@@ -273,6 +273,9 @@
   .ctl { margin-top: 11px; }
   .ctl-lbl { font-size: 11px; color: var(--muted); margin-bottom: 5px; display: flex; justify-content: space-between; }
   .ctl-lbl b { color: var(--text); font-weight: 560; font-family: var(--mono); font-size: 10.5px; }
+  .ctl-pair { display: flex; gap: 6px; }
+  .ctl-pair input { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 7px; padding: 5px 7px; background: var(--panel-2); color: var(--text); font-size: 11.5px; font-family: var(--mono); }
+  .ctl-pair input:focus { outline: none; border-color: var(--accent); }
   .ctl-action { width:100%; border:1px solid var(--border); border-radius:8px; padding:7px 9px; background:var(--panel-2); color:var(--text); font-size:11.5px; text-align:left; }
   .ctl-action:hover { border-color:var(--accent); }
   .row { display: flex; align-items: center; gap: 8px; }
@@ -539,7 +542,10 @@ const loadCss = url => new Promise((ok, bad) => {
 });
 await loadCss("https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css");
 await loadScript("https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js");
-await loadScript("https://unpkg.com/deck.gl@9/dist.min.js");
+// deck.gl comes from the vendored bundle, not a CDN, because the browser COG
+// reader is bundled with it: two copies of luma.gl in one page fail outright
+// with "This version of luma.gl has already been initialized".
+const deck = await import("/template-assets/cog.bundle.mjs");
 loadScript("https://unpkg.com/@highlightjs/cdn-assets@11.9.0/highlight.min.js").catch(() => {});
 
 const qs = id => document.getElementById(id);
@@ -560,6 +566,9 @@ const CMAPS = {
   turbo:   [[48,18,59],[42,160,215],[103,241,105],[249,182,45],[122,4,3]],
   terrain: [[51,51,153],[0,181,153],[86,204,102],[221,204,120],[150,110,80],[240,240,240]],
   greys:   [[240,240,240],[20,20,20]],
+  // Dark-to-light, the way a photograph reads. `greys` runs the other way, so
+  // it turns a panchromatic image into a negative.
+  gray:    [[0,0,0],[255,255,255]],
 };
 function cmapColor(name, t) {
   const stops = CMAPS[name] || CMAPS.viridis;
@@ -606,8 +615,11 @@ map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom
 map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-right");
 qs("boot-msg").classList.add("hidden");
 
+let resolveDevice;
+const deviceReady = new Promise(resolve => { resolveDevice = resolve; });
 const overlay = new deck.MapboxOverlay({
   interleaved: false, layers: [],
+  onDeviceInitialized: device => resolveDevice(device),
   getTooltip: ({ object, layer, index }) => {
     if (!layer || !layer.id.startsWith("v_")) return null;
     const L = state.layers.get(layer.id.slice(2));
@@ -889,10 +901,17 @@ async function loadTarget(target, name) {
   state.layers.set(target, L);
   renderFileList(); renderLayerCards();
   try {
+    if (isRemoteCog(target) && await openClientCog(L, target)) {
+      L.loading = false; L.visible = true;
+      state.selected = target;
+      persistOpen(); renderAll(); refreshCode();
+      return;
+    }
     const desc = await fused.runPython("./map_render.py", {
       target, colormap: (L.style && L.style.colormap) || "viridis",
       rescale: (L.style && L.style.rescale) ? L.style.rescale.join(",") : "",
       render_mode: (L.style && L.style.render_mode) || "",
+      stretch: (L.style && L.style.stretch) || "",
       category_colors: JSON.stringify((L.style && L.style.category_colors) || {}),
       ...sourceArgs(target),
     });
@@ -1015,9 +1034,326 @@ function computeColorByStats(L) {
 
 /* ---- deck layers ------------------------------------------------------ */
 // state.layers insertion order = z-order, bottom → top.
+/* =======================================================================
+   REMOTE COG — read and styled in the browser, no tile service
+   ===================================================================== */
+// A remote Cloud-Optimized GeoTIFF is read here by HTTP range request and
+// coloured on the GPU. The Python tile service publishes tile URLs containing
+// its own ephemeral port, so the layer died whenever that process was replaced,
+// and it spends a round trip per 256px tile. Reading the file directly costs
+// three requests for a whole first view, keeps the coarse overview painted
+// while detail refines, and costs nothing to pan back over ground already
+// fetched. Restyling is a shader uniform: measured at one frame (~18ms) and
+// zero requests, against 2-5s for a re-describe and re-tile.
+//
+// Everything this cannot do — local files, non-TIFF drivers, anything that is
+// not 8-bit, categorical rasters with class colours — stays on the Python
+// engine, which renders them properly.
+const COG_SUFFIX = /\.(tif|tiff)(\?|$)/i;
+const isRemoteCog = target => /^https?:\/\//i.test(target) && COG_SUFFIX.test(target);
+
+let decoderPool = null;
+function cogPool() {
+  // Passing our own pool is mandatory: the library's default builds a worker
+  // URL relative to the bundle, which 404s, and then hangs silently — the
+  // header parses, no tile ever arrives, and no error is ever raised.
+  if (!decoderPool) {
+    decoderPool = new deck.DecoderPool({
+      createWorker: () =>
+        new Worker("/template-assets/cog.worker.bundle.mjs", { type: "module" }),
+    });
+  }
+  return decoderPool;
+}
+
+// The colormap sprite is a texture, so it needs deck's GPU device, which only
+// exists once the overlay has initialised.
+let colormapTexture = null;
+const colormapReady = deviceReady.then(async device => {
+  const bytes = await (await fetch(deck.colormapsUrl)).arrayBuffer();
+  colormapTexture = deck.gpu.createColormapTexture(
+    device, await deck.gpu.decodeColormapSprite(bytes));
+  return colormapTexture;
+});
+
+const WGS84 = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
+  + 'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]';
+
+// The library's own resolver fetches epsg.io per layer — a network hop, and one
+// this template cannot make offline. Projected COGs in the wild are
+// overwhelmingly UTM, which its zone number fully describes. Anything else
+// throws, which sends the raster to the Python engine instead.
+function epsgResolver(code) {
+  const n = Number(code);
+  if (n === 4326) return deck.parseWkt(`${WGS84.slice(0, -1)},AUTHORITY["EPSG","4326"]]`);
+  if (n === 3857 || n === 900913) {
+    return deck.parseWkt(
+      `PROJCS["WGS 84 / Pseudo-Mercator",${WGS84},PROJECTION["Mercator_1SP"],`
+      + 'PARAMETER["central_meridian",0],PARAMETER["scale_factor",1],'
+      + 'PARAMETER["false_easting",0],PARAMETER["false_northing",0],'
+      + 'UNIT["metre",1],AUTHORITY["EPSG","3857"]]');
+  }
+  const utm = (n >= 32601 && n <= 32660) || (n >= 32701 && n <= 32760);
+  if (!utm) throw new Error("EPSG:" + n + " is not supported in the browser reader");
+  const zone = n % 100, south = n >= 32700;
+  return deck.parseWkt(
+    `PROJCS["WGS 84 / UTM zone ${zone}${south ? "S" : "N"}",${WGS84},`
+    + 'PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],'
+    + `PARAMETER["central_meridian",${zone * 6 - 183}],PARAMETER["scale_factor",0.9996],`
+    + `PARAMETER["false_easting",500000],PARAMETER["false_northing",${south ? 10000000 : 0}],`
+    + `UNIT["metre",1],AUTHORITY["EPSG","${n}"]]`);
+}
+
+// The decoder hands back either separate band arrays or one pixel-interleaved
+// buffer, and 8-bit data arrives as Uint8ClampedArray as often as Uint8Array.
+// Normalise both, and return the texture format alongside the pixels: three or
+// more bands become one RGBA texture so a colour image stays a colour image,
+// while a single band stays one channel for a colormap to index. Uploading only
+// band 0 of an RGB file would draw it as a single channel.
+function tilePixels(array, bands) {
+  const separate = array.layout === "band-separate";
+  const first = separate ? array.bands[0] : array.data;
+  if (!(first instanceof Uint8Array) && !(first instanceof Uint8ClampedArray)) return null;
+  const pixels = array.width * array.height;
+  if (bands < 3) {
+    const stride = separate ? 1 : (array.count || 1);
+    if (stride === 1) {
+      return {
+        data: first instanceof Uint8Array
+          ? first
+          : new Uint8Array(first.buffer, first.byteOffset, first.length),
+        format: "r8unorm",
+      };
+    }
+    const band = new Uint8Array(pixels);
+    for (let i = 0; i < pixels; i++) band[i] = first[i * stride];
+    return { data: band, format: "r8unorm" };
+  }
+  const rgba = new Uint8Array(pixels * 4);
+  const stride = separate ? 1 : (array.count || 3);
+  const channels = separate ? array.bands : [first, first, first];
+  for (let i = 0; i < pixels; i++) {
+    for (let c = 0; c < 3; c++) {
+      const source = channels[c];
+      if (!source) return null;
+      rgba[i * 4 + c] = separate ? source[i] : source[i * stride + c];
+    }
+    rgba[i * 4 + 3] = 255;
+  }
+  return { data: rgba, format: "rgba8unorm" };
+}
+
+// A 2-98% window off the coarsest overview: one decimated read, so it costs a
+// couple of range requests and about 20ms. Full resolution would be exact but
+// the difference is a few DN at the bright end, which no one can see.
+async function autoRescale(geotiff) {
+  const level = geotiff.overviews[geotiff.overviews.length - 1] || geotiff;
+  const counts = new Uint32Array(256);
+  let total = 0;
+  const { x: cols, y: rows } = level.tileCount;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const { array } = await level.fetchTile(x, y, { boundless: false, pool: cogPool() });
+      const band = tilePixels(array, 1), mask = array.mask;
+      if (!band) return null;
+      const data = band.data;
+      for (let i = 0; i < data.length; i++) {
+        if (mask && !mask[i]) continue;
+        counts[data[i]]++; total++;
+      }
+    }
+  }
+  if (!total) return null;
+  const at = fraction => {
+    let seen = 0;
+    for (let value = 0; value < 256; value++) {
+      seen += counts[value];
+      if (seen >= total * fraction) return value;
+    }
+    return 255;
+  };
+  const lo = at(0.02), hi = at(0.98);
+  return hi > lo ? [lo, hi] : [0, 255];
+}
+
+function colormapIndex(name) {
+  const index = deck.gpu.COLORMAP_INDEX[name];
+  return index == null ? deck.gpu.COLORMAP_INDEX.gray : index;
+}
+
+function cogDescriptor(target, geotiff, bounds, bands) {
+  return {
+    id: target,
+    status: "ok",
+    kind: "raster_cog_client",
+    crs_original: "EPSG:" + geotiff.crs,
+    bounds: [bounds.west, bounds.south, bounds.east, bounds.north],
+    data: { source: target },
+    stats: {
+      bands,
+      width: geotiff.width ?? null,
+      height: geotiff.height ?? null,
+      dtype: "uint8",
+      nodata: geotiff.nodata ?? null,
+      overviews: (geotiff.overviews || []).length,
+    },
+    // Greyscale is not a special case, it is the `gray` ramp — the same code
+    // path that draws every other colormap.
+    style: {
+      opacity: 0.9,
+      render_mode: bands >= 3 ? "rgb" : "single",
+      colormap: "gray",
+      rescale: null,
+      reversed: false,
+    },
+    minzoom: 0,
+    maxzoom: 24,
+    optimization: { status: "not_needed", progress: 100 },
+    warnings: [],
+    message: null,
+    detected_type: "Cloud-optimized GeoTIFF, read in the browser",
+  };
+}
+
+function cogLayer(L) {
+  const style = L.style || {};
+  const single = (L.cogBands || 1) < 3;
+  // A contrast end the user left blank draws at the measured automatic bound.
+  const auto = L.autoRescale || [0, 255];
+  const set = style.rescale || [];
+  const lo = set[0] ?? auto[0], hi = set[1] ?? auto[1];
+  return new deck.COGLayer({
+    id: "cog_" + L.target,
+    geotiff: L.geotiff,
+    pool: cogPool(),
+    epsgResolver,
+    opacity: L.opacity ?? 1,
+    visible: L.visible !== false,
+    updateTriggers: { renderTile: [lo, hi, style.colormap, style.reversed, single] },
+    getTileData: async (image, { device, x, y, signal, pool }) => {
+      const { array } = await image.fetchTile(x, y, { boundless: false, pool, signal });
+      const { width, height, mask } = array;
+      const pixels = tilePixels(array, single ? 1 : 3);
+      // Raising this is what lets onTileError report an unsupported file
+      // instead of a TypeError from deep inside a texture upload.
+      if (!pixels) throw new Error("unsupported pixel type for the browser reader");
+      const texture = device.createTexture({
+        data: pixels.data, format: pixels.format, width, height,
+        sampler: { minFilter: "linear", magFilter: "linear" },
+      });
+      // Without the file's own mask the padded edge tile draws opaque and
+      // smears to the edge of the canvas.
+      const maskTexture = mask
+        ? device.createTexture({
+            data: mask, format: "r8unorm", width, height,
+            sampler: { minFilter: "nearest", magFilter: "nearest" },
+          })
+        : null;
+      return {
+        texture, mask: maskTexture, width, height,
+        byteLength: pixels.data.byteLength + (mask ? mask.byteLength : 0),
+      };
+    },
+    renderTile: tile => ({
+      renderPipeline: [
+        { module: deck.gpu.CreateTexture, props: { textureName: tile.texture } },
+        ...(tile.mask
+          ? [{ module: deck.gpu.MaskTexture, props: { maskTexture: tile.mask } }]
+          : []),
+        // The GPU has already normalised uint8 to 0..1, so a stored value
+        // divides by 255 on its way into the shader.
+        { module: deck.gpu.LinearRescale, props: { rescaleMin: lo / 255, rescaleMax: hi / 255 } },
+        ...(single && colormapTexture
+          ? [{
+              module: deck.gpu.Colormap,
+              props: {
+                colormapTexture,
+                colormapIndex: colormapIndex(style.colormap || "gray"),
+                reversed: !!style.reversed,
+              },
+            }]
+          : []),
+      ],
+    }),
+    onGeoTIFFLoad: (loaded, { geographicBounds }) => {
+      const announce = L.pendingCog;
+      if (announce) { L.pendingCog = null; announce(loaded, geographicBounds); }
+    },
+    onTileError: error => {
+      L.tileError = String((error && error.message) || error);
+      renderLayerCards();
+    },
+  });
+}
+
+// Restyling only swaps shader uniforms, so it never refetches a tile.
+function restyleCog(L) {
+  L.cogLayer = cogLayer(L);
+  rebuildDeck();
+}
+
+// Resolves true when the raster is open and drawing, false when this reader
+// cannot take it and the Python engine should. Opening the file explicitly
+// rather than handing COGLayer a URL is what makes that answer available — a
+// URL failure would only ever surface as a layer that silently never draws.
+async function openClientCog(L, target) {
+  let geotiff, auto;
+  try {
+    geotiff = await deck.GeoTIFF.fromUrl(target);
+    epsgResolver(geotiff.crs);
+    // A device that never initialises must not strand the layer: time the wait
+    // out so the Python engine still gets a chance.
+    await Promise.race([
+      colormapReady,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("the GPU device did not initialise")), 8000)),
+    ]);
+    // Doubles as the 8-bit check: these tiles are uploaded as r8unorm, so
+    // anything wider belongs to the Python engine, which can scale it.
+    auto = await autoRescale(geotiff);
+    if (!auto) throw new Error("not 8-bit imagery");
+  } catch (error) {
+    // Falling back silently makes an unsupported file indistinguishable from a
+    // slow one, which cost real debugging time.
+    L.cogFallbackReason = error.message;
+    console.warn("browser COG reader declined " + target + ": " + error.message);
+    return false;
+  }
+
+  L.geotiff = geotiff;
+  L.autoRescale = auto;
+  const bands = geotiff.count ?? 1;
+  L.cogBands = bands;
+  let settle;
+  const ready = new Promise(resolve => { settle = resolve; });
+  L.pendingCog = (loaded, geographicBounds) => {
+    L.descriptor = cogDescriptor(target, loaded, geographicBounds, bands);
+    L.style = Object.assign({}, L.descriptor.style);
+    settle(true);
+  };
+  L.cogLayer = cogLayer(L);
+  rebuildDeck();
+  const opened = await Promise.race([
+    ready,
+    new Promise(resolve => setTimeout(() => resolve(false), 20000)),
+  ]);
+  if (!opened) {
+    L.cogLayer = null;
+    L.cogFallbackReason = "the browser reader did not report a footprint";
+    rebuildDeck();
+  }
+  return opened;
+}
+
 function rebuildDeck() {
   const layers = [];
   for (const [key, L] of state.layers) {
+    if (L.cogLayer) {
+      layers.push(L.cogLayer.clone({
+        opacity: L.opacity, visible: L.visible !== false,
+      }));
+      continue;
+    }
     if (!L.descriptor || L.descriptor.status !== "ok") continue;
     const d = L.descriptor;
     if (d.kind === "raster_image" && d.data.image_path) {
@@ -1310,6 +1646,7 @@ map.on("sourcedata", event => {
   const L = tiledLayerForSource(event.sourceId);
   if (!L || (!event.isSourceLoaded && event.sourceDataType !== "idle")) return;
   L.tileLoading = false;
+  L._recovered = false;
   renderLayerCards();
 });
 map.on("idle", () => {
@@ -1323,11 +1660,37 @@ map.on("idle", () => {
   }
   if (changed) renderLayerCards();
 });
+// A tile URL carries the tile service's port and token, so it stops resolving
+// the moment that service is replaced — it exits when idle, and respawns on any
+// backend change. Nothing about the layer is actually wrong, so re-describe once
+// to pick up the new address and rebind the source; only a failure that survives
+// that is worth showing. Guarded by a flag so one broken viewport (every visible
+// tile errors at once) triggers a single recovery, not one per tile.
+async function recoverTiles(L) {
+  if (L._recovering) return;
+  L._recovering = true;
+  try {
+    await reloadRaster(L);
+  } finally {
+    L._recovering = false;
+  }
+}
+
 map.on("error", event => {
   const L = tiledLayerForSource(event.sourceId);
   if (!L) return;
   L.tileLoading = false;
-  L.tileError = (event.error && event.error.message) || "unknown tile error";
+  const message = (event.error && event.error.message) || "unknown tile error";
+  const unreachable = event.error && (event.error.status === 0 || event.error.status === 404);
+  // `_recovered` latches so a dead service is re-described once, not once per
+  // failing tile; a tile that then loads clears it, so a service replaced again
+  // later is recovered again rather than being permanently given up on.
+  if (unreachable && L.descriptor && L.descriptor.kind === "raster_tiles" && !L._recovered) {
+    L._recovered = true;
+    recoverTiles(L);
+    return;
+  }
+  L.tileError = message;
   renderLayerCards();
 });
 
@@ -1416,15 +1779,28 @@ const EYE = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke=
 const EYEOFF = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.9 17.9A10.7 10.7 0 0 1 12 20C5 20 1 12 1 12a19.6 19.6 0 0 1 5.1-5.9m3.9-1.8A10.7 10.7 0 0 1 12 4c7 0 11 8 11 8a19.6 19.6 0 0 1-2.3 3.3M1 1l22 22"/></svg>';
 const DOTS = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
 
+const RASTER_KINDS = new Set(["raster_image", "raster_tiles", "raster_cog_client"]);
+
+function rasterStatLine(st) {
+  // The browser reader reports what the TIFF tags carry, which is less than the
+  // Python engine reads; show the parts that are there.
+  const parts = [];
+  if (st.bands) parts.push(`${st.bands}-band`);
+  if (st.width && st.height) parts.push(`${st.width}×${st.height}`);
+  if (st.dtype) parts.push(st.dtype);
+  if (st.overviews) parts.push(`${st.overviews} overviews`);
+  return parts.join(" · ");
+}
+
 function kindBadge(d) {
-  return (d.kind === "raster_image" || d.kind === "raster_tiles") ? "raster"
+  return RASTER_KINDS.has(d.kind) ? "raster"
        : d.kind === "vector_points_binary" ? "points"
        : d.kind === "vector_tiles_pmtiles" ? "pmtiles" : "vector";
 }
 
 function swatchStyle(L) {
   const d = L.descriptor, s = L.style || {};
-  if (d && (d.kind === "raster_image" || d.kind === "raster_tiles")) {
+  if (d && RASTER_KINDS.has(d.kind)) {
     return s.render_mode === "rgb"
       ? "background:linear-gradient(90deg,#f87171,#4ade80,#60a5fa)"
       : `background:${cmapGradient(s.colormap || "viridis")}`;
@@ -1610,7 +1986,7 @@ function renderStyleDock() {
   body.appendChild(sliderCtl("Opacity", Math.round(L.opacity*100)+"%", 0, 100, Math.round(L.opacity*100),
     v => { L.opacity = v/100; rebuildRasterTiles(); rebuildVectorTiles(); rebuildDeck(); updateCtlLabel(body,"Opacity",v+"%"); }));
 
-  if (d.kind === "raster_image" || d.kind === "raster_tiles") rasterControls(body, L);
+  if (RASTER_KINDS.has(d.kind)) rasterControls(body, L);
   else if (d.kind === "vector_tiles_mvt") vectorTileControls(body, L);
   else if (d.kind === "vector_points_binary") binaryPointControls(body, L);
   else if (d.kind === "vector_geojson") vectorControls(body, L);
@@ -1618,7 +1994,7 @@ function renderStyleDock() {
   // stats + warnings
   const st = d.stats || {};
   let statTxt = "";
-  if (d.kind === "raster_image" || d.kind === "raster_tiles") statTxt = `${st.bands}-band · ${st.width}×${st.height} · ${st.dtype}`;
+  if (RASTER_KINDS.has(d.kind)) statTxt = rasterStatLine(st);
   else if (["vector_geojson", "vector_points_binary", "vector_tiles_mvt"].includes(d.kind)) statTxt = `${(st.feature_count||0).toLocaleString()} features · ${(st.geometry_types||[]).join(", ")}`;
   if (d.crs_original) statTxt += `\nCRS: ${d.crs_original}`;
   if (d.timing_ms != null) statTxt += ` · ${d.timing_ms} ms`;
@@ -1628,6 +2004,39 @@ function renderStyleDock() {
 
 function rasterControls(body, L) {
   const s = L.style, d = L.descriptor;
+  if (d.kind === "raster_cog_client") {
+    const single = (d.stats.bands || 1) < 3;
+    // Each end is remembered as the user left it, so a blank box stays blank
+    // and keeps meaning "auto"; only the drawing resolves against the measured
+    // window. Showing the resolved numbers instead made the boxes impossible to
+    // empty, and the automatic window unreachable once anything was typed.
+    const auto = L.autoRescale || [0, 255];
+    const set = s.rescale || [];
+    const lo = set[0] ?? auto[0], hi = set[1] ?? auto[1];
+    if (single) {
+      body.appendChild(selectCtl("Colormap", Object.keys(CMAPS), s.colormap || "gray", v => {
+        s.colormap = v; s._touched = true; restyleCog(L); renderStyleDock();
+      }));
+      const legend = document.createElement("div"); legend.className = "legend";
+      legend.innerHTML = `<div class="bar" style="background:${cmapGradient(s.colormap||'gray')}"></div>`
+        + `<div class="ends"><span>${Number(lo)}</span><span>${Number(hi)}</span></div>`;
+      body.appendChild(legend);
+    }
+    // Blank means auto: the 2-98% window measured off the file's own coarsest
+    // overview. Every edit here is a shader uniform, so it repaints in a frame
+    // and fetches nothing.
+    body.appendChild(rangeCtl("Contrast", set[0] ?? "", set[1] ?? "", L.autoRescale, (min, max) => {
+      // Emptying one field restores that end of the automatic window; emptying
+      // both drops back to fully automatic.
+      s.rescale = (min == null && max == null) ? null : [min, max];
+      s._touched = true; restyleCog(L); renderStyleDock();
+    }));
+    const note = document.createElement("div"); note.className = "stat";
+    note.textContent = (single ? `${d.stats.bands || 1}-band source` : "RGB composite (bands 1, 2, 3)")
+      + (s.rescale ? "" : " · contrast auto (2–98%)");
+    body.appendChild(note);
+    return;
+  }
   const categories = d.stats.categories;
   if (categories && categories.length) {
     body.appendChild(selectCtl("Render", ["Continuous", "Categorical"],
@@ -1652,7 +2061,17 @@ function rasterControls(body, L) {
       <div class="ends"><span>${fmt(st.p2 ?? st.min)}</span><span>${fmt(st.p98 ?? st.max)}</span></div>`;
     body.appendChild(leg);
   } else {
-    const note = document.createElement("div"); note.className="stat"; note.textContent="RGB composite (bands 1–3)"; body.appendChild(note);
+    const bands = (d.stats.indexes || [1, 2, 3]).join(", ");
+    if (d.stats.true_color) {
+      body.appendChild(selectCtl("Colour", ["True colour", "Auto stretch"],
+        s.stretch === "auto" ? "Auto stretch" : "True colour",
+        v => {
+          s.stretch = v === "Auto stretch" ? "auto" : "native";
+          s._touched = true; reloadRaster(L);
+        }));
+    }
+    const note = document.createElement("div"); note.className="stat";
+    note.textContent = `RGB composite (bands ${bands})`; body.appendChild(note);
   }
   if (d.kind === "raster_tiles" && d.data.optimize_url) {
     const job = d.optimization || {};
@@ -1802,6 +2221,7 @@ async function reloadRaster(L) {
     const desc = await fused.runPython("./map_render.py", { target: L.target, colormap: L.style.colormap || "viridis",
       rescale: L.style.rescale ? L.style.rescale.join(",") : "",
       render_mode: L.style.render_mode || "",
+      stretch: L.style.stretch || "",
       category_colors: JSON.stringify(L.style.category_colors || {}),
       ...sourceArgs(L.target) });
     L.loading = false;
@@ -1839,6 +2259,22 @@ function alphaCtl(label, alpha, fallback, on) {
     c.querySelector(".ctl-lbl b").textContent = v + "%";
     on(Math.round(v / 100 * 255));
   });
+  return c;
+}
+function rangeCtl(label, lo, hi, auto, on) {
+  const c = ctlShell(label, auto && `auto ${auto[0]}–${auto[1]}`);
+  const wrap = document.createElement("div"); wrap.className = "ctl-pair";
+  const make = (value, placeholder) => {
+    const input = document.createElement("input");
+    input.type = "number"; input.value = value; input.placeholder = placeholder;
+    return input;
+  };
+  const min = make(lo, "auto"), max = make(hi, "auto");
+  const fire = () => on(
+    min.value === "" ? null : Number(min.value),
+    max.value === "" ? null : Number(max.value));
+  min.onchange = fire; max.onchange = fire;
+  wrap.appendChild(min); wrap.appendChild(max); c.appendChild(wrap);
   return c;
 }
 function selectCtl(label, opts, val, on) {
@@ -1934,12 +2370,40 @@ function refreshCode() {
   if (!qs("codepanel").classList.contains("hidden")) updateCodeViewer(state.selected);
 }
 
+function rasterSummary(path, d) {
+  const st = d.stats || {};
+  const rows = [["Source", path], ["CRS", d.crs_original || "—"]];
+  if (st.width && st.height) rows.push(["Size", `${st.width} × ${st.height} px`]);
+  if (st.bands) rows.push(["Bands", String(st.bands)]);
+  if (st.dtype) rows.push(["Type", st.dtype]);
+  if (st.overviews != null) {
+    rows.push(["Overviews", Array.isArray(st.overviews)
+      ? (st.overviews.join(", ") || "none") : String(st.overviews)]);
+  }
+  if (st.nodata != null) rows.push(["Nodata", String(st.nodata)]);
+  if (d.bounds) rows.push(["Bounds", d.bounds.map(v => (+v).toFixed(6)).join(", ")]);
+  rows.push(["Read by", d.kind === "raster_cog_client"
+    ? "the browser, over HTTP range requests"
+    : "the Python raster engine"]);
+  const width = Math.max(...rows.map(([label]) => label.length));
+  return rows.map(([label, value]) => `${label.padEnd(width)}  ${value}`).join("\n");
+}
+
 async function updateCodeViewer(path) {
   const body = qs("cp-body"), fnEl = qs("cp-fn"), langEl = qs("cp-lang");
   if (!path) { fnEl.textContent = "—"; langEl.textContent = ""; body.innerHTML = `<div class="cp-empty">Select a file on the left, then this shows its source.</div>`; return; }
   const name = path.split(/[\\/]/).pop();
   fnEl.textContent = name; fnEl.title = path;
   const ext = (name.split(".").pop() || "").toLowerCase();
+  const opened = state.layers.get(path);
+  if (opened && opened.descriptor && opened.descriptor.status === "ok"
+      && RASTER_KINDS.has(opened.descriptor.kind)) {
+    // A raster has no source text, but "binary dataset" is a useless thing to
+    // say about a layer the viewer is drawing right now. Describe it instead.
+    langEl.textContent = "raster";
+    body.innerHTML = `<div class="cp-note">${esc(rasterSummary(path, opened.descriptor))}</div>`;
+    return;
+  }
   if (!TEXT_EXT.includes(ext)) {
     langEl.textContent = ext || "data";
     body.innerHTML = `<div class="cp-note">Binary dataset — no source to show.\n\n${esc(path)}</div>`;

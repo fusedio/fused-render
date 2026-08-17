@@ -877,7 +877,14 @@ def test_every_mutating_invocation_is_pinned_hardened_and_bounded(
     for argv, kwargs in seen:
         assert isinstance(argv, list), "argv list only — never a shell string"
         assert kwargs.get("shell") in (None, False)
-        assert argv[0] == "git"
+        # argv[0] is the ABSOLUTE path to git, not the bare name, and the
+        # absoluteness is required rather than cosmetic: CPython only reaches
+        # posix_spawn when os.path.dirname(executable) is truthy, and a fork in a
+        # process with libproj resident dies with SIGSEGV before exec (see
+        # tests/test_git_posix_spawn.py). Still exactly one basename, still a list,
+        # still no shell — which is what this assertion is really about.
+        assert os.path.isabs(argv[0])
+        assert os.path.basename(argv[0]) in ("git", "git.exe")
         assert "--no-pager" in argv
         # Exactly one invocation is pinned to the TARGET rather than the root:
         # the `--show-toplevel` bootstrap that discovers the root in the first

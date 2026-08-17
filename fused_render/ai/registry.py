@@ -16,9 +16,10 @@ than an import:
   other declaring folder gets. No new install machinery exists for AI.
 * **A wedged model cannot take the app down.** OOM, a CUDA fault, a Rust panic
   inside a loader — all of it happens in a process the supervisor can kill.
-* **Adding a backend is adding a folder.** MLX today; llama.cpp or transformers
-  for Windows tomorrow is a new module here plus a new folder, and nothing else
-  in the app has to learn about it.
+* **Adding a backend is adding a folder.** This was written when MLX was the only
+  text runner and said "transformers for Windows tomorrow" — which turned out to
+  be exactly one new row here and one new folder (D293), with nothing else in the
+  app changed. The claim is kept because it was tested.
 
 **Availability is checked, never assumed.** MLX runs on Apple Silicon and nowhere
 else, so `available()` answers with a REASON rather than a bool — "needs Apple
@@ -29,6 +30,30 @@ Resolution is by CAPABILITY, not by model: a caller asks for `text-generation`
 and gets whichever runner serves it here. A model id never picks the runner,
 because the same repo can be servable by two backends and the choice belongs to
 the machine, not to the string.
+
+**Several runners can share one capability, and the ORDER between them is the
+whole mechanism.** Text generation prefers MLX on Apple Silicon and uses torch
+on Windows and Linux, with torch also remaining a fallback on Apple Silicon when
+MLX is unavailable; speech to text does the same thing with MLX Whisper over
+CTranslate2, and since D319 carries a THIRD row — Parakeet, Apple Silicon only,
+registered under MLX Whisper so that the default does not move. Every row is
+registered, every one is asked whether it can run, and the first that says yes
+wins. Nothing else in the app knows there is more than
+one — but the CATALOG does, because what to suggest depends on which backend
+will load it (`catalog.py`), and an MLX checkpoint on a Windows machine is a
+download that cannot be used.
+
+**A user can override that order, and the override is a REQUEST rather than an
+instruction** (D302). `resolve()` reads a per-capability preference — "auto", or
+a runner code — from `shell/prefs.py`, and a named runner wins only if it can
+actually run here. An honoured preference is the whole story; an override naming
+a runner this machine cannot run is IGNORED and the ordering above decides, with
+the reason carried out in the `Resolution` so a page can say what happened. That
+asymmetry is the point: prefs.json travels — it is a plain file in a home
+directory people sync, copy between machines and restore from a backup — so a
+preference set on a Mac must not arrive on a Windows box and take speech to text
+away entirely. A preference that quietly does nothing is recoverable; a
+capability that has silently vanished is a bug report.
 """
 
 from __future__ import annotations
@@ -43,6 +68,10 @@ from typing import Callable
 # the supervisor's one-resident-model-per-capability rule all key off these.
 TEXT_GENERATION = "text-generation"
 IMAGE_GENERATION = "text-to-image"
+#: The Hub's own tag for it, like `IMAGE_GENERATION` is — so the constant, the
+#: `pipeline_tag` on a Whisper repo and the capability a card asks to load are
+#: one string rather than three that have to be kept in step.
+SPEECH_TO_TEXT = "automatic-speech-recognition"
 
 RUNNERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runners")
 
@@ -69,8 +98,56 @@ class Runner:
     #: process the supervisor starts). Both are read from here and nowhere else.
     folder: str
     #: What this backend is, in one line, for the page that has to explain a
-    #: capability the machine cannot serve.
+    #: capability the machine cannot serve. The FULL name, qualifier and all
+    #: ("MLX LM (Apple Silicon)"), and it has exactly one home: the Preferences
+    #: engine picker, where the reader is choosing between backends and the
+    #: qualifier is the difference between the options.
     label: str
+    #: The same backend without the qualifier ("MLX LM"), for everywhere else.
+    #:
+    #: A FIELD, not the label with the brackets stripped off. A regex would make
+    #: the short name a side effect of how someone punctuated the long one, and
+    #: the first runner whose name legitimately contains brackets would lose
+    #: half of it with nothing failing. It is also the vocabulary this app
+    #: already speaks informally — `skills/fused-render-ai/SKILL.md`'s runner
+    #: table has been writing these names for as long as it has existed.
+    #:
+    #: The qualifier is noise anywhere the reader is not CHOOSING: a card
+    #: saying "MLX FLUX (Apple Silicon)" tells someone on a Mac nothing they did
+    #: not know, and costs roughly double the width of a tag that has to fit
+    #: beside the task and the size.
+    #:
+    #: **Both names are PRODUCT NAMES, and they are Title Case with acronyms
+    #: left uppercase — "MLX Whisper", "Diffusers", "Faster Whisper".** The AI
+    #: Models page prints them all side by side in one column, so a name that
+    #: keeps its upstream punctuation reads as a different KIND of thing than
+    #: its neighbours rather than as a faithful citation; `faster-whisper` sat
+    #: next to `Diffusers` and `MLX FLUX` and looked like a package, not a
+    #: choice. The exact upstream spelling is not lost by this: the card's
+    #: library tag one column over is the literal identifier (`ctranslate2`,
+    #: `diffusers`, `mlx`, `gguf`) and stays lowercase, which is the split that
+    #: earns the rename. Anywhere a runner is IDENTIFIED rather than named —
+    #: `code`, the folder, the pyproject, the catalog keys — the upstream
+    #: spelling is load-bearing and must not be touched.
+    short_label: str = ""
+    #: What using this backend is LIKE, for the page to say before anything is
+    #: loaded. A standing fact about the runner, never a claim about this
+    #: machine — the device a model actually got is the worker's to report
+    #: (`worker_base.STATE["device"]`) and is not knowable until one has run.
+    #:
+    #: It exists because the honest answer for `transformers-text` is "this may
+    #: be a great deal slower than you expect, and here is why". Empty for a
+    #: runner with nothing surprising to say.
+    #:
+    #: **It renders under that engine's row on the AI Models page's Engines
+    #: tab** (D315), beneath the select, and only for the runner actually
+    #: serving the capability. It spent a while over the Discover tab's
+    #: capability sections instead, which was wrong twice: only some runners
+    #: have a note, so those sections were blotchy and the sentences read as
+    #: noise; and the `mflux-image` one is a CAUTION about a choice — the thing
+    #: that tells a 16GB Mac to go back to Diffusers — which belongs beside the
+    #: control that makes that switch, not over a grid of downloads.
+    note: str = ""
     _available: Callable[[], Availability] = field(repr=False, default=lambda: Availability(True))
 
     def available(self) -> Availability:
@@ -84,8 +161,19 @@ class Runner:
         is a claim; this is the check that makes it true.
         """
         if not os.path.isfile(self.worker):
-            return Availability(False, f"the {self.label} runner is not built yet")
+            return Availability(False, f"the {self.short} runner is not built yet")
         return self._available()
+
+    @property
+    def short(self) -> str:
+        """`short_label`, falling back to the full one.
+
+        The fallback is for a Runner built somewhere that has no opinion about
+        display — a test's stand-in, mostly. A REGISTERED runner must set it,
+        which `test_every_runner_has_both_names` requires: degrading to the long
+        name is a cosmetic wart, degrading to "" would be a blank tag.
+        """
+        return self.short_label or self.label
 
     @property
     def worker(self) -> str:
@@ -113,20 +201,105 @@ def _apple_silicon() -> Availability:
 
 
 def _always() -> Availability:
-    """torch + diffusers build wheels for macOS, Linux and Windows. Whether the
-    machine is FAST enough is a different question, and not one to refuse on."""
+    """torch + diffusers and CTranslate2 build on every platform we ship.
+
+    Whether the machine is FAST enough is a different question, and not one to
+    refuse on — a model answering slowly on a CPU is a model answering, and the
+    device is reported (`worker_base.STATE["device"]`) so the page can say which
+    case it is.
+    """
     return Availability(True)
 
 
-# The table. Ordered, and first-match-wins per capability — so a future
-# cross-platform text runner sits after mlx_text and picks up the machines MLX
-# turns down.
+def _transformers_platform() -> Availability:
+    """The transformers text runner's supported production platforms.
+
+    MLX is preferred on Apple Silicon by registry order, but torch's MPS path is
+    a working fallback when MLX is absent or unavailable. Intel macOS is not a
+    distribution target, and availability drives the catalog and Load button,
+    so it must not be advertised merely because torch happens to publish a
+    wheel there.
+    """
+    system = platform.system()
+    machine = platform.machine()
+    if (
+        system in ("Windows", "Linux")
+        or (system == "Darwin" and machine == "arm64")
+    ):
+        return Availability(True)
+    return Availability(
+        False,
+        f"requires Windows, Linux, or Apple Silicon macOS (this is {system.lower()}/{machine})",
+    )
+
+
+# The table. Ordered, and first-match-wins per capability — which is what lets
+# TWO runners serve one: MLX takes Apple Silicon when available, and the row
+# below it serves Windows and Linux plus the Apple Silicon fallback. All three
+# multi-runner capabilities (text generation, image generation, speech to text)
+# are arranged that way. The ordering is the whole mechanism, so the rows are
+# not sorted alphabetically and must not be — it is also the DEFAULT that a
+# user's engine preference overrides, so a re-order silently re-decides every
+# machine set to "auto", which is all of them until somebody chooses otherwise.
 _RUNNERS: tuple[Runner, ...] = (
     Runner(
         code="mlx-text",
         capability=TEXT_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "mlx_text"),
-        label="MLX (Apple Silicon)",
+        label="MLX LM (Apple Silicon)",
+        short_label="MLX LM",
+        _available=_apple_silicon,
+    ),
+    Runner(
+        code="transformers-text",
+        capability=TEXT_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "transformers_text"),
+        label="Transformers (PyTorch)",
+        short_label="Transformers",
+        # ONE LINE, and that is a hard constraint rather than a summary: it sits
+        # under this engine's row on the Engines tab, in the space between one
+        # picker and the next, and anything that wraps twice is something nobody
+        # finishes. Everything that used to follow a dash here — that the
+        # Windows build is CPU-only, that a CPU answers at a few words a second
+        # — lives in the loaded card's tooltip instead, where somebody has
+        # stopped to ask.
+        note="Uses an NVIDIA GPU when PyTorch can see one, and the CPU otherwise.",
+        # Deliberately BELOW the MLX row rather than instead of it. Apple Silicon
+        # therefore gets MLX when it is present and this runner's working MPS
+        # path when it is not; Windows and Linux come here directly. Intel macOS
+        # is not a distribution target.
+        _available=_transformers_platform,
+    ),
+    # Image generation is arranged like the other two: MLX takes the Macs
+    # (D310). One 4.6GB repo against the ~10.1GB two-repo split the torch
+    # recipe needs, ~8x quicker to load, ~15-20% quicker per image, measured
+    # same model, prompt and seed.
+    #
+    # **The memory ceiling is a KNOWN, ACCEPTED risk rather than an unknown.**
+    # MLX's allocator reported a ~23.6GB `get_cache_memory` high-water doing
+    # those renders — larger than torch's ~19.1GB Metal allocation for the same
+    # picture — on a 34GB machine already several GB into swap, and nothing has
+    # been run on the 16GB Macs this app's own catalog says full-precision FLUX
+    # already OOMs. The evidence is one machine's benchmark; the decision was to
+    # take the speed and let a user who hits the ceiling move back to Diffusers
+    # from the Engines tab, which is the case the engine preference (D302)
+    # exists to serve in both directions. The `note` says so **under that very
+    # picker** (D315) — it is the sentence a 16GB Mac needs at the moment it is
+    # deciding whether to switch away, and it was over a grid of downloads on
+    # another tab until then.
+    Runner(
+        code="mflux-image",
+        capability=IMAGE_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "mflux_image"),
+        label="MLX FLUX (Apple Silicon)",
+        short_label="MLX FLUX",
+        # ONE LINE, per the rule the transformers row states. It describes the
+        # DEFAULT rather than an opt-in, so the memory caveat leads: the reader
+        # it exists for is someone on a small Mac deciding whether to switch
+        # AWAY, not someone deciding whether to try it — and since D315 the line
+        # is rendered directly under the control that does the switching.
+        note="Reserves much more memory than Diffusers and is untested below "
+             "32GB, but loads far quicker from a smaller download.",
         _available=_apple_silicon,
     ),
     Runner(
@@ -134,6 +307,61 @@ _RUNNERS: tuple[Runner, ...] = (
         capability=IMAGE_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "diffusers_image"),
         label="Diffusers (PyTorch)",
+        short_label="Diffusers",
+        _available=_always,
+    ),
+    # Speech to text, and the capability that finally USED the two-runner
+    # ordering this table was built for. MLX takes the Macs; CTranslate2 below
+    # it keeps every other platform — and keeps the Macs too whenever the MLX
+    # folder is not built yet, which is the state `Runner.available` describes.
+    Runner(
+        code="mlx-whisper",
+        capability=SPEECH_TO_TEXT,
+        folder=os.path.join(RUNNERS_DIR, "mlx_whisper"),
+        label="MLX Whisper (Apple Silicon)",
+        short_label="MLX Whisper",
+        note="Transcribes on the GPU. Several times quicker than the CPU path "
+             "on the same Mac.",
+        _available=_apple_silicon,
+    ),
+    # …and the third, which is the first capability to have one (D319).
+    # **Below MLX Whisper deliberately**, so nothing about the default changes:
+    # Parakeet-TDT beats Whisper large-v3 on English word error rate and is
+    # several times quicker again on the same Mac, but v3 covers 25 European
+    # languages against Whisper's ~99 — so promoting it would silently break
+    # every page relying on `language` being detected, on recordings this
+    # model has never heard a word of. A user opts in per capability on the
+    # Engines tab (D302), which is exactly the machinery that case needs and
+    # is why no new plumbing came with this runner.
+    Runner(
+        code="parakeet-mlx",
+        capability=SPEECH_TO_TEXT,
+        folder=os.path.join(RUNNERS_DIR, "parakeet_mlx"),
+        label="Parakeet TDT (Apple Silicon)",
+        short_label="Parakeet TDT",
+        # ONE LINE, per the rule the transformers row states — it sits under
+        # this engine's row on the Engines tab, between one picker and the
+        # next. It describes an OPT-IN, so what it leads with is the reason to
+        # take it and the reason not to, in that order.
+        note="Quicker than Whisper and more accurate in English, but it "
+             "handles 25 European languages only.",
+        _available=_apple_silicon,
+    ),
+    Runner(
+        code="faster-whisper",
+        capability=SPEECH_TO_TEXT,
+        folder=os.path.join(RUNNERS_DIR, "faster_whisper"),
+        # "Faster Whisper", not the upstream "faster-whisper": the tag column is
+        # product names, and `code` above still carries the exact spelling.
+        label="Faster Whisper (CTranslate2)",
+        short_label="Faster Whisper",
+        # `_always`, and that is why speech to text SHIPPED on CTranslate2
+        # rather than on MLX: text generation was already Apple-Silicon-only,
+        # and a second capability that existed on a Mac and nowhere else would
+        # have made "local AI" a thing Windows and Linux users read about
+        # rather than used. The MLX row above is the sequel that argument
+        # always allowed for — it takes the Macs and leaves everything else
+        # here, and no user loses a capability to it.
         _available=_always,
     ),
 )
@@ -143,18 +371,20 @@ _RUNNERS: tuple[Runner, ...] = (
 #: that can actually RUN it.
 #:
 #: **A vision-language checkpoint is a text model when you only give it text**,
-#: and that is not a technicality — `mlx-community/gemma-3-12b-it-4bit` is
-#: labelled "image + text to text" because gemma-3 carries a vision tower, and
-#: it is also one of the models this app's own catalog RECOMMENDS for chat.
-#: Leaving the label out of this table took the Load button off a model the app
-#: was suggesting on the next tab over. mlx-lm loads such a checkpoint through
-#: its text config; the image half simply goes unused until an `mlx-vlm` runner
-#: exists to use it.
+#: and that is not a technicality — it is now the NORMAL case rather than an
+#: exception. Every model in this app's own MLX catalog is labelled "image +
+#: text to text", because Qwen3.5 and gemma-4 ship as one checkpoint with a
+#: vision tower (and, for gemma-4, an audio one) attached to the language
+#: model. Leaving the label out of this table took the Load button off the
+#: models the app was suggesting on the next tab over. mlx-lm loads such a
+#: checkpoint through its text config; the other towers simply go unused until
+#: an `mlx-vlm` runner exists to use them.
 _TASK_CAPABILITIES = {
     "text generation": TEXT_GENERATION,
     "image + text to text": TEXT_GENERATION,
     "text to image": IMAGE_GENERATION,
     "image generation": IMAGE_GENERATION,
+    "speech recognition": SPEECH_TO_TEXT,
 }
 
 #: The other half of the same decision: labels nothing here serves, listed
@@ -166,14 +396,26 @@ _TASK_CAPABILITIES = {
 #: every label the listing can produce to appear in one of these two, which turns
 #: "we forgot" into a failing test instead of a missing button.
 NO_RUNNER_YET = frozenset({
-    # Nothing here generates embeddings, classifies, transcribes, or segments —
-    # these are real jobs with no local runner in this cut.
+    # Nothing here generates embeddings, classifies, or segments — these are
+    # real jobs with no local runner in this cut.
     "embeddings", "sentence embeddings", "fill mask", "text classification",
     "token classification", "question answering", "summarization", "translation",
     "image classification", "zero-shot image classification",
     "zero-shot text classification", "image segmentation", "object detection",
     "depth estimation", "image to image", "image to text", "audio classification",
-    "speech recognition", "text to speech", "audio generation", "video generation",
+    "video generation",
+    # An audio-language model: a recording and a prompt in, text out. It is
+    # NOT speech recognition — it is asked questions about the audio rather
+    # than asked to transcribe it — and mlx-lm has no module for one, so
+    # neither the text runners nor the whisper runners can serve it. Listed
+    # here rather than left out, because an absent label and a ruled-out label
+    # look identical from a card (see the table above).
+    "audio + text to text",
+    # Speech OUT, as opposed to speech in. Deliberately not folded into the
+    # transcription capability as a direction flag: one capability holds one
+    # resident model, so a shared "audio" capability would have a synthesis
+    # model evict a Whisper model and back again on every alternation.
+    "text to speech", "audio generation",
     # An encoder-decoder (T5-shaped). Not the causal-LM path mlx-lm serves, so
     # it is not text generation however much the name suggests it.
     "text-to-text generation",
@@ -208,17 +450,161 @@ def by_code(code: str) -> Runner | None:
     return next((r for r in _RUNNERS if r.code == code), None)
 
 
-def for_capability(capability: str) -> Runner | None:
-    """The runner that serves `capability` HERE, or None.
+#: What a capability's engine preference says when nobody has chosen: use the
+#: table's order. The literal is shared with `shell/prefs.py` and the
+#: Preferences page rather than spelled three times, because it is a value that
+#: travels through JSON and a typo in any copy reads as an unknown runner.
+AUTO = "auto"
 
-    Availability is part of the resolution, not a check the caller does after:
-    picking a runner that cannot run and failing later would report "the model
-    failed to load" for a machine that was never going to be able to load it.
+
+@dataclass(frozen=True)
+class Resolution:
+    """Which runner serves a capability here, and whether anyone was overruled.
+
+    `for_capability` answers only the first half, which is all almost every
+    caller wants. This exists for the ones that have to EXPLAIN the answer: the
+    Preferences page, which must not show a preference as being in force when it
+    is not, and the AI Models page, whose suggestion list changes when the
+    engine does.
     """
+
+    #: What will actually load. None when nothing can serve the capability here.
+    runner: Runner | None
+    #: The preference as stored — `AUTO`, or a runner code.
+    requested: str = AUTO
+    #: Why the request was not honoured, in words, for a page to show. Empty
+    #: when it was — including when nothing was requested, since "auto" is
+    #: honoured by definition.
+    ignored_reason: str = ""
+
+    @property
+    def honoured(self) -> bool:
+        return not self.ignored_reason
+
+
+def preferred_code(capability: str) -> str:
+    """The user's engine choice for `capability` — `AUTO` when there is none.
+
+    Read on every resolution rather than cached, for the same reason
+    `prefs.selected_engine()` is: a preference is a file, changing it must not
+    need a restart (CT-5), and this is not on a hot path — a resolution happens
+    once per load, per download and per page render, not per token.
+
+    Imported lazily and defended, because the registry is imported by the
+    supervisor and by the worker-facing code paths, and it must not become a
+    thing that cannot answer because a preferences file is unreadable. A machine
+    with no prefs.json is the normal case, not an error.
+    """
+    try:
+        from fused_render.shell import prefs
+
+        return prefs.engine_for_capability(capability)
+    except Exception:  # noqa: BLE001 - a preference must never break resolution
+        return AUTO
+
+
+def _first_available(capability: str) -> Runner | None:
+    """Registry order, filtered by availability — the rule before D302, and
+    still the rule whenever a preference is absent or unusable."""
     for runner in _RUNNERS:
         if runner.capability == capability and runner.available().ok:
             return runner
     return None
+
+
+def resolve(capability: str) -> Resolution:
+    """Which runner serves `capability` here, and what the user asked for.
+
+    Availability is part of the resolution and not a check the caller does
+    after: picking a runner that cannot run and failing later would report "the
+    model failed to load" for a machine that was never going to be able to load
+    it. That applies to the PREFERENCE too, which is the whole design of this
+    function — see the module docstring. A preference naming a runner that
+    cannot run here is dropped, the ordering decides instead, and the reason
+    comes back so that a page can say so rather than showing a control whose
+    value has no effect.
+
+    Three ways a preference is dropped, and they are told apart because the
+    remedies differ:
+
+    * the runner does not serve this capability (a stale prefs.json, or one
+      hand-edited),
+    * the runner is not registered at all (a preference written by a NEWER
+      build, then opened by an older one — the reason this is not an assert),
+    * the runner cannot run here, which is the case that actually happens: a
+      preference set on a Mac, carried to a Windows machine in a synced home
+      directory.
+    """
+    requested = preferred_code(capability)
+    if requested and requested != AUTO:
+        runner = by_code(requested)
+        if runner is None:
+            return Resolution(_first_available(capability), requested,
+                              f"{requested} is not a runner this build knows")
+        if runner.capability != capability:
+            return Resolution(_first_available(capability), requested,
+                              f"{runner.short} does not do {capability}")
+        status = runner.available()
+        if not status.ok:
+            return Resolution(_first_available(capability), requested,
+                              status.reason or f"{runner.short} cannot run here")
+        return Resolution(runner, requested)
+    return Resolution(_first_available(capability), AUTO)
+
+
+def for_capability(capability: str) -> Runner | None:
+    """The runner that serves `capability` HERE, or None.
+
+    The whole app's resolution, and deliberately the SAME call for the
+    supervisor, the catalog and the API — a second copy of this rule is how a
+    page comes to offer a model the loader then refuses (D293), and a
+    preference honoured in one place and not another would be the same bug with
+    a new cause.
+    """
+    return resolve(capability).runner
+
+
+def unavailable_reason(capability: str) -> str | None:
+    """Why nothing here serves `capability`, in words — or None when something does.
+
+    The same sentence `supervisor._runner_or_raise` raises, available to a
+    caller that has not got as far as starting anything. It exists because a
+    request can now fail EARLIER than the supervisor for a reason that has
+    nothing to do with the real one: since the catalog became per-runner (D293),
+    an unavailable runner also has no curated default, so `POST /api/ai/image`
+    answered "no image model is configured" — true, useless, and hiding the
+    actionable "the Diffusers runner is not built yet" one layer down.
+
+    Both messages are worth keeping, and this is what tells them apart: no
+    runner is a fact about the MACHINE, and no suggestion is a fact about the
+    CATALOG.
+
+    **Every runner's reason, not the first one's**, and with two runners per
+    capability that stopped being a detail. The first cut took
+    `next(r for r in _RUNNERS if r.capability == capability)`, which for text
+    generation is always `mlx-text` — so a Linux machine whose transformers
+    worker was missing (a state `Runner.available` documents, since a runner is
+    registered before its folder is written) would be told text generation
+    "needs Apple Silicon", naming the one backend that was never going to serve
+    it and hiding the one that would have. Reported by review on the PR that
+    added the second runner.
+
+    Joined rather than picked, because there is no rule for choosing between
+    them that is not a guess about which the reader meant — and a capability
+    with one runner, which is all of them but this one, reads exactly as before.
+    Duplicates are dropped: two runners of the same label failing the same way
+    is one sentence, said once.
+    """
+    if for_capability(capability) is not None:
+        return None
+    reasons: list[str] = []
+    for runner in _RUNNERS:
+        if runner.capability != capability:
+            continue
+        reason = runner.available().reason
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    return "; ".join(reasons) or f"no runner provides {capability!r}"
 
 
 def capabilities() -> tuple[str, ...]:
@@ -233,7 +619,20 @@ def capabilities() -> tuple[str, ...]:
 
 def describe() -> list[dict]:
     """The registry as the API reports it: what exists, what runs here, and why
-    not when it does not."""
+    not when it does not.
+
+    **`available` and `active` are different questions, and they only became
+    different with D302.** Availability is a fact about the hardware: can this
+    backend run at all. Active is a fact about this capability right now: is
+    this the backend a load would use. They were the same answer while
+    resolution was purely first-available — the first available runner was the
+    one that ran — so `fused.ai.models.list()` reported availability and every
+    reader took it to mean "this is what serves me". With a user preference in
+    the middle that reading is wrong: on an Apple Silicon machine BOTH whisper
+    runners are available and exactly one is active. A page that cannot tell
+    them apart cannot say which engine transcribed for it.
+    """
+    engines = {capability: resolve(capability) for capability in capabilities()}
     rows = []
     for runner in _RUNNERS:
         status = runner.available()
@@ -241,9 +640,77 @@ def describe() -> list[dict]:
             {
                 "code": runner.code,
                 "capability": runner.capability,
+                # BOTH names, and the field names say which is which. `label`
+                # keeps meaning the full one everywhere on the wire — a
+                # consumer that reads it after this change gets exactly what it
+                # got before — and a surface that wants the qualifier-free name
+                # asks for it. The alternative, quietly shortening `label`,
+                # would be a change no reader of the payload could see.
                 "label": runner.label,
+                "shortLabel": runner.short,
+                "note": runner.note or None,
                 "available": status.ok,
                 "reason": status.reason or None,
+                # Which of the available runners this capability is actually
+                # using. False for every runner of a capability nothing can
+                # serve, which is the honest answer — there is no active engine.
+                "active": engines[runner.capability].runner is runner,
+            }
+        )
+    return rows
+
+
+def describe_engines() -> list[dict]:
+    """One row per capability: what was asked for, what is serving, what was
+    ignored.
+
+    Separate from `describe()` because it answers a different question and has a
+    different cardinality — a preference belongs to a CAPABILITY, while
+    availability belongs to a RUNNER. Folding the two would give every runner
+    row a copy of its capability's preference, and two rows of one capability
+    disagreeing about it would then be representable.
+    """
+    rows = []
+    for capability in capabilities():
+        resolution = resolve(capability)
+        rows.append(
+            {
+                "capability": capability,
+                # As STORED: what a PUT round-trips, and what applies again if
+                # the machine that cannot honour it stops being the one in use.
+                # Never rewritten to match reality — a preference silently
+                # corrected on read is one the user cannot see or undo.
+                "selected": resolution.requested,
+                "effective": resolution.runner.code if resolution.runner else None,
+                "effectiveLabel": resolution.runner.label if resolution.runner else None,
+                # The summary line under the picker ("Using MLX LM.") reads the
+                # short one: it sits directly beneath the options, which carry
+                # the qualifier a line above, and repeating it there says
+                # nothing the reader has not just read. The picker itself, and
+                # the sentence that names a chosen option back to the user
+                # (`ignoredWarning`), stay on `label`.
+                "effectiveShortLabel": resolution.runner.short if resolution.runner else None,
+                # Null when the selection is in force (including "auto", which
+                # is honoured by definition). A sentence when it is not, and the
+                # UI is expected to show it — a control whose value does nothing,
+                # with nothing saying why, is the failure this field exists for.
+                "ignoredReason": resolution.ignored_reason or None,
+                "choices": [
+                    {
+                        "code": runner.code,
+                        "label": runner.label,
+                        "note": runner.note or None,
+                        "available": runner.available().ok,
+                        # The registry's own words ("needs Apple Silicon — MLX
+                        # runs on Metal only (this is windows/amd64)"), so the
+                        # disabled radio explains itself with the same sentence
+                        # the rest of the app uses. The page must not write its
+                        # own copy of this, because the page cannot know it.
+                        "reason": runner.available().reason or None,
+                    }
+                    for runner in _RUNNERS
+                    if runner.capability == capability
+                ],
             }
         )
     return rows

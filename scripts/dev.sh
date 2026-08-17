@@ -5,8 +5,15 @@
 #
 # Pipeline: npm install (if needed) -> one gated build (tsc + vite, so type
 # errors surface before anything starts) -> `vite build --watch` in the
-# background -> fused-render server in the foreground, supervised by
-# watchfiles for Python auto-reload. Ctrl-C stops everything.
+# background -> fused-render server (supervised by watchfiles for Python
+# auto-reload) ALSO in the background, with dev.sh parked on `wait` for it.
+# Ctrl-C — or a plain `kill` of this script — stops everything.
+#
+# The server is deliberately not a foreground child: bash defers a trap handler
+# until the current foreground command returns, so while it ran in the
+# foreground a signal to dev.sh merely QUEUED the handler and the whole tree
+# survived. `wait` is interruptible, so the handler runs at once. See the
+# process-cleanup section below, which owns the teardown for every pid.
 #
 # Two independent reload paths:
 #   * Frontend: `vite build --watch` rebuilds into fused_render/static/
@@ -26,14 +33,513 @@
 #
 # Knobs:
 #   * --no-browser (passed through): dev.sh won't open a tab either.
+#   * --cleanup: reap this worktree's running dev.sh tree and exit, starting
+#     nothing. Consumed here, never forwarded to the server.
 #   * FUSED_RENDER_NO_RELOAD=1: disable Python auto-reload; run the server once
 #     exactly as before (server opens its own browser tab).
 # watchfiles is auto-installed into the venv if missing; if the install fails,
 # dev.sh falls back to the original single-launch behavior.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# PHYSICAL, not logical: `cd -P` + `pwd -P` resolve every symlink, so this is
+# the same string no matter how the developer spelled the path they invoked
+# (a symlinked checkout, /tmp vs /private/tmp on macOS, an alias into a worktree).
+# That matters because $REPO_ROOT is what dev_pidfile_is_ours compares the
+# recorded root against, and it is the only field in the record that names a
+# worktree at all. With a logical `pwd`, one run through a symlink and the next
+# through the real path derived two different roots for the SAME .dev-pids/
+# directory: the second called the live record not-ours, deleted it, and started
+# a second tree — the duplicate-vite bug, now with no record left to find it by.
+# `cd -P` twice rather than `cd "…/.."` because a logical `..` is applied
+# textually and would jump to the wrong parent when it is `scripts` itself that
+# is the symlink.
+REPO_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && cd -P .. && pwd -P)"
 FRONTEND="$REPO_ROOT/frontend"
+
+# --cleanup is dev.sh's own flag and must not reach the server: cli.py's parser
+# rejects unknown options, so leaving it in "$@" would turn a cleanup into a
+# usage error. Strip it here, before either passthrough site (the watchfiles
+# CMD builder and the single-launch argv) reads "$@".
+CLEANUP_ONLY=0
+_ARGS=()
+for _a in "$@"; do
+  if [[ "$_a" == "--cleanup" ]]; then CLEANUP_ONLY=1; else _ARGS+=("$_a"); fi
+done
+# `${_ARGS[@]+…}` because bash 3.2 (what macOS ships) treats an empty array as
+# unset under `set -u` and would abort on a bare `"${_ARGS[@]}"`.
+set -- ${_ARGS[@]+"${_ARGS[@]}"}
+
+# Isolate each branch/worktree onto its own port + state dir. Without this every
+# dev.sh run (main checkout and every worktree) defaults to the baseline port
+# 1777 and clobbers the same ~/.fused-render state, so a server left running in
+# one worktree collides with — or gets served stale to — another. Deriving the
+# ref from the current branch gives each branch a deterministic port of its own
+# (see fused_render/_branch.py). main/master and detached HEAD sanitize to the
+# baseline, so this is a no-op there. Respect an already-set value so the caller
+# can override (including to "" to force baseline).
+#
+# Resolved this early (before any of the setup below) because the port it feeds
+# is what the startup reap waits on for the old server to let go of the bind, and
+# that reap has to happen before dev.sh starts rebuilding the shell — otherwise
+# the old run's `vite build --watch` is still writing shell-dist/ while this one
+# builds into it. (The pidfile deliberately does NOT depend on this ref; see
+# dev_pidfile_path.)
+#
+# NOTE: on main/master this mirrors baseline (port 1777 + the shared
+# ~/.fused-render state), which is exactly what the installed macOS desktop app
+# uses. Running dev.sh on main alongside the installed app therefore collides:
+# the port bind fails loudly (see cli.py _check_port_free) and, more subtly,
+# both read/write the same baseline state dir. Work on a feature branch (or pass
+# FUSED_RENDER_BRANCH / --port) to run dev fully isolated from the desktop app.
+if [[ -z "${FUSED_RENDER_BRANCH+x}" ]]; then
+  export FUSED_RENDER_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+fi
+
+# ---------------------------------------------------------------------------
+# Process cleanup: kill_tree, the per-worktree pidfile, and the one shutdown
+# handler every trap installs.
+#
+# dev.sh used to leak entire process trees. Eleven orphans were hand-killed off
+# one machine, some 10-20 days old, from three separate holes:
+#
+#   1. `(cd "$FRONTEND" && npm run watch) &` makes $! the SUBSHELL, not vite.
+#      The observed chain was dev.sh -> subshell -> npm -> node vite; the trap
+#      killed the subshell, and npm + vite reparented to init and kept
+#      rebuilding into shell-dist/ forever. Same shape for the core_apps poll
+#      loop (which has a `sleep` child) and the browser opener.
+#   2. The watchfiles-supervised server ran in the FOREGROUND and appeared in no
+#      trap at all — and bash defers a trap handler until the current foreground
+#      command returns, so `kill <dev.sh>` was merely queued. Those trees only
+#      collapsed once the watchfiles children were signalled directly.
+#   3. Nothing noticed an already-running dev.sh for the same worktree. cli.py's
+#      port guard catches a second SERVER, but two vite watchers coexist happily
+#      while both write the same shell-dist/ — which is how one worktree ended
+#      up with two complete dev.sh trees.
+#
+# Everything below reaps ONLY the pids this run owns, or the tree the pidfile
+# names. Never a pattern kill: other worktrees on this machine run their own
+# dev servers and orphans that are none of our business.
+# ---------------------------------------------------------------------------
+
+# Every walk below is `pgrep -P`, so a machine without pgrep would degrade
+# silently back to the exact orphan bug this section exists to fix (the walks
+# swallow the failure with `|| true` and only the root pid gets signalled). Say
+# so once, loudly, rather than leaking vite watchers for another three weeks.
+if ! command -v pgrep >/dev/null 2>&1; then
+  echo "==> WARNING: pgrep not found — dev.sh can only signal its direct" >&2
+  echo "    children, so a vite watch or server may be left running after exit." >&2
+fi
+
+# macOS ships bash 3.2 and has no `setsid`, so there is no process group to
+# signal — walk the tree by hand. `pgrep -P` exists on both macOS and Linux
+# (CI runs linux-desktop), unlike the BSD-only ps flags. Depth-first: children
+# die before their parent, so nothing reparents to init mid-kill and escapes.
+kill_tree() {
+  local pid="$1" child
+  [[ -n "$pid" ]] || return 0
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    kill_tree "$child"
+  done
+  kill -TERM "$pid" 2>/dev/null || true
+}
+
+# The same walk, but only collecting pids. Snapshotting BEFORE the kill is what
+# makes the KILL escalation possible at all: once TERM lands, the parent links
+# are gone and the tree can no longer be rediscovered.
+tree_pids() {
+  local pid="$1" child
+  [[ -n "$pid" ]] || return 0
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    tree_pids "$child"
+  done
+  printf '%s\n' "$pid"
+}
+
+# Alive AND not a zombie. `kill -0` answers yes for a zombie (it exists until
+# it is waited for), which would make every shutdown burn the full grace period
+# on our own just-TERMed children.
+pid_alive() {
+  local st
+  st="$(ps -o stat= -p "$1" 2>/dev/null | tr -d '[:space:]')"
+  [[ -n "$st" && "${st:0:1}" != "Z" ]]
+}
+
+# TERM every tree rooted at the (space-separated) pids in $1, then KILL whatever
+# is still standing. The grace period is bounded (~2s) rather than a
+# wait-until-gone loop: a child that traps TERM must not be able to hang the
+# Ctrl-C the developer just pressed.
+#
+# One function for both callers (the startup reap and dev_shutdown) so the
+# escalation policy cannot differ between "reap the previous run" and "reap this
+# one" — the two trap sites already drifted apart once.
+reap_trees() {
+  local roots="$1" pids="" p i alive newpid
+  for p in $roots; do
+    [[ -n "$p" ]] || continue
+    pids="$pids $(tree_pids "$p")"
+    kill_tree "$p"
+  done
+  [[ -n "${pids// /}" ]] || return 0
+  for i in $(seq 1 10); do
+    # Re-walk from the roots on every pass: a tree can GROW mid-teardown. The
+    # core_apps poll loop touches a *.py trigger, which is exactly what makes
+    # watchfiles spawn a REPLACEMENT server — so a restart can land between the
+    # walk above and the TERM, and that new server would inherit the port with
+    # nothing supervising it. Anything that appears is TERMed and joins the
+    # escalation list. (A root that is already gone contributes nothing, which is
+    # why this cannot chase a pid we never owned.)
+    for p in $roots; do
+      [[ -n "$p" ]] || continue
+      for newpid in $(tree_pids "$p"); do
+        case " $pids " in
+          *" $newpid "*) ;;
+          *)
+            pids="$pids $newpid"
+            kill -TERM "$newpid" 2>/dev/null || true
+            ;;
+        esac
+      done
+    done
+    alive=0
+    for p in $pids; do
+      if pid_alive "$p"; then alive=1; break; fi
+    done
+    [[ "$alive" -eq 0 ]] && return 0
+    sleep 0.2
+  done
+  for p in $pids; do
+    if pid_alive "$p"; then kill -KILL "$p" 2>/dev/null || true; fi
+  done
+  return 0
+}
+
+# Single-tree convenience wrapper (the startup reap has exactly one root).
+kill_tree_hard() {
+  [[ -n "$1" ]] || return 0
+  reap_trees "$1"
+}
+
+# A python that can import this worktree's fused_render._branch. Deliberately
+# NOT the $PY resolved further down: its two callers — dev_effective_port and
+# port_is_open — both run BEFORE the venv bootstrap, because the reap has to know
+# which port to wait on before this run starts rebuilding anything, and because
+# `--cleanup` bootstraps nothing at all. _branch is stdlib-only and is imported
+# from the source tree via cwd, so any python3 gives the same answer the server
+# will. (The pidfile used to be a third caller; it no longer resolves an
+# interpreter for anything — see dev_pidfile_path.)
+dev_python() {
+  if [[ -n "${VIRTUAL_ENV:-}" && -x "$VIRTUAL_ENV/bin/python" ]]; then
+    printf '%s\n' "$VIRTUAL_ENV/bin/python"
+  elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+    printf '%s\n' "$REPO_ROOT/.venv/bin/python"
+  else
+    # Last resort, and it CAN come up empty: on a machine with no venv yet and
+    # only a versioned `python3.12` on PATH (the setup the venv bootstrap below
+    # exists to serve) there is no bare python3 to find. Callers must treat ""
+    # as "not yet resolvable" and say so — see the PORT note below.
+    command -v python3 || command -v python || true
+  fi
+}
+
+# Where this worktree records its dev.sh pid. Keyed on the WORKTREE — one fixed
+# filename — because the worktree is what the record actually protects:
+# shell-dist/, node_modules, and the `vite build --watch` writing into them are
+# per-checkout, not per-branch. `.dev-pids/` lives inside $REPO_ROOT, so the
+# directory is already worktree-unique by construction and a branch component in
+# the name would add nothing but two ways to MISS a live process:
+#
+#   * this function used to shell out to dev_python() to sanitize the ref, and
+#     dev_python() legitimately returns "" on the machine the venv bootstrap
+#     below exists to serve (no $VIRTUAL_ENV, no .venv yet, only a versioned
+#     python3.12 that is not on PATH as `python3`). The name silently fell back
+#     to a literal `_baseline` even on a feature branch, so the FIRST run
+#     recorded itself under one name and the next — bootstrap done, interpreter
+#     now resolvable — read another, found nothing, and stacked a second tree;
+#   * `git checkout` while dev.sh is running changed the derived ref, so the next
+#     run looked up a different file and left the old tree alive, with two vite
+#     watchers writing the same shell-dist/.
+#
+# Keying on the path also drops the interpreter dependency entirely, which is
+# what makes `--cleanup` and the startup reap work before any venv exists.
+# Distinguishing one worktree's record from another's is now solely the job of
+# the recorded repo root in dev_pidfile_is_ours — see the note there.
+dev_pidfile_path() {
+  printf '%s/.dev-pids/dev.sh.pid\n' "$REPO_ROOT"
+}
+
+# Is pid $1 really the dev.sh this pidfile was written for? Four checks, ALL
+# mandatory, because getting this wrong means kill_tree_hard on an innocent
+# process:
+#   * a recorded start time exists at all;
+#   * it is alive;
+#   * its command line still mentions dev.sh;
+#   * its start time matches the one recorded alongside the pid — the only check
+#     that actually rules out pid reuse, since a *new* dev.sh in another
+#     worktree satisfies the other two just as well as ours does.
+# The start-time check is required rather than best-effort for exactly that
+# reason: were it skipped when the record is empty (a `ps -o lstart=` that
+# failed at write time), a recycled pid landing on ANY process whose argv
+# mentions dev.sh — another worktree's dev.sh included — would be reaped.
+# Failing closed costs a missed auto-restart; failing open kills someone's work.
+# The recorded repo root is compared too, and that check carries more weight now
+# that the filename is fixed rather than branch-derived: it is the ONLY thing in
+# the record that names a worktree. It catches a pidfile that arrived from
+# another checkout by any route — copied by hand, restored from a backup, or
+# (the realistic one) a $REPO_ROOT that moved because the directory was renamed
+# or a worktree was re-created at a new path while a dev.sh from the old path was
+# still running. Never drop it on the grounds that the file's location already
+# implies the root.
+dev_pidfile_is_ours() {
+  local pid="$1" want_start="$2" want_root="$3" cmd cur_start
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ "$pid" != "$$" ]] || return 1
+  [[ -n "$want_start" ]] || return 1
+  [[ "$want_root" == "$REPO_ROOT" ]] || return 1
+  pid_alive "$pid" || return 1
+  # `-ww` is load-bearing on Linux and NOT cosmetic: GNU procps truncates the
+  # command column to 80 chars whenever stdout is not a terminal (it is a pipe
+  # here), and dev.sh lives at the END of its own command line. Any checkout
+  # deeper than ~74 characters — e.g. a git worktree under
+  # <repo>/.claude/worktrees/<name>/scripts/dev.sh — would lose the "dev.sh"
+  # suffix, this check would reject the pidfile forever, and the startup reap
+  # would silently do nothing while dev.sh went back to stacking duplicate
+  # trees. Exactly the invisible failure this whole section exists to remove.
+  # BSD ps (macOS) accepts -ww too and never truncated a piped -o in the first
+  # place, so this needs no platform branch.
+  cmd="$(ps -ww -o command= -p "$pid" 2>/dev/null || true)"
+  case "$cmd" in
+    *dev.sh*) ;;
+    *) return 1 ;;
+  esac
+  cur_start="$(ps -o lstart= -p "$pid" 2>/dev/null | sed -e 's/^ *//' -e 's/ *$//')"
+  [[ "$cur_start" == "$want_start" ]] || return 1
+  return 0
+}
+
+# Every background pid this run owns. Set before the traps so the handler can
+# read them lazily under `set -u` no matter how early we die.
+WATCH_PID=""
+CORE_WATCH_PID=""
+OPENER_PID=""
+SERVER_PID=""
+DEV_PIDFILE=""
+
+# The single shutdown handler — one function, installed by every trap, so the
+# two trap sites that used to carry DIFFERENT pid lists (and neither of them the
+# server) cannot drift apart again.
+dev_shutdown() {
+  # Disarm first: the INT/TERM handlers exit, which re-enters via EXIT.
+  trap - EXIT INT TERM
+  local roots="$WATCH_PID $CORE_WATCH_PID $OPENER_PID $SERVER_PID"
+  if [[ -n "${roots// /}" ]]; then
+    reap_trees "$roots"
+    # Reap our own children rather than leaving zombies parked on this shell.
+    # Safe from hanging: anything that ignored TERM has just been KILLed.
+    wait 2>/dev/null || true
+  fi
+  [[ -n "$DEV_PIDFILE" ]] && rm -f "$DEV_PIDFILE"
+  return 0
+}
+
+# The port this run will use, for the post-reap wait below and for the browser
+# opener further down (derived in one place so the two cannot disagree). An
+# explicit --port wins — in either spelling — otherwise it is the per-branch
+# default the server derives. Returns "" when no interpreter is resolvable yet;
+# every caller checks.
+dev_effective_port() {
+  local a want=0 port="" py
+  for a in "$@"; do
+    if [[ "$want" -eq 1 ]]; then port="$a"; want=0; continue; fi
+    case "$a" in
+      --port=*) port="${a#--port=}" ;;
+      --port)   want=1 ;;
+    esac
+  done
+  if [[ -z "$port" ]]; then
+    py="$(dev_python)"
+    if [[ -n "$py" ]]; then
+      port="$(cd "$REPO_ROOT" && "$py" -c 'from fused_render._branch import branch_port; print(branch_port())' 2>/dev/null || true)"
+    fi
+  fi
+  printf '%s\n' "$port"
+}
+
+# Is $1 accepting connections? Same probe the browser opener uses.
+port_is_open() {
+  local py
+  py="$(dev_python)"
+  [[ -n "$py" && -n "$1" ]] || return 1
+  "$py" -c "import socket,sys; s=socket.socket(); s.settimeout(0.5); sys.exit(0 if s.connect_ex(('127.0.0.1', int(sys.argv[1])))==0 else 1)" "$1" 2>/dev/null
+}
+
+# Library mode: define the helpers, then stop before doing anything. Lets the
+# tests drive kill_tree, the stale-pidfile decision and the --port extraction
+# against the real code instead of a copy that can rot
+# (tests/test_dev_sh_process_cleanup.py). Everything testable belongs ABOVE
+# this line.
+if [[ -n "${FUSED_RENDER_DEV_SH_LIB:-}" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+# Best effort at this point in the script: the reap has to run before the venv
+# bootstrap (it must stop the old vite watch before this run rebuilds
+# shell-dist/), so on a machine whose only interpreter is the versioned
+# python3.12 that the bootstrap is about to use, there is nothing to ask yet.
+# That is not fatal — it costs the post-reap port wait, and PORT is re-derived
+# once $PY exists — but it is never silent.
+PORT="$(dev_effective_port "$@")"
+if [[ -z "$PORT" ]]; then
+  echo "==> NOTE: no interpreter on PATH yet, so the dev port is still unknown;" >&2
+  echo "    skipping the post-reap port wait (re-derived after the venv is ready)." >&2
+fi
+
+# Reap a previous dev.sh for THIS worktree. Restarting is nearly always what the
+# developer meant by running dev.sh again — and the alternative is hole 3 above:
+# a second full tree whose vite watch fights this one over shell-dist/.
+DEV_PIDFILE="$(dev_pidfile_path)"
+REAPED=0
+# Every record in .dev-pids/, not just the current filename. The pidfile used to
+# be named after the sanitized branch ref, so a dev.sh started before this change
+# — or before a `git checkout` — left its record in this same directory under a
+# different name, and honouring only the new name would leave those trees running
+# forever with nothing but a pattern kill able to find them.
+#
+# Reading the leftovers is safe, and reading them is not a weaker check than
+# reading the current one: .dev-pids/ lives inside $REPO_ROOT, so every file in
+# it describes a process started from THIS worktree, and each one still has to
+# pass all of dev_pidfile_is_ours (live, argv says dev.sh, start time matches,
+# recorded root == $REPO_ROOT) before anything is signalled. The glob is second
+# so the current name is handled first and the messages come out in the order the
+# developer expects; the `-f` test skips the repeat (already handled) and the
+# no-match literal when the dir does not exist.
+#
+# What gets DELETED is a separate question from what gets reaped, and the two
+# must not be conflated. dev_pidfile_is_ours fails closed, so "not ours" also
+# covers recoverable answers — a `ps` that failed under load, a start time that
+# read back empty, a $REPO_ROOT that skewed. Deleting on that answer throws away
+# the only handle on a tree that may well be alive, and the sole way back would
+# be the pattern kill this section forbids. So only two kinds of record are
+# removed: one we just reaped (its process is now gone), and one whose recorded
+# pid is not alive at all (definitively dead — nothing can be lost with it).
+# Anything else stays on disk for a later run to re-evaluate, and is named in the
+# output so the developer can look at it. (One record cannot actually be kept:
+# the CURRENT filename is where this run has to write its own pid a few lines
+# down, so an unverifiable record there is overwritten regardless. That is why
+# the note below is loud and names the pid — it is the developer's only chance to
+# act on it.)
+#
+# `!= $$` in the alive test is not redundant with the same check inside
+# dev_pidfile_is_ours: a record carrying THIS pid means our pid was recycled from
+# the dev.sh that wrote it, so that process is gone and the record is genuinely
+# dead. Without the guard `pid_alive` would answer yes about ourselves and the
+# file would be kept forever.
+STALE_DEAD=0
+STALE_KEPT=""
+for _pf in "$DEV_PIDFILE" "$REPO_ROOT"/.dev-pids/*; do
+  [[ -f "$_pf" ]] || continue
+  rec_pid="" rec_start="" rec_root=""
+  { read -r rec_pid || true; read -r rec_start || true; read -r rec_root || true; } < "$_pf"
+  if dev_pidfile_is_ours "$rec_pid" "$rec_start" "$rec_root"; then
+    echo "==> reaping the dev.sh already running for this worktree (pid $rec_pid)"
+    kill_tree_hard "$rec_pid"
+    REAPED=1
+    rm -f "$_pf"
+  elif [[ "$rec_pid" =~ ^[0-9]+$ ]] && [[ "$rec_pid" != "$$" ]] && pid_alive "$rec_pid"; then
+    STALE_KEPT="$STALE_KEPT $(basename "$_pf")(pid $rec_pid)"
+  else
+    STALE_DEAD=$((STALE_DEAD + 1))
+    rm -f "$_pf"
+  fi
+done
+
+# One line per OUTCOME, not one per file: a worktree upgraded from the
+# branch-keyed naming can hold several leftovers at once, and a burst of
+# identical "stale pidfile" lines reads as several stale processes when it is
+# really one directory being tidied.
+if [[ "$STALE_DEAD" -gt 0 ]]; then
+  echo "==> discarded $STALE_DEAD stale dev.sh pidfile(s) — their processes are gone"
+fi
+if [[ -n "${STALE_KEPT// /}" ]]; then
+  echo "==> NOTE: pidfile(s) naming a LIVE pid this run could not verify:$STALE_KEPT" >&2
+  echo "    left in place rather than deleted (verification fails closed, so this" >&2
+  echo "    can be a transient ps failure as easily as a foreign process). Check" >&2
+  echo "    with: pgrep -laf dev.sh — and stop it yourself if it is a dev.sh for" >&2
+  echo "    this worktree, because this run will not signal it." >&2
+fi
+
+# Wait for the port to actually free: the old server holds the bind for a beat
+# after its process dies, and cli.py's port guard would SystemExit on it.
+# Bounded — a port still busy after this belongs to something else, and the guard
+# should say so loudly rather than have dev.sh hang here. Done once, after the
+# whole loop, and deliberately only for $PORT: a leftover record written before a
+# `git checkout` names a server on the OTHER branch's port, which this run is not
+# about to bind and therefore need not wait on. $PORT is the only port whose
+# release can block us.
+if [[ "$REAPED" -eq 1 && -n "$PORT" ]]; then
+  for _ in $(seq 1 40); do
+    port_is_open "$PORT" || break
+    sleep 0.25
+  done
+fi
+
+if [[ "$CLEANUP_ONLY" -eq 1 ]]; then
+  # The summary is a function of ALL THREE sweep outcomes, not just the reap
+  # flag. --cleanup exists to answer one question — "is anything still running
+  # for this worktree?" — so a kept record has to outrank everything else: it
+  # names a pid that is alive right now and that this run deliberately did not
+  # signal. Reporting "nothing left running" or "nothing reaped" alongside it
+  # would contradict the NOTE printed a few lines above, in the one command whose
+  # entire output is that answer.
+  if [[ -n "${STALE_KEPT// /}" ]]; then
+    echo "==> --cleanup: NOT clean — see the unverified pidfile(s) noted above"
+    if [[ "$REAPED" -eq 1 ]]; then
+      echo "    (the dev.sh this worktree recorded WAS reaped; what is left is"
+      echo "     the record(s) above, whose pids are alive but unverifiable)"
+    fi
+  elif [[ "$REAPED" -eq 1 ]]; then
+    echo "==> --cleanup: done, nothing left running for this worktree"
+  elif [[ "$STALE_DEAD" -gt 0 ]]; then
+    # Distinct from the case below: records DID exist, so this worktree is not a
+    # fresh one — their processes had simply already exited. Nothing to hunt for.
+    echo "==> --cleanup: nothing was running — only dead records to tidy up"
+  else
+    # Say what was NOT done, and why. A dev.sh started before this change wrote
+    # no pidfile at all, which is the common case on the first upgrade — and
+    # finding it would take a pattern match over every process on the machine,
+    # which is precisely what must never happen here (other worktrees run their
+    # own servers, and at least one deliberate orphan). Hand the developer the
+    # search instead of guessing on their behalf.
+    echo "==> --cleanup: no dev.sh recorded for this worktree — nothing reaped"
+    echo "    (a dev.sh started before this pidfile existed leaves no record;"
+    echo "     find it with: pgrep -laf dev.sh, and check its worktree first)"
+  fi
+  exit 0
+fi
+
+# Record this run. Written after the reap so the dying predecessor's own EXIT
+# trap (which removes the pidfile) cannot delete the entry we just made —
+# kill_tree_hard does not return until that process is gone. The start time goes
+# in alongside the pid so a recycled pid can be recognized and left alone.
+mkdir -p "$REPO_ROOT/.dev-pids"
+SELF_START="$(ps -o lstart= -p $$ 2>/dev/null | sed -e 's/^ *//' -e 's/ *$//')"
+if [[ -z "$SELF_START" ]]; then
+  # dev_pidfile_is_ours fails closed without a start time, so the record would
+  # be inert: the next run would call it stale and start a second tree instead
+  # of restarting. Better to lose the auto-restart than to reap on two weaker
+  # checks, but the developer should know why `dev.sh` stopped replacing itself.
+  echo "==> WARNING: could not read this process's start time (ps -o lstart=)," >&2
+  echo "    so a later run will not be able to verify this pidfile and will not" >&2
+  echo "    reap this dev.sh. Stop it with Ctrl-C, or scripts/dev.sh --cleanup" >&2
+  echo "    will report nothing to do." >&2
+fi
+printf '%s\n%s\n%s\n' "$$" "$SELF_START" "$REPO_ROOT" > "$DEV_PIDFILE"
+
+# Armed from here on, so an abort anywhere in the setup below (a failed npm
+# install, a Ctrl-C during the venv bootstrap) still clears the pidfile and
+# reaps whatever had started.
+trap 'dev_shutdown' EXIT
+trap 'dev_shutdown; exit 130' INT
+trap 'dev_shutdown; exit 143' TERM
 
 # Read core templates straight from the repo, skipping the stage-into-home copy
 # (~/.fused-render/.core-templates). Without this the server serves the last
@@ -71,25 +577,6 @@ done
 # already-set value so the caller can override (including to "0" to force the
 # production dies-with-server behavior).
 export FUSED_RENDER_RCLONE_PERSIST="${FUSED_RENDER_RCLONE_PERSIST:-1}"
-
-# Isolate each branch/worktree onto its own port + state dir. Without this every
-# dev.sh run (main checkout and every worktree) defaults to the baseline port
-# 1777 and clobbers the same ~/.fused-render state, so a server left running in
-# one worktree collides with — or gets served stale to — another. Deriving the
-# ref from the current branch gives each branch a deterministic port of its own
-# (see fused_render/_branch.py). main/master and detached HEAD sanitize to the
-# baseline, so this is a no-op there. Respect an already-set value so the caller
-# can override (including to "" to force baseline).
-#
-# NOTE: on main/master this mirrors baseline (port 1777 + the shared
-# ~/.fused-render state), which is exactly what the installed macOS desktop app
-# uses. Running dev.sh on main alongside the installed app therefore collides:
-# the port bind fails loudly (see cli.py _check_port_free) and, more subtly,
-# both read/write the same baseline state dir. Work on a feature branch (or pass
-# FUSED_RENDER_BRANCH / --port) to run dev fully isolated from the desktop app.
-if [[ -z "${FUSED_RENDER_BRANCH+x}" ]]; then
-  export FUSED_RENDER_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-fi
 
 # Python: active venv first, then the repo-local .venv. With neither, bootstrap
 # a repo-local .venv (with the `dev` + `fused` + `bundled` extras) so a fresh
@@ -277,11 +764,12 @@ rm -f "$DIST_INDEX"
 
 echo "==> starting vite watch + fused-render server (Ctrl-C stops both)"
 (cd "$FRONTEND" && npm run watch) &
+# $! is the SUBSHELL, not vite: the real chain is subshell -> npm -> node vite.
+# dev_shutdown walks down from here with kill_tree; killing this pid alone is
+# exactly what left three `vite build --watch` nodes running under init for
+# weeks. The traps are already armed (see the cleanup section at the top) and
+# read WATCH_PID lazily, so there is nothing to re-install here.
 WATCH_PID=$!
-# OPENER_PID is the one-shot browser opener (set below, reload path only). The
-# trap references it lazily so it's harmless while still unset.
-OPENER_PID=""
-trap 'kill "$WATCH_PID" 2>/dev/null || true; [[ -n "$OPENER_PID" ]] && kill "$OPENER_PID" 2>/dev/null || true' EXIT INT TERM
 
 echo "==> waiting for the vite watch to emit the shell bundle"
 for _ in $(seq 1 60); do
@@ -315,22 +803,28 @@ if [[ "$RELOAD" -eq 1 ]]; then
 fi
 
 if [[ "$RELOAD" -eq 1 ]]; then
-  # Decide whether to open a browser tab, and on which port. The server runs
-  # with --no-browser under the reloader, so dev.sh opens the tab exactly once.
+  # Decide whether to open a browser tab. The server runs with --no-browser
+  # under the reloader, so dev.sh opens the tab exactly once. $PORT is already
+  # resolved (dev_effective_port, at the top) — the startup reap needs the same
+  # number to wait on, and deriving it twice is how the two would drift.
   NO_BROWSER=0
-  PORT=""
-  want_port=0
   for a in "$@"; do
-    if [[ "$want_port" -eq 1 ]]; then PORT="$a"; want_port=0; continue; fi
     case "$a" in
       --no-browser) NO_BROWSER=1 ;;
-      --port=*)     PORT="${a#--port=}" ;;
-      --port)       want_port=1 ;;
     esac
   done
-  # No explicit --port: fall back to the per-branch default the server derives.
+  # Second attempt for the case the early derivation warned about: back then
+  # there may have been no interpreter at all, and by now the venv bootstrap has
+  # made one. Without this the opener would silently never fire on a
+  # freshly-created checkout.
   if [[ -z "$PORT" ]]; then
-    PORT="$("$PY" -c 'from fused_render._branch import branch_port; print(branch_port())' 2>/dev/null || true)"
+    PORT="$(dev_effective_port "$@")"
+    # Spelled as an `if`, not `[[ … ]] && echo`: under `set -e` that idiom
+    # aborts the script whenever the test is false and it is the last command
+    # in the enclosing block.
+    if [[ -z "$PORT" ]]; then
+      echo "==> NOTE: dev port still unresolved — not opening a browser tab" >&2
+    fi
   fi
 
   # One-shot opener: wait for the port to accept a connection, then open the tab.
@@ -399,8 +893,9 @@ if [[ "$RELOAD" -eq 1 ]]; then
       fi
     done
   ) &
+  # Another subshell pid, and this one has a `sleep` child of its own — same
+  # kill_tree treatment as the vite watch above.
   CORE_WATCH_PID=$!
-  trap 'kill "$WATCH_PID" "$CORE_WATCH_PID" 2>/dev/null || true; [[ -n "$OPENER_PID" ]] && kill "$OPENER_PID" 2>/dev/null || true' EXIT INT TERM
 
   # The restart target is dev_server_run.sh (re-stage builtin zips, then exec
   # the server) so every restart mounts current core_apps content — not the
@@ -408,8 +903,33 @@ if [[ "$RELOAD" -eq 1 ]]; then
   CMD="bash $(printf '%q' "$REPO_ROOT/scripts/dev_server_run.sh") $(printf '%q' "$PY")"
   for a in "$@"; do CMD+=" $(printf '%q' "$a")"; done
   CMD+=" --no-browser"
-  "$PY" -m watchfiles --filter python "$CMD" "$REPO_ROOT/fused_render" "$REPO_ROOT/core_apps"
+  # BACKGROUNDED, then waited on — not run in the foreground, which is how this
+  # whole tree used to survive `kill <dev.sh>`: bash defers a trap handler until
+  # the current foreground command returns, so the signal only queued a handler
+  # that never got to run, and watchfiles + the server it supervises were in no
+  # trap anyway. `wait` is interruptible, so the handler fires immediately.
+  "$PY" -m watchfiles --filter python "$CMD" "$REPO_ROOT/fused_render" "$REPO_ROOT/core_apps" &
+  SERVER_PID=$!
+  # `wait` returns the child's status and a signalled child returns non-zero, so
+  # `set -e` would abort here on an ordinary Ctrl-C; the status is captured
+  # instead and re-raised below, which keeps a genuinely failing server failing.
+  set +e
+  wait "$SERVER_PID"
+  SERVER_STATUS=$?
+  set -e
+  SERVER_PID=""
+  exit "$SERVER_STATUS"
 else
   # Original single-launch behavior: the server opens its own browser tab.
-  "$PY" -m fused_render.cli "$@"
+  # Backgrounded + waited on for the same reason as the reload path above: a
+  # foreground server defers the trap, and the vite watch started earlier would
+  # be left running.
+  "$PY" -m fused_render.cli "$@" &
+  SERVER_PID=$!
+  set +e
+  wait "$SERVER_PID"
+  SERVER_STATUS=$?
+  set -e
+  SERVER_PID=""
+  exit "$SERVER_STATUS"
 fi

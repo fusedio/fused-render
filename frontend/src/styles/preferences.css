@@ -717,7 +717,14 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 6px 11px;
+  padding: 11px;
+  transition: padding 0.18s ease;
+}
+
+/* Hover breathes the title rows open a hair along with the fan. */
+.fhb-card:hover .fhb-sheet-row {
+  padding-top: 12px;
+  padding-bottom: 12px;
 }
 
 /* Depth cascade: the front sheet (d0) is full width and holds the body; each
@@ -734,20 +741,13 @@
 }
 
 .fhb-sheet-d1 {
-  margin: 0 10px -20px;
+  margin: 0 10px -33px;
   z-index: 2;
 }
 
 .fhb-sheet-d2 {
-  margin: 0 20px -20px;
+  margin: 0 20px -33px;
   z-index: 1;
-}
-
-/* Back-sheet title rows sit tighter than the front sheet's — at rest the
-   stack should read as slim page edges, not a column of full-height bars. */
-.fhb-sheet-d1 .fhb-sheet-row,
-.fhb-sheet-d2 .fhb-sheet-row {
-  padding: 4px 11px;
 }
 
 /* Back sheets are open pages, not closed pills: square bottom corners and no
@@ -760,8 +760,9 @@
 }
 
 /* The back sheet's page body: a blank strip a step off the sheet's own fill,
-   fully tucked away at rest (peek height equals the -20px overlap) — the
-   hover fan slides a 4px page edge out. */
+   fully tucked away at rest (the -33px overlap swallows the 20px peek plus
+   the title row's bottom padding, so the next sheet's top edge sits right
+   under the name — the ref design's hugging cut). */
 .fhb-sheet-peek {
   position: relative;
   flex: 0 0 auto;
@@ -794,11 +795,11 @@
   background: color-mix(in srgb, var(--fg) 14%, var(--bg));
 }
 
-/* Hovering the card slides the back sheets out a little — more of each page
-   edge shows, the ref design's "contents fan". */
+/* Hovering the card fans the back sheets open — the title rows themselves
+   move apart, not just a page-edge sliver. */
 .fhb-card:hover .fhb-sheet-d1,
 .fhb-card:hover .fhb-sheet-d2 {
-  margin-bottom: -16px;
+  margin-bottom: -18px;
 }
 
 .fhb-sheet-icon {
@@ -867,6 +868,32 @@
   border-top: none;
   background: none;
 }
+
+/* Empty folder: the mark stands in for the stack the card has nothing to
+   build. Static — motion here read as a loading state, which is the one thing
+   this card is not. */
+.fhb-empty {
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fhb-empty-mark {
+  width: 40px;
+  height: 40px;
+  opacity: 0.35;
+}
+
+/* Theme pair, same rule as the hero mark: dark is the default, light takes
+   over under the [data-theme="light"] stamp on <html>. */
+.fhb-empty-mark-light,
+:root[data-theme="light"] .fhb-empty-mark-dark {
+  display: none;
+}
+
+:root[data-theme="light"] .fhb-empty-mark-light {
+  display: block;
+}
+
 
 /* The MAX_CARDS fold's "Show more": a quiet pill centered under the grid. */
 .fhb-more {

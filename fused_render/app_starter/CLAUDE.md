@@ -4,7 +4,10 @@ This folder is a **fused-render app** — a self-contained folder rendered by
 the fused-render explorer. `index.html` is the app's entry view; it was
 scaffolded from the starter kit, so edit it in place (don't create a second
 top-level `.html` next to it — one entry file is what makes the folder open
-as an app).
+as an app). Keep the `<meta name="fused-app" />` tag near the top of its
+`<head>`: the marker is the ONLY thing that identifies this page as a fused
+app's entry — without it the app disappears from the apps hub (detection reads
+only the first 4 KiB of the file, so keep the tag near the top).
 
 The page runs inside the explorer, which injects a `fused` runtime bridge:
 `fused.params` (URL-synced view state), `fused.runPython("./file.py", args)`

@@ -6,7 +6,7 @@
 // Lives in the shell layer on purpose: it composes builder cards
 // (AppPreviewCard) with explorer cards and libs, which only the shell may
 // import together (scripts/check-boundaries.mjs).
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import {
@@ -16,6 +16,7 @@ import {
   type ClaudeSessionFolder,
   type Config,
 } from "@platform/lib/api";
+import { sortApps } from "@platform/lib/appEntry";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { FilesSearch } from "@apps/explorer/FilesHome";
@@ -33,28 +34,29 @@ const MAX_ROW = 12;
 
 // How many cards fit across the sections' shared container right now.
 // One ResizeObserver on the wrapper, one count for all three strips.
+//
+// A CALLBACK ref, not useRef+useEffect: the measured wrapper UNMOUNTS while a
+// search is live (`searching ? null : <div ref=…>`), and a mount-once effect
+// only ever saw the first element — on unmount the observer fired against the
+// detached node (clientWidth 0 → count 1) and the remounted wrapper was never
+// observed again, so clearing a search left every strip at one card per row.
+// The callback re-runs on each mount/unmount: it tears the old observer down
+// and measures the element actually on screen.
 function useStripCount() {
-  const ref = useRef<HTMLDivElement | null>(null);
   const [count, setCount] = useState(3);
-  useEffect(() => {
-    const el = ref.current;
+  const roRef = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((el: HTMLDivElement | null) => {
+    roRef.current?.disconnect();
+    roRef.current = null;
     if (!el) return;
     const measure = () =>
       setCount(Math.max(1, Math.floor((el.clientWidth + CARD_GAP) / (CARD_W + CARD_GAP))));
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    roRef.current = ro;
   }, []);
   return { ref, count };
-}
-
-// Same order the /apps hub uses (Apps.tsx sortApps): recently-modified desc,
-// apps without a timestamp sink to the end, name breaks ties.
-function sortApps(apps: AppInfo[]): AppInfo[] {
-  const byName = (a: AppInfo, b: AppInfo) =>
-    (a.title || a.name).localeCompare(b.title || b.name) || a.name.localeCompare(b.name);
-  return apps.slice().sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0) || byName(a, b));
 }
 
 // Section chrome: title row with the "See all" action on the right edge.

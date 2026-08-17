@@ -143,6 +143,10 @@ _SAFE = {
     "(i * 0.08 + 0.05).toFixed(2)", "42 - i * 6", "64 - i * 9", "w",
     # Locally generated markup / derived styles, no external string in them.
     "gutter", "lines", "swatchStyle(L)", "cmapGradient(s.colormap||'viridis')",
+    "cmapGradient(s.colormap||'gray')",
+    # The browser-read COG's contrast legend: both ends go through Number(),
+    # so neither can carry a string out of the file or the URL.
+    "Number(lo)", "Number(hi)",
     "encodeURIComponent(q)",
     # Backend enums and control labels: descriptor kinds and the literal
     # strings the style dock passes to ctlShell ("Opacity", "Colormap", ...).

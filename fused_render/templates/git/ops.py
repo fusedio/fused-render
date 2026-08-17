@@ -177,12 +177,18 @@ _SAFE_OPS = (
     "stash_push", "stash_apply", "stash_pop",
     "fetch", "pull", "push",
 )
-DESTRUCTIVE_OPS = ("discard", "discard_all", "stash_drop")
+#
+# `resolve` is here rather than in `_SAFE_OPS` because it OVERWRITES a file in
+# the working tree: the marked-up conflicted text is the only copy of "what git
+# left me", and once it is replaced the only way back is `git checkout --merge`.
+# So it gets the confirmation step every other work-losing op gets, and the
+# proposed-resolution panel in front of it is a review surface, not the consent.
+DESTRUCTIVE_OPS = ("discard", "discard_all", "stash_drop", "resolve")
 _OPS = _SAFE_OPS + DESTRUCTIVE_OPS
 
 # Ops that take an explicit `paths` list, and ops that operate on the whole open
 # scope instead. Everything else takes neither.
-_PATH_OPS = ("stage", "unstage", "discard")
+_PATH_OPS = ("stage", "unstage", "discard", "resolve")
 _SCOPE_OPS = ("stage_all", "unstage_all", "discard_all")
 
 # git's own words for the two situations we have to recognise in its output
@@ -190,6 +196,17 @@ _SCOPE_OPS = ("stage_all", "unstage_all", "discard_all")
 # failure. Matched case-insensitively against stderr+stdout.
 _NOTHING_TO_STASH = "no local changes to save"
 _NOT_FF = "not possible to fast-forward"
+
+# The lines git writes into a conflicted file. Mirrors log.py's CONFLICT_MARKERS
+# (the two modules are exec'd standalone, so neither may import the other) and is
+# used for the opposite purpose: there to recognise a conflict, here to REFUSE
+# content that still contains one.
+CONFLICT_MARKERS = ("<<<<<<< ", "=======", ">>>>>>> ")
+
+# A resolved file is one file's text. The bound is generous — it has to hold
+# whatever the conflicted file held — and exists so a hand-written request cannot
+# ask this module to write an arbitrary amount of data.
+MAX_CONTENT_BYTES = 2_000_000
 
 
 class _Refused(Exception):
@@ -203,24 +220,50 @@ class _Refused(Exception):
 # ------------------------------------------------------------------ invocation
 
 
+
+# ---------------------------------------------------------------- how git is run
+#
+# argv[0] is an ABSOLUTE path, and that is load-bearing rather than tidy. With
+# libproj resident in the host process a plain fork() runs PROJ's pthread_atfork
+# child handler into a SIGSEGV before exec, so the child dies with signal 11 and
+# empty output and NO exception — every git answer becomes a silent negative.
+# CPython avoids fork only when EVERY clause holds
+# (`subprocess.py::_execute_child`): `os.path.dirname(executable)` truthy,
+# `close_fds` false, `cwd is None`, no preexec_fn/pass_fds/start_new_session.
+# `close_fds=False` alone is NOT enough, which is what the previous version of
+# this comment got wrong: a bare "git" has dirname "" and forks regardless, and
+# so does any call that passes `cwd=`. All three parts together, or none of them
+# work. `-C <root>` is what replaces `cwd=`.
+_GIT_BIN = None
+
+
+def _git_bin():
+    """An absolute path to git, resolved once. Bare name as a last resort so a
+    PATH-less environment still raises the FileNotFoundError callers expect."""
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
+
 def _argv(root, args):
     """log.py's twin. `-C <root>` on everything, so a relative pathspec means
     exactly one thing and no `cd` can change it."""
-    return ["git", "--no-pager", *_CONFIG, "-C", root, *args]
+    return [_git_bin(), "--no-pager", *_CONFIG, "-C", root, *args]
 
 
 def _popen_kwargs():
     return {
         "env": {**os.environ, **_ENV},
         "stdin": subprocess.DEVNULL,
-        # close_fds=False matches every other subprocess spawn in this codebase
-        # (app_git.py documents the crash at length): with libproj resident, a
-        # plain fork() runs PROJ's pthread_atfork child handler into a SIGSEGV
-        # before exec, and close_fds=False is what makes CPython take the
-        # posix_spawn path that runs no atfork handlers. It matters more here
-        # than in the reader: a read that dies before exec is a refused read,
-        # while a `git commit` that dies before exec is work the user believes
-        # they recorded.
+        # close_fds=False is NECESSARY for the posix_spawn path and, on its own,
+        # NOT SUFFICIENT — the older version of this comment claimed otherwise
+        # and the whole app shipped forking anyway. See the note above _argv:
+        # argv[0] must also be absolute and no `cwd=` may be passed. It matters
+        # more here than in the reader: a read that dies before exec is a
+        # refused read, while a `git commit` that dies before exec is work the
+        # user believes they recorded.
         "close_fds": False,
         "creationflags": (subprocess.CREATE_NO_WINDOW
                           if sys.platform == "win32" else 0),
@@ -422,7 +465,91 @@ def _scope_spec(rel):
 # ----------------------------------------------------------------- validation
 
 
-def _check_strings(op, paths, message, name, index):
+def _check_resolve_content(paths, content):
+    """Everything about a `resolve` that is decidable from the strings alone.
+
+    All three refusals are this module's own rather than git's, because git is
+    never asked: `resolve` writes a file and stages nothing, so there is no git
+    command whose error could stand in for any of them.
+
+    * **one path.** A resolution is one file's text; a `paths` list of two with
+      one `content` cannot mean anything, and picking the first would write the
+      wrong file.
+    * **not empty.** Truncating a conflicted file to nothing is never a
+      resolution, and it is exactly what an AI answer that arrived empty (a
+      cancelled stream, a refusal, a fenced reply that cleaned to "") would do.
+    * **no markers left.** Content that still carries `<<<<<<<` has not resolved
+      the conflict, it has copied it — and writing it back makes the file look
+      resolved-and-saved to everything downstream while leaving the markers in the
+      source. This is the check that makes the feature safe to point at a model.
+    """
+    if len(paths) != 1:
+        raise _Refused(
+            "one-path",
+            f"A resolution applies to ONE file; {len(paths)} were given.")
+    if not isinstance(content, str) or not content.strip():
+        raise _Refused("empty-content",
+                       "There is no resolved content to write.")
+    if len(content.encode("utf-8", "replace")) > MAX_CONTENT_BYTES:
+        raise _Refused(
+            "too-large",
+            f"That resolution is larger than {MAX_CONTENT_BYTES} bytes.")
+    if any(any(line.startswith(m) or line == m.strip() for m in CONFLICT_MARKERS)
+           for line in content.splitlines()):
+        raise _Refused(
+            "unresolved",
+            "That text still contains conflict markers, so it is not a "
+            "resolution. Nothing was written.")
+
+
+def _resolve(root, rel, content):
+    """Write the resolved text of ONE conflicted file, and do nothing else.
+
+    Deliberately NOT followed by `git add`. Marking a conflict resolved is the
+    act that lets the merge be committed, and it is not what the user pressed:
+    they pressed "apply this proposal so I can look at it". So the file lands in
+    the working tree, still unmerged as far as the index is concerned, and the
+    ordinary Stage button — which the view already has, and which git's own
+    `add` semantics make the resolve — is how it becomes resolved. No commit
+    either, for the same reason and more so.
+
+    The path must currently be UNMERGED. That is not a courtesy check: without it
+    this op is a general-purpose "overwrite any file in the repo" write, which is
+    not something this module offers. `--diff-filter=U` is git's own answer to
+    "is this file conflicted", so the question is not re-implemented here.
+
+    Written through a temporary file in the same directory and `os.replace`d, so
+    an interrupted write cannot leave the conflicted file half-overwritten — the
+    one outcome worse than not writing at all.
+    """
+    out = _git_ok(root, "diff", "--name-only", "--diff-filter=U", "-z",
+                  *_spec([rel]), allow=(0, 1))
+    unmerged = [c for c in out.decode("utf-8", "replace").split("\0") if c]
+    if rel not in unmerged:
+        raise _Refused(
+            "not-conflicted",
+            f"{rel} is not a conflicted file, so there is nothing to resolve "
+            "in it. Nothing was written.")
+
+    full = os.path.join(root, *rel.split("/"))
+    tmp = full + ".fused-resolve.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as handle:
+            handle.write(content)
+        os.replace(tmp, full)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise _Refused("write-failed", f"Could not write {rel}: {exc}") from exc
+    return _ok("resolve",
+               f"Wrote the resolved {rel}. It is NOT staged and NOT committed — "
+               "review it, then stage and commit as usual.",
+               path=rel)
+
+
+def _check_strings(op, paths, message, name, index, content=""):
     """Everything that can be decided WITHOUT touching the filesystem or git.
 
     Ordering, not just validation. `_locate` is itself a git call, so validating
@@ -461,6 +588,9 @@ def _check_strings(op, paths, message, name, index):
             if os.path.isabs(raw) or any(part == ".." for part in rel.split("/")):
                 raise _Refused("outside-repo",
                                f"{raw} is outside the repository.")
+
+    if op == "resolve":
+        _check_resolve_content(paths, content)
 
     if op == "commit" and not (message or "").strip():
         # Our own refusal, not git's: `git commit -m ""` fails with "Aborting
@@ -1028,6 +1158,7 @@ def main(
     include_untracked: bool = False,
     checkout: bool = True,
     sha: str = "",
+    content: str = "",
 ) -> dict:
     """One mutation, or a refusal payload.
 
@@ -1037,12 +1168,14 @@ def main(
     try:
         # Strings first, always — `_locate` forks git, so nothing malformed may
         # get that far.
-        _check_strings(op, paths, message, name, index)
+        _check_strings(op, paths, message, name, index, content)
         root, scope, scope_is_dir = _locate(file)
 
         if op in _PATH_OPS:
             rels = _resolve_paths(root, scope, scope_is_dir, paths)
             label = _n(len(rels), "path")
+            if op == "resolve":
+                return _resolve(root, rels[0], content)
             if op == "stage":
                 return _stage(root, rels, label)
             if op == "unstage":

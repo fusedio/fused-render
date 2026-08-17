@@ -45,9 +45,9 @@ def _app_dir(workspace, name, htmls=("index.html",), title=None, tag="local"):
     d = workspace / tag / name
     d.mkdir(parents=True)
     for i, h in enumerate(htmls):
-        body = "<html><body>hi</body></html>"
+        body = '<html><head><meta name="fused-app" /></head><body>hi</body></html>'
         if title is not None and i == 0:
-            body = f"<html><head><title>{title}</title></head></html>"
+            body = f"<html><head><meta name=\"fused-app\" /><title>{title}</title></head></html>"
         (d / h).write_text(body)
     return d
 
@@ -65,8 +65,8 @@ def test_lists_only_top_level_dirs_with_entry_resolution(client, workspace):
     _app_dir(workspace, "one")                                 # exactly one html
     _app_dir(workspace, "none", htmls=())                      # zero htmls
     _app_dir(workspace, "many", htmls=("b.html", "a.html"))    # first in NAME order
-    _app_dir(workspace, "indexed", htmls=("a.html", "index.html"))  # index wins
-    (workspace / "loose.html").write_text("<html></html>")     # a file, not a tag dir
+    _app_dir(workspace, "indexed", htmls=("a.html", "index.html"))  # first tagged wins
+    (workspace / "loose.html").write_text('<html><head><meta name="fused-app" /></head></html>')     # a file, not a tag dir
 
     apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
     # `none` is absent: a page is what makes a folder an app, so a folder with no
@@ -74,8 +74,10 @@ def test_lists_only_top_level_dirs_with_entry_resolution(client, workspace):
     assert set(apps) == {"one", "many", "indexed"}
     assert apps["one"]["entry_html"] == str(workspace / "local" / "one" / "index.html")
     assert apps["many"]["entry_html"] == str(workspace / "local" / "many" / "a.html")
+    # `index.html` has no special status (D301): among tagged pages, first in
+    # name order wins.
     assert apps["indexed"]["entry_html"] == str(
-        workspace / "local" / "indexed" / "index.html"
+        workspace / "local" / "indexed" / "a.html"
     )
     # `entry` — the file a card OPENS — is the same file, so the card and the
     # /render iframe cannot disagree about which page the folder is.
@@ -122,10 +124,10 @@ def test_sorted_by_tag_then_name(client, workspace):
 def test_hidden_dirs_and_hidden_htmls_are_skipped(client, workspace):
     hidden_tag_app = workspace / ".hidden-tag" / "app"
     hidden_tag_app.mkdir(parents=True)
-    (hidden_tag_app / "index.html").write_text("<html></html>")
+    (hidden_tag_app / "index.html").write_text('<html><head><meta name="fused-app" /></head></html>')
     _app_dir(workspace, ".hidden-app")  # hidden project dir inside a real tag
     v = _app_dir(workspace, "app", htmls=("view.html",))
-    (v / ".draft.html").write_text("<html></html>")  # hidden: doesn't make it ambiguous
+    (v / ".draft.html").write_text('<html><head><meta name="fused-app" /></head></html>')  # hidden: doesn't make it ambiguous
 
     apps = client.get("/api/apps").json()["apps"]
     assert [a["name"] for a in apps] == ["app"]
@@ -138,7 +140,7 @@ def test_entry_match_is_non_recursive(client, workspace):
     all; the nested page surfaces as its own app instead (the depth-3 rule)."""
     d = _app_dir(workspace, "app", htmls=())
     (d / "sub").mkdir()
-    (d / "sub" / "index.html").write_text("<html></html>")
+    (d / "sub" / "index.html").write_text('<html><head><meta name="fused-app" /></head></html>')
     apps = client.get("/api/apps").json()["apps"]
     assert [a["name"] for a in apps] == ["sub"]
     assert apps[0]["entry_html"] == str(d / "sub" / "index.html")
@@ -162,7 +164,8 @@ def test_title_parsed_from_entry_head(client, workspace):
 def test_title_beyond_first_4kb_is_null_not_an_error(client, workspace):
     d = workspace / "local" / "big"
     d.mkdir(parents=True)
-    (d / "index.html").write_text("<!--" + "x" * 5000 + "--><title>late</title>")
+    (d / "index.html").write_text(
+        '<html><meta name="fused-app" /><!--' + "x" * 5000 + "--><title>late</title>")
     apps = client.get("/api/apps").json()["apps"]
     assert apps[0]["title"] is None
 
@@ -237,9 +240,8 @@ def test_entry_is_reported_alongside_entry_html(client, workspace):
     is a renderable page". They coincide for a workspace app.
 
     A page-less folder is no longer listed at all, so the walk has no null-entry
-    card to assert here; the null-under-both-keys shape is `app_dict`'s and is
-    still reachable through the linked-app registry, which is where it is now
-    covered (tests/test_linked_apps.py).
+    card to assert here; the null-under-both-keys shape remains `app_dict`'s
+    contract (it accepts `entry=None`) with no listing caller today.
     """
     _app_dir(workspace, "withentry")
     (workspace / "local" / "bare").mkdir()
@@ -383,13 +385,102 @@ def test_updated_at_is_a_float(client, workspace):
 
     This used to stage a page-less folder, to pin that `updated_at` is filled in
     even with no entry. That folder is no longer an app (a page is what makes one,
-    at any depth), so the entry-less half of the claim moved to where an
-    entry-less app still exists: the linked-app registry, in
-    tests/test_linked_apps.py::test_a_linked_folder_resolves_its_entry_on_the_shared_rule.
+    at any depth), so the entry-less half of the claim has no listable app left
+    to carry it and is dropped.
     """
     _app_dir(workspace, "stamped")
     apps = client.get("/api/apps").json()["apps"]
     assert isinstance(apps[0]["updated_at"], float)
+
+
+# ------------------------------------------------- opened_at (recency of open)
+
+@pytest.fixture()
+def recents_home(tmp_path, monkeypatch):
+    """Per-test recents store — the session-wide FUSED_RENDER_HOME is shared,
+    and app_recents.json written by one test must not rank apps in another."""
+    home = tmp_path / "frhome"
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
+    return home
+
+
+def test_opening_an_app_stamps_opened_at_in_the_listing(
+        client, workspace, recents_home):
+    """The recency the shell sorts /home and /apps by: POST recents/open
+    records the open (keyed on the app's path), and GET /api/apps reports it
+    as epoch seconds (updated_at's unit). An app never opened carries null."""
+    _app_dir(workspace, "opened")
+    _app_dir(workspace, "untouched")
+    r = client.post("/api/apps/recents/open",
+                    json={"path": str(workspace / "local" / "opened")},
+                    headers={"X-Fused": "1"})
+    assert r.json() == {"recorded": True}
+    apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
+    assert isinstance(apps["opened"]["opened_at"], float)
+    assert abs(apps["opened"]["opened_at"] - time.time()) < 60
+    assert apps["untouched"]["opened_at"] is None
+
+
+def test_open_records_at_every_depth_and_shelves_do_not_collide(
+        client, workspace, recents_home):
+    """The path key exists because (tag, name) was ambiguous: two depth-3 apps
+    under different shelves of one tag share both. Each depth the walk lists
+    (1-3) must record, and opening one same-named app must not stamp the other."""
+    # depth 1: the folder is its own tag; depth 3: index.html under tag/shelf/app.
+    (workspace / "solo").mkdir()
+    (workspace / "solo" / "page.html").write_text('<html><head><meta name="fused-app" /></head></html>')
+    for shelf in ("a", "b"):
+        d = workspace / "deep" / shelf / "twin"
+        d.mkdir(parents=True)
+        (d / "index.html").write_text('<html><head><meta name="fused-app" /></head></html>')
+    for p in ("solo", "deep/a/twin"):
+        r = client.post("/api/apps/recents/open",
+                        json={"path": str(workspace / p)},
+                        headers={"X-Fused": "1"})
+        assert r.json() == {"recorded": True}, p
+    apps = {a["path"]: a for a in client.get("/api/apps").json()["apps"]}
+    assert isinstance(apps[str(workspace / "solo")]["opened_at"], float)
+    assert isinstance(apps[str(workspace / "deep" / "a" / "twin")]["opened_at"], float)
+    assert apps[str(workspace / "deep" / "b" / "twin")]["opened_at"] is None
+
+
+def test_open_outside_the_workspace_is_a_no_op(client, workspace, recents_home, tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    r = client.post("/api/apps/recents/open",
+                    json={"path": str(outside)}, headers={"X-Fused": "1"})
+    assert r.json() == {"recorded": False}
+
+
+def test_a_malformed_recents_timestamp_never_fails_the_listing(
+        client, workspace, recents_home):
+    """app_recents.json is user-writable: a garbage openedAt drops that
+    entry's opened_at, it must not 500 GET /api/apps."""
+    _app_dir(workspace, "victim")
+    recents_home.mkdir(parents=True, exist_ok=True)
+    (recents_home / "app_recents.json").write_text(json.dumps({
+        "entries": [
+            {"path": "local/victim", "openedAt": "not-a-date"},
+            {"path": "local/victim2", "openedAt": 12345},
+        ]
+    }))
+    r = client.get("/api/apps")
+    assert r.status_code == 200
+    apps = {a["name"]: a for a in r.json()["apps"]}
+    assert apps["victim"]["opened_at"] is None
+
+
+def test_reopening_updates_opened_at_not_duplicates(
+        client, workspace, recents_home):
+    _app_dir(workspace, "again")
+    for _ in range(2):
+        client.post("/api/apps/recents/open",
+                    json={"path": str(workspace / "local" / "again")},
+                    headers={"X-Fused": "1"})
+    entries = client.get("/api/apps/recents").json()["entries"]
+    assert [e["path"] for e in entries] == ["local/again"]
+    apps = client.get("/api/apps").json()["apps"]
+    assert isinstance(apps[0]["opened_at"], float)
 
 
 # ---------------------------------------------------- the fork-safe spawn seam
@@ -401,10 +492,15 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     pthread_atfork handler; same crash test_worker_forksafe.py pins for the
     executor). The spawn must therefore happen via a helper subprocess — and
     that helper's own Popen must stay on the posix_spawn path (close_fds=False,
-    no cwd, no start_new_session) with the prompt on stdin, not argv."""
+    no cwd, no start_new_session) with the prompt on stdin, not argv.
+
+    The spawn itself now lives in fused_render/claude_spawn.py — shared with
+    scheduled messages, which need the identical discipline — so the subprocess
+    stub goes there. What stays this module's own is the policy asserted below:
+    permission mode "auto", and a fresh session."""
     entry = workspace / "app" / "index.html"
     entry.parent.mkdir()
-    entry.write_text("<html></html>")
+    entry.write_text('<html><head><meta name="fused-app" /></head></html>')
     seen = {}
 
     def fake_run(cmd, **kwargs):
@@ -413,7 +509,7 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
         return type("R", (), {"returncode": 0,
                               "stdout": '{"run_id": "r-1"}', "stderr": ""})()
 
-    monkeypatch.setattr(apps_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
     monkeypatch.setattr(apps_mod, "_claude_agent", lambda: None)
     started_threads = []
     monkeypatch.setattr(apps_mod.threading, "Thread",
@@ -423,7 +519,7 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     assert (run_id, err) == ("r-1", None)
 
     # a real python -c helper, not claude itself, and prompt over stdin only
-    assert seen["cmd"][0] == apps_mod.sys.executable
+    assert seen["cmd"][0] == apps_mod.claude_spawn.sys.executable
     assert "secret prompt" not in " ".join(seen["cmd"])
     import json as jsonlib
     req = jsonlib.loads(seen["kwargs"]["input"])
@@ -433,6 +529,8 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     # the strict default mode would park the first tool call until the
     # permission timeout denied it — boilerplate, silently.
     assert req["permission_mode"] == "auto"
+    # an app is being scaffolded: there is no prior conversation to resume
+    assert req["session_id"] == ""
     # posix_spawn preconditions on the helper spawn (the crash was fork+exec)
     assert seen["kwargs"]["close_fds"] is False
     assert "cwd" not in seen["kwargs"]
@@ -445,10 +543,31 @@ def test_spawn_helper_failure_reports_why(tmp_path, workspace, monkeypatch):
         return type("R", (), {"returncode": 1, "stdout": "",
                               "stderr": "boom\nFileNotFoundError: claude"})()
 
-    monkeypatch.setattr(apps_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
     run_id, err = apps_mod._start_app_session("/x/index.html", "hi")
     assert run_id is None
     assert "FileNotFoundError: claude" in err
+
+
+def test_a_missing_claude_cli_reports_the_fix_not_a_traceback_tail(
+        tmp_path, workspace, monkeypatch):
+    """_claude_bin's FileNotFoundError is a multi-line message, so the helper's
+    last-stderr-line report used to surface its "Also looked in: ..." tail —
+    accurate, but with the actual instruction cut off. The mapped message says
+    what to do and where the guide is."""
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr":
+                              "Traceback (most recent call last):\n"
+                              "FileNotFoundError: claude CLI not found — "
+                              "install Claude Code, put `claude` on the PATH\n"
+                              "of the environment that launched fused-render. "
+                              "Also looked in: /opt/foo"})()
+
+    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
+    run_id, err = apps_mod._start_app_session("/x/index.html", "hi")
+    assert run_id is None
+    assert "Claude Code isn't installed" in err
+    assert "render.fused.io/#troubleshooting-notfound" in err
 
 
 @pytest.mark.skipif(os.name == "nt", reason="/bin/sh stub claude is POSIX-only")
@@ -465,7 +584,7 @@ def test_spawn_really_delivers_the_prompt_to_the_claude_process(
     that; a stub that is never executed writes no files and fails here."""
     entry = workspace / "app" / "index.html"
     entry.parent.mkdir()
-    entry.write_text("<html></html>")
+    entry.write_text('<html><head><meta name="fused-app" /></head></html>')
     argv_log, stdin_log = tmp_path / "argv.txt", tmp_path / "stdin.txt"
     stub = tmp_path / "claude"
     stub.write_text(
@@ -509,7 +628,7 @@ def test_agent_start_stdin_mode_keeps_message_out_of_argv(tmp_path, monkeypatch)
     spec.loader.exec_module(agent)
 
     target = tmp_path / "index.html"
-    target.write_text("<html></html>")
+    target.write_text('<html><head><meta name="fused-app" /></head></html>')
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     seen = {}
@@ -543,7 +662,7 @@ def test_agent_start_default_still_passes_message_in_argv(tmp_path, monkeypatch)
     spec.loader.exec_module(agent)
 
     target = tmp_path / "index.html"
-    target.write_text("<html></html>")
+    target.write_text('<html><head><meta name="fused-app" /></head></html>')
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     seen = {}
@@ -628,7 +747,7 @@ def test_poll_serves_a_run_started_by_the_server(tmp_path, workspace, monkeypatc
         pytest.skip("/bin/sh stub claude is POSIX-only")
     entry = workspace / "app" / "index.html"
     entry.parent.mkdir()
-    entry.write_text("<html></html>")
+    entry.write_text('<html><head><meta name="fused-app" /></head></html>')
     stub = tmp_path / "claude"
     # the stream-json rows poll parses: an init row carrying the session id, a
     # streamed text delta, and the terminating result row
@@ -661,3 +780,102 @@ def test_poll_serves_a_run_started_by_the_server(tmp_path, workspace, monkeypatc
     # ...and the session lists in the entry file's sidecar, so a later visit
     # without a `run` param still finds the conversation
     assert agent._sessions(str(entry))["sessions"][0]["id"] == "sid-live"
+
+
+# --------------------------------------------- opens recorded by GET /render
+#
+# D301: rendering a page that carries the fused-app marker IS the open — the
+# server records recency (workspace apps) or registers the folder (/apps hub,
+# external folders) right in GET /render. No client post is involved; the shell
+# stopped sending one.
+
+
+def _opened_at(client, name):
+    apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
+    return apps.get(name, {}).get("opened_at")
+
+
+def test_rendering_a_workspace_app_records_its_open(client, workspace, recents_home):
+    d = _app_dir(workspace, "sine")
+    assert _opened_at(client, "sine") is None
+    r = client.get("/render", params={"path": str(d / "index.html")})
+    assert r.status_code == 200
+    assert _opened_at(client, "sine") is not None
+
+
+def test_a_preview_render_records_nothing(client, workspace, recents_home):
+    # `_preview=1` is the card/preview iframes saying "thumbnail, not an open" —
+    # without it every visit to the /apps grid would mark every app just-opened.
+    d = _app_dir(workspace, "sine")
+    r = client.get("/render",
+                   params={"path": str(d / "index.html"), "_preview": "1"})
+    assert r.status_code == 200
+    assert _opened_at(client, "sine") is None
+
+
+def test_a_render_referred_by_a_preview_records_nothing(client, workspace, recents_home):
+    # A previewed page may itself iframe another app's /render URL directly —
+    # its author never wrote _preview=1, but the same-origin Referer carries
+    # the parent's stamp, so the nested render is a thumbnail too. Without
+    # this, previewing a page that embeds other apps re-records THOSE apps.
+    d = _app_dir(workspace, "sine")
+    r = client.get(
+        "/render",
+        params={"path": str(d / "index.html")},
+        headers={"Referer": "http://x/render?path=%2Fw%2Ftutorial.html&_preview=1"},
+    )
+    assert r.status_code == 200
+    assert _opened_at(client, "sine") is None
+    # An ordinary referer (a real open navigated from anywhere) still records.
+    r = client.get(
+        "/render",
+        params={"path": str(d / "index.html")},
+        headers={"Referer": "http://x/explorer/view/w/sine"},
+    )
+    assert r.status_code == 200
+    assert _opened_at(client, "sine") is not None
+
+
+def test_rendering_an_unmarked_page_records_nothing(client, workspace, tmp_path, recents_home):
+    # Templates and plain html render through /render too; no marker, no record.
+    p = tmp_path / "plain.html"
+    p.write_text("<html><body>hi</body></html>")
+    r = client.get("/render", params={"path": str(p)})
+    assert r.status_code == 200
+    assert client.get("/api/apps").json()["apps"] == []
+    from fused_render import registered_apps
+    assert registered_apps.read_entries() == []
+
+
+def test_app_entry_endpoint_answers_by_the_marker_rule(client, workspace, tmp_path):
+    # The explorer's "Open app" button asks the server instead of re-deriving
+    # the rule from filenames (D301) — any folder may be asked, workspace or not.
+    d = _app_dir(workspace, "sine", htmls=("main.html",))
+    r = client.get("/api/apps/entry", params={"path": str(d)})
+    assert r.json() == {"entry": str(d / "main.html")}
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "index.html").write_text("<html></html>")  # untagged: no entry
+    assert client.get("/api/apps/entry",
+                      params={"path": str(plain)}).json() == {"entry": None}
+    assert client.get("/api/apps/entry",
+                      params={"path": "relative/nope"}).json() == {"entry": None}
+    assert client.get("/api/apps/entry",
+                      params={"path": str(tmp_path / "gone")}).json() == {"entry": None}
+
+
+def test_rendering_an_external_marked_page_registers_the_folder(
+        client, tmp_path, workspace, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    ext = tmp_path / "elsewhere" / "myapp"
+    ext.mkdir(parents=True)
+    (ext / "main.html").write_text(
+        '<html><head><meta name="fused-app" /></head><body>x</body></html>')
+    r = client.get("/render", params={"path": str(ext / "main.html")})
+    assert r.status_code == 200
+    from fused_render import registered_apps
+    (entry,) = registered_apps.read_entries()
+    assert entry["path"] == str(ext)
+    # ...and the folder now lists on the hub under the reserved tag.
+    apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
+    assert apps["myapp"]["tag"] == registered_apps.REGISTERED_TAG

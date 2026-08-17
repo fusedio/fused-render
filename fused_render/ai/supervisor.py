@@ -39,6 +39,7 @@ boundary, in an interpreter this one built.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -78,6 +79,23 @@ HEALTH_TIMEOUT_S = 5.0
 # Generation can take minutes (an image at high step counts, a long completion).
 GENERATE_TIMEOUT_S = 900.0
 
+# A transcription can take HOURS, and 900s was a silent cap on the feature's own
+# motivating case. The worker sends nothing until the decode finishes — one JSON
+# reply when `generate` returns — so this socket timeout covers the whole run,
+# and a 90-minute recording is ~18 minutes of it at the default model's CPU int8
+# speed. At 900s that request died, the row went to error, and the worker
+# carried on to write a transcript nobody was told about; worse, it was still
+# holding the worker's `GENERATE_LOCK`, so every queued transcription repeated
+# the failure in turn.
+#
+# Four hours of DECODING is ~20 hours of audio, which is past anything somebody
+# hands a file explorer. It is a backstop rather than the stop: the ✕ makes the
+# worker reply (its per-segment tick carries the cancel back), and an unload
+# kills the process and closes the socket — both unblock this in seconds. What
+# is left for a timeout is a worker that is alive but wedged, and parking a
+# daemon thread on that forever is the thing worth refusing.
+TRANSCRIBE_TIMEOUT_S = 4 * 3600.0
+
 # How long an image request will wait for its model to become resident. Long,
 # because the honest worst case is a multi-GB download on a slow connection
 # followed by a minutes-long load — and the alternative to waiting is failing a
@@ -90,6 +108,41 @@ JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-model:"
 #: pieces of work with two progress bars, and a shared id would have the second
 #: overwrite the first's row mid-flight.
 IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
+#: And one row per RECORDING, for the same reason.
+TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
+
+#: One transcription in flight at a time, decided HERE rather than left to the
+#: worker's `GENERATE_LOCK`.
+#:
+#: The worker serializes generations anyway — one model, one process — but it
+#: does so by parking the second request inside `_single`, BEFORE that handler
+#: reaches `heartbeat()`. So the second row got no ticks at all while it waited,
+#: and with `TRANSCRIBE_TIMEOUT_S` at four hours that wait is long enough to hit
+#: every timer in `jobs`: stalled at 30s ("no longer reporting" about work that
+#: is merely queued), swept away at 600s, at which point `watchJob` resolves
+#: with nothing and the page is told a still-running transcription failed. Two
+#: 90-minute recordings back to back is all it takes.
+#:
+#: Waiting on THIS side of the request is what makes the wait describable. The
+#: row says it is queued, keeps saying so, and its ✕ is honoured — none of which
+#: is reachable from inside a blocked `urlopen`.
+_TRANSCRIBE_LOCK = threading.Lock()
+
+#: How often a queued transcription re-states its row — a DISPLAY heartbeat and
+#: nothing more.
+#:
+#: It was briefly sized against `worker_base.HEARTBEAT_S`, to decide which live
+#: row `jobs._sweep` would shed first under the cap. That whole question is
+#: gone: the sweep does not evict live server rows any more (see the cap branch
+#: in `jobs.py`), which is what finally stopped this feature compensating for a
+#: row it could lose. The one constraint left is the plain one — report often
+#: enough that a row merely waiting its turn is not displayed as "no longer
+#: reporting" (`jobs.STALE_AFTER_S`, 30s).
+_QUEUE_TICK_S = 10.0
+
+#: …and how often it looks at its ✕, which is a different question and so a
+#: different number. A cancel must not wait on a display heartbeat.
+_QUEUE_POLL_S = 1.0
 
 
 class SupervisorError(RuntimeError):
@@ -155,6 +208,12 @@ class Worker:
     #: on offering a dead model as `ready`.
     proc: subprocess.Popen | None = field(default=None, repr=False)
     resident_bytes: int | None = None
+    #: "cuda" | "mps" | "cpu", as the WORKER reported it — never as this process
+    #: worked it out. The supervisor can see that a machine has a GPU and not
+    #: whether the runner's torch was built to use it, and on Windows those
+    #: differ by default (the PyPI wheel is CPU-only). Same argument AI-8 makes
+    #: about resident bytes: only the process holding the weights knows.
+    device: str = ""
     loaded_at: float | None = None
     started_at: float = field(default_factory=time.time)
     #: Set when the user cancels or a newer load evicts this one. The bring-up
@@ -541,11 +600,27 @@ def _failure_text(e: BaseException) -> str:
     return f"{e.__class__.__name__}: {e}".strip().rstrip(":")
 
 
-def _cancel_requested(job: str) -> bool:
+def _cancel_state(job: str) -> bool | None:
+    """Was the ✕ pressed — or is there no row to ask?
+
+    Three answers, not two, because "no row" is not "no". A row can be EVICTED
+    by the cap at any moment (`jobs._sweep`), and `cancel_requested` is server
+    state that no report can restore — so a poller reading a missing row as
+    False is not observing that the ✕ was not pressed, it is guessing. The
+    guess is usually right and occasionally silently loses a cancel, which is
+    the worst combination for something nobody will ever see.
+
+    Callers that can act on the distinction take the tri-state; the rest keep
+    the boolean below, whose behaviour is unchanged.
+    """
     for record in jobs.list_jobs():
         if record["id"] == job:
             return bool(record.get("cancel_requested"))
-    return False
+    return None
+
+
+def _cancel_requested(job: str) -> bool:
+    return _cancel_state(job) is True
 
 
 def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
@@ -562,7 +637,7 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
         return envinstall.venv_python_for(runner.folder)
 
     worker.state = "venv"
-    _report(job, state="running", kind="download", detail=f"Preparing {runner.label}…",
+    _report(job, state="running", kind="download", detail=f"Preparing {runner.short}…",
             done=None, total=None)
 
     # ROUNDS, because an install is not always one install. On a machine with no
@@ -593,12 +668,12 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
                     raise SupervisorError(str(record["error"]))
                 break
             _report(job,
-                    detail=f"Preparing {runner.label} — {record.get('stage') or 'installing'}…")
+                    detail=f"Preparing {runner.short} — {record.get('stage') or 'installing'}…")
             time.sleep(0.5)
         worker.install_key = ""
         if envinstall.is_installed(runner.folder):
             return envinstall.venv_python_for(runner.folder)
-    raise SupervisorError(f"the environment for {runner.label} did not build")
+    raise SupervisorError(f"the environment for {runner.short} did not build")
 
 
 def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
@@ -633,6 +708,10 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 worker.detail = str(health.get("detail") or "")
                 resident = health.get("resident_bytes")
                 worker.resident_bytes = resident if isinstance(resident, int) else None
+                # Read on every poll rather than once at `ready`: a runner sets
+                # it inside `load()`, and this loop is what is watching when
+                # that happens.
+                worker.device = str(health.get("device") or "")
                 if worker.state == "ready":
                     worker.loaded_at = time.time()
                     _report(job, state="done", detail="Model loaded")
@@ -706,6 +785,18 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
                 return
             time.sleep(0.5)
         if proc.returncode != 0:
+            # **The ✕ is checked before the exit code, because the WORKER can
+            # beat this loop to it.** Both sides watch for a cancel — this loop
+            # every 0.5s, and the worker's own fetch tick every 1s, which learns
+            # about it from the reply (`worker_base.report_or_cancel`). When the
+            # worker notices first it raises `Cancelled` and exits non-zero, and
+            # the `proc.poll() is None` guard above then drops us straight here
+            # without ever asking about the ✕ — so a download the user cancelled
+            # was reported as a FAILED one, with a traceback in the message.
+            # The flag is the honest answer either way: it is server state that
+            # only a ✕ sets, and it survives the worker's death.
+            if _cancel_requested(job):
+                raise SupervisorError("cancelled")
             stderr = _tail(log)
             raise SupervisorError(stderr.strip() or f"the download exited {proc.returncode}")
         _report(job, state="done", detail="Downloaded")
@@ -724,14 +815,19 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
 def _runner_or_raise(capability: str) -> registry.Runner:
     """The runner serving `capability`, or a SupervisorError saying why there isn't
     one — the machine's reason ("needs Apple Silicon") where a runner exists but
-    cannot run here, and a bare "no runner provides …" where none is registered."""
+    cannot run here, and a bare "no runner provides …" where none is registered.
+
+    The sentence comes from `registry.unavailable_reason` rather than being
+    derived again here. It used to be derived here, and in `start_image`, and in
+    the registry: three copies of "the first runner registered for this
+    capability", which was one rule while every capability had one runner and
+    three wrong answers the moment text generation had two — all three named the
+    Apple Silicon runner on machines that were never going to use it.
+    """
     runner = registry.for_capability(capability)
     if runner is None:
-        known = next((r for r in registry.all_runners() if r.capability == capability), None)
-        raise SupervisorError(
-            known.available().reason if known
-            else f"no runner provides {capability!r}"
-        )
+        raise SupervisorError(registry.unavailable_reason(capability)
+                              or f"no runner provides {capability!r}")
     return runner
 
 
@@ -753,9 +849,20 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     job = job_id_for(model)
     with _lock:
         current = _workers.get(capability)
-        if current is not None and current.model == model and current.state != "error":
+        if (current is not None and current.model == model
+                and current.runner_code == runner.code
+                and current.state != "error"):
             # Joining an in-flight bring-up hands back ITS record, so the second
             # caller watches the same thing the first one is watching.
+            #
+            # The RUNNER has to match as well as the model. One model id can be
+            # published for two backends — `openai/whisper-large-v3` exists as
+            # an MLX conversion and as a CTranslate2 one — so "the model already
+            # loading is the model you asked for" does not answer "the worker
+            # loading it is the one that should serve you". Without this, a load
+            # placed after the preference moved joined the outgoing engine's
+            # bring-up and the switch never happened. A mismatch falls through
+            # to the eviction below, which is what a change of engine means.
             return {"jobId": job, "model": model, "state": current.state}, current
         if current is not None:
             # Eviction: the weights of the old model must be released BEFORE the
@@ -828,13 +935,9 @@ def start_image(model: str, request: dict, job: str) -> None:
     a job row that immediately fails — the caller gets an error it can show,
     rather than a progress bar it has to watch die.
     """
-    runner = registry.for_capability(registry.IMAGE_GENERATION)
-    if runner is None:
-        known = next((r for r in registry.all_runners()
-                      if r.capability == registry.IMAGE_GENERATION), None)
-        raise SupervisorError(
-            known.available().reason if known
-            else f"no runner provides {registry.IMAGE_GENERATION!r}")
+    # `_runner_or_raise`, not a third copy of the same lookup — which is what
+    # this was, and it drifted the moment a capability grew a second runner.
+    _runner_or_raise(registry.IMAGE_GENERATION)
     _require_build_tools()
 
     title = str(request.get("prompt") or model).strip() or model
@@ -857,6 +960,107 @@ def start_image(model: str, request: dict, job: str) -> None:
     threading.Thread(target=run, name="ai-image", daemon=True).start()
 
 
+#: What a queued transcription's row says while it waits.
+_QUEUED_DETAIL = "Queued behind another transcription…"
+
+
+def transcribe_row_fields(title: str) -> dict:
+    """Everything a report must carry for a transcription row to survive being
+    RE-CREATED — the row's identity, as opposed to its progress.
+
+    **Any row can be rebuilt from scratch at any tick.** `jobs._sweep` drops the
+    least recently updated running row once `MAX_JOBS` (64) bites, and a queue
+    of transcriptions is precisely what produces more than 64 rows — so a
+    reporter whose tick omits a field does not update a row missing it, it
+    creates one where that field is `Job`'s DEFAULT. `title` is the extreme
+    case (without it `upsert` raises and the row never comes back at all), but
+    it is only the loudest: `cancellable` defaults to False, which hides the ✕
+    on a row the manager then draws with a DISMISS cross instead — operable
+    looking and inert; `unit` defaults to "" and reverts the seconds clock to a
+    bare pair of numbers; and `state` is what lets a `_forget`-ten row reopen
+    at all, since a tick that does not say `running` is answered as a late tick
+    from work the user already closed.
+
+    So this is a PAYLOAD rather than a list of fields to remember, and it is
+    passed to the worker in the request body rather than re-spelled there —
+    every reporter on a transcription's lifecycle (this module's opening
+    report, its queue ticks, its terminal report, and all four of the worker's)
+    restates the same thing, and none of them can drift from it.
+
+    `state` is deliberately NOT here: the terminal report needs `done`/`error`/
+    `cancelled` and would have to override it. Callers say their own.
+    """
+    return {"title": title, "kind": "task", "cancellable": True, "unit": "s"}
+
+
+def _transcribe_row(title: str, detail: str) -> dict:
+    """`transcribe_row_fields` plus the progress of a row that has none yet."""
+    return {**transcribe_row_fields(title), "state": "running",
+            "done": None, "total": None, "detail": detail}
+
+
+def _transcribe_title(request: dict, model: str) -> str:
+    """The row's title: the FILE, not the model.
+
+    The manager may be showing several of these at once and "meeting-2024.m4a"
+    is what tells them apart. Shared by the row's opening report and by every
+    queue tick, which must agree — a tick carrying a different title would
+    rename the row under the user each time it reopened.
+    """
+    return (os.path.basename(str(request.get("path") or "")) or model)[:80]
+
+
+def transcribe_job_id(uid: str) -> str:
+    """The download-manager row for one transcription. See `image_job_id`."""
+    return TRANSCRIBE_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def start_transcribe(model: str, request: dict, job: str) -> None:
+    """Open `job` and transcribe on a thread. Raises before starting if it cannot.
+
+    The runner check is synchronous here for the reason `start_image` explains:
+    a request a machine cannot serve should answer with the reason, not open a
+    row that immediately dies.
+    """
+    _runner_or_raise(registry.SPEECH_TO_TEXT)
+    _require_build_tools()
+
+    # `unit="s"` from the first tick: the row is drawn before the worker knows
+    # the duration, and a bar that starts unitless and acquires seconds later
+    # relabels itself under the user. The payload is shared with the queue
+    # ticks so an evicted row is rebuilt as the same row, not a partial one.
+    title = _transcribe_title(request, model)
+    _report(job, **_transcribe_row(title, "Preparing…"))
+    # The worker reports to this same row for the whole decode, so it needs the
+    # row's identity to restate — it is a different PROCESS, and a tick of its
+    # that arrives after an eviction would otherwise be dropped outright
+    # (`upsert` refuses a first report with no title) and take the ✕, the
+    # progress and the terminal state with it. Sent rather than re-spelled
+    # there, so the two cannot disagree about what this row is.
+    request = {**request, "row": transcribe_row_fields(title)}
+
+    def run() -> None:
+        # Every terminal report carries the identity too: the row may have been
+        # evicted at any point during a decode that ran for hours, and a bare
+        # `state="done"` would be refused, leaving the page watching a row that
+        # never finishes for a transcript that is already on disk.
+        fields = transcribe_row_fields(title)
+        try:
+            result = generate_transcript(model, request, job)
+        except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
+            message = _failure_text(e)
+            if message == "cancelled":
+                _report(job, **fields, state="cancelled")
+            else:
+                _report(job, **fields, state="error", message=message)
+            return
+        duration = result.get("duration")
+        _report(job, **fields, state="done", done=duration, total=duration,
+                detail=f"Saved {os.path.basename(result.get('output') or 'transcript')}")
+
+    threading.Thread(target=run, name="ai-transcribe", daemon=True).start()
+
+
 def unload(model: str | None = None, capability: str | None = None) -> bool:
     """Stop a resident worker. True if there was one to stop."""
     with _lock:
@@ -872,6 +1076,41 @@ def unload(model: str | None = None, capability: str | None = None) -> bool:
         _terminate(worker)
         _report(job_id_for(worker.model), state="done", detail="Unloaded")
     return bool(targets)
+
+
+def evict_stale_engines() -> list[str]:
+    """Unload any resident model whose capability now resolves to a DIFFERENT
+    runner. Returns the models that were stopped.
+
+    Called when an engine preference changes (D302). One capability holds one
+    resident model (see the module docstring), and that model belongs to the
+    backend that loaded it — a Whisper model resident in the CTranslate2 worker
+    is not usable by the MLX one, they hold different formats and different
+    weights. So switching a capability's engine while a model is loaded leaves a
+    process holding gigabytes for a backend nothing will route to again: the
+    memory stays spent, the AI Models page shows it as the resident model for
+    that capability, and the next transcription starts a second worker beside
+    it. Eviction is what makes the switch mean something.
+
+    **Stated as a reconciliation rather than as "undo what that PUT did"**, and
+    that is deliberate: the caller then needs no before/after bookkeeping, the
+    call is idempotent, and it is correct for every other way the resolution can
+    move under a resident model — a runner folder finishing its build, a
+    preference edited into prefs.json by hand.
+
+    Deliberately NOT touching `_downloads`: a weights-only fetch holds no memory
+    and evicts nothing, and the bytes it is pulling stay useful — a user who
+    switches engines mid-download almost certainly wants the download.
+    """
+    with _lock:
+        stale = []
+        for worker in list(_workers.values()):
+            resolved = registry.for_capability(worker.capability)
+            if resolved is not None and resolved.code != worker.runner_code:
+                stale.append(worker)
+    for worker in stale:
+        unload(model=worker.model, capability=worker.capability)
+    return [worker.model for worker in stale]
 
 
 def unload_all() -> None:
@@ -920,14 +1159,39 @@ def busy_reason(model: str) -> str | None:
 
 
 def ready_worker(capability: str, model: str | None = None) -> Worker | None:
-    """The resident, READY worker for a capability — what generation needs."""
+    """The resident, READY worker for a capability — what generation needs.
+
+    **The ENGINE is part of the question, not only the capability and the
+    model.** A worker belongs to the backend that started it, and resolution can
+    move underneath one that is already loaded: `preferred_code` re-reads
+    prefs.json on EVERY resolution with no cache, so a file edited by hand,
+    restored from a backup or synced into the home directory changes the answer
+    with no endpoint ever running. Serving the old worker anyway is the failure
+    the whole feature exists to remove — the Preferences page saying CTranslate2
+    while every transcription is answered by the resident MLX process.
+
+    So a mismatch EVICTS rather than merely declining. Returning None alone
+    would leave a worker nothing can ever route to holding its gigabytes until
+    the next PUT, which may never come; `evict_stale_engines` is exactly that
+    reconciliation, and calling it here rather than copying it keeps one
+    definition of "stale". Idempotent, so the second request pays nothing.
+
+    The resolution happens OUTSIDE `_lock` — it reads prefs.json off disk, and
+    that is not something to do while holding the table every other thread
+    wants. It costs one small JSON read per generation request, which is the
+    price of the preference meaning something between PUTs.
+    """
     with _lock:
         worker = _workers.get(capability)
         if worker is None or worker.state != "ready":
             return None
         if model is not None and worker.model != model:
             return None
-        return worker
+    resolved = registry.for_capability(capability)
+    if resolved is not None and resolved.code != worker.runner_code:
+        evict_stale_engines()
+        return None
+    return worker
 
 
 def generate_text(model: str, body: dict):
@@ -966,8 +1230,19 @@ def generate_text(model: str, body: dict):
                 continue
 
 
-def _wait_ready(model: str, capability: str, job: str) -> Worker:
+def _wait_ready(model: str, capability: str, job: str,
+                row: dict | None = None) -> Worker:
     """Make `model` resident, reporting the wait to `job`. Blocking.
+
+    `row` is the caller's row IDENTITY, restated on every tick of the wait —
+    see `transcribe_row_fields`. Optional because the image path does not yet
+    supply one, and its ticks behave exactly as before without it; but a wait
+    for a COLD model is the longest-running reporter in this module (a
+    multi-GB pull), so it is the likeliest of all of them to be the tick that
+    has to re-create an evicted row rather than update it. Without an identity
+    it cannot: `upsert` refuses a first report with no title, `_report`
+    swallows that, and the row stays gone for the whole download — no
+    progress, no ✕, and a page told the transcription failed.
 
     Text generation cannot do this — a chat box must not hang for the minutes a
     cold load takes, so `generate_text` fails fast with the job id instead. An
@@ -984,6 +1259,7 @@ def _wait_ready(model: str, capability: str, job: str) -> Worker:
     """
     started, pending = _start_resident(model, capability)
     deadline = time.monotonic() + LOAD_WAIT_TIMEOUT_S
+    unreadable = False
     while time.monotonic() < deadline:
         worker = ready_worker(capability, model)
         if worker is not None:
@@ -1004,9 +1280,22 @@ def _wait_ready(model: str, capability: str, job: str) -> Worker:
             # capability, or an unload landed. The record we hold never errored,
             # so there is no better answer than what happened to it.
             raise SupervisorError(f"{model} was unloaded before it could be used")
-        if _cancel_requested(job):
+        cancel = _cancel_state(job)
+        if cancel:
             raise SupervisorError("cancelled")
-        _report(job, detail=f"Waiting for {model} — {detail or state}…")
+        if cancel is None and not unreadable:
+            # No row to ask. Said once rather than every half-second, and NOT
+            # treated as a cancel: a cold load is minutes of legitimate work
+            # and aborting it on capacity pressure would be a worse failure
+            # than the one this guards. The tick below rebuilds the row when
+            # the caller gave us its identity, so the blind window is one
+            # iteration rather than the whole download.
+            unreadable = True
+            logger.warning(
+                "job row %s is gone while waiting for %s; a cancel requested "
+                "now cannot be read until the row is rebuilt", job, model)
+        _report(job, **(row or {}), **({"state": "running"} if row else {}),
+                detail=f"Waiting for {model} — {detail or state}…")
         time.sleep(0.5)
     raise SupervisorError(
         f"{model} did not finish loading in time (watch {started['jobId']})")
@@ -1039,6 +1328,156 @@ def generate_image(model: str, request: dict, job: str) -> dict:
         raise SupervisorError("cancelled")
     if not payload.get("ok"):
         raise SupervisorError(str(payload.get("error") or "the image failed to render"))
+    return payload.get("result") or {}
+
+
+def _await_turn(job: str, title: str) -> None:
+    """Take `_TRANSCRIBE_LOCK`, saying so on `job` for as long as it takes.
+
+    Returns holding the lock — the caller releases it. Raises
+    `SupervisorError("cancelled")` if the ✕ is pressed while waiting, which is
+    the other half of why the wait lives here: a queued request has sent nothing
+    to the worker, so there is nothing there to cancel and no tick coming back
+    to carry the request.
+
+    The uncontended case costs one non-blocking `acquire` and reports nothing,
+    so a lone transcription's row is unchanged.
+
+    **There is exactly ONE cancel check between acquiring and returning, and it
+    is placed so that every route to "we hold the lock" passes through it.** The
+    first cut checked only inside the polling loop, which is the contended
+    route — so the fast path returned holding the lock having never read the
+    flag, and a ✕ pressed on "Preparing…" with a model already resident still
+    started a full-file decode that then had to be waited out by the next
+    request. A guard an optimisation can skip is a guard in the wrong place.
+    """
+    if not _TRANSCRIBE_LOCK.acquire(blocking=False):
+        _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
+        warned = False
+        next_tick = time.monotonic() + _QUEUE_TICK_S
+        # POLLED often, REPORTED rarely — and rebuilt ON DETECTION, which is
+        # the part that makes the two cadences safe to differ.
+        while not _TRANSCRIBE_LOCK.acquire(timeout=_QUEUE_POLL_S):
+            # ONE pass over the rows answers both questions: was the ✕ pressed,
+            # and is there still a row to press it on.
+            cancel = _cancel_state(job)
+            if cancel:
+                raise SupervisorError("cancelled")
+            if cancel is None:
+                # **The row is GONE, so rebuild it now rather than at the next
+                # scheduled tick.** The write cadence is a heartbeat, never the
+                # mechanism for the row's survival: waiting `_QUEUE_TICK_S` to
+                # notice would leave the row absent for ten seconds, and
+                # `fused.watchJob` gives up after five consecutive misses —
+                # about 3.5s — so the page would be told a transcription that is
+                # merely QUEUED and about to succeed had stopped reporting.
+                # Detection costs nothing: this poll has just read the list the
+                # answer is in.
+                #
+                # `cancel_requested` cannot come back with it — it is server
+                # state no report may set — so a ✕ pressed in the window before
+                # the eviction is genuinely lost. Said out loud once rather than
+                # silently believed, because reading False off a record we just
+                # created is not an observation.
+                #
+                # NOT treated as a cancel: eviction under capacity pressure is
+                # the ANTICIPATED case here (a folder of recordings is what
+                # produces more than `MAX_JOBS` rows), so aborting on it would
+                # fail the feature's main scenario to guard a one-poll window.
+                if not warned:
+                    logger.warning(
+                        "transcription row %s was evicted while queued; rebuilt, "
+                        "but a cancel requested just before that is lost", job)
+                    warned = True  # once per wait; the sweep may do this often
+                _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
+                next_tick = time.monotonic() + _QUEUE_TICK_S
+                continue
+            if time.monotonic() < next_tick:
+                continue
+            # The idle heartbeat, and only that. The bar does not move — there
+            # is nothing to say but "still waiting" — which is exactly what a
+            # heartbeat is (AI-5h). Deliberately slower than the running row so
+            # the cap sheds queued rows first; see `_QUEUE_TICK_S`.
+            _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
+            next_tick = time.monotonic() + _QUEUE_TICK_S
+    # Guarded, because this runs while we HOLD the lock and before any caller's
+    # `finally` exists to release it: `_cancel_state` walks `jobs.list_jobs()`,
+    # and an exception escaping here would leave `_TRANSCRIBE_LOCK` — a module
+    # global that is never re-created — held for the life of the process. Every
+    # later transcription would then block in this function forever, showing
+    # "Queued behind another transcription…" with nothing running. Low
+    # probability; permanent and process-wide if it happens.
+    try:
+        cancelled = _cancel_requested(job)
+    except BaseException:
+        _TRANSCRIBE_LOCK.release()
+        raise
+    if cancelled:
+        _TRANSCRIBE_LOCK.release()
+        raise SupervisorError("cancelled")
+
+
+@contextlib.contextmanager
+def _transcribe_turn(job: str, title: str):
+    """`_await_turn` as a `with`, so the acquire and the release are one thing.
+
+    The release used to live in a `try/finally` the CALLER opened after
+    `_await_turn` returned, which left a window — the post-acquire cancel check
+    — where the lock was held with no `finally` in scope. Pairing them here is
+    the shape that cannot regress: there is no way to take this turn without
+    also giving it back, and a future caller cannot forget.
+    """
+    _await_turn(job, title)
+    try:
+        yield
+    finally:
+        _TRANSCRIBE_LOCK.release()
+
+
+def generate_transcript(model: str, request: dict, job: str) -> dict:
+    """Transcribe one recording. Blocking — call it on a thread, never on the loop.
+
+    The image path's shape exactly (`generate_image`), because the two have the
+    same properties: minutes of work, a model that may need loading first, a
+    file the worker writes itself, and progress that goes straight to `job`.
+    Nothing here polls; this function holds the request open and turns a dead
+    worker into an error somebody can read.
+
+    **The turn is taken BEFORE the model is resolved, and that ordering is the
+    whole of it.** Resolving first put the one destructive step in this path —
+    `_wait_ready` -> `_start_resident`, which EVICTS whatever holds the
+    capability when the model differs — outside the lock that exists to
+    serialize transcriptions. A page asking for a different Whisper model while
+    a 90-minute run was mid-decode terminated that worker, lost its transcript,
+    failed its row with "the transcription process did not answer", and then
+    queued behind a lock nobody was holding. The identical-model case failed
+    more quietly: a worker handle captured before a wait that can last hours is
+    a handle to a process an unload may since have killed, so the request went
+    to a dead port instead of re-resolving.
+    """
+    with _transcribe_turn(job, _transcribe_title(request, model)):
+        worker = ready_worker(registry.SPEECH_TO_TEXT, model)
+        if worker is None:
+            # The row identity travels into the wait too — it is the longest
+            # reporter on this path, so it is the one most likely to meet an
+            # evicted row.
+            worker = _wait_ready(model, registry.SPEECH_TO_TEXT, job,
+                                 row=request.get("row"))
+        try:
+            response = _worker_request(worker, "/generate", body={**request, "job": job},
+                                       timeout=TRANSCRIBE_TIMEOUT_S)
+        except (OSError, ValueError) as e:
+            raise SupervisorError(f"the transcription process did not answer: {e}") from e
+        with response:
+            try:
+                payload = json.loads(response.read().decode() or "{}")
+            except ValueError as e:
+                raise SupervisorError(
+                    "the transcription process sent a malformed reply") from e
+    if payload.get("cancelled"):
+        raise SupervisorError("cancelled")
+    if not payload.get("ok"):
+        raise SupervisorError(str(payload.get("error") or "the transcription failed"))
     return payload.get("result") or {}
 
 
@@ -1078,6 +1517,34 @@ def refresh_memory() -> None:
             worker.resident_bytes = health["resident_bytes"]
 
 
+def resident_models() -> set[str]:
+    """Which models are HELD right now — the weights in memory, ready to answer.
+
+    `describe()` answers the same question far better (state, device, bytes) and
+    charges a health request per live worker for it, which is the right trade for
+    the sidebar and the wrong one for `/api/ai/catalog`: that route is a slow
+    inventory a picker polls, and it only needs the boolean. Split out rather than
+    folded into `describe()` so the cheap answer stays cheap.
+
+    **`state == "ready"`, not merely "in the table".** A Worker is inserted at
+    `starting` and passes through `venv`, `downloading` and `loading` on its way —
+    which for a first-ever bring-up is a multi-minute `uv sync` followed by a
+    multi-GB fetch. Reporting every row would have flipped a picker's "loaded" mark
+    the instant the button was pressed and left it lit through the whole download,
+    which is the opposite of what the mark promises.
+
+    **And still running.** `_alive` is `proc.poll()` — no signal, no request, and it
+    reaps the zombie as it asks — so a worker that crashed after reaching `ready`
+    reads as gone here rather than as loaded forever. Without it this path would be
+    the one place in the supervisor that trusts `state` alone: `refresh_memory()`
+    reaps on exactly this check, and skipping the probe is not a licence to skip the
+    liveness too.
+    """
+    with _lock:
+        return {w.model for w in _workers.values()
+                if w.state == "ready" and _alive(w)}
+
+
 def describe() -> dict:
     """The runtime as the API reports it."""
     refresh_memory()
@@ -1091,6 +1558,10 @@ def describe() -> dict:
                 "detail": w.detail or None,
                 "error": w.error or None,
                 "residentBytes": w.resident_bytes,
+                # What the weights actually landed on. None from a runner that
+                # does not report one, which the page renders as nothing rather
+                # than as a guess.
+                "device": w.device or None,
                 "loadedAt": w.loaded_at,
                 "startedAt": w.started_at,
                 "jobId": job_id_for(w.model),

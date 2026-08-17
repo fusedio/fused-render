@@ -19,10 +19,14 @@ _cancel).
 Sessions are per-file. Every conversation started from this template is
 recorded in a sidecar under home_dir()/sidecar/<mapped path>.json
 (D83-reversal, D205 — see shared/appenv.py's sidecar_path), never beside
-the target, and the template lists ONLY the sessions in that sidecar,
-never the user's global session history. Claude runs with cwd = the
-target file's directory and an appended system prompt that scopes it
-(softly) to the file.
+the target. Claude runs with cwd = the target file's directory and an
+appended system prompt that scopes it (softly) to the file.
+
+The session LIST is wider than that sidecar, and only that list is: it also
+carries the transcripts already sitting in this cwd's ~/.claude/projects dir
+that no sidecar claims — the chats the user had in a terminal about the same
+folder. Still not the global history; still scoped to this one cwd. See
+`_sessions`.
 
 Tool approvals are the browser's to give: claude is spawned with a
 `--permission-prompt-tool` pointing at `permission_server.py` (a one-tool stdio
@@ -46,7 +50,10 @@ Actions:
                                       -> {"decided": ..., "decision": ...}
   main(action="app_state", run_id=..., request_id=..., state=<json string>)
                                       -> {"answered": ...}
-  main(action="sessions", file=...)   -> {"sessions": [...]}   (sidecar only)
+  main(action="sessions", file=...)   -> {"sessions": [...]}
+      every session about this target, newest first: the sidecar's own, plus
+      the transcripts in the same project dir that this chat did not start
+      (`source`: "template" | "cli" — see _sessions)
   main(action="history", file=..., session_id=...) -> {"turns": [...]}
   main(action="snapshots", file=..., enrich=..., deltas=...)
       -> file_history.timeline(...) — Claude Code's checkpoints for this FILE
@@ -438,6 +445,8 @@ def _claude_bin() -> str:
         resolved = os.path.expanduser(os.path.expandvars(candidate))
         if os.path.isfile(resolved):
             return resolved
+    # claude_spawn.py recognizes this failure by the "claude CLI not found"
+    # substring — keep the two in step if the wording changes.
     raise FileNotFoundError(
         "claude CLI not found — install Claude Code, put `claude` on the PATH "
         "of the environment that launched fused-render, or set "
@@ -1551,6 +1560,10 @@ def _start(file: str, message: str, session_id: str, model: str,
     try:
         with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
              _private_open(os.path.join(run_dir, "err.log")) as err:
+            # posix-spawn-exempt: `cmd` is the CLAUDE CLI argv (built by
+            # _claude_argv), never git — checked by hand. The git spawn in this
+            # file is the `git()` helper above, which resolves an absolute
+            # argv[0] and passes close_fds=False like every other one.
             proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                     cwd=_workdir(file),
                                     stdin=stdin_fh or subprocess.DEVNULL,
@@ -1603,8 +1616,12 @@ def _commit_turn(file: str, message: str) -> None:
         if subject else "Claude turn"
 
     def git(*args):
+        # ABSOLUTE argv[0]: close_fds=False alone does NOT reach posix_spawn —
+        # CPython forks unless os.path.dirname(executable) is truthy, and a fork
+        # with libproj resident dies with SIGSEGV before exec (rc -11, silently).
+        import shutil
         return subprocess.run(
-            ["git", "-C", app_dir, "-c", "user.name=Fused",
+            [shutil.which("git") or "git", "-C", app_dir, "-c", "user.name=Fused",
              "-c", "user.email=apps@fused.io", *args],
             capture_output=True, text=True, timeout=30, close_fds=False)
 
@@ -1654,6 +1671,63 @@ def _alive(run_dir: str) -> bool:
         return False
 
 
+# How far back a live-run lookup bothers to look. Run dirs are named
+# "<YYYYmmdd-HHMMSS>-<hex>", so a reverse sort is newest-first and a run that is
+# still going is by construction among the newest few — a turn does not outlive
+# 60 later ones. The cap is what keeps this O(1)-ish on a machine that has been
+# chatting for weeks, since nothing prunes RUNS.
+_LIVE_SCAN_LIMIT = 60
+
+
+def _live_run(file: str, session_id: str = "") -> dict:
+    """The id of a run for `file` that is STILL GOING, or "" if there is none.
+
+    The page can only re-attach to a run whose id it has, and until this existed
+    the id lived in exactly one place: the `run` param on a single history entry.
+    Navigating away from that entry (Back, then re-opening the chat from the
+    session list) lost it for good — the detached claude process kept writing
+    into RUNS/<id>/out.jsonl with nothing watching, and the chat rendered its
+    half-written transcript as if the turn had never started. Asking the server
+    "is anything still running for this chat?" is the missing half: `resumeRun`
+    was always able to adopt a run this frame did not start.
+
+    Matched on the TARGET first, and on the session only when the caller names
+    one. Two ids can identify the same chat — the session the run resumed
+    (`resumed_from` in meta.json) and the session the CLI minted for it (written
+    to the `session` file by the first poll that sees one, because
+    `--fork-session` can hand back a NEW id and the sidecar row then points at
+    that one) — so either matching is a match.
+    """
+    file = os.path.abspath(file)
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)[:_LIVE_SCAN_LIMIT]
+    except OSError:
+        return {"run_id": ""}
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if os.path.abspath(meta.get("file", "")) != file:
+            continue
+        if session_id:
+            own = ""
+            try:
+                with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
+                    own = fh.read().strip()
+            except OSError:
+                pass
+            if session_id not in (meta.get("resumed_from", ""), own):
+                continue
+        # Liveness LAST: it is the only check that touches a pid, and the two
+        # above have already thrown out everything that is not this chat.
+        if _alive(run_dir):
+            return {"run_id": name}
+    return {"run_id": ""}
+
+
 def _retry_info(row: dict):
     """One `api_retry` row as the page's view of it, or None if unreadable.
 
@@ -1697,6 +1771,40 @@ def _overload_error(error: str, info) -> str:
     return ("Could not reach the API: %s, and %d retr%s did not clear it. "
             "Trying again in a moment usually works. (%s)"
             % (what, spent, "y" if spent == 1 else "ies", error))
+
+
+# The download page's troubleshooting anchor, used with a suffix per error
+# (-login, -notfound, -limit) so the page opens the matching panel rather
+# than always showing the login fix.
+GUIDE_URL = "https://render.fused.io/#troubleshooting"
+
+
+def _account_error(error: str) -> str:
+    """Login and plan-limit failures rewritten to say what to do about them.
+
+    The raw CLI text ("Invalid API key · Please run /login") names a fix that
+    only works INSIDE an interactive claude session, while the user is looking
+    at fused-render — so it reads as a bug in this app with no way out. Say
+    where to run the fix and link the guide; the original rides along in
+    parentheses because it is the part a bug report can be matched on.
+
+    Substring matching over the error text is deliberate: these strings come
+    from the CLI's own `result` row or stderr, never from model output, so a
+    false positive would need the CLI itself to phrase an unrelated failure in
+    login words."""
+    if not error:
+        return error
+    low = error.lower()
+    if ("invalid api key" in low or "/login" in low or "oauth token" in low
+            or "not logged in" in low or "authentication_error" in low):
+        return ("Claude Code isn't logged in. Open a terminal, run `claude`, "
+                "type /login and finish the sign-in, then start a new chat "
+                "here. Help: %s-login (%s)" % (GUIDE_URL, error))
+    if "usage limit reached" in low or "session limit" in low:
+        return ("Your Claude plan's usage limit was reached. Wait for it to "
+                "reset, or upgrade the plan, then try again. Help: %s-limit (%s)"
+                % (GUIDE_URL, error))
+    return error
 
 
 def _skill_calls(row: dict) -> list:
@@ -2176,7 +2284,12 @@ def _poll(run_id: str) -> dict:
     # flight then THAT is the story and the raw text does not tell it. `retry`
     # covers the abnormal exit — a process killed mid-backoff never writes the
     # `result` row that would have moved it into `gave_up`.
-    error = _overload_error(error, gave_up or retry)
+    # Overload first, and it WINS: a run that died mid-retry is an API-health
+    # story even when the underlying 429 text mentions a usage limit, and
+    # letting _account_error re-match inside the overload message's
+    # parenthesized original would bury the retries already spent.
+    rewritten = _overload_error(error, gave_up or retry)
+    error = rewritten if rewritten != error else _account_error(error)
 
     # Approvals, after `done` is final. A card the user never answered is only
     # still live while the run is: once it ends, whatever the request was
@@ -2250,6 +2363,13 @@ def _poll(run_id: str) -> dict:
         try:
             _record_session(meta["file"], new_session, meta.get("message", ""),
                             meta.get("resumed_from", ""))
+            # The id the CLI minted for this run, next to the id it resumed.
+            # `--fork-session` makes those two different, and _record_session
+            # then repoints the sidecar row at the NEW one — so a page that
+            # later asks "is anything running for this chat?" (see _live_run)
+            # would be holding an id meta.json has never heard of.
+            with _private_open(os.path.join(run_dir, "session")) as fh:
+                fh.write(new_session)
             open(marker, "w", encoding="utf-8").close()
         except OSError:
             pass  # sidecar bookkeeping must never break the chat itself
@@ -2391,11 +2511,169 @@ def _defaults(file: str) -> dict:
     return {"model": model, "effort": effort, "source": source}
 
 
+# How many OUTSIDE sessions the list carries, and how far into one of them the
+# title read goes. Both are ceilings on work the home view pays for on every
+# paint, over a folder whose project dir may hold hundreds of transcripts.
+#
+# 131072 is ~3.5x the deepest first-user-row this machine's 154 real transcripts
+# have (37 KB — Claude Code writes its SessionStart hook output, which can be a
+# whole skill file, ahead of the first thing the user said). A head read is the
+# only affordable shape here: transcripts run to multiple MB, and everything
+# this needs is in the opening rows.
+_CLI_SESSION_LIMIT = 30
+_CLI_HEAD_BYTES = 131072
+
+
+def _cli_preview(path: str, workdir: str) -> str:
+    """The first thing a HUMAN said in one transcript, truncated like a sidecar
+    preview — or "" for a transcript this list has no business showing.
+
+    Read from the file's HEAD only, and only far enough to find that message:
+    the alternative is parsing whole multi-MB transcripts to label a row.
+
+    Two things earn a "": a transcript nobody ever spoke in (a session that
+    opened and closed is not a past chat — there is nothing to name it with and
+    nothing to resume into), and one whose own `cwd` is not this folder. The
+    second is the munge guard: `_munge` maps every non-alphanumeric char to "-",
+    so `/a/b-c` and `/a-b/c` land in the SAME project dir, and the directory
+    name cannot be decoded back (server/routers/claude_sessions.py carries the
+    same caveat and takes the same way out — believe the transcript, not the
+    dirname).
+
+    Skipped rows: `isMeta` (the local-command caveat Claude Code writes for the
+    user), `isSidechain` (a subagent's prompt, which the user never typed), and
+    anything opening with "<" — a slash command's `<command-name>` envelope, or
+    this template's own APP_STATE_TAG block, neither of which the user wrote as
+    prose.
+    """
+    try:
+        with open(path, "rb") as fh:
+            blob = fh.read(_CLI_HEAD_BYTES)
+    except OSError:
+        return ""
+    lines = blob.decode("utf-8", "replace").splitlines()
+    # A head read cuts the last line mid-way. Drop it rather than let it look
+    # like a corrupt transcript — we are the ones who truncated it.
+    if len(blob) == _CLI_HEAD_BYTES and lines:
+        lines.pop()
+    cwd_seen = False
+    for line in lines:
+        if not line.startswith("{"):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        # Checked before the row is used for anything else, so a colliding
+        # transcript is rejected on the first row that can prove it (normally
+        # line 0, and always at or before the first user row — user rows carry
+        # `cwd` themselves).
+        if not cwd_seen:
+            cwd = row.get("cwd")
+            if isinstance(cwd, str) and cwd:
+                if os.path.abspath(cwd) != workdir:
+                    return ""
+                cwd_seen = True
+        if row.get("type") != "user" or row.get("isMeta") or row.get("isSidechain"):
+            continue
+        content = (row.get("message") or {}).get("content")
+        if isinstance(content, list):
+            # Block form: prose only. A message that is nothing but a tool
+            # result or an image has no words to title a row with.
+            content = " ".join(b.get("text", "") for b in content
+                               if isinstance(b, dict) and b.get("type") == "text")
+        if not isinstance(content, str):
+            continue
+        content = content.strip()
+        if not content or content.startswith("<"):
+            continue
+        return content[:80] if cwd_seen else ""
+    return ""
+
+
+def _cli_sessions(file: str, known: set) -> list:
+    """Claude sessions about this target's folder that did NOT start in this
+    chat — the ones the user ran in a terminal, plus any this template holds
+    under a DIFFERENT target in the same folder.
+
+    They need no import, no copy and no new resume path, which is the whole
+    reason this is a dozen lines: a session's home is its cwd's project dir
+    (`_munge(_workdir(file))`), the template keys on exactly the same dir, so
+    these transcripts are already sitting where `_history` reads and where
+    `--resume` looks from. `_migrate_session` sees the destination present and
+    no-ops. Resuming one records it in the sidecar (`_record_session`), after
+    which it is an ordinary template session and `known` keeps it from
+    appearing twice.
+
+    "cli" is therefore a claim about PROVENANCE, not about the tool: it means
+    "this chat did not start it". That is all the sidecar can prove, and the row
+    says only that much.
+    """
+    workdir = os.path.abspath(_workdir(file))
+    proj = os.path.join(PROJECTS, _munge(workdir))
+    try:
+        names = os.listdir(proj)
+    except OSError:
+        return []      # no store, or no sessions ever in this folder
+    found = []
+    for name in names:
+        if not name.endswith(".jsonl"):
+            continue
+        sid = name[:-len(".jsonl")]
+        # `_bad_id` because the id becomes a path again on resume (and a URL
+        # param on the way there); a filename we cannot round-trip is not
+        # offered at all.
+        if sid in known or _bad_id(sid):
+            continue
+        try:
+            found.append((os.path.getmtime(os.path.join(proj, name)), sid))
+        except OSError:
+            continue
+    found.sort(reverse=True)
+    out = []
+    for mtime, sid in found:
+        if len(out) >= _CLI_SESSION_LIMIT:
+            break
+        preview = _cli_preview(os.path.join(proj, sid + ".jsonl"), workdir)
+        if not preview:
+            continue
+        # `created_at`/`last_used` rather than a `mtime` of its own: the page's
+        # row renderer already reads those two off a sidecar entry, and one
+        # shape for both sources is what lets the list merge at all. mtime is
+        # the only timestamp a transcript offers for free — it is the last
+        # activity, so it lands on `last_used` and `created_at` borrows it.
+        out.append({"id": sid, "source": "cli", "preview": preview,
+                    "created_at": mtime, "last_used": mtime,
+                    "cwd": workdir, "resumable": True})
+    return out
+
+
 def _sessions(file: str) -> dict:
-    """Sessions recorded in THIS file's sidecar, newest activity first."""
+    """Every Claude session about this target, newest activity first.
+
+    ONE list, from two stores, because the user has one memory: a chat they had
+    about this folder is a chat they had about this folder, and it being in a
+    terminal an hour ago rather than in this page does not make it a different
+    thing to go back to. The page used to show only the sidecar, so the session
+    the user was in five minutes ago was missing from the list of their sessions.
+
+    The sidecar stays authoritative for the entries it owns — it carries the
+    real `created_at`, the preview as typed, and the id continuity that
+    `--fork-session` breaks (see `_record_session`) — and the disk scan only
+    fills in what the sidecar never saw. Every row carries `source` so the page
+    can say which is which; nothing else about them differs.
+    """
     file = os.path.abspath(file)
-    sessions = sorted(_load_sidecar(file)["claudeSessions"],
-                      key=lambda s: s.get("last_used", 0), reverse=True)
+    # Copies, not the loaded dicts: `_load_sidecar`'s result is the same shape
+    # `_save_sidecar` writes back, and `source` is ours, not the store's.
+    mine = [dict(s, source="template") for s in _load_sidecar(file)["claudeSessions"]]
+    sessions = mine + _cli_sessions(file, {s.get("id") for s in mine})
+    # `or 0`, not a default: a sidecar entry written by an older version can
+    # carry an explicit null, which a `.get(k, 0)` hands straight to sorted().
+    sessions.sort(key=lambda s: s.get("last_used") or s.get("created_at") or 0,
+                  reverse=True)
     return {"sessions": sessions}
 
 
@@ -2726,7 +3004,14 @@ def _history(file: str, session_id: str) -> dict:
     prose around them. User turns keep just `text`: there is nothing structured
     about a typed message, and the app-state block is stripped from it BEFORE
     anything else reads it (below), which is also why segments cannot become a
-    second route back for the block the user never saw."""
+    second route back for the block the user never saw.
+
+    User turns DO carry `uuid`, the transcript record's own id. It is the one
+    field a restored turn can be addressed by from outside this page: the Tasks
+    list reads the same uuid off the same record (`_prompt`, server/routers/
+    tasks.py) and links a message as `?msg=<uuid>`, so the chat can scroll to the
+    turn a person clicked instead of to the top of the conversation. "" on a
+    record that has none — the template treats the key as optional throughout."""
     if _bad_id(session_id):
         return {"turns": []}
     file = os.path.abspath(file)
@@ -2785,7 +3070,8 @@ def _history(file: str, session_id: str) -> dict:
             text = _strip_app_state(text)
             if text.strip() and not text.startswith(("<local-command", "<command-name")):
                 close_stretch()  # before the user turn, or the segments land on it
-                turns.append({"role": "user", "text": text})
+                turns.append({"role": "user", "text": text,
+                              "uuid": str(row.get("uuid") or "")})
             else:
                 # Everything else on a `user` row belongs to the assistant's
                 # reply: tool_result blocks are what its tool segments are
@@ -2879,6 +3165,14 @@ def main(action: str = "start", file: str = "", message: str = "",
         if not file:
             return {"error": "missing target file (no _file param?)"}
         return _sessions(file)
+    if action == "live_run":
+        # "Is a run for this chat still going?" — the lookup a page needs when it
+        # arrives without a `run` param but the turn it started is still
+        # streaming somewhere. `session_id` is optional: without one this
+        # answers for the target as a whole.
+        if not file:
+            return {"error": "missing target file (no _file param?)"}
+        return _live_run(file, session_id)
     if action == "defaults":
         if not file:
             return {"error": "missing target file (no _file param?)"}

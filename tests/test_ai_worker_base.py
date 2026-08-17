@@ -14,6 +14,7 @@ machine and the disk-measured download behaves the way the supervisor assumes.
 import importlib.util
 import json
 import os
+import sys
 import threading
 import time
 import urllib.error
@@ -159,6 +160,33 @@ def test_a_failed_load_ends_in_error_never_loading_forever(base):
     state = base.snapshot()
     assert state["state"] == "error"
     assert "no metal for you" in state["error"]
+
+
+def test_a_cancelled_download_is_not_reported_as_a_failed_load(base, monkeypatch):
+    """A ✕ pressed during the fetch is not a crash, and calling it one is not
+    merely a wrong word.
+
+    `fetch_with_progress` learns about the ✕ from the reply to its own tick and
+    raises `Cancelled` — which the broad catch below turned into a terminal
+    `state="error"` on the row. That state CLEARS `cancel_requested`
+    (`jobs.upsert`), so the supervisor's own poll — the thing that would have
+    written "cancelled" half a second later — could no longer see the ✕ at all,
+    read /health, found "error", and reported the download the user stopped as a
+    load that failed.
+    """
+    reports = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: reports.append(fields) or None)
+
+    def download(model_id):
+        raise base.Cancelled()
+
+    base._bring_up("org/m", download, lambda model_id, fetched: None)
+
+    assert [r["state"] for r in reports if "state" in r] == ["cancelled"]
+    # The health error is the literal string the supervisor switches on, so its
+    # independent verdict agrees with the row rather than overwriting it.
+    assert base.snapshot()["error"] == "cancelled"
 
 
 # -- /generate, both shapes -----------------------------------------------------
@@ -374,6 +402,120 @@ def test_fetch_with_progress_re_raises_on_the_calling_thread(base, monkeypatch):
         base.fetch_with_progress("org/m", boom, total=None)
 
 
+# -- a fetch that happens inside a REQUEST, on a row with a live ✕ ---------------
+#
+# These fetches used to own a model-load row, whose ✕ the supervisor answers by
+# killing the process — so a plain `report` was enough. A component model pulled
+# during a transcription reports into a row whose `cancellable` is True and
+# whose ✕ has to stop THIS work, and the reply to the tick is the only channel
+# that reaches a thread parked inside huggingface_hub.
+
+
+def _slow_fetch(seconds=0.2):
+    def call():
+        time.sleep(seconds)
+        return "/snap"
+    return call
+
+
+def test_a_fetch_honours_the_cross_pressed_on_the_row_it_reports_to(base, monkeypatch):
+    """`cancel_requested` comes back on the reply to the tick we were sending
+    anyway. Without this the user pressed ✕, the manager recorded it, and 33MB
+    carried on downloading behind a row that went on saying "running"."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 512)
+    # `report` rather than `_send`: `report` short-circuits to None unless
+    # `JOB_URL` is a real http address, so a `_send` stub is never reached here
+    # and the test would pass against a fetch that ignores cancellation.
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: {"cancel_requested": True})
+
+    with pytest.raises(base.Cancelled):
+        base.fetch_with_progress("org/m", _slow_fetch(), total=1024,
+                                 job="sys:ai-transcribe:x")
+
+
+def test_a_fetch_honours_the_cancel_ROUTE_when_it_is_inside_a_request(base, monkeypatch):
+    """The supervisor POSTs `/cancel` as well as setting the row's flag, and a
+    fetch that read only one of the two channels would honour a ✕ or not
+    depending on which arrived first."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 512)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    base.CANCEL.set()
+    try:
+        with pytest.raises(base.Cancelled):
+            base.fetch_with_progress("org/m", _slow_fetch(), total=1024,
+                                     job="sys:ai-transcribe:x")
+    finally:
+        base.CANCEL.clear()
+
+
+def test_a_model_DOWNLOAD_ignores_a_cancel_flag_left_by_an_earlier_generation(
+        base, monkeypatch):
+    """`CANCEL` belongs to whatever holds `GENERATE_LOCK` and is cleared by
+    `_single`/`_stream` on the way in — so it means THIS fetch exactly when this
+    fetch is inside a request. `_bring_up` runs on its own thread with no such
+    lock, and reading the flag there would abort a download nobody asked to
+    stop because some earlier generation was cancelled. Hence the `job` gate:
+    no job, no route-flag reading. The row's own ✕ still works, via the reply."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 512)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    base.CANCEL.set()
+    try:
+        assert base.fetch_with_progress("org/m", _slow_fetch(), total=1024) == "/snap"
+    finally:
+        base.CANCEL.clear()
+
+
+def test_a_cross_that_lands_as_the_fetch_FINISHES_keeps_the_bytes(base, monkeypatch):
+    """The same rule `_call_with_ticks` states about a finished decode: the
+    bytes are on the disk, and raising here would make the next attempt
+    re-download what this one already has. The final report is a plain
+    `report`, and the loop does not tick for a thread that has already ended."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 1024)
+    # Returns immediately, so the ✕ can only be seen by the first report (before
+    # any bytes moved) or the last (after they all did). The first is honoured;
+    # the last is not, and this pins that the completed value comes back.
+    calls = {"n": 0}
+
+    def reporting(job=None, **fields):
+        calls["n"] += 1
+        # Not cancelled until the fetch is done — the late-cancel window.
+        return {"cancel_requested": calls["n"] > 1}
+
+    monkeypatch.setattr(base, "report", reporting)
+    assert base.fetch_with_progress("org/m", lambda: "/snap", total=1024,
+                                    job="sys:ai-transcribe:x") == "/snap"
+
+
+def test_every_fetch_tick_can_rebuild_the_row_it_reports_to(base, monkeypatch):
+    """A component fetch lands on a row the manager can evict at any tick, and
+    a report with no `title` is refused outright — which kills the row for good.
+    The identity has to ride on EVERY tick, not just the first."""
+    ticks = []
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 512)
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+    row = {"title": "meeting.m4a", "kind": "task", "cancellable": True, "unit": "s"}
+
+    base.fetch_with_progress("org/m", _slow_fetch(1.2), total=1024,
+                             job="sys:ai-transcribe:x", row=row)
+
+    assert len(ticks) >= 3, ticks
+    for tick in ticks:
+        assert tick["title"] == "meeting.m4a", tick
+        assert tick["cancellable"] is True, tick
+        assert tick["state"] == "running", tick
+        # …and for the duration of a download the row IS one: `kind`/`unit` are
+        # this function's own and override the row's, so the manager draws
+        # bytes rather than a seconds clock over a byte count.
+        assert tick["kind"] == "download" and tick["unit"] == "bytes", tick
+
+
 # -- the shipped runners actually use it ----------------------------------------
 
 
@@ -513,22 +655,12 @@ def test_progress_never_exceeds_a_scoped_total(base, monkeypatch):
     assert all(t.get("done", 0) <= 2_600_000_000 for t in ticks if "done" in t), ticks
 
 
-def test_the_image_recipe_keeps_the_config_it_needs_to_load():
-    """The recipe skips WEIGHT files, never the subfolder. `from_single_file`
-    reads `transformer/config.json`, so ignoring `transformer/*` would leave a
-    "downloaded" model that still needs the network — the one promise Download
-    makes."""
-    import importlib.util
-
-    path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "fused_render", "ai", "runners", "diffusers_image", "worker.py",
-    )
-    source = open(path, encoding="utf-8").read()
-    # Read as source: importing it would pull in torch.
-    assert '"transformer/*"' not in source, "the whole subfolder is ignored again"
-    assert '"transformer/*.safetensors"' in source
-    assert '"skip"' in source
+# The image recipe's own patterns moved to tests/test_ai_diffusers_worker.py,
+# where they are asserted against a frozen listing of the real repo instead of
+# by grepping the source for a pattern string. That grep was the reason a recipe
+# whose deny-list saved nothing still passed: the string it looked for was
+# present and the 7.75GB root bundle beside it was not something a substring
+# check could see.
 
 
 # -- the heartbeat --------------------------------------------------------------
@@ -639,3 +771,152 @@ def test_a_finished_row_is_never_re_reported(base, monkeypatch):
         time.sleep(0.1)
 
     assert sent == [], "a finished row was kept alive by its own heartbeat"
+
+
+# -- what a failure SAYS ---------------------------------------------------------
+#
+# The load path is the one place a user meets a library's own error text, and
+# the libraries a runner loads all re-raise. Reporting the top frame is how a
+# missing stdlib module reached the AI Models page as a sentence about a model.
+
+
+def test_a_wrapped_failure_reports_the_ROOT_cause_not_the_wrapper(base):
+    """transformers' lazy-module machinery wraps every import failure, so what
+    arrived on the page was `Could not import module 'AutoTokenizer'` — beside
+    the name of a Qwen repo that was downloaded correctly — while the exception
+    it was raised `from` said `No module named 'filecmp'`. One of those is
+    actionable."""
+    def load(model_id, fetched):
+        try:
+            raise ModuleNotFoundError("No module named 'filecmp'", name="filecmp")
+        except ModuleNotFoundError as cause:
+            raise RuntimeError("Could not import module 'AutoTokenizer'") from cause
+
+    base._bring_up("mlx-community/Qwen3-8B-4bit", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert "Could not import module 'AutoTokenizer'" in error, "the wrapper still shows"
+    assert "No module named 'filecmp'" in error, "and so does the cause"
+
+
+def test_a_missing_STDLIB_module_is_named_as_an_interpreter_problem(base):
+    """The distinction that decides what the user does next: a third-party
+    package is fixed by rebuilding the environment, a stdlib module is baked
+    into the interpreter the environment was built FROM — so rebuilding
+    reproduces it exactly, forever."""
+    def load(model_id, fetched):
+        raise ModuleNotFoundError("No module named 'filecmp'", name="filecmp")
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert "STANDARD LIBRARY" in error
+    assert "rebuilding the environment" in error
+    assert sys.base_prefix in error, "name the interpreter, so it can be reported"
+
+
+def test_a_missing_THIRD_PARTY_module_gets_no_stdlib_hint(base):
+    """The hint must not fire for the ordinary case, or it is noise on every
+    genuinely missing dependency."""
+    def load(model_id, fetched):
+        raise ModuleNotFoundError("No module named 'mlx_lm'", name="mlx_lm")
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert "mlx_lm" in error
+    assert "STANDARD LIBRARY" not in error
+
+
+def test_an_unchained_failure_reads_exactly_as_before(base):
+    """No `from`, no context, nothing to add — the message must not grow a
+    dangling "caused by"."""
+    assert base.describe_failure(RuntimeError("no metal for you")) == (
+        "RuntimeError: no metal for you")
+
+
+def test_a_cycle_in_the_exception_chain_terminates(base):
+    """`__context__` can point back into a chain already walked (an except block
+    that re-raises something it caught earlier). The walk is bounded by identity
+    rather than by trust."""
+    first = RuntimeError("first")
+    second = RuntimeError("second")
+    first.__context__ = second
+    second.__context__ = first
+
+    assert "first" in base.describe_failure(first)
+
+
+def test_a_generation_failure_is_described_the_same_way(base):
+    """The load path is not special: a generate that dies inside a library gets
+    the same treatment, since the same wrapping happens there."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+
+    def generate(body):
+        try:
+            raise ModuleNotFoundError("No module named 'filecmp'", name="filecmp")
+        except ModuleNotFoundError as cause:
+            raise RuntimeError("Could not import module 'AutoTokenizer'") from cause
+
+    server = _serve(base, generate)
+    try:
+        with _call(server, "/generate", {}) as response:
+            payload = json.loads(response.read())
+    finally:
+        server.shutdown()
+
+    assert payload["ok"] is False
+    assert "filecmp" in payload["error"] and "STANDARD LIBRARY" in payload["error"]
+
+
+def test_a_suppressed_context_is_not_walked_past(base):
+    """`raise … from None` is a library saying "what I caught is not the
+    explanation", and the commonest thing hidden that way is an optional
+    dependency probe: `except ImportError: raise … from None`. Following it
+    anyway would report a deliberately hidden error as the root cause — and if
+    the probe happened to be for a stdlib module, would accuse an interpreter
+    that is perfectly complete."""
+    def load(model_id, fetched):
+        try:
+            raise ModuleNotFoundError("No module named 'filecmp'", name="filecmp")
+        except ModuleNotFoundError:
+            raise RuntimeError("this backend is unavailable") from None
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert error == "RuntimeError: this backend is unavailable"
+    assert "filecmp" not in error
+    assert "STANDARD LIBRARY" not in error
+
+
+def test_a_name_error_inside_a_present_stdlib_package_is_not_blamed_on_the_interpreter(base):
+    """`from email import nope` raises a plain ImportError whose `.name` is
+    `email` — a package that is present and working. Keying the hint on
+    ImportError would accuse a complete interpreter of missing part of its
+    stdlib and tell the user that rebuilding cannot help: the exact class of
+    confidently-wrong cause this whole change exists to stop."""
+    def load(model_id, fetched):
+        from email import definitely_not_a_real_name  # noqa: F401
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert "definitely_not_a_real_name" in error, "the real error still reaches the user"
+    assert "STANDARD LIBRARY" not in error
+    assert "rebuilding the environment" not in error
+
+
+def test_a_missing_stdlib_SUBMODULE_is_still_named(base):
+    """A partially-shipped stdlib fails as `No module named 'email.mime'`, and
+    `sys.stdlib_module_names` holds only top-level names — so the top level is
+    what decides, while the full name is what gets reported."""
+    def load(model_id, fetched):
+        raise ModuleNotFoundError("No module named 'email.mime'", name="email.mime")
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert "email.mime" in error
+    assert "STANDARD LIBRARY" in error

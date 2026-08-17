@@ -21,12 +21,35 @@ fused-render is a local file explorer that renders `.html` files live in the bro
    │
    ├─ fused.readFile / writeFile / stat / rawUrl   ← direct file IO, no Python needed
    │
-   ├─ fused.ai("...")          ← runs the local claude CLI, returns {text, model, usage}
+   ├─ fused.ai("...")          ← the claude CLI, or a local model; {text, model, usage}
    │
    └─ fused.trackJob({...})         ← report long work to the shell's download manager
 ```
 
-Three primitives — `runPython`, `params`, and the file IO helpers — are the core API (plus `fused.ai` for asking an AI model through the local claude CLI and `fused.trackJob` for reporting long-running work — each gets its own section below — and two auxiliary members, `fused.env` and `fused.autoReload`, covered in the table). Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
+**Mark every app entry page with `<meta name="fused-app" />`**, placed near the
+top of `<head>` (right after `<meta charset>` — detection reads only the first
+4 KiB of the file). The marker is **the only thing that makes a folder a fused
+app**: filenames — `index.html` included — declare nothing, so a page without
+the tag does not appear on the /apps hub, does not resolve as a folder's entry,
+and is never recorded/registered when rendered. The starter template already
+carries it; when authoring an entry page by hand, add it yourself.
+
+**Migrating an existing app** (one that predates the marker, or lives outside
+`~/Documents/Fused`): add the tag to the entry page's `<head>`:
+
+```html
+<head>
+<meta charset="utf-8" />
+<meta name="fused-app" />
+...
+```
+
+Workspace apps were stamped automatically by a one-time migration at startup;
+apps anywhere else (external folders, cloned repos) are yours to stamp — this
+one line is the whole migration. Once tagged, rendering the page registers an
+external folder on the /apps hub automatically.
+
+Three primitives — `runPython`, `params`, and the file IO helpers — are the core API (plus `fused.ai` for asking an AI model — the claude CLI or a local one — and `fused.trackJob` for reporting long-running work — each gets its own section below — and two auxiliary members, `fused.env` and `fused.autoReload`, covered in the table). Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
 
 ## The Python side: `main()` contract
 
@@ -176,25 +199,32 @@ try {
 - `model` — the **full model id that actually ran**; an alias request (`"sonnet"`) echoes the resolved id.
 - `usage` — either `null` or exactly `{input_tokens, output_tokens}` (both integers). These are **Anthropic-style names** — there is NO `prompt_tokens`/`completion_tokens` (OpenAI names); reading those yields `undefined`.
 
-The page never talks to a model directly: the server runs the call through the **`claude` (Claude Code) CLI** on the author's machine — the user's Claude Code login is the credential; the binary comes from `PATH`, overridable with the `FUSED_RENDER_CLAUDE_BIN` env var. That makes it **local-only**: an exported/hosted page has no local CLI to run, so the exporter rejects any page that calls `fused.ai` (SPEC RH-11). If a view must survive export, gate the AI UI on `fused.env === "local"` and keep the string `fused.ai(` out of the code path entirely (the exporter matches the call textually).
+The page never talks to a model directly, and there are **two destinations** — the model id decides which. An id **containing a `/`** is a Hugging Face repo and runs on **this machine** (a resident worker process); anything else goes to the **`claude` (Claude Code) CLI**, where the user's Claude Code login is the credential (binary from `PATH`, overridable with `FUSED_RENDER_CLAUDE_BIN`).
 
-Options:
+Both are **local-only**: an exported/hosted page has neither, so the exporter rejects any page containing the string `fused.ai(` (SPEC RH-11) — a textual match, so an `if (fused.env === "local")` guard does not make the page exportable. Keep AI out of a view that must export.
+
+Core options:
 
 | Option | Meaning |
 |---|---|
-| `systemPrompt` | System message (string). Put role + ground rules here; put the data + question in `prompt`. |
-| `model` | Model id. Default `claude-haiku-4-5-20251001`. |
-| `effort` | `"low"` \| `"medium"` \| `"high"` → max_tokens 1024 / 4096 / 16384. Default medium. |
-| `maxTokens` | Explicit token cap; overrides `effort`. |
+| `systemPrompt` | System message (string). Role + ground rules here; data + question in `prompt`. |
+| `model` | Model id. Default `claude-haiku-4-5-20251001` (or the user's configured default). A `/` in it means a local model. |
+| `effort` | `"low"` \| `"medium"` \| `"high"` \| `"xhigh"`. Claude path only; default low = no extended thinking. |
+| `onChunk(text)` | Opts into streaming; the promise still resolves with the same `{text, model, usage}`. |
+
+`history`, `raw`, `temperature`, `topP` and `maxTokens` are **local-model only** and are **refused with a 400 on the Claude path**, not dropped.
 
 Rejections carry an `Error` with `.type`:
 
 | `.type` | Cause | UI response |
 |---|---|---|
-| `ai_unavailable` | `claude` binary not found/runnable — message says what to install or set. | Friendly "AI unavailable" state, not a raw overlay. |
-| `bad_request` | Empty prompt / bad options. | Fix the call; surfacing it usually means a bug in your page. |
-| `ai_error` | CLI ran but reported an error (bad model id, upstream failure). | Show `err.message`. |
-| `timeout` | No answer within 120 s. | Offer retry; suggest lower `effort`. |
+| `model_loading` | A local model isn't resident. The call **started the load**; `err.jobId` is it. | Not a failure — show the download, then retry. |
+| `ai_unavailable` | `claude` binary not found/runnable, or the local worker won't start. | Friendly "AI unavailable" state, not a raw overlay. |
+| `bad_request` | Empty prompt / bad options / a local-only option on the Claude path. | Fix the call; usually a bug in your page. |
+| `ai_error` | Ran but reported an error (bad model id, upstream failure). | Show `err.message`. |
+| `timeout` | No answer within 600 s. | Offer retry; suggest lower `effort`. |
+
+**There is more to the AI API than this call** — `fused.ai.models.*` (list/catalog/load/download/unload), `fused.ai.image()`, `fused.ai.cancel()`, and the rules for driving local models. For any of that → **`fused-render-ai`**.
 
 The canonical shape — compute data in Python, reduce it to **compact aggregates**, and hand the model those, never the raw dataset (a full table blows the token budget and drowns the signal):
 
@@ -233,7 +263,7 @@ async function ask(question) {
 Two behaviors that differ from `runPython`, each for a reason:
 
 - **No stale-cancel channel.** An AI call is never a slider scrub — you asked a question and want the answer — so calls run fully concurrent. The flip side: nothing stops a double-click from firing two paid calls. Disable the button while a call is in flight (as above).
-- **The relay times out at 120 s** server-side (vs 60 s for `runPython`) — generation is slower than computation. A `high`-effort call on a big model can legitimately take a while; keep the loading state honest.
+- **The relay times out at 600 s** server-side (vs 60 s for `runPython`) — generation is slower than computation. A `high`-effort call on a big model can legitimately take a while; keep the loading state honest.
 
 When a call fails, check the CLI before blaming the page — same probe style as `/api/run`:
 

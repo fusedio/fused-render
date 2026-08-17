@@ -79,17 +79,17 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 
 The listing may show the selected entry's preview beside the list — Finder's list view. This is the one feature the deleted `preview` directory template had and the shell did not (D185); it lives here so it inherits the listing's watch (LS-1), file operations (§24), multi-select, streaming search (§22) and theming (§30) instead of re-implementing them.
 
-- **FS-9** **THE PANE IS NOT A CHOICE — it is a property of how much room the listing container has.** Above `PANE_SPLIT_MIN_W` (700 px, measured on the container with a `ResizeObserver`, never read off `window.innerWidth`) the listing splits; below it the listing has the container to itself and is exactly the listing FS-1..FS-8 describes. Measured on the **container** because the same `Listing` renders full-window, inside a chrome-free embed, and inside another view's split, and only the container knows which. 700 px sits well above the 280 px both floors technically fit in (FS-12): the question was never "can it be laid out" but "is a half-width listing beside a half-width preview still worth reading", and at 700 px both halves are ~350 px — a listing that still shows a name and a size, and a preview big enough to recognise what it is showing. An unmeasured container (0, `NaN` — an unattached or `display:none` element) reads as **no**, which is the safe answer: painting a pane on a guess and tearing it away on the first real measurement is the one visible failure here. **The gate answers only whether there CAN be a pane; whether one is up, and what it shows, is the user's own `_side` state on top of it (FS-10).** *This replaces a **Default OFF** clause and everything that hung off it. The pane used to be opt-in per folder, and that one bit lived in three places that had to agree — a toggle button, a sticky `?preview=true` URL param carried across directory navigation, and a `pane=0` view-state key so a folder remembered being closed. Three writers for one bit, and the bit was almost always a proxy for a question the layout can answer itself.*
-- **FS-10** **THE LAYOUT DECIDES WHETHER THERE CAN BE A PANE; the user decides what it shows and whether it is up.** `shouldShowPane(containerW)` is the whole of the *layout* half (FS-9) — nothing a user can press or store puts a pane on a container too narrow for one, so the split is right on a wide window, right in a narrow embed, and right the moment either is resized. The *user's* half is **`_side` on the folder URL** (`listing/pane-side.ts`): which of the pane's **three modes** it is showing — **Preview** (the selected row's own default view, FS-11), **Claude** (the chat, `chat_only=1`, about the selected row) and **Git** (the OPEN FOLDER's working tree, which belongs to the folder and not to the row) — or `_side=off`, that the user has shut it. **An ABSENT `_side` means OPEN at `preview`**, deliberately the opposite of the file preview's sidebar, where absent means closed: the pane is not an extra beside a complete view, it is the folder view's other half, and every folder URL, bookmark and recent predates the param. `pane.on && sideState.open` is therefore the pane on screen, and an unknown value (a stale `_side` carried in from a file view) falls back to `preview` silently, as an unknown `_mode` does. There is still no separate mode, no `_mode` value and no registry entry for "listing with a pane" — the pane is a property of *how this folder is being viewed*, not a different view of it (precisely the distinction the `preview` template got wrong). The pane's **header strip** is present in every pane state (loading skeleton, error, metadata card, multi-selection placeholder, self target), and it is the PANE's bar rather than the row's: the way out of the column at its left end, the three-mode pill at its right (`SideChrome`, the one component both this pane and the file preview's sidebar render), with the previewed row's identity between them. **Closing and reopening is ONE AFFORDANCE IN TWO PLACES, chosen by state:** closing is the chevron in that header, on the seam the column collapses toward; reopening cannot live there, since a shut column hosts nothing, so that half is a mode-icon button in the listing's **search row** — the folder's own chrome, beside the folder's own search box — rendered *only* while the pane is shut, wearing the icon of the mode that would come back. Both on screen at once is two buttons for one bit of state a few pixels apart across a divider, which reads as a rendering fault rather than as a choice. *This clause used to specify the toggle as **one affordance in two places, chosen by state**: an icon-only "Hide preview" as the first item of the pane's header strip (on the seam it collapses toward), and a labelled glyph + "Preview" button in the listing's search row for reopening, the two never coexisting. **What was deleted is the TOGGLE, not that shape.** An on/off button for a bit the layout can answer itself went with `?preview=true`; the two-place, chosen-by-state affordance above is a **mode** control — it says which of the three would return, which is a question no measurement answers — and it keeps the rule that killed the old one, **closing needs a way back**, because its reopening half renders exactly while the pane is down. The **drag-to-close gesture** stays deleted: a divider dragged to the right edge shut the pane with no reopen affordance in that era, so it stayed shut until the window was resized. The drag now just holds at the pane's floor, which is what the clamp already did all the way to the edge.*
-- **FS-11** **Selection-driven content, in the pane's `preview` mode.** Only this one of FS-10's three modes is about the selected row's own templates — `claude` is the chat aimed at the row, `git` is the open folder's working tree and does not follow the selection at all — and in it the pane renders whatever the currently selected row is:
-  - a **file** → its default template mode (PT-8/PT-9) in an **iframe**, `/render?path=<template>&_file=<file>`, exactly as the preview view builds it (PT-2) — one code path, so a file previews identically in the pane and full-screen. **No switcher over the ROW's templates** — the pane shows the default, and full-screen is a double-click on the row (FS-15). *A per-row switcher did sit in this header, synced to a `_panelMode` URL param, offering every mode the row resolved (image/photos/pano for a `.png`). It was retired when the header became the pane's own three-mode bar (FS-10): two mode controls over one row, and the companions in the new bar are not row views at all. What is genuinely lost is picking a NON-DEFAULT content template inside the pane; the expand button opens the row full-screen, where the content switcher lives. Nothing writes or reads `_panelMode` any more.* "Default" means PT-9's rule in full, including its tail: the first **unconditional** entry renders immediately (CT-12 — no waiting on a gate), and an **all-conditional** list resolves its gates and shows the first **allowed** one, so the pane never claims "no preview" for a file that opens fine full-screen. A file with no usable entry at all (empty list, or every gate denied/broken — fail closed) gets the metadata card below. **The pane never edits the mode list on account of its own width** (PT-15): it is a narrow host — 220 px at the floor, and 30–70 % of the container by default depending on how wide that container is (FS-12) — and a template whose layout needs more than that collapses itself at its own breakpoint, which is why nothing here knows how wide any template wants to be.
-  - a **directory that is an APP** (it holds a top-level `.html` — `index.html`, else the first non-hidden top-level `.html` in name order, the shared entry rule of D269) → **that PAGE**, in the ordinary file preview above, exactly as if the page itself had been selected: the pane RETARGETS the row and everything downstream (the template list, the `/render` iframe, the expand button) is the page's. *A folder that is an app is that page at every surface, and a nested file table beside a file table was the pane answering a question nobody asked. Resolution happens at the EDGE — one `/api/fs/list` (shared with the embedded listing through `prefetchListDir`) plus the pure rule in `apps/explorer/lib/app-entry.ts` — so no `app` template, `?_mode=app` or `_app` sentinel comes back with it (D264 deleted those and D269 revives none of them). Deliberately NOT the same as navigating INTO the folder, which still opens its listing with the page auto-selected (FS-16).*
-  - any **other directory** → its `_listing` mode, mounted as the **real shell `Listing` component, embedded** (`embedded` prop: full sorting, search and selection, but no URL writes, no global keyboard and no pane of its own — a listing inside a listing's pane is the one nesting case). *Two earlier answers are gone. A folder holding exactly one top-level page used to embed that page instead, through a pane-only `_app` sentinel that stood in wherever the registry's `app` mode was absent or gate-denied; both went with the app concept (D264), and the sentinel had to go with them or it would have become its only surviving carrier, labelled "Preview". Before either, the peek was a **read-only mini child list** (names + icons, no sort, no file ops, no search, not navigable) — deliberately read-only, because two live listings on screen means two watch sockets, two selection models and an ambiguous target for a delete. That argument lost: the pane exists to answer "what is in here" before you commit to going in, and the embedded listing answers it with the same columns, sorting and search as the folder you would have walked into, instead of a second, worse listing maintained beside the real one — which is D185's own lesson about forks. The `embedded` prop answers the half of those concerns that were about the HOST — no URL writes, a pane-local sort that never re-sorts the real listing, no global keyboard and no pane of its own — while the second dir-watch is simply accepted: the pane is showing a folder, and a stale picture of one is worse than a socket. Its `.pane-mini-*` styles are still in `explorer.css` with nothing rendering them.*
-  - **nothing selected** → the **self target**: the pane's subject is the folder *already open on the left*, and it has **no preview at all**. The header carries the folder's icon and its name — no actions. *A folder's "Open as app" was once handed down into this slot; a folder has no primary action at all now, because D264 deleted the app concept itself — the mode, the button and the lone-app probe alike.* The body is the neutral hint `Select a file to preview.` (the `.pane-hint` the empty pane already had). **There is NO PER-ROW mode picker**, and therefore no row mode: the self target never builds a row mode list, resolves no default, and issues no stat — there is no row to resolve templates for. The pane's **own** three-mode pill (FS-10) is in the header here exactly as in every other state, and it is the control this state used to lack. *What was removed was the per-row picker: the `/` key's peers are heavyweight opt-ins (D235/D237 put the chat on every folder), so in this state that picker offered a chat on the folder from a header that otherwise said "select something" — a `Choose view` chip pointing at a view nobody came for. Claude-on-the-folder is a named mode of the PANE now, so it is offered plainly instead of through a picker with nothing else in it.* The folder's own modes remain one click away on the **left** half (the browse chip / the folder's own view), and every entry in the folder previews on selection; since opening a folder now auto-selects its first page, else its first entry (FS-16, D263) and clicking the listing background no longer deselects (FS-15), this state is reached essentially only by an empty folder or by a deliberate **Escape**. *There used to be an elaborate rule here instead — drop `_listing`, offer the peers, but land on no mode unless the folder had a lone app of its own, with a pane-only `_none` entry before that. Hiding the picker deletes the question those were answering.*
-- **FS-12** **Draggable divider** between list and pane. **The split is a FRACTION of the split container, not a pixel width** — state is `{ on, frac }`, rendered as a percentage `flex-basis`, defaulting to `PANE_DEFAULT_FRAC = 0.5` (half and half). A proportion is what the user actually chose ("about a third of the window to the list"), and it is the only form of the answer that stays right when the window resizes: the previous model resolved a measured half into pixels at mount and then never rescaled, so a pane sized on a wide monitor became the whole view on a laptop. A percentage also needs **no measurement** — it is correct before the first paint, whatever the container turns out to be — so the measuring layout effect and its unmeasurable-container fallback (`PANE_FALLBACK_W = 420`) are both gone. **The pixel floors remain, and they are where the pixels live now:** the drag runs the cursor's distance from the container's right edge through `clampPaneWidth` (pane ≥ 220 px, list ≥ 60 px, the pane's floor applied last so a container too small for both keeps the pane and scrolls the list) and stores `clamped ÷ container width`. **A container too narrow to hold both floors (< 280 px) expresses no split at all** — the clamp returns the pane's floor whatever the cursor does, so the fraction would describe the container rather than a choice (exactly `1.0` at 220 px), and one drag in a narrow pane would leave the list at its 60 px sliver on every window thereafter. There the drag moves nothing and records nothing (dragging to the edge no longer closes the pane — FS-10); above 280 px the ceiling is `(W − 60) ÷ W`, so a real drag can never reach 1. `.listing-pane-slot` and `.listing-main` carry the same two floors as CSS `min-width`, which is what holds them when the *window* — not the divider — is what changed. Only a **dragged** fraction is recorded at all (FS-13); the default is never recorded. **UNDRAGGED, the fraction is not a constant** — it steps with the container's width through `defaultPaneFrac`: **30 %** of a container that only just has room for two panes, **50 %** (`PANE_DEFAULT_FRAC`) at a normal window (`PANE_MID_W` 1000), **70 %** once it is wide (`PANE_WIDE_W` 1440), floored at the pane's own 220 px so the flex-basis can never disagree with the CSS `min-width` (30 % of 700 is 210). A single 50 % at every width was wrong at both ends: half of 720 px is a preview too narrow to read beside a listing that has shed its columns for it, and half of a 1920 px window is 960 px of file names. **Steps, not a continuous ramp** — the pane is persistent furniture, so its width wants to be predictable and recognisable ("this is the wide layout"), and a fraction that slides with every pixel of a window drag is neither. *The `PANE_DEFAULT_FRAC = 0.5` this clause opens with is now only the middle step, and the answer for an unmeasured container.*
-- **FS-13** **NOTHING ABOUT THE PANE IS STORED — not in view state, not in `localStorage`, not in `sessionStorage`. The width gate is inferred from the container; what the user chose is `_side` on the URL; the dragged width lives in memory for the session and nowhere else.**
-  - **The width gate → not persisted at all**, because it is not a choice (FS-9/FS-10). It is recomputed from the container on every measurement, so there is nothing to write, nothing to restore, and nothing that can disagree with what is on screen. **The user's half — which of the three modes, or that the pane is shut — is `_side` on the folder URL and nowhere else** (FS-10): it belongs in the URL for the reason SB-2 gives, that a bookmark captures what the right side currently shows, and `_side=off` is spelled as a word rather than as a deleted param because an absent one already means something different here (open at `preview`). Reopening keeps the mode the pane was shut on, and only "shut" is written down: the open-at-default state gets the clean URL, per PT-9's rule that selecting the default deletes the param. *This replaces **`?preview=true` on the shell URL** (that literal spelling) plus a `pane` view-state key, with the URL authoritative on mount, the view state consulted in its absence, and the param carried by `navigate()` onto directory targets so folder-to-folder movement never silently opened or closed the pane. All of it is deleted: the param, its stickiness, the reflect-into-the-URL effect, and the `pane` key. **A stale `?preview=true` in an old bookmark is inert** — no reader remains — which also retires the D72 ancestor-climb caveat that kept the param off file targets. SB-2 still captures the URL verbatim; there is simply no pane state in it.*
-  - **Width → a module-level variable, for the lifetime of the DOCUMENT** (`listing/pane-store.ts`), never the URL and **never storage of any kind**. One fraction, shared by every folder and every file. It survives everything the shell does, since the shell navigates by `history.pushState` and never reloads: folder → folder, folder → file, Back and Forward all keep the width. A **refresh clears it** and the pane returns to following the container through FS-12's breakpoints, and that reset is the *feature* — once dragged, a pane stops adapting to the window forever, and the way back has to be something a user can find without being told about a gesture. Reloading a page is that. `sessionStorage` would survive the refresh and `localStorage` the browser, so neither is an option, and there is deliberately no double-click-to-reset gesture. Only a **dragged** fraction is recorded (FS-12), at three decimals — a tenth of a percent of the container, well under a pixel on any window.
+- **FS-9** **THE PANE IS NOT A CHOICE AND NOT A MEASUREMENT — a `Listing` that has a pane has one, at every width** (D282). The whole of "is there a pane" is *which* `Listing` this is: not an embedded one (the pane's own `_listing` mode — no nesting), not a frozen-tree snapshot, not a panel pane. Those are facts about the SURFACE, and each is the host-side question a measurement could never answer: a snapshot's listing and a panel pane's are both top-level listings handed a column by someone else, and both were wide enough to pass any threshold while being exactly the cases that must not split. **There is no width GATE and no visibility threshold anywhere in this path.** *A container measurement does exist again (D283) — the split container is observed so the companion's SHARE can step to 50% on a small one (FS-12) — and it decides how wide the pane is, never whether there is one. The distinction is the whole of FS-9: presence is a property of the surface, proportion is a property of the room.* *This retires `PANE_SPLIT_MIN_W` (700 px, measured on the split container) and everything that hung off it, on the owner's instruction to remove the breakpoint logic outright — the same instruction that flattened the width to one share (FS-12). **The consequence is stated rather than hedged, and it has two regimes.** Down to about **285 px** of container — the pane's 220 px floor, the 5 px divider and the list's 60 px floor (FS-12) — a narrow window shows a narrow listing beside a floored pane instead of the whole listing, and the way out is `_side=off` (FS-10), the same control it is on a wide one. **Below that the split OVERFLOWS HORIZONTALLY**: the floors no longer fit, `.listing-split` is a plain flex row with no `overflow` rule, and nothing clamps the RENDERED fraction — only the drag is clamped (`dragPaneFrac` refuses a container under 280 px, which is a rule about recording a choice, not about painting one). The old gate made this unreachable by refusing to split at all under 700 px. *Whether it stays reachable is deliberately left open: clamping the rendered fraction, or withholding the pane under the floor sum, is a width condition of exactly the kind this decision removed, so it is the owner's call rather than a fix to slip in beside it. Reachable in practice only in a very narrow embed or a heavily zoomed window.* The gate existed to answer "is a half-width listing beside a half-width preview still worth reading" — a judgement the app was making on the user's behalf, and the answer it is now allowed to make for itself.* *Before the gate there was a **Default OFF** clause and everything that hung off it. The pane used to be opt-in per folder, and that one bit lived in three places that had to agree — a toggle button, a sticky `?preview=true` URL param carried across directory navigation, and a `pane=0` view-state key so a folder remembered being closed. Three writers for one bit, and the bit was almost always a proxy for a question the layout can answer itself.*
+- **FS-10** **THE SURFACE DECIDES WHETHER THERE CAN BE A PANE; the user decides what it shows and whether it is up.** The surface half is FS-9's three flags and nothing else — no width in it, so nothing to re-decide on a resize and nothing that can disagree with what is on screen. *A resize does re-decide the pane's SHARE (FS-12's 1000 px step, D283); it can never re-decide its existence.* The *user's* half is **`_side` on the folder URL** (`listing/pane-side.ts`): which of the pane's **three modes** it is showing — **Preview** (the selected row's own default view, FS-11), **Claude** (the chat, `chat_only=1`, about the selected row) and **Git** (the OPEN FOLDER's working tree, which belongs to the folder and not to the row) — or `_side=off`, that the user has shut it. **An ABSENT `_side` means OPEN at `preview`**, deliberately the opposite of the file preview's sidebar, where absent means closed: the pane is not an extra beside a complete view, it is the folder view's other half, and every folder URL, bookmark and recent predates the param. `pane.on && sideState.open` is therefore the pane on screen, and an unknown value (a stale `_side` carried in from a file view) falls back silently, as an unknown `_mode` does — **to the first mode on offer, which is not always `preview`**: a selected FOLDER row has no Preview at all (FS-11, D281), so there the absent-or-unknown param resolves onward to Claude. An explicit choice that this target cannot offer is left in the URL untouched, so hopping out of a repository and back in does not silently reset the pane. There is still no separate mode, no `_mode` value and no registry entry for "listing with a pane" — the pane is a property of *how this folder is being viewed*, not a different view of it (precisely the distinction the `preview` template got wrong). The pane's **header strip** is present in every pane state (loading skeleton, error, metadata card, multi-selection placeholder, self target), and it is the PANE's bar rather than the row's: the way out of the column at its left end, the three-mode pill at its right (`SideChrome`, the one component both this pane and the file preview's sidebar render), with the previewed row's identity between them. **Closing and reopening is ONE AFFORDANCE IN TWO PLACES, chosen by state:** closing is the chevron in that header, on the seam the column collapses toward; reopening cannot live there, since a shut column hosts nothing, so that half is a mode-icon button in the listing's **search row** — the folder's own chrome, beside the folder's own search box — rendered *only* while the pane is shut, wearing the icon of the mode that would come back. Both on screen at once is two buttons for one bit of state a few pixels apart across a divider, which reads as a rendering fault rather than as a choice. *This clause used to specify the toggle as **one affordance in two places, chosen by state**: an icon-only "Hide preview" as the first item of the pane's header strip (on the seam it collapses toward), and a labelled glyph + "Preview" button in the listing's search row for reopening, the two never coexisting. **What was deleted is the TOGGLE, not that shape.** An on/off button for a bit the layout can answer itself went with `?preview=true`; the two-place, chosen-by-state affordance above is a **mode** control — it says which of the three would return, which is a question no measurement answers — and it keeps the rule that killed the old one, **closing needs a way back**, because its reopening half renders exactly while the pane is down. The **drag-to-close gesture** stays deleted: a divider dragged to the right edge shut the pane with no reopen affordance in that era, so it stayed shut until the window was resized. The drag now just holds at the pane's floor, which is what the clamp already did all the way to the edge.*
+- **FS-11** **Selection-driven content, in the pane's `preview` mode.** Only this one of FS-10's three modes is about the selected row's own templates — `claude` is the chat aimed at the row, `git` is the open folder's working tree and does not follow the selection at all — and in it the pane renders whatever the currently selected row is. **THE PANE FOLLOWS THE LEAD ONCE IT HAS SETTLED** (`listing/pane-settle.ts`, 250 ms): a move from rest — a click, the first press of a key — reaches it at once, but a move made mid-burst re-arms, so a held arrow key mounts only the row it stops on. *A pane mount is an iframe load, and on the `claude` side that iframe spawns `agent.py` through `/api/run` before it can draw, so chasing a held key down a listing meant one subprocess per keystroke — on a path with this repo's fork-crash history. Same "settle before acting on the lead" as the `?sel=` write (FS-16).* The rows below are what a settled lead resolves to:
+  - a **file** → its default template mode (PT-8/PT-9) in an **iframe**, `/render?path=<template>&_file=<file>`, exactly as the preview view builds it (PT-2) — one code path, so a file previews identically in the pane and full-screen. **No switcher over the ROW's templates** — the pane shows the default, and full-screen is a double-click on the row (FS-15). *A per-row switcher did sit in this header, synced to a `_panelMode` URL param, offering every mode the row resolved (image/photos/pano for a `.png`). It was retired when the header became the pane's own three-mode bar (FS-10): two mode controls over one row, and the companions in the new bar are not row views at all. What is genuinely lost is picking a NON-DEFAULT content template inside the pane; the expand button opens the row full-screen, where the content switcher lives. Nothing writes or reads `_panelMode` any more.* "Default" means PT-9's rule in full, including its tail: the first **unconditional** entry renders immediately (CT-12 — no waiting on a gate), and an **all-conditional** list resolves its gates and shows the first **allowed** one, so the pane never claims "no preview" for a file that opens fine full-screen. A file with no usable entry at all (empty list, or every gate denied/broken — fail closed) gets the metadata card below. **The pane never edits the mode list on account of its own width** (PT-15): it is a narrow host — 220 px at the floor, and 30 % of the container by default (FS-12) — and a template whose layout needs more than that collapses itself at its own breakpoint, which is why nothing here knows how wide any template wants to be.
+  - a **directory** → **no `preview` at all** (D281). A folder is not a thing this pane previews: rendering the page it holds is what D280 stopped, and the only other candidate — the embedded listing peek — is the listing already open on the left. So the pane's three-mode pill (FS-10) drops its **Preview** row for a selected folder row and the pane lands on **Claude**, the chat about that folder, sent `chat_only=1` so the chat template gives up its own preview pane (which for a folder it would fill with that folder's entry page — the same render, one level deeper). An explicit `?_side=git` still wins; only the absent param, which parses as `preview`, is resolved onward. **NO surface offers a folder a "Preview" any more**, which is the owner's bar and is met in two different ways: the pill drops the row above, and no list of TEMPLATE modes ever carried one — the full-screen topbar menu, the panel/tab pane menus and the Open With menu all render `modeTitle(mode)`, and a directory's modes label as `Claude, Listing, Git, Graph, …`. **`_listing` is "Listing" there, not "Preview"** (`mode-name.ts`'s sentinel names), which is exactly what lets a folder lose its Preview everywhere while keeping a plainly-named way to its file table. *A guard reads the shipped registry and fails if any directory key ever binds a mode that humanizes to "Preview" — the deleted D185 folder-preview template's own name is the likely way that returns.* **While the folder's companion probes are still OUT the pane has NO MODE and holds its skeleton** — it does not fall back to `preview`. A probe that has not answered is not a denial, and treating it as one put the pill on "Preview" over a rendered chat (the row's own `claude` default) for the window after a folder opens, then remounted and re-spawned `agent.py` when the verdict landed. The pill's two companion rows spin in that window (CT-12's spinner), so the header says "resolving" while the body does. A FILE row is unaffected: its `preview` is its own template list, which the folder's companion gates say nothing about. **Where NEITHER companion is offered** — a mount-backed folder, whose `claude` and `git` gates both refuse, this time answered — `preview` comes back as the fallback and shows the embedded `_listing` peek: the pane must show something, and that sentinel is unconditional, renders no template and runs no Python, so the fallback is never heavier than the default it replaces. *This is the answer to "what if a folder's `claude` is denied", and it is why `_listing` must stay in the universal directory key (PT-13) however the key is ordered.* *The pill and the body used to disagree here, which is how this was found: with `claude` leading the folder's mode list (D280) the pane rendered the chat while the pill still read "Preview" — two controls naming one thing differently. D280 deletes D269's pane half: A folder holding a top-level `.html` used to be RETARGETED to that page and previewed as an ordinary file — the whole pipeline downstream (the template list, the `/render` iframe, the expand button) being the page's — on the rule that such a folder IS its page. In this pane that made a SELECTION an execution: arrowing onto a row mounted the folder's app, ran its template's Python and put a live UI with working buttons in the sidebar for a folder the user had merely highlighted. The owner's words were "we don't want rendering". The `/api/fs/list` the retarget cost per selected folder goes with it, and so does the frontend copy of the entry rule (`apps/explorer/lib/app-entry.ts`, deleted — this pane was its only caller). D269's OTHER half stands: an app CARD still opens the entry page, and the server (`app_listing.app_entry`) and the claude template (`templates/shared/app_entry.py`) keep the rule for the surfaces that ask which page a folder is. Selecting a folder was already NOT the same as navigating INTO it, which opens its listing with nothing selected (FS-16); the two now agree that a folder is a folder.*
+  - a directory's **`_listing`** mode — the switch behind that default, and the default itself wherever `claude` is gate-denied → mounted as the **real shell `Listing` component, embedded** (`embedded` prop: full sorting, search and selection, but no URL writes, no global keyboard and no pane of its own — a listing inside a listing's pane is the one nesting case). *Three earlier answers are gone. It was the folder default itself until `claude` took the registry's lead (D280). Before that, a folder holding exactly one top-level page used to embed that page instead, through a pane-only `_app` sentinel that stood in wherever the registry's `app` mode was absent or gate-denied; both went with the app concept (D264), and the sentinel had to go with them or it would have become its only surviving carrier, labelled "Preview". Before either, the peek was a **read-only mini child list** (names + icons, no sort, no file ops, no search, not navigable) — deliberately read-only, because two live listings on screen means two watch sockets, two selection models and an ambiguous target for a delete. That argument lost: the pane exists to answer "what is in here" before you commit to going in, and the embedded listing answers it with the same columns, sorting and search as the folder you would have walked into, instead of a second, worse listing maintained beside the real one — which is D185's own lesson about forks. The `embedded` prop answers the half of those concerns that were about the HOST — no URL writes, a pane-local sort that never re-sorts the real listing, no global keyboard and no pane of its own — while the second dir-watch is simply accepted: the pane is showing a folder, and a stale picture of one is worse than a socket. Its `.pane-mini-*` styles are still in `explorer.css` with nothing rendering them.*
+  - **nothing selected** → **the chat about the OPEN FOLDER** (D284). The subject is the folder already open on the left, and *a folder is not a thing this pane previews* — the same rule and the same words as a selected directory above, applied to the state **every folder opens into** (FS-16). So this state takes the identical treatment: **no `preview` on the pane's mode list and no Preview row in its pill**, and it lands on the first companion on offer, which is `claude` aimed at the folder (`paneSideTarget` already falls a null row back to the folder, so nothing new carries it). While the companion probes are still out the list is EMPTY and the pane holds its **skeleton** — resolving `preview` in that window is the bug D281 records, and here it would fire on every single folder open. **The `self` target survives as ONE case: neither companion offered** (a mount-backed folder, both gates refusing), where the body is the neutral hint `Select a file to preview.` (the `.pane-hint` the empty pane already had) and that hint is the pane's only possible content. *Until D284 the hint WAS this state's answer, under a pill reading "Preview" — which is what the owner reported: D281 gave a selected folder row this treatment and left the no-selection state, then FS-16/D278 made that state the default landing for every folder, so the wrong pill and a hint over a non-previewable folder were what a user met on every open.* A **multi-selection** is deliberately untouched and keeps both its Preview side and its "N items selected" placeholder: several rows are not a folder. The header carries the folder's icon and its name — no actions. *A folder's "Open as app" was once handed down into this slot; a folder has no primary action at all now, because D264 deleted the app concept itself — the mode, the button and the lone-app probe alike.* The body is the neutral hint `Select a file to preview.` (the `.pane-hint` the empty pane already had). **There is NO PER-ROW mode picker**, and therefore no row mode: the self target never builds a row mode list, resolves no default, and issues no stat — there is no row to resolve templates for. The pane's **own** pill (FS-10) is in the header here exactly as in every other state — minus its Preview row (D284), so what it offers is what the pane can be: the two companions, disabled with their reasons or spinning while their probes are out. It is the control this state used to lack. *What was removed was the per-row picker: the `/` key's peers are heavyweight opt-ins (D235/D237 put the chat on every folder), so in this state that picker offered a chat on the folder from a header that otherwise said "select something" — a `Choose view` chip pointing at a view nobody came for. Claude-on-the-folder is a named mode of the PANE now, so it is offered plainly instead of through a picker with nothing else in it.* The folder's own modes remain one click away on the **left** half (the browse chip / the folder's own view), and every entry in the folder previews on selection. **This is the state EVERY freshly opened folder is in** (FS-16, D278): a folder opens with nothing selected, so **the chat about that folder is the first thing its pane shows** (D284 — the hint was, until this state stopped claiming to preview a folder), and the state persists until the user picks a row. *It was briefly the rare case instead — while opening a folder auto-selected a row for it (D263, D240) it was reached essentially only by an empty folder or by a deliberate **Escape**; clicking the listing background still does not deselect (FS-15), so once a row is picked the pane keeps showing it.* *There used to be an elaborate rule here instead — drop `_listing`, offer the peers, but land on no mode unless the folder had a lone app of its own, with a pane-only `_none` entry before that. Hiding the picker deletes the question those were answering.*
+- **FS-12** **Draggable divider** between list and pane. **The split is a FRACTION of the split container, not a pixel width** — state is `{ on, frac }`, rendered as a percentage `flex-basis`, defaulting to **`PANE_DEFAULT_FRAC = 0.3`, which is the file view's sidebar share imported by name** (`COMPANION_FRAC`, `lib/side-width.ts`): after D280/D281 a folder's pane holds the same companion the file view's sidebar holds, so **one number serves both** and neither surface spells it (D282 — the owner's "they are the same concept now"). Two literals are how they came to differ. A proportion is what the user actually chose ("about a third of the window to the list"), and it is the only form of the answer that stays right when the window resizes: the previous model resolved a measured half into pixels at mount and then never rescaled, so a pane sized on a wide monitor became the whole view on a laptop. A percentage also needs **no measurement** — it is correct before the first paint, whatever the container turns out to be — so the measuring layout effect and its unmeasurable-container fallback (`PANE_FALLBACK_W = 420`) are both gone. **The pixel floors remain, and they are where the pixels live now:** the drag runs the cursor's distance from the container's right edge through `clampPaneWidth` (pane ≥ 220 px, list ≥ 60 px, the pane's floor applied last so a container too small for both keeps the pane and scrolls the list) and stores `clamped ÷ container width`. **A container too narrow to hold both floors (< 280 px) expresses no split at all** — the clamp returns the pane's floor whatever the cursor does, so the fraction would describe the container rather than a choice (exactly `1.0` at 220 px), and one drag in a narrow pane would leave the list at its 60 px sliver on every window thereafter. There the drag moves nothing and records nothing (dragging to the edge no longer closes the pane — FS-10); above 280 px the ceiling is `(W − 60) ÷ W`, so a real drag can never reach 1. `.listing-pane-slot` and `.listing-main` carry the same two floors as CSS `min-width`, which is what holds them when the *window* — not the divider — is what changed. Only a **dragged** fraction is recorded at all (FS-13); the default is never recorded. **UNDRAGGED, THE FRACTION IS ONE STEP: 30 %, or 50 % in a container of 1000 px or less** (`companionFrac`, `lib/side-width.ts` — the same function the file view's sidebar calls, so the two companion columns cannot drift apart; 1000 itself counts as small, matching CSS `(max-width: 1000px)`, and an unmeasured container is not small). *D283 restored that step after D282 deleted it, and the argument D282 deleted it on was **wrong**: it claimed the 280 px column floor already reached the same answer, but 280 of 720 is 39 %, not 50 % — a floor stops a column being unreadable, it does not give a cramped layout the half it needs. The owner reported the gap from the case that shows it, a small browser window. **One step is not the ladder**: the 30/50/70 % tiers, their two breakpoint constants and the 700 px visibility gate all stay deleted, and this changes the pane's share and never whether it exists.* **Moving the boundary to 1000 px CLOSED the flex-basis/`min-width` disagreement it briefly had** and opened no new one: at 720 the pane is now on the 50 % side (360 px, well clear of the 220 px floor), and just above the new boundary 30 % of 1001 is 300 px, clear of it too. The two only disagree below ~440 px, where they always did and where both shares are floored alike. *It used to STEP with the container's width through a `defaultPaneFrac`: 30 % of a container that only just had room for two panes, 50 % at a normal window (`PANE_MID_W` 1000), 70 % once it was wide (`PANE_WIDE_W` 1440), with a `220 px ÷ container` floor folded in so the flex-basis could not disagree with the CSS `min-width`. The argument for it was that a single fraction is wrong at both ends — half of 720 px being a preview too narrow to read, half of 1920 px being 960 px of file names — and the steps were the answer. **D282 deletes all three tiers and the measurement they needed**, on the owner's instruction to remove the breakpoint logic: the companion is a companion at any size, the pixel floors below still stop a 30 % pane from being unusably narrow, and a user who wants a different proportion drags the divider. Both breakpoint constants and the `ResizeObserver` are gone rather than left computing something nothing reads.*
+- **FS-13** **NOTHING ABOUT THE PANE IS STORED — not in view state, not in `localStorage`, not in `sessionStorage`. Whether there is a pane follows from the surface; what the user chose is `_side` on the URL; the dragged width lives in memory for the session and nowhere else.**
+  - **Whether there is a pane → not persisted at all**, because it is not a choice (FS-9/FS-10). It is three flags about which `Listing` this is, evaluated on every render, so there is nothing to write, nothing to restore, and nothing that can disagree with what is on screen. *This sub-clause used to say "recomputed from the container on every measurement"; D282 deleted the measurement, and the property it describes is stronger without it.* **The user's half — which of the three modes, or that the pane is shut — is `_side` on the folder URL and nowhere else** (FS-10): it belongs in the URL for the reason SB-2 gives, that a bookmark captures what the right side currently shows, and `_side=off` is spelled as a word rather than as a deleted param because an absent one already means something different here (open at `preview`). Reopening keeps the mode the pane was shut on, and only "shut" is written down: the open-at-default state gets the clean URL, per PT-9's rule that selecting the default deletes the param. *This replaces **`?preview=true` on the shell URL** (that literal spelling) plus a `pane` view-state key, with the URL authoritative on mount, the view state consulted in its absence, and the param carried by `navigate()` onto directory targets so folder-to-folder movement never silently opened or closed the pane. All of it is deleted: the param, its stickiness, the reflect-into-the-URL effect, and the `pane` key. **A stale `?preview=true` in an old bookmark is inert** — no reader remains — which also retires the D72 ancestor-climb caveat that kept the param off file targets. SB-2 still captures the URL verbatim; there is simply no pane state in it.*
+  - **Width → a module-level variable, for the lifetime of the DOCUMENT** (`listing/pane-store.ts`), never the URL and **never storage of any kind**. One fraction, shared by every folder and every file. It survives everything the shell does, since the shell navigates by `history.pushState` and never reloads: folder → folder, folder → file, Back and Forward all keep the width. A **refresh clears it** and the pane returns to the flat 30 % (FS-12), and that reset is the *feature* — once dragged, a pane keeps that proportion for the whole session, and the way back has to be something a user can find without being told about a gesture. Reloading a page is that. `sessionStorage` would survive the refresh and `localStorage` the browser, so neither is an option, and there is deliberately no double-click-to-reset gesture. Only a **dragged** fraction is recorded (FS-12), at three decimals — a tenth of a percent of the container, well under a pixel on any window.
   - ***Width used to be PER FOLDER, and that was the bug.*** *It lived as a `panew` key in the per-path view state (`lib/viewstate.ts`), alongside the folder's sort, on the reasoning that two sibling folders should keep independent splits. In use that reasoning does not hold: a width is a statement about this window and this pair of panes, not about whichever folder was open when the divider moved. The result was that the divider **jumped on ordinary navigation** — out of a folder you had dragged, into a sibling you had not — snapping between your width and the breakpoint default on every hop. The file preview's own `_side` sidebar had always used a single global width and never had this problem. **Every stored `panew` is purged**, once, at `listing/pane.ts` module init (`purgeViewStateParams`, which also clears the older `pane` key); nothing is translated forward, because a width chosen for one folder is not a statement about the session, so every user starts on the adaptive default until their next drag. **The sort stays per folder** — that one really is a fact about the folder — which is why the purge names its params instead of clearing the map. The `parsePaneFrac` reader went with the key, and with it the rule that **legacy pixel values are ignored, not translated** (anything `>= 1` in `panew` predated the fraction model and was measured against a container this window may not have): there is nothing stored to validate on the way in any more.*
 
   **`navigate()` carries exactly one piece of pane state, `_side`, and only across DIRECTORY hops** — a folder hop keeps the pane as the user left it, open on the same companion or shut, which is the same stickiness the deleted `?preview` param had and for the same reason. It is a reserved (`_`-prefixed) name, so unlike `preview` it cannot shadow a template's own param through D72's ancestor-climb, and it is withheld from **file** targets for that era's other reason: a file view hosts a template iframe that reads every shell-URL param. The width gate is re-measured at the destination (FS-9) and the dragged width is already global for the session (FS-13), so both are simply right on arrival. **A top-bar (breadcrumb) directory hop still always lands on the plain listing:** it drops `_mode` rather than carrying the current folder's view onto the target — hopping out of a full-screen moded folder (`claude`, `graph`) into another folder that offers the same mode looked like nothing had happened, and the breadcrumb is how a user leaves a mode. *A sticky `?preview` param used to ride this rule: carried onto **directory** targets so folder-to-folder movement never silently opened or closed the pane, and deliberately withheld from **file** targets, because `preview` is an *unreserved* param name and the runtime's ancestor-climb (D72) exposes shell-URL params to a template iframe as global fallbacks, so a file URL carrying it would shadow a user template's own param of that name. The param is gone (FS-13), and with it that whole hazard — including the residual caveat this clause used to state rather than fix, that a template rendered **inside the pane** (FS-11) saw `preview` through the same climb while the listing URL carried it. `_side` is ONE param name on two surfaces — the file preview's companion sidebar and this pane — read differently on each (absent = closed on a file, absent = open at `preview` on a folder; `listing/pane-side.ts` states both), which is why an unknown value carried between them falls back rather than erroring. The `_panelMode` that used to ride beside `_mode` here — the pane's per-row template switcher — is retired with that switcher (FS-11): nothing writes one, so there is nothing to carry or to drop.*
@@ -103,11 +103,9 @@ The listing may show the selected entry's preview beside the list — Finder's l
   **`Enter` opens** — the same target the double-click does, so the keyboard keeps a binding that opens whatever the mouse model is. **Shift+click** (contiguous range) and **Mod+click** (toggle + re-anchor) are untouched by all of this: they build a selection and have never navigated.
 
   **No single/double-click delay timer.** Distinguishing the two clicks by waiting would put a deliberate ~250 ms lag on the pane preview — the one interaction the pane exists to make fast. Instead the first click of a double-click just selects, which is harmless: the pane fetch it starts is superseded (the row's navigation unmounts the listing), so the cost of the extra click is a request that nobody reads, not a wrong view or a flash of one.
-- **FS-16** **Opening a folder auto-selects its first PAGE, else its first entry**, so the pane opens showing something. With the pane on and nothing else claiming the selection, the listing walks the **rendered order** the first time the folder's listing settles and selects the first **page** row — an `.html`/`.htm` FILE — falling back to the plain first row, file or directory, when the folder has none (D263, superseding D240's answer; D240's other halves — a directory is an ordinary candidate, and the decision reads no URL — stand). Rendered order both ways, so the choice follows the active sort and is the qualifying row nearest the top of the table the user is looking at; deliberately **not** a favoured `index.html`, which could select a row scrolled off screen and would need a tie-break of its own the moment a folder held two. The row **kind** is checked, not the name — a directory called `build.html` (an exported site tree) is not a page. `.htm` counts HERE and not in the entry rule (`lib/app-entry.ts`, mirroring `app_listing.app_entry` and `templates/shared/app_entry.py`), and the split is the answer to each question rather than a drift: the entry rule makes a claim the server and the templates also make about the same folder and all of them must agree to the letter, while this one picks a preview row where the registry renders `.htm` and `.html` identically and being wrong costs a keystroke. *(The module named here was `lib/folder-app.ts` — deleted with the app concept by D264; `lib/app-entry.ts` is its D269 successor on the broad entry rule.)* Otherwise the pane opened on the folder's own **self target** (FS-11), whose default state is the `Select a file to preview.` hint: a pane that opens empty asks the user to do the obvious thing before it will do anything at all, on a view they opened precisely to see what is inside. **A directory is previewed like any other row** (D240, overturning the original skip-directories rule): selecting one shows it in the pane — its entry PAGE when it is an app, else an embedded listing (FS-11, D269) — never a navigation, so landing on it is as harmless as landing on a file — and with dirs-first sorts it is the row the eye actually lands on. Only an **empty folder** keeps the self target and its hint, unchanged.
+- **FS-16** **Opening a folder selects NOTHING.** A freshly opened folder has an empty selection: no row is highlighted, and its pane sits on the folder's own **self target** — showing **the chat about that folder** (FS-11, D284), since a folder is not a thing the pane previews — until the user picks a row. There is no auto-selection over a folder's rows at all — not a function with no caller, not an effect held back by a guard (**D278, superseding D263's answer and, with it, D240's**; the halves of those that were about a SELECTED row still stand, below). *This overturns the argument both of them rested on — "the pane exists to show something, so put something in it". Guessing is a real action taken on the user's behalf: it highlights a row nobody chose, mounts a `/render` iframe (and a template's Python) for a file they may never look at, and aims the keyboard and every row-scoped action — delete, rename, the pane's expand button — at whatever the active sort happened to put first. An empty pane costs one click; a wrong selection has to be noticed first and then undone.* **Two seedings are NOT auto-selection and are untouched:** a `?sel=` on the URL is seeded into the selection at mount (`pathFromSelParam` in `useListingSelection`), so a reload and a shared deep link come back to their row; and a click made in the pre-stat provisional listing carries across the scaffold→resolved swap (`recallSelection`). Both are the user's own claim rather than the app's guess. **SEARCH still lands on its top hit** (SR-12) and is the only auto-selection left in the listing — typing a query is itself a request to look at something, which is exactly what opening a folder is not. **A directory is previewed like any other row** (D240's surviving half, overturning the original skip-directories rule): SELECTING one shows it in the pane — its entry PAGE when it is an app, else an embedded listing (FS-11, D269) — never a navigation, so landing on it is as harmless as landing on a file. *Deleted with the rule: `autoSelectPath` and its `isPageRow` page test — the one place `.htm` counted as a page where `lib/app-entry.ts` (mirroring `app_listing.app_entry` and `templates/shared/app_entry.py`) accepts `.html` only — and `selectionClaimed`, the "has something already claimed the selection?" guard that existed only to hold that one shot back.*
 
-  **It is ONE SHOT PER FOLDER NAVIGATION** (the listing component remounts per path), and **it fills an EMPTY selection — it never replaces one.** If something already holds the selection when the shot's conditions are first met, the shot is spent silently and that selection stands: in practice this is a row the user clicked in the **provisional scaffold** during a slow mount, carried across the swap by the recall store (or the reconcile having clamped onto a surviving row). Overwriting it with row one would undo a click the user had already made and seen. The **decision** half (`autoSelectPath`) still takes no reading of the selection — that split is deliberate: the answer to "which row" is the rendered rows and nothing else, while "may I ask at all" is the effect's business, alongside its other timing conditions. The **`?sel` URL param** — the lead row mirrored into the address bar and seeded back on load — is what the *decision* used to defer to, and the split above is what changed rather than the param: `autoSelectPath` reads neither the selection nor the URL, and the URL reaches the shot only the way any other claim does — `?sel` **seeds the selection at mount**, and the effect's one reading is `selectionClaimed(sel)` over that selection, so a link naming a row spends the shot silently instead of being overwritten by row one. **The write is DEBOUNCED** (`SEL_URL_DELAY_MS` = 300 ms, `listing/useListingSelection.ts`): it used to fire on every arrow-key press, and arrow-keying down a long folder is a burst of selection changes with no reason to record any but the last — thirty `replaceState` calls against the ~100-writes/30 s cap the listing's own `types.ts` documents. Trailing the movement spends about one write a second and still has the URL current before a user could copy it. It is **not carried between folders** (a row name from the folder you left names nothing in the folder you arrive in), though a caller may SET one for its destination — how an upward hop lands with the folder you came from selected — and an **embedded** listing (the pane's `_listing` mode) neither reads nor writes it, since the URL belongs to the host view. The selection otherwise lives in component state plus the cross-remount recall store, which carries a click across the provisional→resolved swap. Every other explorer param is untouched (`sort`/`order`, `q`, `_side`, `_mode`). *`preview` and `_panelMode` appeared in that list until they stopped existing — the pane's on/off (FS-13) and its per-row switcher (FS-11).*
-
-  Three conditions **hold** the shot rather than spending it, because each can still turn into a folder the user is looking at: the width gate saying **no pane** (`pane.on` — a window later widened past the threshold still lands on the first entry; note this is the gate and **not** a pane the user has shut, since `_side=off` leaves the selection to show when the pane comes back and so spends the shot normally), **search** mode (the rendered rows are a query's answer, not the folder's, so clearing the query still lands), and a listing that is not **OK** — not merely "not still loading": a failed first fetch settles with zero rows and the dir-watch refetch that succeeds afterwards does not pass back through the loading state, so spending the shot on an error meant a folder whose first request blipped never auto-selected for the whole mount. Two listings never fire at all: an **embedded** one (the pane's own `_listing` mode — no pane to fill), and the **provisional** pre-stat scaffold, whose auto-selection would mount a preview iframe that the swap to the resolved listing tears down and re-issues a beat later. The scaffold holds the layout's shape, not its work; a click the user makes there still previews, still carries across the swap, and — per the yield above — is what the resolved listing's shot then stands down for. Because it is one shot, a dir-watch refresh never re-fires it and a deliberately cleared selection stays cleared — the auto-selection is an opening move, not a rule that the selection must be non-empty.
+  **The `?sel` URL param** — the lead row mirrored into the address bar and seeded back on load — is the whole of how a row can be selected without the user clicking it in THIS visit, and it survived the removal above precisely because it is not a guess: something named that row. It **seeds the selection at mount** (`pathFromSelParam`), so a reload or a shared link comes back with the row highlighted and previewed. **A `?sel=` that MISSES selects NOTHING** (D279): a bookmark, a recents entry or an upward hop naming a file since deleted or renamed seeds a lead the folder has no row for, and the reconcile resolves it to the empty selection. *It used to clamp to row one — the vanished-row re-anchor reading the "never seen in these rows" marker (`-1`) as row zero — which selected a file nobody named and mounted a preview iframe nobody asked for, the same guess this rule removed from the folder open, arriving by another door. The re-anchor itself is untouched where it belongs: a row that vanishes WHILE the folder is open (an external delete, a rename the user made) still lands the selection on whatever took its slot, because there the user was demonstrably on that row.* **The write is DEBOUNCED** (`SEL_URL_DELAY_MS` = 300 ms, `listing/useListingSelection.ts`): it used to fire on every arrow-key press, and arrow-keying down a long folder is a burst of selection changes with no reason to record any but the last — thirty `replaceState` calls against the ~100-writes/30 s cap the listing's own `types.ts` documents. Trailing the movement spends about one write a second and still has the URL current before a user could copy it. It is **not carried between folders** (a row name from the folder you left names nothing in the folder you arrive in), though a caller may SET one for its destination — how an upward hop lands with the folder you came from selected — and an **embedded** listing (the pane's `_listing` mode) neither reads nor writes it, since the URL belongs to the host view. The selection otherwise lives in component state plus the cross-remount recall store, which carries a click across the provisional→resolved swap. Every other explorer param is untouched (`sort`/`order`, `q`, `_side`, `_mode`). *`preview` and `_panelMode` appeared in that list until they stopped existing — the pane's on/off (FS-13) and its per-row switcher (FS-11).*
 
 ### Sidebar & Bookmarks (M2)
 
@@ -366,7 +364,7 @@ Deferred to later milestones (needed for data templates):
 - **PY-14** Both engines return **one wire shape** — `{ok, result, error: {type, message, traceback}, stdout}` (the fused engine adds `stderr`/`duration_ms`) — so `runtime.js` and templates never see which ran. Tracebacks under the fused engine point at the user's real file (the source is compiled as its own unit under its own filename); backend/wrapper plumbing frames are stripped.
 - **PY-16** A `.py`'s environment is decided by the **folder** it belongs to, never by anything written in the file. The project root is resolved first — the app folder (`<fused_dir()>/<tag>/<name>`), an immediate child of a template root, else the **topmost** ancestor holding a `pyproject.toml` — and that root's `pyproject.toml` `[project].dependencies` is the whole declaration. A manifest that declares **no** dependencies that apply on this platform is not an environment at all and falls through to PY-17 — a bare `uv init` scaffold must not put a script into an empty venv without the bundled stack. Every `.py` under the root shares one venv, however deep it sits; a `pyproject.toml` in a subfolder is **inert** and is surfaced as such (an inert file that looks correct is the failure this rule exists to prevent), and a `# /// script` header is **not read at all** — a leftover block is an ordinary comment, neither honored, merged, nor reported, and a file carrying one runs exactly as it would without it. There is deliberately **no migration tooling and no detection**: this is a clean break in a pre-release product (D233). The venv contains **exactly** what the manifest declares and nothing else — no baseline is unioned in, so it does not contain the rest of the `[bundled]` extra (DM-2), which only the app's own interpreter ships (PY-17). It is built by `uv sync` and stored **centrally** at `<home_dir()>/venvs/<sha256 of the root's absolute path>[:16]`, never inside the user's folder: the folder gains only `pyproject.toml` and `uv.lock`, both source, both git-tracked (MD-7). The path is hashed **as given**, not canonicalised, so moving or renaming a folder yields a fresh environment by design and the orphan is reclaimed by garbage collection at server startup. Staleness is a **digest of `pyproject.toml`** recorded in a `.fused-source.json` sidecar inside the venv — the manifest only, since `uv.lock` is an output of `uv sync` and not an input to it — never an mtime chain — core templates are re-staged with `copy2` on every release, which would make an mtime rule resync byte-identical dependencies at every upgrade. A template that manages its own venv for a daemon declares its dependencies there, not in the folder manifest — that is the only form the built-in engine can honor too (D174). A core template may declare an environment **only if** it is **necessary** (it names something the platform's app interpreter genuinely lacks — judged against the macOS bundle's real contents, not `[bundled]`'s promises, D176), it is **complete** (it covers every such distribution imported by any `.py` under the folder), it has something a `runPython` call site can actually reach, and it ships a committed `uv.lock` so a released build never resolves against PyPI on first render. All of these are enforced by `tests/test_engine_requirements.py`, `tests/test_bundle_contents.py` and `tests/test_template_locks.py`, which derive entry points from the source (`_runpython_targets`/`_module_refs`) rather than from a maintained list (D172, D177; supersedes the per-file header rule).
 - **PY-17** A script whose project root declares **no** `pyproject.toml` (or one with no `[project]` table) runs on **the app's own interpreter** and gets no venv at all: the app ships `[bundled]` + its core `dependencies`, so numpy/pandas/pyarrow/duckdb/pillow/… are available with no download and no first-run wait — a deliberately small set since D276, which moved polars, matplotlib, scipy, the PDF stack and the geo stack out of `[bundled]` and into the manifests of the templates that use them. The interpreter is **verified, not assumed** — it is run once per server process and must report this app's own `sys.prefix`, probed under the child's stripped environment (the backend removes PYTHONHOME/PYTHONPATH, which a packaged interpreter may need to locate its stdlib). An autodetected candidate whose basename is not python-shaped is rejected without being spawned. If the direct candidate fails, the app generates a **wrapper script** that restores the `PYTHONHOME` this process depends on and `exec`s the real interpreter, then verifies THAT the same way. This is the packaged-macOS path, not an edge case: measured on a real DMG, the bundled interpreter stripped of `PYTHONHOME` reports the *build machine's* Homebrew framework as its prefix, and the bundle ships no `venv` module, so a venv-based rescue is impossible there. The wrapper sets the child's `sys.executable` to itself (`exec -a`), so a daemon re-spawned as `[sys.executable, …]` — geotiff, zarr_aoi, usd — keeps working even though those templates scrub `PYTHONHOME` from the environments they spawn into. Wrappers are POSIX-only and generated **only** when this process actually needs `PYTHONHOME`; Windows and the Linux AppImage self-locate and stay on the direct candidate. If no interpreter can be verified, such a script **fails with a configuration error** naming `FUSED_RENDER_APP_PYTHON` — it is never silently degraded to a venv, because with no baseline requirements that venv has no data stack and would fail on the first import, and because a core template that declares nothing must never reach the network. Nothing in this resolution installs anything. `FUSED_RENDER_APP_PYTHON` overrides the candidate (still probed) (D172, D175). **Both probes spawn with `close_fds=False`, and a probe that reached no verdict is not cached** (D277). They run in the server process, where PROJ is resident, so the default `close_fds=True` takes the `fork()` path and the child dies in PROJ's atfork handler at ~1ms — the crash GT-3 documents, one layer up. The probe is therefore **three-valued**, like the sibling-venv probe D212 already made three-valued and which names this one as its model: a candidate that RAN and answered (a foreign `sys.prefix`, a non-zero exit, unparseable output) is a definite rejection and is remembered, while a spawn that never got a verdict — killed by a **signal**, timed out, or failing with a transient `OSError` — leaves the resolution **unresolved and retryable**, at the cost of one subprocess on the next request. The split is by exception **type**, not by errno: a missing, unreadable or not-a-directory path is a fact about the candidate and stays definite. Rung 2 cannot launder rung 1 — the wrapper is built FROM the candidate, so an inconclusive direct probe makes the whole answer provisional even when the wrapper reached a real verdict. For the same reason `app_packages()` no longer caches its `None` when there is no interpreter: it used to, justified by the interpreter's answer being terminal, which this rule voids. Getting this wrong is not a slow path but a dead one — the resolution is per process and no HTTP route resets it, so a single unlucky spawn disabled **every** header-less script until the server restarted.
-- **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. Progress is deliberately coarse (`uv sync` captures its output, so per-package progress is unavailable) and reports only stages it can observe. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so the environment can live under the app's home dir rather than in the backend's store.
+- **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. **That spawn takes the `posix_spawn` path and the worker detaches ITSELF** (D292): it runs from the server process, where PROJ is resident, so `start_new_session=True` — which forces `fork()+exec` — killed the worker in PROJ's atfork handler before it could write anything, leaving an empty `worker.log`, a record stuck at `spawn`, and an install that failed identically on every retry for the life of the process. `close_fds=False` selects `posix_spawn`; `os.setsid()` as the worker's first statement restores the session `killpg` needs. **The venv readiness probe (D212) obeys the same rule and treats a signal as no verdict at all**: forked, it died `-11`, which read as "this venv cannot run its own python" and unlinked a healthy venv's ready marker — charging the user a full re-download for a crash in the probe. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. Progress is deliberately coarse (`uv sync` captures its output, so per-package progress is unavailable) and reports only stages it can observe. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so the environment can live under the app's home dir rather than in the backend's store.
 
 ---
 
@@ -430,15 +428,15 @@ const page = await fused.runPython("./reader.py",
 | `.tif .tiff` | `geotiff` | GeoTIFF/COG via vendored geotiff (in-browser decode, no reader.py); full metadata + dump, photometric routing (RGB/palette/YCbCr), band select + RGB stretch + colormaps, histogram, hover. Small files full-fetched; >32 MiB range-request `fromUrl` |
 | `.nc .nc4 .cdf` | `netcdf` | NetCDF-3 via vendored netcdfjs (HDF5/NetCDF-4 → graceful card); leading-dim sliders, colormaps + stretch, histogram, hover |
 | `.zarr/` (directory) | `zarr_aoi`, `_listing` | Zarr v2/v3 store — a *directory*, bound by the trailing-`/` directory key (PT-13). `zarr_aoi` is the server-side AOI tile-streaming map viewer (opened via zarr-python, tiles streamed as PNG); it ships a `condition.py` store-detection gate (CT-12), so it is a conditional peer rather than the immediate default — the built-in `_listing` (PT-12) shows first and the map joins the switcher when the background gate confirms the store. `_listing` also stays reachable as the raw member listing, replacing the old "Browse contents" escape hatch (D81) |
-| `/` (any directory) | `_listing`, `claude`, `git`, `graph`, `zarr_aoi`, `model_card` | The **universal directory key** (CT-3) — the built-in default for *every* folder. `_listing` is a sentinel (PT-12), not a template folder: the shell's built-in directory listing (sortable columns, in-folder search, file ops, and the optional split preview pane — FS-1, FS-9..FS-15). Zero segments, so any dot-anchored directory key (`.zarr/`) beats it (D81). Every entry but `_listing` is a `condition.py`-gated peer (CT-12) — the AOI map here is the same viewer the `.zarr/` row describes, offered to *any* folder its store-detection gate confirms — so `_listing` stays the immediate default and each gated peer joins the switcher only where its background gate allows. **There is exactly one chat entry, and as of D237 it is `claude` for both kinds of target** (this key used to carry both `claude_split` and `claude`, the second of which is deleted). Its gate is the *weakest* on this row — any existing directory passes — but it is a real gate and not the "no gate at all" D235 specified: it refuses a **mount-backed** path, because an agent turned loose on an rclone/NFS mount walks and rewrites the tree through FUSE (PT-16, MD-11). The order is deliberate and reads left to right: the chat, which is where a folder's contents get built; then the folder-wide views, with **`history` LAST**. *It sat directly after the chat, ahead of `git`, because for an app folder the version timeline was the answer and the raw commit log one click further (#361); #434 moved it to the END of the row, where it is today.* `model_card` joined the row with §37 (D249) — another `condition.py`-gated peer, answering only for a Hugging Face cache folder or a model checkout, so an ordinary folder pays a verdict and nothing else. **This row used to open with `app`** — the folder rendered full-bleed as its own page, gated to a workspace app folder or a registered linked app, and pinned with `claude`/`history` into an `APP_MODES` allowlist by a route of its own. The route went with D262 and the template with D264: there is no app VIEW, and D269 brought none back — what it restored is the DESTINATION, an ordinary file view of the folder's entry page, which is where an app card lands and what the preview pane shows for an app folder (FS-11). A folder with no top-level page is a listing, and this key is unchanged either way: seven directory modes, no `app` row. `history` keeps its gate; on an **ordinary** folder it drops out and the chat stays, which is the D237 asymmetry stated plainly (and as of D239 that chat is **full width** on such a folder — it is the one target of this mode with no left pane, PT-16) — a folder's history answer is `git` (the repo-wide Source Control view, §33, directory-only as of D235/GT-2), and `history` is the single-file timeline. `graph` is MD-2's link graph. The `preview` folder-preview template that also sat here is **deleted** — its split pane is now `_listing`'s (D185) |
+| `/` (any directory) | `claude`, `_listing`, `git`, `graph`, `zarr_aoi`, `model_card` | The **universal directory key** (CT-3) — the built-in default for *every* folder. `_listing` is a sentinel (PT-12), not a template folder: the shell's built-in directory listing (sortable columns, in-folder search, file ops, and the optional split preview pane — FS-1, FS-9..FS-15). Zero segments, so any dot-anchored directory key (`.zarr/`) beats it (D81). Every entry but `_listing` is a `condition.py`-gated peer (CT-12) — the AOI map here is the same viewer the `.zarr/` row describes, offered to *any* folder its store-detection gate confirms — and each joins the switcher only where its background gate allows. **`claude` LEADS the row and `_listing` follows it (D280), and the two surfaces read that order differently — deliberately.** The full-screen folder view resolves the first entry *without* a gate (PT-8), so it lands on `_listing` from second place and opening a folder still shows its file table; the listing's preview pane takes the first offered mode *literally*, so a selected folder row lands on the chat. **Which is why `_listing` is DEMOTED here and never dropped:** as the row's one unconditional entry it is what keeps every folder browsable, and a key without it resolves five gated templates, sends the full-screen route to `visible[0]` — a chat — and leaves a folder with no listing and a one-entry mode menu that hides itself. **There is exactly one chat entry, and as of D237 it is `claude` for both kinds of target** (this key used to carry both `claude_split` and `claude`, the second of which is deleted). Its gate is the *weakest* on this row — any existing directory passes — but it is a real gate and not the "no gate at all" D235 specified: it refuses a **mount-backed** path, because an agent turned loose on an rclone/NFS mount walks and rewrites the tree through FUSE (PT-16, MD-11). The order is deliberate and reads left to right: **the chat** — where a folder's contents get built, and now the row's lead (D280) — then the built-in listing, then the folder-wide views. *The row used to close with `history`, the per-path timeline: directly after the chat at first, because for an app folder the version timeline was the answer and the raw commit log one click further (#361), then moved to the END by #434. The mode is deleted (PT-14) and the row no longer carries it.* `model_card` joined the row with §37 (D249) — another `condition.py`-gated peer, answering only for a Hugging Face cache folder or a model checkout, so an ordinary folder pays a verdict and nothing else. **This row used to open with `app`** — the folder rendered full-bleed as its own page, gated to a workspace app folder or a registered linked app, and pinned with `claude`/`history` into an `APP_MODES` allowlist by a route of its own. The route went with D262 and the template with D264: there is no app VIEW, and D269 brought none back — what it restored is the DESTINATION, an ordinary file view of the folder's entry page, which is where an app CARD lands. *D269 also gave that destination to the preview pane, which resolved a selected folder to its entry page and rendered it; **D280 deleted that half** — merely selecting a row ran the folder's app — so a folder previews as a folder here (FS-11) while the cards are untouched.* A folder with no top-level page is a listing, and this key is unchanged either way: **six** directory modes, no `app` row. A folder's history answer is `git` (the repo-wide Source Control view, §33, directory-only as of D235/GT-2); the single-file `history` timeline is deleted (PT-14). The chat is **full width** on a folder as of D239 — it is the one target of this mode with no left pane (PT-16). `graph` is MD-2's link graph. The `preview` folder-preview template that also sat here is **deleted** — its split pane is now `_listing`'s (D185) |
 | `.html .htm` | `_render`, `code`, `claude`, `reader` | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4). A page is authored, so it carries the authored-file pair (PT-14): the chat's left pane renders the page itself and the chat edits it. This is also the key where a `?_mode=claude` link written before D235 works again for free, because D237's rename put the chat back on the file keys (`examples_seed/tutorial/`) |
 | unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
 
 - **PT-14** **ONE chat template serves both kinds of target, and the companion that used to split by kind is GONE (D235, chat half overturned by D237; the timeline half removed with the `history` template).** *Original (D235) form: four companion modes split by target kind — a directory offered `claude` + `git`, a file offered `claude_split` + `history`, with two separate chat templates. **The two-chat premise is void, and so is the second companion.*** There is now a single chat template, **`claude`** (`claude_split` renamed after the plain full-width `claude` was deleted, D237), and it is bound to **both** the universal `/` directory key and all 47 authored-file keys — 48 keys in all. The other companion those keys used to carry, `history` (a per-path commit timeline that also materialised a commit as a browsable tree), **is deleted**: the `git` view answers the same question without a second surface, because its commit list is SCOPED to whatever target it was opened on and selecting a commit renders the open file as of it (§33, GT-17 — resolved on read through `/api/git/show`, with nothing written to disk). So the companion set is now the chat plus `git`, and **`git` (the Source Control view, §33, GT-2) is FOLDER-ONLY: the universal `/` directory key and no file extension at all.** Everything `git` offers — staging, discarding, stashing, committing, branches, push/pull — is a REPOSITORY-level act, and the working tree a file sits in is its FOLDER's working tree, not the file's: you do not stash a file, you stash a tree. A file therefore has no binding of its own for it; what a file's reader wants — "what happened to this file" — is served by the SAME view borrowed from the file's parent folder into the preview sidebar (`apps/explorer/lib/dir-mode.ts`), scoped to the open path. `git` did briefly ride along on all 48 keys, and the reason was a gap in a different surface rather than anything about the mode: the explorer gave a FOLDER no mode switcher of its own, the only mode surface a browsing user had was the preview pane's, and the pane acted on the SELECTED ROW, always a file — so a mode bound to `/` alone was unreachable without hand-writing `?_mode=git`. The pane selects and previews FOLDER rows now (the folder peek, FS-10/FS-11), so the folder has a mode surface and the workaround is retired. Two rules, not 47 table rows: the per-extension lists above simply say *which* extensions count as authored files. The **authored-file set** — source, config, prose, notebooks, record streams, tabular data, geo data and image assets, 47 keys — is deliberately withheld from spreadsheets, PDFs, media, archives, 3D and generated tool files: a chat is for bytes a human authors or analyses, and those lists are left alone rather than churned. The `/` key's gating asymmetry is the visible consequence of D237 (its third party, `app`, is gone entirely — D262 deleted the app-builder route and D264 the template): the chat's gate accepts **any** directory, while `git`'s takes any folder in a work tree and refuses a file outright (GT-3), which is the binding stated a second time — so a hand-written `?_mode=git` on a file is not offered a repository-level view of something that is not a repository. The chat's own contract (its gate, its left pane's three shapes, and the system prompt that must agree with the pane) is **PT-16**. **What the deleted timeline mode leaves behind, deliberately.** It materialised a commit by `git archive`-ing it into `~/.fused-render/app-versions/<key>/<sha>/` and framing that directory, and two mechanisms outlive it because trees an older version already extracted are still on disk and still immutable: (1) `server/mount.py::_is_under_snapshot_root` makes every `/api/fs` mutation handler refuse a path under that root with the existing `readonly` contract (403 + `{"error": "readonly"}`) and makes `_writable` report `false` there, so a framed editor draws read-only mode up front instead of only failing at Cmd+S; a **copy out** is still allowed — read-only, not sealed. (2) `?snapshot=1` on an embed URL (`router.ts` `IS_SNAPSHOT` → `body.snapshot`) still says FROZEN TREE, NOT A LIVE FOLDER: it opens no preview pane of its own and suppresses the breadcrumb and the corner chips, all of which would act on a frozen copy as though it were live. **Neither has a producer inside the app any more** — nothing writes `app-versions/` and no view frames a snapshot — and that is recorded here rather than left for a reader to rediscover from dead code. What is **still rejected**: (a) keeping `git` on file keys. The original argument was "two commit-log modes for one story", which stopped applying the moment `git` dropped its commit log (GT-2) — and on that basis the mode WAS bound to every file key for a while. The reason it is rejected again is not about duplication: a file key is the wrong place for a repository-level view. Staging, stashing and pushing are done to a tree, the tree in question is the folder's, and putting that behind a single file offers the user a control whose scope is not the thing they selected. What the file-key binding was really buying was REACHABILITY, back when a folder had no mode surface — and that is now bought properly, by the preview pane peeking folder rows and the file sidebar borrowing the parent's entry, rather than by binding the mode to the wrong target. (b) keeping `annotate` as a standalone mode — its tools live in the chat's pane, so the mode was deregistered from every core key rather than left as a second, staler way in (§17), and its comment handoff is now doubly unreachable (no binding, no receiver). What is **no longer** rejected, and is the reversal itself: D235 rejected "binding ONE chat template to both kinds" on the grounds that the split pane renders a target and an ordinary folder has no app entry to render, so one template would have to branch on kind and carry a dead pane for half its bindings. It does branch on kind, in two places — the pane and the prompt — and D239 has since conceded half of D235's premise while leaving its conclusion overturned: an ordinary folder really does have nothing to render, so it gets **no pane**, not a substitute for one (PT-16). What that does not follow is that the template must therefore fork. A no-pane target is a *layout* the one template resolves — the pane is removed and the conversation takes the width — and everything the two kinds actually SHARE is the part that costs something to duplicate: the transcript, the composer, the approval cards, the permission modes, the run/resume/stop machinery, the session sidecar and the transcript restore. D235's own evidence is the argument here: the second chat template WAS that fork, and it drifted into the feature-poor twin (8 mentions of the annotation machinery against 277) precisely because a fork's two halves are maintained by whoever happens to be editing one of them. So the branch is one predicate read in two places, and the cost of the case that has no pane is a flag and a removal — not a second copy of a chat.
-- **PT-15** **A template whose layout needs width is responsible for collapsing itself; the shell offers modes by *binding and gate* only — never by how much room a host happens to have (D236).** The set of modes a target gets is decided by the registry (PT-7/CT-3) and, for a gated folder, by its `condition.py` verdict (CT-12): those two inputs and nothing else. A **split-layout** template — two panes and a divider, like `claude` (the chat, PT-16) or `history` — therefore has to survive every host the shell renders it in, and three of them are narrow by design: the listing's **preview pane** (floor 220 px, default width *half* its split container — FS-12), a **Panel pane** dragged freely (§14), and **`/embed`** in a small window. The rule: the template ships a **media query** at the width its own layout stops being **useful** — the sum of its panes' minimum *useful* widths, rounded up, which is **not** the width at which they merely stop overflowing — and below it shows **one view at a time with a toggle**, the idiom `log_studio` (780 px), `map` (650), `duckdb`/`sqlite` (560) and `bundle` (640) already use. `claude` collapses at **800 px** (its useful floor: `#left` 420 + divider 4 + `#chat` 440 = 864; the breakpoint sits a deliberate notch below it, trading a slightly-squeezed band for keeping the split alive on more hosts) and `history` at **640 px** (`#side` 200 + divider 4 + a 420 px preview frame that is still a page = 624, rounded up) — the two deliberately do NOT share a figure, because `history`'s non-preview column is a 200 px commit spine where `claude`'s is a 440 px chat. The arithmetic **scopes to the targets that have two panes**, which since D239 is `claude`'s file and app-folder shapes only: an ordinary folder has no `#left`, so there is no sum to satisfy, no collapse to perform and no toggle to offer — a single-column layout is already the thing the breakpoint exists to produce, at every width. This is not an exemption from the rule; it is the rule having nothing to do, and it is why the collapse logic is short-circuited outright for that target rather than left to run against a column that is not in the document. The figures sit **at the useful floors and not the ~560 the overflow floors give** because the listing preview pane defaults to *half* its split container — ~700 px on a 1700 px window — so a breakpoint set at the overflow floor engaged the split in every host that could hold it without breaking and none that could hold it usefully; the arithmetic is written down beside the query, so the figure is checkable rather than a taste call. Three sub-rules the two built-ins establish, because getting them wrong is silent: **(a) park the hidden half, do not `display: none` it** — an iframe with no layout box gives its document a 0×0 viewport, so a screenshot of it rasterises 1×1 and every element rect an annotation pin is anchored to collapses (§17); out of flow + `visibility: hidden` + `pointer-events: none` keeps a real viewport and shows nothing. **(b) An inline width written by the divider's own JS outranks the media query**, so the collapse must neutralise it — either from CSS (`!important`) or by having the apply function skip the inline write while narrow; the split *ratio* param is never touched either way, so crossing back restores the user's width with no reload. **(c) A control that acts on the hidden half is absent, not disabled**, and any **armed** state it owns is reset on the flip — a disabled control still asserts the feature exists, and an armed control over an invisible document swallows input or attaches something the user cannot see. Only the view toggle itself (navigation, not a feature) and content the user has already authored stay reachable from both views. The toggle **names what its destination is FOR**, not merely where it goes: `claude`'s reads **"Annotate preview"** outbound and **"Back to chat"** on the return (D239), because the preview column is where the annotation tools live and that is the only reason a person leaves the conversation for it — "Preview"/"Chat" named the two halves and said nothing about why one would move. It stays navigation and is **not merged** with the annotate switch (§17), which arms the mode once you are there: one control moves the view, the other changes what a click in the frame does, and one button doing both would arm a mode in the same gesture that reveals the surface. The label and the `aria-label` are **one string**, since a second wording is a second thing to keep in step; the longer labels are what `#viewbtn`'s `flex-shrink: 0` and the annotate switch's own ellipsis exist for, so a 220px host truncates the mode name rather than overflowing the row or half-hiding the only way back. Which view **leads** is the mode's subject, not the wider pane: the chat opens on the chat, `history` on the commit list (a snapshot must be picked before there is a preview). **Pane-local params** are the persistence channel and stay pane-local under D72's boundary: `claude` carries `split` (the ratio), `annotations` + `annmode` (§17's notes and armed mode — and **`annmode` is written only when the URL does not already MEAN the new state**: it is effectively-on, so absent and `1` are the same answer, and the boot default normalising an absent param to `1` was a semantic no-op that still cost a history entry under the runtime's first-change-push rule (PR-3), which is why expanding the preview pane to full screen took TWO presses of Back to undo. Writing `0` over an absent param is a real disarm — a narrow pane boots that way — and still pushes; the single-writer funnel is unchanged, it just has a no-op guard), **`leftmode`** (which of the offerable stat entries the left pane frames, PT-16 — a listbox picker at the RIGHT-HAND end of the pane's own bar, showing each template's `icon.svg` beside its name, hidden below two choices, an unknown value falling back to the default silently as in PT-9) and **`paneview`** (`chat`|`preview`, which of the two the narrow layout shows, chat by default) — all four of which an ordinary folder's chat **ignores silently** rather than strips (PT-16), since they describe a layout that target does not have; `history` keeps its narrow view in a **body class only**, deliberately not a param, since which half a temporarily-narrow host shows is not state a bookmark should reproduce. What was **rejected**: having the **shell filter split-layout modes out of narrow hosts**. A pane's width is *dynamic* — the listing pane defaults to half its container, so on a wide window the split fits and the mode should be offered — which makes a host-based ban wrong in the one place it was aimed at; a width-based filter makes modes appear and disappear from the switcher (PT-10) mid-divider-drag and can yank the **active** mode out from under the user; it needs per-template width knowledge in the shell, i.e. a new `registry.json` field plus a new field on stat's template entries (which carry only `mode`/`path`/`icon`/`conditional`, PT-8), applied separately in three hosts (`ListingPreviewPane.tsx`, `PaneModeMenu.tsx`, `/embed`); and **user templates (§16) would never inherit it**, whereas a media query in the template is something a user template gets for free. **The `annmode` clause above has since GENERALISED past boot and SPLIT along D271's policy.** Generalised: every always-live control asks the same question and gets it wrong the same way — see **PT-17**, which is the rule `annmode` was the first instance of. Split: "do not write it" was the right answer for `annmode` because effectively-on is what an absent param already MEANS, but a param whose default the reader could have CHOSEN is stamped into the URL instead, with `{history: "replace"}` so the stamp costs no entry (PR-3), while a value the view DERIVES from something the URL does not record is not written at all and its MODE is the bookmark.
+- **PT-15** **A template whose layout needs width is responsible for collapsing itself; the shell offers modes by *binding and gate* only — never by how much room a host happens to have (D236).** The set of modes a target gets is decided by the registry (PT-7/CT-3) and, for a gated folder, by its `condition.py` verdict (CT-12): those two inputs and nothing else. A **split-layout** template — two panes and a divider, like `claude` (the chat, PT-16) or `history` — therefore has to survive every host the shell renders it in, and three of them are narrow by design: the listing's **preview pane** (floor 220 px, default width *half* its split container — FS-12), a **Panel pane** dragged freely (§14), and **`/embed`** in a small window. The rule: the template ships a **media query** at the width its own layout stops being **useful** — the sum of its panes' minimum *useful* widths, rounded up, which is **not** the width at which they merely stop overflowing — and below it shows **one view at a time with a toggle**, the idiom `log_studio` (780 px), `map` (650), `duckdb`/`sqlite` (560) and `bundle` (640) already use. `claude` collapses at **800 px** (its useful floor: `#left` 420 + divider 4 + `#chat` 440 = 864; the breakpoint sits a deliberate notch below it, trading a slightly-squeezed band for keeping the split alive on more hosts) and `history` at **640 px** (`#side` 200 + divider 4 + a 420 px preview frame that is still a page = 624, rounded up) — the two deliberately do NOT share a figure, because `history`'s non-preview column is a 200 px commit spine where `claude`'s is a 440 px chat. The arithmetic **scopes to the targets that have two panes**, which since D239 is `claude`'s file and app-folder shapes only: an ordinary folder has no `#left`, so there is no sum to satisfy, no collapse to perform and no toggle to offer — a single-column layout is already the thing the breakpoint exists to produce, at every width. This is not an exemption from the rule; it is the rule having nothing to do, and it is why the collapse logic is short-circuited outright for that target rather than left to run against a column that is not in the document. The figures sit **at the useful floors and not the ~560 the overflow floors give** because the listing preview pane defaults to *half* its split container — ~700 px on a 1700 px window — so a breakpoint set at the overflow floor engaged the split in every host that could hold it without breaking and none that could hold it usefully; the arithmetic is written down beside the query, so the figure is checkable rather than a taste call. Three sub-rules the two built-ins establish, because getting them wrong is silent: **(a) park the hidden half, do not `display: none` it** — an iframe with no layout box gives its document a 0×0 viewport, so a screenshot of it rasterises 1×1 and every element rect an annotation pin is anchored to collapses (§17); out of flow + `visibility: hidden` + `pointer-events: none` keeps a real viewport and shows nothing. **(b) An inline width written by the divider's own JS outranks the media query**, so the collapse must neutralise it — either from CSS (`!important`) or by having the apply function skip the inline write while narrow; the split *ratio* param is never touched either way, so crossing back restores the user's width with no reload. **(c) A control that acts on the hidden half is absent, not disabled**, and any **armed** state it owns is reset on the flip — a disabled control still asserts the feature exists, and an armed control over an invisible document swallows input or attaches something the user cannot see. Only the view toggle itself (navigation, not a feature) and content the user has already authored stay reachable from both views. The toggle **names what its destination is FOR**, not merely where it goes: `claude`'s reads **"Comment on preview"** outbound and **"Back to chat"** on the return (D239; the verb was "Annotate" until D298 relabelled the whole feature "Comment" in the UI, ids and params unchanged), because the preview column is where the annotation tools live and that is the only reason a person leaves the conversation for it — "Preview"/"Chat" named the two halves and said nothing about why one would move. It stays navigation and is **not merged** with the annotate switch (§17), which arms the mode once you are there: one control moves the view, the other changes what a click in the frame does, and one button doing both would arm a mode in the same gesture that reveals the surface. The label and the `aria-label` are **one string**, since a second wording is a second thing to keep in step; the longer labels are what `#viewbtn`'s `flex-shrink: 0` and the annotate switch's own ellipsis exist for, so a 220px host truncates the mode name rather than overflowing the row or half-hiding the only way back. Which view **leads** is the mode's subject, not the wider pane: the chat opens on the chat, `history` on the commit list (a snapshot must be picked before there is a preview). **Pane-local params** are the persistence channel and stay pane-local under D72's boundary: `claude` carries `split` (the ratio), `annotations` + `annmode` (§17's notes and armed mode — and **`annmode` is written only when the URL does not already MEAN the new state**: it is effectively-on, so absent and `1` are the same answer, and the boot default normalising an absent param to `1` was a semantic no-op that still cost a history entry under the runtime's first-change-push rule (PR-3), which is why expanding the preview pane to full screen took TWO presses of Back to undo. Writing `0` over an absent param is a real disarm — a narrow pane boots that way — and still pushes; the single-writer funnel is unchanged, it just has a no-op guard), **`leftmode`** (which of the offerable stat entries the left pane frames, PT-16 — a listbox picker at the RIGHT-HAND end of the pane's own bar, showing each template's `icon.svg` beside its name, hidden below two choices, an unknown value falling back to the default silently as in PT-9) and **`paneview`** (`chat`|`preview`, which of the two the narrow layout shows, chat by default) — all four of which an ordinary folder's chat **ignores silently** rather than strips (PT-16), since they describe a layout that target does not have; `history` keeps its narrow view in a **body class only**, deliberately not a param, since which half a temporarily-narrow host shows is not state a bookmark should reproduce. What was **rejected**: having the **shell filter split-layout modes out of narrow hosts**. A pane's width is *dynamic* — the listing pane defaults to half its container, so on a wide window the split fits and the mode should be offered — which makes a host-based ban wrong in the one place it was aimed at; a width-based filter makes modes appear and disappear from the switcher (PT-10) mid-divider-drag and can yank the **active** mode out from under the user; it needs per-template width knowledge in the shell, i.e. a new `registry.json` field plus a new field on stat's template entries (which carry only `mode`/`path`/`icon`/`conditional`, PT-8), applied separately in three hosts (`ListingPreviewPane.tsx`, `PaneModeMenu.tsx`, `/embed`); and **user templates (§16) would never inherit it**, whereas a media query in the template is something a user template gets for free. **The `annmode` clause above has since GENERALISED past boot and SPLIT along D271's policy.** Generalised: every always-live control asks the same question and gets it wrong the same way — see **PT-17**, which is the rule `annmode` was the first instance of. Split: "do not write it" was the right answer for `annmode` because effectively-on is what an absent param already MEANS, but a param whose default the reader could have CHOSEN is stamped into the URL instead, with `{history: "replace"}` so the stamp costs no entry (PR-3), while a value the view DERIVES from something the URL does not record is not written at all and its MODE is the bookmark.
 - **PT-16** **The chat template's contract: one gate, TWO pane shapes plus a no-pane case, and a system prompt that cannot disagree with the pane (D237, revised by D239).** `templates/claude/` is the single chat mode (PT-14). Because it is bound to two kinds of target it branches on kind in exactly two places — the left pane and the prompt — and both read the **same** predicate, `shared/app_entry.entry_html`, so what the prompt claims is beside the chat is what is beside the chat. *This clause said "three pane shapes" until D239: the third shape — fused-render's own file browser framed for a folder with no app entry — is **removed**, and an ordinary folder now gets a full-width chat with no pane at all. The predicate and the two-places rule are unchanged; what changed is that one of the two answers is "there is nothing beside the chat", and the prompt says nothing about a pane there because there is none.*
   - **The gate** (`claude/condition.py`, CT-12) accepts **any existing regular file and any existing directory**, and nothing else: `os.path.isfile` / `os.path.isdir`, never `not isdir` (the loose form also swallows every path that does not exist, and "cannot tell" must read as "refuse"), and it never lists, walks, globs or resolves symlinks, because it runs for every path the explorer stats. That reduces to "the path exists", which the shell already knows — so the gate exists for **one** refusal: a **mount-backed** path (`shared/appenv.is_mount_backed`). The bytes under the mounts dir arrive over FUSE and an agent turned loose there rewrites the remote tree, the same reason every peer gate refuses those paths (MD-11). This is a **capability deliberately removed** relative to the deleted plain chat template, which shipped no `condition.py` at all and therefore did offer a chat over an rclone/NFS mount. **Rejected:** deleting the gate outright now that everything else about it is always-true — an always-true gate would be worth removing, a gate that still says no to remote mounts is not.
-  - **The left pane, TWO shapes and a no-pane case (D239).** A **file** → the file in its OWN default template: `GET /api/fs/stat` for the target, drop `conditional` entries (their verdict lives behind `/api/fs/conditions` and is deliberately not fetched — an unresolved gate reads as "not offered") and drop the chat mode itself (a pane framing the chat again is a mirror, not a preview), then frame `/render?path=<that template>&_file=<file>` — or the file itself when the entry is the `_render` sentinel. That is the shell's own `defaultTemplate` rule (PT-8) reused rather than a per-extension table inside the chat, which would drift from the registry on the next rebinding and ignore a user override (§16); and it is a **default, not a lock** — the pane-local `leftmode` param (PT-15) selects any other offerable entry from that same stat payload, unknown values falling back silently as in PT-9. **The picker sits on the pane it controls, at the RIGHT-HAND end of it:** in the split layout it is a row across the top of the LEFT column, not a control in the chat pane's strip across the divider — and it is pushed to that row's far end (`margin-left: auto`, scoped to `#leftbar`), because the bar exists to carry this one control and a lone control hard against the left edge reads as a LABEL for the pane rather than as a switch on it. It is a **listbox, not a `<select>`**, and the reason is the ICON: its rows show each template's own `icon.svg` beside the mode name, exactly as the shell's mode menu does (`templateModeIcon`), and an `<option>` renders text in every engine. The icon needs no new server plumbing — stat's `templates` entries already carry the icon's absolute path (PT-11), `/api/fs/raw` serves it, and it is drawn as a mask filled with `currentColor` so one flat glyph follows the row's ink in both themes; a template with no `icon.svg` (and the `_render` sentinel) falls back to the shell's own lettered box. The rows are real `<button>`s inside a `role="listbox"` popup under an `aria-haspopup` trigger — the idiom the `reader` template's voice menu already uses here — so focus, Enter and Space stay the platform's job and only the arrows and Escape are the template's — the same grammar the explorer's own preview pane follows (FS-10). Below the 800px breakpoint there is no persistent left column to hang a bar on, so the *same* element moves back into the shared `#anntools` strip, the one row both narrow views keep; crossing the breakpoint relocates it live, with no reload and no effect on `leftmode` itself. It is hidden entirely when the target offers fewer than two views. An **app folder** (an entry page resolves) → that entry page, via `/render`. **The entry rule is `index.html`, else the FIRST top-level `.html` in name order** (`shared/app_entry.entry_html`, `sorted` so two consumers cannot land on different pages). It used to call several pages without an `index.html` *ambiguous* and resolve to None, which meant every consumer dead-ended on such a folder — this pane drew nothing, the `app` mode drew "no entry page", and a materialised snapshot of one showed that notice instead of the app at that commit. Owner call on the user's own wording ("for multiple html files, just pick the first one"): a deterministic first page is one click from any of the others once the folder is open, and None was one click from nowhere. The consequence here is that a folder with several pages and no index now HAS a pane (and the `app_state` tool with it) where it previously had none. Everything the pane implies rides on those two and nothing else: the annotation layer (§17), the 800px collapse (PT-15) and the `app_state` tool (below). A folder with **no** app entry → **no pane at all**: no `#leftframe`, no `#divider`, no view toggle, no annotate affordance, and the conversation owns the full width. *What this overturns.* D237 framed **`/explorer/embed/<dir>?preview=false&modechip=false`** there — the chrome-free navigable shell (LM-4/D39), a real file browser beside the chat — and it was chosen as the fix for code that used to `throw` (`no app entry…`, a permanent error panel beside a working chat). It fixed the throw and left the real problem untouched: **nothing flowed back from that pane.** The template has no `postMessage` and no message listener, so selecting a file in the browser attached nothing, fed nothing to the composer and changed no agent context; annotate was hard-disabled over it by construction (no element of a file listing is a thing a pin could mean anything about); and the `leftmode` picker was inert for it, since neither directory branch populates `paneEntries`. So it was half the width of a folder chat spent on a view that reported to nobody, for a question the agent's ordinary file tools already answer. **Deliberately given up:** the `state.url` backchannel — embed navigation rewrote the iframe's path, so `app_state` could tell the agent which folder or file the user had walked into. It was the one signal that did flow back, and it goes with the pane. **Both embed params go too, and they go differently:** `modechip=false` loses its only producer in the codebase, so its plumbing is **removed from its consumer** as well (`Preview.tsx` no longer reads it and the corner chip has no opt-out) — a URL param no caller can produce is a branch nothing can test, and if another template ever frames an embed of its own counterpart's target the opt-out returns with that caller; `preview=false` was kept at the time, because the listing wrote it for itself when the user closed the pane (`listing/pane.ts`), and it has since gone the same way — the pane lost its toggle (it appears from the split container's measured width, `listing/pane-math.shouldShowPane`), and with the toggle went the only writer of that param. What the param MEANT survives it: a framed listing still may not open a pane of its own, and that rule now rides on `snapshot=1` (PT-14 above), the flag the one remaining framer already writes. With the folder embed gone, `/embed` is **no longer used as a pane by any template**, so D235's rejection of it for a FILE target stands unqualified. *The no-pane case is a designed ABSENCE, not a missing element, and the difference is load-bearing.* Shipping the markup without `#leftframe` cannot work: the frame's `load` hook is wired at top level, so with no element to wire that statement throws a `TypeError` and aborts **every declaration after it** — the agent poll loop, the annotate switch, the composer wiring — and the boot `catch` cannot report it either, because its own first statement removes that same missing element, so the throw lands inside the catch and neither the error panel nor `pushAppLog` runs. A blank page with a working-looking composer. So the markup ships the column exactly as it does for a file, every declaration initialises against it, and `enterNoPane()` takes it away **afterwards** — ordering that is guaranteed rather than hoped for, since the template is one `<script>` and the loader reaches that branch only after `await`ing a fetch. Three subtrees are removed (`#left`, `#divider`, and `#anntools` — which is a child of `#chat`, so it survives removing the column and would otherwise sit there as an empty bordered row of controls for a pane that is not there). One `noPane` flag then short-circuits `applySplit`, `applyNarrowView`, `renderAnn` and `annSetMode`, so nothing writes to a detached node or to a param describing a layout this target does not have. **Stale params are ignored SILENTLY and never stripped:** `split`, `paneview`, `leftmode`, `annmode` and `annotations` left on a folder URL by an old bookmark open a full-screen chat with no error — the same forgiving posture PT-9 takes for an unknown `_mode` — and rewriting them would break that bookmark's round trip for the day the folder grows an `index.html` and gets its pane back. **Also enforced, not documented:** `appEntry` (the only field in the app-state payload that distinguishes the user's real app from our own UI) is never set on this path, and the "pane unreadable" sentence no longer names "no app entry" among its causes, because that condition now produces no pane and therefore no tool to ask. **REMOVED (owner call): the composer's whole-pane screenshot pill.** Both composers carried a per-message toggle (`#viewshot`, `#hviewshot`) that attached one picture of the entire visible pane to the next send, as its own `<pane-shot>` wire block with its own caps and its own receipt row. It is gone — "it doesn't make sense": the question it answered ("the whole layout is wrong") is one the agent can ask about by reading the page, and the cost was a per-send rasterise, encode and uploaded file behind a toggle a user had to notice, arm and re-arm. **What stays, and why the difference matters:** the capture machinery itself (`shotPane`, `shotEncode`, the shots directory) is SHARED with the annotation crops (§17), which are the user's own act of pointing at something, so none of it moves; and `stripPaneBlock` / `MARKER_VIEW` / `PANE_SHOT_TAG` stay although nothing writes one any more, because sessions already on disk carry those blocks and a restored transcript must still show what the user typed rather than a screenful of JSON. Reading an old wire format is a permanent obligation; being able to write it is not. **Rejected:** the `throw` (an error panel for the ordinary case of a folder that is not an app); keeping the embed as a read-only browser (it is the reporting-to-nobody problem, restated as a feature); and hiding the column with CSS while leaving it in the document (the elements would stay live, `shotPane` would still rasterise them and the removed controls would still be focusable — a hidden pane is a pane).
+  - **The left pane, TWO shapes and a no-pane case (D239).** A **file** → the file in its OWN default template: `GET /api/fs/stat` for the target, drop `conditional` entries (their verdict lives behind `/api/fs/conditions` and is deliberately not fetched — an unresolved gate reads as "not offered") and drop the chat mode itself (a pane framing the chat again is a mirror, not a preview), then frame `/render?path=<that template>&_file=<file>` — or the file itself when the entry is the `_render` sentinel. That is the shell's own `defaultTemplate` rule (PT-8) reused rather than a per-extension table inside the chat, which would drift from the registry on the next rebinding and ignore a user override (§16); and it is a **default, not a lock** — the pane-local `leftmode` param (PT-15) selects any other offerable entry from that same stat payload, unknown values falling back silently as in PT-9. **The picker sits on the pane it controls, at the RIGHT-HAND end of it:** in the split layout it is a row across the top of the LEFT column, not a control in the chat pane's strip across the divider — and it is pushed to that row's far end (`margin-left: auto`, scoped to `#leftbar`), because the bar exists to carry this one control and a lone control hard against the left edge reads as a LABEL for the pane rather than as a switch on it. It is a **listbox, not a `<select>`**, and the reason is the ICON: its rows show each template's own `icon.svg` beside the mode name, exactly as the shell's mode menu does (`templateModeIcon`), and an `<option>` renders text in every engine. The icon needs no new server plumbing — stat's `templates` entries already carry the icon's absolute path (PT-11), `/api/fs/raw` serves it, and it is drawn as a mask filled with `currentColor` so one flat glyph follows the row's ink in both themes; a template with no `icon.svg` (and the `_render` sentinel) falls back to the shell's own lettered box. The rows are real `<button>`s inside a `role="listbox"` popup under an `aria-haspopup` trigger — the idiom the `reader` template's voice menu already uses here — so focus, Enter and Space stay the platform's job and only the arrows and Escape are the template's — the same grammar the explorer's own preview pane follows (FS-10). Below the 800px breakpoint there is no persistent left column to hang a bar on, so the *same* element moves back into the shared `#anntools` strip, the one row both narrow views keep; crossing the breakpoint relocates it live, with no reload and no effect on `leftmode` itself. It is hidden entirely when the target offers fewer than two views. An **app folder** (an entry page resolves) → that entry page, via `/render`. **The entry rule is `index.html`, else the FIRST top-level `.html` in name order** (`shared/app_entry.entry_html`, `sorted` so two consumers cannot land on different pages). It used to call several pages without an `index.html` *ambiguous* and resolve to None, which meant every consumer dead-ended on such a folder — this pane drew nothing, the `app` mode drew "no entry page", and a materialised snapshot of one showed that notice instead of the app at that commit. Owner call on the user's own wording ("for multiple html files, just pick the first one"): a deterministic first page is one click from any of the others once the folder is open, and None was one click from nowhere. The consequence here is that a folder with several pages and no index now HAS a pane (and the `app_state` tool with it) where it previously had none. Everything the pane implies rides on those two and nothing else: the annotation layer (§17), the 800px collapse (PT-15) and the `app_state` tool (below). A folder with **no** app entry → **no pane at all**: no `#leftframe`, no `#divider`, no view toggle, no annotate affordance, and the conversation owns the full width. *What this overturns.* D237 framed **`/explorer/embed/<dir>?preview=false&modechip=false`** there — the chrome-free navigable shell (LM-4/D39), a real file browser beside the chat — and it was chosen as the fix for code that used to `throw` (`no app entry…`, a permanent error panel beside a working chat). It fixed the throw and left the real problem untouched: **nothing flowed back from that pane.** The template has no `postMessage` and no message listener, so selecting a file in the browser attached nothing, fed nothing to the composer and changed no agent context; annotate was hard-disabled over it by construction (no element of a file listing is a thing a pin could mean anything about); and the `leftmode` picker was inert for it, since neither directory branch populates `paneEntries`. So it was half the width of a folder chat spent on a view that reported to nobody, for a question the agent's ordinary file tools already answer. **Deliberately given up:** the `state.url` backchannel — embed navigation rewrote the iframe's path, so `app_state` could tell the agent which folder or file the user had walked into. It was the one signal that did flow back, and it goes with the pane. **Both embed params go too, and they go differently:** `modechip=false` loses its only producer in the codebase, so its plumbing is **removed from its consumer** as well (`Preview.tsx` no longer reads it and the corner chip has no opt-out) — a URL param no caller can produce is a branch nothing can test, and if another template ever frames an embed of its own counterpart's target the opt-out returns with that caller; `preview=false` was kept at the time, because the listing wrote it for itself when the user closed the pane (`listing/pane.ts`), and it has since gone the same way — the pane lost its toggle (first to a measurement of the split container, then to nothing at all — D282 deleted the measurement too, so a Listing that has a pane simply has one), and with the toggle went the only writer of that param. What the param MEANT survives it: a framed listing still may not open a pane of its own, and that rule now rides on `snapshot=1` (PT-14 above), the flag the one remaining framer already writes. With the folder embed gone, `/embed` is **no longer used as a pane by any template**, so D235's rejection of it for a FILE target stands unqualified. *The no-pane case is a designed ABSENCE, not a missing element, and the difference is load-bearing.* Shipping the markup without `#leftframe` cannot work: the frame's `load` hook is wired at top level, so with no element to wire that statement throws a `TypeError` and aborts **every declaration after it** — the agent poll loop, the annotate switch, the composer wiring — and the boot `catch` cannot report it either, because its own first statement removes that same missing element, so the throw lands inside the catch and neither the error panel nor `pushAppLog` runs. A blank page with a working-looking composer. So the markup ships the column exactly as it does for a file, every declaration initialises against it, and `enterNoPane()` takes it away **afterwards** — ordering that is guaranteed rather than hoped for, since the template is one `<script>` and the loader reaches that branch only after `await`ing a fetch. Three subtrees are removed (`#left`, `#divider`, and `#anntools` — which is a child of `#chat`, so it survives removing the column and would otherwise sit there as an empty bordered row of controls for a pane that is not there). One `noPane` flag then short-circuits `applySplit`, `applyNarrowView`, `renderAnn` and `annSetMode`, so nothing writes to a detached node or to a param describing a layout this target does not have. **Stale params are ignored SILENTLY and never stripped:** `split`, `paneview`, `leftmode`, `annmode` and `annotations` left on a folder URL by an old bookmark open a full-screen chat with no error — the same forgiving posture PT-9 takes for an unknown `_mode` — and rewriting them would break that bookmark's round trip for the day the folder grows an `index.html` and gets its pane back. **Also enforced, not documented:** `appEntry` (the only field in the app-state payload that distinguishes the user's real app from our own UI) is never set on this path, and the "pane unreadable" sentence no longer names "no app entry" among its causes, because that condition now produces no pane and therefore no tool to ask. **The composer's screenshot BUTTON (D285), which is the second version of this control.** Both composers carry `#viewshot` / `#hviewshot`, a camera pill that **captures on click**: one picture of the entire visible pane (`shotCapturePane`, caps `SHOT_VIEW_EDGE` 1600 / `SHOT_VIEW_BYTES` 900 KB, uploaded into the same shots directory the crops use) which then hangs above the composer as a **chip with a thumbnail**, in the same row as the annotation chips and removable with the same ✕. On send it rides the message as the `<pane-shot>` block (`paneShotBlock`, `composeOutgoing`'s fourth argument), placed after the app-state block and before the annotations so `stripAnnBlock`'s position-zero preamble still matches. The first version was a per-message **toggle**, and it was deleted — "it doesn't make sense": what went out was a picture nobody had seen, of a moment nobody chose, behind a switch that had to be noticed, armed and re-armed every turn, and the capture ran during the send where a failure could only degrade silently. Capturing on click answers each of those in turn — the picture is visible before it goes, the moment is the user's, a failure becomes a chip that says so, and nobody who does not press the button pays a rasterise, an encode or a file. **Seeing the picture (D286), the pass that followed the first user test — which shipped the feature and failed the user: "not obvious that it took a screenshot", "no way to preview it before sending", "not intuitive".** Four answers, all in the template. (1) A **shutter flash** — a white sheet over the photographed pane, 340ms, opacity-only, appended to `annHl.parentNode` (our `#leftview` split, the injected shadow root hosted) and animated with the Web Animations API rather than from either stylesheet; it fires on the click, BEFORE the capture, and cannot reach the capture because `cloneNode` does not clone a shadow tree. The chip's own entrance animation is the second half, for the eye that has already moved to the composer. (2) A **viewer** (`#shotview`): every thumbnail this template draws — the pending chip's and every sent turn's — is a real `<button>` built by one `shotThumbBtn`, and opens the picture full size with the path, the `viewNote` caveat that had ridden the wire since D208 with nowhere to be said, Discard (offered only while the shot is still `paneShot`, by identity) and Close; Escape leads the `escapeAction` precedence because it is modal. Clicking the picture swaps fitted ⇄ natural size with the box scrolling, because `position: fixed` is the TEMPLATE's viewport and in the sidebar that is a ~440px column a 1600px capture fits into at ~330px. (3) A **sent turn keeps its picture**: one `shotReceipt` builds the row for a live send and for a restored one, and `paneShotIn` reads `{view, viewNote}` back out of the `<pane-shot>` block so a reopened session renders the shot from `fused.rawUrl(path)` → `/api/fs/raw` (verified end-to-end), with a pruned temp file saying so in words rather than showing a broken-image glyph. (4) **Discoverability**: the button moved from among the three dropdowns (where it read as a fourth setting) to the seat beside Send, the glyph became a camera rather than a framed landscape, and the tooltip became one verb-first sentence. Shipped with it, because the same wire was leaking one surface over: **`sessionTitle`** — the chat list named conversations "<pane-shot> The user attached a pi…" and "The user annotated 1 element in the l…", since a session preview is the head of a message that BEGINS with a machine-written block and is truncated before the closing tag any strip matches on. **Visibility follows `annCapable()`**, the annotate switch's own question, so the buttons are hidden where the host shows nothing marked and removed outright by `enterNoPane`; the narrow chat view hides the BUTTON (a view showing no preview offers no features of the preview) and keeps the CHIP (it is chat content, about to be sent). **What was already there and was reused rather than reinvented:** the whole capture machinery (`shotPane`, `shotEncode`, the shots directory and its one `Read(//<shots>/**)` grant) is SHARED with the annotation crops (§17); and `stripPaneBlock` / `MARKER_VIEW` / `PANE_SHOT_TAG` never left, because sessions on disk carry those blocks and a restored transcript must show what the user typed rather than a screenful of JSON — so the button rewrote an existing wire format instead of inventing a second one. Reading an old wire format is a permanent obligation; writing one again is a choice this control made deliberately. **A capture that is actually a picture of the screen (D287), and the two ways it was not.** *Scroll.* `cloneNode` copies attributes and `scrollTop`/`scrollLeft` are PROPERTIES, so the clone of a scrolled page was a clone of that page at the top; `shotPane` compensated only for `win.scrollX/Y`, which covers a document that scrolls itself and no app in this repo, all of which scroll an inner `overflow: auto` box. `shotInlineStyles` now records `{clone, x, y}` for every scrolled element as it walks (the same guarded descent that already pairs a live node with its clone — a second walk would pair by index and land one element's offset on another), never for the root (`src` is `<body>`, whose scroll IS the window's), and `shotApplyScroll` puts each box back by prepending `transform: translate(-x, -y)` to each CHILD's inline style — expressible in markup, which is all the serialized SVG carries, layout-neutral so a flex scroller is not rearranged, composed with (never replacing) any transform the walk already wrote, and skipped for `position: sticky`/`fixed` children, which do not move with a scroll. *Images.* An `<svg>` loaded through an `<img>` renders with external resource loading disabled at every origin, so every `<img src="http…">` in the clone drew as a broken glyph — including one served by our own `/api/fs/raw`. `shotInlineImages` fetches each distinct URL (from `img.currentSrc` and from every `url(…)` in the clone's inline styles, which is where the computed `background-image` already sits) and rewrites it to a `data:` URL, capped at `SHOT_IMG_MAX` 30 distinct URLs and re-encoded through a canvas past `SHOT_IMG_MAX_BYTES` 256 KB; the style walk now stops `SHOT_IMG_MS` 1500 ms before the capture's deadline so the fetches have a tail. A cross-origin URL with no CORS headers falls back to drawing the already-loaded element into a canvas; a genuine failure becomes a dashed "image not captured" box the size of the picture (a broken glyph reads as a bug in the page being photographed, and removing the element would redraw the layout around a hole the screen did not have) and is counted into `shotImageNote` — a caveat that rides the pane shot AND every crop, and that is deliberately not one of `shotPaneNote`'s `incomplete` causes, because it is BOUNDED and visible where those are unbounded. `<picture><source>` and the `srcset`/`sizes` attributes are dropped so nothing re-resolves over the rewritten `src`. Order inside `shotPane` is load-bearing: styles → images → `shotRasterise` (whose own data:-URL `<img>`s would otherwise be paired against the source's real images) → scroll (so a canvas swapped for an `<img>` moves with its box). The annotation crops inherit both fixes, being cuts out of that one bitmap. **Pictures the user already HAS (D287): paste and drag-and-drop.** Both textareas take a `paste`, and `#chat` takes a drag (four listeners, all gated on `dataTransfer.types` containing `Files`, with a COUNTED `dropping` class because dragenter/dragleave fire per child element); any image in either is uploaded through the existing `fused.uploadFile` into the SAME shots directory — already the one path `--allowed-tools` pre-approves a `Read` of, already pruned, already served back by `/api/fs/raw` — and becomes a chip beside the camera's. `preventDefault` fires only once a picture has actually been found, so an ordinary text paste still reaches the box. Caps: `SHOT_ATTACH_MAX` 4 pictures per message, `SHOT_ATTACH_MAX_BYTES` 4 MB each; over either, the file still becomes a chip carrying the reason, in the `{view: null, viewNote}` shape a failed capture already wears. `paneShot` is now `shotAttached`, a LIST of `{kind, view, viewNote, thumb, name}` — one list because the chip, the viewer, the ✕, the receipt, the wire block and the restore treat both kinds identically and `kind` decides only the words, with the pane keeping ONE seat inside it (a second camera click replaces it, D285's rule intact). The `<pane-shot>` payload is now always a JSON ARRAY carrying `kind` per entry, so the model can tell a picture of this pane from a photo the user brought in; `paneShotIn` reads that AND the bare object every older session holds, returning a one-element list either way, and `MARKER_IMG` ("🖼 images") joins `MARKER_ANN`/`MARKER_VIEW` in the `MARKERS` set for a wordless send of pasted pictures aloneREMOVED (owner call): the composer's whole-pane screenshot pill.** Both composers carried a per-message toggle (`#viewshot`, `#hviewshot`) that attached one picture of the entire visible pane to the next send, as its own `<pane-shot>` wire block with its own caps and its own receipt row. It is gone — "it doesn't make sense": the question it answered ("the whole layout is wrong") is one the agent can ask about by reading the page, and the cost was a per-send rasterise, encode and uploaded file behind a toggle a user had to notice, arm and re-arm. **What stays, and why the difference matters:** the capture machinery itself (`shotPane`, `shotEncode`, the shots directory) is SHARED with the annotation crops (§17), which are the user's own act of pointing at something, so none of it moves; and `stripPaneBlock` / `MARKER_VIEW` / `PANE_SHOT_TAG` stay although nothing writes one any more, because sessions already on disk carry those blocks and a restored transcript must still show what the user typed rather than a screenful of JSON. Reading an old wire format is a permanent obligation; being able to write it is not. **Rejected:** the `throw` (an error panel for the ordinary case of a folder that is not an app); keeping the embed as a read-only browser (it is the reporting-to-nobody problem, restated as a feature); and hiding the column with CSS while leaving it in the document (the elements would stay live, `shotPane` would still rasterise them and the removed controls would still be focusable — a hidden pane is a pane).
   - **The system prompt** (`_split_system_prompt`) has a shape per pane shape, and is decided **per run, never cached**, so a folder being scaffolded into starts being described as a project the moment it becomes one. An **app folder** keeps the project wording (its HTML is an app fused-render serves through the `runPython` bridge; naming fused-render here rather than leaving it to the user's own `CLAUDE.md`, which we do not own — the D216 reliability argument). A **file** says whose page the pane is and that the viewer is never to be edited. An **ordinary folder** gets the folder-scoping instruction and **nothing about a pane** (D239): the paragraph that used to be here described fused-render's own file browser beside the chat and warned that `app_state` "reports the **browser**, not the folder", and it went with the pane it described — a prompt that tells the model what the user can see beside the conversation, when there is nothing beside the conversation, is a false claim about the screen. The **composer's placeholder** names the same three kinds and is set from the same resolution the pane already performs (stat's `is_dir`, then whether an entry html resolves) — *"Ask Claude about this **project** / **folder** / **file**…"*, with the markup shipping the kind-free *"Ask Claude…"* until stat answers; it was hardcoded to "this project", which was the wrong noun for an ordinary folder and for all 47 file keys, and the rule is the prompt's rule: the UI does not claim a kind the target does not have. That rule is **general, not just the placeholder's** — the footnote under the composer and the annotation block's own preamble both said "project" unconditionally too, so every piece of chrome that names the target reads one writer, and a test asserts no kind noun is hardcoded in the markup. The **app_state disclosure** rides the two shapes that HAVE a pane, for D235's reason (an un-announced tool is a tool that never gets called) — and only those two, since the ordinary folder is not offered the tool at all. Saying "this is a fused-render project" over `~/Downloads` is rejected as a lie that costs something — it invites the agent to hunt for a bridge that is not there and to read a folder of PDFs as a codebase.
   - **The tool roster varies by target kind (D239).** `mcp__fused_approvals__app_state` reads the page beside the chat; a target with no pane has no such page, so the tool is **not offered** there — absent from `tools/list`, absent from the dispatch, and absent from the spawn line's pre-allowance. One switch decides all of it, and it is the **channel's own existence**: `agent.py` spawns `permission_server.py` with the app-state directory only when `_has_pane` (the same `entry_html` predicate), and the server keys both its roster and its dispatch on having that directory. A roster that could vary independently of the channel would advertise a tool the server cannot serve. **Rejected:** offering it and answering with an explanatory error — the model would call it after every edit and spend the 20-second app-state timeout discovering the same thing once per turn; and offering it and answering instantly with "there is no pane" — a tool whose only possible answer is that it does not apply is a tool that should not be in the list. The `Read` rule for the screenshot directory stays unconditional, because it is a rule about a directory and not a claim that this target can annotate.
 - **PT-17** **A template never spends a history entry on a value the URL already MEANS, and the guard that decides sits at ONE funnel per template rather than at each call site (D271, D272; generalises PT-15's `annmode`).** **PR-3's gesture gate cannot catch these**, because the gate is read when the write LANDS and not when boot started: a boot path continuing behind an `await` is already post-gesture, so a click anywhere during engine warm-up — the Browse button, the explorer row that chose this file — opens the gate before the seed arrives. **Absent is a value:** a missing param means its default, so writing the default over it is a no-op the runtime's byte comparison cannot see (`set(k, '')` on an absent key appends `k=`), which is what `{default: d}` (PR-3) exists to declare. An audit of **65 `fused.params.set()` call sites across 20 templates** found 39 genuine navigations — left alone, since a working Back is the whole point — and 19 writes that cost an entry for nothing, in six shapes worth recognising: a **re-entrant boot path reached through a gesture** (`latex`'s `startWorkspace` re-running the boot block on Home ▸ open project; `slides`' `openLibrary` ▸ File ▸ New blank deck); an **async callback a click started** (`latex`'s clean compile collapsing an already-collapsed drawer); a **multi-param write whose UNCHANGED half fires first**, takes the push, and leaves the real write to merely coalesce (`las`/`vector`/`pmtiles` writing `dir` before `file` when the file is picked from the folder already being browsed; `xlsx` `offset` before `sheet`; `slides` `slide` before `mode`); a **sweep rewriting every field on every submit** (`api`'s Execute); a **control clamped at its limit** (`pyramid` re-analysing an unchanged path; `pano` comparing the raw param instead of the read-back value, so a drag ending at the default wrote over an absent param); and a **write loop** (`zip`'s `params.onChange` → `openPreview` → `writeLocation`, writing the same pair straight back). The always-live controls D272 closed — a Reset that is not disabled when there is nothing to reset, a Load button over a box seeded from the resolved path, a "back to the list" that is live on a list you never left — are the same rule at the other end of the visit. **The guard goes at the funnel** because a check per call site is a check the next call site forgets — and a key the view leaves OUT of its own repaint comparison (a draft written per keystroke, like `git`'s `msg`) must never push at all, because Back across that entry clears the param while the repaint short-circuits and the stale text stays on screen. **A write's history cost is judged from the state it CAN be reached in, not the state it is normally reached in:** `git` clears `ask` at the end of every mutation and the confirmation has almost always cleared it already, so the no-op guard hides the cost — but `ask` is in the URL precisely so a pending question survives a refresh, and a page reloaded with `?ask=…` arrives with the question live and the entry pristine, so any action clicked from there clears it for real, post-gesture and post-`await`, and takes the push. `history` is outside the audit on the owner's instruction; `git` was too while its rewrite was in flight, and the reworked file has since been reviewed (D271).
@@ -452,7 +450,7 @@ const page = await fused.runPython("./reader.py",
 
   Users **can** rebind any registry key — including `.html`/`.htm` (CT-4 revised, D73) and the directory keys (D81) — dropping a sentinel, then listing it explicitly brings it back. Unknown sentinel entries (path `null`, mode not in the set) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`, `zarr_aoi`) work exactly like any template mode. Future modes are added to the server-side registry and flow through the framework normally.
 - **PT-13b** **An explorer folder has no top-bar mode control.** Directories resolve modes like anything else (PT-13), but the shell's title-bar switcher is **not rendered for a directory, full stop** — the folder's mode control is the preview pane's own (FS-10/FS-11), which sits with the thing it changes. It once carried an exception for the app-builder route, which kept the control because under that route the folder was the whole subject rather than a listing beside a preview; D262 deleted the route and the `appChrome` flag that named it, so the rule is one clause with no carve-out and `Preview.tsx` keys on `!stat.is_dir` alone. **The accepted consequence, stated rather than discovered:** nothing in the explorer switches a folder INTO one of its other modes. The pane's menu writes **`_side`** — which of the PANE's three companions is showing (Preview / Claude / Git, FS-10) — never `_mode`, so the folder itself stays on `_listing` while the pane changes. *The menu used to write `_panelMode`, which named which of the SELECTED ROW's templates the pane previewed; that switcher is retired (FS-11) and the param with it.* Two of the folder's own peers are consequently reachable without touching `_mode` at all — `claude` and `git`, which the pane borrows from the folder as companions — while its `graph`/`model_card` views are still **entered** by an explicit `?_mode=` (a typed URL, a bookmark, the file menu's **Open With**), or by a registry default that is not `_listing` (a `.zarr` store opens on `zarr_aoi`). **Getting back out is the BROWSER'S BACK BUTTON, and deliberately nothing else** (owner call). Every one of the ways in is a *navigation* — a typed `?_mode=`, a bookmark, Open With — so the navigation that got the user there is what undoes it, and it is already at the top of the window. This rule briefly shipped a second answer: the `Browse contents` chip (PT-13/D65) revealed in the explorer by an `is-exit` modifier. It is **removed**. Pinned absolutely over the template's iframe it landed on whatever that template drew in its own top-right corner — over the full-width timeline view since removed it sat across that view's own header and the newest commit — so in the folder modes people actually open it read as a stray tooltip rather than as a control. A bespoke affordance that has to be explained is worse than the standard one every user already has, and "the view must supply its own way back" was never the requirement; "the state must not be a dead end" was, and Back satisfies it. **This rule leaves a folder no bar control at all.** It briefly left one — "Open as app", which D262 made the only way into a folder's app view once cards stopped carrying `?_mode=app`, and whose gate therefore had to match the server's exactly. D264 removed the app view instead: there is no destination left for that button to guard, and a folder's modes are entered the way this rule already says every other one is. The chip keeps its **embed** reveal untouched — a different surface, where `.preview-header` and its switcher are hidden outright, so there the chip is the whole affordance rather than a second one. This is an owner call: two mode switchers in one view, a few hundred pixels apart and governing different halves, is not a choice a user should have to work out, and for a folder the pane is the explorer while its peers are opt-in tools rather than other ways of looking at the listing. Files keep the top-bar control; nothing else does.
-- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"]` (D185 removed `preview` and D264 removed `app` — the mode and its template folder are deleted, so a folder is its listing; `model_card` joined the row with D249/§37; `graph` per MD-2; `git` per §33/D193, directory-only per D235/GT-2 and gated to a folder in a work tree; the per-path timeline mode that used to close this row is deleted (PT-14); `claude` — the one chat template since D237, which deleted the second one this key used to carry — gated only against mount-backed paths, §7.2's `/` row and PT-14/PT-16) and `".zarr/": ["zarr_aoi", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the listing by default with the `zarr_aoi` map joining as a `condition.py`-gated peer (CT-12) once its background verdict confirms the store (`_mode=zarr_aoi` selects it). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay) — moot in the core registry since D235, where `annotate` is bound to nothing at all, but still the rule for a user who re-binds it (§16). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["_listing", "gallery"]` lists the built-in listing plus a gallery mode for every folder (built-in names are listed explicitly — there is no splice, D94); dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), and a `.zarr` bookmark also lists by default now (the `zarr_aoi` map is a gated peer reached via `_mode=zarr_aoi`, not the default). Accepted break (D185): the `preview` folder-preview template is **deleted** and gone from this key, and the two ways a leftover reference surfaces are **different mechanisms** — a **`?_mode=preview` URL or bookmark** is an unknown `_mode` value, so it falls back to the default (`_listing`) **silently, with no error** per PT-9 (and lands on the listing that now carries the split pane, FS-9..FS-15, which is what such a URL was asking for); a **user registry** still listing `"preview"` is instead a dangling name per CT-6/D95 — dropped from the mode list with `template_error` naming it on the stat payload and a broken (`exists:false`) row in the Templates view (§23).
+- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"]` — **`claude` leads it as of D280**, because the listing's preview pane reads this order for its default literally (`activePaneMode` takes the first offered mode), so the lead is what a SELECTED folder row previews as; the FULL-SCREEN folder route resolves "first entry without `conditional`" instead (PT-8), so `_listing` still wins there from second place and opening a folder still lands on its file table. **Dropping `_listing` rather than demoting it is what would break that** — every folder would open on a gated chat with no listing at all — so it stays, and the reorder is the whole of the change (D185 removed `preview` and D264 removed `app` — the mode and its template folder are deleted, so a folder is its listing; `model_card` joined the row with D249/§37; `graph` per MD-2; `git` per §33/D193, directory-only per D235/GT-2 and gated to a folder in a work tree; the per-path timeline mode that used to close this row is deleted (PT-14); `claude` — the one chat template since D237, which deleted the second one this key used to carry — gated only against mount-backed paths, §7.2's `/` row and PT-14/PT-16) and `".zarr/": ["zarr_aoi", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the listing by default with the `zarr_aoi` map joining as a `condition.py`-gated peer (CT-12) once its background verdict confirms the store (`_mode=zarr_aoi` selects it). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay) — moot in the core registry since D235, where `annotate` is bound to nothing at all, but still the rule for a user who re-binds it (§16). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["_listing", "gallery"]` lists the built-in listing plus a gallery mode for every folder (built-in names are listed explicitly — there is no splice, D94); dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), and a `.zarr` bookmark also lists by default now (the `zarr_aoi` map is a gated peer reached via `_mode=zarr_aoi`, not the default). Accepted break (D185): the `preview` folder-preview template is **deleted** and gone from this key, and the two ways a leftover reference surfaces are **different mechanisms** — a **`?_mode=preview` URL or bookmark** is an unknown `_mode` value, so it falls back to the default (`_listing`) **silently, with no error** per PT-9 (and lands on the listing that now carries the split pane, FS-9..FS-15, which is what such a URL was asking for); a **user registry** still listing `"preview"` is instead a dangling name per CT-6/D95 — dropped from the mode list with `template_error` naming it on the stat payload and a broken (`exists:false`) row in the Templates view (§23).
 - **PT-5** **User overrides:** DECIDED and specced as §16 (M7, extended by M8) — user template folders under `~/.fused-render/templates/` bound to extensions by `~/.fused-render/templates/registry.json`, replacing or extending the built-in mode list, using the exact same mechanism.
 
 ---
@@ -504,7 +502,7 @@ const page = await fused.runPython("./reader.py",
 Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 
 - **DM-1** **DECIDED (v2, D33):** the `.app` is built by **py2app** from a framework-build python (Homebrew `python@3.12`, bootstrapped by the build script). py2app ships a real re-invokable interpreter in-bundle (`Contents/MacOS/python`) — `sys.executable` subprocess executor works unchanged — and its compiled stub gives proper LaunchServices/AppKit process identity (the earlier hand-rolled bash-shim caused flaky NSStatusItem behavior under Finder launches).
-- **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. `[bundled]` is the dev-install list and the Linux/Windows shipping list; on macOS py2app **copies** only what `scripts/setup_py2app.py` names — which now DERIVES that list from the installed distributions and excludes nothing, so all three platforms ship the whole extra (D176). `BUNDLED_EXCLUDED` is empty but stays as the mechanism: a `[bundled]` distribution the bundle does not carry must be named there with its measured cost, never merely absent. "Is this dependency available?" therefore has one answer today, and `tests/test_bundle_contents.py` is what keeps it that way — the templates that genuinely need an install declare dependencies **outside** `[bundled]` (`pyproj`, `imagecodecs`, `py360convert`, `pypandoc-binary`, and since D276 the geo/PDF stacks named below), which is what exercises the install loader on a shipped build. **The extra is a size budget, not a wish list (D276).** It ships preinstalled: numpy, pandas, pyarrow, duckdb, pillow, openpyxl, requests, httpx, msgpack, python-pptx, drain3, botocore, google-auth, the `fused` engine + the core `dependencies`. It deliberately does NOT ship polars (197.0 MB, imported by nothing in the product), scipy (70.3 MB), matplotlib (25.0 MB), pymupdf + pikepdf (68.9 MB) or the geo stack geopandas/rasterio/rio-tiler/shapely/zarr and their exclusive transitives (180.1 MB) — 541.9 MB removed, taking the installed set from 954.3 MB to 412.4 MB (D276 states the measurement method; absolutes are only comparable against it, deltas against anything). Those live in the `pyproject.toml` of each template that imports them (`map`, `vector`, `geometry_editor`, `pdf_studio`) or in the venv a daemon manages itself (`geotiff`, `netcdf`, `zarr_aoi`, `pyramid`, D174), and are installed on first render through PY-18 — `map`'s environment resolves to 472.8 MB on that same measure, since a declaration is the complete list (D172) and it additionally carries duckdb + requests for the user-supplied Python targets `worker.py` executes in-process. **The unit of that decision is the FOLDER, not the wheel** (PY-16): `fpdf2` stays in the extra at a measured 14.1 MB precisely because moving it would have put all of `excel` and `slides` behind a project venv, gating every `.xlsx`/`.csv`/`.pptx` on a first-render install of packages the app already ships. **The built-in executor cannot honour any of this** — it owns no venv machinery (D174) — so `executor.explain_missing_module` replaces a bare `ModuleNotFoundError` with one naming the folder, its manifest, the missing distributions and both fixes, whenever the failed import resolves to something that folder declares. At FAILURE time, never before the run: a pre-flight refusal keyed on the folder's state breaks every stdlib-only entry point in a folder that declares one heavy optional dependency (`geotiff`'s `ensure()`, `model_card`'s `inspect_model.py`, `pano`, `docs`, `latex`), and an AST pre-scan would refuse the lazy imports that make `pdf_studio`'s `health` action answerable while its venv builds. That obligation is enforced in both directions: a template may not declare what the bundle already ships (`test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks`) and MUST declare what it does not (`test_a_template_declares_whatever_the_app_does_not_ship`), and the Learn page may not promise a library the app lacks (`test_the_learn_page_only_promises_what_the_app_ships`). Removing from the extra rather than excluding from the bundle is the deliberate choice: `BUNDLED_EXCLUDED` would have shrunk macOS alone and left Linux and Windows carrying what the extra still promised — D176's defect in the other direction. py2app note: these are force-copied via `packages` — the executor imports them only in child processes, so import tracing can't see them. This holds under the fused engine too: a script whose folder declares no `pyproject.toml` runs on that same interpreter (PY-17), and only a folder that declares one gets an environment of its own (PY-16/PY-18).
+- **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. `[bundled]` is the dev-install list and the Linux/Windows shipping list; on macOS py2app **copies** only what `scripts/setup_py2app.py` names — which now DERIVES that list from the installed distributions and excludes nothing, so all three platforms ship the whole extra (D176). `BUNDLED_EXCLUDED` is empty but stays as the mechanism: a `[bundled]` distribution the bundle does not carry must be named there with its measured cost, never merely absent. "Is this dependency available?" therefore has one answer today, and `tests/test_bundle_contents.py` is what keeps it that way — the templates that genuinely need an install declare dependencies **outside** `[bundled]` (`pyproj`, `imagecodecs`, `py360convert`, `pypandoc-binary`, and since D276 the geo/PDF stacks named below), which is what exercises the install loader on a shipped build. **The extra is a size budget, not a wish list (D276).** It ships preinstalled: numpy, pandas, pyarrow, duckdb, pillow, openpyxl, requests, httpx, msgpack, python-pptx, drain3, botocore, google-auth, the `fused` engine + the core `dependencies`. It deliberately does NOT ship polars (197.0 MB, imported by nothing in the product), scipy (70.3 MB), matplotlib (25.0 MB), pymupdf + pikepdf (68.9 MB) or the geo stack geopandas/rasterio/rio-tiler/shapely/zarr and their exclusive transitives (180.1 MB) — 541.9 MB removed, taking the installed set from 954.3 MB to 412.4 MB (D276 states the measurement method; absolutes are only comparable against it, deltas against anything). Those live in the `pyproject.toml` of each template that imports them (`map`, `vector`, `geometry_editor`, `pdf_studio`) or in the venv a daemon manages itself (`geotiff`, `netcdf`, `zarr_aoi`, `pyramid`, D174), and are installed on first render through PY-18 — `map`'s environment resolves to 472.8 MB on that same measure, since a declaration is the complete list (D172) and it additionally carries duckdb + requests for the user-supplied Python targets `worker.py` executes in-process. **The unit of that decision is the FOLDER, not the wheel** (PY-16): `fpdf2` stays in the extra at a measured 14.1 MB precisely because moving it would have put all of `excel` and `slides` behind a project venv, gating every `.xlsx`/`.csv`/`.pptx` on a first-render install of packages the app already ships. **The built-in executor cannot honour any of this** — it owns no venv machinery (D174) — so `executor.explain_missing_module` replaces a bare `ModuleNotFoundError` with one naming the folder, its manifest, the missing distributions and both fixes, whenever the failed import resolves to something that folder declares. At FAILURE time, never before the run: a pre-flight refusal keyed on the folder's state breaks every stdlib-only entry point in a folder that declares one heavy optional dependency (`geotiff`'s `ensure()`, `model_card`'s `inspect_model.py`, `pano`, `docs`, `latex`), and an AST pre-scan would refuse the lazy imports that make `pdf_studio`'s `health` action answerable while its venv builds. That obligation is enforced in both directions: a template may not declare what the bundle already ships (`test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks`) and MUST declare what it does not (`test_a_template_declares_whatever_the_app_does_not_ship`), and the Learn page may not promise a library the app lacks (`test_the_learn_page_only_promises_what_the_app_ships`). Removing from the extra rather than excluding from the bundle is the deliberate choice: `BUNDLED_EXCLUDED` would have shrunk macOS alone and left Linux and Windows carrying what the extra still promised — D176's defect in the other direction. py2app note: these are force-copied via `packages` — the executor imports them only in child processes, so import tracing can't see them. **The standard library ships WHOLE** (D305): py2app freezes only the stdlib its modulegraph reaches from `app_entry.py`, and that subset is inherited by every environment built on the bundled interpreter (PY-18) — a DMG shipped without `filecmp`, and an MLX load died inside transformers with a message about the model. `setup_py2app.STDLIB_EXCLUDED` names the few omissions with reasons (tkinter and turtle, idlelib, turtledemo, ensurepip, lib2to3, antigravity, this), and `build_dmg.sh` §4b-ter fails the build when either the bundled interpreter OR a venv built on it cannot import what that list says ships. This holds under the fused engine too: a script whose folder declares no `pyproject.toml` runs on that same interpreter (PY-17), and only a folder that declares one gets an environment of its own (PY-16/PY-18).
 - **DM-3** **DECIDED (v2, D34):** regular app — **Dock icon AND menu bar ✦** (Open in browser / Copy URL / Quit). No LSUIElement. Dock right-click → Quit is the discoverable lifecycle path.
 - **DM-4** **DECIDED (v2, D73):** signing is credential-driven in `scripts/build_dmg.sh` — a **Developer ID** identity in the keychain (auto-detected or via `FUSED_RENDER_CODESIGN_IDENTITY`) triggers hardened-runtime, inside-out signing + optional notarization (`FUSED_RENDER_NOTARY_PROFILE`); with no identity it **ad-hoc signs** (local testing, unchanged). Developer-ID signing is also the general fix for the repeated Downloads/Desktop/Documents prompt (one Team ID unifies the app + its executor subprocess, complementing the D72 in-process reader split). Details: `docs/signing.md`. Supersedes the earlier "Briefcase external-app" plan (D35 — Briefcase's template breaks `sys.executable`).
 - **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running ⇒ open browser only; else start (1777, fall forward to 1787), write pidfile, open browser.
@@ -1818,6 +1816,25 @@ job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
   rate-limits `history.replaceState` (~100 calls/30 s, then throws), so
   per-keystroke sync is a crash, not a nicety. Input state stays immediate;
   only the URL lags.
+
+- **SR-12** **A search selects its TOP HIT**, so the preview pane has something in
+  it and Enter has a target without the user reaching for a row first. Typing a
+  query is itself a request to look at something — which is why this survived the
+  removal of the folder auto-select (FS-16, D278) and is now the listing's only
+  automatic selection. Unlike that one it is **repeated, not one-shot**: results
+  re-rank on every keystroke, every stream flush and every published slice, so
+  the selection FOLLOWS the ranking as it refines rather than pinning row one of a
+  ranking the user has typed past. Three situations, three answers
+  (`searchAutoSelectPath` / `nextSearchSelection`): nobody has claimed the
+  selection → the top hit; **the user moved it → leave it, and that claim
+  OUTLIVES a query change** (a new query re-ranks the rows, it does not revoke a
+  choice; a deliberate Escape is equally theirs); the user's row dropped out of
+  the results → the top hit again, since keeping the selection on a path that is
+  not on screen previews something the user cannot see. Whose selection it is has
+  to be REMEMBERED (`SearchSelectState`: the path this rule last wrote, plus a
+  sticky user-claimed flag) rather than recomputed per query — as a pair of refs
+  reset on every query change it reclassified the user's own selection as the
+  app's guess and let the next re-rank overwrite it.
 
 ---
 
@@ -4537,6 +4554,75 @@ caller that wants the log on purpose.
   never the traceback overlay — and `ai_unavailable` reads as *"AI is not
   available on this server."*
 
+- **GT-19** **A merge conflict, and a failed operation, can be taken to an AI —
+  and NOTHING it says reaches the working tree without a confirmation.** Two
+  situations, one button (the same sparkle as GT-18), one panel, and one model:
+  **`claude-sonnet-5`**, named explicitly rather than left on the cheap default,
+  because reconciling two versions of a file is not the shape of work the default
+  is for. `effort` stays low — the thinking budget is not what decides whether a
+  merge is understood, and it is the latency the user waits through.
+
+  **The conflict case is the primary one.** A conflicted row in the change lists
+  carries the sparkle, ahead of Stage — on a conflicted file the resolution is
+  what the user came for, and Stage is the act that ENDS the conflict, so
+  offering them the other way round invites a `git add` of a file that still has
+  markers in it. Which rows are conflicted is the READER's answer
+  (`_status`'s `conflicted`, git's own porcelain rule: a `U` on either side, plus
+  `AA`/`DD`) and never re-derived in the view — a seven-case mirror with no way
+  to notice it drifting is how the button appears on the wrong rows.
+
+  The context the model gets is `log.py op="conflicts"`: the unmerged paths with
+  their **working-tree marker text** (the index's three stages are not the text a
+  resolution replaces), the operation in flight — merge / rebase / cherry-pick /
+  revert, read from the git dir's marker files rather than parsed out of `git
+  status`'s localised prose — and the branch. The read is deliberately
+  **UNSCOPED**, unlike almost every other read in §33: a merge is not
+  half-finished for one folder, so hiding the conflicts outside the open scope
+  would describe a state that does not exist. Each entry carries `in_scope`
+  instead, so the view SHOWS every conflict and offers to write only the ones
+  `ops.py` would accept (GT-13). Capped in file count and total bytes with the
+  truncation reported, so a prompt built from it is bounded and the panel can say
+  the model saw only part of the file. A binary or unreadable unmerged file is
+  NAMED and never read — the answer there is `git checkout --ours/--theirs`, not
+  a model.
+
+  **Nothing is applied by the button that asked.** The answer streams into a
+  review panel above the toolbar; Apply asks (GT-16's `ask` mechanism, and
+  `resolve` is in `DESTRUCTIVE_OPS` for exactly that reason: it overwrites the
+  only copy of what git left behind), and the confirmation is rendered INSIDE the
+  panel rather than in a list section — the question belongs next to the text it
+  writes, and a conflicted file is listed in both the staged and the changes
+  section, so there is no single row to attach it to. A pending `ask=resolve:…`
+  that survived a refresh is dropped rather than answered: the resolved text
+  lives in memory, so its Yes could only fail.
+
+  `ops.py op="resolve"` writes ONE file's text and does **nothing else** — no
+  `git add`, no commit. Marking a conflict resolved is a separate act the user did
+  not press, so the file lands unmerged-in-the-index and the ordinary Stage
+  button is still what resolves it. It refuses: a path that is not currently
+  unmerged (`--diff-filter=U` is the authority, which is what stops this being a
+  general-purpose "overwrite any file" write), more than one path, empty content,
+  oversized content, and — the refusal that makes the feature safe to point at a
+  model — content that still carries conflict markers. Written through a temp
+  file and `os.replace`, because a half-overwritten conflicted file is worse than
+  no write. A model that declines answers `UNRESOLVABLE` and gets **no Apply at
+  all**.
+
+  **The operation-error case is secondary and produces advice only.** A failed
+  mutation's `flash` carries the sparkle; the model gets the error text plus the
+  repository's branch/upstream/ahead-behind/dirty state and returns what it means
+  and what to run. There is no Apply, and this view will not run a command a
+  model picked — that is a different feature and a much larger one.
+
+  Every `fused.ai` rejection is this view's own sentence, never the traceback
+  overlay: `ai_unavailable`, `model_loading`, `unavailable`, `cancelled`,
+  `timeout` and `bad_request` each read as an ordinary answer. The button is
+  disabled while a call is in flight and while a proposal is on screen (one panel,
+  one subject), and Cancel drops the panel — honestly, since `fused.ai.cancel`
+  only reaches a LOCAL generation and this asks for a Claude model. Mount-backed
+  targets never reach any of it: `_locate` refuses a mount in both modules and the
+  gate never offers the view (GT-4 / MD-11).
+
 **See also §34** (`file_history`), the other history view. It is complementary
 rather than an alternative: this one drives the repository's own commit graph and
 index, i.e. everything git already knows about; that one reads Claude Code's
@@ -5297,6 +5383,25 @@ stop it short of quitting the app.
   until dismissed (the persistent-error toast's rule, §3). `MAX_JOBS` (64) caps
   the list; over the cap, finished rows are evicted before running ones and
   least-recently-updated first, so a live download is the last thing to go.
+  **Live SERVER work is never evicted by the cap at all** (D288), so the list
+  can exceed `MAX_JOBS`. For work the app itself runs, the row is not a view of
+  the work but its only channel — the ✕'s route to the process, and the
+  completion signal `fused.watchJob` polls, which reads a missing row as work
+  that stopped and settles a promise that cannot then be un-settled. The cap
+  was written for a pathological reporter; a queue of transcriptions (AI-10a)
+  made "more than 64 rows of live work" ordinary, and evicting there rejected
+  transcriptions that went on to succeed. Page-owned rows stay capped, which is
+  where the unbounded risk is (`fused.trackJob()` can mint rows a page never
+  finishes); finished server rows stay evictable; and the age sweep still drops
+  a running row whose reporter has gone silent, so a crashed worker cannot pin
+  one for the session. **The cap is measured against the rows it can actually
+  shed**, not against the whole list: counting exempt rows while refusing to
+  evict them bounds nothing and merely moves which row pays — over the cap the
+  only candidate left was whatever had JUST finished, so it was deleted on the
+  next read and a watcher never saw the outcome. A success survives that through
+  its artefact; a failure or a cancel has none, so the page reported "no longer
+  being reported" instead of the reason. It also silently shortened this
+  bullet's own retention promise to zero under pressure.
 - **BG-7** **Dismiss is for rows nobody is reporting on** — finished, or
   `stalled`. A live row is refused (409): the only honest way to make it go away
   is to stop the work, and a dismiss that hid a live download would restore
@@ -5659,7 +5764,7 @@ loads weights, imports a framework, or touches the network.
 
 ---
 
-## 39. Discover — Searching the Hub From the AI Models Page (D255)
+## 39. Discover — The Hub, Narrowed to What This App Can Run (D255, D313, D314)
 
 Goal: §37 answers "what did I already download". This answers the other half —
 "what is out there" — and the two are only worth anything **together**, because
@@ -5667,18 +5772,107 @@ the Hub does not know your disk and a browser tab open on huggingface.co cannot
 tell you that the model you are reading about is already cached, was last read
 three weeks ago, and would cost nothing to open.
 
+- **HS-0** **Everything on this tab is RUNNABLE HERE, and the constraint is the
+  feature** (D313, narrowed by D316). A repo runs here only if a registered
+  engine reads its weight format, so a search that returned whatever the Hub
+  returned put embedding models and fill-mask models in front of a page that
+  could act on none of them — and admitted it in a caption reading "Search
+  results are read-only". **The filter is the registry's, not a list**: a
+  candidate tag survives only if `registry.capability_for_task` maps it to a
+  capability some runner serves, which is the SAME function that decides
+  whether a repo already on disk gets a Load button. Searchable and loadable
+  therefore cannot drift, and a new runner makes its filter appear without an
+  edit to the module that talks to the Hub. Four tags qualify today, against
+  the twenty-six the menu used to offer. A row is dropped for an unrunnable
+  tag, for NO tag (a repo that cannot be classified cannot be promised), and
+  for `private` — nothing an ordinary account does reaches a private repo, so
+  a card for one could never be actioned by the person reading it. Every
+  surviving row carries a non-null `capability`, which is what the Download
+  button hands to the runtime.
+- **HS-0d** **The constraint is "an engine here can run it", NOT "nothing
+  further is asked of the user" — so gated repos are results** (D316). They
+  were dropped alongside private ones, on the rule that every card must carry a
+  working button; that drew the line one step too tight and quietly removed
+  several of the best-known models on the Hub from a search that claimed to
+  cover it. **A gate the reader can open is a step, not a wall.** The gate
+  travels on the row (`gated`: `"auto"` — accept the licence while signed in;
+  `"manual"` — the owner grants access by hand; `null`), and the card spends it
+  on the ACTION as well as the label: with a token on this machine it is an
+  ordinary Download, and without one the button is replaced by a link to the
+  repo's own Hub page reading "Accept terms" or "Request access". That is what
+  keeps this from being the `gated` pill D313 deleted, which named the problem
+  and left a button that would 403 sitting next to it. `manual` earns its own
+  words because somebody told to "accept the terms" on an approval-gated repo
+  goes looking for a button that is not there; an unrecognised truthy gate is
+  read as `manual`, the stricter of the two. **There is no credentials UI and
+  this does not add one**: the token is read where `huggingface_hub` reads it
+  (`HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `$HF_HOME/token`), the search reply
+  carries only the boolean `authenticated`, and the hover names
+  `huggingface-cli login` rather than offering a box to paste a secret into.
+- **HS-0a** **The menu constrains what can be ASKED; the row filter constrains
+  what comes BACK.** They are not the same guarantee: an unfiltered query lets
+  the Hub answer with anything it likes, so the supported-tag pass runs over
+  every reply regardless of what was asked. A task the app cannot run is
+  refused with a 400 rather than searched for and returned empty — an empty
+  grid reads as "the Hub has no summarization models", which blames the wrong
+  party. Because the pass throws most of an unfiltered page away, the request
+  **over-fetches (4x, capped) and truncates AFTER filtering**, so `limit` means
+  "rows you will be shown"; with a task filter the Hub has already constrained
+  and the request asks for exactly what it shows.
+- **HS-0b** **One grid at a time, and the search box is at the top** (D313). A
+  curated shortlist answers "what should I even get" — the question somebody
+  has BEFORE they know what to type — so results REPLACE the suggestions rather
+  than stacking under them, and clearing the box brings them back. The box sits
+  above the sections because it is what the tab is for; underneath them, the
+  only way to reach it was to scroll past the thing it is an alternative to.
+  **The way back is a CONTROL, not a thing to work out** (D317): "clearing the
+  box" is only obvious for a query somebody typed, and the state that stranded
+  people was a task picked from the select with an empty box — nothing to
+  clear, no suggestions, and the route back is guessing that the menu's first
+  option restores them. Two affordances, both resetting **query and task
+  together in one act** (`showsReset`, and `clearSearch` in the component): an
+  ✕ inside the search field, and "← Back to suggested models" in the results
+  heading row. Escape in the box does the same. A control that emptied only the
+  text would be the worst of the three outcomes — the reader does the obvious
+  thing, the box goes empty, and the suggestions still do not come back — which
+  is why the platform's own `type="search"` ✕ is hidden rather than relied on.
+- **HS-0c** **Each face names itself, in the same slot, in the same words'
+  worth of chrome** (D314). One grid replacing another is only legible if the
+  new one says what it is: "Suggested models" and "Search results", each with
+  one muted right-hand fact — `11 picked for this machine` against
+  `"whisper" · 24 on huggingface.co`, which is the count and the PROVENANCE in
+  one line. **The count states what came back, never what did not**: it is
+  absent while a request is in flight, and absent again when the search FAILED.
+  A soft failure answers 200 with an `error` and `models: []`, and a count taken
+  from that array's length reads `0 on huggingface.co` — the heading reporting
+  that the Hub has none of these, beside a banner saying we never heard back,
+  which is the opposite of D316's point that a gated hit is missing rather than
+  absent. What was ASKED survives a failure and still shows; what came BACK does
+  not exist, so `resultsSummary` takes the failure as a required argument rather
+  than inferring it from a length. Under each heading sits its own note, in the same place: why these
+  eleven for the shortlist, which host is being asked for the results. The two
+  faces are therefore heading, note, grid in that order either way, and the
+  difference between them is a label rather than the presence or absence of a
+  paragraph — which was a difference only visible to somebody watching it
+  happen, so a reader who searched, scrolled and looked back up had nothing on
+  screen telling them which grid they were in. The heading is one string, not
+  two conditions (`chrome.heading`), so the page cannot claim to be both. **It
+  is the SECTION tier, and the capabilities under it are subgroups** — the
+  Local tab's exact shape, where "User downloaded models" sits over a rule and
+  its capability rows are quieter ALL-CAPS titles with no rule of their own.
+  Drawn as a second `.am-section-head` the view's name and `TEXT GENERATION`
+  were twins (same caps, same weight, same muted suffix, same full-width line),
+  and two levels rendered identically are no levels at all. The heading, that
+  line, the grid and the host disclosure are one decision in one place
+  (`shell/discoverView.ts`), since every way they can disagree is the page
+  making a false claim about itself.
 - **HS-1** **AMENDED (D258): downloading is offered, and the reasoning is
   unchanged.** The original rule was that a download needs a progress surface, a
   cancel and an answer for a half-finished pull — none of which existed, so the
   button did not either. Local inference (§40) built exactly that, so Discover
-  now downloads through it. What still holds: search, filter and sort tell you
-  what a result would COST before the click, and this module still never writes
-  to the cache itself — it asks the runner's worker to, and the job registry
-  shows it. Downloading gigabytes onto someone's
-  disk is a separate decision with a separate cost (free space, a progress
-  surface, a resumable transfer, a half-written cache to clean up) and is
-  deliberately not part of this. Every route is a GET, so none carries the D3
-  `X-Fused` guard: there is nothing to guard.
+  now downloads through it — from the search results as well as the shortlist
+  since D313. This module still never writes to the cache itself: it asks the
+  runner's worker to, and the job registry shows it.
 - **HS-1a** **Search is a guarded POST; the rest of Discover is an ordinary
   read.** The app's rule is that reads are unguarded GETs (WF-5), and the reason
   is D36's: a foreign page can fire a request but the browser will not let it
@@ -5713,14 +5907,17 @@ three weeks ago, and would cost nothing to open.
   concatenated: a search for `a&b=c` is a search, not a second parameter. The
   sort is a **fixed set** of names, so a client can never pass a raw field
   through to the Hub.
-- **HS-4** **Nothing reaches the network until Discover is opened.** The app is
-  a local file explorer; a page that quietly queried a third party on mount
-  would be a surprise. Selecting the tab is the consent, the caption names the
-  host being asked, and the query is debounced — a burst of typing is one
-  request — with identical queries inside a short TTL answered from memory,
-  because search-as-you-type would otherwise put one request per keystroke on a
-  public API. **Errors are never cached:** the network comes back, and the next
-  keystroke has to be allowed to find out.
+- **HS-4** **Nothing reaches the network until Discover is opened, and nothing
+  at all until something is typed.** The app is a local file explorer; a page
+  that quietly queried a third party on mount would be a surprise. Selecting the
+  tab is the consent, the caption names the host being asked, and the query is
+  debounced — a burst of typing is one request — with identical queries inside a
+  short TTL answered from memory, because search-as-you-type would otherwise put
+  one request per keystroke on a public API. An EMPTY box makes no request at
+  all: the curated view is served from the local catalog, so asking the Hub for
+  "the most downloaded models" and then not rendering them would be an outbound
+  call for nothing. **Errors are never cached:** the network comes back, and the
+  next keystroke has to be allowed to find out.
 - **HS-5** **The local half of a result is never served stale, and is scoped to
   the results.** The Hub's answer holds for the TTL; what is on this disk does
   not, so the join runs on every request, outside the cache — a model deleted a
@@ -5733,13 +5930,11 @@ three weeks ago, and would cost nothing to open.
   is FOR — work no row here needs, and work a debounced keystroke must not pay
   for across a cache of hundreds of repos.
 - **HS-6** **Sizes are recovered, and say so.** `safetensors.parameters` is a
-  dtype → count map, so bytes come from summing `count * bits / 8` — the same
+  dtype -> count map, so bytes come from summing `count * bits / 8` — the same
   arithmetic and the same `≈` the model card uses on local files (HF-17), so one
   model cannot be 16GB on one tab and 8GB on the other. A repo with no
   safetensors metadata reports **no size** rather than a guessed one: a number
-  someone plans a 16GB download around must not be invented. `gated` is surfaced
-  before anyone tries, because "accept the licence on the Hub first" is worth
-  knowing in advance rather than as a 403.
+  someone plans a 16GB download around must not be invented.
 - **HS-7** **One vocabulary across both tabs.** A result's task label and its
   hover sentence come from the same glossary the cached cards use (HF-18), so
   "image + text to text" means the same thing wherever it appears. The task
@@ -5749,7 +5944,8 @@ three weeks ago, and would cost nothing to open.
   generation", "video generation") are this app's reading of a diffusers
   `_class_name` rather than tags anyone publishes under, and a filter built from
   one would quietly return nothing. Every offered filter resolves to a label the
-  glossary explains, and a test pins that.
+  glossary explains AND to a capability a runner serves (HS-0), and a test pins
+  both.
 - **HS-8** **A far side that is unhappy is a sentence, not a 500.** Unreachable,
   rate-limiting, refusing without a token, answering with HTML — each produces a
   200 carrying an empty result and an explanation the page can show, because the
@@ -6037,6 +6233,33 @@ an AI Models page that could say what was on disk but not what was *running*.
   rather than destructive), no per-segment UI, and no cache lock — the etag names
   the content, so two instances write identical bytes at identical offsets and
   the loser of a rename race falls back rather than corrupting anything.
+- **AI-5j** **A load that omits `capability` INFERS it, and refuses rather than
+  guessing when it cannot.** The omitted argument used to mean text generation
+  unconditionally, which is a wrong-runner dispatch wearing a library error:
+  `fused.ai.models.load("mlx-community/FLUX.2-Klein-4B-4bit")` reached mlx-lm and
+  raised `FileNotFoundError: config.json` — a file that repo has never had —
+  while `/api/ai/image` rendered from the same snapshot, because that route is
+  capability-bound by construction and this one was not. The same shape had
+  already fired once through Preload with a whisper repo. `POST
+  /api/ai/runtime/load` and `/download` now resolve an absent capability in four
+  steps: (1) the LOCAL SNAPSHOT, read through the AI Models page's own
+  `cached_capability` — the same join of task label, decisive format
+  (`runners/formats.py`) and registry that the page draws its Load button from,
+  so a card offering Load and a load refusing cannot disagree — plus one
+  addition, that a non-decisive format whose readers all share one capability
+  answers with it (a bare directory of safetensors is read only by the two TEXT
+  runners, which is what keeps every existing `load(id)` on an unlabelled chat
+  repo working); (2) `catalog.capability_of`, since every repo this app
+  RECOMMENDS belongs to a runner and knowing costs a dict lookup rather than a
+  Hub round trip; (3) text generation, unchanged, for an id that is neither —
+  a cold load cannot be classified without downloading it, refusing one would
+  break every page that preloads a chat model, and a wrong guess is bounded by
+  the runner's own format check; (4) a **400 naming the repo, what it looks like
+  and what to pass**, for the one case with no excuse: the repo IS cached and
+  nothing here reads it. **No network call is added to either route** — every
+  step reads the local cache or a module constant. An explicitly passed
+  capability is validated and used unchanged, so this governs only the omitted
+  case.
 - **AI-8b** **A runner whose weights live outside RSS supplies its own memory
   probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
   arrays; the image runner needs it for an unrelated reason and the number was
@@ -6125,7 +6348,44 @@ an AI Models page that could say what was on disk but not what was *running*.
   states the Hub result cards already draw. And the cache answer is the PAGE's
   one walk, handed down, not a second walk Discover runs for itself: two walks
   meant two definitions of "on this machine" and a window where the tabs
-  disagreed about the same repo.
+  disagreed about the same repo. That handed-down answer is a **map of id →
+  path, and it answers the whole of what a card says about the local copy** —
+  the ✓, the absent Download button, *and* Explore's destination (`localCopy`).
+  Explore used to read `local.path` from the **search reply** instead, which is
+  frozen at the moment of the search: download a model from the results and the
+  re-walk turned the ✓ on while Explore stayed hidden, so the one card most
+  likely to want it offered no way to open the copy just fetched. Same fact,
+  same source, or they drift.
+- **AI-7d** **Every suggestion list is ordered SMALLEST FIRST, and the default
+  is position 0.** One rule, no second field: `catalog.SUGGESTIONS` is sorted by
+  ascending `size_gb` (an entry with no size sorts last), and
+  `catalog.default_for()` returns the first entry — which is what a `model`-less
+  `POST /api/ai/image` or `/api/ai/transcribe` loads. **The consequence is
+  accepted, not overlooked**: a bare `fused.ai.transcribe()` gets
+  `Systran/faster-whisper-small` (or `mlx-community/whisper-small-mlx`) rather
+  than the turbo checkpoint, and a bare text default is the 2B/1.7B. The
+  alternative — order by recommendation and mark the default with its own field
+  — was considered and rejected, because two orderings that can silently
+  disagree cost more than the accuracy a no-model call gives up. Reordering a
+  list so the "best" model leads is therefore a REGRESSION of this requirement,
+  not a fix; `tests/test_ai_runtime.py` asserts the sort and the four defaults.
+- **AI-7e** **A repo THIS APP downloaded as part of something else says whose it
+  is, and is never offered a Load** (D308). Two repos land in the Hub cache that
+  no user chose — `unsloth/FLUX.2-klein-4B-GGUF`, the quantized transformer
+  AI-9b's recipe swaps in (2.4GB), and `onnx-community/silero-vad`, the speech
+  detector AI-10f pre-fetches (2MB). Both listed as peers of real models with the
+  quiet "no engine" tag, which is true and explains nothing: deleting the first
+  breaks the image model that needs it, deleting the second costs a slower
+  transcription. The listing carries `component` (`owner`, `part`, `of`, `what`)
+  and the card wears "part of FLUX.2 klein 4B" instead of an engine tag, with the
+  consequence in its hover. **They stay on the page and stay deletable**: this
+  page's job includes showing what is eating the disk, so hiding 2.4GB would be
+  the opposite of it. The registry is `runners/formats.py`'s `COMPONENT_REPOS`,
+  for the reason `MFLUX_VARIANTS` is there — the ids are named inside runner
+  folders that are separate venvs the server cannot import, the workers read the
+  FILENAME back out of it rather than keeping a second copy, and a test asserts
+  every recipe's component repo appears there, so a new recipe cannot
+  reintroduce an unexplained row.
 - **AI-9** **Image generation is job-backed, and the reply decides everything
   but the pixels.** `POST /api/ai/image` answers immediately with a `jobId` to
   watch AND with the **path** and the **seed** already settled — so no second
@@ -6176,18 +6436,57 @@ an AI Models page that could say what was on disk but not what was *running*.
   → a ~2.6GB Q4_K_M GGUF), because "which quantization of which part is safe" is
   the same editorial judgement `catalog.py` makes about what to suggest, not
   something to infer from a file listing. A model absent from the table is not
-  unsupported — it loads the ordinary way. The recipe also decides what NOT to
-  download: the base repo's own `transformer/` is exactly the weights the
-  quantized file replaces, and fetching it would cost several GB for components
-  that are then ignored — but it skips the WEIGHT files, never the subfolder,
-  because `from_single_file` reads that subfolder's config and a "download" that
-  leaves a cache which cannot load offline has not done what the button said.
+  unsupported — it loads the ordinary way. The recipe also decides what IS
+  downloaded, **as an allow-list of what `from_pretrained` reads** (`keep`:
+  `model_index.json` plus the component subfolders, and the transformer's
+  `config.json` but not its weights) — never a deny-list of what to skip (D308).
+  A deny-list has to predict every extra bundle a repo may carry, and the first
+  one it met defeated it: FLUX.2 klein also ships its transformer as a
+  root-level `flux-2-klein-4b.safetensors`, 7.75GB the pipeline never opens and
+  no `transformer/*` pattern matched, so the skip list saved nothing and the
+  recipe cost 18.6GB where the model needs 10.8. The transformer's config is
+  kept because `from_single_file` reads that subfolder's config and a "download"
+  that leaves a cache which cannot load offline has not done what the button
+  said. `allow_patterns` and `ignore_patterns` are both first-class arguments of
+  `download_snapshot`, applied by one filter (`worker_base.selects`, hub's own
+  precedence — ignore wins) to the bar's total, the segmented fetch and the
+  fallback alike.
   **A scoped download measures itself against a scoped total**: one file out of
   a repo that publishes a dozen quantizations counts that file, and a pull that
   ignores a subfolder does not count it. Summing the whole repo either way is
   how a 2.6GB fetch came to read as a fraction of 30GB and then jump to
   complete; the reported figure is also capped at the total, since the disk walk
   sees siblings the download was never fetching.
+- **AI-9d** **Image generation has an MLX runner too, and like the other two
+  multi-runner capabilities it takes the Macs by default** (D310). `mflux_image`
+  renders FLUX on Metal from a single `mlx-community`
+  conversion whose components are all already 4-bit — so where the torch path
+  needs AI-9b's recipe (a ~2.6GB GGUF transformer plus ~8.2GB of base-repo
+  components — 10.8GB in all), this is one ~4.6GB snapshot with nothing skipped. On the
+  machine it was measured on it loads ~8x faster, halves cold time-to-first-image
+  and is ~15-20% quicker per image. **Its memory ceiling is an accepted risk
+  rather than a resolved one**, and is recorded because the failure it would
+  produce will not look like an ordering decision: MLX's allocator reserved a
+  ~23.6GB high-water pool during those renders — larger than torch's driver
+  allocation for the same picture — on a 34GB machine already several GB into
+  swap, and nothing has been run on the 16GB Macs that AI-9b's own note says
+  full-precision FLUX already OOMs. The way back is the engine preference
+  (AI-10e), which serves this case in both directions, and the runner's `note`
+  names the ceiling **on the Engines tab, under the picker that is the way
+  back** (D315) — it used to sit over Discover's image-generation section,
+  which is a page about downloads and two clicks from the only control that
+  answers it. Everything a page can see is
+  unchanged: same `/generate` body, same reply, same denoising-step row, same ✕,
+  and the SAME DEFAULTS (28 steps, guidance 4.0 — diffusers' numbers, not
+  mflux's own 4 and 1.0), because switching engines is a performance decision and
+  must not silently change what an unparameterised render means. Two mechanical
+  differences are worth naming: progress comes from mflux's per-model CALLBACK
+  REGISTRY rather than a callback argument, so the hook is registered once at
+  load and reads the live request from a slot (registering per call appends, and
+  the tenth render would report ten times); and the PNG is saved with
+  `overwrite=True`, because mflux's default resolves a collision by writing
+  somewhere else, and the server has already told the caller where the image
+  will be.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
   honest number rather than two that need reconciling. What the supervisor knows
@@ -6210,3 +6509,872 @@ an AI Models page that could say what was on disk but not what was *running*.
   interpreter and framework; the allocator carries buffers RSS has not seen yet),
   so the honest claim is "at least this much". A runner's probe that raises is
   worth no memory figure, never a broken `/health`.
+- **AI-10** **Speech to text is the third capability, and it is the first one
+  that works EVERYWHERE** (D288). `automatic-speech-recognition` — the Hub's own
+  tag — served by a `faster_whisper` runner folder built on CTranslate2, which
+  publishes wheels for macOS on both architectures, Linux and Windows. That
+  choice is the point of the bullet: mlx-whisper would be quicker on Apple
+  Silicon and would have made ASR a *third* Apple-Silicon-only feature, and an
+  app whose local AI is something most users read about is not the app this is
+  meant to be. An `mlx_whisper` runner **has since been added ABOVE this one**
+  (AI-10c, D302) — the registry's first-match-wins ordering (AI-2) existed for
+  exactly that — so a Mac transcribes on Metal and every other platform still
+  arrives here. Both Whisper directions ship:
+  `task: "transcribe"` (same language) and `task: "translate"` (into English)
+  are one flag to the model, so omitting either would only buy a second change
+  later — but the value is **named, never silently defaulted**, since
+  "translation" instead of "translate" would transcribe in the original language
+  and read as the model ignoring the request. `language` omitted means Whisper's
+  own auto-detect. **The whole audio dependency stays inside the runner folder**:
+  faster-whisper decodes through PyAV, whose wheels carry the ffmpeg libraries,
+  so nothing shells out to an `ffmpeg` binary this app does not ship — the rule
+  AI-2 states about mlx and torch, applied to a system tool. **The format
+  constraint is surfaced rather than hidden**: the runner loads CTranslate2
+  conversions, so a transformers-format repo like `openai/whisper-large-v3` will
+  not load however happily the AI Models page offers it a Load button (the same
+  situation text generation has with GGUF and AWQ). The load error names the
+  cause and a repo that works, because a user who picked the wrong one should
+  learn it from the error rather than from a web search. Text-to-speech and
+  audio generation stay in `NO_RUNNER_YET` as SEPARATE future capabilities, not
+  as a direction flag on one "audio" capability: AI-4 keeps one resident model
+  per capability, so sharing one would have a synthesis model and a Whisper
+  model evict each other on every alternation.
+- **AI-10a** **A transcription is job-backed like an image, and its result is a
+  FILE.** `POST /api/ai/transcribe` answers immediately with a `jobId` and with
+  the output paths already settled, exactly as AI-9 does — a 90-minute recording
+  is minutes of decoding, so nothing waits on it, and the wait for a cold model
+  belongs inside the job for the same reason it does for a render. Progress is
+  **seconds of audio** (`unit: "s"`, `done` = the last segment's end timestamp,
+  `total` = the decoder's reported duration), which is the unit the person
+  watching is thinking in, and the download manager renders that unit as a
+  CLOCK (`12:00 / 1:30:00`) rather than a bare pair, since `720 / 5400` is a
+  number a reader takes for segments or steps. **The ✕ has to reach two
+  phases, not one.** The per-segment loop is a real interruption point because
+  `transcribe()` hands back a generator that decodes as it is consumed — but
+  before it returns that generator it has already decoded the entire file and
+  run the VAD over it, which on a long recording is minutes. That eager phase
+  is therefore ticked from a thread (the poll IS the progress and the
+  cancellation point, as it is for downloads); leaving it behind a single plain
+  `report` left a window where the row sat at zero and a ✕ was not honoured
+  until the first segment landed. **And it gets its OWN socket timeout**
+  (`TRANSCRIBE_TIMEOUT_S`, four hours) rather than the 900s an image uses: the
+  worker sends nothing until the decode finishes, so that timeout covers the
+  entire run, and at 900s this feature's own motivating case — a 90-minute
+  recording, ~18 minutes of decoding — died on the socket while the worker went
+  on to write a transcript nobody was told about, still holding `GENERATE_LOCK`
+  so every queued request repeated it. It is a backstop, not the stop: the ✕
+  makes the worker reply and an unload closes the socket, both in seconds.
+  **A second transcription waits on the SUPERVISOR's side, not inside the
+  worker.** The worker serializes generations anyway, but by parking the second
+  request before its handler reaches `heartbeat()` — so with a four-hour
+  timeout that row got no ticks for hours and hit every timer in §36: stalled
+  at 30s ("no longer reporting" about work that is merely queued), swept at
+  600s, after which the bridge is told a still-running transcription failed.
+  Holding a supervisor-side lock instead is what makes the wait describable —
+  the row says it is queued, keeps saying so, and its ✕ is honoured, none of
+  which is reachable from inside a blocked `urlopen` that has sent the worker
+  nothing to cancel. **Every reporter on a transcription's lifecycle restates
+  the ROW'S IDENTITY on every tick** — title, kind, unit, cancellable, and
+  `state: "running"` — title, kind, unit, cancellable, `state` — so that a row
+  which had to be re-created comes back as the SAME row rather than one with
+  the same id. A report without a title is refused outright and the row never
+  returns at all; without `cancellable` it is drawn with a dismiss cross
+  instead of a cancel one, operable-looking and inert; without `unit` the
+  seconds clock reverts to a bare pair of numbers. The identity is defined ONCE
+  and handed to the worker in the request body rather than re-spelled in that
+  process, so the supervisor's reports and the worker's cannot disagree about
+  what the row is — the cold-model wait included, since it is the longest
+  reporter of the lot.
+  **Why the row can no longer vanish under a live transcription is BG-6's rule,
+  not a cadence here** (D288): the cap does not evict live server work. That is
+  the fix nine rounds of this feature had been compensating for from the
+  reporting side — restate the row harder, tick faster, rebuild on detection —
+  and none of it could reach the actual consequence, because `fused.watchJob`
+  resolves null after five consecutive misses and a promise that has settled
+  cannot be un-settled by a row that comes back. Maximum absence for a live
+  transcription is therefore ZERO, and the write cadence went back to being
+  what it sounds like: a display heartbeat, sized only so a row waiting its
+  turn is not shown as "no longer reporting", with the ✕ polled on its own
+  faster cadence because a cancel must not wait on a display. The restatement
+  above and the rebuild-on-detection stay as backstops for the one absence a
+  user can still cause — dismissing the row — and `fused.ai.transcribe`'s
+  absent-row branch is the same two lines `fused.ai.image` has: read the
+  artefact, and if it is not there, reject. It briefly grew a retry loop
+  instead, which could hang forever; that machinery is gone, because the fix
+  belonged in the manager.
+  **The turn is taken before the MODEL is resolved**, and
+  that ordering is load-bearing: resolving first put the one destructive step —
+  `_start_resident`, which EVICTS the resident model when the requested one
+  differs — outside the very lock that serializes this path, so a page asking
+  for a different Whisper model killed a 90-minute run mid-decode and lost its
+  transcript. One row per RECORDING (`sys:ai-transcribe:<uid>`). The
+  transcript is written under `<home>/ai/transcripts/` as a `.json` (segments
+  with timestamps, language, duration, model) and a `.txt` (plain words) —
+  **segments, not a flat token stream**, because the timestamps are most of what
+  Whisper produced and a transcript beside a player needs them. Writing a file
+  rather than streaming is the same argument the PNG makes: work that took four
+  minutes should outlive the tab that asked, and a page that navigated away
+  mid-run should still find it. **The input is an absolute path and there is no
+  allowlist**, deliberately: the worker is a process on this machine and opens
+  the file itself (nothing is uploaded), `/api/fs/raw` already serves any
+  absolute path because this app IS a local file explorer, and the protection is
+  D3/D36's `X-Fused` guard plus the worker's own token. The route normalizes the
+  path and refuses one that is missing or is not a regular file with a 400
+  before a job row opens — a typo deserves an error the caller can show, not a
+  progress bar that dies. A RELATIVE path resolves against the calling page's
+  directory via `base`, the same page-relative rule `/api/fs/raw` follows
+  (RH-1): `fused.readFile("clip.m4a")` already means "beside this page", so
+  resolving here against the server's cwd would 400 on a path the author never
+  wrote — or, if a same-named file happened to sit under whatever directory the
+  app was launched from, silently transcribe the wrong recording. Relative with
+  no `base` is refused rather than guessed. `fused.ai.transcribe({path, …})`
+  resolves with the
+  text, the segments and a ready-made `/api/fs/raw` url, and falls back to the
+  file when the row has aged out from under a backgrounded tab.
+- **AI-10b** **No audio has ever been transcribed by this code, and the two
+  bullets above should be read as a design that is tested only down to the
+  worker's door.** faster-whisper cannot run on CI — CTranslate2 plus a model
+  download — so the route, the supervisor, the job row, the glossary, the
+  catalog and the bridge are all exercised against a FAKE worker speaking the
+  AI-3 contract with canned segments, exactly as the image path is. The
+  runner's OWN logic is tested a level down — `faster_whisper/worker.py` is
+  stdlib-only at import time (`faster_whisper` and `ctranslate2` are imported
+  inside the functions that need them), so its decode loop, its
+  seconds-of-audio arithmetic, both cancel paths, the two Whisper directions,
+  the files it writes and the CTranslate2-format check are all driven on CI
+  against a stub model. **What no test touches is Whisper itself**: no audio is
+  decoded anywhere in this suite, so the numbers a real `info.duration` and a
+  real `segment.end` supply, the CPU-vs-CUDA placement, the int8 quality trade
+  and the actual transcription quality are unverified — as is the assumption
+  that PyAV opens the container formats users will point at it. A first real
+  transcription is the outstanding verification, and until it happens this
+  section describes a design that is proven only down to the model's door.
+- **AI-10c** **Apple Silicon transcribes on the GPU: an `mlx_whisper` runner
+  ABOVE the CTranslate2 one, indistinguishable to a page** (D302). AI-10 chose
+  CTranslate2 so the capability would exist everywhere and said an MLX runner
+  could be added later above it; this is that addition, and it is the first use
+  AI-2's ordering has had for a capability that already worked. Macs take MLX;
+  Windows, Linux and Intel macOS are untouched, which is the property that had
+  to hold. **The result dict, the two output files, the job row and the
+  seconds-of-audio progress are identical**, because `fused.ai.transcribe` is
+  about audio and not about backends — a page must not be able to tell which
+  ran. Three things cost work to keep that promise. **The audio is decoded in
+  this process**: `mlx_whisper.transcribe(path)` calls openai-whisper's
+  `load_audio()`, which spawns `ffmpeg` — the binary this app deliberately does
+  not ship — so the runner decodes with `av` to 16 kHz mono float32 and passes
+  the WAVEFORM, which the library accepts on the same argument. This is the same
+  rule AI-10 states, at the one place where following it is not free.
+  **Progress is borrowed rather than invented**: `transcribe()` is one blocking
+  call, so there is no per-segment tick to carry `done` — and reporting nothing
+  would freeze a bar that AI-10a and `runtime.js` promise moves in seconds of
+  audio. Chunking the audio here was rejected (whisper's own window seeking is
+  what keeps it accurate across a boundary, so hand-rolled chunks trade
+  transcript quality for a progress bar); instead the library's internal frame
+  counter is read by swapping the `tqdm` binding in its module for the duration
+  of the call. That is a reach into another package's internals and is treated
+  as one — guarded, restored on every path, and degrading to honest
+  indeterminate ticks rather than a made-up percentage if a future version
+  stops keeping a bar. It is coarser than faster-whisper's (one update per
+  decoded window, up to 30s of audio) and never ahead of reality. It also makes
+  the ✕ better than the CT2 runner's: the hook sits inside the decode loop, so
+  an abandoned transcription raises at the next window instead of running the
+  file to its end. **Memory is MLX's own accounting**, not RSS — Metal's
+  unified buffers are real and RSS cannot see them (AI-8a's argument, and the
+  reason a resident model would otherwise be priced at nothing).
+- **AI-10d** **The MLX runner has never transcribed real audio under test
+  either, and its dependency on a library INTERNAL is the part to watch.**
+  AI-10b's caveat applies unchanged — no CI can run Metal — with one addition
+  specific to this runner: the progress hook depends on `mlx_whisper.transcribe`
+  keeping a module-level `tqdm` binding, which is not part of its API. Both
+  branches are tested (borrowed, and absent), and the contract was verified by
+  hand against mlx-whisper 0.4.3 on an Apple Silicon machine: an `av` decode of
+  a real recording fed straight into `transcribe`, whose counter reported seven
+  windows over a 198-second file. What that verification did NOT cover is
+  transcription quality, the container formats users will point at it, and the
+  behaviour of a recording long enough to matter.
+- **AI-10f** **`vad` means the same thing on both whisper engines** (D320).
+  `fused.ai.transcribe` has always taken the flag, and until now the two
+  runners answered it differently: faster-whisper runs a Silero VAD filter and
+  drops the silence, while the MLX runner could only map it onto mlx-whisper's
+  per-window `no_speech_threshold`. Same API, same argument, two behaviours —
+  which is the one thing AI-10c says a second runner may not be. The MLX runner
+  now runs Silero itself, from the ONNX export on `onnxruntime`: **not**
+  faster-whisper's copy (that would drag `ctranslate2` into a Metal-only venv,
+  defeating the folder split) and **not** the PyTorch one (gigabytes for a 2MB
+  model). The repo is ungated, which the download rule requires of everything
+  this app fetches and not only of models a user picks. **Silence is dropped and
+  each speech region is transcribed on its own**, with every timestamp mapped
+  back to original-recording time. That is chunking, which AI-10c rejects for
+  progress — and the difference is where the cut falls: a VAD boundary is by
+  construction half a second of silence, where a sentence has already ended,
+  whereas a fixed offset cuts through one. What is still lost is conditioning
+  ACROSS a gap (`condition_on_previous_text` works inside one call), and
+  carrying the previous region's text in as a prompt was rejected rather than
+  forgotten: it invites the model to continue a sentence that finished before
+  the pause, which is the known route to a repetition loop. **Progress stays in
+  seconds of the ORIGINAL recording**: the borrowed frame counter denominates
+  whatever waveform the library was handed, so once silence is removed it
+  counts seconds of SPEECH, and reporting that against a total of the whole file
+  would be two units in one bar — a 90-minute recording with 30 minutes of
+  silence finishing at 60/90 and stopping. The counter is mapped through the
+  same region table the timestamps are. **A detector that cannot be fetched
+  degrades to transcribing everything**, saying so on the row and in the log,
+  rather than failing a transcription that works without it — but it is fetched
+  during Download precisely so an offline machine still has it.
+- **AI-10e** **Which engine serves a capability is a user preference, and an
+  unusable one is IGNORED rather than obeyed** (D302). Runner selection was
+  implicit — first-match-wins over registry order, filtered by availability —
+  which was a complete answer while the order was decided by hardware. With two
+  capabilities carrying two runners each, `prefs.json` gains `engines`:
+  capability → `"auto"` (the default, and the absence of a key, meaning exactly
+  the previous behaviour) or a runner code. `registry.resolve()` honours it, and
+  every consumer goes through that one call, so the supervisor, the catalog and
+  the API cannot disagree about which backend is in play. **A preference naming
+  a runner that cannot run HERE is dropped and the ordering decides**, with the
+  reason carried out for the page to show. That asymmetry is the design rather
+  than a safety net: prefs.json is a plain file in a home directory people sync,
+  copy and restore, so a preference set on a Mac must not arrive on a Windows
+  machine and take speech to text away — a preference that quietly does nothing
+  is recoverable, a capability that has silently vanished is a bug report. The
+  stored value is never corrected on read either, because a choice the user can
+  neither see nor restore is worse than one that is not in force today. Three
+  consequences are surfaced rather than left to be discovered: changing an
+  engine EVICTS that capability's resident model (one capability holds one, and
+  it belongs to the backend that loaded it), the AI Models suggestions change
+  with it (a suggestion is only meaningful for the backend that will load it,
+  AI-11a/D293), and the runner rows in `fused.ai.models.list()` now carry
+  `active` beside `available` — the same answer until a preference could sit
+  between them, and different the moment one can.
+- **AI-10f** **What a backend is LIKE reads under the picker that chooses it**
+  (D315). A runner's `note` — MLX FLUX's memory ceiling, MLX Whisper's GPU
+  speed, PyTorch's NVIDIA-or-CPU — renders as a muted line beneath its
+  capability's row on the Engines tab, for the **effective** runner only, the
+  same discipline the "Using MLX LM." line above it follows. It used to head
+  the matching capability section on Discover, which was wrong twice: three of
+  six runners have a note, so those sections were blotchy and the sentences
+  read as noise; and the FLUX one is not a fact but the **instruction AI-9c's
+  accepted risk depends on** — the sentence that tells a 16GB Mac to switch
+  back to Diffusers — which has to be beside the control that switches. The
+  rows are uneven, and here that is information: this engine has a caveat, that
+  one does not. The field stays on `catalog.describe()` regardless; it answers
+  a question about the catalog, not about where a page prints it.
+- **AI-10g** **A THIRD engine serves transcription — `parakeet_mlx`, Apple
+  Silicon only — registered UNDER MLX Whisper so the default does not move,
+  and refusing what it cannot do rather than pretending** (D319). Parakeet-TDT
+  beats Whisper large-v3 on English word error rate, decodes several times
+  quicker again on the same Metal, is CC-BY-4.0 and does not hallucinate over
+  silence. It is still **not** the default, and that is the requirement rather
+  than a caution: v3 handles 25 European languages against Whisper's ~99, so
+  promoting it would silently regress every page relying on language detection,
+  producing a confident transcript in the wrong language instead of an error.
+  The row sits directly below `mlx-whisper`, and a user opts in per capability
+  on the Engines tab — AI-10e's machinery serving the case it was built for,
+  with no new plumbing. **The waveform reaches the library by borrowing its
+  loader.** `parakeet_mlx.transcribe` takes a path and calls `load_audio`,
+  which spawns ffmpeg (AI-10's rule again, at its sharpest — without ffmpeg the
+  library raises rather than degrading), so the runner decodes with `av` and
+  swaps the module's `load_audio` binding for the duration of one call. That
+  keeps the library's chunking AND its overlap token merge, which reimplementing
+  around `get_logmel`/`generate` would have cost; it is the same reach into
+  another package's globals AI-10c already makes for `tqdm`, guarded and
+  restored the same way, and a MISSING binding raises rather than falling
+  through to ffmpeg. Progress is the library's `chunk_callback`, which fires
+  before each chunk — so the reported position is that chunk's start: behind
+  reality, never ahead of it. **Three options are REFUSED by name**:
+  `task: "translate"`, `language` and `initialPrompt`, none of which this model
+  has an answer for. That is a deliberate, visible crack in AI-10c's "a page
+  cannot tell which engine ran", and it is the right place to put one — a loud
+  refusal naming the engine and the way out beats a silent substitution the
+  page cannot see. **`vad` still means one thing** (AI-10f): `runners/vad.py`
+  moved out of `mlx_whisper/` on its second caller and is now shared by the two
+  MLX engines, with a `vad.py` inside any runner folder a failing test. The CT2
+  engine is unchanged and does NOT read it — faster-whisper carries its own
+  Silero and is asked for it through `vad_filter`, which is what AI-10f settled
+  and why the flag already meant one thing across those two. On this engine it
+  is a wall-clock saving rather than a correctness fix, which changes why it is
+  wanted and not what it does. **The format check is on the CONFIG**: a Parakeet snapshot
+  carries `model.safetensors` like every transformers repo, so what identifies
+  it is a `nemo.collections.asr.models.…` class in `config.json` — and a match
+  claims the snapshot alone, or the text runners would offer to load a speech
+  model as a chat model. **Nothing here has transcribed real audio under test**;
+  AI-10b and AI-10d's caveat applies unchanged, against the `parakeet-mlx` 0.5.2
+  API.
+- **AI-11** **Text generation runs on every supported desktop platform, on the
+  backend that suits the machine — and TWO runners share one capability for the
+  first time** (D293).
+  MLX is Metal-only, so the app's flagship local capability was something a
+  Windows or Linux user could read about and not use: the exact complaint AI-10
+  answers for transcription, still standing for chat. A `transformers_text`
+  runner folder (torch + transformers) is registered BELOW `mlx_text`, and
+  AI-2's first-match-wins ordering does the rest — Apple Silicon prefers MLX
+  (faster on Metal, and its 4-bit catalog is sized for a 16GB laptop) but can
+  fall through to torch when MLX is unavailable, while Windows and Linux reach
+  torch directly. Intel macOS is not a distribution target and is not
+  advertised by the runner. Nothing else in the app learned that a capability
+  can have two runners, which is the claim AI-2 made and this is the test of it.
+  **The backend was chosen on packaging, not on benchmarks.** llama.cpp would be
+  the obvious pick and is refused by AI-2a: `llama-cpp-python` publishes an sdist
+  and no wheels at all, so declaring it would put cmake and a C++ toolchain —
+  MSVC, on Windows — between a user and the Download button, with its prebuilt
+  wheels on a private index that is a second thing to trust. torch is the
+  runtime this app already builds on users' machines for the image runner, so
+  its install path and its failure modes are known rather than guessed at.
+  `onnxruntime-genai` is the credible alternative (tiny, fast int4 on CPU,
+  DirectML reaching every Windows GPU) and was deferred rather than dismissed:
+  it only loads pre-converted ONNX repos, so the Hub models the page already
+  offers a Load button for would refuse — and as a SECOND text runner it would
+  break the rule that a model id never picks the runner.
+- **AI-11a** **The CATALOG is keyed by runner, and the page says which one it
+  resolved.** This is the part a second runner really did change. A suggestion
+  is only meaningful for the backend that will load it: `mlx-community/…` is
+  packed for Metal kernels and is an unusable download on a PC, while an
+  ordinary safetensors repo is the right answer there and the wrong one on a Mac
+  that has MLX. So `catalog.SUGGESTIONS` moved from capability keys to RUNNER
+  keys, and `catalog.describe()` resolves the runner the way a LOAD resolves it
+  — it used to take the first runner REGISTERED for a capability whatever its
+  availability, which with two rows would have told a Windows machine that text
+  generation "needs Apple Silicon" while a runner sat ready to serve it, under a
+  heading whose four suggestions it could not load. The curation rules for the
+  cross-platform list are three, each a failure this app has already shipped
+  once: unquantized safetensors only (every other format needs a package the
+  runner does not ship — the CTranslate2 trap AI-10 describes), ungated only (a
+  licence-gated repo 401s partway through a download for a user who did nothing
+  wrong), and sized for a machine with no GPU. One consequence had to be fixed
+  where it surfaced rather than where it started: an unavailable runner also has
+  no curated default, so `POST /api/ai/image` began answering "no image model is
+  configured" — true, useless, and hiding the actionable "the Diffusers runner is
+  not built yet" underneath. `registry.unavailable_reason()` tells the two apart,
+  because no runner is a fact about the MACHINE and no suggestion is a fact about
+  the catalog. **It reports EVERY runner's reason, not the first one's**, which
+  only became a distinction when a capability grew a second runner: three places
+  independently took "the first runner registered for this capability" — the
+  registry, `_runner_or_raise` and `start_image` — so a Linux machine whose
+  transformers worker was missing was told text generation "needs Apple
+  Silicon", naming the one backend that was never going to serve it. The three
+  copies are now one, which is the actual fix; joining rather than picking is
+  the answer because there is no rule for choosing between two reasons that is
+  not a guess about which the reader meant.
+- **AI-11e** **A model the user DOWNLOADED is in `catalog()` too, and it cannot
+  become the default** (D323). The curation is a shortlist, not a whitelist: the
+  Discover tab's Hub search downloads any repo the user chooses, and until now the
+  bytes landed in the cache and the model then appeared in **no page's picker at
+  all** — every page reads `fused.ai.models.catalog()`, which was the curation and
+  nothing else, and `fused.ai.models.list()` reports only resident workers and
+  in-flight fetches, so no merged view existed anywhere. `/api/ai/catalog` now
+  unions each capability's curated list with the cached repos whose inferred
+  capability matches, and every entry carries `source` (`"curated"`/`"cached"`),
+  `downloaded` and `loaded` beside the `{id, label, size_gb, note}` a picker
+  already reads — so three shipped apps gained the models with no change to any of
+  them, which is why the union is in the payload rather than in each page.
+  **The cached half is per RUNNER, exactly like the curated half.** A capability is
+  not enough to put a repo in a list — AI-11a's whole point is that one capability's
+  backends read mutually unloadable formats — so a cached repo is injected only when
+  the runner the row resolved is among the ones that would accept its snapshot
+  (`CachedModel.loaders`, straight from `ai/runners/formats.py`). That drops
+  `openai/whisper-large-v3`, a speech model neither shipping speech runner reads, and
+  an MLX conversion on a Mac switched to Transformers; injecting on capability alone
+  put both into pickers whose load then refused them by name. **Dropped, not flagged
+  `available: false`**: `models[]` has no availability field and every consumer reads
+  it as "things I may offer", so a flag would leave existing pages offering the repo
+  until each learned a new key. It is not hidden — the Local tab lists it with the
+  actionable engine reason, which a dropdown option cannot carry.
+  **Appended, never merged into the ordering.** `entry.default`,
+  `catalog.default_for()` and `catalog.for_capability()` still answer over the
+  curated list alone, because `default_for()` is what a bare `fused.ai.image()` or
+  `fused.ai.transcribe()` loads and AI-11a's smallest-first rule would otherwise
+  let a 3KB folder off the disk decide it. The cached tail is sorted by that same
+  rule so the halves read as one list. Wherever anything is curated, index 0 is
+  curated and agrees with `default`; **the one case a cached entry leads is a runner
+  with no `SUGGESTIONS` key at all**, where `default` is null because there is
+  nothing to recommend — so the contract is read `default`, never `models[0]`, and
+  `source` is on every entry so a consumer inventing a fallback can refuse an
+  uncurated one. The capability inference is `ai_models`' own — the very reading the
+  Load button is drawn from — because a picker offering a model and a `load()`
+  refusing it must not be able to disagree (D321); repos with no inferable
+  capability, component repos and datasets are therefore not injected anywhere,
+  since inventing a capability is the bug D321 closed. The scan is memoised on
+  MTIMES — the cache directory's entries plus each repo's own four directory mtimes,
+  four stats where the alternative is a recursive walk of every blob — with a
+  minutes-long TTL as a backstop for the only change no directory mtime can see, a
+  listed file still growing. The mtime half is not optional: a memo that outlived a
+  completed download would hide the model the user just fetched, which is precisely
+  the bug being fixed.
+- **AI-11d** **Reasoning is OFF by default, because it is invisible and the CPU
+  path cannot afford it.** Qwen3's chat template defaults `enable_thinking` to
+  true and three of the four curated models are Qwen3, so an ordinary question
+  emits a `<think>` block first — hundreds of tokens the caller cannot tell
+  apart from the answer, since `/generate` streams whatever the model produces.
+  At a few tokens a second on the CPU this runner exists to serve, that is
+  minutes of apparent silence on a machine already suspected of being slow. The
+  flag is passed to every model rather than to a list of known ones: kwargs land
+  in the Jinja render context, so a template that never mentions it does not
+  read it, and a tokenizer whose signature rejects it outright retries without —
+  a model that will not take the hint should still answer, just verbosely. The
+  same class of trap as the version floor beside it: `transformers>=4.51` is
+  what knows a `qwen3` exists, and an older resolution installs perfectly and
+  then fails every Qwen3 Download with `KeyError: 'qwen3'`, which reads as a
+  broken model rather than an environment one version too old.
+- **AI-11b** **The device is reported, because a model on a CPU works and looks
+  broken.** torch runs on whatever it can see, and what it can see is not
+  knowable from outside the process: **the PyPI torch wheel is CPU-only on
+  Windows** (its `nvidia-*` dependencies are all marked `platform_system ==
+  "Linux"`), so the ordinary outcome on a Windows machine with a graphics card
+  is a perfectly healthy model answering at a few words a second, with a green
+  LOADED card and a healthy memory figure and nothing on screen to explain the
+  speed. `worker_base.STATE` therefore carries a `device` that each runner sets
+  in its own `load()` — the same argument AI-8 makes about resident bytes: only
+  the process holding the weights knows. It surfaces twice, and the two are
+  different KINDS of statement: the loaded card shows a measurement (**on CPU**,
+  warning-coloured, beside the memory figure), while Discover shows a standing
+  fact about the backend above the cards, before any download, since that is
+  when it can still change a decision. All three runners report it — the image
+  runner has had the same Windows CPU-only problem since D257 and never said so.
+  **Windows CUDA was deferred, deliberately**: reaching it means pulling torch
+  from `download.pytorch.org` through a `[[tool.uv.index]]`, which costs EVERY
+  Windows user a ~3GB CUDA runtime to serve the ones with an NVIDIA card. The
+  trade is stated rather than hidden, which is what the device reporting is for.
+- **AI-11c** **No text has ever been generated by this runner, and AI-10b's
+  disclaimer applies verbatim.** torch cannot run on CI, so the registry, the
+  catalog, the resolution across four platforms and the API are exercised
+  against fakes, and the runner's OWN logic is tested a level down —
+  `transformers_text/worker.py` is stdlib-only at import time, so its format
+  refusals, its dtype-keyword choice, its device placement and its two
+  prompt-encoding paths are all driven on CI with stubs. What no test touches is
+  torch itself: the actual generation, the streaming, the real speed on a CPU,
+  and whether the four suggested repos load as expected. Their `size_gb` values
+  are full-snapshot download estimates from the Hub's per-file byte metadata,
+  not claims about measured filesystem usage (D295). A first real load is the
+  outstanding verification.
+
+## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
+
+Goal: the app could start a Claude Code session on demand — the split-view chat,
+and the apps API's scaffolding turn — but had no way to say *later*. Scheduling
+a message ("update the changelog at 6pm", "re-run the check tomorrow morning")
+had to be done outside the app, by a crontab line or a Task Scheduler entry
+invoking `agent.py` directly, and that turns out not to work in the way that
+matters: a scheduled turn launched from outside the app runs in a different
+world from one the user typed.
+
+- **SCH-1** **A durable schedule** (`fused_render/schedule.py`,
+  `<home>/scheduled_messages.json`). One entry per message:
+  `{id, target, message, due, session_id, permission_mode, state, created,
+  fired, run_id, error}`. On disk, not in memory (unlike the job registry, §36)
+  — the whole point is to outlive the app session that scheduled it. Branch-aware
+  through `storage.home_dir()`, so a dev checkout on a branch ref never fires the
+  baseline install's messages. A missing or corrupt store reads as "nothing
+  scheduled", the same degradation as every other registry here.
+- **SCH-2** **The app sends it, not the OS.** `supervisor/paths.py`'s
+  `child_environment` injects ~20 variables into every child the app spawns
+  (state/cache/runtime/temp/log dirs, the bundled rclone and uv, `TMPDIR`, the
+  `CLAUDE_CONFIG_DIR` passthrough), and `_plugin_argv` hands a session
+  fused-render's skills only when that contract is present. A cron line
+  reproduces none of it, so its turn silently becomes a *different install*:
+  other state dir, no skills. On macOS it is worse than different — per D72 a
+  process that is not the app does not inherit the app's Documents/Desktop TCC
+  grants, and the CLI's credentials live in the login Keychain of a GUI session
+  cron is not in; both spawn paths run headless (`claude -p`) where the `/login`
+  the CLI prints can never be actioned. Firing inside the server process makes a
+  scheduled turn environmentally identical to a typed one.
+- **SCH-3** **The cost, stated: nothing fires while the app is closed.** The page
+  says this where it is relevant rather than implying a guarantee it does not
+  have. Two mechanisms make it survivable:
+  - **SCH-3a** **Wall-clock comparison, never tick-counting.** Every tick asks
+    what is due *now*. A laptop that slept through a due time fires on the tick
+    after it wakes; an app that was quit fires on the tick after it starts.
+    Catch-up is not a feature — it is what the absence of tick-counting gets for
+    free, which is why the loop is a **startup event** (not the `create_app`
+    body: it sends things, and every test that builds an app would otherwise
+    spawn whatever the developer's store held) and does not sleep before its
+    first pass.
+  - **SCH-3b** **Missed work QUEUES and runs when the app next opens; there is no
+    bound by default.** The earlier design bounded catch-up at 24h on the reasoning
+    that a message meant for Tuesday's standup, fired unattended on Friday, is worse
+    than one that never fired. That reasoning was sound about *unattended* firing and
+    is answered directly now rather than by a timer: the queue is visible before it
+    runs (the Calendar's Queued strip), every entry in it can be cancelled, and a
+    running one carries its own cancel. Given a cancel affordance, a bound only
+    throws work away silently. `FUSED_RENDER_SCHEDULE_MAX_LATE` still reinstates a
+    bound where an operator wants one, and only then does an entry become `missed`.
+    `GET /api/schedule` reports `max_late_seconds: null` when unbounded — the page
+    must read null as "no bound", never as zero.
+- **SCH-4** **The claim is written before the spawn.** An entry becomes `sending`
+  *before* the helper is launched, so a process that dies mid-spawn leaves it
+  `sending` rather than `pending` and the next boot does not resend it; a sweep
+  later reports it as interrupted. That is the safe direction to fail — an unsent
+  message is a disappointment, a message sent five times over five crash-restarts
+  is an agent running unattended five times.
+- **SCH-5** **Permission mode is per-entry, default `auto`.** Same reasoning as
+  the apps API (`_APP_SESSION_PERMISSION_MODE`): nobody polls `decide`, so under
+  the strict default the first tool call parks a request until `PERMISSION_WAIT`
+  denies it — a message that "sent" and did nothing. The extra wrinkle here is
+  that the turn is unattended *by definition*, so the mode is recorded ON the
+  entry: "auto" is a choice made per message, not a property of scheduling.
+- **SCH-6** **A mount-backed target is refused**, in the router rather than the
+  model (the mounts registry lives above it). A scheduled turn is an agent turned
+  loose on a path; scheduling one against a FUSE mount would route around the
+  gate `templates/claude/condition.py` exists solely to be.
+- **SCH-7** **Routes.** `GET /api/schedule` lists and `GET /api/schedule/events`
+  reads undelivered outcomes (both unguarded, like every read);
+  `POST /api/schedule` schedules, `POST /api/schedule/cancel` withdraws, and
+  `POST /api/schedule/events/ack` confirms narration — all three
+  behind the D3 X-Fused guard — one schedules code execution and the other stops
+  it. Create takes **exactly one** of `due` (ISO 8601) or `delay_seconds`, so a
+  caller offering "in 30 minutes" never does timezone arithmetic; a **naive**
+  `due` is read as LOCAL time, because it came from a human writing the time on
+  their own clock. Only a `pending` entry is cancellable: the helper for a
+  `sending` one is already away.
+- **SCH-8** **The OS half launches the app and nothing else**
+  (`fused_render/schedule_wake.py`). It sends no messages and does not know what
+  one is; it asks the platform to have the app *running* at the times something
+  is due, and the app's own first tick (SCH-3a) does the rest. **macOS: a
+  LaunchAgent** — `launchd`, not cron, because it runs in the Aqua session (so
+  the app it starts has the Keychain and can prompt for consent) and it runs a
+  missed `StartCalendarInterval` when the machine next wakes, which cron does not
+  do at all. Intervals are written in **local time** (what launchd evaluates
+  against), capped to the soonest few (the plist is a wake-up list, not the
+  schedule), and `open -g -a` launches **without stealing focus** from whatever a
+  3am wake interrupted. **Windows and Linux get nothing new, deliberately:** both
+  already have a start-at-login toggle the supervisor owns (`_win32/startup.py`'s
+  Run key, `_linux/startup.py`'s autostart entry), and a schedule-specific timer
+  would be a third mechanism that can disagree with those two about whether the
+  app should be running. Everything here is best-effort: a failed plist write
+  makes messages fire less reliably, never lost, and must not fail the store
+  write that triggered it.
+  - **SCH-8a** **The wake stub reads the store; nobody hands it a view of it.**
+    `_sync_wake()` takes no argument. It cannot run under `_lock` — that would hold
+    the store across two `launchctl` subprocesses, letting one tick stall a
+    `GET /api/schedule` for as long as launchd takes — so it takes `_wake_lock`,
+    re-reads the pending times under `_lock`, releases, and only then shells out.
+    Callers used to snapshot the times inside their own locked block and pass them
+    in, and that lost writes: two mutations racing could reach `launchctl` in the
+    opposite order, and the older snapshot then overwrote the plist and **dropped
+    the newer message's wake time**, with nothing to resync until some later store
+    write happened along. Serialising the shell-out and re-reading inside it is
+    what makes "last to write the plist is last to read the store" true. Lock order
+    is `_wake_lock` then `_lock`, never the reverse — a caller still holding `_lock`
+    here inverts it, and two such callers deadlock, which is what the
+    "outside `_lock`, always" rule is really protecting.
+- **SCH-9** **One copy of the spawn discipline** (`fused_render/claude_spawn.py`).
+  The apps API and the scheduler need the identical posix_spawn posture — calling
+  `agent._start` in the server process fork()s with libproj resident and SIGSEGVs
+  the child before exec — plus the same poll that gets a run into its sidecar.
+  Extracted rather than duplicated, because that reasoning is the kind that gets
+  paraphrased into something false on the second telling.
+- **SCH-10** **Two surfaces, because nobody is looking when it happens.** This is
+  the one kind of work in the app with no audience at the moment it runs, so
+  "what did it do" cannot be left to a page the user has to think to visit.
+  - **SCH-10a** **A job row per send** (§36's registry, id `sys:schedule:<entry>`,
+    kind `task`). Opened `running` when the send succeeds and held for the whole
+    **turn**, not just the spawn — the spawn takes a moment, the turn can take
+    minutes, and the minutes are what is worth seeing. Its `detail` carries the
+    turn's phase and token count, and — the one worth having — reports **waiting
+    for permission** when `_poll` shows a parked card, because from the outside a
+    turn nobody has approved looks exactly like a slow one, and for an unattended
+    session that is the likeliest way to be stuck. `cancellable` is honest here in
+    a way it is not for most reporters: this process owns the run, so the
+    manager's ✕ calls `agent._cancel` and is an ACTION (`jobs.OWNER_SERVER`).
+  - **SCH-10b** **An event log the shell toasts** (`schedule.event_log()`,
+    `GET /api/schedule/events`) — append-only, monotonically ided, bounded. A
+    separate endpoint from the listing for the reason the mount-health log is
+    separate: this poll runs app-wide in every shell forever and must not carry
+    the page's payload. **The SERVER decides what is undelivered**
+    (`undelivered_events` + a guarded `ack` the shell POSTs after narrating), and
+    that is the correction to the first shape, which copied `useMountHealth`'s
+    "first successful poll is a silent baseline". That rule is right for mounts —
+    which emit nothing at startup by design — and exactly wrong here: the catch-up
+    pass emits its `missed` verdicts on the scheduler's FIRST tick, long before a
+    shell has loaded, so a client-side baseline swallowed precisely the events the
+    log exists to deliver. Acking after narrating means a client that dies in
+    between gets a duplicate toast rather than a silent miss, and a reload is quiet
+    without the client having to guess. It is an ack POST rather than a
+    drain-on-read because a GET with that side effect would let any page the user
+    visits silently consume their notifications. Kinds: `done` → info, auto-dismissing; `failed`
+    and `missed` → persistent errors with an action onto `/scheduled`. `missed` is
+    worded differently from `failed` on purpose — nothing went wrong, the app was
+    not running — but it still needs a person, because the user asked for
+    something that did not happen. The rules are a pure module
+    (`schedule-toast.ts`, bun-tested) with the polling left in the hook, the same
+    split `server-status.ts` uses.
+  - **SCH-10c** **`state` and `turn` are two facts, not one.** `state` says
+    whether the message was SENT; `turn` says how the session it started then went
+    (`""` until it ends, else `ok`/`failed`/`cancelled`). They fail
+    independently — a message can send perfectly and its turn still die on the
+    first tool call — and reporting a dead turn as a send failure would send the
+    user looking in the wrong place. The page labels a sent row by its turn
+    ("Running…", "Ran", "Turn failed") and counts a still-running turn as live.
+  - **SCH-10d** **The watcher wraps the recorder, it does not replace it.**
+    `record_session_when_ready` gained an optional `on_tick` observer (called
+    before its `done` check, since that final tick is where the outcome is), whose
+    exceptions are swallowed: the sidecar write and the commit must happen whether
+    or not anything is watching, so an observer is never allowed to abandon a run.
+    Every report is best-effort — a registry that refuses a field must not cost a
+    message its send.
+  - **SCH-10e** **A turn abandoned by a dead process is closed by the sweep.**
+    `sent` with an empty `turn` means two different things — a turn running
+    normally, and one whose watcher died with the app mid-turn — and the store
+    cannot tell them apart, because the difference is only knowable by a live
+    process. `schedule._watched` holds the entry ids this process is watching
+    (registered BEFORE the store says `sent`, so a concurrent sweep cannot close a
+    turn that is about to be watched; deregistered in a `finally`, so a finished
+    turn does not stay invisible to the sweep instead). The sweep closes any `sent`
+    entry with no `turn` that nothing is watching: `state` stays `sent` because the
+    message did go, `turn` becomes `unknown` — the same word SCH-10d's
+    `_close_unwatched` uses, which is the in-process floor under a watch that ENDS
+    and by construction cannot cover a process that DIES. Left unclosed the entry
+    cost three separate things: the page read `Running…` for ever, no toast ever
+    said what happened, and — the one that costs a future message rather than a
+    label — its session stayed in `_busy_sessions`, so the next scheduled message to
+    that conversation was held back tick after tick until the catch-up bound gave up
+    and called it missed.
+- **SCH-11** **Scheduling happens in the claude template's composer, not on a
+  settings page** (`templates/claude/template.html`, the **Send now** pill beside
+  the model/effort/approvals pills). The composer already holds the two hard
+  parts — WHICH FOLDER (the template is bound to one target, `FILE`) and WHAT TO
+  SAY — so the only thing it was missing is *when*. A settings page asking for a
+  path and a message again was making the user do twice what they had already
+  done once, and typing an absolute path by hand was the worst affordance in the
+  feature.
+  - **SCH-11a** **Presets, not a date picker.** The pill row is a fixed
+    vocabulary and a `datetime-local` field wedged between the pills would read as
+    a different app; "in an hour / this evening / tomorrow 9am / Monday 9am" is
+    what a deferred prompt actually wants. `POST /api/schedule` still takes an
+    exact `due`, so nothing is lost for a caller that needs 03:14. Presets resolve
+    at SEND time — "tomorrow 9am" means tomorrow from the moment the user commits,
+    not from whenever the pill was touched — and a preset already past today (the
+    evening case) is reported rather than silently shifted a day.
+  - **SCH-11b** **The choice does not outlive its message.** Model, effort and
+    approvals persist in `fused.params` because they describe how the chat
+    behaves; "send it at 6pm" describes ONE message, so the pill resets to
+    **Send now** after every send. A deferral that survived its own send would
+    silently defer whatever the user typed next.
+  - **SCH-11c** **The approvals pill applies to the scheduled turn**, which is the
+    same question asked about the case where the answer matters most. The
+    composer's four modes and `schedule.PERMISSION_MODES` are therefore held
+    together by a test (`test_claude_schedule_pill.py`): the first version of that
+    copied tuple omitted `acceptEdits`, so a composer sitting on that mode had its
+    schedule refused with a 400 naming modes the user had never chosen.
+  - **SCH-11d** **Annotations are not folded into a scheduled message**, unlike a
+    sent one. A note is a crop of what is on screen *now* plus a pointer into this
+    render of the pane, and by the time the message runs the pane may show
+    something else. A scheduled message is the words; the pending notes stay
+    pending. An annotation-only send is therefore refused with a reason rather
+    than deferred.
+  - **SCH-11i** **The two list groups run in OPPOSITE directions**, because "most
+    relevant first" means opposite things about the future and the past: live
+    entries ascending (the next thing that will happen, at the top), handled ones
+    DESCENDING (the latest news, at the top). One direction for both was a straight
+    bug, found by hand: it buried what had just run under every message ever
+    scheduled, and got worse the longer the feature was used. A handled entry sorts
+    on when it ACTED (`fired`), falling back to `due` for one that never did —
+    `missed` and `cancelled` carry no fired stamp — which is also the stamp its row
+    displays, so the order matches what the reader is reading. Ordered by
+    `list_entries`, not the page: the page filters the one list into its two
+    sections and must not re-sort or reverse what it is handed.
+  - **SCH-11j** **The page's URL is served by `routers/shell.py`**, like every
+    other shell route. Omitting it is invisible to whoever built the page — in-app
+    navigation is a client-side pushState that never asks the server — and 404s for
+    anyone who refreshes or bookmarks. `/scheduled` shipped that way and was found
+    by hand. `test_shell_routes.py` now DERIVES the list from the shell's own route
+    table (the `pathname === "…"` comparisons in App.tsx) and requests each for
+    real, so the next page added without a server entry fails a test rather than
+    waiting for someone to press ⌘R.
+  - **SCH-11k** **A scheduled message is a CARD**, in the grid and shell the apps
+    hub already uses (`.apps-cards` / `.app-pcard`: auto-fill columns, `--bg-alt`
+    on a 12px radius, a hover lift) so it reads as the same kind of object as the
+    rest of the app's cards. Borrowed, not re-invented — these carry no thumbnail,
+    so only the shell comes across, and the columns are narrower (280 vs 300)
+    because a card here holds a few lines of text rather than a 16:10 preview. The
+    prompt is the card's subject and gets the body colour, clamped to four lines so
+    a grid keeps an even baseline with the full text in the title. Actions are
+    pinned to the foot (`margin-top: auto`) so buttons line up across a row however
+    long each prompt is. **Only `error` and `missed` tint their border** — the two
+    states that need a person — because a pill alone is easy to miss across twenty
+    cards, and if every card had an accent the accent would mean "this is a card"
+    rather than "look here". Those two **restate their tint on `:hover`**, without
+    which the generic card-hover border (two selectors to the modifier's one) wins
+    and pointing at a failed card is what erases the mark saying it failed.
+    The page runs at **two widths**, not one: it is built out of the settings
+    vocabulary, whose `.prefs-page > *` caps children at 760px, so a
+    `minmax(280px, …)` grid needing 868px for a third track sat silently two-up.
+    The sections holding cards get the ~1120px the app's other card grids use
+    (`.apps-cards`, `.fhb-grid`) while the prose inside them keeps the narrow
+    measure — two kinds of content in one page: text read a line at a time, and
+    objects scanned in a grid. Both invariants are arithmetic between rules in two
+    files, which nobody re-checks after changing one, so
+    `tests/test_schedule_css.py` reads the stylesheet's own numbers and pins them.
+  - **SCH-11e** **The page keeps the list and loses the form.** Every folder's
+    schedule in one place, with cancel and the outcomes, is the part that has
+    nowhere else to live; it points at the composer for the scheduling itself.
+  - **SCH-11f** **A chat left open picks up its own scheduled send.** The gap this
+    closes was reported from use and it was the composer's worst failure: a
+    scheduled message is spawned by the SERVER, so nothing in the page ever set
+    `activeRun`, and a chat left open past its own scheduled time sat on
+    "Scheduled for 12:20" while the session ran, finished, and edited files — the
+    page's only route to the truth being a reload. That made the composer a worse
+    place to schedule from than the settings page it replaced, where at least
+    nobody expected the conversation on screen. `pollScheduledRuns` reads
+    `/api/schedule` every 15s while the chat view is showing and hands any newly
+    fired run for this target to **`resumeRun`**, which is already written for a
+    run this frame did not start: live, it renders the user line and streams the
+    rest through `pollLoop`; already finished, it repairs the transcript from the
+    poll payload. Three guards, each earning its place: never over a live turn
+    (`resumeRun` would fight `pollLoop` for the frame); the first pass is a silent
+    baseline — taken AT LOAD, not one interval later, since baselining on the first
+    interval wrote off anything firing in the opening 15s as predating a frame it
+    had fired inside, which is exactly when a reader opens the chat because the
+    note told them to; and a run only attaches when it BELONGS on this screen — the same session by either id, or, with no
+    session yet, one that resumed nothing and so created a session this frame can
+    adopt. Splicing another conversation's turn into this transcript would be the
+    page lying about what was said where, which is worse than not attaching. The
+    confirmation note promises the turn will appear here, which is true only
+    because this exists; the two move together and a test says so.
+  - **SCH-11g** **A finished scheduled turn is APPENDED, which needed an opt-in**
+    (`resumeRun(run_id, {neverShown: true})`). `resumeRun`'s done path repairs
+    only what it can prove is missing — an empty log, or a last user bubble that IS
+    this run's message — because on the reload path it was written for, the restored
+    transcript may already hold the turn and appending would duplicate it. A
+    scheduled send is the opposite case: it fired *after* this frame rendered, so
+    the turn cannot be on screen and the caller knows it. Without the opt-in, a
+    scheduled turn that finished between two polls fell through both branches and
+    appeared nowhere — which is most of them, since a short turn beats a 15s poll,
+    so the first cut of SCH-11f fixed only the live case while the note promised
+    otherwise. A failed run appended this way gets its own user line first, or the
+    error reads as belonging to whatever the reader last said. **The flag suppresses
+    `matches` outright rather than adding a branch beside it**, which is the second
+    bug in this area: with matching still preferred, the same prompt sent twice ("run
+    the tests" now, those words scheduled for later) let the earlier identical bubble
+    match, and the repair stripped everything after it — DELETING that turn's real
+    reply to hang the scheduled answer there. The live path strips partial rows on a
+    match too, so the suppression is folded into `matches` itself, in one place,
+    covering both. **And `neverShown` is only sound while the visible transcript
+    postdates every already-fired run**, which a session SWITCH breaks: `loadHistory`
+    restores the new session's history, already containing any scheduled turn that
+    ran in it, so attaching appended a second copy. `scheduleResetForNewTranscript`
+    therefore clears both sets and re-baselines wherever the transcript is replaced,
+    beside the other per-transcript clears — which is what makes `neverShown` true by
+    construction for the attaches that survive, and which supersedes the earlier
+    reasoning that a foreign-session run was left unmarked so a later switch could
+    adopt it. Adoption is history's job, not the poller's.
+  - **SCH-11h** **A run is written off only once it is really handled.** Two sets,
+    not one: `SCHEDULE_ATTACHED` blocks a second attach, `SCHEDULE_NOTED` blocks a
+    repeated mention of a run that belongs to another session — which is
+    deliberately NOT marked attached, because this frame can switch sessions without
+    remounting and the turn would then belong here after all. The live-turn guard
+    sits adjacent to the `resumeRun` call with nothing awaited between: checked
+    before the fetch it could go stale, and `resumeRun` returning early on `sending`
+    while the id had already been written off lost the turn entirely. The attached
+    run also goes on the URL as `run` (a `replace` write, PR-3), for the same reason
+    `sendMessage` does it — a reload or a remounting mode switch re-attaches from
+    the param, and without it the stream was lost and the next frame's baseline then
+    wrote the same run off as predating it.
+
+### 41.b Recurring schedules and the calendar (D296)
+
+- **SCH-12** **A recurring job is a `recurring` TEMPLATE plus materialized
+  one-shot occurrences** (`repeats`: a 5-field cron line; occurrences carry
+  `template_id`). The template is never claimed or sent; each tick,
+  `_materialize` guarantees exactly one `pending` occurrence per live template,
+  computed from the latest occurrence ever created (never earlier than now).
+  Everything downstream — claim-before-spawn, job rows, the event log, the
+  watcher — handles only one-shots, unchanged.
+- **SCH-13** **A recurring backlog COALESCES to its latest run, never replays.**
+  Where a one-shot missed by a week still runs (SCH-3b), a repeat missed five times
+  runs **once** — replaying "daily at 9am" five times into one thread is not what
+  the words meant. `_coalesce` walks the recurrence before `_materialize`, keeps the
+  most recent missed occurrence and counts the rest onto it as `skipped` /
+  `skipped_note`, announced as a single event ("4 earlier runs skipped") rather than
+  four. Occurrences no longer carry `max_late: 120`; a legacy one is cleared by the
+  coalescer. `count`/`until` budgets are spent by skipped runs, following the same
+  rule `create` already applies.
+- **SCH-13a** **A repeating template LEARNS its thread on the first run.** A task is
+  a Claude session, so a repeat appends into one thread and `new_task_each_run` is
+  the opt-out — but that does not fall out for free, and assuming it did was a real
+  bug. A template is created with **no** session, because none exists yet: Claude
+  Code mints the id on the first turn. So when a run reports the session it actually
+  ran in, `_chain_session` writes that id back onto the TEMPLATE's `session_id`, and
+  every later occurrence inherits it. Three guards, each of which is a bug if
+  dropped: write only while the field is empty, so a re-report cannot thrash it and a
+  session the user chose deliberately is never overwritten; never write when the
+  template is set to fork; and fix up any ALREADY-materialized pending occurrence in
+  the same pass, because `tick` materializes the next run before the previous turn
+  reports, so run 2 normally already exists carrying `""`. `_busy_sessions` must also
+  union `session_id` with `claude_session_id`, or run 2 resumes run 1's thread while
+  its turn is still open. The `session_id` (input, "resume this") and
+  `claude_session_id` (answer, "what it ran in") split is preserved throughout: this
+  propagates run 1's ANSWER into run 2's INPUT, and never conflates the two on one
+  entry. The writeback also stamps **`session_learned`** on the entry, because a
+  `session_id` has two possible authors — a chat handoff the user supplied, which a
+  repeat must refuse, and this — and only the moment of writing knows which. It rides
+  with the id everywhere the id goes (`_materialize` copies both; `create` accepts it
+  so an edit, which is cancel + re-create, can re-state it) and is never invented for
+  a supplied id. Absent means NOT learned, which is what every entry stored before it
+  existed is.
+- **SCH-13b** **A rule anchored in the PAST runs once, on its most recent slot.**
+  A past-anchored template used to run nothing until its next future slot, because
+  `_materialize` computes from `base = now` and the anchor only sets the pattern
+  (time of day, weekday, nth-weekday). That is right for "monthly on the second
+  Wednesday" but reads as broken beside a past one-off, which fires immediately.
+  So a rule template with no occurrences yet walks anchor → now and materializes
+  **the latest slot at or before now**, at that slot's own time, marked `catch_up`.
+  The latest, not the anchor: "the oldest thing you missed" is rarely what anyone
+  wants re-run, and this is the rule `_coalesce` already applies to a repeat missed
+  while the app was shut — the same walk, extracted as `_walk_latest` and shared,
+  with `spend=True` for the coalescer (it bills `made` and counts `skipped`) and
+  `spend=False` here. Intervening slots are never materialized and never reported:
+  nothing happened at those times, so nothing is drawn at them either.
+- **SCH-13c** **A due message DEFERS while that conversation has a live turn.**
+  `_busy_sessions` only ever knew about scheduled sends, so a message due while the
+  user was mid-turn in the same session spawned a second `claude --resume` against
+  one transcript. Liveness is now asked of the same rule the session badge uses —
+  extracted to `fused_render/session_liveness.py` rather than duplicated, because it
+  is a 16KB tail read plus a housekeeping filter plus a `turn_duration` end-marker
+  plus two windows, and a scheduler that disagreed with the badge on any one of them
+  would hold a message the page calls safe. **Deferred, never dropped:** nothing is
+  written, so the entry stays `pending` and cannot be swept `missed` (catch-up is
+  unbounded by default). An unreadable or absent transcript answers "not live", so a
+  bad read can never park a message for ever. The user is never blocked from their
+  own chat — the machine waits, not the person.
+- **SCH-13d** **`POST /api/schedule/run-now` sends a pending message early and
+  leaves its `due` alone.** The Board's Upcoming → In Progress drag means "run it
+  now", and the schedule time is a fact about what was asked for, so history keeps
+  it and the row reads as having run early (`at` is scheduled-for, `ran_at` is when
+  it went; see SCH-15). Reuses `_claim`, the single `pending → sending` transition,
+  so claim-before-spawn is unchanged and run-now races a tick exactly as two ticks
+  race each other. Anything not pending is refused 409 with its own sentence.
+  Running one occurrence early leaves its template's rule, `made` and `due` alone.
+  A conversation with a live turn is refused rather than forced — a drag gesture
+  cannot consent to two processes on one transcript (SCH-13c).
+- **SCH-15** **`at` is when a message was scheduled for and never moves; `ran_at`
+  is when it actually went.** They were one field, and matching a run to its
+  transcript prompt overwrote the due time — so a task scheduled two days ago and
+  caught up today jumped to today's column. A calendar places chips by `at`, so the
+  chip stays on the day the work was asked for and the row says it ran late; the
+  Board's run-now case is the same field pair read the other way round. `last_active`
+  maxes over both, so a caught-up task still sorts as today's news while its chip
+  stays put.
+- **SCH-14** **Cron is parsed in-house** (`fused_render/cron.py`): `*`, numbers,
+  ranges, lists, `/n` steps, dow 0–7 with both 0 and 7 as Sunday, and the
+  standard dom-OR-dow rule; all arithmetic in naive LOCAL time because "daily at
+  9am" is a promise about the reader's wall clock. One question is ever asked of
+  it (next occurrence strictly after t), so a dependency was not bought for it.
+  Bad lines fail at `create` with the field named; a template whose stored line
+  stops parsing (hand-edited store) goes to `error` and is announced — silently
+  never firing again is the one outcome the feature must not have.
+- **SCH-15** **The page grew a week calendar (default) beside the card list**,
+  one toggle apart (persisted). Same entries, two questions: the calendar
+  answers "when", the list "what exactly happened". Future runs of a recurring
+  job render as dashed GHOST boxes from `upcoming` — a projection the SERVER
+  computes on `GET /api/schedule` (next 14 days) precisely so the client needs
+  no cron parser; ghosts that collide with the stored next occurrence to the
+  minute are not drawn twice. A box's popover reuses the card vocabulary, and a
+  ghost's cancel is honestly the TEMPLATE's cancel — a projection has no id.
+- **SCH-16** **Creation lives in BOTH places now**: the composer pill keeps the
+  convenient path (it knows the folder, holds the message) and gained an exact
+  `datetime-local` pick plus repeat presets; the page's New job modal serves the
+  calendar-first direction ("what should run Monday 9am?"), where no chat exists
+  to borrow from — an empty-slot click opens it with the time filled in. Preset
+  UI is a cron BUILDER: the generated line is always shown, so "Custom" is a
+  continuation, not a cliff. Cancelling a template cascades to its pending
+  occurrence; cancelling just the occurrence means "skip this one" and the
+  schedule continues.

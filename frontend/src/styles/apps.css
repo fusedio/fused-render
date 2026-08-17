@@ -190,6 +190,10 @@
   height: 100%;
   object-fit: cover;
   background: var(--bg-panel);
+  /* Hover live preview: the fade-OUT transition rides in AppPreviewCard's
+     inline style together with the opacity, so hover-end (which removes the
+     whole style) restores the still instantly — a transition here would fade
+     it back in over the just-unmounted iframe's blank thumb. */
 }
 
 .app-pcard-shield {

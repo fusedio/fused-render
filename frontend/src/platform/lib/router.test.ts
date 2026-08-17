@@ -22,7 +22,7 @@ import { describe, expect, test } from "bun:test";
   clearTimeout: globalThis.clearTimeout.bind(globalThis),
 };
 
-const { navigate, rewriteLegacyUrl } = await import("./router");
+const { navigate, rewriteLegacyUrl, withPreviewFlag } = await import("./router");
 
 // The url navigate() pushed, with the page sitting on `search` when it ran.
 // navigate reads location.search live (the framing flag is carried FORWARD, not
@@ -118,6 +118,22 @@ test("legacy settings sentinels map to their plain routes", () => {
   expect(rewriteLegacyUrl("/view/_account")).toBe("/preferences?tab=account");
 });
 
+// The Inference engines tab moved from Preferences to /ai-models, so this is a
+// tab that no longer exists on the page the url names. Left alone, Preferences
+// silently falls back to its default tab — which looks like the setting was
+// removed rather than moved, and is exactly the dead end the /view/_account
+// rewrite above exists to prevent.
+test("the engines tab is redirected to the page that owns it now", () => {
+  expect(rewriteLegacyUrl("/preferences?tab=engines")).toBe("/ai-models?tab=engines");
+  // Through the OLDER shape too: a bookmark from before the sentinel rename
+  // carries the same query, and mapping it to /preferences first would land it
+  // on a tab that is gone.
+  expect(rewriteLegacyUrl("/view/_prefs?tab=engines")).toBe("/ai-models?tab=engines");
+  // Every other Preferences tab is still a Preferences tab.
+  expect(rewriteLegacyUrl("/preferences?tab=indexing")).toBe("/preferences?tab=indexing");
+  expect(rewriteLegacyUrl("/preferences")).toBe("/preferences");
+});
+
 test("current urls pass through untouched", () => {
   expect(rewriteLegacyUrl("/explorer/view/Users/me/x")).toBe("/explorer/view/Users/me/x");
   expect(rewriteLegacyUrl("/apps/local/demo?_mode=claude")).toBe(
@@ -125,4 +141,20 @@ test("current urls pass through untouched", () => {
   );
   // A file legitimately named view/ deeper in the path must not rewrite.
   expect(rewriteLegacyUrl("/explorer/view/w/view/f")).toBe("/explorer/view/w/view/f");
+});
+
+// The `_preview=1` thumbnail stamp (D301: GET /render records an app open by
+// default; a card peek must say "I am a picture"). A miss here is invisible
+// until the /apps hub's recency order rearranges itself as cards scroll by.
+test("withPreviewFlag stamps the thumbnail param", () => {
+  expect(withPreviewFlag("/explorer/embed/w/app/index.html")).toBe(
+    "/explorer/embed/w/app/index.html?_preview=1",
+  );
+  // A bookmark's stored query (the saved view params) rides along.
+  expect(withPreviewFlag("/explorer/embed/w/d?sort=size")).toBe(
+    "/explorer/embed/w/d?sort=size&_preview=1",
+  );
+  // Idempotent: cards rebuild src every render; accumulating would reload.
+  const once = withPreviewFlag("/render?path=x");
+  expect(withPreviewFlag(once)).toBe(once);
 });

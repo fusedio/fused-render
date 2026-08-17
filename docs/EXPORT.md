@@ -135,7 +135,7 @@ runtime API is portable:
 | `fused.writeFile(...)` | ❌ | a hosted artifact is immutable. |
 | `fused.stat(...)` | ❌ | no filesystem to stat. |
 | `fused.ai(...)` | ❌ | runs the claude CLI — or a model resident on the author's own machine — neither of which a hosted page can reach. |
-| `fused.ai.image(...)` / `fused.ai.models.*` | ❌ | local inference (SPEC §40): a resident worker process on the author's machine, and a PNG on its disk. |
+| `fused.ai.image(...)` / `fused.ai.transcribe(...)` / `fused.ai.models.*` | ❌ | local inference (SPEC §40): a resident worker process on the author's machine, writing to its disk — a PNG for `image`, a `.json`/`.txt` transcript for `transcribe`, and for `transcribe` an input path on that filesystem too. Like `fileIndex` and unlike bare `fused.ai(...)`, these are **not** currently blocking export errors: the exporter's check requires `fused.ai(`, so a dotted call slips past it. Gate them on `fused.env`. |
 | `fused.fileIndex.search(...)` / `.query(...)` | ❌ | the index is a store on the author's own machine, built by scanning their filesystem; there is nothing behind it on a hosted page. Unlike `fused.ai` this is **not** currently a blocking export error, so a page that reads the index and is also meant to be deployed must gate on `fused.env`. |
 | `fused.watchJob(...)` | ⚪️ | must be a **no-op stub** in the hosted runtime, like `trackJob` (SPEC BG-14): the handle exists and `watch` resolves with null, so a page that observes server-owned work still exports and runs. There is no download manager — and no server-side work — on a hosted page to observe. The stub lives in the `fused` wheel, a separate repo; this row is the obligation on it, not a report of its state. |
 | `fused.trackJob(...)` | ⚪️ | a **no-op stub**: the handle and all its methods exist and resolve, so a page that reports progress exports and runs unchanged — there is simply no download manager on a hosted page to report to (SPEC BG-14). Unlike `fused.ai`, it does **not** block export: progress reporting is decoration, not data. |
@@ -154,7 +154,14 @@ faithfully, rather than shipping a page whose data calls 404 at request time:
 - **Literal `runPython` paths only.** A `runPython` path must be a quoted literal:
   a hosted entrypoint's served route name is derived from that literal, so a
   computed target (a variable, a template string) cannot be routed and is an error.
-- **No unsupported API.** `writeFile`/`stat` in the page are errors.
+- **No unsupported API.** `writeFile`/`stat`/`ai` in the page are errors. The
+  check matches `fused.<name>(`, so it catches `fused.ai(...)` but **not** the
+  dotted local-inference calls (`fused.ai.image(...)`,
+  `fused.ai.transcribe(...)`, `fused.ai.models.*`) — those export cleanly today
+  and fail at runtime on the hosted page instead. Whether they should block, or
+  stay a `fused.env` gating obligation like `fileIndex`, is an open call rather
+  than an oversight to patch quietly: a page that only reaches for a local model
+  behind an `env === "local"` branch is legitimately exportable.
 - **In-bundle paths only.** Absolute paths and paths escaping the page directory
   (`..`) are rejected — a hosted page can only reach files inside its bundle.
 - **Targets must exist.** A referenced `.py`/asset (or an `include` file) that

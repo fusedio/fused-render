@@ -1,5 +1,5 @@
-"""POST /api/ai-models/hub/search — models on the Hugging Face Hub, told apart
-from the ones already on this disk.
+"""POST /api/ai-models/hub/search — models on the Hugging Face Hub that this
+machine can actually run, told apart from the ones already on this disk.
 
 The AI Models page (§37) answers "what did I already download". This answers the
 other half — "what is there" — and the two are only useful *together*: the Hub
@@ -9,10 +9,36 @@ read three weeks ago, and would cost nothing to open. Every result here is
 cross-referenced against the local scan before it is returned, so a card can say
 **downloaded**, **partly downloaded**, or **not downloaded, ~7.3 GB**.
 
-**Read-only, and that is the whole feature.** Nothing here downloads a model,
-writes to the cache, or mutates anything. Downloading is a separate decision with
-a separate cost (gigabytes of someone's disk) and is deliberately not part of
-this module.
+**Every result is RUNNABLE HERE, and that constraint is the feature** (D313,
+narrowed by D316). This search used to return whatever the Hub returned —
+`sentence-transformers`, `bert-base-uncased`, a fill-mask model — over a page
+that could load none of them, and it said so in a caption under the box:
+"Search results are read-only". A browsing surface over tens of thousands of
+repos in front of an app that runs about four kinds of model is not a feature
+with a rough edge. So the constraint moved into the module: a row survives only
+if
+
+* its `pipeline_tag` maps, through the SAME table that decides whether a
+  downloaded model gets a Load button (`registry.capability_for_task`), to a
+  capability some registered runner serves. A repo with no pipeline tag at all
+  is dropped too — we cannot promise something we cannot classify.
+* it is not `private`. There is no step an ordinary account can take to reach
+  one, so a card for it could never be actioned by the person reading it.
+
+**The constraint is "an engine here can run it", not "nothing further is asked
+of the user"** — that is D316's correction. Gated repos come BACK, carrying
+their gate (`gated`: "auto" | "manual" | None), because a licence you accept by
+signing in and clicking is a step the user can take, and several of the
+best-known models on the Hub sit behind exactly one. The card says what is
+needed instead of offering a button that 403s.
+
+Every row therefore carries a non-null `capability`, which is exactly what the
+page needs to hand to `POST /api/ai/runtime/download`. **The filter is by
+CAPABILITY EXISTENCE, not by what resolves on this machine**: the Engines tab
+lists all three capabilities on every platform, a runner that cannot run here
+is a fact the download refuses with its own sentence, and making search results
+depend on the host would mean the same query answered differently on two
+machines for reasons neither user could see.
 
 **Search is nevertheless a guarded POST, and the reason is worth stating.** The
 app's rule is that reads are unguarded GETs (WF-5), because D36's protection is
@@ -65,6 +91,7 @@ import httpx
 from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.ai.registry import capability_for_task
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.routers.ai_models import (
     _FRIENDLIER_TAGS,
@@ -107,12 +134,22 @@ _SORTS = {
 
 _MAX_LIMIT = 60
 
-# The task filters the page offers. These are the Hub's OWN `pipeline_tag`
-# values — the far side has to recognise a filter for it to return anything —
-# ordered the way someone scanning a menu would read them: text, then vision,
-# then audio. Every one of them resolves through the shared glossary to a label
-# with a sentence, which `tests/test_hub_models.py` pins.
-_FILTER_TAGS = (
+# An unfiltered query is filtered HERE, so the Hub has to be asked for more rows
+# than the page will show or a search for a common word would come back nearly
+# empty after the supported-tag pass. Bounded, because this is somebody's home
+# connection and a public API: four pages' worth, never more than _MAX_FETCH.
+_OVERFETCH = 4
+_MAX_FETCH = 200
+
+# The tags a filter menu COULD offer: the Hub's own `pipeline_tag` values —
+# the far side has to recognise a filter for it to return anything — ordered the
+# way someone scanning a menu would read them: text, then vision, then audio.
+#
+# Which of them the page actually offers is not decided here (see
+# `supported_tags`). This list is the vocabulary; the registry is the authority
+# on what can be run, and keeping the two apart is what stops a new runner
+# needing an edit in this module to become searchable.
+_CANDIDATE_TAGS = (
     "text-generation",
     "text2text-generation",
     "image-text-to-text",
@@ -191,6 +228,24 @@ def _friendly_task(tag) -> str | None:
     if not isinstance(tag, str) or not tag:
         return None
     return _FRIENDLIER_TAGS.get(tag, tag.replace("-", " "))
+
+
+def supported_tags() -> tuple[str, ...]:
+    """The Hub pipeline tags this app can download AND run, in menu order.
+
+    Asked of the registry rather than listed here, and that is the whole point
+    of the split above. `capability_for_task` is the SAME function that decides
+    whether a repo already on this disk gets a Load button, so a search result
+    and a downloaded card cannot disagree about whether a kind of model is
+    runnable — which they would the moment two hand-maintained lists drifted,
+    and the drift would be invisible until a user downloaded 8GB of something
+    that then refused to load.
+
+    It follows that adding a runner for, say, text-to-speech makes that filter
+    appear here with no edit to this module, and that removing one makes it
+    vanish. `tests/test_hub_models.py` pins both directions.
+    """
+    return tuple(t for t in _CANDIDATE_TAGS if capability_for_task(_friendly_task(t)))
 
 
 def _estimated_bytes(safetensors) -> int | None:
@@ -278,32 +333,79 @@ def _local_state(cache_dir: str, dirname: str | None) -> dict:
     }
 
 
+def _gate(raw) -> str | None:
+    """The Hub's `gated` field as one of None / "auto" / "manual".
+
+    The Hub sends `False` for an open repo and the two strings for a gated one.
+    Anything else truthy is read as "manual": that is the stricter of the two
+    gates, and telling somebody a gate opens by signing in when it does not is
+    worse than telling them to go and look.
+    """
+    if not raw:
+        return None
+    return "auto" if raw == "auto" else "manual"
+
+
 def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
-    """One Hub result, joined to the local cache. None for anything without an
-    id — a row the page could not act on is a row it should not be given."""
+    """One Hub result, joined to the local cache — or None for a row this app
+    has no business offering.
+
+    **Three ways to be dropped, and they are the search's whole contract**
+    (D313, narrowed by D316). A row that reaches the page comes with a Download
+    button or with the one sentence that says what to do first, so every one of
+    these is the difference between an actionable card and one that apologises:
+
+    * no id — a row the page could not act on at all.
+    * a `pipeline_tag` no registered runner serves, or none at all. The tag is
+      classified by `capability_for_task`, the same function the Local tab's
+      Load button asks, so "searchable" and "loadable" cannot come apart.
+    * `private` — visible only because this machine happens to hold a token
+      that can see it. There is no step an ordinary account can take to reach
+      one: no licence to accept, no queue to join, so a card for it could never
+      be actioned by the person reading it.
+
+    **`gated` is NOT a drop, and the distinction is the point** (D316). It was
+    one, on the rule that every card must be downloadable — a rule drawn one
+    step too tight. A gate you open by signing in and accepting a licence is
+    not a repo nobody can have; several of the best-known models on the Hub sit
+    behind exactly that, and a search that silently omitted them was answering
+    a question nobody asked. The gate TRAVELS instead (`gated`: "auto",
+    "manual" or None), so the card can say what is needed rather than offering
+    a button that 403s. `manual` — the owner grants access by hand — is the one
+    case that needs more than logging in, and the Hub does tell us, so it stays
+    its own value; a truthy gate we do not recognise is read as `manual`, the
+    stricter reading, because guessing "just sign in" about an unknown gate is
+    the guess that wastes someone's afternoon.
+    """
     model_id = raw.get("id") or raw.get("modelId")
     if not isinstance(model_id, str) or not model_id:
         return None
+    if raw.get("private"):
+        return None
     task = _friendly_task(raw.get("pipeline_tag"))
-    tags = raw.get("tags")
+    capability = capability_for_task(task)
+    if capability is None:
+        return None
     safetensors = raw.get("safetensors")
     return {
         "id": model_id,
         "task": task,
         # The same sentence the local cards show on hover, so a task means the
         # same thing on both tabs or it means nothing.
-        "taskHelp": _TASK_HELP.get(task) if task else None,
-        "pipelineTag": raw.get("pipeline_tag") if isinstance(raw.get("pipeline_tag"), str) else None,
+        "taskHelp": _TASK_HELP.get(task),
+        "pipelineTag": raw.get("pipeline_tag"),
+        # Never null, by the drop rule above — it is what the page hands to
+        # `POST /api/ai/runtime/download`, which needs to know which runner is
+        # being asked for.
+        "capability": capability,
+        # None, "auto" or "manual" — never absent and never False, so the page
+        # tests one field for "is there a gate and what kind". A missing key
+        # would make "no gate" and "the Hub did not say" the same answer.
+        "gated": _gate(raw.get("gated")),
         "library": raw.get("library_name") if isinstance(raw.get("library_name"), str) else None,
         "downloads": raw.get("downloads") if isinstance(raw.get("downloads"), int) else None,
         "likes": raw.get("likes") if isinstance(raw.get("likes"), int) else None,
         "updated": raw.get("lastModified") if isinstance(raw.get("lastModified"), str) else None,
-        # `gated` is "auto"/"manual"/False on the Hub — anything truthy means
-        # the licence has to be accepted before a download would work, which is
-        # worth saying BEFORE someone tries.
-        "gated": bool(raw.get("gated")),
-        "private": bool(raw.get("private")),
-        "tags": [t for t in tags if isinstance(t, str)][:12] if isinstance(tags, list) else [],
         "params": _params(safetensors),
         "estimatedSize": _estimated_bytes(safetensors),
         "local": _local_state(cache_dir, dirs.get(model_id)),
@@ -394,16 +496,29 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     task_filter = (task or "").strip()[:60] if isinstance(task, str) else ""
     if sort not in _SORTS:
         return _error(f"unknown sort {sort!r}", status=400)
+    # A task nothing here can run is refused rather than searched for. The menu
+    # only offers supported tags, so reaching this is either a stale page or a
+    # hand-written request — and answering it with an empty grid would look
+    # like "the Hub has no summarization models" rather than "this app does not
+    # run them".
+    if task_filter and task_filter not in supported_tags():
+        return _error(f"nothing here runs {task_filter!r}", status=400)
     try:
         count = 24 if limit is None else max(1, min(int(limit), _MAX_LIMIT))
     except (TypeError, ValueError):
         return _error("limit must be a number", status=400)
 
     sort_field, direction = _SORTS[sort]
+    # With a task filter the Hub already returns only rows we keep, so asking
+    # for `count` is asking for what will be shown. WITHOUT one, the
+    # supported-tag pass runs here and throws most of a page away — a search for
+    # "small" sorted by downloads is mostly embedding models — so the request
+    # over-fetches and the reply is truncated after filtering.
+    fetch = count if task_filter else min(count * _OVERFETCH, _MAX_FETCH)
     params: dict[str, object] = {
         "sort": sort_field,
         "direction": direction,
-        "limit": count,
+        "limit": fetch,
         "expand[]": list(_EXPAND),
     }
     if query:
@@ -431,10 +546,14 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # only the handful of repos that turned out to be present.
     cache_dir = hub_cache_dir()
     dirs = _cached_dirs()
+    # `_model_row` is also the supported-tag filter (see its docstring): a row
+    # this app could not download and run comes back None and never reaches the
+    # page. Truncation is AFTER that pass, so `limit` means "rows you will be
+    # shown" rather than "rows the Hub was asked for".
     models = [row
               for row in (_model_row(r, cache_dir, dirs)
                           for r in payload["raw"] if isinstance(r, dict))
-              if row is not None]
+              if row is not None][:count]
     return {
         "models": models,
         "query": {"q": query, "task": task_filter, "sort": sort, "limit": count},
@@ -448,11 +567,18 @@ def api_hub_tasks():
     """The task filters the page offers: the Hub's tag, our label for it, and
     the sentence explaining what it means.
 
-    The TAGS are listed here because they are Hub vocabulary and this is the
-    module that talks to the Hub — a filter is only useful if the far side
-    recognises it. The LABEL and the sentence come from the shared glossary, so
-    a filter named "text generation" here means exactly what a downloaded model
-    labelled "text generation" means on the other tab.
+    **Only the ones something here can run** (D313). The menu used to list
+    every tag the Hub recognises — twenty-six of them, of which this app could
+    load four — so the filter that looked most like the point of the feature
+    was mostly a list of ways to get results with no working button.
+
+    The candidate TAGS are listed in this module because they are Hub
+    vocabulary and this is the module that talks to the Hub — a filter is only
+    useful if the far side recognises it. Which of them survives is
+    `supported_tags`, i.e. the registry's answer. The LABEL and the sentence
+    come from the shared glossary, so a filter named "text generation" here
+    means exactly what a downloaded model labelled "text generation" means on
+    the other tab.
 
     Deriving the tags by reversing the glossary is the tempting version and it
     is wrong: several labels there ("image generation", "video generation",
@@ -461,7 +587,7 @@ def api_hub_tasks():
     from one would quietly return nothing.
     """
     tasks = []
-    for tag in _FILTER_TAGS:
+    for tag in supported_tags():
         label = _friendly_task(tag)
         tasks.append({"tag": tag, "label": label, "help": _TASK_HELP.get(label)})
     return {"tasks": tasks}

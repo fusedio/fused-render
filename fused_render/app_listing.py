@@ -1,13 +1,16 @@
 """The entry contract behind `GET /api/apps`, extracted from its router.
 
 An app is a folder in the workspace, one to three levels down, whose entry is
-its `index.html`, else its first non-hidden direct-child `.html` in name
-order (`app_entry`, the shared rule — D269). The walk that finds them
-(`workspace_apps`, which is where the per-level rules are written down), and
-the facts reported about each one — a title read out of the entry, an authored
-`preview.png` thumbnail if there is one, and when the folder was last touched —
-live here rather than inside the route handler, so they can be tested and reused
-without a `TestClient`.
+its first non-hidden direct-child `.html` carrying the `<meta name="fused-app">`
+marker (`app_entry`, the shared rule — D269 for the sharing, D301 for the
+marker). THE MARKER IS THE ONLY SIGNAL: filenames — `index.html` included —
+declare nothing (D301 removed the name rules; a one-time migration stamped the
+existing workspace apps, and the managed pipelines stamp what they write). The
+walk that finds them (`workspace_apps`, which is where the per-level rules are
+written down), and the facts reported about each one — a title read out of the
+entry, an authored `preview.png` thumbnail if there is one, and when the folder
+was last touched — live here rather than inside the route handler, so they can
+be tested and reused without a `TestClient`.
 
 Nothing in this module raises for a directory it cannot read: a listing degrades
 to what it could see. The one deliberate exception is `app_entry`, which lets
@@ -24,28 +27,61 @@ from fused_render.index.ignore import SHARED_IGNORE_DIRS, MountGuard
 
 _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
+# The declarative app marker: `<meta name="fused-app">` in a page's head. A page
+# carrying it is the author saying "this file is a fused app's entry" — the ONE
+# signal that makes a folder an app (D301: filenames, `index.html` included,
+# declare nothing). Matched from the head bytes only (same budget as
+# `entry_title`): the tag belongs at the top of the document, and an unbounded
+# read per candidate would turn the workspace walk into a full-file scan of
+# every page on every listing.
+FUSED_META_NAME = "fused-app"
+_FUSED_META_RE = re.compile(
+    rb"<meta\s[^>]*name\s*=\s*[\"']?fused-app[\"']?", re.IGNORECASE)
+_META_SCAN_BYTES = 4096
+
+
+def has_fused_meta(html_path: str) -> bool:
+    """True when the page declares itself a fused app via
+    `<meta name="fused-app">` in its first 4 KiB. Never raises — an unreadable
+    page simply doesn't carry the marker."""
+    try:
+        with open(html_path, "rb") as fh:
+            head = fh.read(_META_SCAN_BYTES)
+    except OSError:
+        return False
+    return _FUSED_META_RE.search(head) is not None
+
+
+def text_has_fused_meta(text: str) -> bool:
+    """The marker check for a page already held as text (GET /render reads the
+    file — or the mount serve — before asking), same head-bytes budget."""
+    return _FUSED_META_RE.search(
+        text[:_META_SCAN_BYTES].encode("utf-8", "ignore")) is not None
+
 
 def app_entry(dir_path: str) -> str | None:
-    """An app folder's entry page: `index.html` if the folder has one, else the
-    FIRST non-hidden direct-child `.html` in name order. None only when the
-    folder has no top-level `.html` at all.
+    """An app folder's entry page: the FIRST non-hidden direct-child `.html`
+    (name order) carrying `<meta name="fused-app">`. None when no page in the
+    folder declares itself — a folder full of untagged html is NOT an app.
 
     Raises OSError when the dir can't be listed; every caller skips those.
+
+    THE MARKER IS THE ONLY SIGNAL (D301). The rule used to be name-based —
+    `index.html`, else the first `.html` in name order (D269) — which was a
+    guess about intent read off a filename: any checked-out repo full of html
+    became a grid of cards, and an app was invisible the moment its entry wasn't
+    named the blessed way. The marker is the author stating the intent, so
+    `index.html` now has ZERO special status — not even as a tiebreaker among
+    tagged pages, because a name rule kept "just in case" is the old guess
+    sneaking back in. Existing workspace apps were stamped by the one-time
+    migration (`meta_migration`); apps elsewhere are the user's to stamp (the
+    authoring skill carries the instruction).
 
     THE SAME RULE AS `templates/shared/app_entry.py::entry_html`, deliberately
     and to the letter — that module's docstring carries the reasoning, and
     `tests/test_shared_app_entry.py` and `tests/test_app_listing.py` ask both the
     same questions. A folder resolving to one page for the card that opens it and
     another for the template that renders it is the failure this parity prevents.
-
-    It USED to be narrower on purpose: the single non-hidden `.html`, with zero
-    or several meaning None ("ambiguous — the UI opens the folder"). D269 removed
-    that divergence rather than preserving it, on the owner's rule that a folder
-    with a top-level html IS that page at every surface. The narrow rule made a
-    two-page folder a card that opened a file listing — the one outcome the rule
-    forbids — and "ambiguous" was never a better answer than the deterministic
-    first page, which is the same page the chat, the history and the preview pane
-    have all been picking since the shared rule widened.
 
     The ONE divergence that remains is the OSError: this raises where the shared
     copy swallows, so `workspace_apps` can tell "unreadable, skip this folder"
@@ -57,21 +93,16 @@ def app_entry(dir_path: str) -> str | None:
     package, so neither side can reach the other. The parity is held by tests.
     """
     children = os.listdir(dir_path)
-    htmls = [
-        c for c in sorted(children)
-        if not c.startswith(".")
-        and c.lower().endswith(".html")
-        and os.path.isfile(os.path.join(dir_path, c))
-    ]
-    if not htmls:
-        return None
-    for c in htmls:
-        if c.lower() == "index.html":
-            return os.path.abspath(os.path.join(dir_path, c))
-    # `sorted` above is what makes "the first" a fact rather than whatever order
-    # the filesystem handed back — the shell and the templates read the same
-    # folder and must land on the same page.
-    return os.path.abspath(os.path.join(dir_path, htmls[0]))
+    # `sorted` is what makes "the first" a fact rather than whatever order the
+    # filesystem handed back — the shell and the templates read the same folder
+    # and must land on the same page.
+    for c in sorted(children):
+        if c.startswith(".") or not c.lower().endswith(".html"):
+            continue
+        p = os.path.join(dir_path, c)
+        if os.path.isfile(p) and has_fused_meta(p):
+            return os.path.abspath(p)
+    return None
 
 
 # The one authored thumbnail name. A card's picture of an app is otherwise the
@@ -146,8 +177,7 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
 
     `preview_image` is resolved HERE, and the asymmetry is the point: it has no
     such ambiguity to hand back (see `app_preview_image`), so resolving it once
-    in the shared shape is what keeps the workspace walk and the linked-app
-    registry from having to remember it separately.
+    in the shared shape keeps callers from having to remember it separately.
     """
     return {
         "name": name,
@@ -173,8 +203,8 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
     }
 
 
-# Deepest level below the workspace root the walk looks at. Level 3 is where the
-# `index.html` requirement applies and where descent stops outright.
+# Deepest level below the workspace root the walk looks at; descent stops
+# outright there.
 MAX_APP_DEPTH = 3
 
 # Vendor/build directory names that are never an app and never walked into.
@@ -219,48 +249,37 @@ def workspace_apps(root: str) -> list[dict]:
     to the page, and so was an app one level below a tag dir. The walk is now
     recursive, with the depth bound and the per-level rules below.
 
-    A PAGE IS WHAT MAKES A FOLDER AN APP, at every level — an entry-less folder
-    is a SHELF the apps sit on, never a card. So, relative to `root`, an app is a
-    non-hidden directory that:
+    A DECLARED PAGE IS WHAT MAKES A FOLDER AN APP, at every level: the folder's
+    entry is a direct-child `.html` carrying `<meta name="fused-app">`
+    (`app_entry` — the marker is the only signal, D301). An entry-less folder is
+    a SHELF the apps sit on, never a card. The rule is now UNIFORM across depths
+    1-3: the old per-depth name rules ("any html" at 1-2, `index.html` at 3)
+    existed to bound how far a filename could be trusted as a guess about
+    intent; the marker is not a guess, so one rule holds everywhere, and a
+    checked-out code repo full of untagged html contributes nothing at any
+    depth.
 
-      * DEPTH 1 or 2 — has an entry, i.e. any `*.html` that `app_entry` resolves.
-        A folder saved straight into the workspace
-        (`~/Documents/Fused/sine/sine.html`) is an app; `local/`, `showcase/` and
-        a `sandbox/<person>/` are not.
-      * DEPTH 3 — has an `index.html`, directly. The permissive "any page" rule
-        cannot be carried this deep: a checked-out code repo in the workspace
-        turns every third-level folder into a card (measured: 55 candidates on one
-        repo, 47 of them a single `templates/` tree). An explicit `index.html` is
-        the author saying "this folder is a page", the only signal worth trusting
-        that far down.
+    An earlier walk emitted entry-less folders as cards that opened a
+    directory. A real workspace showed why it had to go: `sandbox/` held ten
+    PEOPLE's folders with the 14 real apps one level inside them, so the page
+    drew a blank, title-less card for every person beside the apps it now also
+    found. The shelf and its contents both appearing is the tell. `app_dict`
+    still accepts `entry=None` (the dict contract predates the walk's page
+    requirement, and a future caller may hold an entry-less folder), so that
+    changed what the WALK emits, never the dict contract.
 
-    The two-level walk this replaced emitted entry-less folders as cards that
-    opened a directory, and depth 2 kept that rule at first. A real workspace
-    showed why it had to go: `sandbox/` held ten PEOPLE's folders with the 14 real
-    apps one level inside them, so the page drew a blank, title-less card for
-    every person beside the apps it now also found. The shelf and its contents
-    both appearing is the tell. `app_dict` still accepts `entry=None` — the
-    linked-app registry (`linked_apps.linked_apps`) passes one for a registered
-    folder that has no page — so this changed what the WALK emits, never the dict
-    contract.
+    DESCENT IS A SEPARATE DECISION: an entry-less folder is not a card but it
+    IS walked, which is exactly how the apps inside those ten people's folders
+    are found. Descent stops (depth 2 onward) at a folder WITH an entry — a
+    declared page owns its subtree ("this folder IS the page, what is below it
+    is my assets"); without the rule, a multi-page app scatters its own tagged
+    sub-pages across the grid as separate cards.
 
-    DESCENT IS A SEPARATE DECISION and did not change with that one: an
-    entry-less folder is not a card but it IS walked, which is exactly how the
-    apps inside those ten people's folders are found. Descent stops (depth 2
-    onward) only at a folder whose entry is literally
-    `index.html`. That name is the author declaring "this folder IS the page, and
-    what is below it is my assets" — without the rule, an app with an
-    `index.html` and a `sub/index.html` lists twice and a multi-page app scatters
-    its own pages across the grid as separate cards. ANY OTHER `.html` declares
-    nothing of the sort and does not block the walk: a repo cloned to
-    `<ws>/local/<repo>/` routinely carries a `coverage.html` or a `docs.html` at
-    its root, and treating that as "this repo is one page, its subfolders are
-    assets" silently deleted every app in the repo from the grid.
-
-    Depth 1 is descended unconditionally, even on an `index.html`: the top level
-    is the workspace's shelf of tag/repo folders, and one of those holding a
-    landing page (a `showcase/index.html`) must not delete every app underneath
-    it. So a top-level folder with a page lists AND its children still list.
+    Depth 1 is descended unconditionally, even when it has an entry: the top
+    level is the workspace's shelf of tag/repo folders, and one of those holding
+    a landing page (a `showcase/index.html`) must not delete every app
+    underneath it. So a top-level folder with a page lists AND its children
+    still list.
 
     `tag` — the page's "Repo" facet — is THE FIRST PATH SEGMENT at every depth,
     so `showcase/sub/bar` files under `showcase` exactly as `showcase/bar` does.
@@ -331,26 +350,112 @@ def _walk_apps(dir_path: str, root: str, depth: int, apps: list[dict],
         # The first segment of the path below the root, which for a depth-1
         # folder is the folder itself.
         tag = os.path.relpath(path, root).replace(os.sep, "/").split("/")[0]
-        # The one name that makes a folder declare itself a page — the depth-3
-        # requirement, and the only entry that stops the walk descending.
-        is_index = bool(entry_html) and os.path.basename(entry_html).lower() == "index.html"
-        if depth >= MAX_APP_DEPTH:
-            # An explicit index.html, nothing else, and no descent past here.
-            if is_index:
-                apps.append(app_dict(path, name, tag, entry_html))
-            continue
-        # A PAGE is what makes a folder an app, at every level. An entry-less one
-        # is a shelf the apps sit on, and it is still WALKED (below) — that is how
-        # the apps under it are found.
+        # A DECLARED page (`<meta name="fused-app">` — `app_entry`'s one rule)
+        # is what makes a folder an app, at every level. An entry-less one is a
+        # shelf the apps sit on, and it is still WALKED (below, depth
+        # permitting) — that is how the apps under it are found.
         if entry_html is not None:
             apps.append(app_dict(path, name, tag, entry_html))
+        if depth >= MAX_APP_DEPTH:
+            continue  # the walk never looks past depth 3
         # Descent is a separate question from emission. A symlink and a package
-        # are never descended; below the top level, a self-declared page
-        # (`index.html`) owns its subtree and any other `.html` does not.
+        # are never descended; below the top level, a declared page owns its
+        # subtree. Depth 1 descends unconditionally — see `workspace_apps`.
         if is_link or is_package:
             continue
-        if depth == 1 or not is_index:
+        if depth == 1 or entry_html is None:
             _walk_apps(path, root, depth + 1, apps, guard)
+
+
+def is_workspace_app_entry(fs_path: str, root: str) -> bool:
+    """Whether `fs_path` is the ENTRY PAGE of a listed workspace app — i.e.
+    whether `workspace_apps(root)` would report it as some app's `entry`.
+
+    The explorer's recents filter (shell/recents.py) asks this at record time
+    and on every GET: opening an app's entry page is already recorded in the
+    APP recents store (server/routers/apps.py), and the same open landing in
+    the file recents too put every app in both sidebar lists.
+
+    A targeted re-derivation of the walk, not a `workspace_apps` membership
+    test: the walk pays `entry_title`/`preview_image`/`metadata.json` reads
+    per app on every call, and this runs per recents record (including the
+    500 ms param-churn re-records) and per GET entry. Cost here is bounded
+    string work plus at most three listdirs (and `app_entry`'s marker sniffs)
+    on the LOCAL workspace.
+
+    The error asymmetry decides every ambiguous case: True hides the file
+    from the file recents, so anything indeterminate (OSError, mount-backed
+    root, outside the workspace) answers False — a duplicate row is today's
+    behavior, a file missing from both lists is a new bug. Parity with the
+    walk is held by tests (test_app_listing.py), same as the shared-template
+    copy of `app_entry`.
+    """
+    guard = MountGuard()
+    root = os.path.abspath(root)
+    if guard.blocks(root):
+        return False  # workspace_apps lists nothing under a mount
+    # The walk's first act is listdir(root), and an unlistable root lists
+    # nothing — the same probe here keeps parity (an execute-only root must
+    # not make a descendant "an app's entry" the walk would never emit).
+    try:
+        os.listdir(root)
+    except OSError:
+        return False
+    path = os.path.abspath(fs_path)
+    try:
+        rel = os.path.relpath(path, root)
+    except ValueError:
+        return False  # Windows cross-drive: not inside the workspace
+    if rel == "." or rel.startswith(".."):
+        return False
+    segments = rel.split(os.sep)
+    # The file sits directly in an app folder, so its own depth is the
+    # folder's + 1; folders list at depths 1..MAX_APP_DEPTH only.
+    parent_depth = len(segments) - 1
+    if not 1 <= parent_depth <= MAX_APP_DEPTH:
+        return False
+    # Reachability: every ancestor DIRECTORY must be one the walk descends
+    # into (or, for the app folder itself, one it lists). The name rules
+    # apply to all of them; descent rules apply to the ancestors ABOVE the
+    # app folder — a symlinked or `.app`-package app folder still LISTS, but
+    # a symlinked/package ancestor is never walked past.
+    for i, seg in enumerate(segments[:-1]):
+        lowered = seg.lower()
+        if (seg.startswith(".") or lowered in PRUNE_DIR_NAMES
+                or lowered.endswith(OPAQUE_DIR_SUFFIXES)):
+            return False
+        is_app_folder = i == parent_depth - 1
+        dir_path = os.path.join(root, *segments[:i + 1])
+        if guard.blocks(dir_path):
+            return False
+        try:
+            if not is_app_folder:
+                # An ancestor the walk must descend THROUGH: never a symlink
+                # or a package, and (below depth 1) never a folder with an
+                # entry of its own — a declared page owns its subtree. The
+                # entry probe runs at EVERY depth, depth 1 included, because
+                # the walk resolves each candidate's entry before descending
+                # and an unlistable folder ends its subtree there — only the
+                # ownership rule is depth-gated (depth 1 descends
+                # unconditionally, landing page or not).
+                if os.path.islink(dir_path) or lowered.endswith(PACKAGE_DIR_SUFFIXES):
+                    return False
+                ancestor_entry = app_entry(dir_path)
+                if i + 1 >= 2 and ancestor_entry is not None:
+                    return False
+            else:
+                # The app folder itself: a symlink or `.app` package here
+                # still LISTS when it holds a page, so only the entry rule
+                # applies.
+                entry = app_entry(dir_path)
+        except OSError:
+            return False  # unreadable anywhere: the walk skips it — record
+    # The entry rule is `app_entry`'s alone (the first tagged direct-child
+    # page — the marker is the only signal, D301, uniform across depths 1-3),
+    # so matching it is the whole remaining question.
+    if entry is None:
+        return False
+    return os.path.normcase(entry) == os.path.normcase(path)
 
 
 def entry_title(entry_html: str) -> str | None:

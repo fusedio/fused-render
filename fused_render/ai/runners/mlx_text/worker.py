@@ -44,9 +44,45 @@ def download(model_id):
     return worker_base.download_snapshot(model_id)
 
 
+def _mlx_load():
+    """`mlx_lm.load`, or an error that names the ENVIRONMENT rather than a module.
+
+    An ImportError out of mlx-lm is never about the model being loaded, and by
+    the time it reaches the AI Models page it has lost every trace of that: what
+    the user read was `Could not import module 'AutoTokenizer'`, printed beside
+    the name of a Qwen repo that was downloaded correctly, while the real
+    exception — three frames down, wrapped by transformers' lazy-module
+    machinery — was `ModuleNotFoundError: No module named 'filecmp'` out of the
+    bundled interpreter's incomplete stdlib.
+
+    So this says what is TRUE at this level and no more: mlx-lm could not be
+    imported, here is the environment, and here is the original error. What that
+    error MEANS is `worker_base.describe_failure`'s job, because it is not
+    specific to MLX — it walks the chain to the root and, for a stdlib module,
+    says that rebuilding the environment cannot help. Chaining with `from e` is
+    what makes that possible, so it is load-bearing rather than good manners.
+
+    Deliberately no longer claims an interrupted install. That was a guess, it
+    was wrong in the case that motivated this, and a confident wrong cause is
+    worse than none: it sent the user to delete an environment that was
+    installed perfectly.
+    """
+    try:
+        from mlx_lm import load as mlx_load
+    except ImportError as e:
+        raise RuntimeError(
+            f"mlx-lm could not be imported from the runner environment at "
+            f"{sys.prefix} ({e.__class__.__name__}: {e}). That is an environment "
+            "failure rather than a problem with this model — mlx-lm imports "
+            "transformers for the tokenizer, so the import that fails is rarely "
+            "the one named first."
+        ) from e
+    return mlx_load
+
+
 def load(model_id, path):
     """`path` is what `download` returned — the snapshot directory."""
-    from mlx_lm import load as mlx_load
+    mlx_load = _mlx_load()
 
     model, tokenizer = mlx_load(path)
     _loaded["model"] = model

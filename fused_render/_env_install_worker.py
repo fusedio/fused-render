@@ -209,8 +209,11 @@ def _acquire_python(version):
     # handle and SIGSEGVs before exec — a bare returncode -11 with no stderr. `uv` is
     # dir-qualified here (it comes from `shutil.which`), which posix_spawn also
     # requires; a bare command name forks despite the flag.
+    # This worker runs detached with no console of its own, so Windows would
+    # otherwise pop a fresh one for a console-subsystem child like uv.exe.
     proc = subprocess.run([uv, "python", "install", version], env=_uv_env(),
-                          capture_output=True, text=True, close_fds=False)
+                          capture_output=True, text=True, close_fds=False,
+                          creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     if proc.returncode != 0:
         # Verbatim, exactly like the requirements install below: uv's own text names
         # the real problem (an offline machine, a proxy refusing the download, no
@@ -335,7 +338,8 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
     # close_fds=False for posix_spawn rather than fork()+exec — the same discipline
     # every other spawn in this codebase follows; see `_acquire_python` above.
     proc = subprocess.run(cmd, cwd=project_dir, env=env,
-                          capture_output=True, text=True, close_fds=False)
+                          capture_output=True, text=True, close_fds=False,
+                          creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     if proc.returncode != 0:
         # Verbatim: uv's own text names the real problem (no wheel for this
         # platform, a bad pin, no network, a lock that no longer matches the
@@ -491,6 +495,33 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
         raise
 
 
+def _detach():
+    """Lead our own session, so this install outlives the request that began it.
+
+    The DETACHMENT is done here rather than by the spawner, and that is not a
+    style choice: `subprocess.Popen(start_new_session=True)` forces CPython off
+    `posix_spawn` onto `fork()+exec`, and the spawner is the SERVER process,
+    where PROJ is resident — its `pthread_atfork` child handler closes a stale
+    SQLite handle and the forked child dies of SIGSEGV before it ever reaches
+    this file (D277's crash; see `envinstall._spawn`). Called from the child,
+    a few milliseconds later, it buys exactly the same thing with no fork.
+
+    First statement of the run, before any record is written and long before uv
+    is started, because it is `envinstall._kill`'s `killpg` that reaches that uv
+    — and `_kill` only signals a group whose leader is this pid.
+
+    EPERM means we are already a process-group leader, which is the same end
+    state; anything else here is not worth failing an install over, since the
+    only thing lost is the tidiness of the teardown.
+    """
+    if os.name == "nt" or not hasattr(os, "setsid"):
+        return  # Windows detaches at spawn time (DETACHED_PROCESS) and never forks
+    try:
+        os.setsid()
+    except OSError:
+        pass
+
+
 def main(args):
     """`<key> <progress_dir> <project_dir> <venv_dir> <uv_cache_dir>
     <python_executable> <acquire_python>`
@@ -500,6 +531,7 @@ def main(args):
     the literal `""` instead, the last slot would have this worker try to download a
     Python version called nothing on every ordinary install.
     """
+    _detach()
     if len(args) < 7:
         print(__doc__, file=sys.stderr)
         sys.exit(2)

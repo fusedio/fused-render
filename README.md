@@ -132,8 +132,12 @@ Any `.html` file can call it and bind the result to the URL:
   reproduces its exact state.
 - `fused.ai(prompt, opts?)` — ask an AI model through the `claude` (Claude
   Code) CLI on your machine; resolves with `{text, model, usage}`. Pass a
-  Hugging Face repo id as `model` (`"mlx-community/Qwen3-8B-4bit"`) and the same
+  Hugging Face repo id as `model` (`"Qwen/Qwen3-4B-Instruct-2507"`) and the same
   call runs a model **locally** instead — the slash is what tells them apart.
+  Local chat works on every supported desktop platform: MLX is preferred on
+  Apple Silicon with PyTorch as its fallback, while Windows and Linux use
+  PyTorch directly. The AI Models page suggests models that suit whichever
+  backend your machine got.
   Local calls also take `history` (prior `{role, content}` turns, for a
   conversation rather than one question) and can be stopped mid-answer with
   `fused.ai.cancel()`.
@@ -142,6 +146,13 @@ Any `.html` file can call it and bind the result to the URL:
   chosen for you if you don't pass one, so a render is always repeatable). It
   runs for minutes, so `onProgress` fires per denoising step and the download
   manager's ✕ really stops it.
+- `fused.ai.transcribe({path, ...})` — speech to text, locally: point it at an
+  audio or video file on this machine and it resolves with the words plus the
+  `{start, end, text}` segments that carry their timestamps. `task` picks
+  between transcribing in the original language and translating to English; the
+  language is auto-detected unless you name one. It runs for minutes, so
+  `onProgress` fires with seconds of audio and the download manager's ✕ really
+  stops it, and the transcript is written to a file so it outlives the tab.
 - `fused.ai.models.list() / load(id) / unload(id)` — what this machine is
   holding in memory and what it costs. See the **AI Models** page
   ([docs](docs/usage.md#ai-models)).
@@ -162,7 +173,8 @@ Any `.html` file can call it and bind the result to the URL:
   it describes. Your page is the only thing that can stop its own work, so the
   ✕ here is a *request* you honour by checking `cancelRequested`.
 - `fused.watchJob(id)` — the other half: watch work the **server** is doing
-  (`fused.ai.image()` and `fused.ai.models.load()` both hand you an id) with
+  (`fused.ai.image()`, `fused.ai.transcribe()` and `fused.ai.models.load()` all
+  hand you an id) with
   `.onUpdate(cb)`, `.get()` and a `.cancel()` that really stops it — the server
   owns those processes, so its ✕ is an act rather than a request.
 

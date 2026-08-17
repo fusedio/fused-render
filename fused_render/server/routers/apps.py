@@ -3,24 +3,16 @@ and scaffold new ones.
 
 Apps live ONE TO THREE levels under the workspace (``fused_dir()``,
 ~/Documents/Fused), found by a bounded recursive walk whose per-level rules are
-written down in ``app_listing.workspace_apps``: A PAGE IS WHAT MAKES A FOLDER AN
-APP — any ``*.html`` at depth 1 or 2, an ``index.html`` at depth 3, nothing
-deeper. A page-less folder is a SHELF: it is never a card, but it IS walked, which
-is how the apps inside it are found. A "tag" is the FIRST path segment — there is
-no registry or whitelist, so a new tag is just a new folder, discovered on the
-next listing, and a third-level app files under the same tag as its second-level
-neighbours. An app's entry is its
-``index.html``, else the first non-hidden direct-child ``.html`` in name order
-— the shared entry rule (D269), so the card, the preview pane and the templates
-all resolve one folder to one page. ``entry_html: null`` still occurs in this
-payload, but only for a LINKED app now (linked_apps.py): the registry lists a
-registered folder whether or not it has a page.
-
-Alongside the workspace walk, the listing merges in *linked apps*: folders
-anywhere on disk registered in ~/.fused-render/linked_apps.json, surfaced
-under the reserved virtual tag ``linked`` (fused_render/linked_apps.py — a
-registry, deliberately not a symlink dir; see that module for why). Nothing
-registers one any more — see the note above the recents section.
+written down in ``app_listing.workspace_apps``: A DECLARED PAGE IS WHAT MAKES A
+FOLDER AN APP — its entry is the first non-hidden direct-child ``.html``
+carrying ``<meta name="fused-app">``, the one signal at every depth (D301;
+filenames, ``index.html`` included, declare nothing). A page-less folder is a
+SHELF: it is never a card, but it IS walked, which is how the apps inside it
+are found. A "tag" is the FIRST path segment — there is no registry or
+whitelist, so a new tag is just a new folder, discovered on the next listing,
+and a third-level app files under the same tag as its second-level neighbours.
+The entry rule is shared (D269), so the card, the preview pane and the
+templates all resolve one folder to one page.
 
 The walk itself lives in ``fused_render/app_listing.py``, which also defines
 what one listed app looks like. Each app reports its entry twice: ``entry`` is
@@ -47,18 +39,14 @@ loaded with ``--plugin-dir`` (skill_plugin.py, D216) — and the user-level copy
 (user_skills.py) covers the user's own later ``claude`` in the folder. Both are
 refreshed at server startup and again here at create time.
 """
-import json
 import os
 import shutil
-import subprocess
-import sys
 import threading
-import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render import app_listing, linked_apps
+from fused_render import app_listing, claude_spawn
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.seed import fused_dir
 
@@ -81,40 +69,70 @@ _APP_STARTER_DIR = os.path.join(
 
 @router.get("/api/apps")
 def api_apps():
-    # "linked" is the registry's reserved tag, but nothing stops a user from
-    # creating a real <workspace>/linked/<name> folder. The two cards would
-    # then be two entries with the same (tag, name) identity — which is the key
-    # the recents store and the link-status probe speak — so the workspace twin
-    # is dropped rather than listed as an indistinguishable duplicate. (Their
-    # CARDS would still open different folders correctly: a card opens its own
-    # `path`.) Non-colliding workspace "linked" apps keep listing.
-    registry = linked_apps.linked_apps()
-    taken = {a["name"] for a in registry}
-    workspace = [
-        a for a in app_listing.workspace_apps(fused_dir())
-        if not (a["tag"] == linked_apps.LINKED_TAG and a["name"] in taken)
-    ]
-    apps = workspace + registry
+    from fused_render import registered_apps
+
+    apps = list(app_listing.workspace_apps(fused_dir()))
+    opened = _opened_at_by_app()
+    root = fused_dir()
+    for a in apps:
+        a["opened_at"] = opened.get(_workspace_rel(root, a["path"]))
+    # External folders the user opened through "Open app" — the registry's own
+    # `openedAt` already rides in as `opened_at` (registered_apps.py), so these
+    # sort by recency exactly as workspace apps do.
+    apps.extend(registered_apps.registered_apps())
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 
 
-# Linked apps: the routes that REGISTERED one (GET /api/apps/link-status,
-# POST /api/apps/link, /api/apps/unlink) are gone with the app concept they
-# served (D264 — "Add as app" was their only caller). The registry is read-only
-# now: `GET /api/apps` still merges whatever an earlier version registered, so
-# nobody's cards disappear, and nothing can add to it.
+def _workspace_rel(root: str, path: str) -> str | None:
+    """`path` as a workspace-relative, forward-slash key, or None when it isn't
+    inside the workspace. The store's identity: unique at every depth the walk
+    lists (1-3), where (tag, name) is not — two depth-3 apps under different
+    shelves of one tag share both. Normalized to "/" so a key written on
+    Windows matches the split in _app_folder_exists; the replace is os.sep-
+    conditional because on POSIX a backslash is a legal filename character."""
+    try:
+        rel = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+    except ValueError:
+        # Windows: relpath across drives has no relative form — that is just
+        # "not inside the workspace", not an error.
+        return None
+    if rel == "." or rel.startswith(".."):
+        return None
+    return rel.replace(os.sep, "/") if os.sep != "/" else rel
+
+
+def _opened_at_by_app() -> dict[str, float]:
+    """Workspace-relative app path → last-open time as epoch seconds
+    (updated_at's unit), from the recents store. The file is user-writable, so
+    a malformed openedAt just drops that entry — a bad timestamp must never
+    fail the listing."""
+    out: dict[str, float] = {}
+    for e in _read_app_recents()["entries"]:
+        ts = e.get("openedAt")
+        if not isinstance(ts, str):
+            continue
+        try:
+            out[e["path"]] = datetime.fromisoformat(ts).timestamp()
+        except ValueError:
+            continue
+    return out
 
 
 # ------------------------------------------------------------------- recents
 #
 # App-builder recents at ~/.fused-render/app_recents.json — its OWN store,
 # fully independent of the explorer's recents.json (shell/recents.py). Entries
-# identify an app by (tag, name), newest-first, deduped, capped. GET filters
-# entries whose app folder is gone (read-only — the folder may come back).
-# The workspace is always local, so plain isdir checks are safe here.
+# identify an app by its WORKSPACE-RELATIVE path (`path`, e.g. "local/demo" or
+# "tag/shelf/app") — unique at every depth the walk lists, where the previous
+# (tag, name) key was not — newest-first, deduped, capped. GET filters entries
+# whose app folder is gone (read-only — the folder may come back). The
+# workspace is always local, so plain isdir checks are safe here.
 
-APP_RECENTS_CAP = 20
+# The store is the sort input for /home and /apps (opened_at in GET /api/apps),
+# not just a short recents row — so the cap must comfortably exceed the number
+# of apps a user actively cycles through, or open #N+1 silently loses its rank.
+APP_RECENTS_CAP = 200
 
 
 def _app_recents_path() -> str:
@@ -134,67 +152,95 @@ def _read_app_recents() -> dict:
         "entries": [
             e
             for e in (entries if isinstance(entries, list) else [])
-            if isinstance(e, dict)
-            and isinstance(e.get("tag"), str)
-            and isinstance(e.get("name"), str)
+            if isinstance(e, dict) and isinstance(e.get("path"), str)
         ]
     }
 
 
-def _app_folder_exists(tag: str, name: str) -> bool:
-    """Does the (tag, name) app currently resolve to a folder on disk?
-    Workspace apps resolve under <workspace>/<tag>/<name>; a "linked" tag
-    resolves through the registry instead."""
-    if tag == linked_apps.LINKED_TAG:
-        path = linked_apps.linked_path(name)
-        return path is not None and os.path.isdir(path)
-    return os.path.isdir(os.path.join(fused_dir(), tag, name))
+def _app_folder_exists(rel: str) -> bool:
+    """Does the workspace-relative app path currently resolve to a folder on
+    disk? Rejects a key that would escape the workspace — the store is
+    user-writable, so `rel` cannot be trusted to stay under it."""
+    # Split on the OS separator too: a user-edited backslash key on Windows
+    # must not smuggle `..` past a "/"-only split. Segments are then vetted
+    # individually — a drive-relative segment like "C:foo" would make a
+    # starred os.path.join discard the workspace base entirely, so anything
+    # carrying a drive or absolute form is rejected, and the join happens as
+    # ONE "/"-joined string (a legal separator on Windows as well) so no
+    # segment can ever reset the base.
+    parts = rel.replace(os.sep, "/").split("/")
+    if os.path.isabs(rel) or rel.startswith(".") or ".." in parts:
+        return False
+    if any(not p or os.path.isabs(p) or os.path.splitdrive(p)[0] for p in parts):
+        return False
+    return os.path.isdir(os.path.join(fused_dir(), "/".join(parts)))
+
+
+@router.get("/api/apps/entry")
+def api_app_entry(path: str):
+    """The folder's app entry (its first tagged top-level page — the one rule,
+    `app_listing.app_entry`) or null. The explorer's "Open app" button asks
+    THIS instead of re-deriving the rule from filenames client-side: under the
+    marker rule (D301) a name tells the client nothing, and a second copy of
+    the rule in the shell is a copy that drifts. Any folder may be asked,
+    workspace or not; an unreadable or entry-less one is `entry: null`."""
+    from fused_render.index.ignore import MountGuard
+
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return {"entry": None}
+    if MountGuard().blocks(path):
+        return {"entry": None}
+    try:
+        if not os.path.isdir(path):
+            return {"entry": None}
+        return {"entry": app_listing.app_entry(path)}
+    except OSError:
+        return {"entry": None}
 
 
 @router.get("/api/apps/recents")
 def api_app_recents():
     entries = [
-        e
-        for e in _read_app_recents()["entries"]
-        if _app_folder_exists(e["tag"], e["name"])
+        e for e in _read_app_recents()["entries"] if _app_folder_exists(e["path"])
     ]
     return {"entries": entries}
 
 
-@router.post("/api/apps/recents/open")
-def api_app_recent_open(
-    body: dict = Body(...), x_fused: str | None = Header(default=None)
-):
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
+def record_app_open(path: str, title: str | None = None) -> bool:
+    """Record that the app folder at absolute `path` was just opened.
+
+    THE CALLER IS GET /render (D301): a page carrying the fused-app marker
+    being rendered IS the open — every surface that shows an app renders it,
+    so recording here needs no cooperation from any button or client post
+    (the shell's "Open app" flow, D297, no longer records anything). Inside
+    the workspace the open lands in the recents store (keyed workspace-
+    relative); outside, opening IS registering — `registered_apps.record_open`
+    puts the folder on the /apps hub and stores the open time itself.
+    """
     from fused_render.shell import storage
 
-    tag, name = body.get("tag"), body.get("name")
-    if not isinstance(tag, str) or not isinstance(name, str) or not tag or not name:
-        return _error("tag and name required", 400)
-    # Only real app folders are recorded — same benign no-op posture as the
-    # explorer's POST /api/recents/open for a non-file url.
-    if "/" in tag or "/" in name or tag.startswith(".") or name.startswith("."):
-        return {"recorded": False}
-    if not _app_folder_exists(tag, name):
-        return {"recorded": False}
-    title_raw = body.get("title")
-    title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
+    rel = _workspace_rel(fused_dir(), path)
+    if rel is None:
+        # Validation (exists, has a declared entry, not behind a wedged mount)
+        # is the module's.
+        from fused_render import registered_apps
+
+        return registered_apps.record_open(path)
+    if not _app_folder_exists(rel):
+        return False
     data = _read_app_recents()
-    # Dedupe by (tag, name); a title-less re-record keeps the last known title.
+    # Dedupe by path; a title-less re-record keeps the last known title.
     existing_title = None
     kept = []
     for e in data["entries"]:
-        if e["tag"] == tag and e["name"] == name:
+        if e["path"] == rel:
             t = e.get("title")
             if existing_title is None and isinstance(t, str) and t:
                 existing_title = t
             continue
         kept.append(e)
     entry = {
-        "tag": tag,
-        "name": name,
+        "path": rel,
         "openedAt": datetime.now(timezone.utc).isoformat(),
     }
     if title is not None:
@@ -203,7 +249,24 @@ def api_app_recent_open(
         entry["title"] = existing_title
     data["entries"] = [entry, *kept][:APP_RECENTS_CAP]
     storage.write_json(_app_recents_path(), data)
-    return {"recorded": True}
+    return True
+
+
+@router.post("/api/apps/recents/open")
+def api_app_recent_open(
+    body: dict = Body(...), x_fused: str | None = Header(default=None)
+):
+    # Kept for older clients: the shell no longer posts here (D301 — the open
+    # is recorded by GET /render when it serves a marker-carrying page).
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = body.get("path")
+    if not isinstance(path, str) or not path:
+        return _error("path required", 400)
+    title_raw = body.get("title")
+    title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
+    return {"recorded": record_app_open(path, title)}
 
 
 # ------------------------------------------------------------------ creation
@@ -224,72 +287,16 @@ def _app_name_error(name) -> str | None:
     return None
 
 
-def _agent_path() -> str:
-    """The claude template backend (agent.py) — the staged core copy
-    (server.templates.TEMPLATES_DIR), the same file the split app view
-    executes, so the runs dir, sidecar shape (.claude-split.json inside the
-    app folder), and permission_server path stay in step with what the page
-    will poll. A newly CREATED app lands folder-first in claude (opening an
-    existing one lands on the folder's explorer listing instead), so the
-    scaffolding session must be recorded at the folder level too."""
-    from fused_render.server import templates as _server_templates
+# The spawn machinery (where agent.py lives, why _start cannot be called in
+# this process, and the poll that gets a run into its sidecar) is shared with
+# scheduled messages and lives in fused_render/claude_spawn.py.
+#
+# These two are re-bound as module-level names rather than called through
+# `claude_spawn.` at the use site, because `_start_app_session` resolves them as
+# globals — which is what lets a test swap either one out.
+_claude_agent = claude_spawn.load_agent
+_record_session_when_ready = claude_spawn.record_session_when_ready
 
-    return os.path.join(_server_templates.TEMPLATES_DIR, "claude", "agent.py")
-
-
-def _claude_agent():
-    """Load agent.py as a module, for in-process READ paths only (_poll).
-    The spawn goes through _SESSION_HELPER in a subprocess — see
-    _start_app_session for why calling agent._start in this process crashes."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "fused_render_apps_claude_agent", _agent_path())
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def _record_session_when_ready(agent, run_id: str) -> None:
-    """Poll the detached run until it finishes.
-
-    agent._poll is what writes the sidecar (first poll that sees the session
-    id records it, one-shot via the run's `recorded` marker) AND what commits
-    the finished turn into the app's repo (one-shot via `committed`) — but
-    nobody is polling until the user opens the new app's claude chat, which
-    may be never. This background loop polls all the way to `done` so both
-    happen regardless: the session is listed when the user does look, and the
-    scaffolding turn's work is committed."""
-    for _ in range(1800):  # ~1 h at 2 s — a scaffolding turn can run long
-        try:
-            data = agent._poll(run_id)
-        except Exception:
-            return  # bookkeeping only; never let it matter
-        if data.get("done"):
-            return
-        time.sleep(2)
-
-
-# The helper the spawn runs in. agent._start cannot be called in THIS process:
-# its Popen sets cwd + start_new_session, which forces CPython off posix_spawn
-# onto fork()+exec, and the server has libproj resident with a live proj.db
-# SQLite handle — fork() runs PROJ's pthread_atfork child handler, which
-# sqlite3_close()es that now-invalid handle and SIGSEGVs the child before exec
-# (the exact crash test_worker_forksafe.py locks out of the executor; verified
-# live: empty out.jsonl, dead pid, a Python .ips crash report with the server
-# as parent). So the _start happens one hop away, in a bare python that has no
-# libproj loaded and can fork freely. Args ride over stdin as JSON (never
-# argv — the prompt is user text); the result comes back as one JSON line.
-_SESSION_HELPER = """\
-import importlib.util, json, sys
-req = json.load(sys.stdin)
-spec = importlib.util.spec_from_file_location("claude_agent", req["agent"])
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print(json.dumps(mod._start(req["file"], req["message"], "", "", "",
-                            permission_mode=req["permission_mode"],
-                            message_via_stdin=True)))
-"""
 
 # The permission mode the scaffolding session runs in, passed EXPLICITLY rather
 # than left to agent.py's default ("prompt", the strictest).
@@ -314,21 +321,12 @@ _APP_SESSION_PERMISSION_MODE = "auto"
 def _spawn_session_helper(target: str, prompt: str) -> dict:
     """Run agent._start in the fork-safe helper; return its result dict.
 
-    close_fds=False + no cwd + no start_new_session keeps THIS Popen on the
-    posix_spawn path (no atfork handlers — same discipline as executor.py's
-    worker spawn). The helper itself detaches claude with setsid; it is a
-    bare python where fork() is safe."""
-    proc = subprocess.run(
-        [sys.executable, "-c", _SESSION_HELPER],
-        input=json.dumps(
-            {"agent": _agent_path(), "file": target, "message": prompt,
-             "permission_mode": _APP_SESSION_PERMISSION_MODE}),
-        capture_output=True, text=True, timeout=60, close_fds=False,
-    )
-    if proc.returncode != 0:
-        tail = (proc.stderr or "").strip().splitlines()
-        return {"error": "session helper failed: " + (tail[-1] if tail else "unknown")}
-    return json.loads(proc.stdout)
+    Thin wrapper over claude_spawn.spawn_helper, which holds the posix_spawn
+    discipline this call depends on. What stays here is the one policy choice:
+    the permission mode above, and a FRESH session always — an app is being
+    scaffolded, so there is no prior conversation to resume."""
+    return claude_spawn.spawn_helper(
+        target, prompt, _APP_SESSION_PERMISSION_MODE)
 
 
 def _start_app_session(app_dir: str, prompt: str) -> tuple[str | None, str | None]:

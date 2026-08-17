@@ -23,64 +23,44 @@
 
 const PANE_MIN_W = 220;
 const LIST_MIN_W = 60;
-export const PANE_DEFAULT_FRAC = 0.5;
 
-// The width breakpoints the UNDRAGGED split steps through: 30% of a container
-// that only just has room for two panes, 50% at a normal window, 70% once the
-// window is wide. A single 50% for every width was wrong at both ends — half of
-// 720px is a preview too narrow to read beside a listing that has had to shed
-// its columns for it, and half of a 1920px window is 960px of file names.
+// **THE PANE'S WIDTH: the companion share of its container** — 30%, or 50% at
+// 1000px and under (D283 amending D282). The same function the file view's sidebar
+// uses, imported from there so the two cannot drift apart again; the reasoning,
+// including why D282's argument for deleting the small step was wrong, is on
+// `companionFrac`.
 //
-// STEPS, not a continuous ramp: the pane is a persistent piece of furniture, so
-// its width wants to be predictable and recognisable ("this is the wide
-// layout"), and a fraction that slides with every pixel of a window drag is
-// neither. The tiers are the standard laptop/desktop widths.
-export const PANE_MID_W = 1000;
-export const PANE_WIDE_W = 1440;
-
-// The width at which the listing splits. Above it the pane is there; below it
-// the listing has the container to itself.
+// It is a function of the CONTAINER's width and of nothing else — never the
+// viewport, so an embedded pane in a small frame gets the same 50% a small window
+// does.
 //
-// Comfortably above the 280px both floors technically fit in (PANE_MIN_W +
-// LIST_MIN_W), because "can it be laid out" was never the question — "is a
-// half-width listing beside a half-width preview still worth reading" is. At
-// 700px both halves are around 350px: a listing that still shows a name and a
-// size, and a preview big enough to recognise what it is showing. Under it,
-// splitting produces two panes that are each too small to do their job, which
-// is why the pane used to need a toggle at all.
-export const PANE_SPLIT_MIN_W = 700;
-
-// Whether a container of this width shows the preview pane. The WHOLE of the
-// pane's on/off decision: there is no user toggle any more, no URL param and
-// no saved on/off state — the split is a property of the room available, so it
-// is right on a wide window, right in a narrow embed, and right the moment
-// either is resized, with nothing to restore and nothing to get stale.
+// Three pieces of responsive machinery are DELETED here, on the owner's
+// instruction ("remove any complicated breakpoint logic"):
 //
-// A NaN width (an unattached or display:none container) reads as "no" via the
-// comparison, which is the safe answer: painting a pane on a guess and tearing
-// it away on the first real measurement is the one visible failure here.
-export function shouldShowPane(containerW: number): boolean {
-  return containerW >= PANE_SPLIT_MIN_W;
-}
-
-// The fraction an UNDRAGGED pane takes in a container this wide (above), used
-// for rendering and never recorded — pane-store holds only a fraction the user
-// chose by dragging, so the session never remembers a number the layout picked
-// for it, and a pane with no chosen width keeps following the window.
+//   * the 30/50/70 TIERS (`defaultPaneFrac`), stepping on 1000px and 1440px
+//     container breakpoints, with a `220/containerW` floor folded in;
+//   * `PANE_SPLIT_MIN_W` / `shouldShowPane` — the **700px gate** that decided
+//     whether there was a pane AT ALL;
+//   * `useSplitIsWide` in pane.ts, the gate's second consumer (Preview's browse
+//     chip), which asked the measurement for a verdict nothing needs now.
 //
-// Floored at the pane's own PANE_MIN_W: at the narrow end 30% is under the
-// 220px floor CSS enforces anyway (0.3 × 700 = 210), and a flex-basis the
-// min-width silently overrides is a layout that disagrees with its own
-// arithmetic — the divider would sit where the fraction says it doesn't.
-//
-// An unmeasured container (0, NaN — see shouldShowPane) has no tier to pick, so
-// it answers PANE_DEFAULT_FRAC. Nothing renders a pane at that width, and the
-// first real measurement arrives before paint (useLayoutEffect, pane.ts).
-export function defaultPaneFrac(containerW: number): number {
-  if (!(containerW > 0)) return PANE_DEFAULT_FRAC;
-  const step = containerW >= PANE_WIDE_W ? 0.7 : containerW >= PANE_MID_W ? PANE_DEFAULT_FRAC : 0.3;
-  return Math.max(step, PANE_MIN_W / containerW);
-}
+// **The container MEASUREMENT is back, and only it** (D283): `useSplitWidth` returns
+// so the small step above can be asked of the container rather than of the window.
+// One boolean's worth of responsiveness — small or not — where there used to be a
+// visibility gate and three tiers reading the same number. The pane's PRESENCE is
+// still a property of WHICH Listing this is (`paneEnabled` in
+// Listing.tsx: not embedded, not a snapshot, not a panel pane) — a question about
+// the surface, not about how many pixels it happens to have. The pixel FLOORS
+// below stay: they are clamps a drag and the CSS must agree on, not conditions on
+// the layout, and they are the only reason a 30% pane on a very narrow window is
+// still a usable column.
+// Re-exported under its OWN name, deliberately not as `defaultPaneFrac`: that name
+// belonged to the tier ladder, a test pins its absence, and reviving the identifier
+// for a two-value step would make the ladder look like it came back.
+export {
+  COMPANION_FRAC as PANE_DEFAULT_FRAC,
+  companionFrac,
+} from "@apps/explorer/lib/side-width";
 
 // The one place the pixel clamps live, so the drag cannot disagree with the
 // CSS floors: the pane keeps at least PANE_MIN_W, and the list keeps at least

@@ -24,6 +24,23 @@ from typing import Any, Generator, Optional
 
 from fused_render.shell.storage import home_dir
 
+
+# An ABSOLUTE git path is required to reach posix_spawn, not merely tidy: CPython
+# forks unless `os.path.dirname(executable)` is truthy, and a fork in a process
+# with libproj resident dies with SIGSEGV before exec (rc -11, no output, no
+# exception). `close_fds=False` alone does NOT achieve this — see
+# fused_render/server/gitignore.py and tests/test_git_posix_spawn.py.
+_GIT_BIN = None
+
+
+def _git_bin():
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
+
 # flock is POSIX-only and this module is imported at server-startup time (the
 # router is registered unconditionally in server/app.py), so a bare
 # `import fcntl` would take the WHOLE server down on Windows over a lock that
@@ -253,7 +270,7 @@ def git(*args: str, check: bool = True) -> str:
     spawn instead of inside git, and a forking spawn dies rc=-11 the moment
     PROJ is resident in this process."""
     res = subprocess.run(
-        ["git", "-C", CLAUDE_DIR, *args],
+        [_git_bin(), "-C", CLAUDE_DIR, *args],
         capture_output=True,
         **SUBPROCESS_KWARGS,
     )
@@ -705,7 +722,7 @@ def archive_zip(name: str) -> bytes:
     ~/.claude.json, or secrets."""
     ensure_repo()
     res = subprocess.run(
-        ["git", "-C", CLAUDE_DIR, "archive", "--format=zip", name],
+        [_git_bin(), "-C", CLAUDE_DIR, "archive", "--format=zip", name],
         capture_output=True,
         close_fds=False,
     )

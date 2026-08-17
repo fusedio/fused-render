@@ -43,6 +43,11 @@ def _load(directory, name, alias):
     return mod
 
 
+# A page carrying the fused-app marker — the only thing that makes it an entry
+# (D301); PLAIN pages resolve to nothing whatever they are named.
+TAGGED = '<html><head><meta name="fused-app" /></head><body>hi</body></html>'
+
+
 @pytest.fixture()
 def entry_of():
     shared = _load(os.path.join(TEMPLATES_DIR, "shared"), "app_entry",
@@ -50,51 +55,48 @@ def entry_of():
     return shared.entry_html
 
 
-def test_index_html_wins_over_its_siblings(tmp_path, entry_of):
-    for name in ("index.html", "about.html", "zzz.html"):
-        (tmp_path / name).write_text("<html></html>")
-    assert entry_of(str(tmp_path)) == str(tmp_path / "index.html")
-
-
-def test_a_single_html_is_the_entry_whatever_it_is_called(tmp_path, entry_of):
-    (tmp_path / "dashboard.html").write_text("<html></html>")
+def test_a_tagged_page_is_the_entry_whatever_it_is_called(tmp_path, entry_of):
+    (tmp_path / "dashboard.html").write_text(TAGGED)
     assert entry_of(str(tmp_path)) == str(tmp_path / "dashboard.html")
 
 
-def test_a_folder_with_no_html_at_all_resolves_to_nothing(tmp_path, entry_of):
+def test_untagged_pages_resolve_to_nothing_index_html_included(tmp_path, entry_of):
+    # The marker is the only signal (D301): a folder full of untagged html —
+    # index.html among them — is not an app and has no entry.
+    assert entry_of(str(tmp_path)) is None
+    for name in ("index.html", "about.html", "zzz.html"):
+        (tmp_path / name).write_text("<html></html>")
     assert entry_of(str(tmp_path)) is None
     (tmp_path / "data.csv").write_text("a,b\n")
     assert entry_of(str(tmp_path)) is None
 
 
-def test_several_htmls_without_an_index_resolve_to_the_first(tmp_path, entry_of):
-    # This used to be None as "ambiguous", and every consumer dead-ended on it:
-    # the `app` mode and the chat pane drew "no entry page" over a folder plainly
-    # full of pages. First in NAME order, so the answer does not depend on
-    # readdir order and two consumers cannot land on different pages.
-    for name in ("zzz.html", "about.html", "middle.html"):
-        (tmp_path / name).write_text("<html></html>")
-    assert entry_of(str(tmp_path)) == str(tmp_path / "about.html")
-    # ...and index.html still outranks all of them, wherever it sorts.
+def test_several_tagged_pages_resolve_to_the_first_in_name_order(tmp_path, entry_of):
+    # First in NAME order among TAGGED pages, so the answer does not depend on
+    # readdir order and two consumers cannot land on different pages. An
+    # untagged index.html outranks nothing.
+    for name in ("zzz.html", "middle.html"):
+        (tmp_path / name).write_text(TAGGED)
+    (tmp_path / "about.html").write_text("<html></html>")
     (tmp_path / "index.html").write_text("<html></html>")
-    assert entry_of(str(tmp_path)) == str(tmp_path / "index.html")
+    assert entry_of(str(tmp_path)) == str(tmp_path / "middle.html")
 
 
 def test_hidden_and_nested_html_files_are_ignored(tmp_path, entry_of):
-    (tmp_path / ".hidden.html").write_text("<html></html>")
+    (tmp_path / ".hidden.html").write_text(TAGGED)
     (tmp_path / "sub").mkdir()
-    (tmp_path / "sub" / "index.html").write_text("<html></html>")
+    (tmp_path / "sub" / "index.html").write_text(TAGGED)
     assert entry_of(str(tmp_path)) is None
-    # ...and a hidden index.html does not count as THE index either.
-    (tmp_path / ".index.html").write_text("<html></html>")
-    (tmp_path / "real.html").write_text("<html></html>")
+    # ...and a hidden tagged page does not count either.
+    (tmp_path / ".index.html").write_text(TAGGED)
+    (tmp_path / "real.html").write_text(TAGGED)
     assert entry_of(str(tmp_path)) == str(tmp_path / "real.html")
 
 
 def test_a_missing_or_unreadable_directory_resolves_to_nothing(tmp_path, entry_of):
     assert entry_of(str(tmp_path / "nope")) is None
     f = tmp_path / "a.html"
-    f.write_text("<html></html>")
+    f.write_text(TAGGED)
     assert entry_of(str(f)) is None  # a file, not a directory
 
 
@@ -105,9 +107,10 @@ def test_the_claude_backend_resolves_through_the_shared_rule(tmp_path):
                   "test_shared_app_entry_claude_backend")
     entry_of = _load(os.path.join(TEMPLATES_DIR, "shared"), "app_entry",
                      "test_shared_app_entry_direct").entry_html
-    (tmp_path / "index.html").write_text("<html></html>")
+    (tmp_path / "index.html").write_text(TAGGED)
     (tmp_path / "other.html").write_text("<html></html>")
     assert split.main(dir=str(tmp_path)) == {"entry": entry_of(str(tmp_path))}
+    assert split.main(dir=str(tmp_path))["entry"] == str(tmp_path / "index.html")
     assert split.main(dir=str(tmp_path / "nope")) == {"entry": None}
     # No argument at all must not blow up in the /api/run worker: the template
     # always passes _file, but a missing param must answer, not raise.
@@ -116,9 +119,15 @@ def test_the_claude_backend_resolves_through_the_shared_rule(tmp_path):
 
 # ---------------------------------------------------------------- the parity
 #
-# The shell's THIRD copy of this rule (frontend/src/apps/explorer/lib/app-entry.ts,
-# read by the listing's preview pane) is pinned by its own bun test against the
-# same cases; it cannot be exercised from here, so the two Python copies are.
+# TWO copies now, and both are Python — so the parity below is the whole of it.
+#
+# There was a THIRD, in the shell (frontend/src/apps/explorer/lib/app-entry.ts,
+# read by the listing's preview pane), pinned by its own bun test against these
+# same cases. **It is deleted (D280):** selecting a folder row no longer resolves
+# the folder to its page, because merely highlighting a row must not run the
+# folder's app, and the pane was that copy's only caller. Nothing on the frontend
+# derives this rule any more — so if a third copy ever comes back, it needs its own
+# pin against these cases, and this note is what says so.
 
 
 def test_the_server_listing_resolves_the_same_page_as_the_shared_rule(tmp_path):
@@ -137,7 +146,9 @@ def test_the_server_listing_resolves_the_same_page_as_the_shared_rule(tmp_path):
         d = tmp_path / name
         d.mkdir()
         for c in children:
-            (d / c).write_text("<html></html>")
+            # `plain_` children are untagged — the marker is what decides, so
+            # the parity cases mix both.
+            (d / c).write_text("<html></html>" if c.startswith("plain_") else TAGGED)
         for c in dirs:
             (d / c).mkdir()
         return str(d)
@@ -146,6 +157,8 @@ def test_the_server_listing_resolves_the_same_page_as_the_shared_rule(tmp_path):
         folder("lone", "dashboard.html"),
         folder("indexed", "about.html", "index.html", "zzz.html"),
         folder("several", "zzz.html", "about.html", "middle.html"),
+        folder("mixed", "plain_aa.html", "zz.html"),
+        folder("all_plain", "plain_index.html", "plain_about.html"),
         folder("hidden", ".draft.html", "real.html"),
         folder("only_hidden", ".draft.html"),
         folder("nested", dirs=("sub",)),
@@ -164,3 +177,18 @@ def test_the_server_listing_resolves_the_same_page_as_the_shared_rule(tmp_path):
     with pytest.raises(OSError):
         app_listing.app_entry(gone)
     assert entry_of(gone) is None
+
+
+def test_only_the_marker_names_the_entry(tmp_path, entry_of):
+    # Same rule as the server's app_entry (test_app_listing has the twin, and
+    # the parity test above holds the two copies together): only
+    # `<meta name="fused-app">` names the entry — an untagged index.html
+    # changes nothing.
+    from fused_render import app_listing
+
+    (tmp_path / "about.html").write_text("<html></html>")
+    (tmp_path / "zzz.html").write_text(TAGGED)
+    assert entry_of(str(tmp_path)) == str(tmp_path / "zzz.html")
+    assert app_listing.app_entry(str(tmp_path)) == str(tmp_path / "zzz.html")
+    (tmp_path / "index.html").write_text("<html></html>")
+    assert entry_of(str(tmp_path)) == str(tmp_path / "zzz.html")

@@ -66,7 +66,9 @@ body:has(.sidebar-resize-handle.resizing) {
   user-select: none;
 }
 
-/* Collapse chevron in the brand row, pushed to the right edge. */
+/* Collapse toggle in the brand row, pushed to the right edge. Its glyph is the
+   left-hand panel icon (platform/ui/PanelIcon), the same one the collapsed
+   rail's expand button wears. */
 .sidebar-collapse-btn {
   margin-left: auto;
   display: flex;

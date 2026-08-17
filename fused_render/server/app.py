@@ -55,13 +55,15 @@ from fused_render.server.routers.git_show import router as git_show_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.ai_models import router as ai_models_router
-from fused_render.server.routers.ai_runtime import router as ai_runtime_router
 from fused_render.server.routers.hub_models import router as hub_models_router
+from fused_render.server.routers.ai_runtime import router as ai_runtime_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
+from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
+from fused_render.server.routers.tasks import router as tasks_router
 from fused_render.server.routers.update import router as update_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
 # (tests repoint it at a staged copy before calling create_app, and
@@ -120,12 +122,6 @@ def export_app_env() -> None:
     # into the containing app's repo, and scopes that to this workspace.
     os.environ["FUSED_RENDER_WORKSPACE_DIR"] = shell_seed.fused_dir()
     shell_mounts.export_ro_mounts_env()
-    # Registered linked-app folders (fused_render/linked_apps.py) — the app
-    # and claude gates accept these alongside <workspace>/<tag>/<name>.
-    # Re-exported on every registry write; this is the startup baseline.
-    from fused_render import linked_apps
-
-    linked_apps.export_linked_apps_env()
     # The skill plugin the chats we spawn are handed (D216). Here rather than in
     # a startup event because this is the export path: it assembles the root and
     # publishes it as one more FUSED_RENDER_* var for every child to inherit.
@@ -231,6 +227,21 @@ def create_app(start_dir: str) -> FastAPI:
     @app.on_event("startup")
     async def _startup_sync_user_skills():
         sync_user_skills()
+
+    # Scheduled Claude messages (schedule.py). A startup event and emphatically
+    # NOT the create_app body: this loop SENDS things, and its first tick fires
+    # everything already overdue. Tests build the app without running lifespan,
+    # so under the create_app body every test that constructs an app would spawn
+    # whatever the developer's own store happened to hold.
+    #
+    # The first tick is also the catch-up pass — it is what sends a message that
+    # came due while the app was closed — so nothing here waits for a due time
+    # that has already gone by.
+    @app.on_event("startup")
+    async def _startup_schedule():
+        from fused_render import schedule
+
+        schedule.start()
 
     @app.on_event("shutdown")
     async def _startup_shutdown_ai():
@@ -348,6 +359,15 @@ def create_app(start_dir: str) -> FastAPI:
     # Artifacts published from those sessions, recovered from the same
     # transcripts (routers/claude_artifacts.py) — read-only, no auth guard.
     app.include_router(claude_artifacts_router)
+    # Scheduled Claude messages (routers/schedule.py): the durable list, and the
+    # POSTs that add to and cancel from it. The loop that SENDS them is started
+    # as a startup event below, not here — see there.
+    app.include_router(schedule_router)
+    # Tasks (routers/tasks.py): the sessions above and the schedule above,
+    # joined into one noun — a task IS a Claude session, and its thread is every
+    # message that entered it, typed or scheduled. Reads are unguarded; the one
+    # POST marks a message read, the same weight of change as the triage POST.
+    app.include_router(tasks_router)
     # Community marketplace backend for the /apps hub's Showcase tab and the
     # explorer preview's Clone button (routers/community.py).
     app.include_router(community_router)
@@ -366,11 +386,13 @@ def create_app(start_dir: str) -> FastAPI:
     # its one destructive POST (delete a repo/revision) carries the D3 X-Fused
     # guard. It never downloads anything.
     app.include_router(ai_models_router)
-    # The other half of that page: what the Hugging Face Hub HAS, joined to what
-    # this disk already holds (routers/hub_models.py). Read-only — it searches
-    # and never downloads — so no guard, and it is the only outbound request
-    # this feature makes. A separate module because "what is on my disk" and
-    # "what is on the network" fail differently and share nothing but the join.
+    # The other half of that page: what the Hugging Face Hub has that this app
+    # can actually run, joined to what this disk already holds
+    # (routers/hub_models.py). It downloads nothing itself — the page hands a
+    # result's `capability` to the runtime's download route — and it is the only
+    # outbound request this feature makes. A separate module because "what is on
+    # my disk" and "what is on the network" fail differently and share nothing
+    # but the join.
     app.include_router(hub_models_router)
     # Local inference (routers/ai_runtime.py, SPEC §40): which models this
     # machine is holding in memory, what they cost, and the load/unload/download
@@ -449,5 +471,10 @@ def create_app(start_dir: str) -> FastAPI:
     @app.on_event("startup")
     async def _startup_index_scan():
         await index_routes.startup_scan(start_dir)
+        # ...and warm the corpus path the explorer's home search reads, on a
+        # detached thread, so the gitignore sweep and the duckdb import are
+        # paid at idle rather than by the user's first keystroke
+        # (index/specs/server-api.md §4).
+        index_routes.startup_warm()
 
     return app

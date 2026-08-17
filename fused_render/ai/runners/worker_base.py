@@ -68,6 +68,16 @@ STATE = {
     "error": "",
     "resident_bytes": None,
     "loaded_at": None,
+    #: "cuda" | "mps" | "cpu" — what the weights actually landed on, set by the
+    #: runner's `load()`. Only the process holding them knows: the supervisor
+    #: can see that this machine HAS a GPU and not that torch was built to use
+    #: it, which on Windows is the common case rather than the exotic one (the
+    #: PyPI torch wheel there is CPU-only). Reported because a model answering
+    #: at three tokens a second is working perfectly and looks broken, and the
+    #: device is the whole of the explanation.
+    #:
+    #: None from a runner that does not set it — one device, nothing to say.
+    "device": None,
 }
 _state_lock = threading.Lock()
 
@@ -100,6 +110,86 @@ def set_state(**fields):
 def snapshot():
     with _state_lock:
         return dict(STATE)
+
+
+def describe_failure(exc):
+    """What a user should be told about `exc` — the CHAIN, never the top frame.
+
+    `str(exc)` is the wrong answer whenever a library re-raises, and the
+    libraries a runner loads all do. transformers wraps every import failure
+    from its lazy-module machinery, so a missing stdlib module three layers
+    down arrived on the AI Models page as:
+
+        Could not import module 'AutoTokenizer'
+
+    while the actual exception it was raised `from` said:
+
+        ModuleNotFoundError: No module named 'filecmp'
+
+    One of those names a thing the user can act on; the other sends them
+    looking at the model, the repo and the download — all of which were fine.
+    So the chain is walked to its root and reported with the top message.
+
+    `__cause__` first, then `__context__`: an explicit `raise … from e` is the
+    library telling us what it wrapped, and an implicit context is the next-best
+    evidence when it did not bother.
+
+    `__suppress_context__` is honoured, which is the same rule `traceback`
+    itself follows and not a technicality here. `raise … from None` is a library
+    saying the exception it caught is NOT the explanation — the shape an
+    optional-dependency probe takes (`except ImportError: raise … from None`) —
+    and walking past it would let a deliberately hidden ImportError become our
+    "root cause", up to and including firing the stdlib hint about an
+    interpreter that is perfectly complete.
+    """
+    chain, seen = [], set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__)
+    text = f"{exc.__class__.__name__}: {exc}"
+    if len(chain) > 1:
+        root = chain[-1]
+        text += f" — caused by {root.__class__.__name__}: {root}"
+    hint = _stdlib_hint(chain)
+    return text + hint if hint else text
+
+
+def _stdlib_hint(chain):
+    """The sentence for a missing STDLIB module, or "".
+
+    This is a fact about the INTERPRETER, not about the environment built on
+    it, and the difference is the whole point: a missing third-party package is
+    fixed by rebuilding the runner's venv, while a missing stdlib module is
+    baked into the interpreter that venv was created from, so rebuilding
+    reproduces it exactly. Told the first story, a user retries forever.
+
+    **`ModuleNotFoundError`, not `ImportError`**, and that is not pedantry:
+    `from email import nope` raises a plain ImportError whose `.name` is
+    `email` — a package that is present and fine — so keying on ImportError
+    would accuse a complete interpreter of missing part of its stdlib and tell
+    the user a rebuild cannot help. That is the exact class of confidently
+    wrong cause this function exists to stop, which makes it worth being
+    strict: only "the module was not found" earns the accusation.
+
+    The TOP-LEVEL name decides, because `sys.stdlib_module_names` holds only
+    top-level names while a partial stdlib fails as `No module named
+    'email.mime'`. The full name is what gets reported — it is the thing that
+    is actually missing.
+    """
+    for exc in chain:
+        name = getattr(exc, "name", None) or ""
+        if isinstance(exc, ModuleNotFoundError) and name.partition(".")[0] in sys.stdlib_module_names:
+            return (
+                f"\n\n`{name}` is part of the PYTHON STANDARD LIBRARY, so this is "
+                f"the interpreter this environment was built on ({sys.base_prefix}) "
+                "shipping without it — not a problem with this model and not "
+                "something rebuilding the environment can fix. Please report it "
+                "with this message."
+            )
+    return ""
 
 
 class Cancelled(Exception):
@@ -401,7 +491,31 @@ def bytes_on_disk(folder):
     return total
 
 
-def _repo_files(model_id, include=None, ignore=None, revision=DEFAULT_REVISION):
+def selects(name, include=None, allow=None, ignore=None) -> bool:
+    """Whether a repo file is in scope, with `huggingface_hub`'s OWN semantics.
+
+    One function, because three readers ask it and they must not drift: the
+    total on the bar, the list the segmented fetch works through, and
+    `snapshot_download` itself on the fallback path. Hub's `filter_repo_objects`
+    is `(no allow_patterns or any match) and (no ignore_patterns or no match)`,
+    matched with `fnmatch` against the path RELATIVE to the repo root — where
+    `*` crosses `/` like every other character, which is what makes
+    `transformer/*.safetensors` a subtree rule rather than a one-level one.
+
+    **`ignore` wins over `allow`**, as it does there. `include` is ours: a single
+    exact filename, for a fetch of one GGUF out of a repo that publishes twenty.
+    """
+    if include is not None and name != include:
+        return False
+    if allow and not any(fnmatch.fnmatch(name, pattern) for pattern in allow):
+        return False
+    if ignore and any(fnmatch.fnmatch(name, pattern) for pattern in ignore):
+        return False
+    return True
+
+
+def _repo_files(model_id, include=None, allow=None, ignore=None,
+                revision=DEFAULT_REVISION):
     """`(sha, files)` — the commit this listing resolved to, and what to fetch.
 
     The sha comes back WITH the list because the two must not be decided
@@ -425,8 +539,10 @@ def _repo_files(model_id, include=None, ignore=None, revision=DEFAULT_REVISION):
 
     **Scoped, because a repo is rarely fetched whole.** `include` is a single
     filename (one GGUF out of a repo that publishes a dozen quantizations of the
-    same model); `ignore` is the same fnmatch patterns `snapshot_download` takes,
-    so a download that skips a subfolder does not measure itself against it.
+    same model); `allow`/`ignore` are the same fnmatch patterns
+    `snapshot_download` takes, applied by `selects` with the same precedence, so
+    a download that fetches part of a repo does not measure itself against the
+    rest of it.
 
     Raises, unlike its callers: the fetch cannot proceed on a guess, while the
     bar can.
@@ -439,9 +555,7 @@ def _repo_files(model_id, include=None, ignore=None, revision=DEFAULT_REVISION):
         name = getattr(sibling, "rfilename", None) or ""
         if not name:
             continue
-        if include is not None and name != include:
-            continue
-        if ignore and any(fnmatch.fnmatch(name, pattern) for pattern in ignore):
+        if not selects(name, include=include, allow=allow, ignore=ignore):
             continue
         files.append((name, getattr(sibling, "size", None)))
     return getattr(info, "sha", None), files
@@ -1222,7 +1336,8 @@ def _fallback(model_id, error):
     _clear_parts(repo_folder(model_id))
 
 
-def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…", job=None):
+def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…",
+                        job=None, row=None):
     """Run `call()` on a thread, reporting bytes-on-disk once a second.
 
     `call` is whatever huggingface_hub function actually fetches — a whole
@@ -1230,12 +1345,57 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     part neither of them should write twice: the poll is the progress AND the
     heartbeat, without which a long single-file download reports nothing for
     minutes and the manager calls the row abandoned.
+
+    **`job`/`row` exist because not every fetch belongs to a download job.** A
+    runner that pulls a component model DURING a request — the speech detector,
+    the two diarization models — is reporting into a row the supervisor opened
+    for a transcription, not into this process's `JOB_ID` (which is the model's
+    own load row, long since finished). `job` sends the tick to the right row;
+    `row` is that row's IDENTITY (`supervisor.transcribe_row_fields`), restated
+    on every tick because the manager can evict and rebuild any row at any tick
+    and a report with no `title` is refused outright.
+
+    `kind`/`unit` are this function's own and override the row's, deliberately:
+    for the length of the fetch the row IS a download and 6MB of 26MB is what a
+    person wants to see. The next tick from the work itself restates the row's
+    own pair, so the flip is for the duration and not a rename.
+
+    **The tick carries the ✕ back**, and that became load-bearing the moment a
+    fetch could land on a transcription row. It ticked with a plain `report`
+    while these fetches owned a model-load row, whose ✕ the supervisor answers
+    by killing the process — so nothing here had to. A component fetch reports
+    into a row whose `cancellable` is True and whose ✕ must stop THIS work, and
+    with a plain `report` the user pressed it, the manager set
+    `cancel_requested`, and 33MB carried on downloading behind a row that went
+    on saying "running". The reply to the tick we were sending anyway is the
+    only channel that reaches a thread parked inside huggingface_hub.
+
+    `CANCEL` is consulted too, but ONLY when `job` was passed. That flag is the
+    `/cancel` route's, it belongs to the generation holding `GENERATE_LOCK`, and
+    it is cleared by `_single`/`_stream` on the way in — so it means this fetch
+    exactly when this fetch is inside a request. A model download runs on
+    `_bring_up`'s own thread with no such lock, where a flag left set by an
+    earlier cancelled generation would abort a download nobody asked to stop.
+
+    **A ✕ that lands as the fetch FINISHES is not honoured**, which is the same
+    rule `_call_with_ticks` states: the bytes are on the disk, and throwing them
+    away would make the next attempt re-download what this one already has. So
+    the final report is a plain `report`. The abandoned fetch thread is a
+    daemon nobody waits for — it finishes into a result that is discarded, and
+    huggingface_hub resumes partial files, so the bytes are not lost either.
     """
     folder = repo_folder(model_id)
     if total is None:
         total = repo_total_bytes(model_id)
-    report(job=job, state="running", kind="download", unit="bytes",
-           detail=detail, done=_capped(bytes_on_disk(folder), total), total=total)
+    identity = {**(row or {}), "kind": "download", "unit": "bytes"}
+
+    def tick(**fields):
+        """One progress report that can carry a ✕ back. See the docstring."""
+        report_or_cancel(job=job, **identity, state="running", **fields)
+        if job is not None and CANCEL.is_set():
+            raise Cancelled()
+
+    tick(detail=detail, done=_capped(bytes_on_disk(folder), total), total=total)
 
     result = {}
 
@@ -1249,25 +1409,35 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     thread.start()
     while thread.is_alive():
         thread.join(timeout=1.0)
-        report(job=job, done=_capped(bytes_on_disk(folder), total), total=total,
-               detail=detail)
+        if not thread.is_alive():
+            # Finished during the join. Ticking now would be the late-cancel
+            # the docstring refuses — the bytes are already on the disk.
+            break
+        tick(done=_capped(bytes_on_disk(folder), total), total=total,
+             detail=detail)
     if "error" in result:
         raise result["error"]
     # Land on the total rather than on the last walk: the snapshot symlinks are
     # not counted, so a finished repo measures slightly under its own size and a
     # bar that stopped at 98% reads as a download that gave up.
-    report(job=job, done=total or bytes_on_disk(folder), total=total)
+    report(job=job, **identity, state="running",
+           done=total or bytes_on_disk(folder), total=total)
     return result["value"]
 
 
-def download_snapshot(model_id, ignore_patterns=None, **kwargs):
+def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwargs):
     """The repo, with progress. What most runners mean by "download".
 
-    The total is measured against the SAME `ignore_patterns` the download uses,
-    or a pull that deliberately skips a subfolder measures itself against
-    weights it was never going to fetch — a bar that stalls partway and then
-    jumps. The segmented fetch takes its file list from the same filter, for the
-    same reason.
+    The total is measured against the SAME patterns the download uses, or a pull
+    that deliberately fetches part of a repo measures itself against weights it
+    was never going to fetch — a bar that stalls partway and then jumps. The
+    segmented fetch takes its file list from the same filter, for the same
+    reason.
+
+    Both scopes are first-class arguments rather than `**kwargs` precisely so
+    that they reach `_repo_files` too: an `allow_patterns` that only reached
+    `snapshot_download` would fetch a tenth of a repo behind a bar priced at all
+    of it.
     """
     # ONE listing, serving the bar's total, the list to fetch AND the revision
     # to fetch it at. Asking twice is a second round trip before any byte moves;
@@ -1275,7 +1445,8 @@ def download_snapshot(model_id, ignore_patterns=None, **kwargs):
     # be fetched at another.
     sha, files, total = None, None, None
     try:
-        sha, files = _repo_files(model_id, ignore=ignore_patterns)
+        sha, files = _repo_files(model_id, allow=allow_patterns,
+                                 ignore=ignore_patterns)
         total = _total_bytes(files)
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(model_id, error)
@@ -1285,8 +1456,8 @@ def download_snapshot(model_id, ignore_patterns=None, **kwargs):
 
         return fetch_with_progress(
             model_id,
-            lambda: snapshot_download(model_id, ignore_patterns=ignore_patterns,
-                                      **kwargs),
+            lambda: snapshot_download(model_id, allow_patterns=allow_patterns,
+                                      ignore_patterns=ignore_patterns, **kwargs),
             total=total)
 
     if kwargs or files is None or not sha:
@@ -1306,13 +1477,20 @@ def download_snapshot(model_id, ignore_patterns=None, **kwargs):
     return hub()
 
 
-def download_file(repo_id, filename, detail=None):
+def download_file(repo_id, filename, detail=None, job=None, row=None):
     """One file out of a repo — a GGUF checkpoint, say — with progress.
 
     The total is THAT FILE's size, not the repo's. A repo that publishes a dozen
     quantizations of the same model sums to tens of gigabytes, and measuring a
     2.6GB pull against that is how a download reads as barely started for its
     whole life and then jumps to complete.
+
+    `job`/`row` for a fetch that happens inside a REQUEST rather than inside a
+    download — the diarization models on the first `diarize: true`, the speech
+    detector on a machine whose Download predates it. Without them the tick goes
+    to this process's `JOB_ID`, which is the model's own load row: finished,
+    and reopened as a running download of something the user never asked for
+    while the row they ARE watching says nothing. See `fetch_with_progress`.
     """
     # One listing here too, for the revision as much as for the total: a GGUF
     # fetched at a revision its listing never described is the same bug as a
@@ -1331,7 +1509,7 @@ def download_file(repo_id, filename, detail=None):
         return fetch_with_progress(
             repo_id,
             lambda: hf_hub_download(repo_id=repo_id, filename=filename),
-            total=total, detail=detail)
+            total=total, detail=detail, job=job, row=row)
 
     if not sha:
         return hub()
@@ -1340,7 +1518,7 @@ def download_file(repo_id, filename, detail=None):
             repo_id,
             lambda: os.path.join(_segmented_fetch(repo_id, [filename], sha),
                                  filename),
-            total=total, detail=detail)
+            total=total, detail=detail, job=job, row=row)
     except Cancelled:
         raise
     except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader
@@ -1376,12 +1554,29 @@ def _bring_up(model_id, download, load):
         # of the model has not been touched yet. `/health` re-measures on every
         # poll, which is what the number on screen actually comes from.
         report(state="done", detail="Model loaded")
+    except Cancelled:
+        # **A ✕ is not a failure, and saying it is costs more than a wrong word.**
+        # A terminal `state="error"` on the row CLEARS `cancel_requested`
+        # (`jobs.upsert`: a finished job cannot be cancelled) — so the
+        # supervisor's own poll, which is the thing that would have written the
+        # right verdict half a second later, can no longer see the ✕ that caused
+        # this at all. It then reads /health, finds "error", and reports the
+        # download the user stopped as a load that crashed.
+        #
+        # The health state stays "error" because that is the only non-ready
+        # terminal this contract has, and the supervisor's post-spawn loop is
+        # watching for exactly it; `error="cancelled"` is the literal string
+        # `_failure_text`/`_bring_up` switch on, so the supervisor's independent
+        # verdict AGREES with the row instead of overwriting it.
+        set_state(state="error", error="cancelled")
+        report(state="cancelled")
     except BaseException as e:  # noqa: BLE001 - this thread's only job is to explain a failure
         # Deliberately broad and deliberately last: this thread is the only
         # thing that can say why a load failed, and an unhandled exception here
         # would leave /health saying "loading" forever.
-        set_state(state="error", error=f"{e.__class__.__name__}: {e}")
-        report(state="error", message=str(e) or e.__class__.__name__)
+        message = describe_failure(e)
+        set_state(state="error", error=message)
+        report(state="error", message=message)
         traceback.print_exc(file=sys.stderr)
 
 
@@ -1485,7 +1680,7 @@ def _handler(generate, streaming):
                     self._json({"ok": True, "cancelled": True})
                 except BaseException as e:  # noqa: BLE001 - must reach the client
                     traceback.print_exc(file=sys.stderr)
-                    self._json({"ok": False, "error": f"{e.__class__.__name__}: {e}"})
+                    self._json({"ok": False, "error": describe_failure(e)})
 
         def _stream(self, body):
             """NDJSON, chunked. `{"type":"chunk"}` lines closed by
@@ -1506,7 +1701,7 @@ def _handler(generate, streaming):
                     generate(body, write)
                 except BaseException as e:  # noqa: BLE001 - must reach the client
                     write({"type": "done", "ok": False,
-                           "error": f"{e.__class__.__name__}: {e}"})
+                           "error": describe_failure(e)})
                     traceback.print_exc(file=sys.stderr)
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
@@ -1550,6 +1745,15 @@ def serve(download, load, generate, streaming=False, memory=None, argv=None):
     if args.download_only:
         try:
             download(args.model)
+        except Cancelled:
+            # Still non-zero — the weights are not on the disk and a zero would
+            # report the download DONE — but not a traceback: `_fetch_only`
+            # tails this log for the message it puts on a failed row, and a
+            # stack trace for something the user deliberately pressed is the
+            # noise that made a cancel look like a crash. The supervisor tells
+            # the two apart by the row's own ✕, not by what is written here.
+            sys.stderr.write("cancelled\n")
+            sys.exit(1)
         except BaseException as e:  # noqa: BLE001 - stderr is the supervisor's report
             traceback.print_exc(file=sys.stderr)
             sys.stderr.write(f"\n{e.__class__.__name__}: {e}\n")

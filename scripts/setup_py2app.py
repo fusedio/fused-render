@@ -321,6 +321,87 @@ DOCUMENT_TYPES = [
     },
 ]
 
+# --- the standard library itself ---------------------------------------------
+#
+# **py2app ships the stdlib THIS APP IMPORTS, not the standard library**, and
+# that is a promise the app makes to code it never traced.
+#
+# modulegraph freezes what it can reach from `app_entry.py` into
+# `Contents/Resources/lib/python312.zip`. Nothing in fused_render imports
+# `filecmp`, so `filecmp` was not in that zip — and the bundled interpreter is
+# the BASE INTERPRETER of every environment the app builds (PY-18: `uv sync
+# --python Contents/MacOS/python`), so a venv inherits that hole. On a DMG,
+# loading a Qwen model died with:
+#
+#     transformers/dynamic_module_utils.py:17  import filecmp
+#     ModuleNotFoundError: No module named 'filecmp'
+#
+# which transformers' lazy-import machinery re-raised as `Could not import
+# module 'AutoTokenizer'` — a message about the model, three layers away from a
+# missing stdlib module. mlx-lm, transformers and tokenizers were all installed
+# correctly; the install was never interrupted.
+#
+# The subset is only ever right by luck: it is the intersection of the stdlib
+# with what THIS app happens to import, and every dependency any user installs
+# is entitled to the rest of it. So the whole importable stdlib is forced in.
+#
+# Split the way the rest of this file splits: a package (`email`, `xml`,
+# `encodings`) goes to `packages` for a whole-directory copy, because
+# modulegraph would otherwise carry only the submodules it traced; a plain
+# module or C extension goes to `includes`.
+#
+# Builtins are skipped — they are compiled into the interpreter, so there is no
+# file to copy — and anything `find_spec` cannot resolve on the build host is
+# skipped too, which is what keeps the Windows-only names (`msvcrt`, `winreg`,
+# `winsound`) out of a macOS build.
+
+#: Stdlib names the bundle deliberately does NOT carry, each with the reason it
+#: is safe to omit. Anything absent from the bundle must be here rather than
+#: merely missing — that is the rule `test_the_bundle_ships_everything_it_does
+#: _not_explicitly_exclude` already applies to distributions, applied to the
+#: stdlib, and it is what makes the next `filecmp` a failed build rather than a
+#: user's bug report.
+STDLIB_EXCLUDED = {
+    "tkinter": "the GUI is rumps/pyobjc, and build_dmg.sh prunes Tcl/Tk",
+    "idlelib": "the bundled IDE; nothing in the app runs it",
+    "turtle": "imports tkinter at module level, so it cannot work without it",
+    "turtledemo": "demo suite for turtle",
+    # `test` (CPython's own suite) needs no entry: it is not in
+    # `sys.stdlib_module_names`, so the derivation never sees it. build_dmg.sh
+    # prunes the framework's copy separately.
+    "ensurepip": "no pip in the bundle by design (SPEC §19 DP-3)",
+    "lib2to3": "2-to-3 dev tooling, removed upstream in 3.13",
+    "antigravity": "opens a web browser at import time",
+    "this": "an easter egg; the Zen of Python is not a dependency",
+}
+
+
+def _stdlib_split():
+    """`(packages, includes)` covering the importable stdlib on this host."""
+    import importlib.util
+
+    packages, includes = [], []
+    for name in sorted(sys.stdlib_module_names):
+        if name in STDLIB_EXCLUDED or name.startswith("__"):
+            continue
+        if name in sys.builtin_module_names:
+            continue  # compiled in; there is no file to carry
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError):
+            continue  # unresolvable here (a platform module for another OS)
+        if spec is None:
+            continue
+        if spec.submodule_search_locations is not None:
+            packages.append(name)
+        else:
+            includes.append(name)
+    return packages, includes
+
+
+STDLIB_PACKAGES, STDLIB_INCLUDES = _stdlib_split()
+
+
 OPTIONS = {
     "argv_emulation": False,  # rumps/app.py owns AppKit file-open handling directly (application:openFiles:)
     "iconfile": ICONFILE,
@@ -373,14 +454,14 @@ OPTIONS = {
         "pluggy", "tomlkit", "jwt", "yaml", "loguru",
         "aiohttp", "yarl", "multidict", "frozenlist",
         "fsspec", "tabulate", "tqdm", "rtoml",
-    ] + BUNDLED_PACKAGES,
+    ] + BUNDLED_PACKAGES + STDLIB_PACKAGES,
     # Single modules (incl. bare C extensions) that modulegraph can't be
     # trusted to find on its own — same runtime-import blindness as
     # `packages` above, but `includes` handles non-package modules correctly
     # (extension -> lib-dynload/*.so, never a bogus .py copy).
     # _cffi_backend: cryptography's cffi backend, the same bare-top-level-
     # C-extension shape as _duckdb.
-    "includes": ["_duckdb", "_cffi_backend"] + BUNDLED_INCLUDES,
+    "includes": ["_duckdb", "_cffi_backend"] + BUNDLED_INCLUDES + STDLIB_INCLUDES,
     # Skip py2app's "missing conditional import" report. Not cosmetic: that
     # report `__import__`s every module name modulegraph could not resolve, in
     # order to classify it, and catches only `Exception` — so a name whose import

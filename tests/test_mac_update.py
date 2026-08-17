@@ -2,8 +2,10 @@
 
 The signed-manifest crypto path is shared with the Windows updater and covered
 by tests/test_win_supervisor_update.py; these tests cover what's new on mac:
-the brew/dmg method decision, the manager's state machine (including the
-no-DMG-fallback-on-brew-failure rule), and the /api/update endpoints' guards.
+the brew/dmg method decision, the manager's state machine (including the rule
+that brew-managed installs are never updated by the app — the user runs the
+surfaced `brew upgrade` command themselves), and the /api/update endpoints'
+guards.
 """
 import subprocess
 import types
@@ -165,70 +167,51 @@ def test_install_retry_allowed_from_error(monkeypatch):
     assert manager.status()["state"] == "installed"
 
 
-# ---- brew path: failure gives the command, never a DMG fallback ---------------
+# ---- brew path: the app never runs brew — the user does -----------------------
 
 
-def test_brew_failure_sets_manual_command_and_no_dmg(monkeypatch):
+def test_brew_available_carries_manual_command(monkeypatch):
     manager = _manager(monkeypatch, method="brew", available="9.9.9")
-    manager.check()
-    monkeypatch.setattr(mac, "find_brew", lambda: "/fake/brew")
-
-    def run(cmd, **kwargs):
-        return types.SimpleNamespace(returncode=1, stdout="", stderr="Error: no sudo")
-
-    monkeypatch.setattr(mac.subprocess, "run", run)
-    dmg_calls = []
-    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: dmg_calls.append(1))
-    manager.install()
-    manager._install_thread.join(timeout=5)
-    status = manager.status()
-    assert status["state"] == "error"
-    assert status["manual_command"] == "brew upgrade --cask fused-render"
-    assert "no sudo" in status["error"]
-    assert not dmg_calls
-
-
-def test_brew_missing_at_install_sets_manual_command(monkeypatch):
-    manager = _manager(monkeypatch, method="brew", available="9.9.9")
-    manager.check()
-    monkeypatch.setattr(mac, "find_brew", lambda: None)
-    manager.install()
-    manager._install_thread.join(timeout=5)
-    status = manager.status()
-    assert status["state"] == "error"
+    status = manager.check()
+    assert status["state"] == "available"
     assert status["manual_command"] == "brew upgrade --cask fused-render"
 
 
-def test_brew_success_lands_installed(monkeypatch):
+def test_dmg_available_has_no_manual_command(monkeypatch):
+    manager = _manager(monkeypatch, available="9.9.9")
+    status = manager.check()
+    assert status["state"] == "available"
+    assert status["manual_command"] is None
+
+
+def test_brew_install_is_a_noop(monkeypatch):
     manager = _manager(monkeypatch, method="brew", available="9.9.9")
     manager.check()
-    monkeypatch.setattr(mac, "find_brew", lambda: "/fake/brew")
-    monkeypatch.setattr(
-        mac.subprocess, "run",
-        lambda cmd, **kwargs: types.SimpleNamespace(returncode=0, stdout="", stderr=""))
-    # brew exit 0 alone must not count — the bundle on disk proves the install.
+    status = manager.install()
+    assert status["state"] == "available"
+    assert manager._install_thread is None
+
+
+def test_status_notices_external_upgrade_without_a_check(monkeypatch):
+    """The badge polls status() every minute; a terminal `brew upgrade` must
+    flip it to "installed" then, not after the next multi-hour check tick."""
+    manager = _manager(monkeypatch, method="brew", available="9.9.9")
+    assert manager.check()["state"] == "available"
     monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
-    manager.install()
-    manager._install_thread.join(timeout=5)
-    assert manager.status()["state"] == "installed"
-
-
-def test_brew_exit_zero_with_stale_tap_is_an_error(monkeypatch):
-    """brew exits 0 without upgrading when the tap bump hasn't landed yet; the
-    manager must not claim "installed" while the bundle on disk is still old."""
-    manager = _manager(monkeypatch, method="brew", available="9.9.9")
-    manager.check()
-    monkeypatch.setattr(mac, "find_brew", lambda: "/fake/brew")
-    monkeypatch.setattr(
-        mac.subprocess, "run",
-        lambda cmd, **kwargs: types.SimpleNamespace(returncode=0, stdout="", stderr=""))
-    monkeypatch.setattr(manager, "_disk_version", lambda: "0.4.10")
-    manager.install()
-    manager._install_thread.join(timeout=5)
     status = manager.status()
-    assert status["state"] == "error"
-    assert "tap" in status["error"]
-    assert status["manual_command"] == "brew upgrade --cask fused-render"
+    assert status["state"] == "installed"
+    assert status["manual_command"] is None
+
+
+def test_brew_external_upgrade_flips_check_to_installed(monkeypatch):
+    """The user runs brew in a terminal; the next check() sees the new bundle
+    on disk, lands on "installed", and drops the manual command."""
+    manager = _manager(monkeypatch, method="brew", available="9.9.9")
+    assert manager.check()["state"] == "available"
+    monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
+    status = manager.check()
+    assert status["state"] == "installed"
+    assert status["manual_command"] is None
 
 
 def test_failed_check_keeps_installed_when_disk_is_current(monkeypatch):

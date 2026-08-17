@@ -15,7 +15,7 @@ import {
   deleteEntry,
 } from "@platform/lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "@platform/lib/api";
-import { navigate, navigateUrl, urlForFsPath, replaceSearch, IS_EMBED } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath, replaceSearch, IS_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { useDeployEnabled } from "@platform/lib/prefs";
@@ -29,7 +29,7 @@ import {
   trashEntry,
   buildOpenWithItems,
   friendlyFsError,
-  claudeDeepLink,
+  claudeTerminalCommand,
 } from "@apps/explorer/lib/fs-actions";
 import { fileBarMenu } from "@apps/explorer/lib/bar-menus";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
@@ -72,7 +72,6 @@ import { MenuIcons } from "@platform/ui/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
 import DeployModal from "@platform/cloud/DeployModal";
 import Listing from "@apps/explorer/Listing";
-import { useSplitIsWide } from "@apps/explorer/listing/pane";
 
 // The window global the injected runtime calls to hand this shell the commit the
 // git sidebar just selected (static/runtime.js `noteRevSelected`, reached from the
@@ -342,10 +341,12 @@ function usePreviewFileMenu(
     setMenu({ x: e.clientX, y: e.clientY, items: buildMenu() });
   };
 
-  // Open Claude Code on the file (a file cwd's into its parent and pre-fills an
-  // @-mention prompt — the same deep link the listing's row menu builds).
+  // Copy the command that starts Claude Code on this file's folder — the same
+  // clipboard hand-off the listing's row menu makes, not a launch.
   const doOpenInClaude = () => {
-    window.location.href = claudeDeepLink(fsPath, stat.is_dir, stat.name, parent);
+    copyToClipboard(claudeTerminalCommand(fsPath, stat.is_dir, parent)).then((ok) => {
+      if (ok) pushToast({ msg: "Command copied — paste it in your terminal", tone: "info" });
+    });
   };
 
   // The CRUMB BAR's menu for this file — deliberately not `buildMenu` above (see
@@ -851,22 +852,23 @@ function TemplatePreview({
   // single `_listing` mode), so the preview header is uniform across files and
   // dirs.
   const isListing = entry.mode === "_listing";
-  // Whether the listing's right preview pane is showing. The pane has no
-  // on/off state to read any more (no toggle, no `preview` param, no saved
-  // key): it appears when the split container is wide enough, so the only way
-  // to answer the question is to ask the same measurement the listing asks —
-  // hence the same hook, pointed at THIS body, which is the box the listing's
-  // own split container fills. Gated on `isListing`: only a directory renders
-  // a listing, and only a listing has a pane.
+  // Whether the listing's right preview pane is showing — and it is now the same
+  // question as "is this a listing at all". The pane has no on/off state to read
+  // (no toggle, no `preview` param, no saved key) and, since D282, no width gate
+  // either: a Listing that can have a pane has one. This used to measure THIS body
+  // with the same ResizeObserver the listing used, so the two could not disagree
+  // about whether 700px had been reached; with the threshold deleted there is
+  // nothing to measure and nothing to agree on.
   //
   // Used for the one thing the pane displaces: .preview-browse-chip, whose
   // corner is INSIDE the pane when there is one (see its comment below) — an
-  // embed-only control now, but an embedded listing can have a pane too. The
-  // top-bar mode control is not displaced but removed — for an explorer folder
-  // it is gone whether the pane is open or not; see headerActions.
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const bodyIsWide = useSplitIsWide(bodyRef);
-  const listingPaneOpen = isListing && bodyIsWide;
+  // embed-only control now, but an embedded listing can have a pane too. **So the
+  // chip no longer appears over a listing at any width**, where a narrow embed
+  // used to get one; a `.zarr` folder's embed reaches its map through the chip
+  // only while showing the MAP (the `isListing` half), not while showing the
+  // listing. The top-bar mode control is not displaced but removed — for an
+  // explorer folder it is gone whether the pane is open or not; see headerActions.
+  const listingPaneOpen = isListing;
   // Tab title (App's StatView owns the actual document.title write, and it
   // also feeds the default bookmark name and the Recents row — see
   // Breadcrumb.tsx / recents.ts): only a "_render" entry is the file's OWN
@@ -1009,13 +1011,18 @@ function TemplatePreview({
   // page makes through `fused.*` does resolve to the revision, and the write gate
   // applies.
   const remote = stat.remote ? "&_remote=1" : "";
+  // A shell loaded as a card thumbnail (IS_PREVIEW) forwards the flag onto
+  // every render it triggers, so peeking at an app's entry page is not
+  // recorded as opening the app (D301 records on GET /render by default).
+  const preview = IS_PREVIEW ? "&_preview=1" : "";
   const srcFor = (m: string): string | null => {
     if (m === "_listing") return null;
-    if (m === "_render") return revSrc(`/render?path=${encodeURIComponent(fsPath)}`, rev);
+    if (m === "_render")
+      return revSrc(`/render?path=${encodeURIComponent(fsPath)}${preview}`, rev);
     const t = templates.find((x) => x.mode === m);
     return t
       ? revSrc(
-          `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}`,
+          `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}${preview}`,
           rev
         )
       : null;
@@ -1055,7 +1062,7 @@ function TemplatePreview({
     const chatOnly = m === "claude" ? "&chat_only=1" : "";
     return (
       `/render?path=${encodeURIComponent(t.path)}` +
-      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}`
+      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${preview}`
     );
   };
 
@@ -1293,7 +1300,7 @@ function TemplatePreview({
           </Header>
         )
       )}
-      <div className="preview-body" ref={bodyRef}>
+      <div className="preview-body">
         {isPending(entry) ? (
           /* URL-requested a gated mode whose verdict is still in flight: hold
              the body until it lands (the iframe must not render a template on
@@ -1400,19 +1407,30 @@ function TemplatePreview({
             INSIDE the pane — the chip lands in the pane's header row, where it
             reads as pane chrome. It is not (it switches the FOLDER's mode, not
             the previewed file's), so a bare mode name like "Claude" sitting
-            there is a mystery button. The guard only ever bites in `_listing`
-            mode, since the pane exists only there. */}
+            there is a mystery button.
+
+            **That guard now bites in `_listing` mode ALWAYS**, because since D282
+            a listing always has a pane — `listingPaneOpen` is exactly `isListing`.
+            So the chip only ever renders over a NON-listing mode, and its label is
+            unconditionally "Browse contents"; the `isListing` label branches
+            ("Back", the counterpart's own name) were unreachable and are deleted
+            rather than left as a suggestion that they can happen.
+
+            **The direction that is now unreachable is listing → the other mode.**
+            In an embed the whole `.preview-header` and its switcher are hidden, so
+            this chip was the only control there: a `.zarr` folder embedded at any
+            width can go map → listing and then has nothing to click back with. It
+            is a dead end, not a degradation, and it is left standing on purpose —
+            the fix is either a chip that does not sit under the pane's corner or a
+            pane the embed does not get, and re-gating either on a WIDTH is what
+            D282 removed. Recorded in D282 for the owner to rule on. */}
         {toggleListing && !listingPaneOpen && (
           <button
             type="button"
             className="preview-browse-chip"
             onClick={toggleListing}
           >
-            {!isListing
-              ? "Browse contents"
-              : counterpart === defaultEntry.mode
-                ? "Back"
-                : modeTitle(counterpart as string)}
+            Browse contents
           </button>
         )}
       </div>

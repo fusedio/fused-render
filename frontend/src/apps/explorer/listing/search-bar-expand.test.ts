@@ -10,7 +10,8 @@
 //   1. HOW the star is removed. `visibility: hidden` or `opacity: 0` keeps the
 //      element's box — and the star's box is 24px plus a deliberate -11px
 //      negative margin (explorer.css) — so the input would stop 13px short of
-//      where the star was, i.e. a hole. In a flex row `display: none` takes the
+//      where the star was, i.e. a hole. Same for the history arrows beside it,
+//      which are 28px each. In a flex row `display: none` takes the
 //      item out of the layout entirely, gap included, which is what "expand
 //      completely" needs. This is NOT the column-shedding case
 //      (column-shedding.test.ts): there the shed element had to STAY rendered
@@ -62,12 +63,13 @@ test("the searching state is expressed in CSS at all", () => {
 });
 
 test("the bar stands down everything to the left of the search box", () => {
-  // The crumbs were already given up; the ★ is what was still holding the box
-  // off the left edge. The path `···` used to be a third entry here and needs
-  // none: it is not in the bar's markup at all any more — its items are the
-  // bar's right-click menu now (Breadcrumb's onBarContextMenu) — so there is no
-  // box left to stand down.
-  for (const target of [".crumbs", ".bookmark-star-btn"]) {
+  // The crumbs were already given up; the ★ and the ‹ › history arrows
+  // (`.crumb-nav`, which took the bar's opening slot from the star) are what is
+  // still holding the box off the left edge. The path `···` used to be a fourth
+  // entry here and needs none: it is not in the bar's markup at all any more —
+  // its items are the bar's right-click menu now (Breadcrumb's
+  // onBarContextMenu) — so there is no box left to stand down.
+  for (const target of [".crumbs", ".bookmark-star-btn", ".crumb-nav"]) {
     const rule = ruleFor(target);
     expect(rule, `no searching rule for ${target}`).toBeDefined();
     expect(rule!.decls).toMatch(/display:\s*none/);
@@ -75,12 +77,29 @@ test("the bar stands down everything to the left of the search box", () => {
 });
 
 test("the star is removed from the layout, not merely made invisible", () => {
-  // Its box is 24px wide and carries a -11px right margin to pull the first
-  // crumb close (explorer.css). visibility/opacity keep both, so the input
-  // would start 13px in from where the star was.
+  // Its box is 24px wide and carries a -11px LEFT margin to pull the last crumb
+  // close (explorer.css — it was a right margin while the star led the bar).
+  // visibility/opacity keep both, so the input would start 13px in from where
+  // the star was.
   const decls = ruleFor(".bookmark-star-btn")!.decls;
   expect(decls).not.toMatch(/visibility:\s*hidden/);
   expect(decls).not.toMatch(/opacity:\s*0/);
+});
+
+test("the path zone runs arrows, path, star — which is what standing down assumes", () => {
+  // The rules above hide `.crumb-nav` and the ★ so the search field can reach
+  // the bar's left edge, and that only frees a contiguous run if those two
+  // really do bracket the path. It is also the ordering the star's negative
+  // margin is aimed at: `margin-left` tightens last-crumb/★, and the auto margin
+  // that eats the bar's slack rides on the star as the zone's true tail
+  // (`.crumbs:has(.path-crumb) ~ .bookmark-star-btn`). Flip any of the three and
+  // the bar silently regrows a gap no rule here would catch.
+  const nav = BREADCRUMB.indexOf("<CrumbNav />");
+  const crumbs = BREADCRUMB.indexOf('<div className="crumbs"');
+  const star = BREADCRUMB.indexOf('<BookmarkStar id="bookmark-btn"');
+  expect(nav).toBeGreaterThan(-1);
+  expect(crumbs).toBeGreaterThan(nav);
+  expect(star).toBeGreaterThan(crumbs);
 });
 
 test("hiding the star is scoped to the main crumb bar", () => {

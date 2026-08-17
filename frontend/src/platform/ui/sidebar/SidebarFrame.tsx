@@ -5,7 +5,7 @@
 // recents, and app lists. Width/collapsed state is shared across all owners
 // (platform/lib/sidebarstate): switching sub-apps must not jump the layout.
 import React, { useRef, useState } from "react";
-import Chevron from "@platform/ui/Chevron";
+import PanelIcon from "@platform/ui/PanelIcon";
 import { navigateUrl } from "@platform/lib/router";
 import {
   getSidebarState,
@@ -30,8 +30,13 @@ export interface SidebarRailItem {
   label: string;
   icon: React.ReactNode;
   /** Navigate here on click. Highlights as active on exact pathname match,
-      like NavItem. */
+      like NavItem. Still set even when `onClick` overrides the click, so
+      middle-click/copy-link keeps working. */
   href: string;
+  /** Overrides the click instead of navigating to `href` — for a rail icon
+      that opens a menu (e.g. Settings) rather than going straight to a page.
+      Receives the anchor so the caller can anchor a popover off its rect. */
+  onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
   /** Hairline above this item — a group boundary, mirroring the expanded
       sidebar's headings. */
   dividerBefore?: boolean;
@@ -171,8 +176,11 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
           title="Expand sidebar"
           onClick={toggleSidebarCollapsed}
         >
-          {/* Mirrored: expanding sends the sidebar back out to the right. */}
-          <Chevron dir="right" />
+          {/* The SAME glyph the collapse button wears, not a mirrored one: this
+              is one panel with one toggle, and the icon names the panel rather
+              than the direction of travel (platform/ui/PanelIcon). Which state
+              you are in is legible from the sidebar being there or not. */}
+          <PanelIcon side="left" />
         </button>
         {rail && rail.length > 0 && (
           <div className="sidebar-rail-items">
@@ -190,7 +198,8 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
                   title={item.label}
                   onClick={(e) => {
                     e.preventDefault();
-                    navigateUrl(item.href);
+                    if (item.onClick) item.onClick(e);
+                    else navigateUrl(item.href);
                   }}
                 >
                   {item.icon}
@@ -246,11 +255,11 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
           title="Collapse sidebar"
           onClick={toggleSidebarCollapsed}
         >
-          {/* The shared glyph (platform/ui/Chevron) — this used to be a 14px
-              copy of it, which on the 24-unit grid drew a visibly thinner line
-              than the identical 16px chevron on the right-hand companion
-              column's close button. See there for the arithmetic. */}
-          <Chevron dir="left" />
+          {/* The shared glyph (platform/ui/PanelIcon): a frame with its LEFT
+              half filled — this panel, on this side — in place of the chevron
+              that used to say only "something collapses that way", identically,
+              on both edges of the window. */}
+          <PanelIcon side="left" />
         </button>
       </div>
 

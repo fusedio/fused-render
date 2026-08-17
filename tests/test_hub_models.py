@@ -1,11 +1,18 @@
-"""GET /api/ai-models/hub/* — searching the Hub, joined to the local cache
-(SPEC §39).
+"""/api/ai-models/hub/* — searching the Hub for models this app can run, joined
+to the local cache (SPEC §39).
 
 The Hub itself is never called: `httpx.get` is replaced per test, because the
 point under test is what this module DOES with an answer — how it joins, what it
 leaves out, and how it behaves when the far side is unreachable, rate-limiting,
 or sending something unexpected. A test that reached huggingface.co would be
 testing huggingface.co.
+
+The section at the bottom is the D313 constraint, and it is the one that would
+be easiest to lose: every result must be something this machine could download
+AND load, which is a rule about rows the Hub is free to send anyway. The tests
+name the actual repos from the complaint that produced it — `all-MiniLM-L6-v2`,
+`bert-base-uncased` — so a regression fails with the symptom rather than with an
+abstraction of it.
 """
 import json
 import os
@@ -14,6 +21,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from fused_render.ai import registry
 from fused_render.server import create_app
 from fused_render.server.routers import ai_models as ai_models_mod
 from fused_render.server.routers import hub_models as hub
@@ -66,6 +74,19 @@ def _reply(rows, status=200, body=None):
     return fake
 
 
+def _hit(model_id, **extra):
+    """A Hub row that SURVIVES the supported-tag filter.
+
+    Since D313 a result is dropped unless its `pipeline_tag` maps to a
+    capability some runner serves, so a bare `{"id": ...}` is no longer a row
+    the page ever sees — it is the untagged case, which is now deliberately
+    filtered out. Tests about the join, the sizes or the failure modes are not
+    about that rule, so they build their fixtures through here and say
+    `pipeline_tag` only when the tag is the thing under test.
+    """
+    return {"id": model_id, "pipeline_tag": "text-generation", **extra}
+
+
 def _cached_repo(cache, dirname, commit="c1", size=64):
     """A cache repo with a materialised snapshot — i.e. one that is genuinely
     downloaded rather than half-pulled."""
@@ -112,7 +133,7 @@ def test_a_half_pulled_repo_is_partial_not_downloaded(client, hub_cache, monkeyp
     blob = hub_cache / "models--org--partial" / "blobs" / "b1"
     blob.parent.mkdir(parents=True)
     blob.write_bytes(b"x" * 32)
-    monkeypatch.setattr(httpx, "get", _reply([{"id": "org/partial"}]))
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/partial")]))
     models = _search(client).json()["models"]
     assert models[0]["local"]["state"] == "partial"
 
@@ -138,7 +159,7 @@ def test_the_join_costs_what_the_results_cost_not_what_the_cache_costs(
     real_scan = ai_models_mod._scan_repo
     monkeypatch.setattr(
         hub, "_scan_repo", lambda root: (measured.append(root), real_scan(root))[1])
-    monkeypatch.setattr(httpx, "get", _reply([{"id": "org/m2"}, {"id": "org/absent"}]))
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/m2"), _hit("org/absent")]))
 
     models = _search(client).json()["models"]
     assert {m["id"]: m["local"]["state"] for m in models} == {
@@ -153,7 +174,7 @@ def test_the_local_half_is_never_served_stale(client, hub_cache, monkeypatch):
     # model deleted a second ago must stop claiming to be downloaded, or the
     # card links somewhere that no longer exists.
     repo = _cached_repo(hub_cache, "models--org--m")
-    fake = _reply([{"id": "org/m"}])
+    fake = _reply([_hit("org/m")])
     monkeypatch.setattr(httpx, "get", fake)
     assert _search(client).json()["models"][0]["local"]["state"] == "downloaded"
 
@@ -182,10 +203,10 @@ def test_size_is_recovered_from_the_dtype_map(client, hub_cache, monkeypatch):
     # 8B parameters at BF16 is 16GB, and saying so before the click is the
     # number that matters on a page whose sibling feature exists because disks
     # fill up.
-    monkeypatch.setattr(httpx, "get", _reply([{
-        "id": "org/big",
-        "safetensors": {"parameters": {"BF16": 8_000_000_000}, "total": 8_000_000_000},
-    }]))
+    monkeypatch.setattr(httpx, "get", _reply([_hit(
+        "org/big",
+        safetensors={"parameters": {"BF16": 8_000_000_000}, "total": 8_000_000_000},
+    )]))
     row = _search(client).json()["models"][0]
     assert row["params"] == 8_000_000_000
     assert row["estimatedSize"] == 16_000_000_000
@@ -194,33 +215,24 @@ def test_size_is_recovered_from_the_dtype_map(client, hub_cache, monkeypatch):
 def test_a_repo_with_no_safetensors_metadata_reports_no_size(client, hub_cache, monkeypatch):
     # A size we cannot compute is left out. A guessed one would be a number
     # someone plans a download around.
-    monkeypatch.setattr(httpx, "get", _reply([{"id": "org/gguf", "safetensors": None}]))
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/gguf", safetensors=None)]))
     row = _search(client).json()["models"][0]
     assert row["estimatedSize"] is None and row["params"] is None
-
-
-def test_gated_is_reported_before_someone_tries(client, hub_cache, monkeypatch):
-    # The Hub sends "auto"/"manual"/false. Any of the truthy ones means the
-    # licence has to be accepted first, which is worth knowing in advance.
-    monkeypatch.setattr(httpx, "get", _reply([
-        {"id": "org/gated", "gated": "manual"}, {"id": "org/open", "gated": False}]))
-    rows = {m["id"]: m for m in _search(client).json()["models"]}
-    assert rows["org/gated"]["gated"] is True
-    assert rows["org/open"]["gated"] is False
 
 
 def test_missing_fields_are_absent_not_fatal(client, hub_cache, monkeypatch):
     # The Hub returns what it returns, and an older deployment may refuse an
     # expand[] field entirely. Nothing here indexes blindly.
-    monkeypatch.setattr(httpx, "get", _reply([{"id": "org/bare"}]))
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/bare")]))
     row = _search(client).json()["models"][0]
     assert row["id"] == "org/bare"
-    assert row["task"] is None and row["downloads"] is None and row["tags"] == []
+    assert row["downloads"] is None and row["likes"] is None
+    assert row["library"] is None and row["estimatedSize"] is None
 
 
 def test_a_row_with_no_id_is_dropped(client, hub_cache, monkeypatch):
     # A row the page could not act on is a row it should not be given.
-    monkeypatch.setattr(httpx, "get", _reply([{"likes": 3}, {"id": "org/real"}]))
+    monkeypatch.setattr(httpx, "get", _reply([{"likes": 3}, _hit("org/real")]))
     models = _search(client).json()["models"]
     assert [m["id"] for m in models] == ["org/real"]
 
@@ -256,7 +268,7 @@ def test_the_limit_is_bounded(client, hub_cache, monkeypatch):
 def test_identical_queries_inside_the_window_ask_once(client, hub_cache, monkeypatch):
     # Search-as-you-type would otherwise put one request per keystroke on a
     # public API.
-    fake = _reply([{"id": "org/m"}])
+    fake = _reply([_hit("org/m")])
     monkeypatch.setattr(httpx, "get", fake)
     for _ in range(3):
         _search(client, {"q": "llama"})
@@ -321,7 +333,7 @@ def test_an_error_is_not_cached(client, hub_cache, monkeypatch):
     # network comes back, and the next keystroke should find out.
     monkeypatch.setattr(httpx, "get", _reply([], status=500))
     assert _search(client).json()["error"]
-    fake = _reply([{"id": "org/m"}])
+    fake = _reply([_hit("org/m")])
     monkeypatch.setattr(httpx, "get", fake)
     assert _search(client).json()["models"][0]["id"] == "org/m"
 
@@ -351,6 +363,180 @@ def test_a_task_filter_is_passed_through(client, hub_cache, monkeypatch):
     monkeypatch.setattr(httpx, "get", fake)
     _search(client, {"task": "text-generation"})
     assert "filter=text-generation" in fake.calls[0][0]
+
+
+# -- only what this app can run (D313) ---------------------------------------
+
+
+def test_the_menu_offers_only_tags_something_here_can_run(client):
+    """The user's complaint, as a test: "search functionality of things we
+    don't support".
+
+    The menu used to list every tag the Hub recognises — twenty-six of them, of
+    which this app can load four — so the control that looked most like the
+    point of the feature was mostly a list of ways to get results with no
+    working button.
+    """
+    tasks = client.get("/api/ai-models/hub/tasks").json()["tasks"]
+    offered = [t["tag"] for t in tasks]
+    # Every offered tag resolves to a capability something here serves. Asked of
+    # the registry, which is the same authority the Load button uses.
+    for tag in offered:
+        assert registry.capability_for_task(hub._friendly_task(tag)) is not None, tag
+    # And the ones that made the complaint are gone, by name.
+    for absent in ("fill-mask", "feature-extraction", "sentence-similarity",
+                   "text-classification", "summarization", "image-classification"):
+        assert absent not in offered
+    # …while the three the Engines tab is about are all reachable.
+    assert {registry.capability_for_task(hub._friendly_task(t)) for t in offered} == {
+        registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT}
+
+
+def test_the_menu_follows_the_registry_rather_than_a_second_list(client, monkeypatch):
+    """A runner appearing or disappearing must move this menu on its own.
+
+    The tags are Hub vocabulary and live in `hub_models`; WHICH of them is
+    offered is the registry's answer. Two hand-maintained lists would drift, and
+    the drift is invisible until someone downloads 8GB of something that then
+    refuses to load.
+    """
+    monkeypatch.setattr(
+        hub, "capability_for_task",
+        lambda task: registry.TEXT_GENERATION if task == "summarization" else None)
+    assert [t["tag"] for t in client.get("/api/ai-models/hub/tasks").json()["tasks"]] == [
+        "summarization"]
+
+
+def test_a_result_is_never_something_this_app_cannot_run(client, hub_cache, monkeypatch):
+    """The hard guarantee. The menu constrains what a user can ASK for; this
+    constrains what comes back, including for an unfiltered query where the Hub
+    is free to answer with anything it likes."""
+    monkeypatch.setattr(httpx, "get", _reply([
+        {"id": "org/chat", "pipeline_tag": "text-generation"},
+        {"id": "org/vlm", "pipeline_tag": "image-text-to-text"},
+        {"id": "org/pic", "pipeline_tag": "text-to-image"},
+        {"id": "org/ears", "pipeline_tag": "automatic-speech-recognition"},
+        # …and the ones the user was looking at when they complained.
+        {"id": "sentence-transformers/all-MiniLM-L6-v2", "pipeline_tag": "feature-extraction"},
+        {"id": "google-bert/bert-base-uncased", "pipeline_tag": "fill-mask"},
+        {"id": "cross-encoder/ms-marco", "pipeline_tag": "text-classification"},
+    ]))
+    models = _search(client).json()["models"]
+    assert [m["id"] for m in models] == ["org/chat", "org/vlm", "org/pic", "org/ears"]
+
+
+def test_a_result_with_no_pipeline_tag_is_dropped(client, hub_cache, monkeypatch):
+    # We cannot promise a Download button for a repo we cannot classify, and
+    # "probably a text model" is exactly the guess that hands someone a
+    # diffusion checkpoint to load as a chat model.
+    monkeypatch.setattr(httpx, "get", _reply([
+        {"id": "org/mystery"}, {"id": "org/mystery2", "pipeline_tag": None},
+        _hit("org/known")]))
+    assert [m["id"] for m in _search(client).json()["models"]] == ["org/known"]
+
+
+def test_every_result_carries_the_capability_that_would_load_it(client, hub_cache, monkeypatch):
+    # It is what the page hands to the download route, so a null here is a
+    # button that cannot be wired rather than a missing nicety.
+    monkeypatch.setattr(httpx, "get", _reply([
+        {"id": "org/chat", "pipeline_tag": "text-generation"},
+        {"id": "org/vlm", "pipeline_tag": "image-text-to-text"},
+        {"id": "org/pic", "pipeline_tag": "text-to-image"},
+        {"id": "org/ears", "pipeline_tag": "automatic-speech-recognition"},
+    ]))
+    got = {m["id"]: m["capability"] for m in _search(client).json()["models"]}
+    assert got == {
+        "org/chat": registry.TEXT_GENERATION,
+        # A vision-language checkpoint is a text model when you only give it
+        # text — the same rule the Local tab's Load button follows.
+        "org/vlm": registry.TEXT_GENERATION,
+        "org/pic": registry.IMAGE_GENERATION,
+        "org/ears": registry.SPEECH_TO_TEXT,
+    }
+
+
+def test_a_private_repo_is_dropped(client, hub_cache, monkeypatch):
+    """Private stays out, and it is a different case from gated (D316).
+
+    A private repo is visible here only because this machine happens to hold a
+    token that can see it, and there is no step an ordinary account can take to
+    reach it — no licence to accept, no queue to join. A card for one could
+    never be actioned by the person reading it.
+    """
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/blocked", private=True), _hit("org/open")]))
+    assert [m["id"] for m in _search(client).json()["models"]] == ["org/open"]
+
+
+@pytest.mark.parametrize("value,expected", [("auto", "auto"), ("manual", "manual"),
+                                            (True, "manual")])
+def test_a_gated_repo_survives_and_says_which_kind_of_gate(client, hub_cache, monkeypatch,
+                                                           value, expected):
+    """Gated repos come back, carrying the gate (D316).
+
+    They were dropped on the rule that every card must be downloadable now, and
+    that rule was drawn one step too tight: a gate you open by signing in and
+    accepting a licence is not the same as a repo nobody can have. Some of the
+    best-known models on the Hub are `auto`-gated, and a search that silently
+    omits them is answering a question the user did not ask.
+
+    `manual` is the distinct case the Hub does tell us about — access is granted
+    by the repo's owner, not by a click — so it travels as its own value rather
+    than being flattened into "gated". An unrecognised truthy gate is read as
+    `manual`: the stricter of the two, because guessing "just sign in" about a
+    gate nobody here understands is the guess that wastes someone's time.
+    """
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/llama", gated=value)]))
+    rows = _search(client).json()["models"]
+    assert [r["id"] for r in rows] == ["org/llama"]
+    assert rows[0]["gated"] == expected
+    # Still a real capability, so the card knows what it would be downloading.
+    assert rows[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_an_ungated_result_says_so_rather_than_saying_nothing(client, hub_cache, monkeypatch):
+    # Null, not absent and not False: the page tests one field for "is there a
+    # gate and what kind", and a missing key would make "no gate" and "a Hub
+    # that did not tell us" the same answer.
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/open"), _hit("org/also", gated=False)]))
+    assert [r["gated"] for r in _search(client).json()["models"]] == [None, None]
+
+
+def test_asking_for_a_task_nothing_here_runs_is_refused(client, hub_cache, monkeypatch):
+    # Not an empty grid: that reads as "the Hub has no summarization models"
+    # rather than "this app does not run them", and the Hub is not the one being
+    # unhelpful.
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    bad = _search(client, {"task": "fill-mask"})
+    assert bad.status_code == 400 and "fill-mask" in bad.json()["error"]
+    assert not fake.calls, "an unrunnable task still cost an outbound request"
+
+
+def test_an_unfiltered_search_asks_for_more_than_it_shows(client, hub_cache, monkeypatch):
+    """The filter runs HERE for an unfiltered query, so the request has to
+    over-fetch or a search for a common word comes back nearly empty.
+
+    With a task filter the Hub has already done the constraining, so asking for
+    more would be spending someone's rate limit on rows that are thrown away.
+    """
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"q": "small", "limit": 10})
+    assert "limit=40" in fake.calls[0][0]
+
+    _search(client, {"q": "small", "task": "text-generation", "limit": 10})
+    assert "limit=10" in fake.calls[1][0]
+
+
+def test_the_page_is_truncated_after_filtering_not_before(client, hub_cache, monkeypatch):
+    # `limit` means "rows you will be shown". Truncating the Hub's answer first
+    # would make a page of embedding models come back as two results.
+    rows = [{"id": f"org/junk{i}", "pipeline_tag": "fill-mask"} for i in range(20)]
+    rows += [_hit(f"org/good{i}") for i in range(5)]
+    monkeypatch.setattr(httpx, "get", _reply(rows))
+    models = _search(client, {"q": "x", "limit": 3}).json()["models"]
+    assert [m["id"] for m in models] == ["org/good0", "org/good1", "org/good2"]
 
 
 def test_the_hub_token_does_not_survive_a_cross_host_redirect():
