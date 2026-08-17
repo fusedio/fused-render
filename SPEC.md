@@ -7524,6 +7524,11 @@ the installation, and the mark that says so.
   handoff the Inbox and scheduled messages use. Without the run id the sidebar
   opens on the folder, sees nothing, and shows an empty composer while a session
   works three feet away in a process nobody is watching.
+- **SF-3a** **The handoff says the target is a DIRECTORY** (`{ isDir: true }`,
+  the same hint the scaffolder's identical hop passes). It always is — the
+  install root — so it is a fact rather than a guess, and without it the explorer
+  paints file chrome until `stat` answers. A visible stutter on the one
+  navigation this feature promises.
 - **SF-4** **Permission mode is `prompt`, not `auto`.** The app scaffolder runs
   unattended and takes the broadest mode it offers; this session edits the
   application itself, and a user who asked for a local fix has not thereby agreed
@@ -7679,6 +7684,15 @@ the installation, and the mark that says so.
   without clearing `at`, so when the badge came back — a real sequence, since a
   dismissal is scoped to one tree state (SF-15) and a session still editing
   re-stamps past it — the panel reopened over a sidebar nobody had clicked.
+- **SF-12a3** **A dismiss PATCHES local state and the nudge still re-reads**,
+  and the two are not the duplicate path SF-12a1 removed. What was removed was a
+  second *re-read trigger*; this is an optimistic *edit*, which the nudge's read
+  then confirms — the version chip has always worked this way. It became
+  necessary the moment a failed re-read stopped blanking the tab (SF-12a2): with
+  the last good snapshot preserved, a dismiss whose follow-up read failed left
+  Preferences saying "Modified" beside a chip that had already gone clean. The
+  server has confirmed the clear by then, so the marker is known-gone and saying
+  so is not a guess.
 - **SF-12b** **A nudge ABANDONS the read already in flight**, it does not merely
   cancel the next one. The two cadences above mean a `/api/config` read is
   usually outstanding, and the request that resolves after a dismiss still
@@ -7738,6 +7752,18 @@ the installation, and the mark that says so.
   ask about this?" is answerable either way), the reinstall instructions, and
   the dismiss — with room to read it. Read-only installs say so up front here
   rather than only on click, since there is space to say it.
+- **SF-14b1** **With no marker the tab says NOTHING about the bytes**, because
+  it cannot. It used to read *"Unmodified — this is the released build, exactly
+  as it shipped"*, and Dismiss makes that a lie by design: it clears the mark
+  and deliberately keeps the patch (SF-15), so the next snapshot met a
+  dismissed installation still carrying Claude's changes and told the user it
+  was pristine — the one direction this feature must never be wrong in. What
+  the app knows is PROVENANCE, not integrity (SF-7a): that a self-fix session
+  changed this copy, never that nothing did. Rewording it to "no modified badge
+  is active" was rejected as a quieter way of answering a question we cannot
+  answer; the section states the version, the path and the reports, and stops.
+  *An integrity claim would need a signed per-file manifest we do not ship —
+  which is SF-7a's argument, arriving at the UI.*
 - **SF-14c** **"Every report" means WHILE a badge is up as well**, and the tab
   reads the DIRECTORY beside the marker rather than instead of it. The marker's
   `fixes` is capped (`selffix.MAX_FIXES`), a dismiss drops the marker while
@@ -7785,33 +7811,37 @@ the installation, and the mark that says so.
   the path). A session that cannot write spends several minutes reading and then
   reports a fix that was never applied — which, to the user watching, reads
   exactly like a fix that was.
-- **SF-13a** **ONE fix session at a time** (409 naming the run that holds it),
-  because they all edit the same tree: two agents rewriting one installation
-  concurrently is not a slow path, it is a conflict, and each report then
-  describes a state that never existed. A user with two failed rows clicking Fix
-  on both is the ordinary way to get there. The slot lives in memory like the job
-  registry — it describes work happening in THIS process — and the watcher hands
-  it back in a `finally`, so one dead thread cannot lock the feature out.
-- **SF-13b** **The claim is IDENTIFIED, and its TTL is derived from the
-  watcher's own lifetime.** Both halves are the same bug from opposite ends. The
-  TTL is the backstop for a watcher that died without releasing, and at a round
-  3600s it was *exactly* `claude_spawn._RECORD_POLL_TICKS × _RECORD_POLL_INTERVAL`
-  — so it expired at the very moment a healthy long-running watcher was taking
-  its final whole-tree digest, handing the slot to a second session while the
-  first was live. It is now those constants plus a margin, reached into rather
-  than restated, since a hand-written number is how the two came to coincide.
-  And because a slot CAN legitimately move on, a release must prove it still owns
-  what it is dropping: each claim carries a token, and a release whose token does
-  not match is a no-op. Unconditional, the first watcher's `finally` wiped the
-  newer claim on its way out and let a third agent into the tree.
-- **SF-13c** **A watcher that cannot START keeps the slot too**, which is a
-  reversal of the obvious handling. The spawn has already succeeded by then, so
-  releasing says *nothing is running* while something is, and hands a second
-  agent the tree — trading the one thing the slot exists to prevent for the one
-  thing it is allowed to cost. Holding it says something TRUE: the next Fix this
-  is refused with "a fix session is already running", which is exactly the case,
-  and the TTL above is the release. The price is that this session goes
-  unwatched and therefore unstamped, and nothing else can recover that — the
-  mark is a provenance claim only a watched session can make (SF-7a), never
-  inferred from a digest. That is the smaller loss, and reaching this branch at
-  all means the interpreter could not start a thread.
+- **SF-13a** **ONE Claude session at a time in the installation** (409 naming
+  the run), because they all edit the same tree: two agents rewriting one
+  installation is not a slow path but a conflict, and each report then describes
+  a state that never existed. A user with two failed rows clicking Fix on both
+  is the ordinary way to get there.
+- **SF-13b** **The guard is ASKED, not remembered.** `agent._live_run(<install
+  root>)` — a scan of the runs directory for a run whose target is this tree and
+  whose pid is alive. It was a module-global claim with a token and a TTL, and
+  that was wrong in the one way that mattered: **the claude process is DETACHED
+  and outlives this server, while the claim lived in memory and did not.** A
+  restart cleared the guard with an agent still editing — and the restart most
+  likely to happen is the one the fix session itself CAUSES, since it edits `.py`
+  files under a dev server watching them. Persisting a lease instead would mean a
+  lease file, a TTL for it, recovery at startup, and a way to tell a stale lease
+  from a live one: four pieces of state to keep in step with a fact already on
+  disk. Asking also answers the question we actually care about rather than a
+  proxy for it — **a chat the user opened on the install folder by hand is
+  another agent in the same tree**, and the old claim could not see it. What
+  remains in memory is a plain mutex held across one request's look-and-spawn, so
+  two simultaneous clicks cannot both find the directory quiet; it is released a
+  second later and holds nothing about the session now running.
+- **SF-13c** **The watcher thread is bookkeeping, not the guard**, which is what
+  makes its failure uninteresting. While the guard was a claim the watcher had to
+  release, a thread that failed to start forced a choice between two harms — free
+  the guard with an agent live, or hold it on a timer — and the branch needed an
+  argument either way. Now the session excludes the next one because its process
+  is alive, watched or not. One cost survives and no lock could have prevented
+  it: unwatched means unstamped, so the badge will not appear for what that
+  session changes, since the mark is a provenance claim only a watched session
+  can make (SF-7a) and is never inferred from a digest.
+- **SF-13d** **The lookup fails OPEN**, reasoned rather than a coin toss:
+  everything it can fail on (the agent not loading, an unreadable runs directory)
+  fails the spawn moments later too, with a message naming what actually went
+  wrong instead of "already running".

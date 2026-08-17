@@ -63,7 +63,12 @@ function DescribeSection({ writable }: { writable: boolean }) {
     setError(null);
     try {
       const started = await startSelfFix(failureContextFromNote(note));
-      navigateUrl(fixSessionUrl(started));
+      // The target is ALWAYS the install directory, so the hint is a fact and
+      // not a guess — the same one the scaffolder's identical handoff passes
+      // (builder/HomeHero). Without it the explorer paints file chrome until
+      // `stat` answers, which is a visible stutter on the one navigation this
+      // feature promises lands you in the session (SF-3).
+      navigateUrl(fixSessionUrl(started), { isDir: true });
     } catch (e) {
       // Covers the two refusals worth reading: a read-only installation, and a
       // fix session already running (one at a time — they all edit the same
@@ -114,7 +119,14 @@ function DescribeSection({ writable }: { writable: boolean }) {
 
 // The installation's own account: modified or stock, every report, how to get
 // a clean copy back. The version chip shows a summary of this; here it has room.
-function InstallationSection({ snapshot }: { snapshot: SelfFixSnapshot }) {
+function InstallationSection({
+  snapshot,
+  onDismissed,
+}: {
+  snapshot: SelfFixSnapshot;
+  /** Drop the marker locally — see the Dismiss button. */
+  onDismissed: () => void;
+}) {
   const [error, setError] = useState<string | null>(null);
   const { marker, reinstall } = snapshot;
   const otherReports = unlistedReports(snapshot.reports, marker);
@@ -169,10 +181,18 @@ function InstallationSection({ snapshot }: { snapshot: SelfFixSnapshot }) {
               type="button"
               onClick={async () => {
                 try {
-                  // No local re-read here: `clearSelfFix` nudges, and the
-                  // nudge is what this tab listens to. A second path would be
-                  // a second place for the two to disagree.
                   await clearSelfFix();
+                  // PATCHED, not re-fetched — and the difference is the whole
+                  // point. The nudge `clearSelfFix` fires is what RE-READS, and
+                  // adding a second re-read here would be a second path to one
+                  // answer. But a re-read can fail, and this tab now keeps the
+                  // last good snapshot when it does, so relying on it alone
+                  // left the section saying "Modified" beside a chip that had
+                  // already gone clean. The server has just confirmed the
+                  // clear, so the marker is known-gone: say so now and let the
+                  // nudge's read confirm it. The version chip's own dismiss has
+                  // always worked this way, for this reason.
+                  onDismissed();
                 } catch (e) {
                   setError(String((e as Error)?.message || e));
                 }
@@ -185,11 +205,18 @@ function InstallationSection({ snapshot }: { snapshot: SelfFixSnapshot }) {
             Dismissing clears the badge only — the reports above stay on disk.
           </p>
         </>
-      ) : (
-        <p className="deploy-muted">
-          Unmodified — this is the released build, exactly as it shipped.
-        </p>
-      )}
+      ) : null}
+      {/* NOTHING IS SAID WHEN THERE IS NO MARKER, and the silence is the point.
+          This used to read "Unmodified — this is the released build, exactly as
+          it shipped", which is a claim about BYTES that no marker can support:
+          Dismiss deliberately clears the mark and keeps the patch (SF-15), so
+          the very next snapshot took a dismissed installation — still carrying
+          Claude's changes — and told the user it was pristine. What the app
+          actually knows is provenance, not integrity (SF-7a): it can say a
+          self-fix session changed this copy, and it cannot say that nothing
+          did. A weaker sentence ("no badge is active") would only be a quieter
+          version of answering a question we cannot answer, so the section says
+          what it knows — the version, the path, the reports — and stops. */}
 
       {/* EVERY OTHER REPORT ON DISK, whether or not a badge is up. This used to
           be shown only when there was no marker, which hid exactly the reports
@@ -329,7 +356,12 @@ export function SelfFixPanel() {
     <>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       <DescribeSection writable={snapshot.writable} />
-      <InstallationSection snapshot={snapshot} />
+      <InstallationSection
+        snapshot={snapshot}
+        onDismissed={() =>
+          setSnapshot((s) => (s ? { ...s, modified: false, marker: null } : s))
+        }
+      />
     </>
   );
 }

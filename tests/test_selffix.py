@@ -36,14 +36,6 @@ def install(tmp_path, monkeypatch):
     return root
 
 
-@pytest.fixture(autouse=True)
-def free_slot():
-    """The one-session-at-a-time slot is module-global — release it per test."""
-    selffix_routes._release_active()
-    yield
-    selffix_routes._release_active()
-
-
 @pytest.fixture()
 def client(tmp_path, install):
     return TestClient(create_app(start_dir=str(tmp_path)))
@@ -727,61 +719,72 @@ def test_a_failed_spawn_does_not_wedge_the_one_session_slot(client, monkeypatch)
     assert post(client, "/api/selffix/start", {"title": "b"}).status_code == 200
 
 
-def test_the_slot_ttl_outlives_the_longest_legitimate_watcher():
-    """The TTL is a backstop for a watcher that DIED, so it must never fire on
-    one that is merely slow. It was 3600s — exactly the watcher's own poll
-    lifetime — so it expired at the moment a healthy long session was finishing
-    its last stamp, handing the slot away mid-run."""
-    from fused_render import claude_spawn
+class _FakeAgent:
+    """Stands in for the claude template's agent module.
 
-    watcher_lifetime = (claude_spawn._RECORD_POLL_TICKS
-                        * claude_spawn._RECORD_POLL_INTERVAL)
-    assert selffix_routes._ACTIVE_TTL_S > watcher_lifetime
+    `live` is the run the runs directory would report for the install root —
+    which is what the guard asks, so a test sets it the way the real thing would
+    end up set: empty until a session is running, that run's id afterwards.
+    """
 
+    def __init__(self, live: str = ""):
+        self.live = live
 
-def test_a_finishing_watcher_does_not_drop_a_newer_claim():
-    """Once the TTL has handed the slot on, the previous holder's `finally` must
-    not clear it: that reopens the one-at-a-time guard with a session live, and
-    lets a third agent into the same tree."""
-    at = 1000.0
-    ttl = selffix_routes._ACTIVE_TTL_S
-    first, busy = selffix_routes._claim_active(at)
-    assert first and busy == ""
-
-    # The TTL expires and a second session legitimately takes the slot.
-    second, busy = selffix_routes._claim_active(at + ttl)
-    assert second and busy == ""
-    assert second != first
-
-    # ...and only NOW does the first watcher reach its `finally`. A no-op.
-    selffix_routes._release_active(first)
-    held = selffix_routes._active
-    assert held is not None and held["token"] == second
-
-    # So a third session is still refused, which is the whole point.
-    third, _ = selffix_routes._claim_active(at + ttl + 1)
-    assert third == ""
-
-    # The rightful owner can still hand it back.
-    selffix_routes._release_active(second)
-    assert selffix_routes._active is None
+    def _live_run(self, target: str, session_id: str = "") -> dict:
+        return {"run_id": self.live}
 
 
 def test_only_one_fix_session_runs_at_a_time(client, monkeypatch):
     """Two agents rewriting one installation is not concurrency, it is a
     conflict — and a user with two failed rows clicking Fix on both is the
     ordinary way to get there."""
-    monkeypatch.setattr(selffix_routes, "_spawn_helper", lambda *a, **k: {"run_id": "r1"})
-    monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
-    # A watcher that never returns: the first session is still running.
+    agent = _FakeAgent()
+    monkeypatch.setattr(selffix_routes, "_load_agent", lambda: agent)
+    # Starting a session is what makes the runs directory report one.
+    def spawn(*a, **k):
+        agent.live = "r1"
+        return {"run_id": "r1"}
+
+    monkeypatch.setattr(selffix_routes, "_spawn_helper", spawn)
     monkeypatch.setattr(selffix_routes, "_record_session_when_ready",
                         lambda *a, **k: threading.Event().wait(5))
 
     assert post(client, "/api/selffix/start", {"title": "a"}).status_code == 200
     second = post(client, "/api/selffix/start", {"title": "b"})
     assert second.status_code == 409
-    assert "already running" in second.json()["error"]
+    assert "already working" in second.json()["error"]
     assert "r1" in second.json()["error"]
+
+
+def test_the_guard_survives_a_restart_because_it_is_asked_not_remembered(
+        client, monkeypatch):
+    """The claude process is detached and outlives this server, so a guard held
+    in memory is cleared by exactly the restart a fix session CAUSES: it edits
+    .py files under a dev server watching them. Nothing here is carried across —
+    a fresh module state still refuses, because the answer is on disk."""
+    monkeypatch.setattr(selffix_routes, "_load_agent", lambda: _FakeAgent("r-old"))
+    monkeypatch.setattr(selffix_routes, "_spawn_helper",
+                        lambda *a, **k: pytest.fail("must not spawn beside a live run"))
+
+    refused = post(client, "/api/selffix/start", {"title": "after a restart"})
+    assert refused.status_code == 409
+    assert "r-old" in refused.json()["error"]
+
+
+def test_a_lookup_that_cannot_answer_fails_open(client, monkeypatch):
+    """Failing open is not a coin toss: everything this can fail on fails the
+    spawn a moment later too, with a message that says what actually went wrong
+    rather than "already running"."""
+    class Boom:
+        def _live_run(self, *a, **k):
+            raise RuntimeError("runs dir unreadable")
+
+    monkeypatch.setattr(selffix_routes, "_load_agent", lambda: Boom())
+    monkeypatch.setattr(selffix_routes, "_spawn_helper", lambda *a, **k: {"run_id": "r9"})
+    monkeypatch.setattr(selffix_routes, "_record_session_when_ready",
+                        lambda *a, **k: None)
+
+    assert post(client, "/api/selffix/start", {"title": "a"}).status_code == 200
 
 
 def test_the_watcher_stamps_when_the_session_changed_something(install, monkeypatch):
@@ -796,7 +799,7 @@ def test_the_watcher_stamps_when_the_session_changed_something(install, monkeypa
     monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
     monkeypatch.setattr(selffix_routes, "_record_session_when_ready", fake_record)
     selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "download failed",
-                              BEFORE[0], "")
+                              BEFORE[0])
 
     state = selffix.status()
     assert state is not None
@@ -809,7 +812,7 @@ def test_the_watcher_leaves_an_untouched_installation_alone(install, monkeypatch
     monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
     monkeypatch.setattr(selffix_routes, "_record_session_when_ready",
                         lambda agent, run_id, on_tick=None: on_tick({"done": True}))
-    selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "", BEFORE[0], "")
+    selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "", BEFORE[0])
     assert selffix.status() is None
 
 
@@ -853,18 +856,24 @@ def test_clear_endpoint(client, install):
     assert "modified_install" not in client.get("/api/config").json()
 
 
-def test_a_watcher_that_cannot_start_still_holds_the_slot(client, monkeypatch):
-    """The one case where the app must refuse rather than free the guard.
+def test_a_session_whose_watcher_died_still_excludes_a_second_one(client, monkeypatch):
+    """The thread that follows a session is bookkeeping, not the guard.
 
-    If the watcher thread cannot be started the session is ALREADY RUNNING, and
-    releasing the slot then says "nothing is running" while something is —
-    letting a second agent into the same tree, which is the single outcome the
-    slot exists to prevent. Holding it says something true instead, and the TTL
-    is the release. The cost, an unstamped session, is the smaller one and is
-    not recoverable by any other means (the mark is provenance, never inferred).
+    It used to be both, and that forced a choice between two harms when the
+    thread failed to start: free the guard with an agent live, or hold it on a
+    timer. Neither is needed once the guard is a question about the runs
+    directory — the session excludes the next one because its process is alive,
+    watched or not. The unstamped badge is the one cost left, and no lock could
+    have saved it.
     """
-    monkeypatch.setattr(selffix_routes, "_spawn_helper", lambda *a, **k: {"run_id": "r1"})
-    monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
+    agent = _FakeAgent()
+    monkeypatch.setattr(selffix_routes, "_load_agent", lambda: agent)
+
+    def spawn(*a, **k):
+        agent.live = "r1"
+        return {"run_id": "r1"}
+
+    monkeypatch.setattr(selffix_routes, "_spawn_helper", spawn)
 
     class NoThreads:
         def __init__(self, *a, **k):
@@ -879,10 +888,11 @@ def test_a_watcher_that_cannot_start_still_holds_the_slot(client, monkeypatch):
     # The start still succeeds — the session really is running, and the user is
     # about to land in it.
     assert post(client, "/api/selffix/start", {"title": "a"}).status_code == 200
-    # ...so the next one is refused, naming the run that holds the tree. Only
-    # Thread is put back: the spawn stub stays, so a refusal that did NOT happen
-    # would be a test failure rather than a real `claude` process.
+
+    # ...and the next one is refused anyway. Only Thread is put back: the spawn
+    # stub stays, so a refusal that did NOT happen would be a test failure
+    # rather than a real `claude` process.
     monkeypatch.setattr(selffix_routes.threading, "Thread", real_thread)
     second = post(client, "/api/selffix/start", {"title": "b"})
     assert second.status_code == 409
-    assert "already running" in second.json()["error"]
+    assert "r1" in second.json()["error"]

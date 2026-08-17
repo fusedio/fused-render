@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 
 from fastapi import APIRouter, Body, Header
 
@@ -50,71 +49,29 @@ _CHECK_EVERY_TICKS = 8
 # writes describes a state that never existed. A user with two failed rows
 # clicking Fix on both is the ordinary way to get there.
 #
-# In memory, like the job registry: it describes work happening in THIS process,
-# and a restart is the end of it. Held past the run's end by nothing — the
-# watcher releases it in a `finally` — with a TTL as the backstop for a watcher
-# thread that died without running one.
+# THE QUESTION IS ASKED, NOT REMEMBERED. This used to be a module-global claim
+# with a token and a TTL, and it was wrong in the one way that mattered: the
+# claude process is DETACHED and outlives this server, while the claim lived in
+# memory and did not. A restart cleared the guard with an agent still editing —
+# and the restart most likely to happen is one the fix session CAUSES, since it
+# edits .py files under a dev server watching them. Persisting a lease instead
+# would mean a lease file, a TTL for it, recovery at startup and a way to tell a
+# stale lease from a live one: four pieces of state to keep in step with one
+# fact that is already on disk.
 #
-# DERIVED from the watcher's own lifetime, not a round number. It was 3600s,
-# which is EXACTLY `_RECORD_POLL_TICKS * _RECORD_POLL_INTERVAL` — so the backstop
-# for a dead watcher expired at the very moment a healthy long-running one was
-# finishing, and its final stamp (a whole-tree digest) widened that window
-# further. A backstop must only fire when the thing it backs up is genuinely
-# gone, so it has to outlive the longest legitimate watcher by a margin. Reaching
-# into claude_spawn's poll constants is deliberate: a hand-written number here
-# silently drifts out of step with them, which is how the two came to coincide.
-_ACTIVE_TTL_S = (
-    claude_spawn._RECORD_POLL_TICKS * claude_spawn._RECORD_POLL_INTERVAL + 300.0
-)
-_active_lock = threading.Lock()
-# {"token": str, "run_id": str, "at": float} — see `_release_active` for why the
-# token exists.
-_active: dict | None = None
-_token_seq = 0
-
-
-def _claim_active(now: float) -> tuple[str, str]:
-    """Take the slot. Returns `(token, busy_run_id)`.
-
-    A non-empty token means it is OURS and must be handed back to
-    `_release_active`. Otherwise `busy_run_id` names the run already holding it.
-    """
-    global _active, _token_seq
-    with _active_lock:
-        if _active is not None and (now - _active["at"]) < _ACTIVE_TTL_S:
-            return "", str(_active["run_id"])
-        _token_seq += 1
-        token = str(_token_seq)
-        _active = {"token": token, "run_id": "", "at": now}
-        return token, ""
-
-
-def _set_active_run(token: str, run_id: str) -> None:
-    global _active
-    with _active_lock:
-        if _active is not None and _active.get("token") == token:
-            _active["run_id"] = run_id
-
-
-def _release_active(token: str = "") -> None:
-    """Hand the slot back — but ONLY IF WE STILL HOLD IT.
-
-    An unconditional release let a finishing watcher wipe a NEWER session's
-    claim: once the TTL had handed the slot to a second session (see above), the
-    first watcher's `finally` cleared it anyway, leaving the guard open while a
-    session was live and letting a third agent into the same tree. A claim is
-    therefore identified by a token, and a release that does not match is a
-    no-op: the slot has moved on without us.
-
-    An empty token force-releases, which is what the tests reset with.
-    """
-    global _active
-    with _active_lock:
-        if _active is None:
-            return
-        if token and _active.get("token") != token:
-            return  # someone else's claim now — not ours to drop
-        _active = None
+# `agent._live_run(dir)` is that fact. Every run writes `RUNS/<id>/meta.json`
+# with its target and a `pid` file, so "is a Claude session working in this
+# directory?" is a directory scan plus a liveness check — durable across
+# restarts by construction, with nothing to expire, release or recover. It also
+# answers the question we actually care about rather than a proxy for it: a chat
+# the user opened on the install folder BY HAND is another agent in the same
+# tree, and the old claim could not see it.
+#
+# The lock below is not that state. It is held only for the check-and-spawn of a
+# single request, so two simultaneous clicks cannot both look, both see nothing,
+# and both spawn; it is released in a `finally` a second later and holds nothing
+# about the session that is now running.
+_spawn_lock = threading.Lock()
 
 
 # Re-bound as module-level names (the apps router's convention) so a test can
@@ -124,8 +81,24 @@ _load_agent = claude_spawn.load_agent
 _record_session_when_ready = claude_spawn.record_session_when_ready
 
 
+def _live_session_in(root: str) -> str:
+    """The id of a Claude run still going in `root`, or "" if there is none.
+
+    Never raises: a lookup that cannot answer must not be the reason a fix
+    cannot start. Failing OPEN is the right direction here and not a coin toss —
+    everything this can fail on (the agent not loading, the runs dir being
+    unreadable) fails the spawn a moment later too, with a message that says
+    what actually went wrong instead of "already running".
+    """
+    try:
+        return str(_load_agent()._live_run(root).get("run_id") or "")
+    except Exception:  # noqa: BLE001 — see the docstring
+        logger.debug("live-run lookup failed for %s", root, exc_info=True)
+        return ""
+
+
 def _watch_fix(run_id: str, incident: str, report: str, title: str,
-               before: str, token: str) -> None:
+               before: str) -> None:
     """Follow the fix session and stamp the installation if it changed.
 
     Two jobs the session cannot do for itself. The FIRST is the stamp — see
@@ -168,14 +141,13 @@ def _watch_fix(run_id: str, incident: str, report: str, title: str,
     finally:
         # One last look regardless of how the poll ended — it gives up after an
         # hour (claude_spawn._RECORD_POLL_TICKS), and a session that ran long is
-        # exactly the one most likely to have changed something. In a `finally`
-        # so a watcher that died still frees the slot: the alternative is an app
-        # that refuses every later fix for an hour because of one bad thread.
+        # exactly the one most likely to have changed something.
+        #
+        # This thread no longer releases anything: the guard is a question asked
+        # of the runs directory, so a watcher that dies takes nothing with it and
+        # a session it stopped following still excludes a second one for exactly
+        # as long as its process is alive.
         stamp()
-        # OUR claim, by token: the TTL may have handed the slot to a newer
-        # session while this watcher was finishing, and dropping that one would
-        # reopen the guard with a session live.
-        _release_active(token)
 
 
 @router.post("/api/selffix/start")
@@ -236,41 +208,43 @@ def api_selffix_start(body: dict = Body(default={}),
             "applied here. Reinstall fused-render, or install it somewhere you "
             "own.", status=409)
 
-    token, busy = _claim_active(time.time())
-    if not token:
-        return _error(
-            "a fix session is already running on this installation"
-            + (f" (run {busy})" if busy else "")
-            + ". Finish or stop it before starting another — two sessions "
-            "editing the same files at once leave neither report true.",
-            status=409)
+    # Held across the LOOK and the SPAWN together, and released the moment the
+    # request is done. Two clicks a millisecond apart would otherwise both find
+    # the runs directory quiet and both start an agent; there is no state here
+    # to leak, because what excludes the second session afterwards is the first
+    # one's live process, not this lock.
+    with _spawn_lock:
+        busy = _live_session_in(root)
+        if busy:
+            return _error(
+                f"a Claude session is already working on this installation "
+                f"(run {busy}). Finish or stop it before starting another — two "
+                "sessions editing the same files at once leave neither report "
+                "true.", status=409)
 
-    try:
-        incident, report = selffix.record_incident(body)
-        # BEFORE the session starts and never after. Two digests, not one: the
-        # release's (for `reconcile`) and the tree as this session finds it
-        # (what `settle` measures against) — see `selffix.begin_session`. The
-        # incident write above cannot disturb either; the state dir is outside
-        # the digest.
-        _, before = selffix.begin_session()
-    except OSError as exc:
-        _release_active(token)
-        return _error(f"could not write the incident file: {exc}", status=500)
+        try:
+            incident, report = selffix.record_incident(body)
+            # BEFORE the session starts and never after. Two digests, not one:
+            # the release's (for `reconcile`) and the tree as this session finds
+            # it (what `settle` measures against) — see `selffix.begin_session`.
+            # The incident write above cannot disturb either; the state dir is
+            # outside the digest.
+            _, before = selffix.begin_session()
+        except OSError as exc:
+            return _error(f"could not write the incident file: {exc}", status=500)
 
-    try:
-        res = _spawn_helper(
-            root, selffix.fix_prompt(incident, report, reported_error=reported_error),
-            selffix.FIX_PERMISSION_MODE)
-    except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
-        _release_active(token)
-        return _error(f"could not start the fix session: {exc}", status=502)
-    run_id = res.get("run_id")
-    if res.get("error") or not run_id:
-        _release_active(token)
-        return _error(str(res.get("error") or "could not start the fix session"),
-                      status=502)
+        try:
+            res = _spawn_helper(
+                root,
+                selffix.fix_prompt(incident, report, reported_error=reported_error),
+                selffix.FIX_PERMISSION_MODE)
+        except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
+            return _error(f"could not start the fix session: {exc}", status=502)
+        run_id = res.get("run_id")
+        if res.get("error") or not run_id:
+            return _error(str(res.get("error") or "could not start the fix session"),
+                          status=502)
 
-    _set_active_run(token, str(run_id))
     # The marker's label for this fix. A described problem has no operation
     # name, so its first line stands in — the panel lists fixes by this, and
     # "a problem the user described" over every row says nothing.
@@ -280,30 +254,23 @@ def api_selffix_start(body: dict = Body(default={}),
         title = first_line[0][:120] if first_line else ""
     try:
         threading.Thread(target=_watch_fix,
-                         args=(str(run_id), incident, report, title, before, token),
+                         args=(str(run_id), incident, report, title, before),
                          daemon=True, name="fused-render-selffix-watch").start()
     except Exception:  # noqa: BLE001 — the session is already running
-        # THE SLOT IS KEPT, and that is a reversal: this used to release it,
-        # reasoning that nothing would stamp and nothing would free it, so the
-        # TTL alone would lock the feature out for an hour. That traded the one
-        # thing the slot exists to prevent for the one thing it was allowed to
-        # cost. A release here says "no session is running" while a session IS
-        # running, and lets a second agent into the same tree — two of them
-        # rewriting one installation, each report describing a state that never
-        # existed (SF-13a). Holding it says something TRUE instead: the next
-        # Fix this is refused with "a fix session is already running", which is
-        # exactly the case. The TTL then frees it, which is the job it was
-        # derived for (SF-13b).
+        # Nothing to unwind. The session is running and its run directory
+        # already excludes a second one, whether or not anything is watching it
+        # — which is the difference between a guard that is ASKED and one that
+        # is remembered, and the reason this branch used to need an argument
+        # about which harm to accept.
         #
-        # The cost is real and is the smaller one: this session goes unwatched,
-        # so its changes are not stamped and the badge does not appear. Nothing
-        # else can recover that — the mark is a provenance claim only a watched
-        # session can make (SF-7a), never inferred from the digest. Reaching
-        # here at all means the interpreter could not start a thread.
+        # One cost is left and it is not recoverable here: unwatched means
+        # unstamped, so the badge will not appear for whatever this session
+        # changes. The mark is a provenance claim only a watched session can
+        # make (SF-7a) and is never inferred from a digest. Reaching this branch
+        # at all means the interpreter could not start a thread.
         logger.exception(
             "could not start the self-fix watcher for run %s — the session is "
-            "running unwatched and will not be stamped; the slot is held until "
-            "it times out", run_id)
+            "running unwatched and its changes will not be stamped", run_id)
     return {"run_id": str(run_id), "target": root, "incident": incident,
             "report": report}
 
