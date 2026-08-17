@@ -330,13 +330,24 @@ describe("defaultSide and a pending own gate", () => {
     expect(openedAt("", s)).toBe("claude");
   });
 
-  it("prefers an UNGATED companion over a pending gated one", () => {
-    // The content pane's rule, applied to this half: a gated template is never
-    // the default while a normal one exists (CT-12, PT-9 — and the server's own
-    // `_mark_conditions` docstring says the same).
+  it("WAITS rather than preferring an ungated companion behind a pending one", () => {
+    // This asserted `notes` — "a gated template is never the default while a normal
+    // one exists", the content pane's CT-12/PT-9 rule read across to this half. **The
+    // analogy does not survive the second question.** For the content pane the rule
+    // is stable: an allowed conditional does NOT later become the default, so nothing
+    // moves. Here it would — `claude` leads the ranking, so the moment its gate says
+    // yes it takes the default and displaces whatever was showing. Preferring the
+    // settled follower therefore buys a swap, not a faster open.
+    //
+    // And skipping the gate permanently is not on the table either: `claude` is gated
+    // on every file, so a rule that never lets a gated companion be the default would
+    // mean the sidebar never opens by itself anywhere. So the gate is AWAITED.
     const s = sideSplit(gated([gatedClaude, notes], "no"));
-    expect(s.defaultSide).toBe("notes");
-    expect(openedAt("", s)).toBe("notes");
+    expect(s.defaultSide).toBe(null);
+    expect(openedAt("", s)).toBe(null);
+    // ...and the verdict is what opens it, on the leader, once and for good.
+    const settled = sideSplit({ ...gated([gatedClaude, notes], "no"), conditionsPending: false });
+    expect(settled.defaultSide).toBe("claude");
   });
 
   it("still HONOURS a deep link to a pending gated companion", () => {
@@ -359,12 +370,83 @@ describe("defaultSide and a pending own gate", () => {
     ).toBe(null);
   });
 
-  it("treats a settled borrowed git as the default while the own gate is out", () => {
-    // `conditionsPending` is THIS FILE's verdicts; the borrowed entry has its own
-    // flag and is not affected by it (Preview's `isSidePending` splits them the
-    // same way).
-    const s = sideSplit(gated([gatedClaude], "yes"));
-    expect(s.defaultSide).toBe("git");
+  // THE MIRROR OF THE ABOVE, and the worse bug of the two: withholding the default
+  // from a pending companion is not enough on its own, because a DIFFERENT companion
+  // that has already settled would take the default meanwhile — and then be
+  // DISPLACED when the gate answers. A file inside a repository is the common case,
+  // not a corner: the parent's `git` probe is cached per FOLDER, so on every
+  // file→file hop it is settled at first paint while THIS file's `claude` gate is
+  // freshly in flight. The column opened on Git and swapped to Claude a moment
+  // later, under the eyes of whoever was already reading it.
+  //
+  // The rule that fixes it: **the LEADING companion decides, and the default is
+  // withheld while the leader is unresolved.** Nothing later can outrank the leader,
+  // because a verdict only ever REMOVES a companion — it never adds one.
+  it("does not open a settled git that a pending claude would displace", () => {
+    const pending = sideSplit(gated([gatedClaude], "yes"));
+    // Git is settled and would have been the default; claude leads and has not
+    // answered, so nothing opens yet.
+    expect(names(pending.settled)).toEqual(["claude", "git"]);
+    expect(pending.defaultSide).toBe(null);
+    expect(openedAt("", pending)).toBe(null);
+
+    // The verdict lands: the column opens on Claude, and it has never been on Git,
+    // so nothing moved under the user.
+    const settled = sideSplit({ ...gated([gatedClaude], "yes"), conditionsPending: false });
+    expect(settled.defaultSide).toBe("claude");
+    expect(openedAt("", settled)).toBe("claude");
+  });
+
+  it("opens IMMEDIATELY when the leader is the settled one", () => {
+    // The other order costs no wait at all: claude is resolved and leads, and the
+    // still-pending borrowed git cannot outrank it whatever its verdict says — so
+    // there is nothing to protect against and no reason to hold the column back.
+    const s = sideSplit({ ...file([claude], "pending"), conditionsPending: false });
+    expect(s.defaultSide).toBe("claude");
+    expect(openedAt("", s)).toBe("claude");
+    // ...and the verdict landing does not move it.
+    expect(sideSplit({ ...file([claude], "yes"), conditionsPending: false }).defaultSide).toBe(
+      "claude"
+    );
+  });
+
+  it("withholds while an unranked companion is led by a pending one", () => {
+    // `notes` is settled but ranks last, so the pending `git` ahead of it would
+    // displace it the moment it resolved. Same rule, same reason — a short wait
+    // beats a swap.
+    expect(sideSplit(file([notes], "pending")).defaultSide).toBe(null);
+    expect(sideSplit(file([notes], "yes")).defaultSide).toBe("git");
+    expect(sideSplit(file([notes], "no")).defaultSide).toBe("notes");
+  });
+
+  // The default may still MOVE — but only in the one direction that is forced: the
+  // companion it is on stopped existing. That is a column falling away or shifting
+  // because its own mode went, never a swap between two live ones.
+  it("moves when the leader is DENIED out from under it", () => {
+    const before = sideSplit({ ...file([claude], "yes"), conditionsPending: false });
+    expect(before.defaultSide).toBe("claude");
+    // The chat's gate has now denied this file (Preview's visibility filter drops
+    // it, so it is not in `own` any more): the column falls to Git rather than
+    // vanishing.
+    const after = sideSplit({ ...file([], "yes"), conditionsPending: false });
+    expect(after.defaultSide).toBe("git");
+  });
+
+  it("keeps an explicit deep link on the mode it names, before AND after the verdict", () => {
+    // A named request is resolved against `all`, so it neither waits for the leader
+    // nor follows it — the deep link is the user's choice and outlives the race.
+    const pending = sideSplit(gated([gatedClaude], "yes"));
+    expect(openedAt("?_side=git", pending)).toBe("git");
+    const settled = sideSplit({ ...gated([gatedClaude], "yes"), conditionsPending: false });
+    expect(openedAt("?_side=git", settled)).toBe("git");
+  });
+
+  it("keeps a user's own switch, whatever the default becomes", () => {
+    // What Preview holds after a click: the request carries the mode, so the
+    // default's later movement cannot overrule it.
+    const settled = sideSplit({ ...gated([gatedClaude], "yes"), conditionsPending: false });
+    expect(resolveSide({ open: true, mode: "git" }, settled)).toBe("git");
+    expect(settled.defaultSide).toBe("claude");
   });
 });
 
@@ -382,8 +464,10 @@ describe("resolveSide", () => {
     // whose probe may yet say "no repository here", so a bare URL opens nothing
     // and the verdict is what opens it.
     expect(openedAt("", sideSplit(file([], "pending")))).toBe(null);
-    // ...and it never outranks a companion this file really has.
-    expect(openedAt("", sideSplit(file([notes], "pending")))).toBe("notes");
+    // ...and it does not hand the default to a companion it would DISPLACE either:
+    // `notes` is settled but ranks below git, so the wait covers that case too (see
+    // "withholds while an unranked companion is led by a pending one").
+    expect(openedAt("", sideSplit(file([notes], "pending")))).toBe(null);
   });
 
   it("honours `_side=off` however much is on offer", () => {

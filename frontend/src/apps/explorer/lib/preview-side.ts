@@ -160,33 +160,53 @@ export interface SideSplit {
   on: boolean;
   // Something may yet land in the sidebar, so a `_side` naming it is tolerated.
   offered: boolean;
-  // WHAT AN ABSENT `_side` OPENS (D326), and null when nothing does. Over the
-  // companions KNOWN TO BE SHOWABLE — which is a shorter list than `settled`, and
-  // shorter for two different reasons:
+  // WHAT AN ABSENT `_side` OPENS (D326), and null when nothing does yet.
   //
-  //   the borrowed placeholder   `settled` already excludes it. A file whose only
-  //                              candidate is a `git` that may turn out not to
-  //                              exist must not flash a column open for the length
-  //                              of the parent probe.
-  //   an OWN gate still out      `settled` includes it, and that asymmetry is
-  //                              deliberate for the split's EXISTENCE (see the
-  //                              header) — but not for this. `claude` ships a
-  //                              condition.py, so on every file it is pending until
-  //                              /api/fs/conditions answers; auto-opening it means
-  //                              an empty column (`src` null) that vanishes when a
-  //                              mount-backed file's verdict comes back false,
-  //                              seconds later on a cold mount, jumping the content
-  //                              pane's width twice for a sidebar the file never
-  //                              gets. And a gated entry being "never the default"
-  //                              is the rule the content pane already follows
-  //                              (`defaultMode`, CT-12, and the server's own
-  //                              `_mark_conditions` docstring).
+  // **THE LEADING COMPANION, OR NOTHING — never the best of what happens to have
+  // settled.** `all[0]` is the leader (the list is in ranking order), and while that
+  // one entry is unresolved this is null, however much has settled behind it. Two
+  // bugs sit either side of that sentence and the rule is what closes both:
+  //
+  //   opening a PENDING leader        `claude` ships a condition.py, so on every file
+  //                                  it is pending until /api/fs/conditions answers.
+  //                                  Auto-opening it puts an empty column on screen
+  //                                  (`src` null) which then VANISHES on a
+  //                                  mount-backed file, where the verdict is no —
+  //                                  the content pane's width jumping twice, seconds
+  //                                  apart on a cold mount, for a sidebar the file
+  //                                  never gets. A gated entry never being the
+  //                                  default is also what the content pane does
+  //                                  (`defaultMode`, CT-12, and the server's own
+  //                                  `_mark_conditions` docstring).
+  //   opening a SETTLED follower     the mirror image, and the worse of the two. A
+  //                                  file inside a repository has its borrowed `git`
+  //                                  cached per FOLDER, so on every file→file hop it
+  //                                  is settled at first paint while this file's
+  //                                  `claude` gate is freshly in flight. Taking "the
+  //                                  best resolved companion" opened the column on
+  //                                  Git and then SWAPPED it to Claude when the gate
+  //                                  allowed — content changing under the eyes of
+  //                                  whoever was already reading it, on the common
+  //                                  path rather than in a corner.
   //
   // Null means "not yet, ask again when the verdict lands" — the same posture `on`
   // and `sideToggleTarget` take, and what makes the reconcile leave `_side` alone
-  // meanwhile instead of writing `off`. A DEEP LINK to either kind of pending
-  // companion is still honoured: `resolveSide` resolves a NAMED mode against
-  // `all`, and only the default is withheld here.
+  // meanwhile instead of writing `off`.
+  //
+  // **WHY LIVE RECOMPUTATION IS SAFE ONCE THE RULE IS THIS**, rather than needing to
+  // be latched at first resolution: a verdict only ever REMOVES a companion, never
+  // adds one, so nothing can appear later and outrank the leader. The default can
+  // therefore only move when the entry it is on stops existing — the column falling
+  // away, or shifting to the next companion, because its own mode went. That is the
+  // one movement that must keep working, and a latch would have frozen it.
+  //
+  // A DEEP LINK is untouched by all of this, and so is a user's later switch:
+  // `resolveSide` resolves a NAMED mode against `all`, so it neither waits for the
+  // leader nor follows it.
+  //
+  // Note this is deliberately NOT `defaultSidebarMode` over some filtered list. That
+  // function answers "the best of these", which is the question that produced the
+  // swap; the question here is "what will still be true in a moment".
   //
   // It is also the value that decides the URL's SPELLING (`sideParam`): the
   // default gets the clean URL, so only a deliberate second choice is written
@@ -239,13 +259,22 @@ export function sideSplit(i: SideSplitInput): SideSplit {
   // `defaultSide` reads it; see the field's comment for why nothing else does.
   const unresolved = (e: TemplateEntry) =>
     e === i.borrowed ? i.borrowedPending : !!e.conditional && !!i.conditionsPending;
+  // THE LEADING COMPANION DECIDES, AND ONLY IT. `all` is already in ranking order
+  // (orderSidebarModes), so `all[0]` is what an absent `_side` would open — and
+  // while THAT entry is unresolved the answer is "not yet", whatever else has
+  // settled behind it. Filtering the unresolved ones out and taking the best of the
+  // rest is what this used to do, and it was wrong in the mirror-image way the
+  // field's comment describes: a settled companion took the default and was then
+  // DISPLACED when the leader's verdict allowed it.
+  const leader = all[0];
   return {
     menu: sidebarMenu(all, i.bound ?? []),
     all,
     settled,
     on: splittable && settled.length > 0,
     offered: splittable && all.length > 0,
-    defaultSide: splittable ? defaultSidebarMode(all.filter((e) => !unresolved(e))) : null,
+    defaultSide:
+      splittable && leader !== undefined && !unresolved(leader) ? leader.mode : null,
   };
 }
 

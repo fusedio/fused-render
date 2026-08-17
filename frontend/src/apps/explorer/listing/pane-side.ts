@@ -206,7 +206,14 @@ export interface PaneSideEntries {
 // resolves them, so "no companion offered" and "not answered yet" arrive in the same
 // shape; taking the `preview` fallback there was the bug 7c37acf4 fixed — the pill
 // reading "Preview" while a chat rendered under it, then a remount and a SECOND
-// `agent.py` spawn when the verdict landed. So the caller holds a SKELETON on an
+// `agent.py` spawn when the verdict landed.
+//
+// **UNDECIDED NOW INCLUDES "ONLY THE FOLLOWER HAS LANDED"** (D326), which is why the
+// wait below is keyed on `claudePending` before anything is offered at all: the two
+// probes are independent, so Git answering first is ordinary, and offering Git alone
+// meanwhile put the pane on it and then jumped to Claude the moment its verdict
+// arrived — `activePaneSide` reads the live list every render. A denial is still a
+// decision (Git then leads what is left); only an unanswered LEADER is a wait. So the caller holds a SKELETON on an
 // empty list: no mode resolved, nothing mounted, one spawn when the answer arrives.
 // (`paneSideMenu` reads this same list, so it draws its companions as CT-12 spinners
 // meanwhile.)
@@ -222,11 +229,24 @@ export interface PaneSideEntries {
 // is a `?sel=` deep link straight to a file row, which now shows the skeleton for
 // that one window instead of the file's preview.
 export function paneSideList(entries: PaneSideEntries): PaneSide[] {
+  // **THE LEADING COMPANION IS ALSO A WAIT, not just an offer** (D326). `claude`
+  // leads this order, and `activePaneSide` resolves an absent `_side` to
+  // `offered[0]` on every render — so a list that offered Git while Claude's probe
+  // was still out put the pane on Git and then JUMPED it to Claude when the verdict
+  // landed. The two probes are independent `useDirMode` calls with their own caches,
+  // so Git answering first is ordinary rather than exotic, and a pane swapping the
+  // content under a reader is worse than a moment more skeleton. The file sidebar's
+  // half of this is `lib/preview-side`'s `defaultSide`, fixed by the same rule and
+  // for the same reason; the two surfaces agree here deliberately.
+  //
+  // A DENIAL is not a wait: once Claude's probe has answered no, Git leads whatever
+  // is left, and that is a decision the pane can act on.
+  if (entries.claudePending) return [];
   const companions: PaneSide[] = [];
   if (entries.claude) companions.push("claude");
   if (entries.git) companions.push("git");
   if (companions.length > 0) return companions;
-  if (entries.claudePending || entries.gitPending) return [];
+  if (entries.gitPending) return [];
   return [PANE_SIDE_FALLBACK];
 }
 
