@@ -1189,6 +1189,10 @@ export function firstLine(text: string): string {
 //      `tasks_store.head`). Its sibling `title_source: "entry"` — a row named
 //      from a message merely SCHEDULED at the session, because the transcript
 //      could not be read — is not a step here at all; see sessionTitleOf;
+//   3b. the slash command the session ran (`title_source: "command"`), for a
+//      session that contains no prose at all — `/making-a-release` is the only
+//      true thing there is to call one of those, and the server says so rather
+//      than leaving the row nameless;
 //   4. nothing. The field opens blank and the user types a name.
 // Never the composed message, at any step. Steps 2 and 3 need a fetch, so they
 // live in the /api/tasks effect; 1 and 4 are what `initialTitleOf` decides
@@ -1212,6 +1216,29 @@ export function shortTitle(text: string, max = TITLE_MAX): string {
   return (boundary > 0 ? line.slice(0, boundary) : line.slice(0, max)).trimEnd();
 }
 
+// A prefill this field must refuse, whichever source produced it: a transcript
+// record's machine-written wire, leaked into a title.
+//
+// THIS IS A GUARD, NOT THE FIX. The fix is server-side — four readers of a
+// transcript's first user message each had their own idea of what counted as
+// machinery, and /api/tasks served rows titled `<live-app-state>` and
+// `<command-message>making-a-release</command-message>` (44 of them in one real
+// store). tasks_store owns that policy now and the server no longer emits such a
+// string. This refuses one anyway, because of what happens to a bad prefill in
+// THIS field specifically: the precedence below is permanent in one direction —
+// a `user`-set title outranks every other source forever — so a single leaked
+// string the user does not notice before pressing Save becomes that task's name
+// for good. One already is, in one real store. A second check on the cheap side
+// of an asymmetric cost.
+//
+// Deliberately NARROW, and the narrowness is the point: it refuses a value that
+// OPENS with a tag or with the annotation preamble's sentence. It does not go
+// hunting for angle brackets, because "fix why <div> renders twice" is a
+// perfectly good name for a thread about that bug, and refusing it would be the
+// very mistake this whole change undoes — a reader deciding that markup means
+// nobody typed it.
+const LEAKED_TITLE = /^(?:<[a-z][a-z0-9-]*>|The user annotated )/;
+
 // What Title OPENS on, synchronously. Only step 1 and step 4: a stored title
 // wins outright (an edit that quietly replaced it would be data loss), and
 // otherwise the field is BLANK until the /api/tasks lookup answers.
@@ -1222,7 +1249,37 @@ export function shortTitle(text: string, max = TITLE_MAX): string {
 // though Title is required: the requirement bites at Save, by which time either
 // the lookup has filled the field or the user has.
 export function initialTitleOf(entry?: ScheduledMessage | null): string {
-  return (entry?.title ?? "").trim();
+  const title = (entry?.title ?? "").trim();
+  // Guarded here as well as in `sessionTitleOf`, because a stored title is
+  // exactly how the one bad row in the real store got there: it was saved, so it
+  // is a `user` title now, and re-prefilling it on an Edit would keep the
+  // mistake alive every time the form opened.
+  return LEAKED_TITLE.test(title) ? "" : title;
+}
+
+// The pairing that keeps the two halves of step 1 from drifting apart. "Is there
+// a usable stored title?" is ONE question with two readers — the value the field
+// OPENS on, and whether the /api/tasks lookup may run at all — so it is asked
+// once, by `initialTitleOf` above, and both readers take that answer.
+//
+// It was asked twice (review, 2026-08-18), and the two answers disagreed on
+// exactly the rows LEAKED_TITLE exists to rescue: the field took
+// `initialTitleOf`, which blanks a leaked machinery title, while the lookup gated
+// on the RAW `entry.title` — and a leaked string is non-empty, so the guard sent
+// the lookup home. The field arrived blank AND stayed blank on a REQUIRED field,
+// so Save was refused on the one task the user cannot easily rename. Repeating
+// the LEAKED_TITLE test at the second site would only have set the same trap for
+// whatever the third reason to reject a stored title turns out to be.
+//
+// `lookupSession` is "" for "do not fetch", and it carries BOTH refusals: a
+// stored title has won step 1 outright (an async overwrite would be data loss),
+// or there is no session to ask about in the first place.
+export function initialTitleStateOf(
+  entry?: ScheduledMessage | null,
+  sessionId?: string | null,
+): { title: string; lookupSession: string } {
+  const title = initialTitleOf(entry);
+  return { title, lookupSession: title ? "" : (sessionId ?? "") };
 }
 
 // Steps 2 and 3, which only /api/tasks can answer: the name the session this
@@ -1260,8 +1317,15 @@ export function sessionTitleOf(
   const task = tasks.find((t) => t.session_id === sessionId);
   const title = (task?.title ?? "").trim();
   if (!title) return "";
+  // Before the source is consulted at all: a leaked wire string is not a name
+  // from ANY source, and the verbatim branches below would take it as one. See
+  // LEAKED_TITLE — a guard behind a server fix, not the fix.
+  if (LEAKED_TITLE.test(title)) return "";
   if (task?.title_source === "entry") return "";
   if (task?.title_source === "message") return shortTitle(title);
+  // Everything else is already a name and is taken as written: `user` and `ai`,
+  // and `command` — a session whose only user records are a slash command is
+  // named `/making-a-release`, which is short, true, and not a message.
   return title;
 }
 
@@ -1558,16 +1622,23 @@ export default function NewJobModal({
   const initialAsk = initialAskOf(editing, initialMessage);
   const [message, setMessage] = useState(initialAsk);
   // The FIRST field on the card, and REQUIRED (Akshil, 2026-08-17).
-  // `initialTitleOf` is only the synchronous half of the precedence: a stored
-  // title, else blank. The two SESSION steps — the thread's `ai-title`, then its
-  // first user message — need a fetch and land in the /api/tasks effect below.
-  // Blank on the first paint is deliberate now: the alternative was deriving a
-  // name from the ask, which is exactly how a long scheduled message ended up
-  // duplicated into the title.
+  // This is only the synchronous half of the precedence: a usable stored title,
+  // else blank. The two SESSION steps — the thread's `ai-title`, then its first
+  // user message — need a fetch and land in the /api/tasks effect below. Blank on
+  // the first paint is deliberate now: the alternative was deriving a name from
+  // the ask, which is exactly how a long scheduled message ended up duplicated
+  // into the title.
   //
-  // Held in a const for the same reason `initialAsk` is: the BASELINE (`initial`)
+  // The session that could name this task — the chat this form was deep-linked
+  // from, or whatever session an edited entry carries — is resolved HERE rather
+  // than beside the effect, because which value the field opens on and whether
+  // the lookup may run are one decision, taken once; see initialTitleStateOf.
+  //
+  // Held in consts for the same reason `initialAsk` is: the BASELINE (`initial`)
   // has to be the identical value or an untouched Edit reads as dirty.
-  const derivedTitle = initialTitleOf(editing);
+  const nameSession = (editing?.session_id || chatSessionId) ?? "";
+  const { title: derivedTitle, lookupSession: titleLookup } =
+    initialTitleStateOf(editing, nameSession);
   const [title, setTitle] = useState(derivedTitle);
   const [target, setTarget] = useState(editing?.target ?? initialTarget ?? "");
   // ONE date-time drives everything: a one-off runs at it, and every derived
@@ -1961,20 +2032,25 @@ export default function NewJobModal({
   // a name the app already knows.
   //
   // It only ever replaces the SYNCHRONOUS title (usually the empty string),
-  // never a typed one and never a stored one — same discipline as the getConfig
-  // effect above, and for the same bug: `initial` moves with it, because a value
-  // the user did not type must not read as dirty and arm the close-twice guard.
+  // never a typed one and never a USABLE stored one — a leaked stored title is not
+  // one of those, which is the whole reason this effect gets to run on such a row
+  // at all (initialTitleStateOf). Same discipline as the getConfig effect above,
+  // and for the same bug: `initial` moves with it, because a value the user did
+  // not type must not read as dirty and arm the close-twice guard.
   // That pairing matters more now that the field starts blank: without it, every
   // form opened from a chat would arrive already dirty and its ✕ would need two
   // presses before the user had touched anything.
-  const nameSession = (editing?.session_id || chatSessionId) ?? "";
   useEffect(() => {
-    // A stored title is the top of the precedence — nothing may outrank it.
-    if ((editing?.title ?? "").trim() || !nameSession) return;
+    // Whether to look this up at all was decided with the field's opening value,
+    // by the same call, so the two cannot disagree: "" means either a stored title
+    // won step 1 (nothing may outrank it) or there is no session to ask about. It
+    // deliberately does NOT re-derive that from `editing` — reading the raw stored
+    // title here is precisely the bug initialTitleStateOf exists to close.
+    if (!titleLookup) return;
     let alive = true;
     getTasks()
       .then(({ tasks }) => {
-        const resolved = sessionTitleOf(tasks, nameSession);
+        const resolved = sessionTitleOf(tasks, titleLookup);
         if (!alive || !resolved) return;
         setTitle((prev) => (prev === derivedTitle ? resolved : prev));
         setInitial((prev) =>
@@ -1988,7 +2064,7 @@ export default function NewJobModal({
     return () => {
       alive = false;
     };
-  }, [editing, nameSession, derivedTitle]);
+  }, [titleLookup, derivedTitle]);
 
   // ---- Delete ------------------------------------------------------------
   // Only when EDITING, and only for something the server will actually

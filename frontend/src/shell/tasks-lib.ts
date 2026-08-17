@@ -127,9 +127,9 @@ export function messageStamp(at: number): string {
 export const RAN_SKEW_SECONDS = 60;
 
 /**
- * The second half of a scheduled message's time, printed only when there IS a
- * second half: `at` is what was asked for and never moves, `ran_at` is when the
- * turn actually started, and they part company two ways —
+ * Whether this message RAN AT A DIFFERENT TIME than it was due: `at` is what was
+ * asked for and never moves, `ran_at` is when the turn actually started, and they
+ * part company two ways —
  *
  *   * late, when the app was shut at the due minute and the run was caught up,
  *   * early, when someone dragged the task into In Progress and ran it now.
@@ -138,19 +138,87 @@ export const RAN_SKEW_SECONDS = 60;
  * round's fixes): the schedule keeps saying 09:00 and the row says it ran at
  * 07:12, which is the truth. Rewriting `due` to the moment of the drag would
  * have made the row read as if 07:12 had always been the plan.
+ *
+ * This used to FORMAT that second time as well ("ran 07:12 today", drawn beside
+ * the row's own stamp), and the label is gone: 2026-08-17, Akshil, "I don't think
+ * I need this as well, the RAND Today stuff" — a message row carrying two absolute
+ * times was the same crowding the whole evening was spent trimming. The
+ * distinction is not gone with it: it decides the tooltip below, which is where
+ * both instants are still spelled out in full.
  */
-export function ranNote(m: TaskMessage, now: number = Date.now()): string {
-  if (!m.at || !m.ran_at) return "";
-  if (Math.abs(m.ran_at - m.at) < RAN_SKEW_SECONDS) return "";
-  return `ran ${messageTime(m.ran_at, now)}`;
+export function ranOffSchedule(m: TaskMessage): boolean {
+  // No `now` in the signature, and that is the shape of the answer rather than an
+  // omission: this compares two stamps the server wrote against each other, so the
+  // current time cannot change it. The clock only mattered while the helper
+  // FORMATTED the label — "ran 07:12 today" has to know what today is.
+  if (!m.at || !m.ran_at) return false;
+  return Math.abs(m.ran_at - m.at) >= RAN_SKEW_SECONDS;
 }
 
-/** The time cell's tooltip: the absolute stamp, and the run beside it when the
- * two differ. */
-export function messageWhenTitle(m: TaskMessage, now: number = Date.now()): string {
+/** The time cell's tooltip, and since the label above went, the ONLY place a late
+ * or early run is spelled out: the absolute stamp it was due at, plus the one it
+ * actually ran at whenever the two are different facts. */
+export function messageWhenTitle(m: TaskMessage): string {
   const due = messageStamp(m.at);
-  if (!ranNote(m, now)) return due;
+  if (!ranOffSchedule(m)) return due;
   return `Scheduled for ${due} · ran ${messageStamp(m.ran_at)}`;
+}
+
+// ---- "30m ago", "in 2h" -------------------------------------------------------
+
+/** Under a minute in the PAST reads as this. A run that landed forty seconds ago
+ * is news about now, and "0m ago" is not a thing anyone says. */
+export const JUST_NOW = "just now";
+/** ...and under a minute in the FUTURE cannot borrow that word: on an Upcoming row
+ * "just now" would say the run has already happened. `<1m` keeps the direction. */
+export const IMMINENT = "in <1m";
+
+const MINUTE = 60;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+/** Calendar months are not equal, and a row that says "1mo ago" is not making a
+ * claim that survives being exact — this is the same 30-day month
+ * platform/lib/format.timeAgo has always used, so the two agree. */
+const MONTH = 30 * DAY;
+const YEAR = 12 * MONTH;
+
+/**
+ * How long ago, or how long until — ONE unit, always (Akshil, 2026-08-17: the row
+ * ended in `15:53 29 Jul 🗀 ppt_builder` and "both the folder and the time with the
+ * date, they are like too much for me to handle"; the reference they sent reads
+ * `30m ago`, `31m ago`, `1mo ago`).
+ *
+ * Never two units: "1mo 3d ago" is a readout, and this is a glance. The exact
+ * instant is never dropped, only moved — every caller puts it in the element's
+ * `title`, so hovering still answers "when exactly?".
+ *
+ * BOTH DIRECTIONS, which the reference has no case for and this page is full of:
+ * most of Upcoming is in the future, and "5m ago" on a run that has not happened
+ * is simply false. So a future instant reads `in 5m`.
+ *
+ * FLOOR, not round, at every boundary — 89 minutes is `1h ago`, not `1h ago`
+ * rounded up from something it never was, and 23h59m is `23h ago` rather than
+ * jumping a day early. It is the rule platform/lib/format.timeAgo already uses,
+ * and the one that cannot ever name a unit the instant has not reached.
+ *
+ * `now` is a PARAMETER and the clock is never read in here, which is what makes
+ * every boundary above testable. That is also why neither existing helper could be
+ * reused: format.timeAgo reads `Date.now()` itself and has no future direction at
+ * all, and schedule-lib.relativeDue takes an ISO string, rounds rather than floors
+ * and stops at days (no `mo`, no `y`). Both are still right for their own callers.
+ */
+export function relativeWhen(at: number, now: number = Date.now()): string {
+  if (!at) return "";
+  const secs = at - now / 1000;
+  const ahead = secs > 0;
+  const s = Math.abs(secs);
+  if (s < MINUTE) return ahead ? IMMINENT : JUST_NOW;
+  const say = (n: number, unit: string) => (ahead ? `in ${n}${unit}` : `${n}${unit} ago`);
+  if (s < HOUR) return say(Math.floor(s / MINUTE), "m");
+  if (s < DAY) return say(Math.floor(s / HOUR), "h");
+  if (s < MONTH) return say(Math.floor(s / DAY), "d");
+  if (s < YEAR) return say(Math.floor(s / MONTH), "mo");
+  return say(Math.floor(s / YEAR), "y");
 }
 
 // ---- a message's own state ---------------------------------------------------
@@ -610,8 +678,8 @@ export function taskUnread(
  * What a TASK row says about its whole thread — the counterpart of unreadMarker,
  * which speaks for one message.
  *
- * The two are drawn in deliberately different places and registers, and it took
- * three passes to land there:
+ * The two are drawn in the same place now (trailing the title) and in the SAME
+ * MARK, and that is the last of four passes:
  *
  *   * The dot moved to the head of every MESSAGE row, because a thread is scanned
  *     down its left edge and a marker at the right end is missed entirely
@@ -621,38 +689,35 @@ export function taskUnread(
  *   * And that was wrong, because the two rows are not the same question. A list
  *     is scanned for its TITLES, and a number in front of every one of them
  *     announced the messages before the work they are about — it "breaks the
- *     reading priority" (Akshil, 2026-08-17).
+ *     reading priority" (Akshil, 2026-08-17). So both marks went to the end of
+ *     their title.
+ *   * And then the NUMBER went too (Akshil, 2026-08-17: "only show a single dot
+ *     like the notification that we show"). A row said `211` and a card said `13`
+ *     — a readout nobody acts on per unit, where the only decision it feeds is
+ *     "is there anything new here?". That is one bit, so it is drawn as one bit,
+ *     in the very mark the message rows already use.
  *
- * So the count trails the title now, in a quiet neutral rather than the dot's
- * blue. Title leads, total follows, and the visible break between them is the
- * point: the row is the task, the number is a note about it. The per-message dots
- * keep the alerting; nothing else needs to.
+ * So there is no pill and no digit: a task with unread wears `.tasks-dot`, the
+ * same quiet 7px grey dot as an unread message, immediately after its title.
  *
- * Past the cap it prints "99+": the pill is a marker, not a readout, and a
- * three-digit number in a 16px chip is neither. `label` is the accessible name
- * and the tooltip, and it always carries the TRUE count — the cap is a drawing
- * decision, not a rounding of the fact.
+ * THE COUNT IS NOT LOST, it is only unprinted — this function returns the
+ * accessible name, and it names the real number. A reader who cannot see the dot
+ * gets more than the sighted one, which is the right way round for a mark whose
+ * whole visual job is to be noticed rather than read.
  */
-export const UNREAD_COUNT_CAP = 99;
 
-export interface UnreadCount {
-  /** What the pill prints. */
-  text: string;
-  /** The accessible name / tooltip: the real number, uncapped. */
-  label: string;
-}
-
-/** The count that trails a task's title, or null when there is nothing unread —
- * and then nothing is drawn at all. That is the difference from unreadMarker: a
- * LEADING slot has a column to hold open and so exists even when empty, while a
- * chip after the words holds nothing open and an empty one would just be a gap
- * between the title and whatever follows it. */
-export function unreadCount(count: number): UnreadCount | null {
+/** The name a screen reader hears on the dot that trails a TASK's title, or null
+ * when there is nothing unread and no dot is drawn at all. That is the difference
+ * from unreadMarker: a message row's marker used to hold a LEADING column open
+ * and so existed even when empty; a mark after the words holds nothing open, so
+ * an empty one would just be a gap between the title and whatever follows it.
+ *
+ * Uncapped, and singular at one. The old pill printed "99+" past a cap because a
+ * three-digit number does not fit a 16px chip; a dot has no such constraint, and
+ * the name it carries is the whole of what the row knows. */
+export function taskUnreadLabel(count: number): string | null {
   if (count <= 0) return null;
-  return {
-    text: count > UNREAD_COUNT_CAP ? `${UNREAD_COUNT_CAP}+` : String(count),
-    label: `${count} unread`,
-  };
+  return count === 1 ? "1 unread message" : `${count} unread messages`;
 }
 
 // ---- the accordion -----------------------------------------------------------
@@ -738,6 +803,35 @@ export function threadView(task: Task, loaded?: TaskMessage[]): ThreadView {
  */
 export function isExpandable(task: Task): boolean {
   return task.message_count > 1;
+}
+
+/**
+ * The ONE message a leaf row is about, or null when there is not exactly one.
+ *
+ * Dropping the chevron from a one-message row left its click doing nothing at
+ * all, which Akshil noticed and disliked (2026-08-17). With nothing to expand,
+ * "open it" is the only thing a press on that row can sensibly mean — and what
+ * it opens is this message, through the very path a MESSAGE row's own click
+ * takes (openMessage → messageHref). So the row needs to name that message, and
+ * this is where it is named.
+ *
+ * Both halves of the guard matter:
+ *
+ *   * NOT expandable (isExpandable, the server's `message_count`), so this can
+ *     never answer for a row whose press is the accordion. A row of forty
+ *     messages holding a window of one is still an accordion.
+ *   * EXACTLY ONE message in hand. A task that has never run has none — no
+ *     transcript, nothing to open — so it answers null and the row stays inert
+ *     rather than navigating somewhere half-built.
+ *
+ * `held` is heldMessages, the same list the row's count and its marks are
+ * arithmetic over, so the message the click opens is the message the row is
+ * drawing a dot for.
+ */
+export function soleMessage(task: Task, held?: TaskMessage[]): TaskMessage | null {
+  if (isExpandable(task)) return null;
+  const messages = held ?? task.messages ?? [];
+  return messages.length === 1 ? messages[0] : null;
 }
 
 /** Collapsed by default, so the expanded set is what is OPEN (an empty set is
@@ -862,6 +956,42 @@ export function cancelIntent(m: TaskMessage): CancelIntent | null {
 /** Whether the row draws the affordance at all. */
 export function canCancel(m: TaskMessage): boolean {
   return cancelIntent(m) !== null;
+}
+
+/**
+ * WHICH ENTRY A MESSAGE ROW'S PRESS EDITS, or null when that press means the
+ * transcript instead.
+ *
+ * The same principle the task row follows one level up: a message that has not
+ * gone out is an INSTRUCTION, and the form is where an instruction is read and
+ * changed; a message that has run is a TRANSCRIPT TURN, and the transcript is
+ * where it is read (Akshil, 2026-08-17: "for multi-message tasks when i click on
+ * the message, that should open the edit modal").
+ *
+ * SO THE SPLIT IS `state`, and it is the same predicate cancelIntent already
+ * uses — deliberately the same, because the two questions have one answer: a
+ * message the server would refuse to cancel is a message it would refuse to
+ * edit. `pending` and nothing else. `sending` is mid-flight and already beyond
+ * changing; `sent`, `missed`, `error` and `cancelled` have all had their whole
+ * life, so a form over one would present a Save that means nothing. Note it is
+ * `state`, not turnPhase: turnPhase reads `turn` and answers how the SESSION
+ * replied, which is a question only a message that already went out can have.
+ *
+ * THE MESSAGE'S OWN ENTRY, never the task's `next_run_entry`: a repeating task
+ * has several pending occurrences and the row pressed is the one the reader
+ * means. Resolving an occurrence UP to its template is Scheduled.tsx's
+ * `editEntry` — see the note above cancelIntent for why Edit resolves upward
+ * while Cancel stays down.
+ *
+ * NULL ON A PENDING MESSAGE IS POSSIBLE, and then the press must fall through to
+ * the transcript rather than open a blank form: a CHAT message carries no
+ * `entry_id` at all (it was delivered the moment it was typed and the schedule
+ * has no record of it), and a listing row from an older server may not carry one
+ * either.
+ */
+export function messageEditEntry(m: TaskMessage): string | null {
+  if (m.state !== "pending" || !m.entry_id) return null;
+  return m.entry_id;
 }
 
 // ---- drag --------------------------------------------------------------------
@@ -992,6 +1122,53 @@ export function runNowTarget(task: Task): RunTarget | null {
 /** Whether this task has anything to run early at all. */
 export function canRunNow(task: Task): boolean {
   return runNowTarget(task) !== null;
+}
+
+/**
+ * WHICH SCHEDULE ENTRY A ONE-MESSAGE UPCOMING ROW'S PRESS EDITS, or null when
+ * that row's press means something else.
+ *
+ * Such a row's interesting content is the instruction that HAS NOT RUN yet, and
+ * the form is where that instruction lives (Akshil, 2026-08-17: "when i click on
+ * upcoming tasks i think they should open up the edit modal" — then narrowed:
+ * "this should be only for 1 message tasks"). A transcript is the wrong answer
+ * for a row whose whole point is what happens next.
+ *
+ * THREE CONDITIONS, and each is somebody else's function so this adds no rule of
+ * its own:
+ *
+ *   * the LANE, from taskColumn — the same function that files the card into the
+ *     Board's lanes, so the List and the Board cannot disagree about what
+ *     "Upcoming" means.
+ *   * EXACTLY ONE MESSAGE, from soleMessage. Which is the case the user asked
+ *     for and it lands where they meant: a task scheduled but never run has
+ *     exactly one message — the pending one — so "one message and upcoming" IS
+ *     the never-ran-yet row, and a one-off that has run once with its next
+ *     occurrence pending is the same shape and the same answer. It also inherits
+ *     soleMessage's isExpandable guard, so a REPEATING task with past runs is
+ *     never this: its press stays the accordion, whatever its lane.
+ *   * WHICH ENTRY, from runNowTarget — the earliest-due pending entry, reading
+ *     the server's `next_run_entry` when the row names a run it does not hold.
+ *     Deliberately the function run-now and the drag already ask: "the next one
+ *     due" is the only run either gesture could mean, and a second function here
+ *     would let Edit and Run now act on different ones. Only `entryId` is spent;
+ *     Scheduled.tsx's `editEntry` is what resolves an occurrence to its template,
+ *     because changing "tomorrow's run" of a repeating task means changing the
+ *     rule.
+ *
+ * `held` is heldMessages, as soleMessage's own is — so the message this counts is
+ * the message the row is drawing.
+ *
+ * NULL DESPITE THE LANE IS POSSIBLE and the caller must fall through rather than
+ * open an empty form: runNowTarget answers null when the one message the row holds
+ * is not pending or carries no `entry_id` (a chat message is delivered the moment
+ * it is typed and the schedule has no record of it) AND the server named no next
+ * run — an older server without the `next_run` fields.
+ */
+export function upcomingEditEntry(task: Task, held?: TaskMessage[]): string | null {
+  if (taskColumn(task) !== "upcoming") return null;
+  if (soleMessage(task, held) === null) return null;
+  return runNowTarget(task)?.entryId ?? null;
 }
 
 /**
@@ -1399,6 +1576,34 @@ export function hasActiveFilters(f: TaskFilters): boolean {
   return f.statuses.length > 0 || f.projects.length > 0 || f.search.trim() !== "";
 }
 
+/**
+ * Does the list a view is DRAWING span more than one project?
+ *
+ * Which is the whole of the folder chip's reason to exist. With the Project filter
+ * pinned to one folder — or a search that happens to narrow to one — every visible
+ * row repeats the same word, and a column of identical chips is noise on the busiest
+ * edge of the row (Akshil, 2026-08-17: "this looks like a lot of information on the
+ * right side... both the folder and the time with the date, they are like too much
+ * for me to handle"). So the chip is drawn only when it DISTINGUISHES rows.
+ *
+ * Asked of the ROWS THEMSELVES, deliberately, not of the filter's value: a search
+ * for "roadmap" that leaves three rows in one project is the same page to read as
+ * the filter set to that project, and a rule that consulted the control would only
+ * be right about one of the two. It also means the answer is right for a view that
+ * has no filter control at all.
+ *
+ * An empty list is `false` — there is nothing to distinguish — which is the
+ * harmless answer either way, since nothing is drawn.
+ */
+export function spansProjects(tasks: Task[]): boolean {
+  const seen = new Set<string>();
+  for (const t of tasks) {
+    seen.add(t.project);
+    if (seen.size > 1) return true;
+  }
+  return false;
+}
+
 /** The project filter's own choices — "auto-detected from the set of folders
  * that have tasks" (§10), sorted so the menu does not reshuffle when the task
  * order does. */
@@ -1611,6 +1816,69 @@ export function laneTime(task: Task, lane: BoardColumn): number | null {
     default:
       return null;
   }
+}
+
+// ---- the time a task ROW prints ----------------------------------------------
+
+export type TaskWhenKind = "next" | "last";
+
+export interface TaskWhen {
+  /** The instant, epoch seconds. */
+  at: number;
+  /** Which run it is — the row prints the time, the tooltip says which. */
+  kind: TaskWhenKind;
+  /** What the row prints: ONE relative unit ("30m ago", "in 2h"), the same
+   * vocabulary a message row's time speaks — relativeWhen. */
+  text: string;
+  /** The tooltip: which run, and the absolute stamp — "Monday" is not an answer
+   * to "which Monday?" (messageStamp, same reason the message rows carry one). */
+  title: string;
+}
+
+/**
+ * The time a task ROW shows beside its folder, on every task (Akshil,
+ * 2026-08-17: "let's show the time as well for like besides the folder. Let's do
+ * that for every task") — until now a time was only visible on a message row,
+ * which meant a one-message task with nothing to expand showed none at all.
+ *
+ * WHICH time is not a new policy. It is LANE_SORTS', the map that already decides
+ * what each lane is a column of: the lane sorted by `next-run` (Upcoming) is the
+ * lane whose reader wants to know when the work happens, and every lane sorted by
+ * `last-run` wants to know when it did. Reading the answer off that map rather
+ * than off a second list of column names is what keeps the row and the lane it
+ * sits in from disagreeing — and it means Archive, whose order is deliberately the
+ * server's, falls through to "when it last ran", which is the only run it has.
+ *
+ * WHAT IT PRINTS is one relative unit and nothing else (relativeWhen): the row
+ * used to end in a clock AND a date AND a folder, which is three things to read on
+ * every line (Akshil, 2026-08-17). The absolute instant moves into `title`, where
+ * it also gains the word for WHICH run it is — the ink cannot say that in one unit
+ * and does not try.
+ *
+ * The OTHER time is the fallback, not a blank: an Upcoming task whose pending
+ * message is outside the window still shows the run it already made, and a Done
+ * task that also has a repeat coming still has a time to show. A task with
+ * NEITHER — a pending row that has never run and has nothing scheduled we can see
+ * — returns null, and the row prints nothing. Not a placeholder and not epoch
+ * zero: 0 formats as 1970 and would be a confident wrong answer.
+ */
+export function taskWhen(task: Task, now: number = Date.now()): TaskWhen | null {
+  const nextFirst = LANE_SORTS[taskColumn(task)].key === "next-run";
+  const next = nextRunAt(task);
+  const last = lastRunAt(task);
+  const order: [TaskWhenKind, number | null][] = nextFirst
+    ? [["next", next], ["last", last]]
+    : [["last", last], ["next", next]];
+  for (const [kind, at] of order) {
+    if (at === null) continue;
+    return {
+      at,
+      kind,
+      text: relativeWhen(at, now),
+      title: `${kind === "next" ? "Next run" : "Last run"} ${messageStamp(at)}`,
+    };
+  }
+  return null;
 }
 
 /**

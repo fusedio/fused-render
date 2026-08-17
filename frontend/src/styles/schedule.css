@@ -2364,7 +2364,17 @@ input.schedule-when-field {
   }
 }
 
-/* The live ping: a solid dot under a larger translucent one (flow LivePulse). */
+/* The live ping: a solid dot under a larger translucent one (flow LivePulse).
+
+   It is a DOT and it stays one. On 2026-08-17 it was briefly going to become a
+   hollow ring, because the unread mark had just gone grey and lost its number and
+   the row ended in two filled discs of nearly the same size ("why is there still a
+   blue dot as well", Akshil). The answer he chose instead is the one already in
+   hand: grey after the title means unread, blue means live, and that is the whole
+   distinction — "we don't want that" of the ring. It holds up in a still image
+   because the two are different colours, and in a live one because only this one
+   moves. What the pair still owes the reader is distinct NAMES, which they have:
+   "Running" here, "N unread messages" on the dot. */
 .schedule-tv-pulse {
   position: relative;
   display: inline-block;
@@ -3005,15 +3015,19 @@ input.schedule-when-field {
   min-width: 0;
 }
 
-/* The pill as an inline atom. `inline-flex` (it is already that in tasks.css) so
-   it centres its own digits while sitting in the line like a word;
-   `vertical-align: middle` so it rides the ink rather than the baseline, which on
-   a 16px pill against a 12.5px line is the difference between "after the word"
-   and "hanging below it". The gap is a `margin` and not the parent's `gap`
-   because there is no flex parent any more — that wrapper was the bug. Scoped to
-   the board card: the List row keeps the pill as a flex sibling and takes its
-   spacing from the row's own `gap`. */
-.schedule-tv-card-title .tasks-count {
+/* The unread mark as an inline atom, riding in the title's own text flow so it
+   follows the last word onto whichever line that word ends up on. It was a numeric
+   pill here until 2026-08-17 and is now the page's single `.tasks-dot` (tasks.css);
+   the two declarations it needs are the same two either atom needed, which is why
+   this rule survived the swap.
+
+   `vertical-align: middle` so it rides the ink rather than the baseline — on a 7px
+   dot against a 12.5px line that is the difference between "after the word" and
+   "hanging below it". The gap is a `margin` and not a parent `gap` because there is
+   no flex parent any more; that wrapper was the bug this arrangement replaced.
+   Scoped to the board card: the List row keeps the mark as a flex sibling and takes
+   its spacing from the row's own `gap`. */
+.schedule-tv-card-title .tasks-dot {
   margin-left: 6px;
   vertical-align: middle;
 }

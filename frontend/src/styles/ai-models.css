@@ -72,7 +72,7 @@
    its own chevron, its own metrics — which is what makes this control look
    like every other select in the app instead of like the platform's. What is
    left here is only how it behaves in this row. */
-   `width: 100%` fills the grid's control column, which is what makes all three
+/* `width: 100%` fills the grid's control column, which is what makes all three
    selects the same width no matter which option is showing — a select left to
    size itself grows to "MLX Whisper (Apple Silicon) — needs Apple Silicon…"
    the moment somebody picks it, and the column would move under the user's

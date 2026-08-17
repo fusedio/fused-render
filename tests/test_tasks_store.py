@@ -11,6 +11,7 @@ import threading
 import pytest
 
 from fused_render import tasks_store
+from tests import _machinery_records as records
 
 
 @pytest.fixture(autouse=True)
@@ -478,3 +479,127 @@ def test_the_store_dir_is_global_not_branch_nested(monkeypatch):
                                                   "claude-sessions")
     finally:
         importlib.reload(tasks_store)
+
+
+# ------------------------------------------------------------- the machinery
+# One stripper, in one place, for the four readers that parse a transcript's
+# first user message. Before this they each had their own policy and no two
+# agreed: the Tasks list dropped every record opening with a known tag (so a
+# `<live-app-state>` prefix took the user's words with it), tasks_store and the
+# session picker filtered nothing at all (so rows were titled `<live-app-state>`),
+# and the template's own list dropped anything starting with "<". See the tag
+# lists in tasks_store for the corpus counts behind the DROP/STRIP split.
+
+
+def test_a_prepended_block_is_stripped_and_the_words_survive():
+    """THE BUG. `<live-app-state>` is not machinery-only — the fused-render
+    Claude page puts it in FRONT of what the user typed, so dropping the record
+    deletes the human's message. One real session's only message was this
+    string, and "what is this" was gone from the app entirely."""
+    assert tasks_store.strip_machinery(
+        records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                         records.PROSE)) == records.PROSE
+    # …and it is therefore NOT machinery, whatever the leading tag is.
+    assert tasks_store.is_machinery(
+        records.prefixed(records.APP_STATE, records.PROSE)) is False
+
+
+def test_the_annotation_preamble_is_stripped_down_to_the_note():
+    """The annotation block carries no tag — one sentence, field notes for the
+    model, and a fenced json array. Anchored on the fence, and only at position
+    zero, which is why `composeOutgoing` fixes the block order."""
+    assert tasks_store.strip_machinery(
+        records.prefixed(records.APP_STATE, records.ANNOTATION,
+                         records.ANNOTATED_ASK)) == records.ANNOTATED_ASK
+    # The preamble alone, with no words after the fence, leaves nothing — a real
+    # send (annotations and no typed message), and the client's job to label.
+    assert tasks_store.strip_machinery(records.ANNOTATION) == ""
+
+
+def test_a_wordless_send_is_empty_but_still_not_machinery():
+    """A screenshot with no words is something the USER did. `is_machinery` says
+    "Claude Code wrote this whole record", so it must be false here even though
+    the strip leaves nothing — a caller that wants "no words" asks the strip."""
+    wordless = records.prefixed(records.APP_STATE, records.PANE_SHOT)
+    assert tasks_store.strip_machinery(wordless) == ""
+    assert tasks_store.is_machinery(wordless) is False
+
+
+@pytest.mark.parametrize("text", [
+    records.TASK_NOTIFICATION,
+    records.SLASH_COMMAND,
+    records.SLASH_COMMAND_ARGS,
+    records.LOCAL_COMMAND_STDOUT,
+    records.BASH_ENVELOPE,
+])
+def test_the_records_claude_code_writes_are_machinery_whole(text):
+    assert tasks_store.strip_machinery(text) == ""
+    assert tasks_store.is_machinery(text) is True
+
+
+def test_a_half_written_machinery_record_is_still_machinery():
+    """A transcript caught mid-flush has the opener and no close, so no balanced
+    strip can fire. Everything from a machinery opener on is machinery whatever
+    follows it, which is the same fallback template.html's BLOCK_OPENERS pass
+    makes for a truncated preview."""
+    assert tasks_store.strip_machinery(
+        records.TASK_NOTIFICATION_HALF_WRITTEN) == ""
+    assert tasks_store.is_machinery(records.TASK_NOTIFICATION_HALF_WRITTEN) is True
+
+
+def test_a_tag_further_in_leaves_a_real_message_real():
+    """Only a LEADING block is machinery. `<system-reminder>` appended to
+    something a human typed is the pre-existing rule and the reason every match
+    here is anchored at position zero."""
+    said = "now ship it <system-reminder>be careful</system-reminder>"
+    assert tasks_store.strip_machinery(said) == said
+    assert tasks_store.is_machinery(said) is False
+
+
+def test_markup_the_user_typed_is_not_a_machinery_block():
+    """Why the strip knows the tag NAMES instead of matching `<\\w+>`: this is a
+    real question about real markup, and a generic matcher would silently eat
+    the half of it that makes it a question — the same class of bug as dropping
+    the app-state prefix."""
+    said = "<div class=\"card\">Order now</div> why does this render twice?"
+    assert tasks_store.strip_machinery(said) == said
+    assert tasks_store.is_machinery(said) is False
+
+
+def test_the_slash_command_is_read_out_of_the_envelope_in_either_order():
+    """A session whose only user records are a slash command has no prose to be
+    named from, and the command IS real information. Both orders, because real
+    transcripts contain both."""
+    assert tasks_store.slash_command(records.SLASH_COMMAND) == "/making-a-release"
+    assert tasks_store.slash_command(records.SLASH_COMMAND_ARGS) == "/model"
+    assert tasks_store.slash_command(records.TASK_NOTIFICATION) == ""
+    assert tasks_store.slash_command(records.PROSE) == ""
+
+
+def test_the_head_prompt_is_the_words_not_the_block(projects_dir):
+    path = _transcript(projects_dir, "-home-a", "s1", "/home/a",
+                       "2026-08-16T09:00:00Z",
+                       prompt=records.prefixed(records.APP_STATE, records.PROSE))
+    assert tasks_store.head(str(path))[2] == records.PROSE
+
+
+def test_the_head_keeps_scanning_past_a_machinery_record(projects_dir):
+    """An empty remainder is not an answer. Accepting one gave the row a blank
+    title while the message that could have named it sat two lines further
+    down."""
+    path = _transcript(projects_dir, "-home-a", "s1", "/home/a",
+                       "2026-08-16T09:00:00Z", prompt=records.TASK_NOTIFICATION)
+    with open(path, "a", encoding="utf-8") as f:
+        for extra in ({"isSidechain": True, "text": "go and research this"},
+                      {"text": "fix the parser"}):
+            f.write(json.dumps({
+                "type": "user", "cwd": "/home/a",
+                "timestamp": "2026-08-16T09:01:00Z",
+                "isSidechain": extra.get("isSidechain", False),
+                "message": {"role": "user",
+                            "content": [{"type": "text",
+                                         "text": extra["text"]}]}}) + "\n")
+    # Not the notification, and not the SUBAGENT's prompt either — `isSidechain`
+    # is a prompt this module writes for a subagent, never one the user typed,
+    # and its sibling reader in templates/claude/agent.py has always skipped it.
+    assert tasks_store.head(str(path))[2] == "fix the parser"
