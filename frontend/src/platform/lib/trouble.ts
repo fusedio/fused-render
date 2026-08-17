@@ -24,25 +24,49 @@ export const HELP_BASE = "https://render.fused.io";
 /** The install line the download page tells people to run (guide step 1). */
 export const CLAUDE_INSTALL_COMMAND = "curl -fsSL https://claude.ai/install.sh | bash";
 
-// Matched against the SERVER's message, which is the CLI's own text most of the
-// way down. Ordered most-specific first: "not signed in" and "usage limit" are
-// both things a *found* claude says, so they must be tested before the
-// could-not-find patterns, which are the broadest.
-const PATTERNS: [TroubleKind, RegExp][] = [
-  ["login", /invalid api key|please run \/login|not (?:signed|logged) in|oauth|authenticat/i],
-  ["limit", /usage limit|session limit|rate.?limit|quota/i],
-  [
-    "notfound",
-    /claude code isn'?t installed|claude cli not found|claude not found|couldn'?t be found|command not found|enoent|no such file/i,
-  ],
+// TWO TIERS, and the split is the whole correctness argument.
+//
+// Some phrases NAME the thing — "claude cli not found", "please run /login" —
+// and mean what they say wherever they appear. Others describe only the SHAPE
+// of a failure: `ENOENT`, "no such file", "command not found", "authentication
+// failed". Those say nothing about the subject, and this app produces them
+// constantly about files, mounts and credentials that have nothing to do with
+// Claude Code.
+//
+// Treating the second tier as unconditional is how "could not write the
+// incident file: [Errno 2] No such file or directory" ends up telling a user to
+// install Claude Code — a disk-path problem answered with a download link. That
+// is the same wrong-advice failure TR-2 exists to prevent, arriving from the
+// other side, so a shape only counts when the message is ABOUT Claude.
+const ABOUT_CLAUDE = /claude/i;
+
+// Unconditional: these name Claude Code or quote the CLI's own vocabulary.
+const NAMED: [TroubleKind, RegExp][] = [
+  ["login", /please run \/login|invalid api key/i],
+  ["limit", /usage limit|session limit/i],
+  ["notfound", /claude code isn'?t installed|claude cli not found|claude not found/i],
+];
+
+// Only when the message is about Claude — see above.
+const SHAPES: [TroubleKind, RegExp][] = [
+  ["login", /not (?:signed|logged) in|oauth|authenticat/i],
+  ["limit", /rate.?limit|quota/i],
+  ["notfound", /couldn'?t be found|command not found|enoent|no such file/i],
 ];
 
 /** Which of the download page's cases this message is, for the deep link and
     the wording. Anything unrecognised is `raw`, which is a real answer there
-    ("Some other error message") and not a fallback we invented. */
+    ("Some other error message") and not a fallback we invented.
+    
+    Both tiers are ordered most-specific first within themselves: "not signed
+    in" and "usage limit" are things a FOUND claude says, so they are tested
+    before the could-not-find patterns, which are the broadest. */
 export function troubleKind(message: string): TroubleKind {
   const text = String(message || "");
-  for (const [kind, re] of PATTERNS) if (re.test(text)) return kind;
+  for (const [kind, re] of NAMED) if (re.test(text)) return kind;
+  if (ABOUT_CLAUDE.test(text)) {
+    for (const [kind, re] of SHAPES) if (re.test(text)) return kind;
+  }
   return "raw";
 }
 

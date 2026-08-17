@@ -22,19 +22,51 @@ test("the server's own not-found message is recognised", () => {
   ).toBe("notfound");
   // ...and the agent's own, which is what a raw spawn failure carries up.
   expect(troubleKind("claude CLI not found — install Claude Code")).toBe("notfound");
-  expect(troubleKind("[Errno 2] No such file or directory: 'claude'")).toBe("notfound");
 });
 
 test("a signed-out claude is NOT reported as a missing one", () => {
   // It is installed and it ran; telling this user to install it wastes the one
   // minute they needed. The download page separates these for the same reason.
+  // The CLI's own text names itself, so it needs no help.
   expect(troubleKind("Invalid API key · Please run /login")).toBe("login");
-  expect(troubleKind("You are not signed in")).toBe("login");
+  expect(troubleKind("Claude Code is not signed in")).toBe("login");
+});
+
+test("a sign-in problem with no subject is not assumed to be Claude's", () => {
+  // This app has several sign-ins — the Fused account, a cloud deploy, an S3
+  // mount — and "not signed in" on its own belongs to none of them in
+  // particular. Guessing Claude here would send someone to a terminal to run
+  // `/login` about their bucket credentials.
+  expect(troubleKind("You are not signed in")).toBe("raw");
+  expect(troubleKind("oauth token expired")).toBe("raw");
 });
 
 test("a usage limit is its own case, because nothing is broken", () => {
   expect(troubleKind("Usage limit reached — resets at 4pm")).toBe("limit");
   expect(troubleKind("session limit exceeded")).toBe("limit");
+});
+
+test("a failure SHAPE about something else is not about Claude", () => {
+  // The one that mattered, and the one my own test dodged by picking Errno 28:
+  // this app produces ENOENT about files, mounts and credentials constantly,
+  // and answering a disk-path problem with "install Claude Code" is the same
+  // wrong advice TR-2 exists to prevent, arriving from the other side.
+  expect(
+    troubleKind(
+      "could not write the incident file: [Errno 2] No such file or directory: " +
+        "'/Volumes/gone/.fused-render-selffix/incidents/x.md'"
+    )
+  ).toBe("raw");
+  expect(troubleKind("mount probe failed: authentication failed for s3://bucket")).toBe("raw");
+  expect(troubleKind("ffmpeg: command not found")).toBe("raw");
+  expect(troubleKind("rate limit exceeded talking to the tile server")).toBe("raw");
+});
+
+test("...but the same shape IS about Claude when the message says so", () => {
+  // The subject is what promotes a shape, and it is usually right there in the
+  // path the OS could not find.
+  expect(troubleKind("[Errno 2] No such file or directory: 'claude'")).toBe("notfound");
+  expect(troubleKind("spawning claude: command not found")).toBe("notfound");
 });
 
 test("anything else is `raw`, which is a real answer and not a shrug", () => {
