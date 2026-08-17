@@ -146,6 +146,19 @@ def test_list_normalizes_names_and_marks_cloned(harness):
     assert canvases["beta"]["cloned"] is True
 
 
+def test_stale_credentials_map_to_401(harness):
+    # A present-but-unrefreshable store: the CLI dies with its own
+    # re-authenticate message, and the client needs a 401 to fall back to the
+    # sign-in flow instead of a dead 502.
+    harness.log_in()
+    harness.set_scenario(
+        {"fail": "Auth0 refused to refresh your Fused credentials. Re-authenticate by running `fused login`."}
+    )
+    res = harness.client.get("/api/canvases/list", headers=GUARD)
+    assert res.status_code == 401
+    assert "Re-authenticate" in res.json()["error"]
+
+
 def test_whoami_extracts_handle(harness):
     harness.set_scenario({"whoami": {"username": "vasu"}})
     res = harness.client.get("/api/canvases/whoami", headers=GUARD)

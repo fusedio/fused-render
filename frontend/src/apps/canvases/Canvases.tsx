@@ -30,6 +30,9 @@ export default function Canvases() {
   const [busy, setBusy] = useState<string | null>(null); // canvas being opened
   const [loggingIn, setLoggingIn] = useState(false);
   const pollRef = useRef<number | null>(null);
+  // creds_stamp at the moment login started: a re-login over a stale-but-
+  // present store never flips logged_in, so completion = the stamp changing.
+  const loginStampRef = useRef<number | null | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     try {
@@ -42,7 +45,15 @@ export default function Canvases() {
       }
       setError(null);
     } catch (e) {
-      setError((e as Error).message);
+      const err = e as Error & { status?: number };
+      // 401: the credentials file exists but is unrefreshable (the CLI says
+      // re-authenticate) — show the sign-in flow, not a dead error page.
+      if (err.status === 401) {
+        setStatus((prev) => (prev ? { ...prev, logged_in: false } : prev));
+        setError(`Your Fused sign-in expired — sign in again. (${err.message})`);
+        return;
+      }
+      setError(err.message);
     }
   }, []);
 
@@ -56,8 +67,11 @@ export default function Canvases() {
     pollRef.current = window.setInterval(() => {
       void getCanvasesStatus().then((s) => {
         setStatus(s);
-        if (s.logged_in) {
+        const completed =
+          s.logged_in && s.creds_stamp !== loginStampRef.current;
+        if (completed) {
           setLoggingIn(false);
+          setError(null);
           void refresh();
         }
       });
@@ -70,6 +84,7 @@ export default function Canvases() {
   const onLogin = async () => {
     setError(null);
     try {
+      loginStampRef.current = status?.creds_stamp ?? null;
       await startLogin();
       setLoggingIn(true);
     } catch (e) {

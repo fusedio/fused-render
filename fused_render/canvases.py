@@ -148,7 +148,14 @@ def _run_cli(args: list[str], timeout: float) -> tuple[subprocess.CompletedProce
     except OSError as e:
         return None, _error(f"could not run the fused CLI ({cli.command[0]}): {e}")
     if proc.returncode != 0:
-        return None, _error(cli_error(proc.stderr or proc.stdout, f"{label} failed"), 502)
+        message = cli_error(proc.stderr or proc.stdout, f"{label} failed")
+        # A credentials file can exist yet be unrefreshable (e.g. issued by an
+        # older Auth0 application) — presence said "logged in", but every call
+        # dies with the CLI's re-authenticate message. Map that to 401 so the
+        # client can fall back to the sign-in flow instead of a dead error.
+        if "re-authenticate" in message.lower() or "refresh your fused credentials" in message.lower():
+            return None, _error(message, 401)
+        return None, _error(message, 502)
     return proc, None
 
 
@@ -192,9 +199,18 @@ def api_canvases_status():
     /api/canvases/whoami instead.
     """
     cli = fused_cli()
+    try:
+        stamp = os.path.getmtime(_credentials_file())
+    except OSError:
+        stamp = None
     return {
         "cli_found": cli is not None,
         "logged_in": _logged_in(),
+        # Credentials-file mtime: a re-login over a STALE-but-present store
+        # never flips logged_in, so the client watches this stamp change to
+        # know the browser flow completed (same trick as account.py's
+        # creds_stamp).
+        "creds_stamp": stamp,
         "login_in_flight": _reap_login() is not None,
         "workbench_base_url": WORKBENCH_BASE_URL,
         "canvases_dir": canvases_root(),

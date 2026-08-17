@@ -9,6 +9,8 @@ const GUARD = { headers: { "X-Fused": "1" } };
 export interface CanvasesStatus {
   cli_found: boolean;
   logged_in: boolean;
+  /** Credentials-file mtime, or null — changes when a (re-)login completes. */
+  creds_stamp: number | null;
   login_in_flight: boolean;
   workbench_base_url: string;
   canvases_dir: string;
