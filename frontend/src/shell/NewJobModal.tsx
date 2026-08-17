@@ -1189,6 +1189,10 @@ export function firstLine(text: string): string {
 //      `tasks_store.head`). Its sibling `title_source: "entry"` — a row named
 //      from a message merely SCHEDULED at the session, because the transcript
 //      could not be read — is not a step here at all; see sessionTitleOf;
+//   3b. the slash command the session ran (`title_source: "command"`), for a
+//      session that contains no prose at all — `/making-a-release` is the only
+//      true thing there is to call one of those, and the server says so rather
+//      than leaving the row nameless;
 //   4. nothing. The field opens blank and the user types a name.
 // Never the composed message, at any step. Steps 2 and 3 need a fetch, so they
 // live in the /api/tasks effect; 1 and 4 are what `initialTitleOf` decides
@@ -1212,6 +1216,29 @@ export function shortTitle(text: string, max = TITLE_MAX): string {
   return (boundary > 0 ? line.slice(0, boundary) : line.slice(0, max)).trimEnd();
 }
 
+// A prefill this field must refuse, whichever source produced it: a transcript
+// record's machine-written wire, leaked into a title.
+//
+// THIS IS A GUARD, NOT THE FIX. The fix is server-side — four readers of a
+// transcript's first user message each had their own idea of what counted as
+// machinery, and /api/tasks served rows titled `<live-app-state>` and
+// `<command-message>making-a-release</command-message>` (44 of them in one real
+// store). tasks_store owns that policy now and the server no longer emits such a
+// string. This refuses one anyway, because of what happens to a bad prefill in
+// THIS field specifically: the precedence below is permanent in one direction —
+// a `user`-set title outranks every other source forever — so a single leaked
+// string the user does not notice before pressing Save becomes that task's name
+// for good. One already is, in one real store. A second check on the cheap side
+// of an asymmetric cost.
+//
+// Deliberately NARROW, and the narrowness is the point: it refuses a value that
+// OPENS with a tag or with the annotation preamble's sentence. It does not go
+// hunting for angle brackets, because "fix why <div> renders twice" is a
+// perfectly good name for a thread about that bug, and refusing it would be the
+// very mistake this whole change undoes — a reader deciding that markup means
+// nobody typed it.
+const LEAKED_TITLE = /^(?:<[a-z][a-z0-9-]*>|The user annotated )/;
+
 // What Title OPENS on, synchronously. Only step 1 and step 4: a stored title
 // wins outright (an edit that quietly replaced it would be data loss), and
 // otherwise the field is BLANK until the /api/tasks lookup answers.
@@ -1222,7 +1249,12 @@ export function shortTitle(text: string, max = TITLE_MAX): string {
 // though Title is required: the requirement bites at Save, by which time either
 // the lookup has filled the field or the user has.
 export function initialTitleOf(entry?: ScheduledMessage | null): string {
-  return (entry?.title ?? "").trim();
+  const title = (entry?.title ?? "").trim();
+  // Guarded here as well as in `sessionTitleOf`, because a stored title is
+  // exactly how the one bad row in the real store got there: it was saved, so it
+  // is a `user` title now, and re-prefilling it on an Edit would keep the
+  // mistake alive every time the form opened.
+  return LEAKED_TITLE.test(title) ? "" : title;
 }
 
 // Steps 2 and 3, which only /api/tasks can answer: the name the session this
@@ -1260,8 +1292,15 @@ export function sessionTitleOf(
   const task = tasks.find((t) => t.session_id === sessionId);
   const title = (task?.title ?? "").trim();
   if (!title) return "";
+  // Before the source is consulted at all: a leaked wire string is not a name
+  // from ANY source, and the verbatim branches below would take it as one. See
+  // LEAKED_TITLE — a guard behind a server fix, not the fix.
+  if (LEAKED_TITLE.test(title)) return "";
   if (task?.title_source === "entry") return "";
   if (task?.title_source === "message") return shortTitle(title);
+  // Everything else is already a name and is taken as written: `user` and `ai`,
+  // and `command` — a session whose only user records are a slash command is
+  // named `/making-a-release`, which is short, true, and not a message.
   return title;
 }
 

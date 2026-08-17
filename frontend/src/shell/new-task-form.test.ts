@@ -722,6 +722,60 @@ describe("naming the task", () => {
     })).toBe(true);
   });
 
+  // A GUARD, not the fix. The fix is server-side: four readers of a transcript's
+  // first user message each had their own idea of what counted as machinery, so
+  // /api/tasks served rows titled `<live-app-state>` and
+  // `<command-message>making-a-release</command-message>` (44 of them in one real
+  // store). Those are gone at the source. This refuses them anyway, because of
+  // what happens to a bad prefill HERE and nowhere else: a `user`-set title
+  // outranks every other source forever, so one leaked string the user does not
+  // notice before pressing Save becomes that task's permanent name. One already
+  // is, in one real store — which is the proof that the cost is asymmetric and
+  // worth a second check the server has already made.
+  test("a leaked machinery string is never prefilled into the Title field", () => {
+    for (const leaked of [
+      "<live-app-state>",
+      "<command-message>making-a-release</command-message>",
+      "<command-name>/clear</command-name>",
+      "<pane-shot>",
+      // The annotation block opens with a sentence, not a tag, so a "<" test
+      // alone would have let this one straight through.
+      "The user annotated 1 element in the left preview of this file. anchorId =",
+    ]) {
+      // Every source, including the ones that are normally taken verbatim: a
+      // `user` title is exactly how the one bad row in the real store got there,
+      // so re-prefilling it on an Edit would keep the mistake alive.
+      for (const source of ["user", "ai", "message", "entry"]) {
+        expect(sessionTitleOf([task({ title: leaked, title_source: source })], "sess-1")).toBe("");
+      }
+      expect(initialTitleOf(entry({ title: leaked }))).toBe("");
+    }
+  });
+
+  test("…and markup the user typed as a name is still their name to keep", () => {
+    // The guard is deliberately narrow. It refuses a prefill that OPENS with a
+    // tag or with the annotation sentence; it does not go hunting for angle
+    // brackets, because "<div> renders twice" is a perfectly good name for a
+    // thread about that bug and refusing it would be the same class of mistake
+    // as the drop that started all this.
+    expect(sessionTitleOf([task({ title: "fix why <div> renders twice" })], "sess-1")).toBe(
+      "fix why <div> renders twice",
+    );
+    expect(initialTitleOf(entry({ title: "annotated elements are misaligned" }))).toBe(
+      "annotated elements are misaligned",
+    );
+  });
+
+  test("a slash-command title is a name the server read, and it survives", () => {
+    // The server's new fifth source (`title_source: "command"`): a session whose
+    // only user records are `/making-a-release` is named that, because it is true
+    // and useful. Taken verbatim like the other names — it is already one — and
+    // NOT caught by the guard above, which tests the opening tag, not the slash.
+    expect(
+      sessionTitleOf([task({ title: "/making-a-release", title_source: "command" })], "sess-1"),
+    ).toBe("/making-a-release");
+  });
+
   test("step 1: a stored title outranks everything, and an edit never loses it", () => {
     expect(initialTitleOf(entry({ title: "Morning news" }))).toBe("Morning news");
     // Even against a message that would once have derived something else…
