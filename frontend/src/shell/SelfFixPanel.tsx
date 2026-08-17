@@ -75,15 +75,11 @@ function DescribeSection({ writable }: { writable: boolean }) {
     <section className="prefs-section">
       <h2>Something wrong with the app?</h2>
       <p className="deploy-muted">
-        Describe it and Claude will open a session on this installation to look.
-        You do not need an error message — most of what goes wrong never raises
-        one. You will land in the conversation and can watch it work; it asks
-        before it changes anything.
+        Describe what went wrong and Claude will open a session on this
+        installation to look. You do not necessarily need an error message. You
+        will land in the Claude session and can watch it work.
       </p>
-      <Field
-        label="What is it doing?"
-        hint="What you did, what you expected, what happened instead. The app's recent log goes along with it automatically."
-      >
+      <Field label="What is going on?">
         <TextArea
           value={note}
           onChange={(e) => setNote(e.target.value)}
@@ -162,10 +158,6 @@ function InstallationSection({
               </li>
             ))}
           </ul>
-          <p className="deploy-muted">
-            Please send a report to the developers — a fix that only exists on
-            this machine helps nobody else.
-          </p>
           <div className="version-panel-actions">
             <a
               className="update-badge-action"

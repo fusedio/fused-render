@@ -168,8 +168,8 @@ function ModifiedPanel({
       <div className="version-panel-section">
         <div className="version-panel-label">Tell the developers</div>
         <div className="update-badge-text">
-          A fix that only exists on this machine helps nobody else. Send the
-          report to the Fused Render developers so it can ship for everyone.
+          Send the report to the Fused Render developers so it can ship for
+          everyone.
         </div>
         <div className="version-panel-actions">
           {snapshot && (
