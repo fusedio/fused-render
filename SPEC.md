@@ -7891,6 +7891,17 @@ go. Four failures, one answer.
   someone to install what they already installed spends the one minute they
   needed. `login` and `limit` are therefore matched BEFORE the could-not-find
   patterns, which are the broadest.
+- **TR-2a** **A failure SHAPE is not a subject**, and this is TR-2 arriving from
+  the other side. `ENOENT`, "no such file", "command not found", "authentication
+  failed" say nothing about *what* was missing, and this app produces them
+  constantly about files, mounts and credentials that have nothing to do with
+  Claude — so `could not write the incident file: [Errno 2] No such file or
+  directory` classified as Claude-missing and answered a disk-path problem with
+  a download link. Patterns are therefore two tiers: ones that NAME Claude or
+  quote the CLI's own vocabulary count anywhere, and ones that describe only a
+  shape count only when the message is about Claude. The same rule demotes a
+  bare "not signed in", which in this app is as likely to be the Fused account,
+  a deploy or an S3 mount.
 - **TR-3** **`raw` is an answer, not a fallback.** The page has a tab for "some
   other error message", so an unrecognised failure is routed somewhere real
   rather than shrugged at.
