@@ -1366,22 +1366,26 @@ describe("the unread count's position", () => {
     expect(VIEWS).not.toContain("function UnreadRail");
   });
 
-  it("trails the board card's title too, inside the clamped title element", () => {
+  it("trails the board card's title too, and cannot be clipped by its clamp", () => {
     const head = VIEWS.slice(
       VIEWS.indexOf('<span className="schedule-tv-card-head">'),
       VIEWS.indexOf('<span className="schedule-tv-card-foot">'),
     );
     // Not in the head any more — the head is the card's marks only.
-    const headOnly = head.slice(0, head.indexOf('className="schedule-tv-card-title"'));
+    const headOnly = head.slice(0, head.indexOf('className="schedule-tv-card-name"'));
     expect(headOnly).toContain("<StatusIcon");
     expect(headOnly).not.toContain("<UnreadPill");
-    // In the title, after the words: the title is a two-line -webkit-box clamp,
-    // so only a child that flows with the text lands after the last word.
+    // After the title, and OUTSIDE it. Inside was the first attempt, so that the
+    // count would flow after the title's last word — but that element clamps to
+    // two lines and hides its overflow, so a title long enough to fill it took
+    // the count with it. The count vanished on exactly the busiest cards.
     expect(head.indexOf("<UnreadPill")).toBeGreaterThan(head.indexOf("firstLine(task.title)"));
-    // And the pill knows how to sit on a text line there.
-    expect(TASKS_CSS).toMatch(
-      /\.schedule-tv-card-title \.tasks-count\s*\{[^}]*vertical-align: middle/,
+    expect(head).toMatch(
+      /className="schedule-tv-card-title">\{firstLine\(task\.title\)[^}]*\}<\/span>/,
     );
+    // The wrapper is what keeps it visible: it wraps, and the clamp does not.
+    expect(SCHEDULE_CSS).toMatch(/\.schedule-tv-card-name\s*\{[^}]*flex-wrap: wrap/);
+    expect(SCHEDULE_CSS).toMatch(/\.schedule-tv-card-name\s*\{[^}]*align-items: flex-end/);
   });
 
   it("keeps the row's ONE flex spacer and adds no auto margin", () => {
@@ -1392,11 +1396,10 @@ describe("the unread count's position", () => {
     expect((TASKS_CSS.match(/margin-left: auto/g) ?? []).length).toBe(0);
     expect(TASKS_CSS).toMatch(/\.tasks-grow\s*\{[^}]*flex: 1 1 auto/);
     expect(TASKS_CSS).toMatch(/\.tasks-row\s*\{[^}]*gap: var\(--tasks-row-gap\)/);
-    // The one margin the pill does get is on the CARD, where it is an inline box
-    // in a text line rather than a flex item with a gap.
-    expect(TASKS_CSS).toMatch(
-      /\.schedule-tv-card-title \.tasks-count\s*\{[^}]*margin-left: 6px/,
-    );
+    // Not on the card either: its own wrapper carries a `gap`, so the pill needs
+    // no margin of its own anywhere.
+    expect(TASKS_CSS).not.toMatch(/\.schedule-tv-card-title \.tasks-count\s*\{/);
+    expect(SCHEDULE_CSS).toMatch(/\.schedule-tv-card-name\s*\{[^}]*gap: 6px/);
   });
 
   it("still leads every MESSAGE row, which is the one that is scanned", () => {

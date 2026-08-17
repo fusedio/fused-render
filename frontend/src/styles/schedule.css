@@ -2874,6 +2874,19 @@ input.schedule-when-field {
   min-width: 0;
 }
 
+/* Title and its unread count on one line, the count trailing. `flex-wrap` is
+   the whole point: the title below is a clamp that HIDES its overflow, so the
+   count can never live inside it — a two-line title would eat it. Out here it
+   drops to its own line instead of disappearing. `align-items: flex-end` keeps
+   it sitting with the title's last line rather than floating beside line one. */
+.schedule-tv-card-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
 .schedule-tv-card-title {
   font-size: 12.5px;
   line-height: 1.35;
@@ -2882,6 +2895,7 @@ input.schedule-when-field {
   -webkit-box-orient: vertical;
   overflow: hidden;
   overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .schedule-tv-card-next {

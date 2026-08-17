@@ -225,16 +225,11 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* On a Board card the pill trails the title's TEXT rather than a flex sibling of
-   it: the card's title is a two-line `-webkit-box` clamp, so the count has to
-   flow with the words to end up after the last one instead of pinned to a corner.
-   That makes it an inline box in a text line, which is the one place the flex
-   row's `align-items: center` cannot centre it — hence the explicit alignment
-   and the gap that `.tasks-row`'s `gap` provides on the List side. */
-.schedule-tv-card-title .tasks-count {
-  margin-left: 6px;
-  vertical-align: middle;
-}
+/* No Board-card special case any more: the pill is a flex sibling of the card's
+   title inside `.schedule-tv-card-name` (schedule.css), which provides the gap
+   the List row's own `gap` provides here. It USED to sit inside the title, to
+   flow after its last word — but that title is a clamp with `overflow: hidden`,
+   so a title long enough to fill it clipped the count away entirely. */
 
 /* -- Quiet row action (Open chat) ---------------------------------------------
    Hidden until the row is pointed at: it applies to every task that has run,

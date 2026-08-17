@@ -1627,18 +1627,23 @@ function TaskCard({
             head as to a row's start (Akshil, 2026-08-17 — the count in front broke
             the reading priority).
 
-            So it goes INSIDE the title element rather than beside it. That is not
-            decoration: the title is a two-line `-webkit-box` clamp, and only a
-            child that flows with the words can end up after the last one. A flex
-            sibling would sit in a corner of the card instead, which is the very
-            placement being undone. */}
+            So title and count are wrapped TOGETHER, as one shrink-wrapped line
+            the count trails. It cannot go INSIDE the title element: that is a
+            two-line `-webkit-box` clamp with `overflow: hidden`, so a title long
+            enough to fill both lines would clip the count away — losing it on
+            exactly the cards that have the most to say. Nor can it be a bare
+            sibling of the head, which parks it in a corner of the card, the
+            placement this is undoing. The wrapper shrink-wraps the title, so a
+            short one keeps the count right after its last word, and a title that
+            fills its clamp pushes the count onto a line of its own, where it is
+            still there to read. */}
         <span className="schedule-tv-card-head">
           <StatusIcon status={taskColumn(task)} failed={task.failed} />
           <IdChip id={task.task_id} kind="task" />
           {task.live && <LivePulse />}
         </span>
-        <span className="schedule-tv-card-title">
-          {firstLine(task.title) || "(untitled)"}
+        <span className="schedule-tv-card-name">
+          <span className="schedule-tv-card-title">{firstLine(task.title) || "(untitled)"}</span>
           <UnreadPill count={unread} />
         </span>
         <span className="schedule-tv-card-foot">
