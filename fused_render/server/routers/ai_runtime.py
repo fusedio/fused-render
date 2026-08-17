@@ -43,7 +43,7 @@ from fused_render.ai import catalog, registry, supervisor
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
 # rule here costs nothing.
-from fused_render.ai.runners import diarize, engine_options, partial
+from fused_render.ai.runners import diarize, engine_options, partial, preview
 from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability`. It imports nothing from here.
@@ -339,6 +339,20 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         "guidance": guidance,
         "seed": seed,
         "out": path,
+        # …and where the picture-in-progress goes while it denoises, so a page
+        # has something to show through a render that takes minutes. Derived
+        # through `preview.preview_path` rather than spelled here, for the
+        # reason `outPartial` is: the worker that writes this file and the reply
+        # that advertises it must name the same one, and a second spelling of
+        # the suffix is how they come to disagree. A sibling of the image for
+        # the same reason the transcript's three are siblings — the server owns
+        # where user files go.
+        #
+        # Sent unconditionally. Whether a preview HAPPENS is the worker's answer
+        # (it needs a fitted projection for the model's latent space), and a
+        # route that tried to predict it would need this process to know what a
+        # runner venv it cannot import has a matrix for.
+        "outPreview": preview.preview_path(path),
     }
     try:
         supervisor.start_image(model, request, job)
@@ -353,6 +367,13 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     return {
         "jobId": job,
         "path": path,
+        # Canonical, because this goes back to a page that will put it in a
+        # `/api/fs/raw` URL — a Windows path that reached it backslashed would
+        # not match what the shell stored for the same file. It is a promise
+        # about a PATH, not about a file: a model with no fitted projection
+        # writes nothing there, and `fused.ai.image` treats a missing preview
+        # as the ordinary case rather than as an error.
+        "previewPath": canonical_fs_path(request["outPreview"]),
         "model": model,
         "prompt": request["prompt"],
         "width": request["width"],

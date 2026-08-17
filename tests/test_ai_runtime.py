@@ -1706,6 +1706,52 @@ def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner
     assert open(started["path"], "rb").read(8) == b"\x89PNG\r\n\x1a\n"
 
 
+def test_the_reply_says_where_the_LIVE_PREVIEW_will_be(client, fake_image_runner):
+    """The third path this API hands out, and it is decided here for the same
+    reason the other two are: the server owns where user files go. Derived
+    through `preview.preview_path`, never string-munged out of `path` — the
+    worker that writes this file and the reply that advertises it have to name
+    the same one, and a second spelling of the suffix is how they disagree."""
+    from fused_render.ai.runners import preview
+
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert started["previewPath"] == preview.preview_path(started["path"])
+    assert os.path.dirname(started["previewPath"]) == os.path.dirname(started["path"])
+    _wait_job(started["jobId"])
+
+
+def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner,
+                                                       monkeypatch):
+    """The advertised path and the requested one are the same string, because
+    they come from the same call rather than from two agreeing spellings."""
+    captured = {}
+    real_start = supervisor.start_image
+
+    def spy(model, request, job):
+        captured.update(request)
+        return real_start(model, request, job)
+
+    monkeypatch.setattr(supervisor, "start_image", spy)
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert captured["outPreview"] == started["previewPath"]
+    _wait_job(started["jobId"])
+
+
+def test_a_runner_that_writes_no_preview_leaves_NOTHING_behind(client,
+                                                               fake_image_runner):
+    """The preview is a promise about a path, not about a file. A model with no
+    fitted projection — and every worker built before this existed — renders
+    exactly as it did, and the advertised path simply never appears."""
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "done", row
+    assert os.path.isfile(started["path"])
+    assert not os.path.exists(started["previewPath"])
+
+
 def test_the_reply_carries_the_seed_even_when_none_was_asked_for(client, fake_image_runner):
     """A seed invented inside the worker and never surfaced would make every
     unseeded image unrepeatable — "make that one again" has to be possible."""
