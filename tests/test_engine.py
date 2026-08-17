@@ -850,11 +850,10 @@ def test_a_declared_project_runs_in_its_own_venv(
     `_FORCE_VENV_ENV` is set because this project would otherwise no longer reach
     the venv path at all, and for an honest reason rather than a convenient one:
     the warm project declares `pip`, chosen because it is the cheapest possible
-    warm venv, and `pip` is present on the app interpreter (the dev-env setup
-    seeds it into `.venv` on purpose, so `test_deploy.py` can exercise a real
-    `_pip_available()`). A declaration every member of which is already installed
-    is precisely what `app_satisfies` claims, so leaving the fast path enabled
-    here would silently convert this into a second no-project test.
+    warm venv, and `pip` is present on the app interpreter. A declaration every
+    member of which is already installed is precisely what `app_satisfies`
+    claims, so leaving the fast path enabled here would silently convert this
+    into a second no-project test.
 
     The hatch keeps the assertion this test is FOR — build a venv, run the script
     inside it, land under `venvs` — rather than trading it for a weaker one. Which

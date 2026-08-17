@@ -3,7 +3,7 @@
 Run as ``[sys.executable, _fused_token.py]`` by canvases.py (same in-interpreter
 spawn pattern as _fused_cli.py). This is the `fused login` credential store
 (~/.fused/credentials, Auth0 PKCE) — the LEGACY-workbench provider, distinct
-from the `fused cloud login` store account.py manages. The refreshed token is
+from the fused CLI's own `fused cloud login` store. The refreshed token is
 saved back so the on-disk expires_at stays truthful for the cheap staleness
 check canvases.py does before spawning this child.
 """

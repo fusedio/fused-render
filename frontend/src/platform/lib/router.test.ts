@@ -164,14 +164,16 @@ test("legacy view/embed prefixes gain the /explorer namespace", () => {
 test("legacy settings sentinels map to their plain routes", () => {
   expect(rewriteLegacyUrl("/view/_home")).toBe("/apps");
   expect(rewriteLegacyUrl("/view/_prefs")).toBe("/preferences");
-  expect(rewriteLegacyUrl("/view/_account")).toBe("/preferences?tab=account");
+  // The Fused account tab is gone (with the Deploy feature it existed for) —
+  // an old bookmark just lands on Preferences' default tab now.
+  expect(rewriteLegacyUrl("/view/_account")).toBe("/preferences");
 });
 
 // The Inference engines tab moved from Preferences to /ai-models, so this is a
 // tab that no longer exists on the page the url names. Left alone, Preferences
 // silently falls back to its default tab — which looks like the setting was
-// removed rather than moved, and is exactly the dead end the /view/_account
-// rewrite above exists to prevent.
+// removed rather than moved, and is exactly the dead end this rewrite exists
+// to prevent.
 test("the engines tab is redirected to the page that owns it now", () => {
   expect(rewriteLegacyUrl("/preferences?tab=engines")).toBe("/ai-models?tab=engines");
   // Through the OLDER shape too: a bookmark from before the sentinel rename

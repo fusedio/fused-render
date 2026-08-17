@@ -1,5 +1,5 @@
 """Tests for the Preferences backend (SPEC §20): GET/PUT /api/prefs
-(shell/prefs.py — the persisted engine/deploy/reader/call-log preferences), the
+(shell/prefs.py — the persisted engine/reader/call-log preferences), the
 per-request engine dispatch it drives in /api/run, and the merged
 extension→templates registry view (GET /api/templates/registry).
 
@@ -100,31 +100,6 @@ def test_put_rejects_unknown_engine_and_missing_header(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
-def test_deploy_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    # Default off (opt-in), so the preview-header Deploy button stays hidden.
-    assert client.get("/api/prefs").json()["deploy"]["enabled"] is False
-    # Turn it on — persisted and reflected in the response and a fresh GET.
-    body = client.put("/api/prefs", json={"deploy_enabled": True}, headers=FUSED).json()
-    assert body["deploy"]["enabled"] is True
-    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))["deploy_enabled"] is True
-    assert client.get("/api/prefs").json()["deploy"]["enabled"] is True
-    # And back off.
-    assert client.put("/api/prefs", json={"deploy_enabled": False}, headers=FUSED).json()[
-        "deploy"
-    ]["enabled"] is False
-
-
-def test_deploy_enabled_toggle_is_independent_of_engine(tmp_path, monkeypatch):
-    # A partial PUT touching only deploy_enabled must not disturb the engine pref.
-    client, _ = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
-    client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED)
-    body = client.put("/api/prefs", json={"deploy_enabled": True}, headers=FUSED).json()
-    assert body["engine"]["selected"] == "fused"
-    assert body["deploy"]["enabled"] is True
-
-
 def test_reader_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # Default off (accessibility opt-in), so the reader gate denies the mode.
@@ -145,10 +120,8 @@ def test_reader_enabled_toggle_is_independent_of_other_prefs(tmp_path, monkeypat
     client, _ = _client(tmp_path, monkeypatch)
     monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
     client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED)
-    client.put("/api/prefs", json={"deploy_enabled": True}, headers=FUSED)
     body = client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED).json()
     assert body["engine"]["selected"] == "fused"
-    assert body["deploy"]["enabled"] is True
     assert body["reader"]["enabled"] is True
 
 
@@ -161,13 +134,9 @@ def test_put_rejects_bad_reader_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
-def test_put_rejects_bad_deploy_enabled_and_empty_body(tmp_path, monkeypatch):
+def test_put_rejects_empty_body(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
-    # Non-boolean deploy_enabled …
-    assert (
-        client.put("/api/prefs", json={"deploy_enabled": "yes"}, headers=FUSED).status_code == 400
-    )
-    # … and a PUT naming no known preference are both rejected without a write.
+    # A PUT naming no known preference is rejected without a write.
     assert client.put("/api/prefs", json={"nope": 1}, headers=FUSED).status_code == 400
     assert not (home / "prefs.json").exists()
 
@@ -249,9 +218,9 @@ def test_env_var_reports_as_forcing(tmp_path, monkeypatch):
 
 def test_forced_auto_reports_match_dispatch_after_midsession_install(tmp_path, monkeypatch):
     # FUSED_RENDER_ENGINE=auto with fused absent at startup. The engine must be
-    # resolved LIVE, so a mid-session install (which /api/deploy/install
-    # supports) flips BOTH the reported state and actual dispatch together —
-    # the page never claims a different running engine than /api/run uses.
+    # resolved LIVE, so a mid-session install of the `fused` package flips
+    # BOTH the reported state and actual dispatch together — the page never
+    # claims a different running engine than /api/run uses.
     # (Built here, not via _client, since _client clears FUSED_RENDER_ENGINE
     # and create_app must see =auto at startup.)
     available = {"v": False}
@@ -810,7 +779,7 @@ def test_only_an_ENGINE_put_reports_unloads(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
 
     assert "unloaded" not in client.get("/api/prefs").json()["engines"]
-    body = client.put("/api/prefs", json={"deploy_enabled": True}, headers=FUSED).json()
+    body = client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED).json()
     assert "unloaded" not in body["engines"]
 
 

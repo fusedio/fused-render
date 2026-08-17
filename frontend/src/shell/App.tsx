@@ -26,7 +26,6 @@ import { basename } from "@platform/lib/format";
 import { maybeAutoStartTour } from "@platform/lib/tour";
 import { useThemeSync } from "@platform/lib/theme";
 import GlobalSidebar from "@shell/GlobalSidebar";
-import CloneAppHost from "@platform/cloud/CloneAppHost";
 import NotificationHost from "@platform/ui/NotificationHost";
 import QueueDock from "@shell/QueueDock";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
@@ -858,9 +857,6 @@ export default function App({ config }: { config: Config }) {
           card's queue slot), handed in from here rather than imported there
           because it speaks explorerUrl, which lives in this layer. */}
       <NotificationHost activity={<QueueDock />} />
-      {/* Opening a deployed app is requested from the path bar (a pasted https:// link) and
-          from the Apps page; the modal is mounted HERE so both reach one flow (SPEC §35 CL-1). */}
-      {!IS_EMBED && <CloneAppHost />}
       {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
     </div>
   );
