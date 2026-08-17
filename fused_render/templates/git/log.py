@@ -567,6 +567,14 @@ def _status(root, rel, is_dir):
             "path": path,
             "orig": orig,
             "moved": moved,
+            # Whether this entry is UNMERGED, answered from git's own porcelain
+            # rule rather than left for the view to re-derive: any code with a
+            # `U` on either side, plus `AA` and `DD` (both-added / both-deleted
+            # carry no U at all). A mirror of this in the view would be a second
+            # copy of a rule with seven cases and no way to notice it drifting —
+            # and getting it wrong means offering to resolve a file that is not
+            # conflicted, or hiding the button on one that is.
+            "conflicted": "U" in (x, y) or code in ("AA", "DD"),
             "staged": not untracked and x not in (" ", "?"),
             "unstaged": not untracked and y not in (" ", "?"),
             "untracked": untracked,

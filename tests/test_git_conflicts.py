@@ -24,6 +24,7 @@ What is pinned here:
   must be in `DESTRUCTIVE_OPS`, which is what gives it the view's confirmation.
 """
 import importlib.util
+import re
 import os
 
 import pytest
@@ -246,3 +247,92 @@ def test_resolve_refuses_an_unknown_op_shape(ops, tmp_path):
     payload = ops.main(file=root, op="resolve", paths=[], content="x\n")
     assert payload["ok"] is False
     assert payload["reason"] == "missing"
+
+
+# ------------------------------------------------- source contract (the view)
+#
+# The view is a browser document; nothing here executes its JavaScript. What CAN
+# be pinned from a test is the handful of cross-file contracts whose breakage is
+# silent — each of these is a bug that ships looking fine.
+
+_TEMPLATE = os.path.join(_TPL, "template.html")
+
+
+def _view_source():
+    with open(_TEMPLATE, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def test_view_destructive_set_mirrors_ops_module(ops):
+    """The template's DESTRUCTIVE set IS ops.py's DESTRUCTIVE_OPS.
+
+    ops.py says it in a comment ("a new op that can lose work must be added here
+    or it silently ships without a confirmation") and the view says it again. Two
+    hand-maintained copies of one list is exactly the thing that drifts, and the
+    drift is invisible: the op simply stops asking before it destroys something.
+    """
+    found = re.search(r"const DESTRUCTIVE = new Set\(\[([^\]]*)\]\)", _view_source())
+    assert found, "the view no longer declares a DESTRUCTIVE set"
+    listed = set(re.findall(r'"([^"]+)"', found.group(1)))
+    assert listed == set(ops.DESTRUCTIVE_OPS)
+
+
+def test_view_asks_sonnet_for_a_resolution():
+    src = _view_source()
+    assert 'const RESOLVE_MODEL = "claude-sonnet-5"' in src
+    # And it is the model actually passed, not just declared.
+    assert src.count("model: RESOLVE_MODEL") == 2      # conflict + error advice
+
+
+def test_view_reads_conflicts_on_its_own_channel():
+    """Same rule as every other reader call here (see test_git_view.py): a call
+    sharing log.py's default channel supersedes an in-flight overview and hangs
+    it forever."""
+    src = _view_source()
+    assert 'op: "conflicts" }, \n' not in src            # no channel-less form
+    assert re.search(r'op:\s*"conflicts"\s*\}\s*,\s*chan\("conflicts"\)', src)
+
+
+def test_view_never_applies_a_resolution_without_the_confirmation():
+    """The only `op: "resolve"` call site is inside the confirmation bar.
+
+    The proposal panel's Apply button must go through `confirmable`, which writes
+    `ask` to the URL and renders a question — never straight to `run`. A second
+    call site is how that guarantee gets bypassed by a later edit.
+    """
+    src = _view_source()
+    assert src.count('{ op: "resolve"') == 1
+    assert 'confirmable("resolve:" + proposal.path' in src
+    # And the one call site sits inside the confirmation bar's continuation.
+    bar = src.index("function resolveConfirmBar()")
+    after = src.index("\n}", src.index("return confirmBar(", bar))
+    assert bar < src.index('{ op: "resolve"') < after
+    # `pendingConfirm` must NOT also render this question (two Yes buttons for one
+    # proposal, one of them in a list section far from the text it writes).
+    assert 'if (op === "resolve") {\n    /*' in src
+    assert src.count('confirmBar(\n    "Overwrite ') == 1
+
+
+def test_view_handles_every_ai_rejection_code():
+    """`fused.ai` rejects with these `.type`s; an unhandled one falls through to
+    a message that names the code at the user instead of explaining it."""
+    src = _view_source()
+    for code in ("ai_unavailable", "model_loading", "unavailable",
+                 "cancelled", "timeout", "bad_request"):
+        assert '"' + code + '"' in src, code
+
+
+def test_view_offers_the_button_only_on_a_conflicted_row():
+    src = _view_source()
+    assert "if (change.conflicted) {" in src
+    assert "resolveButton(path," in src
+
+
+def test_resolve_never_stages_or_commits(ops):
+    """ops.py's resolve path runs exactly one git command, and it is a READ."""
+    import inspect
+
+    body = inspect.getsource(ops._resolve)
+    for forbidden in ('"add"', '"commit"', '"checkout"', '"merge"', '"restore"'):
+        assert forbidden not in body, forbidden
+    assert body.count("_git_ok(") == 1
