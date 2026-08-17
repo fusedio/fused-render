@@ -109,17 +109,28 @@
        what "not started" should look like. Restated in the light block only
        because test_theme.py requires every dark token to have a light value —
        the value is deliberately the same expression, not a second grey.
-     * Archive is a MUTED VIOLET, because Upcoming took the grey and two lanes
-       cannot share a hue. Violet is the one direction left: it collides with
-       none of yellow/green/red/grey, and desaturated it reads as "put away"
-       rather than as a live lane. The pair is --icon-data's violet, already
-       tuned in this file for the same weight in both themes, so the palette
-       gains a role rather than a colour. */
+     * Archive is a DUSTY ROSE, because Upcoming took the grey and two lanes
+       cannot share a hue. It was a muted violet for a day and that failed on the
+       one thing it had to do: at 16px, beside Upcoming's actual grey, a
+       low-chroma violet reads as barely-tinted grey rather than as a colour —
+       "quite similar" (Akshil, 2026-08-17). The lesson is about temperature, not
+       about that particular violet: at the low saturation this lane needs, COOL
+       hues are the ones that collapse into neutral, and a warm hue at the same
+       chroma still announces itself as a colour. So the replacement is warm.
+       Rose rather than the other two warm candidates because of where the live
+       lanes already sit: a rose keeps its blue channel well clear of its green,
+       which is what stops it reading as Failed's red (where those two are
+       equal), whereas a dull bronze reads as a dimmer In Progress and a muted
+       teal sits between Done's green and --activity's blue and reads as a dimmer
+       Done. Rose is the one direction with no live lane already in it, and it is
+       nowhere near yellow, green or blue. The pair is --icon-image's rose,
+       already tuned in this file for the same weight in both themes, so the
+       palette gains a role rather than a colour. */
   --status-upcoming: var(--fg-muted);
   --status-progress: #facc15;
   --status-done: #4ade80;
   --status-failed: #f87171;
-  --status-archived: #a898cb;
+  --status-archived: #cd93b6;
 
   /* The blue Upcoming used to own, which outlived it: it was never really the
      status hue, it was the page's ACTIVITY hue, and three things still need it —
@@ -229,7 +240,10 @@
   --status-progress: #ca8a04;
   --status-done: #16a34a;
   --status-failed: #dc2626;
-  --status-archived: #6b57a0;
+  /* The rose deepened for white (see the dark block). Still warm, still low
+     enough in chroma to stay quiet, and its blue channel still stands well above
+     its green so it cannot be mistaken for the red above it. */
+  --status-archived: #9c4d78;
 
   --activity: #2563eb;
 

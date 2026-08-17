@@ -2303,7 +2303,7 @@ input.schedule-when-field {
    Bordered circle, hue by column, and an inner dot on the terminal state so
    "done" is legible without colour (flow StatusIcon). The five hues are
    styles/tokens.css's `--status-*`; two of them moved on 2026-08-17 (Upcoming to
-   grey, Archive to a muted violet) and the reasoning lives with the tokens,
+   grey, Archive to a dusty rose) and the reasoning lives with the tokens,
    because the ring is only one of the places they are worn. */
 .schedule-ring {
   position: relative;
@@ -2799,22 +2799,29 @@ input.schedule-when-field {
    this board against flow's side by side — there the lanes are transparent and
    the cards are the only surface).
 
-   So the fill is gone and nothing replaced it: the board's 12px `gap` and the
-   cards' own edges are what make four columns read as four columns. No hairline
-   rule between them either — tried the gap alone first, as asked, and the column
-   of card edges is already a stronger vertical than a 1px line would be.
+   So the FILL is gone and nothing filled in for it — but the lane is still
+   BOUNDED ("at least they should have an outline when they're expanded", Akshil,
+   2026-08-17). Unfilled and unbounded, an open lane's only edge was the ragged
+   right-hand end of whatever card happened to be widest, so the column had no
+   bottom at all and a short lane beside a full one read as loose cards on the
+   page. A hairline answers that without putting the plate back: an outline says
+   where the column is, a fill says the column is a surface, and only the second
+   one was ever competing with the cards.
 
-   What the padding and the radius are still for is the DROP states below, which
-   are the only things this element ever paints. `padding` insets the dashed
-   legal-drop outline off the cards so it reads as the lane's edge rather than as
-   a second border on the top card; the radius is the shape the `is-drop-over`
-   wash takes. Both are dead geometry at rest, which is the point.
+   Deliberately the SAME hairline the collapsed rail wears — 1px, `--border`, and
+   the 8px radius this element already had for the drop wash — so the two forms of
+   a lane read as one family and not as two ideas about what a lane's edge is. The
+   rail's is doing extra work (it is a button you press), but it is the same line.
 
-   An EMPTY lane therefore shows its header and nothing else — the label, the
-   ring and a `0`. That is deliberate: "nothing scheduled" should look like
-   nothing, and the header is what says which column the nothing belongs to. The
-   `min-height` is what keeps the empty lane a droppable target anyway, so a card
-   can still be dragged into a column that has never held one. */
+   What the padding is for, on top of insetting the cards off that new edge, is
+   the DROP states below: it holds the dashed legal-drop outline off the top card
+   so it reads as the lane's own edge rather than as a second border on the card.
+
+   An EMPTY lane therefore shows its header and an empty bounded column — the
+   label, the ring, a `0` and the box the cards would go in. That is still
+   "nothing scheduled looks like nothing": an empty outline is not a filled slab.
+   The `min-height` is what keeps it a droppable target, so a card can still be
+   dragged into a column that has never held one. */
 .schedule-tv-lane-body {
   flex: 1 1 auto;
   min-height: 120px;
@@ -2825,12 +2832,19 @@ input.schedule-when-field {
      rather than as separate objects, which is half of what made the lane look
      like a panel full of rows. */
   gap: 8px;
+  /* Stated with the border, as everywhere else on this page: the width is safe
+     either way (a stretched flex item fits its margin box to the 260px lane, so
+     the edge lands inside), but `min-height` below is not — content-box would
+     make the floor 122px and the number here would stop being the number the
+     board actually has. */
+  box-sizing: border-box;
   padding: 4px;
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 
-/* The card is the board's ONLY surface now that the lane paints nothing, so it
-   has to carry the whole separation from the page ground on its own — and the
+/* The card is the board's ONLY surface now that the lane is an outline rather than
+   a plate, so it has to carry the whole separation from the page ground — and the
    ground is `--bg` in both themes (base.css `body`), which is exactly what the
    card used to be painted in. Against a lane fill that was enough; against the
    page it was the card disappearing, most obviously in light mode where both are
@@ -2885,14 +2899,26 @@ input.schedule-when-field {
    dropdowns speak. The card left behind ghosts.
 
    None of this depended on the lane's resting fill, which is why removing that
-   fill above cost the drop nothing. A drop target announces itself by ADDING
-   paint to an empty box, never by changing paint it was already wearing: legal
-   lanes take a dashed accent outline the moment a drag starts, the lane under
-   the pointer fills with the accent wash, and the one drop that is not filing
-   (Upcoming → In Progress, which sends) swaps the outline for `--activity` and
-   writes the sentence out (tasks.css `.is-drop-run` / `.tasks-run-hint`). All
-   three go from nothing to something, so they are more legible on a transparent
-   lane than they were on a tinted one. */
+   fill cost the drop nothing. A drop target announces itself by ADDING paint to
+   an unfilled box: legal lanes take a dashed accent outline the moment a drag
+   starts, the lane under the pointer fills with the accent wash, and the one drop
+   that is not filing (Upcoming → In Progress, which sends) swaps the outline for
+   `--activity` and writes the sentence out (tasks.css `.is-drop-run` /
+   `.tasks-run-hint`). The wash and the sentence still go from nothing to
+   something, so they are more legible on an unfilled lane than on a tinted one.
+
+   The dashed OUTLINE is the one thing the lane's new hairline changed. It is drawn
+   at `outline-offset: -1px`, i.e. exactly where that hairline now is, so left
+   alone the two stack into a single muddy 2px edge that is half grey and half
+   accent — legible as "thicker", not as "here". So a lane being dropped into
+   takes its own hairline to `transparent` for as long as the drag lasts and the
+   dashed accent line stands in its place: one line either way, in the same
+   position and at the same weight, and the STATE is read off its colour and its
+   dashes rather than off a second concentric line. Nothing moves — the border is
+   still 1px, so the box is the size it was — and the added paint is still what
+   carries the signal; the resting line only steps out of its way.
+
+   Both forms of the lane do this, because both wear the hairline now. */
 .schedule-tv-board .schedule-tv-card.is-draggable,
 .prefs-section .schedule-tv-board .schedule-tv-card.is-draggable {
   cursor: grab;
@@ -3041,12 +3067,14 @@ input.schedule-when-field {
    nobody opens this page to read — and clicking the rail opens it again.
 
    Its resting fill went with the open lane's on 2026-08-17: a rail is a lane, and
-   leaving one lane painted as a slab beside four transparent ones would have made
-   the collapsed column the loudest thing on the board. The hairline stays, and it
-   is doing more work here than on the open lane — the rail is a BUTTON you press
-   to expand, so it has to look like an object rather than a strip of page. Hover
-   still fills (`--row-bg-hover` below), and so do the drop states, which is the
-   same "add paint to an empty box" the lane body relies on. */
+   leaving one lane painted as a slab beside four unfilled ones would have made the
+   collapsed column the loudest thing on the board. The hairline stayed — and later
+   the same day the open lane grew the identical one, so the pair now read as one
+   family: 1px, `--border`, 8px radius, unfilled, in both forms. It is still doing
+   more work here, because the rail is a BUTTON you press to expand and has to look
+   like an object rather than a strip of page; it is the same line either way.
+   Hover fills (`--row-bg-hover` below) and so does the drop wash, which is the
+   same "add paint to an unfilled box" the lane body relies on. */
 .schedule-tv-rail,
 .prefs-section .schedule-tv-rail {
   display: flex;
@@ -3067,10 +3095,32 @@ input.schedule-when-field {
   transition: background-color 0.08s ease;
 }
 
+/* `border-color` is restated here and it is NOT redundant: `.prefs-section
+   button:hover:not(:disabled)` (preferences.css) paints an accent border on any
+   unarmored button on this page, so a hover rule that only set the background
+   would let the rail's edge go accent on hover. It states its own colour, per the
+   page's house rule. */
 .schedule-tv-rail:hover:not(:disabled),
 .prefs-section .schedule-tv-rail:hover:not(:disabled) {
   background: var(--row-bg-hover);
   border-color: var(--border);
+}
+
+/* The hairline gets out of the dashed drop outline's way — see the drag note
+   above, where the reasoning lives. Both forms of the lane, one rule.
+
+   It sits AFTER the hover rule above, and the rail's selectors carry that rule's
+   `:not(:disabled)`, on purpose: hover restates `border-color` (it has to, see
+   above) at the same specificity, so a drop state written any shorter or any
+   earlier would be undone on precisely the rail the pointer is over — the one
+   being dropped into. The lane body has no hover rule and needs neither. */
+.schedule-tv-lane-body.is-drop-legal,
+.schedule-tv-lane-body.is-drop-run,
+.schedule-tv-rail.is-drop-legal:not(:disabled),
+.schedule-tv-rail.is-drop-run:not(:disabled),
+.prefs-section .schedule-tv-rail.is-drop-legal:not(:disabled),
+.prefs-section .schedule-tv-rail.is-drop-run:not(:disabled) {
+  border-color: transparent;
 }
 
 .schedule-tv-rail-label {

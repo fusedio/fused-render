@@ -51,6 +51,7 @@ import {
   groupByColumn,
   heldMessages,
   isDraggable,
+  isExpandable,
   isFailedTask,
   markAllRead,
   markRead,
@@ -725,7 +726,7 @@ export function TaskList({
 function TaskNode({
   task,
   home,
-  open,
+  open: requested,
   onToggle,
   loaded,
   loading,
@@ -741,6 +742,8 @@ function TaskNode({
 }: {
   task: Task;
   home: string;
+  /** What the List's expanded set says about this row. Whether it is honoured is
+   * this component's decision — see `expandable` below. */
   open: boolean;
   onToggle: () => void;
   loaded?: TaskMessage[];
@@ -765,6 +768,17 @@ function TaskNode({
     answer: { unread: number },
   ) => void;
 }) {
+  // Is this row an accordion at all? tasks-lib.isExpandable asks the server's
+  // message_count, because a thread of one message has nothing under it but a
+  // restatement of this row's own title.
+  //
+  // `open` is DERIVED from it rather than merely rendered around it: the guard
+  // belongs in the predicate, so a row that is in the List's expanded set and then
+  // stops being expandable closes itself instead of being stuck open with no
+  // control to close it. That cannot happen today (a thread never shrinks), but
+  // "cannot happen" is not a thing to leave a render depending on.
+  const expandable = isExpandable(task);
+  const open = expandable && requested;
   const view = threadView(task, loaded);
   // Everything this thread holds, one list: the listing window before Show more,
   // the whole fetched thread after it, and either way the listing's fresher copy
@@ -975,18 +989,38 @@ function TaskNode({
         className={"tasks-row" + (open ? " is-open" : "")}
         role="button"
         tabIndex={0}
-        aria-expanded={open}
+        // Only a row that HAS a disclosure claims one. `undefined` rather than
+        // `false`: false says "collapsed, press to expand", which is a promise a
+        // one-message row cannot keep.
+        aria-expanded={expandable ? open : undefined}
         title={task.title}
-        onClick={onToggle}
+        // Still the row's own click, still onToggle, and still nothing else: this
+        // gesture expands the accordion and deliberately does NOT open the chat
+        // (see the Open chat button below — that one is the gesture that opens, so
+        // that one is the gesture that clears the thread). On a row with nothing to
+        // reveal the press simply has no work to do. The row stays a focusable
+        // control either way, because focus on it is what reveals the hover group
+        // of actions (`.tasks-row:focus-within .tasks-act`) — the keyboard's only
+        // way to reach Run now, Archive and Open chat on this task.
+        onClick={() => {
+          if (expandable) onToggle();
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            onToggle();
+            if (expandable) onToggle();
           }
         }}
       >
+        {/* The disclosure gutter is drawn WHETHER OR NOT there is a chevron in it.
+            `--tasks-caret-w` is the first term of `--tasks-rail-x`, which every
+            indent on this page is measured from (tasks.css), so dropping the
+            element on a one-message row would slide that row's status ring — and
+            the whole rail it stands in — a mark and a gap to the left of its
+            neighbours' and turn a column of rings into a zigzag. So the box stays
+            and only the glyph goes. */}
         <span className={"tasks-caret" + (open ? " is-open" : "")} aria-hidden>
-          {ICON_CHEVRON}
+          {expandable ? ICON_CHEVRON : null}
         </span>
         {/* The ring opens the row, and it stands in the column every task row's
             ring stands in (tasks.css `--tasks-rail-x`), which is also the column

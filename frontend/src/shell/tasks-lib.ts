@@ -719,6 +719,27 @@ export function threadView(task: Task, loaded?: TaskMessage[]): ThreadView {
   return { messages, more: hidden > 0, hidden };
 }
 
+/**
+ * Whether this task is an ACCORDION at all — i.e. whether expanding it would
+ * reveal anything the row has not already said.
+ *
+ * A thread of one message is not a thread. Expanding it drew exactly one message
+ * row, whose title is the same text the task row above it was already showing, so
+ * the disclosure offered a press that told the reader nothing ("empty task (1 msg
+ * only) should not have dropdown", Akshil, 2026-08-17). A task of ZERO — a pending
+ * one that has never run — is the same case and the same answer.
+ *
+ * Asked of `message_count`, the SERVER's total, and never of the tail this client
+ * happens to be holding. `task.messages` is a preview window (PREVIEW_MESSAGES),
+ * so a busy thread can arrive with a short tail or none at all, and counting what
+ * we hold would call a forty-message task unexpandable. It is the same number
+ * threadView already trusts for "is there more?", so the chevron and the "Show N
+ * more" button under it cannot disagree about how long the thread is.
+ */
+export function isExpandable(task: Task): boolean {
+  return task.message_count > 1;
+}
+
 /** Collapsed by default, so the expanded set is what is OPEN (an empty set is
  * the resting state and needs no seeding from a task list that changes on
  * every poll). */

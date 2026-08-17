@@ -30,6 +30,7 @@ import {
   heldMessages,
   isAllRead,
   isDraggable,
+  isExpandable,
   isFailedTask,
   isPastDue,
   isUnread,
@@ -216,6 +217,43 @@ describe("threadView", () => {
     expect(threadView({ ...task({}, 1), message_count: 4 }).more).toBe(true);
     // ...and one that claims fewer than it sent never goes negative.
     expect(threadView({ ...task({}, 3), message_count: 1 }).hidden).toBe(0);
+  });
+});
+
+// ---- which rows are accordions at all ----------------------------------------
+// "empty task (1 msg only) should not have dropdown" (Akshil, 2026-08-17). A
+// thread of one drew a single message row under the task row whose title was the
+// same words, so the chevron offered a press that revealed a restatement. Zero is
+// the same case. The number asked has to be the SERVER's, or the answer is wrong
+// on precisely the tasks with most to show.
+
+describe("isExpandable", () => {
+  it("offers no disclosure at zero or one message, and one from two up", () => {
+    // Nothing to reveal: a pending task that has never run, and a thread whose one
+    // message the row above is already showing.
+    expect(isExpandable(task({}, 0))).toBe(false);
+    expect(isExpandable(task({}, 1))).toBe(false);
+    // Two is a thread.
+    expect(isExpandable(task({}, 2))).toBe(true);
+    expect(isExpandable(task({}, 3))).toBe(true);
+    expect(isExpandable(task({}, 40))).toBe(true);
+  });
+
+  it("asks message_count, never the tail the client happens to hold", () => {
+    // The listing sends at most PREVIEW_MESSAGES, and can send fewer or none at
+    // all. Counting what we hold would call this forty-message task a leaf and
+    // hide the chevron on the row with the most to open.
+    expect(isExpandable({ ...task({}, 40), messages: [] })).toBe(true);
+    expect(isExpandable({ ...task({}, 40), messages: [msg({})] })).toBe(true);
+    // And the same number the Show more button is arithmetic over, so the chevron
+    // and "Show N more" cannot disagree about the thread's length.
+    const long = { ...task({}, 40), messages: [msg({})] };
+    expect(threadView(long).more).toBe(true);
+    // The converse: a tail longer than the count claims is still not a thread, so
+    // the two never contradict each other in that direction either.
+    const shrunk = { ...task({}, 3), message_count: 1 };
+    expect(isExpandable(shrunk)).toBe(false);
+    expect(threadView(shrunk).more).toBe(false);
   });
 });
 
@@ -1526,9 +1564,14 @@ describe("the unread count's position", () => {
 // Upcoming · In Progress · Done · Failed · Archive. Read out of tokens.css because
 // the whole vocabulary only works if the five stay DISTINCT in both themes, and
 // two of them were swapped on 2026-08-17 (Upcoming to grey, Archive off grey to a
-// muted violet). A colour test cannot judge taste; what it can pin is that the
-// five are five, that neither theme was left behind, and that the two that moved
-// did not move onto each other or onto a neighbour.
+// muted violet — and then, the same day, off that violet to a dusty rose, because
+// at ring size a low-chroma violet beside a grey is two greys).
+//
+// A colour test cannot judge taste. What it can pin is that the five are five, that
+// neither theme was left behind, that the two that moved did not move onto each
+// other or onto a neighbour — and, since the violet cleared every one of those and
+// still failed, that Archive is far enough from Upcoming in CHROMA to be told apart
+// at a glance rather than merely under a picker.
 
 /** The `--status-*` and `--activity` values of one palette block. */
 function statusHues(selector: string): Record<string, string> {
@@ -1542,6 +1585,26 @@ function statusHues(selector: string): Record<string, string> {
     out[name] = value.trim();
   }
   return out;
+}
+
+/** Any single token's value out of one palette block — for the ones Upcoming
+ *  borrows rather than restates (`var(--fg-muted)`), which have to be RESOLVED
+ *  before two colours can be compared as colours. */
+function paletteHex(selector: string, token: string): string {
+  const at = TOKENS_CSS.indexOf(selector + " {");
+  expect(at).toBeGreaterThan(-1);
+  const block = TOKENS_CSS.slice(at, TOKENS_CSS.indexOf("\n}", at));
+  const found = block.match(new RegExp(`--${token}:\\s*(#[0-9a-f]{6});`));
+  expect(found).toBeTruthy();
+  return found![1];
+}
+
+/** `#rrggbb` as three 0-255 numbers, so a claim about a hue can be arithmetic
+ *  over the actual channels rather than a string comparison — two colours that
+ *  differ by one bit are different strings and the same colour. */
+function channels(hex: string): number[] {
+  expect(hex).toMatch(/^#[0-9a-f]{6}$/);
+  return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
 }
 
 // ---- where the status ring is drawn, and where it is not -----------------------
@@ -1650,45 +1713,66 @@ describe("the board card's status ring", () => {
   });
 });
 
+/** A rule's declarations, found by WHOLE selector rather than by substring: many
+ *  rules on this page are written twice over (`.x` and `.prefs-section .x`, because
+ *  `.prefs-section button` repaints unarmored buttons here), and half of them are
+ *  named in the prose above themselves. Comments are stripped first so a mention
+ *  cannot be mistaken for the rule. */
+function block(css: string, selector: string): string {
+  for (const rule of rules(css)) {
+    if (rule.selectors.includes(selector)) return rule.body;
+  }
+  throw new Error(`no rule whose selector list holds exactly "${selector}"`);
+}
+
+/** Every rule in a stylesheet, as its selector list and its declarations. A
+ *  selector can appear in more than one rule (a resting rule and a state rule),
+ *  which `block` above cannot express — it answers with the first. */
+function rules(css: string): { selectors: string[]; body: string }[] {
+  const bare = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  return [...bare.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, list, body]) => ({
+    selectors: list.split(",").map((s) => s.trim()),
+    body,
+  }));
+}
+
 // ---- which thing on the board is a surface -------------------------------------
 // The lane used to paint a fill at rest, so an empty lane was a grey slab and every
 // card competed with the box around it (Akshil, 2026-08-17, against flow side by
-// side). The fill is gone; the CARD is the only surface. Three things then have to
-// stay true, and all three were nearly broken by the same change, so all three are
-// read out of the stylesheets: the card still lifts off the PAGE (not off a lane
-// fill that no longer exists) in both themes, a drop target still announces itself
-// on a box that is painting nothing, and no rule quietly puts the lane's plate back.
+// side). The fill is gone and the CARD is the only surface — but the lane is still
+// BOUNDED, by the same hairline the collapsed rail wears, because unfilled and
+// unbounded a column had no edge of its own at all (Akshil, same day: "at least
+// they should have an outline when they're expanded"). Four things then have to stay
+// true, and each was nearly broken by one of those two changes, so all four are read
+// out of the stylesheets: no fill comes back, the edge is there and is the rail's
+// edge, the card still lifts off the PAGE in both themes, and a drop target still
+// announces itself on a box that paints almost nothing — without its dashed line
+// stacking onto the hairline that is now underneath it.
 
 describe("the board's surfaces", () => {
-  /** A rule's declarations, found by WHOLE selector rather than by substring:
-   *  every rule here is written twice over (`.x` and `.prefs-section .x`, because
-   *  `.prefs-section button` repaints unarmored buttons on this page), and half of
-   *  them are named in the prose above themselves. Comments go first so a mention
-   *  cannot be mistaken for the rule. */
-  const block = (css: string, selector: string) => {
-    const bare = css.replace(/\/\*[\s\S]*?\*\//g, "");
-    for (const [, list, body] of bare.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      if (list.split(",").some((s) => s.trim() === selector)) return body;
-    }
-    throw new Error(`no rule whose selector list holds exactly "${selector}"`);
-  };
-
-  it("gives the lane no resting fill, and nothing else in its place", () => {
+  it("gives the lane no resting fill, but does give it an edge", () => {
     const lane = block(SCHEDULE_CSS, ".schedule-tv-lane-body");
+    // No FILL: a filled lane is a surface competing with the cards on it, which is
+    // the whole reason the plate came off.
     expect(lane).not.toContain("background");
-    // Not a border or a rule either: the board's `gap` plus the cards' own edges
-    // are what make the columns read as columns, which is what was asked for and
-    // what was tried first.
-    expect(lane).not.toContain("border:");
+    expect(block(SCHEDULE_CSS, ".schedule-tv-lane")).not.toContain("background");
+    // But BOUNDED — "at least they should have an outline when they're expanded".
+    // Unfilled and unbounded, the column's only edge was the widest card's ragged
+    // right-hand end.
+    expect(lane).toContain("border: 1px solid var(--border)");
+    expect(lane).toContain("border-radius: 8px");
+    // Stated with it, so `min-height: 120px` stays the floor the board actually has.
+    expect(lane).toContain("box-sizing: border-box");
+    // One hairline all the way round, not a rule down one side.
     expect(lane).not.toContain("border-left");
     expect(lane).not.toContain("border-right");
-    expect(block(SCHEDULE_CSS, ".schedule-tv-lane")).not.toContain("background");
-    // The collapsed lane is a lane too. One painted slab beside four transparent
-    // columns would have made the closed one the loudest thing on the board — but
-    // it keeps its hairline, because unlike the open lane it is a button.
+    // The collapsed lane is a lane too, and since 2026-08-17 the two wear the SAME
+    // edge — same width, same token, same radius, both unfilled — so the open and
+    // closed forms read as one family rather than as two ideas about a lane's edge.
     const rail = block(SCHEDULE_CSS, ".schedule-tv-rail");
     expect(rail).toContain("background: transparent");
     expect(rail).toContain("border: 1px solid var(--border)");
+    expect(rail).toContain("border-radius: 8px");
   });
 
   it("makes the card lift off the PAGE, in both themes, from tokens", () => {
@@ -1740,8 +1824,7 @@ describe("the board's surfaces", () => {
     );
     expect(TASKS_CSS).toMatch(/\.tasks-run-hint\s*\{[^}]*background: color-mix/);
     // The lane keeps the geometry those states are drawn with — the padding that
-    // insets the outline off the top card, and the radius the wash takes. Dead at
-    // rest, which is the point.
+    // insets the outline off the top card, and the radius the wash takes.
     const lane = block(SCHEDULE_CSS, ".schedule-tv-lane-body");
     expect(lane).toContain("padding: 4px");
     expect(lane).toContain("border-radius: 8px");
@@ -1753,6 +1836,52 @@ describe("the board's surfaces", () => {
     for (const state of ["is-drop-legal", "is-drop-over", "is-drop-run"]) {
       expect((VIEWS.match(new RegExp(`" ${state}"`, "g")) ?? []).length).toBe(2);
     }
+  });
+
+  it("does not let the dashed drop line double up on the lane's own hairline", () => {
+    // The outline is drawn at `outline-offset: -1px`, which since the lane grew a
+    // border is exactly where that border is: left alone, the two stack into one
+    // muddy 2px edge, half grey and half accent, which reads as "thicker" rather
+    // than as "here". So a lane being dropped into takes its hairline to transparent
+    // and the dashed line stands in its place — one line, same position, same
+    // weight, state carried by colour and dashes.
+    // ONE rule does it, and its selector list has to hold all six forms of "a lane
+    // being dropped into" — both drop hues, and both the open lane and the rail.
+    const swap = rules(SCHEDULE_CSS).find(
+      (r) =>
+        r.body.includes("border-color: transparent") &&
+        r.selectors.includes(".schedule-tv-lane-body.is-drop-legal"),
+    );
+    expect(swap).toBeTruthy();
+    for (const selector of [
+      ".schedule-tv-lane-body.is-drop-legal",
+      ".schedule-tv-lane-body.is-drop-run",
+      ".schedule-tv-rail.is-drop-legal:not(:disabled)",
+      ".schedule-tv-rail.is-drop-run:not(:disabled)",
+      ".prefs-section .schedule-tv-rail.is-drop-legal:not(:disabled)",
+      ".prefs-section .schedule-tv-rail.is-drop-run:not(:disabled)",
+    ]) {
+      expect(swap!.selectors).toContain(selector);
+    }
+    // The border-WIDTH never changes, so nothing shifts by a pixel when a drag
+    // starts: the box the cards sit in is the size it was.
+    expect(swap!.body).not.toContain("border-width");
+    expect(swap!.body).not.toContain("border:");
+    // And the rail's drop states have to OUTRANK its hover rule, which restates
+    // `border-color` because `.prefs-section button:hover` would otherwise paint the
+    // edge accent. Same specificity, so the swap has to come later in the file — or
+    // the hairline returns on exactly the rail the pointer is over.
+    const hover = SCHEDULE_CSS.indexOf(
+      ".prefs-section .schedule-tv-rail:hover:not(:disabled)",
+    );
+    const dropped = SCHEDULE_CSS.indexOf(
+      ".prefs-section .schedule-tv-rail.is-drop-legal:not(:disabled)",
+    );
+    expect(hover).toBeGreaterThan(-1);
+    expect(dropped).toBeGreaterThan(hover);
+    expect(block(SCHEDULE_CSS, ".prefs-section .schedule-tv-rail:hover:not(:disabled)")).toContain(
+      "border-color: var(--border)",
+    );
   });
 
   it("gives the card the reference's breathing room, and the strip follows it", () => {
@@ -1803,15 +1932,46 @@ describe("the status ring's five hues", () => {
       // Not the grey Upcoming took, and not the blue either.
       expect(archive).not.toBe(hues["status-upcoming"]);
       expect(archive).not.toBe(hues["activity"]);
-      // A literal, and a violet: red and blue channels above green, which is what
-      // separates it from yellow/green/red and from a neutral (r == g == b).
+      // A literal, and a ROSE: red leads, and blue stands well clear of green.
       expect(archive).toMatch(/^#[0-9a-f]{6}$/);
-      const [r, g, b] = [1, 3, 5].map((i) => parseInt(archive.slice(i, i + 2), 16));
-      expect(b).toBeGreaterThan(g);
+      const [r, g, b] = channels(archive);
       expect(r).toBeGreaterThan(g);
+      expect(r).toBeGreaterThan(b);
+      // The blue-over-green margin is what separates a rose from a RED: on
+      // --status-failed those two channels are equal, so a warm hue with b == g is
+      // the failed lane wearing a different lightness. It is also what keeps it off
+      // the dull bronze that was tried and lost, which reads as a dimmer In
+      // Progress for exactly the opposite reason (b below g).
+      expect(b - g).toBeGreaterThanOrEqual(25);
       // Low-saturation, so a filed lane never out-shouts a live one: the spread
       // between the strongest and weakest channel stays modest.
       expect(Math.max(r, g, b) - Math.min(r, g, b)).toBeLessThan(90);
+    });
+
+    it(`makes ${theme}'s Archive read as a colour beside Upcoming's grey`, () => {
+      // The one thing the old muted violet got wrong, and the reason this test is
+      // about CHANNELS rather than about the two values differing: #a898cb was a
+      // different string from --fg-muted and still read as barely-tinted grey at
+      // ring size — "quite similar" (Akshil, 2026-08-17). Distinguishable means the
+      // two are far apart in CHROMA, so a reader can tell them apart at a glance and
+      // not merely under a colour picker.
+      const hues = statusHues(selector);
+      // Upcoming is `var(--fg-muted)`, so resolve it: the grey it borrows is the
+      // thing Archive has to be told apart from, not the token's spelling.
+      const grey = channels(paletteHex(selector, "fg-muted"));
+      const archive = channels(hues["status-archived"]);
+      const chroma = (c: number[]) => Math.max(...c) - Math.min(...c);
+      // A near-neutral, as a grey must be — this is what Archive is up against.
+      expect(chroma(grey)).toBeLessThanOrEqual(15);
+      // ...and Archive carries real chroma, several times the grey's. The old violet
+      // cleared this by hue but not by margin, which is why the margin is the pin.
+      expect(chroma(archive)).toBeGreaterThanOrEqual(40);
+      expect(chroma(archive) - chroma(grey)).toBeGreaterThanOrEqual(30);
+      // And it is WARM: at this saturation a cool hue collapses into "cool grey",
+      // which is the mistake being corrected. Red leads on the rose and does not on
+      // the grey (whose channels only ever climb towards blue).
+      expect(archive.indexOf(Math.max(...archive))).toBe(0);
+      expect(grey.indexOf(Math.max(...grey))).toBe(2);
     });
   }
 
@@ -1893,6 +2053,78 @@ describe("the In Progress ring", () => {
     // rule leaves no counterpart behind.
     expect(REDUCED_MOTION_CSS).not.toContain("schedule-ring");
     expect(REDUCED_MOTION_CSS).not.toContain("schedule-tv-pulse");
+  });
+});
+
+// ---- the List row's disclosure -------------------------------------------------
+// isExpandable decides whether a row is an accordion; these are the claims about
+// MARKUP that no unit of pure logic can hold — that the chevron is behind that
+// predicate, that the row keeps everything else it does, and above all that the
+// glyph goes without the GUTTER going. `--tasks-caret-w` is the first term of
+// `--tasks-rail-x`, which every indent on the page is derived from, so a chevron
+// removed by deleting its element takes that row's status ring and the whole rail
+// with it and turns a column of rings into a zigzag.
+
+describe("the one-message row's missing chevron", () => {
+  /** The task row's markup, head to thread. */
+  const ROW = VIEWS.slice(
+    VIEWS.indexOf('className={"tasks-row"'),
+    VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')),
+  );
+
+  it("puts the glyph behind the predicate and the gutter in front of it", () => {
+    // The SPAN is unconditional — no `{expandable && (` around it — so the gutter is
+    // drawn on every row...
+    expect(ROW).toContain('<span className={"tasks-caret" + (open ? " is-open" : "")}');
+    expect(ROW).not.toMatch(/expandable &&\s*\(?\s*<span className=\{"tasks-caret"/);
+    // ...and only its CONTENTS are conditional.
+    expect(ROW).toContain("{expandable ? ICON_CHEVRON : null}");
+    // The gutter's width is the element's own, not the glyph's, or an empty span
+    // would collapse and undo the whole point.
+    const caret = block(TASKS_CSS, ".tasks-caret");
+    expect(caret).toContain("flex: 0 0 var(--tasks-caret-w)");
+    expect(caret).toContain("width: var(--tasks-caret-w)");
+    // And that is the term every indent is measured from, still.
+    expect(TASKS_CSS).toContain("--tasks-caret-w: 16px");
+    expect(TASKS_CSS).toMatch(
+      /--tasks-rail-x: calc\(\s*var\(--tasks-row-pad\) \+ var\(--tasks-caret-w\) \+ var\(--tasks-row-gap\)/,
+    );
+  });
+
+  it("makes the row unexpandable rather than only chevron-less", () => {
+    // The guard is in the derived value, not in the render: a row in the List's
+    // expanded set that stops being expandable closes, instead of being stuck open
+    // with nothing left to close it.
+    expect(VIEWS).toContain("const expandable = isExpandable(task);");
+    expect(VIEWS).toContain("const open = expandable && requested;");
+    // Both ways in are guarded — the click and the keyboard.
+    expect((ROW.match(/if \(expandable\) onToggle\(\);/g) ?? []).length).toBe(2);
+    // A row with no disclosure does not claim one. `false` would say "collapsed,
+    // press to expand", which is a promise it cannot keep.
+    expect(ROW).toContain("aria-expanded={expandable ? open : undefined}");
+  });
+
+  it("leaves every other thing the row does alone", () => {
+    // Still a focusable control, which is how the keyboard reaches the hover-revealed
+    // actions at all (`.tasks-row:focus-within .tasks-act`).
+    expect(ROW).toContain('role="button"');
+    expect(ROW).toContain("tabIndex={0}");
+    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-act");
+    // Still the same one gesture that OPENS the conversation, and it is still a
+    // button of its own rather than the row's click — a one-message row keeps it,
+    // and pressing it still goes through the shared performer, so it still clears
+    // the thread on the way out.
+    expect(ROW).toContain("{chat && (");
+    expect(ROW).toContain("openChat(chat)");
+    expect(VIEWS).toContain("const chat = openThreadIntent(task, unread);");
+    expect(VIEWS).toMatch(/const openChat = \(intent: OpenThreadIntent\) => \{[\s\S]*?performOpen\(/);
+    // Its own presence is decided by openThreadIntent — a session, not a message
+    // count — so shortening the thread cannot take the button away.
+    expect(VIEWS).not.toMatch(/\{chat && expandable/);
+    // And the row's own click still opens NOTHING: it toggles, or on a leaf it does
+    // nothing at all. If it ever started opening the chat it would start clearing
+    // unread on a plain click, which is the trap that button exists to avoid.
+    expect(ROW).not.toMatch(/onClick=\{\(\) => \{\s*openChat/);
   });
 });
 
@@ -2226,9 +2458,13 @@ describe("opening a thread, from either view", () => {
     // Marking a whole task read on a press that merely expands it would clear
     // messages nobody has seen. Read off the row div's OWN handlers, so a comment
     // naming the intent cannot make this pass.
-    const gesture = ROW.slice(0, ROW.indexOf('<span className={"tasks-caret"'));
-    expect(gesture).toContain("onClick={onToggle}");
-    expect(gesture).toContain("onToggle();");
+    //
+    // Since 2026-08-17 the toggle is guarded rather than bare — a row with one
+    // message has nothing to expand — which changes what the press does on a leaf
+    // (nothing) but not what it can ever do (open a conversation, silently).
+    const gesture = ROW.slice(0, ROW.indexOf('{/* The disclosure gutter'));
+    expect(gesture).toContain("onClick={() => {");
+    expect((gesture.match(/if \(expandable\) onToggle\(\);/g) ?? []).length).toBe(2);
     expect(gesture).not.toContain("openChat");
     expect(gesture).not.toContain("performOpen");
     expect(gesture).not.toContain("navigateUrl");
