@@ -1,7 +1,57 @@
+import logging
 import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+
+logger = logging.getLogger(__name__)
+
+# Every git call site here fails CLOSED, which is right — but "git said no" and
+# "git could not be run at all" are very different facts and used to look
+# identical from the outside AND leave nothing in the log. A spawn failure (no
+# binary on PATH, EMFILE/EAGAIN under fd or process pressure) or a timeout
+# disables every git-backed feature in the app at once, for every repository:
+# /api/fs/conditions reports "git": false with no error key, /api/fs/git-repo
+# reports is_repo_root false for a real root, and /api/fs/list stops dimming
+# .git — all of it indistinguishable from "not a repository". So the
+# CANNOT-RUN case gets a WARNING while the ordinary negative stays silent.
+#
+# Throttled, because these run on every directory the user opens: a broken git
+# would otherwise write one line per stat and bury the signal it is meant to be.
+_SPAWN_WARN_INTERVAL_S = 60.0
+_spawn_warn_lock = threading.Lock()
+_spawn_warn_at = 0.0
+
+
+def _reset_spawn_failure_throttle() -> None:
+    """Forget the last-warned timestamp. For tests."""
+    global _spawn_warn_at
+    with _spawn_warn_lock:
+        _spawn_warn_at = 0.0
+
+
+def _warn_git_unusable(what: str, exc: BaseException) -> None:
+    """Record that a git subprocess could not be RUN (not that git said no).
+
+    Never raises and never changes a caller's answer: the callers all fail
+    closed either side of this call.
+    """
+    global _spawn_warn_at
+    now = time.monotonic()
+    with _spawn_warn_lock:
+        if _spawn_warn_at and now - _spawn_warn_at < _SPAWN_WARN_INTERVAL_S:
+            return
+        _spawn_warn_at = now
+    logger.warning(
+        "git could not be run (%s): %s: %s — every git-backed feature "
+        "(the git side panel, repo-root detection, .gitignore dimming) is "
+        "failing closed until this clears. Check that `git` is on the server "
+        "process's PATH and that the process is not out of file descriptors or "
+        "child-process slots.",
+        what, type(exc).__name__, exc,
+    )
 
 
 
@@ -78,7 +128,8 @@ class _IgnoreOracle:
                 env=env,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
-        except OSError:
+        except OSError as e:
+            _warn_git_unusable("check-ignore co-process", e)
             self.proc = None
             self.broken = True
         self._buf = b""
@@ -147,7 +198,8 @@ def _repo_toplevel(path):
             timeout=5,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as e:
+        _warn_git_unusable("rev-parse --show-toplevel", e)
         return None
     if proc.returncode != 0:
         return None
@@ -214,7 +266,8 @@ def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:
             timeout=5,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as e:
+        _warn_git_unusable("check-ignore", e)
         return set()
     if proc.returncode not in (0, 1):
         return set()
