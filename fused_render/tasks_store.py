@@ -89,6 +89,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 
@@ -528,6 +529,169 @@ def first_text(content) -> str:
     return ""
 
 
+# ------------------------------------------------ machinery on a user record
+#
+# `type: user` records a human did not type, and the ONE policy every reader of
+# a transcript's first user message now shares. There were four, they disagreed,
+# and the disagreement was visible to the user in two opposite ways at once:
+# rows in the Tasks list titled `<live-app-state>` and
+# `<command-message>making-a-release</command-message>`, and — worse — real
+# messages missing from the app because a reader dropped the whole record on
+# sight of a leading tag.
+#
+# Two sources write these records, and that is the whole reason for the split
+# below. Claude Code writes some ON the user's behalf: a finished subagent
+# reporting back, a slash command's envelope, the stdout it captured. The
+# fused-render Claude page writes others IN FRONT OF what the user typed
+# (`composeOutgoing` in templates/claude/template.html: the app-state snapshot,
+# then the pane screenshots, then the annotation notes, then the words).
+#
+# The corpus says the two groups behave OPPOSITELY. Over 219 transcripts / 2519
+# user records with text, on one real machine (2026-08-17), counting records
+# whose FIRST block is the tag and asking whether any prose survives the strip:
+#
+#     leading tag                records   carry prose
+#     <task-notification>            889   0
+#     <command-name>                  77   0      \  one envelope, three blocks,
+#     <command-message>               77   0       > written in either order and
+#     <command-args>                  66   0      /  sometimes indented
+#     <local-command-stdout>          43   0
+#     <bash-input>                     5   0      \  one envelope again: input,
+#     <bash-stdout>                    5   0       > then its two output halves
+#     <bash-stderr>                    5   0      /
+#     <live-app-state>                72   72     ← every single one
+#     <pane-shot>                      1   1
+#
+# So DROP is machinery all the way down: a reader that keeps it shows the user
+# their own plumbing as the name of their conversation. STRIP is a PREFIX on a
+# real message: a reader that drops it deletes the human's words. One session's
+# only user record was the app-state block, a pane shot, and "what is this" —
+# and "what is this" was gone from the app entirely.
+#
+# **Putting a tag in the wrong list does one of those two harms.** The test for
+# which list a new tag belongs in is the table above: does a record opening with
+# it EVER carry words after the block? Never → DROP. Ever → STRIP.
+#
+# `<user-prompt-submit-hook>` and `<system-reminder>` never LEAD a record in this
+# corpus (a reminder is appended to something a human typed, which is a real
+# message and stays one). They are kept as DROP because the drop this replaces
+# already listed them and a leading one would be a hook's output, not prose.
+_MACHINERY_DROP = (
+    "task-notification",
+    "command-message", "command-name", "command-args",
+    "local-command-stdout", "local-command-stderr",
+    "bash-input", "bash-stdout", "bash-stderr",
+    "user-prompt-submit-hook", "system-reminder",
+)
+
+_MACHINERY_STRIP = ("live-app-state", "pane-shot")
+
+_MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
+
+# One leading `<tag>…</tag>` block. Non-greedy and anchored on the closing tag,
+# the same discipline as agent.py's `_APP_STATE_BLOCK` — and anchored at
+# position zero too, because only a LEADING block is machinery.
+#
+# Restricted to the names above rather than a generic `<\w+>` for the same
+# reason this code exists: `<div class="card">Order now</div> why does this
+# render twice?` is a real question about real markup, and a generic matcher
+# would silently eat the half of it that makes it a question.
+_LEADING_BLOCK = re.compile(
+    r"<(%s)>.*?</\1>\s*" % "|".join(_MACHINERY_TAGS), re.DOTALL)
+
+# The same openers with no close in sight. A transcript caught mid-flush ends
+# inside a block, and so does any TRUNCATED copy of one — so a balanced strip
+# cannot fire and the record would read as a real message. Everything from a
+# machinery opener onwards is machinery whatever follows it, which is exactly
+# the second pass template.html's `BLOCK_OPENERS` makes over a cut preview.
+_LEADING_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_TAGS))
+
+# The annotation notes, which have NO TAG at all: `formatAnnotations` writes one
+# opening sentence, a paragraph of field notes for the model, and a fenced json
+# block. A port of template.html's `stripAnnBlock`, matched at position zero for
+# the same reason it is — anything wedged in front turns the strip into a silent
+# no-op and leaks raw json as the title.
+_ANN_PREAMBLE = "The user annotated "
+_ANN_FENCE_OPEN = "\n```json\n"
+_ANN_FENCE_CLOSE = "\n```"
+
+
+def _strip_ann_block(text: str) -> str:
+    if not text.startswith(_ANN_PREAMBLE):
+        return text
+    open_at = text.find(_ANN_FENCE_OPEN)
+    if open_at == -1:
+        return text
+    close_at = text.find(_ANN_FENCE_CLOSE, open_at + len(_ANN_FENCE_OPEN))
+    if close_at == -1:
+        return text
+    return text[close_at + len(_ANN_FENCE_CLOSE):].lstrip("\n")
+
+
+def strip_machinery(text: str) -> str:
+    """`text` with every machine-written PREFIX peeled off — what the human
+    actually typed, or "" when they typed no words at all.
+
+    A loop, because one send can carry any combination of the blocks and peeling
+    one exposes the next; and a loop rather than a fixed sequence because the
+    envelope blocks arrive in more than one order (`/model` writes its name
+    first, `/making-a-release` its message first).
+
+    "" is a real answer, not a failure: a send that carried only a screenshot or
+    only annotations is something the user DID, and naming it is the client's
+    job (`stripBlocks`'s markers). Callers that must not emit an empty message
+    check the result; callers deciding whether to drop the record ask
+    `is_machinery`, which is a different question.
+    """
+    out = (text or "").strip()
+    while True:
+        before = out
+        match = _LEADING_BLOCK.match(out)
+        if match:
+            out = out[match.end():].strip()
+        out = _strip_ann_block(out).strip()
+        if out == before:
+            break
+    # An opener still standing has no close in the string — see `_LEADING_OPEN`.
+    return "" if _LEADING_OPEN.match(out) else out
+
+
+def is_machinery(text: str) -> bool:
+    """Is this record machinery WHOLE — nothing a human contributed to it?
+
+    Two conditions, and both carry weight. The leading tag has to be a DROP tag:
+    a `<live-app-state>` record is a real message with a prefix, so "the strip
+    left nothing" there means only that the user sent a picture without words,
+    and dropping it would lose the send. And nothing may survive the strip,
+    because a DROP tag is only ever the whole record in practice (0 of 1216
+    above carried prose) and on the day one does, the words win.
+    """
+    out = (text or "").strip()
+    match = _LEADING_BLOCK.match(out) or _LEADING_OPEN.match(out)
+    if match is None or match.group(1) not in _MACHINERY_DROP:
+        return False
+    return not strip_machinery(out)
+
+
+_COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
+
+
+def slash_command(text: str) -> str:
+    """The command a `<command-name>` envelope records — "/making-a-release",
+    "/clear", "/model" — or "" for anything that is not one.
+
+    Searched rather than anchored, unlike everything above: the envelope's
+    blocks arrive in either order on a real machine, and the command is the same
+    fact whichever of them leads.
+
+    This exists for `tasks.py _title`. A session whose only user records are a
+    slash command has no prose to be named from, and the command the user typed
+    is both true and useful where a blank row is neither.
+    """
+    match = _COMMAND_NAME.search(text or "")
+    return match.group(1).strip() if match else ""
+
+
 def _parse_head(path: str) -> tuple[str | None, float | None, str]:
     cwd: str | None = None
     first_ts: float | None = None
@@ -556,12 +720,25 @@ def _parse_head(path: str) -> tuple[str | None, float | None, str]:
                         cwd = val
                 if first_ts is None:
                     first_ts = epoch(obj.get("timestamp"))
-                if not prompt and obj.get("type") == "user" and not obj.get("isMeta"):
+                # `isMeta` is the caveat Claude Code writes FOR the user;
+                # `isSidechain` is a prompt written for a SUBAGENT, which the
+                # user never typed and which can be a whole task brief. Both
+                # skipped — templates/claude/agent.py's sibling reader has
+                # always skipped both, and this one having only half the pair
+                # was how a subagent's brief came to name a task.
+                if (not prompt and obj.get("type") == "user"
+                        and not obj.get("isMeta") and not obj.get("isSidechain")):
                     msg = obj.get("message")
                     if isinstance(msg, dict) and msg.get("role") == "user":
-                        text = first_text(msg.get("content")).strip()
-                        if text:
-                            prompt = text
+                        # STRIPPED, not raw: the fused-render Claude page
+                        # prepends its own blocks to what the user typed, and
+                        # the raw text is how rows came to be titled
+                        # `<live-app-state>`. An empty remainder is not an
+                        # answer either — the loop simply carries on to the next
+                        # user record, because a blank title while the message
+                        # that could have named the row sits two lines further
+                        # down is the same bug from the other side.
+                        prompt = strip_machinery(first_text(msg.get("content")))
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:

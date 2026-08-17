@@ -28,6 +28,9 @@ import os
 
 import pytest
 
+from fused_render import tasks_store
+from tests import _machinery_records as records
+
 
 def _load_agent():
     path = os.path.join("fused_render", "templates", "claude", "agent.py")
@@ -201,6 +204,97 @@ def test_block_content_keeps_the_prose_and_drops_the_rest(agent, target):
             ]}},
     ])
     assert agent._sessions(file)["sessions"][0]["preview"] == "look at this screenshot"
+
+
+def test_a_prepended_block_does_not_cost_the_row_its_name(agent, target):
+    """The `startswith("<")` skip this replaces was too blunt by exactly one
+    case, and it was the case this page CAUSES: `composeOutgoing` puts the
+    app-state block and the pane shots in FRONT of what the user typed, so the
+    only message in a session could open with "<" and still be the user's own
+    words. The row went nameless (and, for the same reason in the server's
+    reader, the Tasks list dropped the message entirely)."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "cli-1", [
+        _said(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                               records.PROSE), workdir),
+    ])
+    assert agent._sessions(file)["sessions"][0]["preview"] == records.PROSE
+
+
+def test_an_annotation_send_is_named_with_the_note_the_user_wrote(agent, target):
+    """Same shape, tag-less: `formatAnnotations` opens with a sentence, not a
+    block, so a "<" test never saw this one at all — the row was called "The user
+    annotated 1 element in the left previe…"."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "cli-1", [
+        _said(records.prefixed(records.APP_STATE, records.ANNOTATION,
+                               records.ANNOTATED_ASK), workdir),
+    ])
+    assert agent._sessions(file)["sessions"][0]["preview"] == records.ANNOTATED_ASK
+
+
+def test_a_wordless_send_is_skipped_like_any_other_nameless_record(agent, target):
+    """The other direction: strip everything and nothing is left, so this row has
+    no name and the scan carries on to the record that does."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "cli-1", [
+        _said(records.prefixed(records.APP_STATE, records.PANE_SHOT), workdir),
+        _said("and now make it green", workdir),
+    ])
+    assert agent._sessions(file)["sessions"][0]["preview"] == "and now make it green"
+
+
+@pytest.mark.parametrize("text", [
+    records.APP_STATE + "\n\n" + records.PROSE,
+    records.APP_STATE + "\n\n" + records.ANNOTATION + "\n\n" + records.ANNOTATED_ASK,
+    records.APP_STATE + "\n\n" + records.PANE_SHOT,
+    records.TASK_NOTIFICATION,
+    records.TASK_NOTIFICATION_HALF_WRITTEN,
+    records.SLASH_COMMAND,
+    records.SLASH_COMMAND_ARGS,
+    records.LOCAL_COMMAND_STDOUT,
+    records.BASH_ENVELOPE,
+    records.ANNOTATION,
+    "now ship it <system-reminder>be careful</system-reminder>",
+    "<div class=\"card\">Order now</div> why does this render twice?",
+    "",
+])
+def test_the_templates_stripper_and_the_servers_agree_exactly(agent, text):
+    """A template may not import fused_render (SPEC PY-15 / D166), so this rule
+    has TWO copies — `tasks_store.strip_machinery` and the mirror in agent.py —
+    and the whole point of the exercise was that four readers had stopped
+    agreeing. Pinned over the corpus rather than by convention, the same way
+    D253/D301 pin their other unavoidable duplicates: if one copy learns a tag,
+    this fails until the other does."""
+    assert agent._strip_machinery(text) == tasks_store.strip_machinery(text)
+
+
+def test_the_two_copies_carry_the_same_tag_lists(agent):
+    """And the lists themselves, so a tag added to one side is caught even if no
+    fixture above happens to exercise it."""
+    assert agent._MACHINERY_DROP == tasks_store._MACHINERY_DROP
+    assert agent._MACHINERY_STRIP == tasks_store._MACHINERY_STRIP
+
+
+def test_the_strip_list_names_the_tags_the_page_actually_writes(agent, template):
+    """The other end of the same duplication, and the one that would fail
+    SILENTLY: the STRIP list is only correct because those are the exact tags
+    `composeOutgoing` prepends. Rename a wire tag in the page and every reader
+    starts titling rows with it again — with nothing failing, because both Python
+    copies would still agree with each other.
+
+    D146's rule (a duplicated constant needs a test, not a comment) already pins
+    APP_STATE_TAG; this pins the pair as a SET, so a third prepended block cannot
+    be added to the page without being classified here too."""
+    written = set()
+    for line in template.splitlines():
+        for const in ("APP_STATE_TAG", "PANE_SHOT_TAG"):
+            prefix = "const %s = \"" % const
+            if line.strip().startswith(prefix):
+                written.add(line.strip()[len(prefix):].split('"')[0])
+    assert written == set(agent._MACHINERY_STRIP), (
+        "the page prepends %s; the readers strip %s" % (
+            sorted(written), sorted(agent._MACHINERY_STRIP)))
 
 
 def test_the_preview_is_truncated_like_a_sidecar_preview(agent, target):

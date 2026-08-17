@@ -22,6 +22,7 @@ from fused_render import schedule, tasks_store
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
+from tests import _machinery_records as records
 
 
 @pytest.fixture(autouse=True)
@@ -288,6 +289,74 @@ def test_the_machinery_claude_code_writes_is_not_a_message(client,
         "now ship it <system-reminder>be careful</system-reminder>",
         "fix the parser",
     ], "a tag further in leaves a real message real"
+
+
+def test_a_prepended_app_state_block_does_not_eat_what_the_user_typed(
+        client, projects_dir):
+    """THE OTHER HALF of the bug above, and the expensive half. The tags in that
+    test are machinery all the way down; `<live-app-state>` is not — the
+    fused-render Claude page PREPENDS it (and the pane shots, and the annotation
+    notes) to what the user actually typed. Dropping the record on sight of the
+    tag deleted the human's message: 33 rows in one real store reported
+    `message_count == 0` while carrying a message exactly this shape."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                               records.PROSE), T9, uuid="u1"),
+        _user(records.prefixed(records.APP_STATE, records.ANNOTATION,
+                               records.ANNOTATED_ASK), T10, uuid="u2"),
+    ])
+    task = _tasks(client)[0]
+    assert task["message_count"] == 2
+    assert [m["body"] for m in task["messages"]] == [
+        records.ANNOTATED_ASK, records.PROSE,
+    ], "the blocks are a prefix, not the message"
+    # …and the row is named with those words rather than with the tag. Before
+    # this, 44 rows on one machine were titled a literal opening tag.
+    assert task["title"] == records.PROSE
+    assert task["title_source"] == "message"
+
+
+def test_a_wordless_screenshot_send_is_not_a_message_either(client, projects_dir):
+    """The one case where a STRIP tag still yields nothing: annotations or a
+    screenshot with no typed words. Real, and the client's job to label — but
+    there is no body for a listing to show, so it is not a row's message."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT), T9,
+              uuid="u1"),
+        _user("and now make it green", T10, uuid="u2"),
+    ])
+    task = _tasks(client)[0]
+    assert task["message_count"] == 1
+    assert [m["body"] for m in task["messages"]] == ["and now make it green"]
+
+
+def test_a_session_that_only_ran_a_slash_command_is_named_the_command(
+        client, projects_dir):
+    """An honest title for a genuinely wordless session. `/making-a-release` is
+    a true and useful thing to call this thread; the alternative the row had was
+    the envelope quoted back at the user as its own name."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user(records.SLASH_COMMAND, T9, uuid="u1"),
+        _user(records.LOCAL_COMMAND_STDOUT, T10, uuid="u2"),
+    ])
+    task = _tasks(client)[0]
+    assert task["message_count"] == 0, "a slash command is not a message"
+    assert task["title"] == "/making-a-release"
+    assert task["title_source"] == "command"
+
+
+def test_a_session_with_nothing_at_all_is_left_for_the_client_to_word(
+        client, projects_dir):
+    """No prose, no command: the server says NOTHING rather than inventing a
+    string. A `(no messages)` label is the client's wording to choose, and a
+    server that shipped one would have it prefilled into a Title field and saved
+    as a task's permanent name."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user(records.TASK_NOTIFICATION, T9, uuid="u1"),
+    ])
+    task = _tasks(client)[0]
+    assert task["message_count"] == 0
+    assert task["title"] == ""
 
 
 def test_an_unreadable_transcript_does_not_hide_the_others(client, projects_dir):
