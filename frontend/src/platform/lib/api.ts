@@ -2040,6 +2040,260 @@ export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolde
   return getJson<{ folders: ClaudeSessionFolder[] }>("/api/claude-sessions");
 }
 
+// -- Claude sessions, one row each (GET /api/claude-sessions/summaries) --------
+// Every Claude Code session on this machine, for the Schedule page's task views
+// (shell/ScheduleTaskViews.tsx). A scheduled task and a chat are the same kind
+// of thing — work Claude did in a folder — so the tree and the board show both,
+// and this is the chat half.
+//
+// `status` is the session collapsed into the board's own vocabulary
+// (in_progress / done / archived), decided server-side so the client never
+// re-derives it. `running` is a separate fact and cannot be folded into it: a
+// session is `in_progress` whether or not a turn is in flight right now, and it
+// is the in-flight one the live pulse draws.
+export interface ClaudeSessionSummary {
+  session_id: string;
+  name: string;
+  cwd: string;
+  started_at: string;
+  last_active: string;
+  running: boolean;
+  status: "in_progress" | "done" | "archived";
+}
+
+export function getClaudeSessionSummaries(): Promise<{ sessions: ClaudeSessionSummary[] }> {
+  return getJson<{ sessions: ClaudeSessionSummary[] }>("/api/claude-sessions/summaries");
+}
+
+// The Board's drag: a chat card moved between In Progress / Done / Archive
+// writes the SAME triage.json the sessions Inbox owns (the server merges, so
+// the record's note/tags/read survive). Tasks never go through this — their
+// column moves are the scheduler's own cancel/restore calls.
+export function setSessionTriage(
+  sessionId: string,
+  status: "in_progress" | "done" | "archived",
+): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/claude-sessions/triage", {
+    session_id: sessionId,
+    status,
+  });
+}
+
+// -- Tasks (GET /api/tasks) ---------------------------------------------------
+// One row per TASK, where a task IS a Claude session: same thing, one name. A
+// task owns a THREAD, and the thread's MESSAGES are every prompt sent into it —
+// typed in a chat, typed in the template's chat, or fired by the scheduler. The
+// three sources differ only in how the message arrived; the thread does not
+// care.
+//
+// `key` is the join everything else uses. A task that has run has a session id
+// and uses it; a task that is only a future schedule entry has no session yet
+// (Claude Code mints the id on the first turn) and uses `pending:<entry-id>`
+// until it runs. The server rekeys it in place at that point, so `task_id`
+// survives the transition — which is the whole reason ids are allocated at
+// creation rather than derived from the session.
+export interface TaskMessage {
+  message_id: string; // MSG-001, per task, oldest first
+  kind: "scheduled" | "chat";
+  body: string;
+  // TWO times, because a scheduled message has two and they are not the same
+  // fact. Both are epoch seconds.
+  //
+  //   at     — what it was SCHEDULED FOR. The time the user picked, and the
+  //            only thing the calendar places a chip by. It never moves.
+  //   ran_at — when it ACTUALLY RAN: the transcript's own timestamp for the
+  //            prompt, falling back to when the scheduler claimed it. 0 for a
+  //            message that has not run (pending, cancelled, missed).
+  //
+  // They differ whenever the app was not open at the due minute. Catch-up is
+  // unbounded, so a message scheduled for Thursday and caught up on Saturday is
+  // ordinary, not exotic — `at` is Thursday and `ran_at` is Saturday. Placing
+  // it by `ran_at` was the original bug: the chip left the day that was asked
+  // for and appeared on the day the app happened to reopen.
+  //
+  // For a chat message the two are equal: a typed message was scheduled for the
+  // moment it was typed.
+  at: number;
+  ran_at: number;
+  state:
+    | "pending"
+    | "sending"
+    | "sent"
+    | "error"
+    | "missed"
+    | "cancelled"
+    | "skipped";
+  unread: boolean;
+  entry_id: string; // schedule entry; "" for a chat message
+  template_id: string; // the recurring message this is an occurrence of
+  turn: "done" | "idle" | "unknown" | "";
+  anchor: string; // transcript record uuid, for scroll-to; "" if unknown
+}
+
+export interface Task {
+  key: string;
+  task_id: string; // TASK-003 — numbered per project, allocated once, never reused
+  project: string; // the FOLDER: a task on ~/x/foo.py belongs to project ~/x
+  target: string; // what the task actually points at (may be that file)
+  session_id: string; // "" until the first run
+  title: string;
+  // Which of the three sources won: the user's own title, Claude Code's own
+  // `ai-title` record, or the first line of the first message.
+  title_source: "user" | "ai" | "message";
+  description: string;
+  // Decided by the SERVER, once, for every view — List, Board and Calendar all
+  // read this rather than each deriving a column from the newest message.
+  //
+  // `failed` is a status of its own and not a kind of `done`: a run that
+  // started and broke is news, and filing it under done meant a view had to
+  // remember to read the boolean below to say so — which is how a failed task
+  // could simply not be shown.
+  //
+  // A SKIPPED occurrence is `archived`, not `failed`. It was filed away and
+  // never attempted (the coalescer dropped it, or the user cancelled it), which
+  // is a different thing from a run that tried and broke; only something that
+  // actually ran can fail.
+  status: "upcoming" | "in_progress" | "done" | "failed" | "archived";
+  // Did the newest message's run break? `status` is the authority on which
+  // column a task belongs in; this is the raw fact underneath it, and the two
+  // disagree in exactly one direction — a task triaged to `done`, or one whose
+  // session is live again, reads a different status while this stays true.
+  // Anything asking "which column" should read `status`.
+  failed: boolean;
+  live: boolean;
+  unread: number;
+  last_active: number;
+  message_count: number;
+  // WHEN THIS NEXT RUNS, and WHICH schedule entry that run is: `min(at)` over
+  // every PENDING entry the task has, epoch seconds, decided by the server
+  // (tasks.py `_next_run`) over the whole set rather than over the three
+  // messages below. 0 / "" when nothing is pending.
+  //
+  // They exist because the three-message window cannot answer the question. The
+  // Board orders Upcoming by soonest-next-run, and `messages` is the three
+  // newest by `at` — so an OVERDUE pending (ordinary here: past scheduling is
+  // allowed and catch-up is unbounded) can be pushed out of it by two runs plus
+  // next month's occurrence, leaving the lane to sort by a LATER time and bury
+  // the work that should go first.
+  //
+  // `next_run_entry` is what makes the BUTTON agree with that order: run-now
+  // sends an entry id, so a card promoted on a run the row could not name would
+  // fire a different message than the one its place in the lane promised. The
+  // two widen together or not at all.
+  //
+  // OPTIONAL because an older server does not send them. tasks-lib.nextRunAt and
+  // tasks-lib.runNowTarget both fall back to reading the window, which is the
+  // same (bounded) answer they gave before these existed.
+  next_run?: number;
+  next_run_entry?: string;
+  // The three most recent, newest first. The rest need the endpoint below —
+  // this list is built by a tail parse because it runs for every row, and a
+  // full transcript parse per task would not survive a few hundred of them.
+  messages: TaskMessage[];
+}
+
+export function getTasks(): Promise<{ tasks: Task[] }> {
+  return getJson<{ tasks: Task[] }>("/api/tasks");
+}
+
+// "Show more": the whole thread, newest first. Deliberately a separate call —
+// this one is allowed to parse the full transcript because it is one task, on
+// demand, and never on the listing path.
+export function getTaskMessages(key: string): Promise<{ messages: TaskMessage[] }> {
+  return getJson<{ messages: TaskMessage[] }>(
+    `/api/tasks/${encodeURIComponent(key)}/messages`,
+  );
+}
+
+// Unread means "I have not seen the response to this message", so it is tracked
+// per message, not per task, and clicking through to the transcript is what
+// clears it. Marking one message read must leave older unread ones alone.
+export function markTaskMessageRead(
+  key: string,
+  messageId: string,
+): Promise<{ ok: boolean; unread: number }> {
+  return postJson<{ ok: boolean; unread: number }>("/api/tasks/read", {
+    key,
+    message_id: messageId,
+  });
+}
+
+// The whole task, in ONE request. Per-message is the right MODEL and stays the
+// default (see above), but it was also the only way to clear a task, so "I have
+// seen all of this" cost one click per row — 89 of them on the longest real
+// thread. Same endpoint, wider object: the server enumerates the thread, marks
+// the messages that are actually unread (a pending one is left alone, so it
+// cannot fire already-read) and answers with what is left, which is 0 unless
+// something arrived while the request was in flight.
+export function markWholeTaskRead(
+  key: string,
+): Promise<{ ok: boolean; unread: number }> {
+  return postJson<{ ok: boolean; unread: number }>("/api/tasks/read", {
+    key,
+    all: true,
+  });
+}
+
+// Every scheduled message in a time window, which is the one question the
+// listing above cannot answer: `Task.messages` holds only the three most recent,
+// and a calendar draws a week. Without this the grid under-draws — a task whose
+// runs fall outside its last three messages simply has no chips on those days.
+//
+// Separate from the listing rather than a parameter on it, deliberately: the
+// window changes on every arrow press and the listing's poll does not, so
+// folding them together would drag a 200-task tail parse behind each step.
+// `from` inclusive, `to` exclusive, epoch seconds — local midnights, because the
+// grid's columns are local days.
+export function getTasksScheduled(
+  from: number,
+  to: number,
+): Promise<{ items: { task_key: string; message: TaskMessage }[] }> {
+  return getJson<{ items: { task_key: string; message: TaskMessage }[] }>(
+    `/api/tasks/scheduled?from=${Math.floor(from)}&to=${Math.floor(to)}`,
+  );
+}
+
+// -- The queue (GET /api/schedule/queue) --------------------------------------
+// Nothing fires while the app is not running, and catch-up for a one-off is now
+// unbounded — so opening the app after a week away can find real work waiting.
+// Three lists, narrowing: `queued` is past due and not yet claimed, in the order
+// it will run; `running` is claimed and spawning; `live` is a turn actually in
+// flight — sent, with no verdict yet.
+//
+// `live` is the one a person needs most and the one nothing used to report. A
+// run parked on a permission prompt looks identical to a slow one from outside,
+// so until the dock could name it there was no way to find the prompt and
+// answer it — the run just sat there.
+//
+// Nothing scheduled for LATER appears in any of them. "Queued" means about to
+// run; a list that also held next Tuesday would be answering a different
+// question, and the calendar already answers that one. The dock, bottom right,
+// is where all three are drawn and cancelled.
+export function getScheduleQueue(): Promise<{
+  queued: ScheduledMessage[];
+  running: ScheduledMessage[];
+  live?: ScheduledMessage[];
+}> {
+  return getJson<{
+    queued: ScheduledMessage[];
+    running: ScheduledMessage[];
+    live?: ScheduledMessage[];
+  }>("/api/schedule/queue");
+}
+
+// Cancelling races the claim, and the server resolves it honestly: an entry
+// already claimed for sending is refused rather than corrupted, and comes back
+// in `refused` so the UI can say why instead of silently dropping it.
+export function cancelQueued(
+  entryIds: string[] | "all",
+): Promise<{ ok: boolean; cancelled: string[]; refused: string[] }> {
+  const body = entryIds === "all" ? { all: true } : { entry_ids: entryIds };
+  return postJson<{ ok: boolean; cancelled: string[]; refused: string[] }>(
+    "/api/schedule/queue/cancel",
+    body,
+  );
+}
+
 // -- AI Models (GET /api/ai-models) -------------------------------------
 // What the Hugging Face cache holds on this machine, for the sidebar's "Local
 // models" page (shell/AiModels.tsx). One entry per cached repo, biggest
@@ -2486,7 +2740,7 @@ export type ScheduledState =
 // the entry's `due`: the first run, and the date every derived part (weekday,
 // day-of-month, nth) is read from.
 export interface RecurrenceRule {
-  freq: "day" | "week" | "month" | "year";
+  freq: "hour" | "day" | "week" | "month" | "year";
   interval?: number; // 1..99, default 1
   byday?: number[]; // week only; 0=Sunday
   monthly?: "day" | "nth-weekday"; // month only, default "day"
@@ -2500,6 +2754,13 @@ export interface ScheduledMessage {
   message: string;
   due: string;
   session_id: string;
+  // WHERE `session_id` came from: true only when the server LEARNED it (a
+  // repeating template's first run reported the session it opened, and that id
+  // was written back). Absent or false means the user supplied it — a chat
+  // handoff — which is the reading an entry stored before this field existed
+  // gets, and the safe one: a repeat continues a learned thread but must never
+  // continue the chat it was scheduled from.
+  session_learned?: boolean;
   permission_mode: string;
   state: ScheduledState;
   created: string;
@@ -2528,17 +2789,42 @@ export interface ScheduledMessage {
   made?: number;
   // On an occurrence: the template it was materialized from.
   template_id?: string;
+  // On an occurrence: this is the ONE catch-up run of a rule whose anchor was
+  // already in the past when it was created. Its `due` is the LATEST slot at or
+  // before the moment it was made (the anchor sets the pattern; the run that
+  // goes is this morning's, not last Saturday's), so it is overdue the instant
+  // it exists and goes on the next tick — the same thing a past-dated one-off
+  // does. The slots it collapsed past are never materialized and never run.
+  catch_up?: boolean;
   // On a `recurring` template in GET /api/schedule only: projected occurrence
   // times (UTC ISO) over the next two weeks — server-side cron math, so the
   // calendar can draw future runs without a client cron parser. Not stored.
   upcoming?: string[];
+  // The user's own one-liner for the task this message belongs to. Optional and
+  // usually absent: left blank, the tasks endpoint falls back to Claude Code's
+  // own `ai-title` record and then to the first line of the message, so a task
+  // is named whether or not anyone named it. An explicit title beats both.
+  title?: string;
+  // Free text the user added when scheduling. Never auto-filled — Claude Code
+  // writes a title into its transcripts but no summary, so there is nothing
+  // honest to prefill this from.
+  description?: string;
+  // On a `recurring` template: mint a FRESH task for every run instead of
+  // appending to one thread. The default (absent/false) is to append, which is
+  // what a task being a session already means — the template's `session_id`
+  // copies to each occurrence, so every run resumes the same conversation.
+  // Ticking this copies "" instead, so each run starts its own.
+  new_task_each_run?: boolean;
 }
 
 export interface ScheduleResult {
   entries: ScheduledMessage[];
   // The catch-up bound, in seconds (FUSED_RENDER_SCHEDULE_MAX_LATE server-side).
-  // Configurable, so the page cannot explain a `missed` entry without asking.
-  max_late_seconds: number;
+  // **null is the default now**: a missed one-off queues and runs however old,
+  // so there is no bound to report. A number means an operator set the env var
+  // and chose to reinstate one — which is the only case where a `missed` entry
+  // needs explaining, and the only case where this is worth printing.
+  max_late_seconds: number | null;
   permission_modes: string[];
 }
 
@@ -2560,7 +2846,20 @@ export function scheduleMessage(body: {
   // with `repeats` and `delay_seconds`.
   rule?: RecurrenceRule;
   session_id?: string;
+  // Only ever sent alongside a `session_id` the entry being re-created had
+  // LEARNED (an edit is cancel + re-create, so the marker has to be re-stated
+  // or it dies with the old entry). Never sent for a chat handoff: the server
+  // does not invent this, and a false claim here would let a repeating task
+  // resume the conversation it was scheduled from.
+  session_learned?: boolean;
   permission_mode?: string;
+  // All three are omitted rather than sent empty: blank means "no opinion", and
+  // for `title` that is a meaningful answer — the server names the task itself.
+  title?: string;
+  description?: string;
+  // Only meaningful alongside `rule` or `repeats`; a one-off has no runs to
+  // split apart.
+  new_task_each_run?: boolean;
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }
@@ -2570,6 +2869,51 @@ export function scheduleMessage(body: {
 // not passed — a skip is the one cancel that can honestly be walked back.
 export function restoreScheduledMessage(id: string): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule/restore", { id });
+}
+
+// Send a pending message NOW — what dragging a card from Upcoming to In
+// Progress means on the Board.
+//
+// It does NOT move the entry's `due`. The schedule time is a fact about what
+// was asked for, so the row reads as having run early (due then, fired now)
+// rather than as having been scheduled for this minute — which is also what
+// keeps its calendar chip on the day the user picked.
+//
+// Rejects rather than silently doing nothing: 404 when there is no such entry,
+// 409 with a reason when there is one that cannot run — already sent, already
+// sending, cancelled, or its conversation has a turn open right now (two
+// `claude --resume` processes on one transcript is the one thing this must
+// never do). The reason is written to be shown.
+export function runScheduledNow(entryId: string): Promise<{ ok: boolean; entry: ScheduledMessage }> {
+  return postJson<{ ok: boolean; entry: ScheduledMessage }>(
+    "/api/schedule/run-now",
+    { entry_id: entryId },
+  );
+}
+
+// Ask again — the other half of Re-run, for the case run-now cannot serve.
+//
+// A run that already went and broke leaves NO pending entry to claim, so
+// runScheduledNow has nothing to fire. This sends the same message as a NEW
+// one: an ordinary one-off due now, resuming the session the original actually
+// ran in, so the re-ask lands in the same thread. The original entry is left
+// exactly as it was — its state, its due time and its error all stand, because
+// that run really did happen and really did break.
+//
+// `entry` is the NEW message, not the original. `note` is a sentence to show
+// beside a SUCCESS: the message may be queued rather than away (its
+// conversation can be mid-turn), which is news but not a failure.
+//
+// Rejects with the server's own sentence: 404 for no such entry, 409 for one
+// that cannot be re-sent — still pending or sending (use run-now, or wait),
+// cancelled or missed (it never went, so there is nothing to send again).
+export function resendScheduledMessage(
+  entryId: string,
+): Promise<{ ok: boolean; entry: ScheduledMessage; note?: string }> {
+  return postJson<{ ok: boolean; entry: ScheduledMessage; note?: string }>(
+    "/api/schedule/resend",
+    { entry_id: entryId },
+  );
 }
 
 // Rejects with the server's 404 message when the entry is no longer pending —
