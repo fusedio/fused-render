@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { stripSessionParams } from "@platform/lib/session-params";
+import { restoredSearch, stripSessionParams } from "@platform/lib/session-params";
 
 // WHAT A SESSION SIDECAR MAY NOT HOLD (LSN-12, D323). The hooks around this
 // function are React and network, so this is the part a DOM-free test can pin —
@@ -30,5 +30,40 @@ describe("stripSessionParams", () => {
   it("drops a valueless `_side` too", () => {
     expect(stripSessionParams("_side")).toBe("");
     expect(stripSessionParams("a=1&_side&b=2")).toBe("a=1&b=2");
+  });
+});
+
+// WHAT A RESTORE ACTUALLY WRITES. Two rules have to hold at once, and getting one
+// without the other is a bug each way round:
+//
+//   the sidecar's params are replayed, minus the omitted ones (LSN-4 + LSN-12);
+//   the LIVE url's omitted params SURVIVE the write, because they are not the
+//   sidecar's business and the restore replaces the whole query.
+//
+// Without the second, a refresh of `?_side=off` on a file that HAS a session would
+// silently reopen the sidebar — the restore would replace the query with the
+// sidecar's and drop the user's close on the way.
+describe("restoredSearch", () => {
+  it("replays the sidecar's params without the omitted ones", () => {
+    expect(restoredSearch("city=oslo&_side=git", "")).toBe("city=oslo");
+    expect(restoredSearch("city=oslo", "")).toBe("city=oslo");
+  });
+
+  it("carries the LIVE `_side` through the restore", () => {
+    expect(restoredSearch("city=oslo", "_side=off")).toBe("city=oslo&_side=off");
+    // The stored one never competes with it.
+    expect(restoredSearch("city=oslo&_side=claude", "_side=off")).toBe("city=oslo&_side=off");
+  });
+
+  it("is EMPTY when there is nothing to replay, whatever the live url holds", () => {
+    // Empty means "do not write" — so a `?_side=off` url with no session (or a
+    // `_side`-only sidecar) keeps the query it already has, untouched.
+    expect(restoredSearch("", "_side=off")).toBe("");
+    expect(restoredSearch("_side=claude", "_side=off")).toBe("");
+    expect(restoredSearch("", "")).toBe("");
+  });
+
+  it("keeps both sides byte-identical", () => {
+    expect(restoredSearch("stretch=2,1471", "_side=git")).toBe("stretch=2,1471&_side=git");
   });
 });

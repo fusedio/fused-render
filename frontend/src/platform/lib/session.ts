@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { getSession, putSession } from "@platform/lib/api";
 import { IS_EMBED, replaceSearch } from "@platform/lib/router";
-import { stripSessionParams } from "@platform/lib/session-params";
+import { restoredSearch, stripSessionParams } from "@platform/lib/session-params";
 
 function stripQ(): string {
   return location.search.replace(/^\?/, "");
@@ -44,8 +44,18 @@ export function useSessionRestore(
   // That is rare (writable remote mounts are the exception; the default is
   // read-only) and its session read is what we actually need, so correctness +
   // not-touching-a-read-only-mount wins over shaving that uncommon case.
+  //
+  // "Empty query" means empty OF SESSION PARAMS (LSN-12): the omitted ones are
+  // invisible to this layer in BOTH directions, so a url carrying nothing but
+  // `?_side=off` — which is what a close click now writes, where it used to delete
+  // the param — is a bare open and still gets its replay. Reading the raw query
+  // here while `maybeSave` strips would have let one click silently switch the
+  // file's restore off.
   const skip =
-    IS_EMBED || isDir !== false || writable !== true || stripQ() !== "";
+    IS_EMBED ||
+    isDir !== false ||
+    writable !== true ||
+    stripSessionParams(stripQ()) !== "";
   const [restored, setRestored] = useState(false);
   useEffect(() => {
     if (skip) return;
@@ -54,12 +64,11 @@ export function useSessionRestore(
     getSession(fsPath).then(
       (r) => {
         if (!alive) return;
-        // `_side` never comes back out of a sidecar, however it got in
-        // (stripSessionParams). An OLD sidecar whose only param WAS `_side`
-        // therefore restores nothing at all rather than replacing the URL with an
-        // empty query — which would be a no-op write, but also the one shape that
-        // could look like "the session was applied" while applying nothing.
-        const s = stripSessionParams(r.lastSession?.search ?? "");
+        // `_side` never comes back out of a sidecar, however it got in, and the
+        // one on the LIVE url survives the write — `restoredSearch` holds both
+        // halves and says why. An old sidecar whose only param was `_side`
+        // restores nothing at all.
+        const s = restoredSearch(r.lastSession?.search ?? "", stripQ());
         if (s) replaceSearch(location.pathname + "?" + s);
         setRestored(true);
       },

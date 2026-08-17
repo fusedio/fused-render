@@ -28,9 +28,41 @@ const SESSION_OMIT = new Set(["_side"]);
 // string VERBATIM, and round-tripping it would quietly rewrite a template's own
 // params (`q=a+b%2Cc`, `stretch=2,1471`) on every open of every file.
 export function stripSessionParams(search: string): string {
-  if (search === "") return "";
+  return splitParams(search, false).join("&");
+}
+
+// The mirror: ONLY the omitted params, in order. The live URL's copy of them has
+// to survive a restore (see `restoredSearch`), which means being able to lift it
+// back out after the strip.
+function sessionOmitted(search: string): string {
+  return splitParams(search, true).join("&");
+}
+
+function splitParams(search: string, omitted: boolean): string[] {
+  if (search === "") return [];
   return search
     .split("&")
-    .filter((p) => p !== "" && !SESSION_OMIT.has(p.split("=", 1)[0]))
-    .join("&");
+    .filter((p) => p !== "" && SESSION_OMIT.has(p.split("=", 1)[0]) === omitted);
+}
+
+// THE QUERY A RESTORE REPLACES THE URL WITH, or "" for "there is nothing to
+// restore, leave the URL alone".
+//
+// Two rules at once, and each is a bug on its own:
+//
+//   * the sidecar's params are replayed with the omitted ones dropped (LSN-4 +
+//     the rule at the top of this file);
+//   * the LIVE url's omitted params SURVIVE, because the restore replaces the
+//     WHOLE query and they are none of the sidecar's business. Without this, a
+//     refresh of `?_side=off` on a file that has a session would silently reopen
+//     the sidebar — the user's close undone by a replay it has nothing to do with.
+//
+// The empty answer is what keeps the second rule safe in the other direction: a
+// `_side`-only sidecar (or none at all) writes NOTHING, rather than replacing
+// `?_side=off` with an empty query and reopening the column that way instead.
+export function restoredSearch(stored: string, live: string): string {
+  const replay = stripSessionParams(stored);
+  if (replay === "") return "";
+  const carried = sessionOmitted(live);
+  return carried === "" ? replay : replay + "&" + carried;
 }
