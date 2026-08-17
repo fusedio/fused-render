@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   COMPANION_FRAC,
+  clampSideWidth,
   defaultSideWidth,
   CONTENT_MIN_W,
   MIN_W,
@@ -105,5 +106,49 @@ describe("defaultSideWidth", () => {
     expect(defaultSideWidth(0)).toBe(MIN_W);
     expect(defaultSideWidth(NaN)).toBe(MIN_W);
     expect(defaultSideWidth(-100)).toBe(MIN_W);
+  });
+});
+
+// THE RESIZE CLAMP, which has to answer two questions at once: never starve the
+// content column, and never lose the width the user actually dragged. It used to
+// answer only the first — `w > max ? max : w`, monotonically narrowing — so a
+// window narrowed and widened again left the column at the narrow width while the
+// STORE still held the dragged one, and the next file→file remount (which re-seeds
+// from the store) snapped it back. One number in two places, disagreeing.
+describe("clampSideWidth", () => {
+  it("narrows to fit the content column's floor", () => {
+    expect(clampSideWidth(900, null, 1000)).toBe(1000 - CONTENT_MIN_W);
+  });
+
+  it("leaves a width that already fits alone", () => {
+    expect(clampSideWidth(400, null, 1400)).toBe(400);
+  });
+
+  it("RESTORES the dragged width when the room comes back", () => {
+    // Dragged to 700 in a wide window, then narrowed to a 900px container (max
+    // 580), then widened again: the column returns to 700 instead of sitting at
+    // 580 until the next remount.
+    expect(clampSideWidth(580, 700, 900)).toBe(580);
+    expect(clampSideWidth(580, 700, 1400)).toBe(700);
+  });
+
+  it("never grows past the standing choice", () => {
+    // Not a "fill the room" rule: an undragged column keeps the width the layout
+    // measured for it, and a dragged one never exceeds what was dragged.
+    expect(clampSideWidth(400, 700, 4000)).toBe(700);
+    expect(clampSideWidth(400, null, 4000)).toBe(400);
+  });
+
+  it("holds still when there is no room for both floors", () => {
+    // CSS min-widths take over below the floor sum; acting here would describe the
+    // container rather than a choice (the pane's rule, FS-12).
+    expect(clampSideWidth(400, null, MIN_W + CONTENT_MIN_W - 1)).toBe(400);
+    expect(clampSideWidth(400, 700, 100)).toBe(400);
+    expect(clampSideWidth(400, null, 0)).toBe(400);
+    expect(clampSideWidth(400, null, NaN)).toBe(400);
+  });
+
+  it("never returns below MIN_W where it acts at all", () => {
+    expect(clampSideWidth(MIN_W, 5, 2000)).toBeGreaterThanOrEqual(MIN_W);
   });
 });

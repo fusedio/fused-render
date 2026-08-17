@@ -42,6 +42,7 @@ import {
   retractPreviewSideSlot,
 } from "@apps/explorer/preview-side-slot";
 import {
+  clampSideWidth,
   defaultSideWidth,
   MIN_W,
   CONTENT_MIN_W,
@@ -146,16 +147,16 @@ export default function PreviewSidebar({
   // A window narrower than the two floors together must not leave the content
   // column at nothing: clamp on every container resize, not only on drag.
   //
-  // The clamp does NOT write the module store: it narrows what is on screen, which
-  // is not the same as the user choosing a narrower column, so widening the window
-  // back re-reads the dragged number instead of the clamped one.
+  // The clamp never WRITES the module store — narrowing what is on screen is not
+  // the user choosing a narrower column — but it does READ it, which is what lets
+  // the column go back to the dragged width when the room returns. The whole rule,
+  // and why it is both directions, is `clampSideWidth` (lib/side-width).
   useEffect(() => {
     const el = splitEl();
     if (!el) return;
     const clamp = () => {
-      const max = el.getBoundingClientRect().width - CONTENT_MIN_W;
-      if (max < MIN_W) return; // no room for both floors — CSS min-width holds
-      setWidth((w) => (w > max ? max : w));
+      const containerW = el.getBoundingClientRect().width;
+      setWidth((w) => clampSideWidth(w, getSideWidth(), containerW));
     };
     clamp();
     const ro = new ResizeObserver(clamp);
