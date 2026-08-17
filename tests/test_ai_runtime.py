@@ -4337,3 +4337,44 @@ def test_a_cached_entry_never_leads_a_list_that_has_a_curated_one(client, hub):
         if any(m["source"] == "curated" for m in row["models"]):
             assert row["models"][0]["source"] == "curated"
             assert row["models"][0]["id"] == row["default"]
+
+
+def test_a_second_revision_landing_in_an_EXISTING_repo_updates_its_size(
+        client, hub, monkeypatch):
+    """The staleness hole the first version of this memo had, and the reason the TTL
+    is no longer what invalidates it.
+
+    A repo folder's own mtime does not move when a blob renames into its `blobs/`,
+    so a signature built from the cache directory's entries alone would have held a
+    stale size for the whole TTL — and with the TTL lengthened to bound the cost of
+    the walk, that meant five minutes of a download the user watched finish not
+    changing the number beside it. The signature now includes each repo's own
+    subdirectory mtimes, so this is caught with the clock frozen.
+    """
+    frozen = time.time()
+    monkeypatch.setattr(ai_models, "_now", lambda: frozen)
+    repo = _text_repo(hub, "some-org/grows", size=1_000_000_000)
+    assert _offered(client, registry.TEXT_GENERATION, "some-org/grows")["size_gb"] == 1.0
+    blobs = repo / "blobs"
+    blobs.mkdir(parents=True, exist_ok=True)
+    (blobs / "second-revision").write_bytes(b"x" * 2_000_000_000)
+    assert _offered(client, registry.TEXT_GENERATION, "some-org/grows")["size_gb"] == 3.0
+
+
+def test_the_size_walk_is_not_repeated_while_a_repo_sits_still(client, hub, monkeypatch):
+    """The other half of the same trade: the signature is four stats per repo, and
+    the recursive walk it guards runs only when one of them moves. A poll of an
+    unchanged cache must cost no walk at all — that is the whole point of paying for
+    the stats."""
+    _text_repo(hub, "some-org/settled", size=2048)
+    walks = []
+    real = ai_models._scan_repo
+    monkeypatch.setattr(ai_models, "_scan_repo",
+                        lambda root: walks.append(root) or real(root))
+    _catalog(client)
+    assert len(walks) == 1  # the first read pays for it once
+    ai_models._CACHED_MODELS.clear()  # force the OUTER memo to miss…
+    _catalog(client)
+    # …and the size cache still answers, because nothing about the repo moved. This
+    # is the assertion that would fail if the walk were keyed on time.
+    assert len(walks) == 1

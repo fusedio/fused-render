@@ -1115,34 +1115,42 @@ _SIZE_CACHE: dict[str, tuple[tuple, int]] = {}
 _now = time.time
 
 
-def _repo_size(repo_dir: str) -> int:
-    """A repo's measured footprint, cached on the directory mtimes that can move it.
+def _repo_signature(repo_dir: str) -> tuple:
+    """The four directory mtimes that decide what a repo folder currently holds.
 
-    `_scan_repo` recursively scandirs and lstats every blob, snapshot entry and ref
-    — tens of thousands of syscalls on a 60GB cache — and `cached_models()` needs
-    the number only to round it to one decimal GB. So the walk is keyed the way
-    `_META_CACHE` keys its own: on the mtimes of the three directories whose
-    contents decide the answer. A blob arriving renames into `blobs/`; a new
-    revision creates a directory under `snapshots/`; a whole revision going away
-    moves `refs/`. Each of those bumps the mtime of the parent this stats.
+    A blob arriving renames into `blobs/`; a new revision creates a directory under
+    `snapshots/`; a revision going away moves `refs/`; the folder itself moves when
+    any of those subdirectories is created or removed. Each bumps the mtime of the
+    parent stat-ed here, so four stats answer "has anything about this repo changed"
+    — against the tens of thousands of syscalls `_scan_repo` spends to answer "how
+    big is it", which is the same question one level too precise.
 
-    What it deliberately does NOT catch is a file already listed there GROWING —
-    writes do not touch a directory's mtime — which is a download in flight, whose
-    bytes the job row reports live and far better than this ever could. The TTL
-    above is what bounds that one case.
+    The one change no directory mtime can see is a file ALREADY THERE growing:
+    writes do not touch a directory's mtime. That is a download in flight, whose
+    bytes the job row reports live and far better than a cache walk ever could, and
+    `_CACHED_MODELS_TTL` is what bounds it.
     """
-    signature = []
+    out = []
     for name in ("", "blobs", "snapshots", "refs"):
         try:
-            signature.append(os.stat(os.path.join(repo_dir, name)).st_mtime_ns)
+            out.append(os.stat(os.path.join(repo_dir, name)).st_mtime_ns)
         except OSError:
-            signature.append(None)
-    key = tuple(signature)
+            out.append(None)
+    return tuple(out)
+
+
+def _repo_size(repo_dir: str, signature: tuple) -> int:
+    """A repo's measured footprint, cached on `_repo_signature`.
+
+    Keyed the way `_META_CACHE` keys its own reading, and for the same reason: the
+    walk behind it is recursive and `cached_models()` wants the result only to round
+    it to one decimal GB.
+    """
     hit = _SIZE_CACHE.get(repo_dir)
-    if hit is not None and hit[0] == key:
+    if hit is not None and hit[0] == signature:
         return hit[1]
     size = _scan_repo(repo_dir).size
-    _SIZE_CACHE[repo_dir] = (key, size)
+    _SIZE_CACHE[repo_dir] = (signature, size)
     return size
 
 
@@ -1165,22 +1173,36 @@ def cached_models() -> list[CachedModel]:
     uncategorised repo belongs in a categorised list. So is one whose format no
     runner reads: `loaders` is empty and the caller must check it (see `CachedModel`).
 
-    **Memoised, because a page polls the catalog and this is a tree walk per repo.**
-    Invalidated on EITHER of two conditions, which cover different failures. The
-    SIGNATURES — the cache directory's entry names and mtimes here, and each repo's
-    own three directory mtimes in `_repo_size` — move the instant a repo folder lands
-    or a blob arrives, so a completed download is visible on the very next read and
-    never waits out a timer; that is the bug this whole change exists to fix and a
-    TTL alone would have reintroduced it. The TTL then bounds the one thing no
-    directory mtime can see, a file already listed still GROWING.
+    **Memoised on MTIMES, not on a timer, because a page polls this route and the
+    walk behind it is recursive.** The signature is every candidate repo folder's
+    name plus its `_repo_signature` — four stats each, so ~120 syscalls for a
+    thirty-repo cache against the tens of thousands `_scan_repo` spends across it.
+    Anything that changes what the cache HOLDS moves that signature: a new repo
+    folder appearing, a blob renaming into an existing `blobs/`, a revision arriving
+    or going away. So a completed download is visible on the very next read and never
+    waits out a timer — that is the bug this whole change exists to fix, and a TTL
+    alone would have reintroduced it.
+
+    `_CACHED_MODELS_TTL` is then the backstop for the one change no directory mtime
+    can see (see `_repo_signature`), which is why it is minutes rather than seconds:
+    the signature is doing the work, and every second shaved off the timer would buy
+    another recursive stat-walk of the whole cache for nothing.
     """
     cache_dir = hub_cache_dir()
     try:
         entries = list(os.scandir(cache_dir))
     except OSError:
         entries = []
+    # Symlinked-in repo folders are followed, exactly as `_listing` follows them:
+    # moving a 40GB model off the boot volume does not stop it being a cached repo.
+    # Datasets, Spaces, `.locks/` and in-flight tmp dirs drop out on the prefix.
+    repos = [
+        (entry.name, os.path.join(cache_dir, entry.name))
+        for entry in entries
+        if entry.name.startswith("models--") and _entry_is_dir(entry)
+    ]
     signature = tuple(sorted(
-        (e.name, _entry_mtime(e)) for e in entries
+        (name, _repo_signature(repo_dir)) for name, repo_dir in repos
     ))
     hit = _CACHED_MODELS.get(cache_dir)
     if hit is not None:
@@ -1188,14 +1210,10 @@ def cached_models() -> list[CachedModel]:
         if seen == signature and _now() - read_at < _CACHED_MODELS_TTL:
             return answer
 
+    by_dir = dict(signature)
     models: list[CachedModel] = []
-    for entry in entries:
-        # Symlinked-in repo folders are followed, exactly as `_listing` follows
-        # them: moving a 40GB model off the boot volume does not stop it being a
-        # cached repo. Datasets and Spaces drop out on the prefix.
-        if not entry.name.startswith("models--") or not _entry_is_dir(entry):
-            continue
-        repo_id = _repo_id_of(entry.name)
+    for name, repo_dir in repos:
+        repo_id = _repo_id_of(name)
         if formats.component(repo_id) is not None:
             continue
         # The load route's own inference, asked rather than re-derived: a picker
@@ -1204,14 +1222,13 @@ def cached_models() -> list[CachedModel]:
         reading = cached_capability(repo_id)
         if not reading.cached:
             continue
-        repo_dir = os.path.join(cache_dir, entry.name)
         # The FORMAT's own reading, carried so the caller can ask the question a
         # capability cannot answer: would the backend serving that capability here
         # actually open this repo? `_repo_meta` is memoised on the snapshot mtime,
         # and `cached_capability` above has already paid for it.
         loaders = _repo_meta(repo_dir).loaders
-        models.append(
-            CachedModel(repo_id, reading.capability, _repo_size(repo_dir), loaders))
+        size = _repo_size(repo_dir, by_dir[name])
+        models.append(CachedModel(repo_id, reading.capability, size, loaders))
     _CACHED_MODELS[cache_dir] = (_now(), signature, models)
     return models
 
