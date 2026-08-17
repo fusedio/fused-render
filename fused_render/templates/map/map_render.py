@@ -45,6 +45,9 @@ WORKER = HERE / "worker.py"
 LOG = CACHE_DIR / "daemon.log"
 START_LOCK = CACHE_DIR / "daemon.spawn.lock"
 SERVICE_START_TIMEOUT = 120
+# Every module the daemon imports, because VERSION is a hash of these and a
+# module left out here can be edited without the running daemon being retired —
+# it would keep serving the old code. test_map_daemon.py walks the imports.
 BACKEND_FILES = (
     DAEMON,
     WORKER,
@@ -53,6 +56,8 @@ BACKEND_FILES = (
     HERE / "geo_classify.py",
     HERE / "geo_paths.py",
     HERE / "raster_categories.py",
+    HERE / "blob_tokens.py",
+    HERE / "optional_runtime.py",
 )
 RASTER_SUFFIXES = (
     ".tif", ".tiff", ".cog", ".vrt", ".jp2", ".j2k", ".img", ".ntf",

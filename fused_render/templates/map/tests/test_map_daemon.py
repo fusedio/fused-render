@@ -8,8 +8,10 @@ Run explicitly:
   PYTHONPATH=<checkout> python -m pytest \
     fused_render/templates/map/tests/test_map_daemon.py -o addopts=""
 """
+import ast
 import importlib.util
 import os
+import pathlib
 import subprocess
 import sys
 import threading
@@ -40,6 +42,39 @@ def mr(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "START_LOCK", tmp_path / "daemon.spawn.lock")
     monkeypatch.setattr(m, "LOG", tmp_path / "daemon.log")
     return m
+
+
+def _local_imports(module_path):
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    siblings = {path.stem for path in module_path.parent.glob("*.py")}
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names.add(node.module.split(".")[0])
+    return names & siblings
+
+
+def test_the_version_hash_covers_every_module_the_daemon_imports(mr):
+    # VERSION is a hash of BACKEND_FILES, and a stale daemon is only replaced
+    # when VERSION changes. A module the daemon imports but that is missing here
+    # can be edited with no effect on a running daemon, which then keeps serving
+    # the old code — blob_tokens.py and optional_runtime.py were both missing.
+    root = pathlib.Path(mr.DAEMON).parent
+    reached, pending = set(), [pathlib.Path(mr.DAEMON).stem, pathlib.Path(mr.WORKER).stem]
+    while pending:
+        name = pending.pop()
+        if name in reached:
+            continue
+        reached.add(name)
+        pending.extend(_local_imports(root / f"{name}.py") - reached)
+
+    listed = {pathlib.Path(path).stem for path in mr.BACKEND_FILES}
+    assert reached <= listed, (
+        "these modules reach the daemon but are missing from BACKEND_FILES, so "
+        f"editing them leaves VERSION unchanged: {sorted(reached - listed)}"
+    )
 
 
 def test_ensure_service_reuses_a_live_daemon_without_spawning(mr, monkeypatch):
