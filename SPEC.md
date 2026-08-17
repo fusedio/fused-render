@@ -6495,7 +6495,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   step**, advertised by the route as `previewPath` and handed to the page by
   `fused.ai.image` as a `previewUrl` on every `onProgress` tick — cache-busted
   by the step, because one path rewritten in place is one image as far as a
-  browser is concerned. Blurring and upscaling it is the page's taste, not this
+  browser is concerned, and **null on the terminal tick and on the resolved
+  object**, because the file is discarded as the render unwinds and a page that
+  followed the last `previewUrl` would end every render on a 404 exactly where
+  the finished picture belongs. Blurring and upscaling it is the page's taste, not this
   API's. **Always on, no flag**: measured at 68ms/step (1.25% of a 512²/16-step
   render) and dominated by the device sync and the PNG encode rather than the
   matmul, so it stays roughly flat as resolution grows — a one-percent feature

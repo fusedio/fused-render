@@ -3009,12 +3009,15 @@ def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.p
     return json.loads(out.stdout)
 
 
+RUNNING = '{state: "running", done: %d, total: 4}'
+
+
 def test_every_progress_tick_carries_a_READY_TO_USE_preview_url():
     """A page sets this as an `<img>` src and gets a picture emerging out of
     noise. Built here rather than by every caller, for the same reason `url`
     is — and CACHE-BUSTED BY STEP, because the preview is one path overwritten
     in place and a browser handed the same URL twice shows frame 2 forever."""
-    settled = _run_ai_image(ticks='[{done: 1, total: 4}, {done: 2, total: 4}]')
+    settled = _run_ai_image(ticks="[%s, %s]" % (RUNNING % 1, RUNNING % 2))
     assert settled["ok"] is True, settled
     assert [tick["previewUrl"] for tick in settled["progress"]] == [
         "/api/fs/raw?path=/t/a.preview.png&step=1",
@@ -3025,27 +3028,44 @@ def test_every_progress_tick_carries_a_READY_TO_USE_preview_url():
 def test_the_tick_a_page_sees_is_a_COPY_of_the_row_the_manager_is_drawing():
     """The record belongs to the job manager and every other watcher of that
     row sees the same object — a field written onto it here would travel."""
-    settled = _run_ai_image(ticks='[{done: 1, total: 4}]')
-    assert settled["rows"] == [{"done": 1, "total": 4}]
+    settled = _run_ai_image(ticks="[%s]" % (RUNNING % 1))
+    assert settled["rows"] == [{"state": "running", "done": 1, "total": 4}]
     assert settled["progress"][0]["done"] == 1
 
 
-def test_the_resolved_image_carries_both_urls():
-    """`previewUrl` is on the resolved object too, and the doc comment says to
-    swap to `url`: the last preview is the finished picture at a thirtieth of
-    the resolution, and the file it points at is deleted the moment the real
-    PNG lands."""
+@pytest.mark.parametrize("state", ["done", "error", "cancelled"])
+def test_the_LAST_tick_has_no_preview_because_the_file_is_already_gone(state):
+    """`watch` calls back with the TERMINAL record too, and by the time a row
+    reaches one the worker's sink has discarded the preview — `Sink.__exit__`
+    runs before `generate()` returns, which is before the row can be marked.
+
+    So a page that keeps its `<img>` pointed at the latest `previewUrl` would
+    end every render on a guaranteed 404: a blank flash exactly where the
+    finished picture should appear. Null is the honest answer, and it is the
+    same answer on a cancel and an error — there is no frame there either."""
+    settled = _run_ai_image(record='{state: "%s"}' % state,
+                            ticks="[%s, {state: '%s', done: 4, total: 4}]"
+                                  % (RUNNING % 3, state))
+    ticks = settled["progress"]
+    assert ticks[0]["previewUrl"] == "/api/fs/raw?path=/t/a.preview.png&step=3"
+    assert ticks[1]["previewUrl"] is None, ticks[1]
+
+
+def test_the_resolved_image_carries_the_url_and_a_NULL_preview():
+    """Same fact from the other side: the resolved object names the real PNG,
+    and `previewUrl` is null because the file it would name has been deleted.
+    A URL to a file that is gone is worse than no URL — a page can test null."""
     settled = _run_ai_image()
     assert settled["ok"] is True, settled
     assert settled["value"]["url"] == "/api/fs/raw?path=/t/a.png"
-    assert settled["value"]["previewUrl"] == "/api/fs/raw?path=/t/a.preview.png&step=4"
+    assert settled["value"]["previewUrl"] is None
 
 
 def test_a_render_with_no_preview_hands_the_page_NULL_rather_than_a_dead_url():
     """A model whose latent space has no fitted projection writes no frames, and
     a URL pointing at a file that will never exist is worse than nothing: a page
     can test `previewUrl` but cannot test an `<img>` that 404s."""
-    settled = _run_ai_image(ticks='[{done: 1, total: 4}]', preview="undefined")
+    settled = _run_ai_image(ticks="[%s]" % (RUNNING % 1), preview="undefined")
     assert settled["ok"] is True, settled
     assert settled["progress"][0]["previewUrl"] is None
     assert settled["value"]["previewUrl"] is None
