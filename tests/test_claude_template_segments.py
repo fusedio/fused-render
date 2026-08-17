@@ -1155,10 +1155,9 @@ function flush() {
     const q = rafQ; rafQ = []; q.forEach((f) => f());
   }
 }
-const nearBottom = () => false;
-const scrollBottom = () => {};
-// The typer follows the tail through followBottom() now (one reader-state
-// flag instead of a per-frame geometry read); stub it the same way.
+// The typer follows the tail through followBottom() alone now — one
+// reader-state flag instead of a per-frame geometry read — so the old
+// nearBottom/scrollBottom stubs would be dead code implying otherwise.
 const followBottom = () => {};
 """, block, r"""
 const parent = document.createElement("span");
@@ -1215,10 +1214,9 @@ function flush() {
     const q = rafQ; rafQ = []; q.forEach((f) => f());
   }
 }
-const nearBottom = () => false;
-const scrollBottom = () => {};
-// The typer follows the tail through followBottom() now (one reader-state
-// flag instead of a per-frame geometry read); stub it the same way.
+// The typer follows the tail through followBottom() alone now — one
+// reader-state flag instead of a per-frame geometry read — so the old
+// nearBottom/scrollBottom stubs would be dead code implying otherwise.
 const followBottom = () => {};
 """, block, r"""
 const parent = document.createElement("span");

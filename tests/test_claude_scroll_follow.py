@@ -58,6 +58,11 @@ const logwrap = {
 const userScrollTo = (top) => { logwrap._top = top; handlers.scroll(); };
 const wheelUp = () => handlers.wheel({ deltaY: -120 });
 const wheelDown = () => handlers.wheel({ deltaY: 120 });
+// A drag DOWNWARD moves the content up: clientY grows as the finger travels.
+const touchDrag = (from, to) => {
+  handlers.touchstart({ touches: [{ clientY: from }] });
+  handlers.touchmove({ touches: [{ clientY: to }] });
+};
 """
 
 
@@ -102,6 +107,47 @@ console.log(JSON.stringify({ writes: writes.length, followTail, top: logwrap._to
     assert out["followTail"] is False
     assert out["writes"] == 0
     assert out["top"] == 480, "the reader's own scroll position was overwritten"
+
+
+def test_a_short_touch_drag_stops_the_follow_too(html):
+    """The touch path used to ask geometry (`followTail = nearBottom()`), so a
+    20px drag — inside the old 60px window — RE-ARMED the follow it was trying to
+    break, and the next frame scrolled the reader back. Direction, not distance."""
+    out = _run(html, """
+logwrap._top = 500; handlers.scroll();
+touchDrag(400, 420);                      // finger down 20px = content up 20px
+followBottom();
+console.log(JSON.stringify({ followTail, writes: writes.length }));
+""")
+    assert out["followTail"] is False
+    assert out["writes"] == 0
+
+
+def test_a_touch_drag_the_other_way_keeps_following(html):
+    """Dragging UP is reaching for the newest output, not away from it."""
+    out = _run(html, """
+logwrap._top = 500; handlers.scroll();
+touchDrag(420, 400);                      // finger up = content down
+followBottom();
+console.log(JSON.stringify({ followTail, writes: writes.length }));
+""")
+    assert out["followTail"] is True
+    assert out["writes"] == 1
+
+
+def test_scrolling_back_down_by_wheel_alone_does_not_re_arm(html):
+    """Only ARRIVING at the bottom re-arms. A few notches down from the middle of
+    a long transcript is still reading, and re-following there would rip the
+    reader to the tail while they were on their way."""
+    out = _run(html, """
+logwrap._top = 500; handlers.scroll();
+wheelUp(); userScrollTo(300);
+wheelDown(); userScrollTo(340);           // heading back, nowhere near the end
+followBottom();
+console.log(JSON.stringify({ followTail, writes: writes.length }));
+""")
+    assert out["followTail"] is False
+    assert out["writes"] == 0
 
 
 def test_returning_to_the_bottom_re_arms_the_follow(html):
@@ -158,6 +204,22 @@ def test_sending_a_message_re_arms_the_follow(html):
     body = src[:src.index("\n}\n")]
     assert "followTail = true;" in body
     assert "scrollBottom();" in body
+
+
+def test_a_blocked_run_scrolls_even_a_reader_who_scrolled_away(html):
+    """The exception's mechanism, not just its call site: scrollBottom() ignores
+    the flag, followBottom() honours it. That difference is the whole reason
+    showPermissionCard may keep calling the former."""
+    out = _run(html, """
+logwrap._top = 500; handlers.scroll();
+wheelUp(); userScrollTo(200);
+followBottom();                           // streaming output: leaves them alone
+const afterFollow = writes.length;
+scrollBottom();                           // a card the run is blocked on: does not
+console.log(JSON.stringify({ afterFollow, afterCard: writes.length, followTail }));
+""")
+    assert out["afterFollow"] == 0
+    assert out["afterCard"] == 1
 
 
 def test_only_a_blocked_run_may_scroll_the_reader_unasked(html):

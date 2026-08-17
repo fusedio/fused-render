@@ -116,17 +116,21 @@ test("no submenu entry carries a nested submenu (only one level is rendered)", (
   }
 });
 
-// The Claude Code command goes to the CLIPBOARD, so it has to survive a paste
-// into a shell verbatim — a folder name with a space or a quote in it is the
-// whole reason this is not string concatenation.
+// ---- claudeTerminalCommand ------------------------------------------------
+// This string goes to the CLIPBOARD for the user to paste into a shell, so it
+// has to survive that paste verbatim: a quote in a filename is the case that
+// would otherwise produce a broken — or a differently-valid — command.
 test("claudeTerminalCommand cd's a dir into itself and a file into its parent", () => {
   expect(claudeTerminalCommand("/Users/a/proj", true, "/Users/a")).toBe("cd '/Users/a/proj' && claude");
   expect(claudeTerminalCommand("/Users/a/proj/index.html", false, "/Users/a/proj")).toBe(
     "cd '/Users/a/proj' && claude",
   );
+  // A file at the filesystem root: normDir's own edge (see the root-parent case
+  // above), and the one input that could emit `cd '' && claude`.
+  expect(claudeTerminalCommand("/index.html", false, "")).toBe("cd '/' && claude");
 });
 
-test("claudeTerminalCommand quotes paths with spaces and single quotes", () => {
+test("claudeTerminalCommand quotes a path a shell would otherwise split or reinterpret", () => {
   expect(claudeTerminalCommand("/Users/a/my proj", true, "/Users/a")).toBe("cd '/Users/a/my proj' && claude");
   expect(claudeTerminalCommand("/Users/a/it's", true, "/Users/a")).toBe(`cd '/Users/a/it'\\''s' && claude`);
 });

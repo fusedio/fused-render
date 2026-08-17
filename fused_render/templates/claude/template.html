@@ -8013,7 +8013,21 @@ const followBottom = () => { if (followTail) scrollBottom(); };
 // follow with NO distance threshold — that is what makes it impossible for the
 // next frame's write to out-race the gesture.
 logwrap.addEventListener("wheel", (e) => { if (e.deltaY < 0) followTail = false; }, { passive: true });
-logwrap.addEventListener("touchmove", () => { followTail = nearBottom(); }, { passive: true });
+// A finger dragging DOWN scrolls the content up, which is the same "let me read"
+// as a wheel flick and gets the same threshold-free answer. Tracked across
+// touchmove events rather than read off the scrollport, because asking geometry
+// here (`followTail = nearBottom()`) reintroduced exactly the race this file
+// removes: a 20px drag stays inside the 60px window, so the touch RE-ARMED the
+// follow it was trying to break and the next frame scrolled the reader back.
+let touchY = null;
+logwrap.addEventListener("touchstart", (e) => {
+  touchY = e.touches[0] ? e.touches[0].clientY : null;
+}, { passive: true });
+logwrap.addEventListener("touchmove", (e) => {
+  const y = e.touches[0] ? e.touches[0].clientY : null;
+  if (y !== null && touchY !== null && y > touchY + 2) followTail = false;
+  touchY = y;
+}, { passive: true });
 // Everything else that moves the scrollport — scrollbar drag, keyboard, a
 // scrollIntoView, our own writes — arrives as a scroll event. `lastTop`/
 // `lastHeight` are here to tell a reader moving UP apart from the browser

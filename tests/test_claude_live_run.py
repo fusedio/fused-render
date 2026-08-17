@@ -13,8 +13,12 @@ worked only because that entry still carried `run`.
 These tests cover the answer it gives and the two client paths that ask.
 """
 import importlib.util
+import inspect
 import json
 import os
+import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -36,6 +40,14 @@ TEMPLATE = os.path.join(
 def template():
     with open(TEMPLATE, encoding="utf-8") as f:
         return f.read()
+
+
+@pytest.fixture(scope="module")
+def html_pane(template):
+    """The template with `// …` comments stripped, so a source pin cannot be
+    satisfied by prose that merely NAMES the call it is looking for. Same guard
+    as test_claude_kind.py's _pane_code."""
+    return re.sub(r"(?m)^\s*//.*$", "", template)
 
 
 @pytest.fixture()
@@ -101,18 +113,51 @@ def test_another_session_of_the_same_file_is_not_adopted(agent, target):
 
 def test_a_forked_session_id_still_matches(agent, target):
     """`--fork-session` hands back a NEW session id and `_record_session`
-    repoints the sidecar row at it — so the id the page holds is the one in the
-    run's `session` file, not the `resumed_from` in meta.json. Both identify the
-    same chat, so either matching is a match."""
+    repoints the sidecar row at it — so the id the page holds may be the one in
+    the run's `session` file OR the `resumed_from` in meta.json. Both identify
+    the same chat, so either matching is a match — and an id that is neither
+    still does not."""
     _run_dir(agent, "20260817-120000-ddd", file=target, resumed_from="sess-old",
              session="sess-new")
     assert agent._live_run(target, "sess-new") == {"run_id": "20260817-120000-ddd"}
+    assert agent._live_run(target, "sess-old") == {"run_id": "20260817-120000-ddd"}
+    assert agent._live_run(target, "sess-other") == {"run_id": ""}
 
 
 def test_the_newest_live_run_wins(agent, target):
     _run_dir(agent, "20260817-090000-old", file=target, resumed_from="sess-A")
     _run_dir(agent, "20260817-150000-new", file=target, resumed_from="sess-A")
     assert agent._live_run(target, "sess-A") == {"run_id": "20260817-150000-new"}
+
+
+def test_a_newer_dead_run_does_not_hide_an_older_live_one(agent, target):
+    """Newest-first is the scan ORDER, not the answer: the finished turn a reader
+    just abandoned is newer than the one still going in another frame."""
+    _run_dir(agent, "20260817-090000-old", file=target, resumed_from="sess-A")
+    _run_dir(agent, "20260817-150000-new", file=target, resumed_from="sess-A",
+             alive=False)
+    assert agent._live_run(target, "sess-A") == {"run_id": "20260817-090000-old"}
+
+
+def test_the_scan_reaches_back_as_far_as_it_claims(agent, target):
+    """_LIVE_SCAN_LIMIT is what keeps this cheap on a machine that has been
+    chatting for weeks, and it is also the one way a live run can go unseen —
+    which is the original bug returning. Pin the boundary: the oldest dir inside
+    the window is found, one past it is not."""
+    live = "20260101-000000-live"
+    _run_dir(agent, live, file=target, resumed_from="sess-A")
+    # Newer dirs, all dead, filling the window exactly up to `live`.
+    for i in range(agent._LIVE_SCAN_LIMIT - 1):
+        _run_dir(agent, "202602%02d-000000-dead" % (i + 1), file=target,
+                 resumed_from="sess-A", alive=False)
+    assert agent._live_run(target, "sess-A") == {"run_id": live}
+
+    _run_dir(agent, "20260301-000000-dead", file=target, resumed_from="sess-A",
+             alive=False)
+    assert agent._live_run(target, "sess-A") == {"run_id": ""}, (
+        "one dir past the window and the live run is invisible — if this limit "
+        "ever needs raising, this is the test that says so"
+    )
 
 
 def test_without_a_session_it_answers_for_the_target(agent, target):
@@ -135,21 +180,111 @@ def test_the_action_is_dispatched(agent, target):
     assert "error" in agent.main(action="live_run", file="", session_id="sess-A")
 
 
-def test_the_first_poll_records_the_session_the_cli_minted(template):
+def test_the_first_poll_records_the_session_the_cli_minted(agent):
     """Written next to the sidecar update, under the same one-shot marker, so
     the two ids a chat can be known by are both on disk."""
-    src = open(os.path.join("fused_render", "templates", "claude", "agent.py"),
-               encoding="utf-8").read()
-    block = src[src.index('marker = os.path.join(run_dir, "recorded")'):]
+    block = inspect.getsource(agent._poll)
+    block = block[block.index('marker = os.path.join(run_dir, "recorded")'):]
     block = block[:block.index("# The streamed deltas")]
     assert '_private_open(os.path.join(run_dir, "session"))' in block
     assert "fh.write(new_session)" in block
 
 
-def test_opening_a_chat_from_the_list_asks_whether_it_is_still_running(template):
+# adoptLiveRun touches no DOM — it is a lookup, a param write and a handoff — so
+# it runs under node against stubs that record the order of all three.
+_ADOPT_STUBS = """
+const calls = [];
+let sending = false, activeRun = null, answer = { run_id: "run-1" }, boom = false;
+const AGENT = "agent.py", FILE = "/proj/index.html";
+const fused = {
+  runPython: async (agent, args) => {
+    calls.push(["ask", args.action, args.file, args.session_id]);
+    if (boom) throw new Error("python is down");
+    return answer;
+  },
+  params: { set: (k, v, o) => calls.push(["param", k, v, (o || {}).history]) },
+};
+const resumeRun = async (id) => { calls.push(["resume", id]); };
+"""
+
+
+def _adopt(html, call):
+    """Run adoptLiveRun() out of the page under node."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own re-attach glue")
+    start = html.index("async function adoptLiveRun(")
+    body = html[start:html.index("\n}\n", start) + 3]
+    script = _ADOPT_STUBS + "\n" + body + "\n(async () => {\n" + call + "\n})();"
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_adopting_asks_then_records_then_resumes_in_that_order(html_pane):
+    """The order is the contract: `resumeRun` reads the `run` param nowhere, but
+    every OTHER reader of the URL (a reload, the Chats button, the queue) does,
+    so the id has to be on the URL before the poll loop can end and clear it."""
+    calls = _adopt(html_pane, """
+await adoptLiveRun("sess-A");
+console.log(JSON.stringify(calls));
+""")
+    assert calls == [
+        ["ask", "live_run", "/proj/index.html", "sess-A"],
+        ["param", "run", "run-1", "replace"],
+        ["resume", "run-1"],
+    ]
+
+
+def test_a_frame_that_owns_a_turn_never_adopts_another(html_pane):
+    """Two attachments to one run would double every streamed chunk, and the
+    guard is cheaper than the lookup it skips."""
+    for setup in ("sending = true;", "activeRun = 'run-9';"):
+        calls = _adopt(html_pane, setup + """
+await adoptLiveRun("sess-A");
+console.log(JSON.stringify(calls));
+""")
+        assert calls == [], setup
+
+
+def test_nothing_running_leaves_the_transcript_alone(html_pane):
+    """An empty answer is the common case — most chats are opened cold — so it
+    must not write a param or start a loop."""
+    calls = _adopt(html_pane, """
+answer = { run_id: "" };
+await adoptLiveRun("sess-A");
+console.log(JSON.stringify(calls));
+""")
+    assert calls == [["ask", "live_run", "/proj/index.html", "sess-A"]]
+
+
+def test_a_failed_lookup_is_not_an_error_the_reader_sees(html_pane):
+    """The transcript already rendered. A lookup that throws should leave the
+    chat exactly as it is, not tear it down."""
+    calls = _adopt(html_pane, """
+boom = true;
+await adoptLiveRun("sess-A");
+console.log(JSON.stringify(calls));
+""")
+    assert calls == [["ask", "live_run", "/proj/index.html", "sess-A"]]
+
+
+def test_a_missing_session_id_crosses_as_an_empty_string(html_pane):
+    """The boot path passes whatever `session_id` the URL had, which can be null,
+    and params reach python string-shaped — a literal "null" would match no run
+    and quietly answer nothing."""
+    calls = _adopt(html_pane, """
+await adoptLiveRun(null);
+console.log(JSON.stringify(calls));
+""")
+    assert calls[0] == ["ask", "live_run", "/proj/index.html", ""]
+
+
+def test_opening_a_chat_from_the_list_asks_whether_it_is_still_running(html_pane):
     """The click path is not a navigation, so nothing re-boots and no `run`
-    param arrives — the row has to ask on its own."""
-    body = template[template.index("function addChatRow("):]
+    param arrives — the row has to ask on its own. Read off comment-stripped
+    source: the prose here NAMES adoptLiveRun, and a pin a comment can satisfy
+    is a pin that survives the call being deleted."""
+    body = html_pane[html_pane.index("function addChatRow("):]
     body = body[:body.index("\n}")]
     open_fn = body[body.index("const open ="):]
     assert "loadHistory(s.id)" in open_fn
@@ -159,17 +294,22 @@ def test_opening_a_chat_from_the_list_asks_whether_it_is_still_running(template)
     )
 
 
-def test_a_boot_without_a_run_param_still_asks(template):
+def test_a_boot_without_a_run_param_still_asks(html_pane):
     """A reload after the param was dropped, a bookmark of the bare chat, a mode
-    switch: all land on boot with a live turn still streaming server-side."""
-    boot = template[template.index("// ── boot: resume from URL"):]
+    switch: all land on boot with a live turn still streaming server-side. `else`,
+    not a second call: a boot that HAS the id must not ask as well."""
+    boot = html_pane[html_pane.index("const run_id = fused.params.get(\"run\")"):]
     assert "else if (session_id) await adoptLiveRun(session_id);" in boot
 
 
-def test_adopting_never_fights_a_turn_this_frame_owns(template):
-    """Two attachments to one run would double every streamed chunk."""
-    fn = template[template.index("async function adoptLiveRun("):]
-    fn = fn[:fn.index("\n}")]
-    assert "if (sending || activeRun) return;" in fn
-    assert 'history: "replace"' in fn, "a rediscovered id is bookkeeping, not a step"
-    assert "resumeRun(id)" in fn
+def test_the_lookup_is_the_only_new_agent_action_the_page_calls(html_pane):
+    """One reader of `live_run`, so there is one place to change if the answer's
+    shape ever grows. The behaviour of the call itself — order, guards, the empty
+    answer, a lookup that throws — is covered above under node; this only pins
+    that nothing else grew a copy of it.
+
+    The `replace` posture of its `run` write is NOT re-asserted here:
+    test_claude_kind.test_every_run_write_is_a_replace_write already holds every
+    such write in the file to that rule, and two guards for one invariant is one
+    that gets updated and one that goes stale."""
+    assert html_pane.count('action: "live_run"') == 1
