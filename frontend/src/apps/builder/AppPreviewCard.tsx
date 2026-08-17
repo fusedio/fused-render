@@ -6,6 +6,8 @@
 //      chose: a live render shows the page in whatever state it comes up in
 //      (empty, mid-load, asking for a file), and a screenshot shows the app
 //      making its point. It is also by far the cheapest of the three.
+//      Hovering the card swaps the still for the live app (step 2's iframe),
+//      and hover-end swaps it back — see the hover state below.
 //   2. the app itself, live: `entry_html` in a sandboxed iframe at desktop
 //      width (1280px) scaled down to fit the card.
 //   3. no entry file at all — the Home grid's tinted monogram, so a card is
@@ -77,7 +79,9 @@ function useNearViewport<T extends Element>(): [React.RefObject<T>, boolean] {
     // one callback, and only the newest reflects where the card is now.
     const io = new IntersectionObserver(
       (entries) => setNear(entries[entries.length - 1].isIntersecting),
-      { root: el.closest(".apps-page"), rootMargin: NEAR_VIEWPORT_MARGIN },
+      // Both surfaces that render this card scroll inside their own div, so
+      // the root is whichever one this card sits in ("/apps" or Home).
+      { root: el.closest(".apps-page, .home-page"), rootMargin: NEAR_VIEWPORT_MARGIN },
     );
     io.observe(el);
     return () => io.disconnect();
@@ -110,6 +114,12 @@ export function AppPreviewCard({
   // Gates the live-iframe branch only — preview.png and the monogram cost
   // nothing to keep mounted, so they don't need this.
   const [thumbRef, nearViewport] = useNearViewport<HTMLSpanElement>();
+  // Hover on a png-thumbed card swaps in the live app: the iframe mounts
+  // UNDER the still image on mouseenter and the image only fades once the
+  // iframe has loaded (`liveReady`), so the swap never shows a blank frame
+  // mid-boot. Mouseleave unmounts the iframe and the png is back instantly.
+  const [hovered, setHovered] = useState(false);
+  const [liveReady, setLiveReady] = useState(false);
   // An anchor, not a button — see AppCard. The href is what makes middle-click
   // and "Open in new tab" land on the same place a left click does.
   return (
@@ -121,6 +131,11 @@ export function AppPreviewCard({
       // INSIDE this element, so a right-click over the preview bubbles up here
       // (the iframe itself never sees it) and one handler covers the whole card.
       onContextMenu={onContextMenu && ((e) => onContextMenu(e, app))}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => {
+        setHovered(false);
+        setLiveReady(false);
+      }}
       title={openTargetFor(app).path}
     >
       <span className="app-pcard-body">
@@ -135,12 +150,29 @@ export function AppPreviewCard({
       <span className="app-pcard-thumb" aria-hidden="true" ref={thumbRef}>
         {app.preview_image && !shotFailed ? (
           <>
+            {/* Hover live preview, mounted BELOW the img in the stacking
+                order so the still stays on top until the app has painted. */}
+            {hovered && app.entry_html && nearViewport && (
+              <iframe
+                src={`/render?path=${encodeURIComponent(app.entry_html)}&_preview=1`}
+                style={{
+                  width: `${100 / PREVIEW_SCALE}%`,
+                  height: `${100 / PREVIEW_SCALE}%`,
+                  transform: `scale(${PREVIEW_SCALE})`,
+                }}
+                onLoad={() => setLiveReady(true)}
+                tabIndex={-1}
+                scrolling="no"
+                title=""
+              />
+            )}
             <img
               className="app-pcard-shot"
               src={rawUrl(app.preview_image)}
               alt=""
               loading="lazy"
               onError={() => setShotFailed(true)}
+              style={hovered && liveReady ? { opacity: 0 } : undefined}
             />
             {/* The same shield the iframe gets. An <img> swallows no clicks of
                 its own, but it DOES carry the browser's native drag-the-image

@@ -190,6 +190,9 @@
   height: 100%;
   object-fit: cover;
   background: var(--bg-panel);
+  /* Hover live preview (AppPreviewCard): the still fades out over the loaded
+     iframe beneath it, and back in the instant hover ends. */
+  transition: opacity 0.15s ease;
 }
 
 .app-pcard-shield {
