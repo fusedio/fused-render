@@ -14,7 +14,8 @@
 // Sync: the server watches the clone folder and pushes on every quiet period
 // (local wins — an edit made inside the embedded workbench is overwritten by
 // the next local push; the banner says so). This page never reloads the
-// workbench iframe — refreshing on upstream changes is the workbench's job.
+// workbench iframe — the hosted workbench refreshes itself on upstream
+// changes.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { embedUrlForFsPath, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";

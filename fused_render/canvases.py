@@ -2,11 +2,9 @@
 
 The workflow (SPEC-pending; see PR description): list the account's canvases,
 clone one to a local folder with `fused canvas pull`, let the user edit those
-files (Claude Code, the explorer, any editor), watch the folder and push every
-change set back upstream with `fused canvas push`, and let the workspace page
-reload its embedded workbench iframe after each successful push (the hosted
-workbench has no push-driven reload of its own — the CLI literally prints
-"you can refresh it now").
+files (Claude Code, the explorer, any editor), and watch the folder and push
+every change set back upstream with `fused canvas push` — the embedded
+workbench iframe picks up the pushed change itself, no reload from this page.
 
 Provider note: canvas commands authenticate with `fused login`
 (~/.fused/credentials, Auth0 PKCE) — a DIFFERENT provider from the
@@ -25,8 +23,8 @@ arms a debounce, and after DEBOUNCE_S of quiet the whole folder is pushed with
 edit made concurrently in the hosted workbench is overwritten. Pushes are
 serialized per canvas by construction (one thread) and the fingerprint is
 re-taken right after clone so the pull's own writes never echo into a push.
-`push_seq` increments on every successful push; the workspace page polls it
-and reloads the workbench iframe when it moves.
+`push_seq` increments on every successful push, surfaced in status for
+observability/tests — the workspace page doesn't act on it.
 
 No import of anything under fused_render.server (server includes this router —
 keep it acyclic); the X-Fused guard is duplicated locally like account.py does.
@@ -508,13 +506,14 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
     manager = _sync_manager(name, create=False)
     if manager is not None:
         manager.pause()
-    try:
-        proc, err = _run_cli(
-            ["workbench", "canvas", "pull", name, "-o", target, "--force"], PULL_TIMEOUT
-        )
-    finally:
-        if manager is not None:
-            manager.resume()
+    proc, err = _run_cli(
+        ["workbench", "canvas", "pull", name, "-o", target, "--force"], PULL_TIMEOUT
+    )
+    if manager is not None:
+        # Only adopt the pulled content as the clean baseline on success — a
+        # failed pull leaves the folder as it was, so any local edits pending
+        # before this clone must stay dirty, not get silently orphaned.
+        manager.resume(rebaseline=err is None)
     if err is not None:
         return err
     return {"ok": True, "dir": target}
@@ -589,6 +588,11 @@ class _SyncManager:
                 # silently adopted as clean and never pushed.
                 self._fingerprint = self._take_fingerprint()
                 self._dirty_since = None
+                # A stale "pending"/"error" from before the pause would
+                # otherwise stick forever: the UI keeps showing a queued
+                # push, and the remote-pull leg of the watcher loop only
+                # runs while push_state == "idle".
+                self.push_state = "idle"
 
     def stop(self) -> None:
         # Join, not just signal: every subprocess call in the loop carries its
