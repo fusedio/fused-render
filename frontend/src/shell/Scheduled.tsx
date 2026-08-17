@@ -7,7 +7,7 @@
 // model, and it is why this page no longer merges two feeds client-side the way
 // it used to: `GET /api/tasks` returns the merge, already titled, already
 // counted, already ordered. See
-// SPEC.md's SCH section and DECISIONS.md D308.
+// SPEC.md's SCH section and DECISIONS.md D322.
 //
 // List and Board show tasks. So does the Calendar — the chip IS a task, not a
 // message. What the time axis adds is placement, not a different unit: one chip
@@ -386,6 +386,14 @@ export default function Scheduled() {
 
       {(creating !== null || editing) && state && (
         <NewJobModal
+          // Keyed on WHAT is being edited, because the form reads `editing` in
+          // `useState` initialisers — they run once, on mount. The `?edit=<id>`
+          // deep link cannot avoid arriving in two steps: it opens the modal
+          // immediately and can only resolve the entry once the schedule fetch
+          // answers, so without a key the card mounted on `editing = null` and
+          // then sat there with both fields blank under an "Edit task" heading.
+          // Changing the key remounts it on the entry it is actually for.
+          key={editing ? `edit:${editing.id}` : "new"}
           initialTime={creating instanceof Date ? creating : null}
           initialTarget={newTarget}
           initialMessage={newMessage}
