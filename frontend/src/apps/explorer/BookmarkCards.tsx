@@ -10,7 +10,15 @@
 // bookmark exactly like the sidebar row would.
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { navigate, navigateUrl, urlForFsPath, withPreviewFlag, EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
+import {
+  navigate,
+  navigateUrl,
+  urlForFsPath,
+  embedUrlForFsPath,
+  withPreviewFlag,
+  EMBED_PREFIX,
+  VIEW_PREFIX,
+} from "@platform/lib/router";
 import { listDir, rawUrl, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
@@ -38,21 +46,6 @@ export function embedUrlForBookmark(url: string): string {
   const { pathname, search } = splitBookmarkUrl(url);
   const prefix = [VIEW_PREFIX, "/view/"].find((p) => pathname.startsWith(p));
   return prefix ? EMBED_PREFIX + pathname.slice(prefix.length) + search : pathname + search;
-}
-
-// Embed url for a raw fs path (a folder card's peeking file child). Same
-// segment encoding as router.urlForFsPath, but onto the embed prefix.
-function embedUrlForFsPath(fsPath: string): string {
-  const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
-  return (
-    EMBED_PREFIX +
-    norm
-      .replace(/^\/+/, "")
-      .split("/")
-      .filter((s) => s.length > 0)
-      .map(encodeURIComponent)
-      .join("/")
-  );
 }
 
 function joinPath(dir: string, name: string): string {
