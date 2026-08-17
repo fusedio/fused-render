@@ -405,10 +405,10 @@ export function entryRepeatText(entry: ScheduledMessage): string {
   return describeRepeats(entry.repeats || "");
 }
 
-// The repeat select's derived choices, Google's list verbatim: every label is
-// read off the picked date, so recurrence needs no fields of its own until
-// Custom. Returned as data so the modal renders and the tests read the same
-// list.
+// The repeat select's derived choices, Google's list less the annual row: every
+// label is read off the picked date, so recurrence needs no fields of its own
+// until Custom. Returned as data so the modal renders and the tests read the
+// same list.
 export interface RepeatChoice {
   key: string;
   label: string;
@@ -434,11 +434,15 @@ export function repeatChoicesFor(picked: Date): RepeatChoice[] {
       label: `Monthly on the ${NTH_NAMES[nthOfMonth(picked) - 1]} ${DAY_NAMES[dow]}`,
       rule: { freq: "month", monthly: "nth-weekday" },
     },
-    {
-      key: "annually",
-      label: `Annually on ${MONTH_NAMES[picked.getMonth()]} ${picked.getDate()}`,
-      rule: { freq: "year" },
-    },
+    // No ANNUAL row (Akshil, 2026-08-17): nothing anybody schedules here runs
+    // once a year, and the preset only ever cost a line in the menu. Note what
+    // is NOT done — `year` stays a freq the rest of the app can read: recur.py
+    // supports it, describeRule still says "Annually on August 12", and
+    // ruleOccurrences still walks it. So a rule already stored as yearly keeps
+    // working: keyOfRule finds no preset for it and answers "custom", which is
+    // how the modal opens it — the repeat menu shows describeRule's own
+    // "Annually on …" wording on the Custom row, and Saving without touching it
+    // writes the same rule back. Dropped from the picker, never from the model.
     {
       key: "weekday",
       label: "Every weekday (Monday to Friday)",
@@ -597,22 +601,40 @@ export function rangeLabel(days: Date[]): string {
 }
 
 // ---- Task colour ---------------------------------------------------------------
-// Same task, same colour, everywhere on the grid — that is what makes five days
-// of a daily task read as ONE thing rather than five unrelated boxes. The colour
-// is derived from the task key so it needs no storage and cannot drift between
-// renders, and it indexes a small HAND-PICKED palette (styles/tokens.css,
-// --task-c0…--task-c7) rather than generating an hsl(): an arbitrary hue clashes
+// Colour says WHICH PROJECT a task belongs to (Akshil, 2026-08-17: "let's have it
+// deterministic based on folder name… so tasks from same folder will have same
+// color"). It is hashed from the task's FOLDER, not its key: hashing the key gave
+// two tasks in one repo two unrelated hues, which made the calendar look busier
+// than the week actually was and told the reader nothing. Now a glance at the
+// grid groups by project, and five days of a daily task still land as ONE thing —
+// the folder does not change between renders any more than the key did.
+//
+// `task.project` is the folder and is decided server-side (the task's own
+// directory, not its target file), so a file and the folder it sits in cannot
+// diverge. It needs no storage and cannot drift between renders.
+//
+// The index lands in a small HAND-PICKED palette (styles/tokens.css,
+// --task-c0…--task-c7) rather than a generated hsl(): an arbitrary hue clashes
 // with the theme in one mode or the other, and the eight tuned ones do not.
+// Eight hues for a machine with more folders than that means collisions by
+// pigeonhole — two unrelated projects sharing a hue is the accepted cost; the
+// thing that must hold is the converse, that one folder is always one colour.
 
 export const TASK_COLOURS = 8;
 
-export function taskColour(key: string): number {
-  // FNV-1a, 32-bit. Cheap, well spread over short ASCII keys, and — unlike
-  // summing char codes — it does not collide on anagrams, which task keys
-  // (session uuids, `pending:<id>`) are full of.
+export function taskColour(folder: string): number {
+  // FNV-1a, 32-bit. Cheap, and — unlike summing char codes — it does not collide
+  // on anagrams, which paths are full of (…/a/b vs …/b/a).
+  //
+  // MEASURED on the real corpus rather than assumed, because a mixer that piles
+  // half the projects onto one hue would be worse than random here: over the 28
+  // distinct `project` paths on this machine it fills all 8 buckets, 1–5 folders
+  // each (χ²=5.1 on 7 df — an ordinary uniform draw), so the deep shared
+  // prefixes those paths have do not cluster it. A final avalanche step was
+  // tried on the same corpus and moved nothing worth the code.
   let h = 2166136261;
-  for (let i = 0; i < key.length; i++) {
-    h ^= key.charCodeAt(i);
+  for (let i = 0; i < folder.length; i++) {
+    h ^= folder.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
   return (h >>> 0) % TASK_COLOURS;
@@ -778,7 +800,11 @@ export function taskChips(
         extra: list.length - 1,
         recurring: !!templateId,
         templateId,
-        colour: taskColour(task.key),
+        // The FOLDER, so every task in one project draws the same hue. The key
+        // is the fallback for the (server-side impossible, client-side
+        // unprovable) case of a task with no project: a stable arbitrary colour
+        // beats every project-less task piling onto hash("").
+        colour: taskColour(task.project || task.key),
         tone: dayTone(list),
         projected: list.every(isProjected),
       });

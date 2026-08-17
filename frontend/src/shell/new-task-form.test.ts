@@ -26,8 +26,12 @@ let initialAskOf: typeof import("./NewJobModal").initialAskOf;
 let deleteActionFor: typeof import("./NewJobModal").deleteActionFor;
 let deleteFailureText: typeof import("./NewJobModal").deleteFailureText;
 let sessionTitleOf: typeof import("./NewJobModal").sessionTitleOf;
-let titlePlaceholderFor: typeof import("./NewJobModal").titlePlaceholderFor;
+let initialTitleOf: typeof import("./NewJobModal").initialTitleOf;
+let firstLine: typeof import("./NewJobModal").firstLine;
+let shortTitle: typeof import("./NewJobModal").shortTitle;
+let TITLE_MAX: typeof import("./NewJobModal").TITLE_MAX;
 let deletePress: typeof import("./NewJobModal").deletePress;
+let saveEnabled: typeof import("./NewJobModal").saveEnabled;
 let TITLE_PLACEHOLDER: typeof import("./NewJobModal").TITLE_PLACEHOLDER;
 let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
@@ -43,8 +47,12 @@ beforeAll(async () => {
   deleteActionFor = mod.deleteActionFor;
   deleteFailureText = mod.deleteFailureText;
   sessionTitleOf = mod.sessionTitleOf;
-  titlePlaceholderFor = mod.titlePlaceholderFor;
+  initialTitleOf = mod.initialTitleOf;
+  firstLine = mod.firstLine;
+  shortTitle = mod.shortTitle;
+  TITLE_MAX = mod.TITLE_MAX;
   deletePress = mod.deletePress;
+  saveEnabled = mod.saveEnabled;
   TITLE_PLACEHOLDER = mod.TITLE_PLACEHOLDER;
   pastNoteFor = mod.pastNoteFor;
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
@@ -73,10 +81,13 @@ const DAILY: RecurrenceRule = { freq: "day" };
 
 const form = (over: Partial<Form> = {}): Form => ({
   target: " /tmp/work ",
-  // The big field: the message AND the description. There is no third text
-  // field on the form any more (Akshil, 2026-08-17).
+  // The SECOND field, and the required one: the message AND the description.
+  // There is no third text field on the form (Akshil, 2026-08-17).
   message: "pull today's news",
-  title: "",
+  // The FIRST field, and required as of 2026-08-17 — so a filled one is the
+  // ordinary case here. `title: ""` is still passed explicitly by the tests that
+  // are about the WIRE contract, which still allows the key to be absent.
+  title: "Morning news",
   when: "2026-08-17T09:00",
   rule: null,
   repeat: "none",
@@ -151,12 +162,13 @@ describe("the Repeat checkbox", () => {
 });
 
 describe("the payload", () => {
-  test("a one-off is target, the ask (twice), due and permission", () => {
+  test("a one-off is target, the ask (twice), the title, due and permission", () => {
     expect(buildSchedulePayload(form())).toEqual({
       target: "/tmp/work",
       message: "pull today's news",
       // Same text, second key: the one big field is the description too.
       description: "pull today's news",
+      title: "Morning news",
       due: "2026-08-17T09:00",
       permission_mode: "auto",
     });
@@ -211,6 +223,68 @@ describe("the payload", () => {
   });
 });
 
+// BOTH prominent fields are required now (Akshil, 2026-08-17): the description
+// because it is the text Claude is actually sent, and Title because a task
+// nobody can name in a list is not much better. Title only became a legitimate
+// refusal once the form stopped opening it blank — see the naming block below,
+// which is the other half of this one.
+describe("what Save refuses", () => {
+  // Everything Save wants, so each test can take exactly one thing away.
+  const gate = (over: Partial<Parameters<typeof saveEnabled>[0]> = {}) => ({
+    message: "pull today's news",
+    title: "Morning news",
+    target: "/tmp/work",
+    pathError: null,
+    repeatOn: false,
+    repeat: "none",
+    customRule: null,
+    legacyCron: "",
+    pickedOk: true,
+    replaced: false,
+    ...over,
+  });
+
+  test("a filled form saves", () => {
+    expect(saveEnabled(gate())).toBe(true);
+  });
+
+  test("an EMPTY description is refused — it is the one required text field", () => {
+    expect(saveEnabled(gate({ message: "" }))).toBe(false);
+    // Whitespace is not an instruction, and a textarea collects plenty of it.
+    expect(saveEnabled(gate({ message: "   " }))).toBe(false);
+    expect(saveEnabled(gate({ message: "\n\n  \t\n" }))).toBe(false);
+  });
+
+  test("…and an EMPTY title is refused too — it used to be the optional one", () => {
+    // The change of 2026-08-17. A blank Title used to save (the server named the
+    // task from the transcript); it now refuses, because the field arrives
+    // prefilled and a blank one means the user deliberately cleared it.
+    expect(saveEnabled(gate({ title: "" }))).toBe(false);
+    // Spaces are not a name, exactly as newlines are not an instruction.
+    expect(saveEnabled(gate({ title: "   " }))).toBe(false);
+    // The two are independent refusals, not one rule read twice.
+    expect(saveEnabled(gate({ title: "", message: "pull today's news" }))).toBe(false);
+    expect(saveEnabled(gate({ title: "Morning news", message: "" }))).toBe(false);
+  });
+
+  test("the rest of the gate is unchanged by the swap", () => {
+    // These were the other refusals before this pass and they still are — the
+    // change moved a field, it did not loosen anything.
+    expect(saveEnabled(gate({ target: "  " }))).toBe(false);
+    expect(saveEnabled(gate({ pathError: "This folder or file doesn't exist" }))).toBe(false);
+    expect(saveEnabled(gate({ replaced: true }))).toBe(false);
+    expect(saveEnabled(gate({ pickedOk: false }))).toBe(false);
+    // A "custom" repeat is only a choice once the dialog produced a rule…
+    expect(saveEnabled(gate({ repeatOn: true, repeat: "custom", customRule: null }))).toBe(false);
+    expect(saveEnabled(gate({ repeatOn: true, repeat: "custom", customRule: DAILY }))).toBe(true);
+    // …and a legacy cron template needs its line, but not a parseable date.
+    expect(saveEnabled(gate({ repeat: "cron", legacyCron: "" }))).toBe(false);
+    expect(saveEnabled(gate({ repeat: "cron", legacyCron: "0 9 * * *", pickedOk: false }))).toBe(
+      true,
+    );
+  });
+});
+
 // The form asks for prose ONCE. Everything the server stores as two values —
 // `message` and `description` — has to fold back into that one field when an
 // Edit opens, and come out the other side unchanged when it is saved again.
@@ -254,15 +328,18 @@ describe("what an Edit opens the big field on", () => {
     expect(again.title).toBe("Morning news");
   });
 
-  test("an untitled task edits back untitled — the server keeps naming it", () => {
-    const saved = buildSchedulePayload(form({ title: "" }));
-    expect("title" in saved).toBe(false);
-    const stored = entry({ message: saved.message, description: saved.description });
-    const again = buildSchedulePayload(
-      form({ message: initialAskOf(stored), title: stored.title ?? "" }),
-    );
-    expect("title" in again).toBe(false);
-    expect(again.description).toBe("pull today's news");
+  test("an UNTITLED task opens its title BLANK, not on a copy of its message", () => {
+    // Every task stored before the field existed, and every one saved while it
+    // was optional, has no title. Editing one used to derive the first line of
+    // the stored message — which is the duplication bug arriving by the back
+    // door, since that message is also what fills the description below it.
+    // Blank is the synchronous answer; the session lookup fills it if the thread
+    // has a name, and Save asks if it does not.
+    const stored = entry({ message: "pull today's news" });
+    expect(stored.title).toBeUndefined();
+    expect(initialTitleOf(stored)).toBe("");
+    // The description is untouched by any of it — the ask still opens filled.
+    expect(initialAskOf(stored)).toBe("pull today's news");
   });
 });
 
@@ -534,11 +611,20 @@ describe("what a failed Delete says", () => {
   });
 });
 
-// Scheduling from an open chat: the session already has a name, so the form
-// PREVIEWS it on Title instead of prefilling it. Prefilling would freeze the
-// name — an explicit title beats Claude Code's per-turn `ai-title` for ever —
-// and it would look like something the user typed (Akshil, 2026-08-17).
-describe("the Title placeholder", () => {
+// Title is required (see "what Save refuses"), and this block is what makes that
+// fair — and what the 2026-08-17 review rewrote. The title now names the
+// SESSION, in this order:
+//
+//   1. the task's stored title, if a user set one;
+//   2. the session's own resolved name — Claude Code's `ai-title`;
+//   3. the session's FIRST user message, shortened to a name;
+//   4. blank, and Save asks.
+//
+// Never the message being scheduled. That was the bug: `firstLine(ask)` filled
+// Title from the composer's draft, so scheduling a long message from a chat
+// duplicated it — once as the title, once as the description. "The description
+// is what we type in the chat box" (Akshil, 2026-08-17).
+describe("naming the task", () => {
   const task = (over: Record<string, unknown> = {}) => ({
     session_id: "sess-1",
     title: "Porting the parquet reader",
@@ -546,44 +632,206 @@ describe("the Title placeholder", () => {
     ...over,
   });
 
-  test("previews the session's own name", () => {
-    expect(sessionTitleOf([task()], "sess-1")).toBe("Porting the parquet reader");
-    expect(titlePlaceholderFor("Porting the parquet reader", false)).toBe(
-      "Porting the parquet reader",
-    );
+  // The message the user is scheduling: long, one line, and the thing that must
+  // never become a name.
+  const LONG =
+    "Go through the whole scheduling stack and work out why a recurring task "
+    + "that has already learned a session id stops resuming that thread after "
+    + "an edit, then fix it and add a regression test for it";
+
+  test("the placeholder is a field label now, and says nothing about optional", () => {
+    expect(TITLE_PLACEHOLDER).toBe("Title");
+    expect(TITLE_PLACEHOLDER).not.toContain("optional");
   });
 
-  test("a title the user already gave this thread is a name too", () => {
+  test("step 2: the session's own `ai-title` is what the form prefills", () => {
+    expect(sessionTitleOf([task()], "sess-1")).toBe("Porting the parquet reader");
+  });
+
+  test("step 1 via the API: a title the user gave this thread is a name too", () => {
     expect(sessionTitleOf([task({ title_source: "user" })], "sess-1")).toBe(
       "Porting the parquet reader",
     );
   });
 
-  test("but the first line of a message is not a name", () => {
-    // `message`-sourced is the message echoed back; the generic placeholder
-    // already says the title fills itself in, so this adds nothing and reads
-    // like the wrong field.
-    expect(sessionTitleOf([task({ title_source: "message" })], "sess-1")).toBe("");
+  test("step 3: a message-sourced title IS the session's first message, so it counts", () => {
+    // The reversal of 2026-08-17. This branch used to be dropped on the grounds
+    // that it echoed a derivation the form already had locally. That derivation
+    // is gone — it was the bug — so this is now the ONLY route to "the first
+    // message that we had", and refusing it would send a session with no
+    // `ai-title` yet straight to blank.
+    expect(
+      sessionTitleOf([task({ title: "port the parquet reader", title_source: "message" })], "sess-1"),
+    ).toBe("port the parquet reader");
   });
 
-  test("no session, no match and no title all fall back to the generic line", () => {
+  test("…but not a title the server read off a SCHEDULED ENTRY", () => {
+    // The server's second source, and the one this refuses. With no readable
+    // transcript, `_title` names the row from the earliest message scheduled at
+    // the session — which on a task made in this form is the ask itself, so
+    // taking it would be the duplication bug arriving by way of the server.
+    // `title_source: "entry"` is the server saying so, which is why nothing here
+    // has to compare strings.
+    expect(sessionTitleOf([task({ title: LONG.slice(0, 200), title_source: "entry" })], "sess-1"))
+      .toBe("");
+    expect(sessionTitleOf([task({ title: "summarise the inbox", title_source: "entry" })], "sess-1"))
+      .toBe("");
+  });
+
+  test("a first prompt the new ask CONTINUES keeps its name", () => {
+    // THE 2026-08-17 review finding. This was refused while the client guessed
+    // at provenance: it dropped a `message` title whenever the composed ask's
+    // first line began with it, and "pull today's news and file it" begins with
+    // "pull today's news" — a real session first prompt the draft merely carries
+    // on from. Title came out blank and Save stayed disabled until the user
+    // retyped a name the app already had.
+    // The draft is not an input any more — the ask this call used to take is
+    // gone from the signature, so no composer text can take a session's own name
+    // away and the type checker is what enforces it.
+    const first = task({ title: "pull today's news", title_source: "message" });
+    expect(sessionTitleOf([first], "sess-1")).toBe("pull today's news");
+  });
+
+  test("no session, no match and a blank title all resolve to nothing", () => {
     expect(sessionTitleOf([task()], "")).toBe("");
     expect(sessionTitleOf([task()], "sess-2")).toBe("");
     expect(sessionTitleOf([task({ title: "   " })], "sess-1")).toBe("");
-    expect(titlePlaceholderFor("", false)).toBe(TITLE_PLACEHOLDER);
-    expect(titlePlaceholderFor("   ", false)).toBe(TITLE_PLACEHOLDER);
-    expect(TITLE_PLACEHOLDER).toBe("Title — optional, filled in automatically");
+    expect(sessionTitleOf([], "sess-1")).toBe("");
   });
 
-  test("ticking Repeat takes the preview away, because it takes the session away", () => {
-    // A repeat refuses the chat's session and opens its own thread, so there is
-    // no conversation whose name would carry over — the preview would be a lie
-    // from the moment the box is ticked.
-    expect(titlePlaceholderFor("Porting the parquet reader", true)).toBe(TITLE_PLACEHOLDER);
-    // …and this is the payload rule it mirrors, asserted above too.
+  test("REPEAT no longer takes the name away — it only takes the session away", () => {
+    // The old preview was suppressed under a ticked Repeat, because a repeat
+    // refuses the chat's session and the preview would have been a lie. A VALUE
+    // in a required field cannot be withdrawn like that: the user still has to
+    // name the task, and the conversation it came from is still the best name
+    // anyone has. The payload rule it used to mirror is unchanged.
     expect(
       buildSchedulePayload(form({ sessionId: "sess-1", rule: DAILY, repeat: "daily" })).session_id,
     ).toBeUndefined();
+    expect(saveEnabled({
+      message: "pull today's news",
+      title: "Porting the parquet reader",
+      target: "/tmp/work",
+      pathError: null,
+      repeatOn: true,
+      repeat: "daily",
+      customRule: null,
+      legacyCron: "",
+      pickedOk: true,
+      replaced: false,
+    })).toBe(true);
+  });
+
+  test("step 1: a stored title outranks everything, and an edit never loses it", () => {
+    expect(initialTitleOf(entry({ title: "Morning news" }))).toBe("Morning news");
+    // Even against a message that would once have derived something else…
+    expect(initialTitleOf(entry({ title: "Morning news", message: "pull the news" }))).toBe(
+      "Morning news",
+    );
+    // …and a stored title of spaces is not one, so it falls through to blank and
+    // the session lookup gets its turn.
+    expect(initialTitleOf(entry({ title: "   " }))).toBe("");
+  });
+
+  // THE regression, stated as plainly as it can be: the message being scheduled
+  // does not become the task's name, however the form was opened.
+  test("a long scheduled message never becomes the title", () => {
+    expect(LONG.length).toBeGreaterThan(150);
+
+    // From a chat: the draft is the description, and Title has nothing
+    // synchronous to say. The old code returned firstLine(LONG) here.
+    expect(initialTitleOf(null)).toBe("");
+    expect(initialAskOf(null, LONG)).toBe(LONG);
+
+    // Editing the task that draft created: the message is stored, and it is
+    // still not a name.
+    const stored = entry({ message: LONG });
+    expect(initialTitleOf(stored)).toBe("");
+    expect(initialAskOf(stored)).toBe(LONG);
+
+    // Nor by way of the session lookup, when the server hands the entry's own
+    // message back as the row's name (`title_source: "entry"` — the only branch
+    // that can be the message being scheduled).
+    expect(
+      sessionTitleOf([task({ title: LONG.slice(0, 200), title_source: "entry" })], "sess-1"),
+    ).toBe("");
+
+    // And nothing anywhere in the resolved chain is that long.
+    for (const resolved of [
+      initialTitleOf(stored),
+      sessionTitleOf([task()], "sess-1"),
+      sessionTitleOf([task({ title: LONG.slice(0, 200), title_source: "entry" })], "sess-1"),
+    ]) {
+      expect(resolved.length).toBeLessThanOrEqual(TITLE_MAX);
+      expect(LONG.startsWith(resolved) && resolved !== "").toBe(false);
+    }
+  });
+
+  // Step 3 is a message being turned into a NAME, so it is clamped. Steps 1 and 2
+  // are names already and are taken verbatim — shortening them would edit either
+  // the user's words or Claude's.
+  describe("shortening a first message into a name", () => {
+    test("a short one is left exactly alone", () => {
+      expect(shortTitle("port the parquet reader")).toBe("port the parquet reader");
+      expect(shortTitle("x".repeat(TITLE_MAX))).toBe("x".repeat(TITLE_MAX));
+    });
+
+    test("a long one is cut on a word boundary, with no ellipsis", () => {
+      const line = "one two three four five six seven eight nine ten eleven twelve";
+      expect(line.length).toBeGreaterThan(TITLE_MAX);
+      expect(shortTitle(line)).toBe("one two three four five six seven eight nine ten eleven");
+      expect(shortTitle(line)).not.toContain("…");
+      expect(shortTitle(line)).not.toContain("...");
+      // Cut on a boundary means the next character in the original is the space
+      // the cut replaced — never the middle of "twelve".
+      expect(line[shortTitle(line).length]).toBe(" ");
+    });
+
+    test("the word straddling the limit is kept whole when the limit IS the space", () => {
+      const line = "x".repeat(TITLE_MAX) + " tail";
+      expect(shortTitle(line)).toBe("x".repeat(TITLE_MAX));
+    });
+
+    test("one unbroken word has no boundary, so it is cut hard", () => {
+      // The only mid-word cut, and unavoidable: there is nowhere else to cut.
+      expect(shortTitle("a".repeat(200))).toBe("a".repeat(TITLE_MAX));
+    });
+
+    test("it takes one line, and never trails whitespace", () => {
+      expect(shortTitle("summarise the inbox\nthen file it")).toBe("summarise the inbox");
+      expect(shortTitle("   ")).toBe("");
+      expect(shortTitle("")).toBe("");
+      expect(shortTitle("word ".repeat(40))).toBe(shortTitle("word ".repeat(40)).trimEnd());
+    });
+  });
+
+  test("firstLine reduces prose to something an <input> can hold", () => {
+    expect(firstLine("summarise the inbox\nthen file it\nand report")).toBe(
+      "summarise the inbox",
+    );
+    expect(firstLine("  padded  \n more ")).toBe("padded");
+    expect(firstLine("   ")).toBe("");
+  });
+
+  test("with nothing to go on it IS blank — and Save says so", () => {
+    // The New task button with an empty form: there is no honest name to
+    // derive, so the field opens empty and the requirement bites. That is the
+    // one path where the user must type a title, and it is the path where they
+    // are typing everything else anyway.
+    expect(initialTitleOf(null)).toBe("");
+    expect(initialTitleOf(undefined)).toBe("");
+    expect(saveEnabled({
+      message: "pull today's news",
+      title: initialTitleOf(null),
+      target: "/tmp/work",
+      pathError: null,
+      repeatOn: false,
+      repeat: "none",
+      customRule: null,
+      legacyCron: "",
+      pickedOk: true,
+      replaced: false,
+    })).toBe(false);
   });
 });
 

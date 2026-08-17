@@ -1203,8 +1203,7 @@
      quiet as its neighbours, and `.pill`'s own padding kept so the hover paints
      the shape the rest of the row paints. Spelled out rather than folded into
      the .viewshot selector: the two buttons share a look, not a fate, and
-     .viewshot's other two rules (hidden with the pane, disabled mid-capture) are
-     about photographing something this one never touches. */
+     .viewshot's `[hidden]` rule is about a pane this one never touches. */
   .schedbtn {
     display: inline-flex;
     align-items: center;
@@ -1212,6 +1211,18 @@
     min-height: 1.65em;
   }
   .schedbtn svg { display: block; }
+  /* Dead for as long as a scheduled message is pending in this session — the same
+     refusal as the disabled textarea above it, because a task queued from here is
+     input into that message's context exactly as a typed reply would be (see
+     applyComposerBlockState). The hover that would have contradicted the dim is
+     excluded on `.pill:hover` itself, where source order can no longer undo it.
+
+     `not-allowed`, which is #box:disabled's cursor and not .viewshot's `default`:
+     these two are the SAME refusal and should feel like one, while .viewshot's
+     disable is a one-second capture that is nobody's mistake to make. Dimmer than
+     the box (.45 against .6) because an 14px monochrome glyph at .6 still reads
+     as a live icon, where a whole greyed textarea does not. */
+  .schedbtn:disabled { opacity: .45; cursor: not-allowed; }
   .user .bubble {
     background: var(--bubble-user);
     border-radius: 18px 18px 4px 18px;
@@ -1985,8 +1996,17 @@
      the "this is on" receipt disappearing under the cursor at exactly the moment
      the user is deciding whether to click. Relying on rule order for that is one
      reshuffle away from the bug coming back, and the next pressable pill in this
-     row inherits the fix rather than rediscovering it. */
-  .pill:hover:not([aria-pressed="true"]) { background-color: var(--surface-2); color: var(--fg); }
+     row inherits the fix rather than rediscovering it.
+
+     `:not(:disabled)` for the second half of the same argument. A dimmed pill that
+     still lights up under the cursor is a control saying two things at once, and
+     the reader believes the one that moves — this row now has a pill that goes dead
+     for as long as a scheduled message is pending (.schedbtn), so the exclusion is
+     spelled here rather than fought locally: at (0,2,0) a `.schedbtn:disabled`
+     override would lose to this rule on source order, which is the bug above with
+     the roles swapped. It is also the idiom the rest of this file already uses
+     (.stop, .perm button, .sb-acts button all hover `:not(:disabled)`). */
+  .pill:hover:not([aria-pressed="true"]):not(:disabled) { background-color: var(--surface-2); color: var(--fg); }
   .pill[aria-pressed="true"]:hover { filter: brightness(1.1); }
   /* Still styled, because the native popup is only SUPPRESSED for the pointer
      (openSelPop): a keyboard user who presses Space still gets the platform
@@ -3133,7 +3153,13 @@
                  selects that only describe how a run behaves.
                  A calendar and not a clock: what it opens is a task with a date
                  on it, not a delay on this message (see openScheduler for what
-                 the composer stopped trying to do on its own). -->
+                 the composer stopped trying to do on its own).
+
+                 The title and aria-label here are the PRISTINE pair, and they are
+                 also the only place this button's wording lives: a pending
+                 scheduled message disables it along with the textarea and swaps
+                 both for the banner's reason, then puts these back when the block
+                 lifts (applyComposerBlockState reads them at boot). -->
             <button id="schedbtn" class="pill schedbtn" type="button"
                     aria-label="Schedule this as a task"
                     title="Schedule this as a task"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="3.2" width="12" height="10.6" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M2 6.6h12M5.4 1.8v2.6M10.6 1.8v2.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
@@ -8040,6 +8066,12 @@ function openSchedConfirm(btn) {
 
 document.querySelectorAll(".schedbtn").forEach((btn) => {
   btn.addEventListener("click", () => {
+    // A pending scheduled message shuts this door as well as the composer's:
+    // a session that is already holding queued work takes no further input, and
+    // a task is input the same way a typed reply is (see applyComposerBlockState,
+    // which is what actually disables the button). Guarded here anyway, the same
+    // discipline `submitChat` keeps — disabled for the eye, guarded for the hand.
+    if (schedBlocked()) return;
     // A second press on the same button closes, rather than closing on the
     // document handler below and reopening here.
     const same = schedPopFor === btn;
@@ -8049,6 +8081,12 @@ document.querySelectorAll(".schedbtn").forEach((btn) => {
 });
 
 document.getElementById("schedpop-go").addEventListener("click", () => {
+  // The confirm can OUTLIVE the press that opened it: the 15s schedule poll may
+  // block this chat while the question is still on screen, and this is the only
+  // caller of openScheduler — so the last word on whether a task may be made from
+  // here is read here, not at open time. The block also closes the confirm
+  // (applyComposerBlockState), which makes this the race and not the ordinary path.
+  if (schedBlocked()) return;
   // The box belonging to the composer that was clicked, not "the visible one":
   // only one composer is on screen at a time, but reading the button's own form
   // is what keeps that a fact about the layout rather than an assumption here.
@@ -11290,7 +11328,25 @@ const schedBlockName = schedBlockEl.querySelector(".sb-name");
 const schedBlockMeta = schedBlockEl.querySelector(".sb-meta");
 const schedBlockNote = schedBlockEl.querySelector(".sb-note");
 const schedBlockStop = document.getElementById("sb-stop");
+// THE CHAT COMPOSER'S CALENDAR BUTTON, which goes dead with the box it sits in
+// (Akshil, 2026-08-17 — "when we have a blocked panel we don't allow to type…
+// we should not allow to schedule the task as well"). A session already holding
+// pending scheduled work takes no further input of ANY kind: queuing a second
+// message into a context that is spoken for is the same pollution the block
+// exists to prevent, one step later. See applyComposerBlockState.
+//
+// The HOME card's copy (#hschedbtn) is deliberately not touched, for the same
+// reason `homebox` is not: there is no session on the landing page, so nothing
+// can be pending in the conversation it is about to start (schedPendingHere
+// returns [] without one) and a handle to it here would be dead wiring.
+const schedBtn = document.getElementById("schedbtn");
 const BOX_PLACEHOLDER = box.placeholder;
+// The pristine wording, read off the markup rather than retyped, which is what
+// BOX_PLACEHOLDER above is doing too: the button's own attributes stay the one
+// place its name lives, so a re-word there cannot leave this file restoring a
+// tooltip nobody writes any more.
+const SCHED_BTN_TITLE = schedBtn.title;
+const SCHED_BTN_LABEL = schedBtn.getAttribute("aria-label");
 
 // The pending messages that would land in this conversation, soonest first.
 // EMPTY is the only state in which the composer works — and it is also the state
@@ -11501,6 +11557,21 @@ function schedStopTarget(entry) {
     ? String(entry.template_id) : String((entry && entry.id) || "");
 }
 
+// WHY THE BOX IS SHUT, in one sentence, and it has one author. The banner shows
+// it as its only line of prose and the calendar button carries it as its tooltip
+// and its spoken name — the two things the block switches off — so a reader
+// refused by the button reads the same words as the card six pixels above it.
+// Two literals would be two things to re-word, and the one that got missed would
+// be the one under the pointer.
+//
+// The repeat gets its own wording because the ESCAPE differs (see schedStopTarget):
+// "scheduled" is a message you can cancel, "repeating" is a job you have to stop.
+function schedBlockReason(entry) {
+  return schedIsRepeat(entry)
+    ? "Blocked — a repeating message runs in this chat."
+    : "Blocked — a scheduled message runs in this chat.";
+}
+
 function renderSchedBlock() {
   const next = schedBlockers[0];
   // Nothing blocking: hide it, and put the button back cold. A hidden card left
@@ -11523,9 +11594,7 @@ function renderSchedBlock() {
   // The SOONEST is named by the row and the rest are counted here, because naming
   // one is what answers "what is coming?" and a list of five would be the Tasks
   // page in a strip above a chat.
-  let why = repeat
-    ? "Blocked — a repeating message runs in this chat."
-    : "Blocked — a scheduled message runs in this chat.";
+  let why = schedBlockReason(next);
   if (others > 0) why += " " + others + " more after it.";
   schedBlockWhen.textContent = why;
   // ── the row ──
@@ -11635,6 +11704,33 @@ function applyComposerBlockState() {
   // simply clipped. The banner above carries the explanation; this only has to
   // say the box is not broken.
   box.placeholder = blocked ? "Waiting on a scheduled message…" : BOX_PLACEHOLDER;
+  // THE CALENDAR BUTTON GOES WITH THE BOX, off the SAME `blocked` — not off a
+  // second read of the schedule. A parallel notion of "is this session blocked"
+  // is two answers to one question, and the day they disagree one of them is
+  // lying to the user about what their chat is doing.
+  //
+  // The real `disabled` attribute rather than a class that merely looks it: it
+  // stops the pointer AND the keyboard in one stroke, since a disabled <button>
+  // fires no click for Enter or Space either — a control that paints itself dead
+  // and still navigates is worse than one that never dimmed. The click handler
+  // guards as well, the same belt-and-braces `submitChat` uses.
+  const why = blocked ? schedBlockReason(schedBlockers[0]) : "";
+  schedBtn.disabled = blocked;
+  schedBtn.title = blocked ? why : SCHED_BTN_TITLE;
+  // And the SPOKEN name says it too, the way the box's placeholder does above:
+  // `disabled` takes the button out of tab order, so the title is unreachable by
+  // keyboard and the name is all a reader browsing this row will hear. The name
+  // stays first — what the control is, then why it is off — so the button is
+  // still identifiable while it is refusing.
+  schedBtn.setAttribute("aria-label", blocked ? SCHED_BTN_LABEL + " — " + why
+                                              : SCHED_BTN_LABEL);
+  // A confirm can already be up when the poll lands: "Schedule this as a task?"
+  // is a question about a button that has just died, and its Continue would hit
+  // the guard and do nothing visible. Take it down instead, so what the reader
+  // ends up looking at is the banner. Only on the way IN — closing a confirm the
+  // user opened the moment the block lifted would be the block reaching past its
+  // own end.
+  if (blocked) closeSchedConfirm();
   // The row's number and name, fetched AFTER the card is on screen and never
   // before the block: what shuts the composer is the schedule, and the listing
   // only decorates the row (see schedLoadTaskRow). Guarded there against refetching

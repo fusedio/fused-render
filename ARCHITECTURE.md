@@ -58,7 +58,7 @@ fused-render/
 │   │       ├── run.py          # /api/run
 │   │       ├── env.py          # script-venv install loader: /api/env/install|progress|cancel (PY-18/D173)
 │   │       ├── jobs.py         # background-job registry: /api/jobs report|list|cancel|dismiss|clear (SPEC §36/D244)
-│   │       ├── selffix.py      # self-fix: /api/selffix start|read|clear — a Claude session on THIS install (SPEC §42/D323)
+│   │       ├── selffix.py      # self-fix: /api/selffix start|read|clear — a Claude session on THIS install (SPEC §42/D326)
 │   │       └── export.py       # /api/export
 │   ├── executor.py             # runner: in-process for first-party helpers, subprocess for user code (D72)
 │   ├── _child.py               # worker-process entry (subprocess path)
@@ -281,10 +281,18 @@ loaded:[{model,capability,runner,state,residentBytes,loadedAt,jobId}],
 downloading:[{model,capability,jobId,startedAt}], totalResidentBytes}`.
 `downloading` is weights landing on disk — no memory, no eviction, no worker row —
 and it is in this reply rather than only in the job list because it is what tells
-a page whether to read job rows at all (AI-5a). `GET /api/ai/catalog` → the curated
-suggestions per capability, and nothing about what is on this disk: the cache is
-the AI-models listing's question, joined by the page so both its tabs mean one
-thing by it. `POST /api/ai/runtime/load|unload|download` — `X-Fused` guarded, since
+a page whether to read job rows at all (AI-5a). `GET /api/ai/catalog` → per capability,
+the curated suggestions **and the models this disk already holds** (D323), each
+entry carrying `source: "curated"|"cached"`, `downloaded` and `loaded` beside
+`{id,label,size_gb,note}`. The cached half comes from `ai_models.cached_models()` —
+the AI-models listing's own scan, its own capability inference and the FORMAT's own
+`loaders` reading, memoised there on directory mtimes, imported here rather than
+re-derived. A cached repo joins a row only when that row's resolved runner is among
+its `loaders`, so the list stays per-RUNNER (AI-11a) and never offers a repo the
+serving engine would refuse. It is APPENDED, so `default`, `catalog.default_for()`
+and `catalog.for_capability()` keep resolving over the curated list alone and a bare
+`fused.ai.image()` cannot load an arbitrary repo off the disk; consumers read
+`default`, never `models[0]`. `POST /api/ai/runtime/load|unload|download` — `X-Fused` guarded, since
 they start processes and write gigabytes; `load` and `download` return a `{jobId}`
 into the download manager rather than blocking.
 

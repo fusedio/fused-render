@@ -495,7 +495,80 @@ def _board_column(message: dict | None) -> str:
     return "upcoming"
 
 
-def _status(newest: dict | None, session_id: str, triage: dict, live: bool) -> str:
+def _pin_at(record: dict) -> float:
+    """When an `in_progress` pin was placed, or 0.0 for one that does not say.
+
+    0.0 is the answer for every pin the Inbox's `autoFlow` wrote — it sends
+    `{status}` and nothing else — and for every pin written before the stamp
+    existed. Both are exactly the pins that have to be reapable, so the absence
+    reads as "older than anything that has happened", which is what 0.0 is.
+
+    Stored as a string because that is the shape of the record: `set_triage.py`
+    coerces every field it writes with `str(value).strip()`, so `read` is "1"
+    and not 1. Parsed defensively for the same reason — a hand-edited file must
+    cost a pin, not the page."""
+    try:
+        return float(record.get("at") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _pin_holds(record: dict, session_id: str, live: bool, busy: set[str],
+               active: float) -> bool:
+    """Is a recorded `in_progress` still describing something?
+
+    This is the one triage word that is a CLAIM ABOUT THE PRESENT. `done` and
+    `archived` are filing decisions and are timeless — they stay true however
+    long the card sits in the lane — so they are never asked this question and
+    never reaped. "Something is running in this conversation" is falsifiable,
+    and nothing was falsifying it.
+
+    Why it had to be: the sessions Inbox's `autoFlow` writes `in_progress` for
+    every session it sees running, and only writes it back to `done` if THAT
+    SAME PAGE is still open to witness the stop — it gates on an in-memory
+    `RUNNING` set that is empty on every load. So every run whose finish no
+    Inbox tab watched leaves a pin on disk that outlives it forever, and
+    `_status` honoured them unconditionally as "the user's own act". The board
+    held five cards in In Progress for days over runs that had recorded `done`
+    hours or a day earlier. The Inbox's own `_summarize` names this exact
+    failure ("a session that finished while nothing was watching shouldn't sit
+    in in_progress forever") and then only guards the untriaged default, which
+    is the half that was never the problem.
+
+    THREE independent reasons to hold, and a pin needs only one. They are
+    independent on purpose, because each one is wrong on its own in a different
+    direction:
+
+    * **`live`** — the shared liveness rule says the transcript is mid-turn.
+      Not sufficient alone: a turn thinking through a long tool call appends
+      nothing for minutes and reads as not-live while genuinely running.
+    * **`busy`** — `schedule.busy_sessions`, the scheduler's own record of a
+      send it has not heard back from (`sending`, or `sent` with no verdict).
+      This is what covers the liveness gap above for a scheduled run, and it is
+      the scheduler's answer rather than a second one of ours. Not sufficient
+      alone either: a session a human is typing into has no entry at all.
+    * **a stamp later than the session's last activity** — a deliberate pin
+      that no run has contradicted. This is what keeps the reopen drag (a
+      `done` card dropped back on In Progress, which `dropLanes` offers) from
+      being undone on the next 20s poll. `active` is therefore what HAPPENED
+      and only that: a due time in the future is later than any stamp a user
+      can make, so admitting one here inverts this guard for exactly the tasks
+      that have work coming. `_row` keeps the two apart.
+
+    A turn is therefore only reaped when the session is quiet, the scheduler is
+    waiting on nothing in it, and the pin predates the last thing that happened
+    — three ways of being over, all at once. What is NOT relied on is the
+    rendered message's `turn`: `_entry_turn` folds liveness into that field and
+    has no word for "sent, no verdict, not live" (it says `idle`), so reading it
+    would have collapsed the second guard into the first.
+    """
+    if live or session_id in busy:
+        return True
+    return _pin_at(record) > active
+
+
+def _status(newest: dict | None, session_id: str, triage: dict, live: bool,
+            busy: set[str], active: float) -> str:
     """The status a task sits in — ONE decision, made here, for every view.
 
     Derived from the newest message, then overridden by an explicit triage
@@ -506,6 +579,10 @@ def _status(newest: dict | None, session_id: str, triage: dict, live: bool) -> s
     a derivation too, and a weaker one than the message's own state. Triage has
     only three words, so a user cannot file a task as `failed`; that is a fact
     about the run, not a place to put it.
+
+    The one exception to triage winning is a stale `in_progress` — a pin whose
+    run has ended, which is not the user's act at all but a claim the Inbox
+    wrote automatically and had no way to take back. See `_pin_holds`.
 
     `failed` is decided here rather than left to the `failed` boolean beside it
     because a broken run is not a kind of `done`, and a status every view reads
@@ -520,7 +597,9 @@ def _status(newest: dict | None, session_id: str, triage: dict, live: bool) -> s
     record = triage.get(session_id) if session_id else None
     if isinstance(record, dict):
         status = record.get("status")
-        if status in _TRIAGE_STATUSES:
+        if status in _TRIAGE_STATUSES and (
+                status != "in_progress"
+                or _pin_holds(record, session_id, live, busy, active)):
             return status
     if live and newest is not None:
         return "in_progress"
@@ -546,23 +625,43 @@ def _failed(newest: dict | None) -> bool:
 
 def _title(task: dict, rec: dict | None, first_prompt: str) -> tuple[str, str]:
     """(title, where it came from). The precedence is §4's: what the user called
-    it, then Claude Code's own one-liner for the session, then the first line of
-    the first message. No summarisation call anywhere — the title we want is
-    already written into the transcript once per turn."""
+    it (`user`), then Claude Code's own one-liner for the session (`ai`), then
+    the first line of the first message. No summarisation call anywhere — the
+    title we want is already written into the transcript once per turn.
+
+    FOUR sources, because the last step has two and they are not equally
+    trustworthy:
+
+    * `message` — the session's own first prompt, read out of the transcript
+      (`tasks_store.head`). This is the step §4 asks for: "the first message
+      that we had", a line the session actually opened with.
+    * `entry` — the earliest scheduled message asked OF this session, used only
+      when there is no readable transcript to take the line above from. It is
+      still the best name here, but for a task scheduled from the New task form
+      it is the very message being scheduled, so a client prefilling a Title
+      field from it writes the description into the name.
+
+    The two are the same shape of string and the client has no way to tell them
+    apart by looking. It used to guess — refusing a `message` title whenever the
+    composed ask began with it — and a guess cannot tell a continuation ("pull
+    today's news" as the session's real first prompt, "pull today's news and file
+    it" as the new ask) from an echo, so a session lost the name the app already
+    knew. Naming the source is the same information without the guess."""
     for entry in reversed(task["entries"]):
         title = str(entry.get("title") or "").strip()
         if title:
             return title[:200], "user"
     if rec is not None and rec.get("title"):
         return str(rec["title"])[:200], "ai"
-    body = first_prompt
+    body, source = first_prompt, "message"
     if not body:
         for entry in task["entries"]:
-            body = str(entry.get("message") or "").strip()
-            if body:
+            text = str(entry.get("message") or "").strip()
+            if text:
+                body, source = text, "entry"
                 break
     line = body.strip().splitlines()[0].strip() if body.strip() else ""
-    return line[:200], "message"
+    return line[:200], source
 
 
 # ------------------------------------------------------------ task collection
@@ -834,8 +933,15 @@ def _next_run(entries: list[dict]) -> tuple[float, str]:
     return best_at, best_id
 
 
-def _row(task: dict, number: str, triage: dict, read: dict, now: float) -> dict:
-    """One listing row. The tail parse only: three messages, and a count."""
+def _row(task: dict, number: str, triage: dict, read: dict, now: float,
+         busy: set[str]) -> dict:
+    """One listing row. The tail parse only: three messages, and a count.
+
+    `busy` is `schedule.busy_sessions` over the WHOLE store, computed once by
+    the caller — see `_pin_holds`. Over the whole store rather than this task's
+    own entries because a resume that forked is filed under the session it RAN
+    in (`_entry_session` reads the answer first) while it still holds the
+    session it NAMED busy, and that one is another row."""
     rec = _scan(task["path"]) if task["path"] else None
     live, active = _live(task["path"], now)
     prompts = list(rec["tail"]) if rec else []
@@ -862,16 +968,33 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float) -> dict:
     _mark_unread(tail, task["key"], read)
 
     newest = tail[-1] if tail else None
+    # TWO times, because "recent" is two questions here and one number could
+    # only answer them by lying to one of them.
+    #
+    # `active` is the last thing that actually HAPPENED in this session, and
+    # nothing that has not happened may enter it — it is the clock `_pin_holds`
+    # measures a deliberate `in_progress` stamp against. `ran_at` is when a
+    # message ran (a caught-up run is news today, whatever day it was due) and
+    # 0.0 until it does; `at` is the due time, which never moves and can be in
+    # the FUTURE (see `_entry_at`). Reading `at` here was reaping every pin on a
+    # task with a message still to come, because no stamp a user can make is
+    # later than tomorrow — the exact reopen the stamp exists to protect.
     if newest is not None:
-        # BOTH stamps, because the list sorts on this and the two answer
-        # different halves of "recent": `ran_at` is when the task last did
-        # something (a caught-up run is news today, whatever day it was due),
-        # and `at` is what keeps a message scheduled for tomorrow near the top
-        # where it can be seen before it fires.
-        active = max(active, newest["at"] or 0.0, newest["ran_at"] or 0.0)
+        active = max(active, newest["ran_at"] or 0.0)
     if not active and task["entries"]:
-        active = (tasks_store.epoch(task["entries"][-1].get("created"))
-                  or _entry_at(task["entries"][-1]))
+        # Nothing has run and there is no transcript to date: what happened is
+        # that the message was ASKED for, and `created` is when. Deliberately
+        # not `_entry_at` — a due time is the other question, below — and `or
+        # 0.0` because `epoch` answers None for a stamp it cannot read, while
+        # every time on this row is a float and 0.0 is how it says "never".
+        active = tasks_store.epoch(task["entries"][-1].get("created")) or 0.0
+    # The sort's question is the other one: the List is read newest-first, and a
+    # message scheduled for tomorrow belongs near the top where it can be seen
+    # BEFORE it fires. So the row's `last_active` keeps the due time — only the
+    # pin's clock stops at what has happened.
+    surfaced = max(active, (newest["at"] or 0.0) if newest is not None else 0.0)
+    if not surfaced and task["entries"]:
+        surfaced = _entry_at(task["entries"][-1])
     title, source = _title(task, rec, task["first_prompt"])
     return {
         "key": task["key"],
@@ -887,11 +1010,14 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float) -> dict:
         # an LLM call. Read from the entry so a store that grows the field later
         # starts working without a change here.
         "description": _description(task),
-        "status": _status(newest, task["session_id"], triage, live),
+        # `active`, not `surfaced`: a pin is stale exactly when it predates the
+        # last thing that HAPPENED, and a run still ahead has not happened.
+        "status": _status(newest, task["session_id"], triage, live, busy,
+                          active),
         "failed": _failed(newest),
         "live": live,
         "unread": _unread_count(task, total, unfired, read),
-        "last_active": active,
+        "last_active": surfaced,
         "message_count": total,
         # The next run, and the entry it belongs to — `min(at)` over every
         # pending entry, not over the window below. 0.0 / "" when the task has
@@ -971,13 +1097,17 @@ def api_tasks():
     read = tasks_store.read_state()
     now = time.time()
     tasks = _collect()
+    # One pass over the store for every row: which conversations the scheduler
+    # is still waiting on. See `_pin_holds`.
+    busy = schedule.busy_sessions(schedule.list_entries())
     for task in tasks.values():
         _place(task)
     numbers = _numbers(tasks)
     rows = []
     for task in tasks.values():
         try:
-            row = _row(task, numbers.get(task["key"], ""), triage, read, now)
+            row = _row(task, numbers.get(task["key"], ""), triage, read, now,
+                       busy)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)

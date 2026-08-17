@@ -97,18 +97,51 @@
   --tour-dim: #7c7f88;
   --tour-next-hover: #d8f238;
 
-  /* Task status hues — the Schedule page's tree/board rings and the live pulse
+  /* Task status hues — the Schedule page's tree/board/calendar rings
      (shell/ScheduleTaskViews.tsx, ported from the flow app's task board). Own
-     tokens rather than --accent/--success/--warning because these four are a
-     VOCABULARY: a reader learns blue-yellow-green-grey once and then reads any
-     row by its ring, which only holds if the four keep their relative hues in
-     both themes. Dark values first, as everywhere here; light darkens each to
-     the same weight against white. */
-  --status-upcoming: #60a5fa;
+     tokens rather than --accent/--success/--warning because these five are a
+     VOCABULARY: a reader learns the ring hues once and then reads any row by its
+     ring, which only holds if they keep their relative weights in both themes.
+     Dark values first, as everywhere here; light darkens each to the same weight
+     against white.
+     Two of the five moved on 2026-08-17 (Akshil):
+     * Upcoming is GREY. It was blue, which is the loudest thing on a page whose
+       whole point is what is happening now — a lane of "nothing has happened
+       yet" was out-shouting In Progress. It borrows --fg-muted outright rather
+       than a grey of its own: the row's id and folder chips are already that
+       colour, so Upcoming recedes into its own row's metadata, which is exactly
+       what "not started" should look like. Restated in the light block only
+       because test_theme.py requires every dark token to have a light value —
+       the value is deliberately the same expression, not a second grey.
+     * Archive is a DUSTY ROSE, because Upcoming took the grey and two lanes
+       cannot share a hue. It was a muted violet for a day and that failed on the
+       one thing it had to do: at 16px, beside Upcoming's actual grey, a
+       low-chroma violet reads as barely-tinted grey rather than as a colour —
+       "quite similar" (Akshil, 2026-08-17). The lesson is about temperature, not
+       about that particular violet: at the low saturation this lane needs, COOL
+       hues are the ones that collapse into neutral, and a warm hue at the same
+       chroma still announces itself as a colour. So the replacement is warm.
+       Rose rather than the other two warm candidates because of where the live
+       lanes already sit: a rose keeps its blue channel well clear of its green,
+       which is what stops it reading as Failed's red (where those two are
+       equal), whereas a dull bronze reads as a dimmer In Progress and a muted
+       teal sits between Done's green and --activity's blue and reads as a dimmer
+       Done. Rose is the one direction with no live lane already in it, and it is
+       nowhere near yellow, green or blue. The pair is --icon-image's rose,
+       already tuned in this file for the same weight in both themes, so the
+       palette gains a role rather than a colour. */
+  --status-upcoming: var(--fg-muted);
   --status-progress: #facc15;
   --status-done: #4ade80;
   --status-failed: #f87171;
-  --status-archived: #8b8f96;
+  --status-archived: #cd93b6;
+
+  /* The blue Upcoming used to own, which outlived it: it was never really the
+     status hue, it was the page's ACTIVITY hue, and three things still need it —
+     the live ping on a turn in flight, the unread dot on a message row, and the
+     Run now / drag-to-run affordance that puts a task into flight. Naming it for
+     that is what let Upcoming go grey without repainting any of the three. */
+  --activity: #60a5fa;
 
   /* File-type icon hues (FileIcons.tsx). Tuned bright for a dark listing;
      the light palette darkens each one to the same relative weight. */
@@ -125,11 +158,12 @@
   --icon-db: #82abbf;
   --icon-file: #868c93;
 
-  /* Task chip hues — the Calendar's per-task colour (shell/ScheduleCalendar.tsx,
-     indexed by schedule-lib.taskColour). Eight, hand-picked and evenly spread
-     around the wheel, because the calendar's whole read depends on "same task,
-     same colour": five days of a daily task must land as ONE thing, and two
-     unrelated tasks in the same hour must not. A generated hsl() would give
+  /* Task chip hues — the Calendar's per-PROJECT colour (shell/ScheduleCalendar.tsx,
+     indexed by schedule-lib.taskColour, which hashes the task's folder). Eight,
+     hand-picked and evenly spread around the wheel, because the calendar's whole
+     read depends on "same folder, same colour": five days of a daily task must
+     land as ONE thing, two tasks out of one repo must land as that repo, and two
+     unrelated projects in the same hour must not. A generated hsl() would give
      that too, and would also give hues that fight the theme in one mode or the
      other — so the palette is picked, not computed. Dark values first; light
      deepens each to the same weight against white, where they are read as a
@@ -205,11 +239,18 @@
   --tour-dim: #6f747c;
   --tour-next-hover: #4e5f00;
 
-  --status-upcoming: #2563eb;
+  /* Upcoming tracks --fg-muted in both themes (see the dark block) — the same
+     expression, restated because the light palette must redefine every token. */
+  --status-upcoming: var(--fg-muted);
   --status-progress: #ca8a04;
   --status-done: #16a34a;
   --status-failed: #dc2626;
-  --status-archived: #737373;
+  /* The rose deepened for white (see the dark block). Still warm, still low
+     enough in chroma to stay quiet, and its blue channel still stands well above
+     its green so it cannot be mistaken for the red above it. */
+  --status-archived: #9c4d78;
+
+  --activity: #2563eb;
 
   --icon-folder: #45689e;
   --icon-code: #2f7a6b;
