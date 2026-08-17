@@ -60,12 +60,9 @@ export interface GroupedRepos {
  *  no engine, no owner. Without a group of its own it renders as `no engine`,
  *  which is the SAME tag a 4.6GB model the user deliberately downloaded wears,
  *  and there was no vocabulary anywhere on the page for "we do not know what
- *  this is". The copy has to say both halves, because either alone is the wrong
- *  reading: not a model this app can load, and not part of one either.
+ *  this is".
  */
-const UNRECOGNISED_NOTE =
-  "Nothing here recognises these — not a model this app can load, and not a " +
-  "part of one. Safe to delete.";
+const UNRECOGNISED_NOTE = "Cannot be loaded into Fused Render because the model type is not supported.";
 
 function totalSize(repos: AiModelRepo[]): number {
   return repos.reduce((bytes, repo) => bytes + repo.size, 0);
@@ -150,10 +147,7 @@ export function noEngineReason(repo: AiModelRepo): string {
   if (repo.capability === null) {
     // Agrees with the Unrecognised heading above the card, which is the only
     // other place on the page that has an opinion about this repo.
-    return (
-      "Nothing here recognises this repo — not a model this app can load, " +
-      "and not part of one."
-    );
+    return UNRECOGNISED_NOTE;
   }
   return (
     "No local engine reads this repo's weight format. The formats are not " +

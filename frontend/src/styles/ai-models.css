@@ -321,15 +321,18 @@
 }
 
 /* "Explore" is the local door — the model card view — and it wears .cc-iconbtn
-   like the ✕ beside it, so the card's actions read as one row of controls
-   rather than a word and some buttons. Still an <a>, because it navigates and
-   middle-click and copy-link have to keep working; this only restores the
-   dimensions and the hover the class expects on a <button>. */
+   like the ✕ beside it, so the card's actions read as one row of controls at
+   the same visual weight rather than a word and some buttons. Still an <a>,
+   because it navigates and middle-click and copy-link have to keep working;
+   this only restores the dimensions and the hover the class expects on a
+   <button>. No `color` override: `.cc-iconbtn` already sets the muted resting
+   colour, and an anchor here previously overrode it to `inherit`, which picked
+   up the card's full-brightness text instead — this Explore icon read heavier
+   than Delete right beside it, though both wear the same class. */
 .am-card-explore {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: inherit;
   text-decoration: none;
 }
 
@@ -711,10 +714,9 @@
   outline-offset: -1px;
 }
 
-/* The host disclosure, under the "Search results" heading — the same slot
-   .am-suggested-lede occupies under the other one, so the two faces of the tab
-   are heading, note, grid in that order either way. It rides .am-group-note's
-   spacing (the `:has` rule above binds it to its heading) and adds nothing. */
+/* The host disclosure, under the "Search results" heading. It rides
+   .am-group-note's spacing (the `:has` rule above binds it to its heading) and
+   adds nothing. */
 .am-hub-note {
   margin: 0 0 var(--am-gap-head);
 }
@@ -899,13 +901,19 @@
 /* Load / Unload. A word, not an icon: this is the one control on the page that
    spends MEMORY rather than disk, and an unlabelled glyph for "put 8GB of
    weights in RAM" is a guess the user should not have to make. Always visible
-   for the same reason. */
+   for the same reason.
+
+   Full `--fg`, not muted: it is the one action on the card worth spending
+   memory on, and it sat at the same dimness as the quiet icon row beside it
+   — Explore, the chevron, Delete — with nothing to tell an eye that this one
+   is the primary action rather than a fourth quiet control. `:disabled`'s
+   opacity still dims it for a refused or busy card. */
 .am-card-power {
   flex: 0 0 auto;
   padding: 3px 9px;
   font: inherit;
   font-size: 12px;
-  color: var(--fg-muted);
+  color: var(--fg);
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -913,8 +921,9 @@
   white-space: nowrap;
 }
 
+/* Only the background moves: the text is already `--fg` at rest, so repeating
+   that here would be a no-op dressed up as a hover rule. */
 .am-card-power:hover:not(:disabled) {
-  color: var(--fg);
   background: var(--bg-alt);
 }
 
@@ -927,8 +936,9 @@
   cursor: not-allowed;
 }
 
+/* Only the border changes here now — `color: var(--fg)` used to be this rule's
+   own job, back when the resting state below it was muted. */
 .am-card-power-on {
-  color: var(--fg);
   border-color: var(--accent);
 }
 
@@ -1017,19 +1027,6 @@
    — the 62ch override that used to be here made these the narrowest prose on
    the page, and they are the longest sentences on it, and the -2px nudge that
    was here is now the `:has` rule's job for every note on both tabs. */
-
-/* Why these particular models, under the SUGGESTED MODELS heading and above
-   the first capability heading. Rides .am-group-note — it is the same kind of
-   sentence as the notes under the headings below it, and giving it its own size
-   or colour would make the tab's opening line look like a banner. The extra
-   bottom margin is the only difference: it is introducing a run of sections
-   rather than captioning the one grid under it. Its opposite number is
-   .am-hub-note, which sits in the same place under the other heading and keeps
-   the smaller gap because it captions ONE grid rather than introducing a run of
-   capabilities. */
-.am-suggested-lede {
-  margin-bottom: var(--am-gap-section);
-}
 
 .am-suggest-note {
   margin-top: 6px;
