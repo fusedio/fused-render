@@ -6,6 +6,7 @@
     "control": "select",
     "options": [
       "default",
+      "fable",
       "opus",
       "opus[1m]",
       "sonnet",
