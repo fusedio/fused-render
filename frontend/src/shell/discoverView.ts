@@ -1,13 +1,14 @@
 // What the Discover tab is showing, decided in one place.
 //
 // The tab has two mutually exclusive faces — a curated shortlist and a grid of
-// Hub search results — and four pieces of chrome that have to agree about
-// which one is on screen: the grid itself, the ALL-CAPS heading that NAMES it,
-// the note under that heading, and the "searching huggingface.co" caption that
-// discloses the outbound request. Written inline they were separate `&&`s over
-// the same two strings, which is one chance per condition to leave one behind:
-// a preamble reading "picked to run on this machine" standing over a grid of
-// search results is the page describing cards that are not there any more.
+// Hub search results — and five pieces of chrome that have to agree about
+// which one is on screen: the grid itself, the heading that NAMES it, the note
+// under that heading, the "searching huggingface.co" caption that discloses the
+// outbound request, and the control that goes BACK. Written inline they were
+// separate `&&`s over the same two strings, which is one chance per condition
+// to leave one behind: a preamble reading "picked to run on this machine"
+// standing over a grid of search results is the page describing cards that are
+// not there any more, and a missing way back is a page with no exit.
 //
 // The heading is the newest of the four and the one the others hang off. The
 // faces used to differ only by whether a paragraph of prose was present, which
@@ -43,6 +44,20 @@ export interface DiscoverChrome {
   /** The disclosure that this is the one place in the app asking a third party
    *  a question. Only while there is a question. */
   showsSearchNote: boolean;
+  /** Whether to offer the way BACK to the shortlist.
+   *
+   *  True exactly when `view` is "results", and that is the whole point of it
+   *  living here: the escape hatch has to be on screen in every state the
+   *  reader can be stuck in, and the state that stranded people was the one an
+   *  ✕-on-the-input would have missed — a task picked from the select with an
+   *  empty search box. There is nothing in the box to clear, the suggestions
+   *  are gone, and the only route back is guessing that the select's first
+   *  option restores them.
+   *
+   *  Derived rather than asked as a second question, because two conditions
+   *  that are opposites today are two chances for a results page to have no way
+   *  off it. */
+  showsReset: boolean;
 }
 
 /** Which face the tab is showing, from the SETTLED query and task filter.
@@ -65,6 +80,10 @@ export function discoverChrome(q: string, task: string): DiscoverChrome {
     // conditions that happen to be opposites today.
     showsPreamble: !asked,
     showsSearchNote: asked,
+    // Asked a question, so there is a way back from the answer. Never in the
+    // curated state, where the control would undo nothing and a permanent
+    // "clear" would teach the reader that the page is always filtered.
+    showsReset: asked,
   };
 }
 

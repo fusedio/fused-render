@@ -455,12 +455,40 @@ export default function AiModelsDiscover({
   // rather than on every keystroke.
   const [settled, setSettled] = useState({ q: "", task: "", sort: "downloads" as HubSort });
   const timer = useRef<number | null>(null);
+  const searchBox = useRef<HTMLInputElement>(null);
 
   // Whether the page is ANSWERING A QUERY or offering a starting point, and the
-  // two captions that have to agree with it. One answer, three consumers —
-  // see `discoverView.ts` for why that is a module rather than three `&&`s.
+  // captions that have to agree with it. One answer, five consumers — see
+  // `discoverView.ts` for why that is a module rather than five `&&`s.
   const chrome = discoverChrome(settled.q, settled.task);
   const searching = chrome.view === "results";
+  // The SAME rule asked of the live controls rather than the settled query,
+  // for the one piece of chrome that belongs to the box instead of to the grid:
+  // the ✕ inside the search field. Everything else on the page describes what
+  // is RENDERED and must wait for the debounce; the ✕ describes what is TYPED,
+  // and a clear button that arrives 350ms after the first letter — or sits
+  // there for 350ms after emptying the box — is the control contradicting the
+  // field it lives in.
+  const live = discoverChrome(query, task);
+
+  /** Back to the curated view, in one act.
+   *
+   *  BOTH inputs, and that is the whole requirement. A control that emptied the
+   *  text and left the task filter set would leave the reader looking at an
+   *  empty search box, a page of results, and no suggestions — having done
+   *  exactly what the page told them to. The sort is deliberately untouched: it
+   *  does not push the tab out of the curated state, so resetting it would be
+   *  the button doing something nobody asked for.
+   *
+   *  Focus returns to the box because it is where the next thing happens, and
+   *  because the two controls that call this are one of them and a key pressed
+   *  inside it.
+   */
+  const clearSearch = () => {
+    setQuery("");
+    setTask("");
+    searchBox.current?.focus();
+  };
 
   useEffect(() => {
     // The filter list is small and comes from the server because only the
@@ -589,14 +617,47 @@ export default function AiModelsDiscover({
           where the only way to find it was to scroll past the thing it was
           supposed to be an alternative to. */}
       <div className="am-hub-controls">
-        <input
-          className="am-hub-search"
-          type="search"
-          value={query}
-          placeholder="Search models on the Hub…"
-          aria-label="Search models on the Hugging Face Hub"
-          onChange={(e) => setQuery(e.target.value)}
-        />
+        <div className="am-hub-field">
+          <input
+            ref={searchBox}
+            className="am-hub-search"
+            type="search"
+            value={query}
+            placeholder="Search models on the Hub…"
+            aria-label="Search models on the Hugging Face Hub"
+            onChange={(e) => setQuery(e.target.value)}
+            // Escape is the reflex for "put this back", and in this box it
+            // clears the TASK FILTER too — the same one act the ✕ performs, for
+            // the same reason. Not stopPropagation: nothing else on this page
+            // listens for Escape while a text field has focus, and swallowing
+            // it would break the next overlay that does.
+            onKeyDown={(e) => {
+              if (e.key !== "Escape" || !live.showsReset) return;
+              e.preventDefault();
+              clearSearch();
+            }}
+          />
+          {/* Inside the box, and it clears BOTH inputs. The native
+              type="search" ✕ is hidden in CSS precisely because it does not:
+              it empties the text and leaves a task filter behind, which is the
+              exact failure that looks broken — the box is empty, the reader has
+              done the obvious thing, and the suggestions still are not back.
+              Its visibility follows the LIVE controls rather than the settled
+              query, because it belongs to the box: appearing 350ms after the
+              first keystroke, or lingering that long after a clear, is the
+              control disagreeing with the field it sits in. */}
+          {live.showsReset && (
+            <button
+              type="button"
+              className="am-hub-clear"
+              onClick={clearSearch}
+              aria-label="Clear the search and show suggested models"
+              title="Clear the search and the task filter (Esc)"
+            >
+              ✕
+            </button>
+          )}
+        </div>
         <select
           className="field-control am-hub-select"
           value={task}
@@ -643,7 +704,25 @@ export default function AiModelsDiscover({
       <section className="am-section">
         <div className="am-section-head">
           <h3 className="am-section-title">{chrome.heading}</h3>
-          {summary && <span className="am-discover-summary">{summary}</span>}
+          <span className="am-discover-headmeta">
+            {summary && <span className="am-discover-summary">{summary}</span>}
+            {/* The second way back, in the row somebody looking at results they
+                did not want is already reading. The ✕ in the box is the one you
+                find when you go looking for it; this is the one you cannot
+                miss, and it says where it goes rather than what it erases —
+                "clear" describes the mechanism, and the reader's question is
+                "how do I get the suggestions back". */}
+            {chrome.showsReset && (
+              <button
+                type="button"
+                className="am-hub-back"
+                onClick={clearSearch}
+                title="Clear the search and the task filter"
+              >
+                ← Back to suggested models
+              </button>
+            )}
+          </span>
         </div>
 
         {/* One grid at a time. A query replaces the shortlist; clearing the box

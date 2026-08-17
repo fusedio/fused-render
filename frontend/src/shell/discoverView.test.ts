@@ -12,6 +12,7 @@ describe("discoverChrome", () => {
       heading: "Suggested models",
       showsPreamble: true,
       showsSearchNote: false,
+      showsReset: false,
     });
   });
 
@@ -21,7 +22,53 @@ describe("discoverChrome", () => {
       heading: "Search results",
       showsPreamble: false,
       showsSearchNote: true,
+      showsReset: true,
     });
+  });
+
+  it("offers the way back for a TASK FILTER on its own", () => {
+    // The complaint, exactly: pick "Text generation" from the select with an
+    // empty box and the shortlist is gone, with no visible way back — the only
+    // route is realising the select has an "Any task" option. An escape hatch
+    // keyed off the query text would be ABSENT in this state, which is the one
+    // state that most needs it.
+    expect(discoverChrome("", "automatic-speech-recognition").showsReset).toBe(true);
+  });
+
+  it("offers nothing to clear when there is nothing to clear", () => {
+    // In the curated state the control would be a button that undoes nothing,
+    // and a permanently visible "clear" teaches the reader that the page is
+    // always filtered.
+    expect(discoverChrome("", "").showsReset).toBe(false);
+    expect(discoverChrome("  ", " ").showsReset).toBe(false);
+  });
+
+  it("moves with the view it is supposed to escape, in every state", () => {
+    // One rule, not two: the control is on screen exactly when the results are.
+    // Split into its own condition, they drift, and the drift that matters is a
+    // results page with no way off it.
+    for (const [q, task] of [["", ""], ["a", ""], ["", "t"], ["a", "t"], [" ", " "]]) {
+      const chrome = discoverChrome(q, task);
+      expect(chrome.showsReset).toBe(chrome.view === "results");
+    }
+  });
+
+  it("comes back to the curated view when the reset clears BOTH inputs", () => {
+    // What the button does, stated as the thing it must produce. Clearing only
+    // the text is the failure this pins: the box is empty, the reader has done
+    // the obvious thing, and the suggestions still are not there.
+    const searching = discoverChrome("whisper", "text-to-image");
+    expect(searching.view).toBe("results");
+    expect(discoverChrome("", "")).toEqual({
+      view: "suggested",
+      heading: "Suggested models",
+      showsPreamble: true,
+      showsSearchNote: false,
+      showsReset: false,
+    });
+    // …and clearing only the query is NOT enough, which is why the control
+    // cannot be an ✕ wired to the input alone.
+    expect(discoverChrome("", "text-to-image").view).toBe("results");
   });
 
   it("names the grid on screen, and never the other one", () => {

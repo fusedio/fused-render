@@ -5756,6 +5756,17 @@ three weeks ago, and would cost nothing to open.
   than stacking under them, and clearing the box brings them back. The box sits
   above the sections because it is what the tab is for; underneath them, the
   only way to reach it was to scroll past the thing it is an alternative to.
+  **The way back is a CONTROL, not a thing to work out** (D317): "clearing the
+  box" is only obvious for a query somebody typed, and the state that stranded
+  people was a task picked from the select with an empty box — nothing to
+  clear, no suggestions, and the route back is guessing that the menu's first
+  option restores them. Two affordances, both resetting **query and task
+  together in one act** (`showsReset`, and `clearSearch` in the component): an
+  ✕ inside the search field, and "← Back to suggested models" in the results
+  heading row. Escape in the box does the same. A control that emptied only the
+  text would be the worst of the three outcomes — the reader does the obvious
+  thing, the box goes empty, and the suggestions still do not come back — which
+  is why the platform's own `type="search"` ✕ is hidden rather than relied on.
 - **HS-0c** **Each face names itself, in the same slot, in the same words'
   worth of chrome** (D314). One grid replacing another is only legible if the
   new one says what it is: "Suggested models" and "Search results", each with

@@ -633,17 +633,69 @@
 
 /* The box takes the width; the two menus take what they need. `flex: 1 1 260px`
    with a min is what makes the row collapse to a stacked search-then-menus
-   layout on a narrow window instead of squeezing a search field to nothing. */
-.am-hub-search {
+   layout on a narrow window instead of squeezing a search field to nothing.
+   It sits on the WRAPPER now, because the field is an input with a button
+   overlaid on it rather than a bare input. */
+.am-hub-field {
+  position: relative;
+  display: flex;
   flex: 1 1 260px;
   min-width: 180px;
-  padding: 7px 10px;
+}
+
+.am-hub-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Room on the right for the ✕, always — reserving it only while the button
+     is there would shift the text under the cursor on the first keystroke. */
+  padding: 7px 30px 7px 10px;
   font: inherit;
   font-size: 13px;
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
+}
+
+/* The platform's own clear button, removed. It empties the TEXT and leaves the
+   task filter set, which is the one outcome that looks broken — an empty search
+   box, a page of results and no suggestions, after the reader did the obvious
+   thing. Two ✕s in one field doing different things would be worse still. */
+.am-hub-search::-webkit-search-cancel-button {
+  display: none;
+}
+
+/* Ours, in the same place the platform's was, clearing both inputs. Muted until
+   hovered: it is an escape hatch, not an action the page is recommending. */
+.am-hub-clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.am-hub-clear:hover {
+  color: var(--fg);
+  background: var(--ctl-quiet-bg-hover);
+}
+
+.am-hub-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
 
 /* The two menus wear .field-control (styles/fields.css), the app's canonical
@@ -901,6 +953,45 @@
   flex: 0 0 auto;
   font-size: 11px;
   color: var(--fg-muted);
+}
+
+/* The heading's right-hand end holds two things in the results state — the
+   count and the way back — so they share the one slot rather than the way back
+   pushing the title off the left. */
+.am-discover-headmeta {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* "← Back to suggested models", beside the count. Deliberately LOUDER than the
+   count it sits next to — it is the only control in that row and the answer to
+   the question somebody reading unwanted results is asking, so it takes the
+   foreground colour where the count stays muted. Still a text button and not a
+   filled one: it undoes, and an undo should not look like the page's main
+   action. */
+.am-hub-back {
+  flex: 0 0 auto;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.am-hub-back:hover {
+  text-decoration: underline;
+}
+
+.am-hub-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 /* Why a capability cannot run here, and which backend serves it when it can.
