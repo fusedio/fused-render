@@ -448,6 +448,66 @@ def test_the_thumbnail_is_the_estimate_at_the_sigma_just_REACHED(
     assert got.tolist() == frame.reshape(-1).tolist()
 
 
+def _order_spies(monkeypatch, worker, base, events):
+    """Record every frame write and every progress tick, in the order they happen."""
+    real_write = worker.preview.Sink._write
+
+    def spy_write(self, rgb, grid):
+        events.append("frame")
+        return real_write(self, rgb, grid)
+
+    real_report = base.report_or_cancel
+
+    def spy_report(job=None, **fields):
+        events.append("tick %d" % fields["done"])
+        return real_report(job=job, **fields)
+
+    monkeypatch.setattr(worker.preview.Sink, "_write", spy_write)
+    monkeypatch.setattr(base, "report_or_cancel", spy_report)
+
+
+def test_the_FRAME_is_written_BEFORE_the_tick_that_announces_it(monkeypatch, base,
+                                                                tmp_path):
+    """The order is load-bearing and reads as arbitrary, so it is pinned rather
+    than left to be tidied up later.
+
+    `done` on the tick is exactly what `runtime.js` turns into the cache-busted
+    `&step=N` preview URL. Report first and a page can be handed step N's URL
+    before step N's PNG exists — `watchJob` polls about every 700ms and the
+    write is about 68ms, so the window is real. The first frame 404s, which is
+    survivable; the nastier half is that the URL is keyed by the step and will
+    never be requested again, so a fetch landing in that window caches the
+    PREVIOUS frame's bytes under step N's URL and that step shows a stale
+    picture for its whole duration.
+
+    Step 1 has no frame at all — a velocity needs two latents — which is the
+    documented early-404 and not this bug.
+    """
+    events = []
+    worker = loaded_worker(monkeypatch, base, FakePipe())
+    _order_spies(monkeypatch, worker, base, events)
+    worker.generate(_request(tmp_path))
+    assert events == ["tick 1", "frame", "tick 2", "frame", "tick 3",
+                      "frame", "tick 4"]
+
+
+def test_a_cancel_is_still_honoured_on_the_tick_it_arrives_on(monkeypatch, base,
+                                                             tmp_path):
+    """The cost of writing the frame first: the ✕ is learned one frame-write
+    later than it was. What must NOT change is which tick honours it — the
+    reply to the report is the only channel a cancel has, so the raise still
+    happens on that same callback and never a step later. A cancelled render
+    writing one extra frame is free; it is discarded on the way out."""
+    worker = loaded_worker(monkeypatch, base, FakePipe())
+    base.cancel_on_tick = 3          # the opening report, then two steps
+    with pytest.raises(base.Cancelled):
+        worker.generate(_request(tmp_path))
+    # Two `report_or_cancel` ticks reached, i.e. it unwound inside the second
+    # step's callback rather than carrying on into a third.
+    assert [tick["done"] for tick in base.ticks] == [0, 1, 2]
+    assert os.listdir(tmp_path) == []
+
+
 def test_a_VAE_with_no_fitted_projection_renders_exactly_as_BEFORE(
         monkeypatch, base, tmp_path):
     """No file, no branch — and no device sync either: the latents are handed

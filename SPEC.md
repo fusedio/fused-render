@@ -6495,7 +6495,13 @@ an AI Models page that could say what was on disk but not what was *running*.
   step**, advertised by the route as `previewPath` and handed to the page by
   `fused.ai.image` as a `previewUrl` on every `onProgress` tick — cache-busted
   by the step, because one path rewritten in place is one image as far as a
-  browser is concerned, and **null on the terminal tick and on the resolved
+  browser is concerned. **The frame is written before the tick that announces
+  it**, in both runners: `done` is what becomes `&step=N`, and a tick published
+  first can hand a page a URL whose file is still being written — which does not
+  merely 404, it caches the PREVIOUS frame's bytes under a URL that is never
+  requested again, so that step shows a stale picture for its whole duration.
+  The cost is that the ✕ is learned one frame-write later, still on the same
+  callback. `previewUrl` is **null on the terminal tick and on the resolved
   object**, because the file is discarded as the render unwinds and a page that
   followed the last `previewUrl` would end every render on a 404 exactly where
   the finished picture belongs. Blurring and upscaling it is the page's taste, not this

@@ -288,6 +288,23 @@ class _StepReporter:
         done = t + 1
         average = sum(started) / len(started) if started else None
         remaining = (steps - done) * average if average else None
+        # The live thumbnail, from the SAME hook and for the same reason the
+        # progress tick is here: this is the only place in a minutes-long
+        # `generate_image()` where anything can be seen. A CLOSURE, not the
+        # array — a sink that is not writing must not be charged for the
+        # conversion, which is what keeps the branch out of this loop and the
+        # two runners' callbacks the same shape.
+        #
+        # **BEFORE the tick, and the order is load-bearing** — the diffusers
+        # runner's `on_step_end` says why at length, and it is the same reason
+        # here because it is the same page reading the same URL: `done` becomes
+        # the cache-busted `&step=N`, and a tick published ahead of its frame can
+        # get the previous frame's bytes cached under this step's URL for the
+        # step's whole duration. It costs the ✕ one frame-write of latency.
+        sigma = _sigma_after(config, t)
+        if sigma is not None:
+            request["preview"].add(lambda: _as_numpy(latents), sigma=sigma,
+                                   grid=request["grid"])
         # `report_or_cancel`, not `report`: this callback is the ONLY point in a
         # minutes-long `generate_image()` where a stop can be honoured, and the
         # reply to this tick is how the ✕ gets here. Same sentence, same fields
@@ -300,16 +317,6 @@ class _StepReporter:
             # `KeyboardInterrupt`, so this is not swallowed and turned into a
             # half-rendered image — it unwinds the call, which is what a ✕ means.
             raise worker_base.Cancelled()
-        # The live thumbnail, from the SAME hook and for the same reason the
-        # progress tick is here: this is the only place in a minutes-long
-        # `generate_image()` where anything can be seen. A CLOSURE, not the
-        # array — a sink that is not writing must not be charged for the
-        # conversion, which is what keeps the branch out of this loop and the
-        # two runners' callbacks the same shape.
-        sigma = _sigma_after(config, t)
-        if sigma is not None:
-            request["preview"].add(lambda: _as_numpy(latents), sigma=sigma,
-                                   grid=request["grid"])
 
 
 def generate(body):
@@ -345,6 +352,9 @@ def generate(body):
     _request.clear()
     _request.update({"job": job, "steps": steps, "step_times": [], "last": started,
                      "preview": frames, "grid": preview.token_grid(width, height)})
+    # Step 0 is the one tick with no frame behind it, and that is not the
+    # ordering rule the reporter documents: a frame needs two latents, so
+    # nothing exists to write until the second step.
     worker_base.report(job=job, state="running", kind="task", unit="",
                        done=0, total=steps, detail="Denoising — step 0/%d" % steps)
     # The sink wraps the SAVE as well as the render: its exit is the lifecycle,

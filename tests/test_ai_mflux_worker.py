@@ -559,6 +559,43 @@ def test_PACKED_and_UNPATCHIFIED_latents_are_both_understood(
     assert written[0] == written[1]
 
 
+def test_the_FRAME_is_written_BEFORE_the_tick_that_announces_it(monkeypatch, base,
+                                                                tmp_path):
+    """The same ordering rule as the diffusers runner's, pinned the same way and
+    for the same reason: `done` on the tick is what `runtime.js` turns into the
+    cache-busted `&step=N` preview URL, so reporting first can hand a page the
+    URL for a frame that is not on disk — and because that URL is keyed by the
+    step and never requested twice, a fetch in the window caches the PREVIOUS
+    frame's bytes under it for that step's whole duration.
+
+    Two engines, one order. It reads as arbitrary from either side."""
+    import numpy
+
+    rng = numpy.random.default_rng(11)
+    model = FakeModel(latents=FakeLatents(_packed(rng)),
+                      sigmas=[1.0, 0.9, 0.7, 0.4, 0.0])
+    worker, _ = _previewing_worker(monkeypatch, base, tmp_path, model=model)
+    events = []
+    real_write = worker.preview.Sink._write
+
+    def spy_write(self, rgb, grid):
+        events.append("frame")
+        return real_write(self, rgb, grid)
+
+    real_report = base.report_or_cancel
+
+    def spy_report(job=None, **fields):
+        events.append("tick %d" % fields["done"])
+        return real_report(job=job, **fields)
+
+    monkeypatch.setattr(worker.preview.Sink, "_write", spy_write)
+    monkeypatch.setattr(base, "report_or_cancel", spy_report)
+    worker.generate(_request(tmp_path, width=512, height=512, steps=4,
+                             outPreview=str(tmp_path / "fox.preview.png")))
+    assert events == ["tick 1", "frame", "tick 2", "frame", "tick 3",
+                      "frame", "tick 4"]
+
+
 def test_a_variant_that_names_NO_autoencoder_renders_exactly_as_BEFORE(
         monkeypatch, base, tmp_path):
     """No file, no branch — and no conversion either: the latents go over as a

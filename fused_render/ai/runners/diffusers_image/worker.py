@@ -301,14 +301,18 @@ def generate(body):
         done = step + 1
         average = sum(step_times) / len(step_times) if step_times else None
         remaining = (steps - done) * average if average else None
-        # `report_or_cancel`, not `report`: this callback is the ONLY point in a
-        # minutes-long `pipe()` call where a stop can be honoured, and the reply
-        # to this tick is how the ✕ gets here.
-        worker_base.report_or_cancel(
-            job=job, kind="task", unit="", done=done, total=steps,
-            detail="Denoising — step %d/%d%s" % (done, steps, _eta(remaining)))
-        if worker_base.CANCEL.is_set():
-            raise worker_base.Cancelled()
+        # **The FRAME comes before the TICK, and the order is load-bearing.**
+        # `done` is what `runtime.js` turns into the cache-busted `&step=N`
+        # preview URL, so a tick published first can hand the page step N's URL
+        # while step N's PNG is still being written — the poll is about every
+        # 700ms and the write about 68ms, so the window is real. The 404 that
+        # produces is survivable; the nastier half is that the URL is keyed by
+        # the step and is never requested twice, so a fetch landing in the
+        # window caches the PREVIOUS frame's bytes under it and that step shows
+        # a stale picture for its whole duration. The cost of this order is that
+        # the ✕ is learned one frame-write later, which is 68ms against a step
+        # measured in seconds — and it is still honoured on THIS callback.
+        #
         # `callback_on_step_end_tensor_inputs` defaults to `["latents"]` and
         # `Flux2KleinPipeline._callback_tensor_inputs` is `["latents",
         # "prompt_embeds"]`, so the latents arrive here without asking for them.
@@ -324,8 +328,20 @@ def generate(body):
                 lambda: callback_kwargs["latents"].detach().to(
                     "cpu", torch.float32).numpy(),
                 sigma=sigma, grid=grid)
+        # `report_or_cancel`, not `report`: this callback is the ONLY point in a
+        # minutes-long `pipe()` call where a stop can be honoured, and the reply
+        # to this tick is how the ✕ gets here.
+        worker_base.report_or_cancel(
+            job=job, kind="task", unit="", done=done, total=steps,
+            detail="Denoising — step %d/%d%s" % (done, steps, _eta(remaining)))
+        if worker_base.CANCEL.is_set():
+            raise worker_base.Cancelled()
         return callback_kwargs
 
+    # Step 0 is the one tick with no frame behind it, and that is not the
+    # ordering bug above: a frame needs two latents, so nothing exists to write
+    # until the second step. `runtime.js` documents that early 404 as ordinary
+    # and tells a page to hide the <img> on error.
     worker_base.report(job=job, state="running", kind="task", unit="",
                        done=0, total=steps, detail="Denoising — step 0/%d" % steps)
     # The sink wraps the SAVE as well as the render: its exit is the lifecycle,
