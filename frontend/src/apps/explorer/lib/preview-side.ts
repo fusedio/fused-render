@@ -4,6 +4,29 @@
 // two sources with different timings, which is exactly the thing a test should
 // pin and a React component should not be the only statement of.
 //
+// **AN ABSENT `_side` MEANS OPEN, AT THIS FILE'S DEFAULT COMPANION** (D326), and
+// shut is the word `off` — the same reading the folder pane has always had, and
+// the reversal of the asymmetry both modules used to state at length ("file:
+// absent = CLOSED; folder: absent = OPEN"). The old rule was defensible on its
+// own terms — a sidebar is an extra beside a content view that is complete
+// without it, so nothing meant nothing — but it made the sidebar's presence a
+// PREFERENCE, and a preference has to be stored somewhere. It was, twice over:
+// in the URL, and from there into the file's session sidecar (lib/session), which
+// replayed it on every later bare open. So one file remembered a sidebar for
+// months while its neighbour never had one, and the app had no way back to a
+// uniform starting state. The owner's words were "we don't want any persisted
+// preference. similar to folder sidebars, they should always open at a fixed 30%
+// size on page refresh. any other changes being made (open/width) must be
+// persisted only for the session."
+//
+// So the whole of `_side` on a file is now a REQUEST FOR THIS DOCUMENT: read off
+// the URL at mount (`parseSide`), resolved against what the file offers on every
+// render (`resolveSide`), carried across the shell's pushState navigation because
+// the URL carries it, and gone on a refresh because a bare URL opens at the
+// default again. The width follows the same policy in `lib/side-store.ts`, and
+// `_side` is stripped from the session sidecar at both ends (lib/session,
+// server/session.py) so no old sidecar can put the old behaviour back.
+//
 // THE TWO SOURCES, and the whole reason this module exists:
 //
 //   OWN         the companions in the file's own stat.templates — `claude`, and
@@ -37,6 +60,14 @@
 // either way, so the only question open is whether it is allowed; treating it as
 // unsettled would move it between the content menu and the sidebar as the verdict
 // landed, which is a worse flash than the one this module removes.
+//
+// **THAT ASYMMETRY DOES NOT REACH `defaultSide`** — the one thing an absent `_side`
+// consults (D326). "Settled enough to be listed and toggled to" is not "settled
+// enough to OPEN BY ITSELF": `claude` ships a condition.py, so on every file it is
+// pending for as long as /api/fs/conditions takes, and auto-opening it would put an
+// empty column on screen that vanishes when a mount-backed file's verdict comes
+// back false. Both kinds of pending are excluded there and only there; see the
+// field.
 //
 // THE THIRD LIST, `menu`, and why it is not either of the two above: what the
 // SWITCHER shows is now EVERY COMPANION, ALWAYS — the ones this file has not
@@ -76,6 +107,18 @@ export interface SideSplitInput {
   // because the file has a `git` of its own).
   borrowed: TemplateEntry | null;
   borrowedPending: boolean;
+  // THIS FILE's condition.py verdicts are still in flight (`conditions === null`,
+  // lib/mode-visibility's `isModePending`). Read for ONE thing — `defaultSide`
+  // below — because an OWN gated companion is `settled` for every other purpose
+  // and deliberately so (see the header's asymmetry note), but must not be what
+  // an absent `_side` opens: there is nothing to put in the column until the
+  // gate answers, and the gate may say no.
+  //
+  // Separate from `borrowedPending` rather than folded into it because the two
+  // are different probes with different timings — this file's `/api/fs/conditions`
+  // and the PARENT's stat + gate — which is the same split Preview's
+  // `isSidePending` makes for exactly this reason.
+  conditionsPending?: boolean;
   // Every companion that EXISTS AS A BINDING, whether or not it may be shown: the
   // file's own sidebar templates BEFORE the visibility filter, plus the parent's
   // `git` however its gate voted (lib/dir-mode's `bound`). Order and duplicates
@@ -117,6 +160,58 @@ export interface SideSplit {
   on: boolean;
   // Something may yet land in the sidebar, so a `_side` naming it is tolerated.
   offered: boolean;
+  // WHAT AN ABSENT `_side` OPENS (D326), and null when nothing does yet.
+  //
+  // **THE LEADING COMPANION, OR NOTHING — never the best of what happens to have
+  // settled.** `all[0]` is the leader (the list is in ranking order), and while that
+  // one entry is unresolved this is null, however much has settled behind it. Two
+  // bugs sit either side of that sentence and the rule is what closes both:
+  //
+  //   opening a PENDING leader        `claude` ships a condition.py, so on every file
+  //                                  it is pending until /api/fs/conditions answers.
+  //                                  Auto-opening it puts an empty column on screen
+  //                                  (`src` null) which then VANISHES on a
+  //                                  mount-backed file, where the verdict is no —
+  //                                  the content pane's width jumping twice, seconds
+  //                                  apart on a cold mount, for a sidebar the file
+  //                                  never gets. A gated entry never being the
+  //                                  default is also what the content pane does
+  //                                  (`defaultMode`, CT-12, and the server's own
+  //                                  `_mark_conditions` docstring).
+  //   opening a SETTLED follower     the mirror image, and the worse of the two. A
+  //                                  file inside a repository has its borrowed `git`
+  //                                  cached per FOLDER, so on every file→file hop it
+  //                                  is settled at first paint while this file's
+  //                                  `claude` gate is freshly in flight. Taking "the
+  //                                  best resolved companion" opened the column on
+  //                                  Git and then SWAPPED it to Claude when the gate
+  //                                  allowed — content changing under the eyes of
+  //                                  whoever was already reading it, on the common
+  //                                  path rather than in a corner.
+  //
+  // Null means "not yet, ask again when the verdict lands" — the same posture `on`
+  // and `sideToggleTarget` take, and what makes the reconcile leave `_side` alone
+  // meanwhile instead of writing `off`.
+  //
+  // **WHY LIVE RECOMPUTATION IS SAFE ONCE THE RULE IS THIS**, rather than needing to
+  // be latched at first resolution: a verdict only ever REMOVES a companion, never
+  // adds one, so nothing can appear later and outrank the leader. The default can
+  // therefore only move when the entry it is on stops existing — the column falling
+  // away, or shifting to the next companion, because its own mode went. That is the
+  // one movement that must keep working, and a latch would have frozen it.
+  //
+  // A DEEP LINK is untouched by all of this, and so is a user's later switch:
+  // `resolveSide` resolves a NAMED mode against `all`, so it neither waits for the
+  // leader nor follows it.
+  //
+  // Note this is deliberately NOT `defaultSidebarMode` over some filtered list. That
+  // function answers "the best of these", which is the question that produced the
+  // swap; the question here is "what will still be true in a moment".
+  //
+  // It is also the value that decides the URL's SPELLING (`sideParam`): the
+  // default gets the clean URL, so only a deliberate second choice is written
+  // down. That is PT-9's rule, and the folder pane's `selectSide` normalisation.
+  defaultSide: string | null;
 }
 
 // The switcher's rows: the closed list of companions, each one either the real
@@ -159,37 +254,147 @@ export function sideSplit(i: SideSplitInput): SideSplit {
   // companion is `claude` has no content pane to sit a sidebar next to, so it
   // renders as it did before the split existed: chat, full width, content mode.
   const splittable = i.splitCapable && i.content.length > 0;
+  // Every reason a companion is not yet SHOWABLE, in one predicate — the borrowed
+  // entry answers to its own probe, everything else to this file's gates. Only
+  // `defaultSide` reads it; see the field's comment for why nothing else does.
+  const unresolved = (e: TemplateEntry) =>
+    e === i.borrowed ? i.borrowedPending : !!e.conditional && !!i.conditionsPending;
+  // THE LEADING COMPANION DECIDES, AND ONLY IT. `all` is already in ranking order
+  // (orderSidebarModes), so `all[0]` is what an absent `_side` would open — and
+  // while THAT entry is unresolved the answer is "not yet", whatever else has
+  // settled behind it. Filtering the unresolved ones out and taking the best of the
+  // rest is what this used to do, and it was wrong in the mirror-image way the
+  // field's comment describes: a settled companion took the default and was then
+  // DISPLACED when the leader's verdict allowed it.
+  const leader = all[0];
   return {
     menu: sidebarMenu(all, i.bound ?? []),
     all,
     settled,
     on: splittable && settled.length > 0,
     offered: splittable && all.length > 0,
+    defaultSide:
+      splittable && leader !== undefined && !unresolved(leader) ? leader.mode : null,
   };
 }
 
-// `_side` as read at MOUNT, exactly like `_mode`, so a bookmark or a shared link
-// restores the split. Resolved against `all` (see the header) so a `?_side=git`
-// deep link survives until the borrowed probe answers — and, for the same reason
-// stated the other way round, so a `?_side=git` on a file whose Git row is the
-// DISABLED placeholder resolves to null. The row is in `menu`, not in `all`; a
-// deep link to it is a deep link to an explanation, and is dropped exactly like
-// a `_side` naming a mode that does not exist.
+// THE VALUE `_side` TAKES WHEN THE USER HAS SHUT THE SIDEBAR — a word, not an
+// absent param, because absence means the opposite (see the header). Deliberately
+// the SAME word the folder pane uses (`listing/pane-side.ts`'s `PANE_SIDE_OFF`):
+// one param name across two surfaces already, so a second spelling for the same
+// state would make a `_side` carried between them mean different things
+// depending on which way the user walked. The two constants are asserted equal in
+// the test rather than one importing the other — a file module has no business
+// depending on the listing's, and the assertion catches a rename either way.
+export const SIDE_OFF = "off";
+
+// What the URL ASKED FOR, before anything about this file is consulted. Split out
+// of the resolution below because the two answer different questions and only one
+// of them can be held as state: the request is what the user chose and survives a
+// verdict landing, while the resolution is what this paint can honour.
 //
+//   open    false ONLY for an explicit `_side=off`. Absence, an empty value and
+//           an unknown mode are all OPEN — see the header, and note that "unknown
+//           reads as no-choice rather than as an error" is the folder pane's rule
+//           too (a hand-typed `_side=graph`, or a `_side=preview` carried in from
+//           a listing, must not leave the sidebar in a state nothing can render).
+//   mode    the companion NAMED, or null for "no choice yet". Not validated here:
+//           `resolveSide` owns the lists, so a mode this file cannot show is
+//           dropped there and lands on the default rather than on nothing.
+export interface SideRequest {
+  open: boolean;
+  mode: string | null;
+}
+
+// The state a bare URL asks for: open, at whatever this file offers first.
+const OPEN_UNCHOSEN: SideRequest = { open: true, mode: null };
+
 // LEGACY DEEP LINKS are the second branch. `?_mode=claude` is what every
 // bookmark, recent, saved session and shared URL from before the split says, and
 // it is still a perfectly clear request — "open this file's chat". It now means
 // the SIDEBAR: the content pane falls back to its default mode (effectiveActive
 // does that for free, since `claude` is no longer in its list) and
-// `reconcileSideSearch` rewrites the URL once.
-export function initialSide(search: string, split: SideSplit): string | null {
-  if (!split.offered) return null;
+// `reconcileSideSearch` drops the param once.
+//
+// It is read only where `_side` is silent, and an explicit `_side=off` therefore
+// beats it: a URL that says both "shut" and "open the chat" was assembled from a
+// close click on top of an old link, and the click is the newer of the two.
+export function parseSide(search: string): SideRequest {
   const params = new URLSearchParams(search);
-  const has = (m: string | null) => !!m && split.all.some((e) => e.mode === m);
-  const want = params.get("_side");
-  if (has(want)) return want;
+  const raw = params.get("_side");
+  if (raw === SIDE_OFF) return { open: false, mode: null };
+  if (raw !== null && raw !== "") return { open: true, mode: raw };
   const legacy = params.get("_mode");
-  return has(legacy) ? legacy : null;
+  if (legacy !== null && isSidebarMode(legacy)) return { open: true, mode: legacy };
+  return OPEN_UNCHOSEN;
+}
+
+// WHICH COMPANION IS ACTUALLY SHOWING, recomputed on every render — not stored,
+// so a verdict that lands cannot leave the screen disagreeing with the lists.
+//
+// The named request is resolved against `all` (see the header) so a `?_side=git`
+// deep link survives until the borrowed probe answers — and, for the same reason
+// stated the other way round, a `?_side=git` on a file whose Git row is the
+// DISABLED placeholder does not resolve. The row is in `menu`, not in `all`; a
+// deep link to it is a deep link to an explanation.
+//
+// What is NEW is where an unhonourable request lands: the DEFAULT, not nothing.
+// A denial says "this companion is not the one", never "shut the sidebar", and
+// the only thing that shuts it is the user (`_side=off`) or a file with nothing
+// to put in it. That is also what makes the switcher's disabled rows safe to
+// deep-link to: the URL resolves onward to something real instead of leaving a
+// closed column beside a param the user cannot act on.
+export function resolveSide(req: SideRequest, split: SideSplit): string | null {
+  if (!split.offered || !req.open) return null;
+  if (req.mode && split.all.some((e) => e.mode === req.mode)) return req.mode;
+  return split.defaultSide;
+}
+
+// SET OR DELETE ONE PARAM, TEXTUALLY, LEAVING EVERY OTHER BYTE ALONE. `null`
+// deletes; a value is appended (a replaced key therefore moves to the end, which
+// is the only difference from URLSearchParams.set and is not something any reader
+// can see).
+//
+// It exists because URLSearchParams was the writer and a round trip through it
+// RE-ENCODES what it merely passes through: `stretch=2,1471` came back as
+// `stretch=2%2C1471`, `sel=a b` as `sel=a+b`. Whatever this module returns is what
+// goes in the address bar AND what the session sidecar records, and LSN-2 says
+// that string is the shell's query verbatim — the same reason the session strip
+// itself is textual (platform/lib/session-params, server/session.py's
+// `_strip_side`). It used to be nearly unreachable, since the reconcile only fired
+// when `_side` disagreed; normalising the default away (`sideParam`) makes it fire
+// on ordinary links that were previously left alone — every `?_side=claude` inbox
+// handoff (shell/schedule-lib), every old bookmark — and on the first close of
+// every auto-opened sidebar, so the exposure is now most of the traffic.
+//
+// Both writers go through it: this module's reconcile and Preview's `setSide`.
+export function writeQueryParam(
+  search: string,
+  key: string,
+  value: string | null
+): string {
+  const kept = search
+    .split("&")
+    .filter((p) => p !== "" && p.split("=", 1)[0] !== key);
+  if (value !== null) kept.push(key + "=" + value);
+  return kept.join("&");
+}
+
+// The URL's SPELLING for a state, and the one writer's rule (used by Preview's
+// `setSide` and by the reconcile below, so the two cannot drift): the default
+// companion gets the CLEAN URL, a shut sidebar says `off`, and only a deliberate
+// second choice is written down. Null means DELETE the param.
+//
+// Normalising the default away is not cosmetic. It is what keeps a plain file
+// open from growing a param at all — and a param is exactly what got recorded and
+// replayed before (see the header), so the shortest URL that means "the usual
+// thing" is the one worth having.
+export function sideParam(
+  activeSide: string | null,
+  defaultSide: string | null
+): string | null {
+  if (activeSide === null) return SIDE_OFF;
+  return activeSide === defaultSide ? null : activeSide;
 }
 
 // What the toggle button acts on, and so what it looks like: whatever is open,
@@ -217,34 +422,64 @@ export function sideToggleTarget(
 //
 //   1. the legacy `?_mode=claude` migration above — drop the param the split
 //      re-homed, once. Only where the split is on offer, since everywhere else
-//      `_mode=claude` still names a real content mode.
+//      `_mode=claude` still names a real content mode. Note that the migration is
+//      now usually a pure DELETION: the sidebar opens at the chat from a bare URL
+//      anyway, so there is nothing to write in `_mode`'s place unless the chat is
+//      not what this file would open by itself.
 //   2. a `_side` this file cannot honour: a param carried in from another view
 //      (the folder pane writes `_side` too), or one whose gate has just DENIED
-//      the mode. It goes, rather than sitting in the URL for a session sidecar to
-//      record and replay on the next bare open (lib/session). The denied mode is
-//      still LISTED — as the disabled row that says why (see the header) — and
-//      that changes nothing here: a row the user cannot select is not a state the
-//      URL is allowed to hold.
-//   3. write `_side` when state moved without the user's click.
+//      the mode. It goes — but "goes" now means "back to absence, which means the
+//      default", not "the sidebar closes". The denied mode is still LISTED, as the
+//      disabled row that says why (see the header), and that changes nothing here:
+//      a row the user cannot select is not a state the URL is allowed to hold.
+//   3. write `_side` when state moved without the user's click, and equally DROP
+//      one that says no more than absence already says (`_side=claude` where
+//      claude is the default) — the normalisation `sideParam` states.
 //
-// A still-PENDING borrowed entry is neither honoured nor stripped: `activeSide`
-// is the pending mode, `_side` already says so, and this returns null. The verdict
-// is what settles it — allowed keeps the param, denied brings us back to job 2.
+// **A STILL-PENDING BORROWED ENTRY SUSPENDS ALL OF IT**, and there are two shapes
+// of that now. The old one: `activeSide` is the pending mode, `_side` already says
+// so, nothing to do. The new one: the request is OPEN, nothing is settled, so
+// there is no default to open at and `activeSide` is null — and `off` must NOT be
+// written there, because that would shut the sidebar for good on a file whose only
+// companion is about to prove it exists. Both leave `_side` exactly as it is; the
+// verdict is what settles it, and a denial that empties the list brings us back to
+// job 2 through `offered`.
 //
 // Only ever on a splitting surface: a panel pane renders `claude` as its content
 // mode and a folder's `_side` is the listing pane's (listing/pane-side.ts), so
 // nothing here may touch either.
 export function reconcileSideSearch(
   search: string,
-  o: { splitCapable: boolean; offered: boolean; activeSide: string | null }
+  o: {
+    splitCapable: boolean;
+    offered: boolean;
+    // The REQUEST's open bit, which `activeSide` alone cannot carry: "the user
+    // shut it" and "nothing has resolved yet" are both a null active side and
+    // want opposite things done to the URL (see the pending block above).
+    open: boolean;
+    activeSide: string | null;
+    defaultSide: string | null;
+  }
 ): string | null {
   if (!o.splitCapable) return null;
+  // READ through URLSearchParams (decoding is what a reader wants), WRITE through
+  // writeQueryParam (byte-preserving — see there).
   const params = new URLSearchParams(search);
   const legacy = params.get("_mode");
   const stale = o.offered && legacy !== null && isSidebarMode(legacy);
-  if (params.get("_side") === o.activeSide && !stale) return null;
-  if (o.activeSide) params.set("_side", o.activeSide);
-  else params.delete("_side");
-  if (stale) params.delete("_mode");
-  return params.toString();
+  // What the URL should say — `undefined` for "no verdict yet, leave `_side`
+  // alone" (the pending block above). A file with nothing on offer holds no
+  // `_side` at all, whatever was carried in.
+  const want =
+    !o.offered
+      ? null
+      : o.activeSide === null && o.open
+        ? undefined
+        : sideParam(o.activeSide, o.defaultSide);
+  const agrees = want === undefined || (params.get("_side") ?? null) === want;
+  if (agrees && !stale) return null;
+  let out = search.replace(/^\?/, "");
+  if (want !== undefined) out = writeQueryParam(out, "_side", want);
+  if (stale) out = writeQueryParam(out, "_mode", null);
+  return out;
 }
