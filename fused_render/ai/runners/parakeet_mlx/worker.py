@@ -57,6 +57,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import diarize  # noqa: E402 - the SHARED speaker labelling; see runners/diarize.py
+import engine_options  # noqa: E402 - what this engine cannot do, refused in ONE place
 import formats  # noqa: E402 - the shared format checks; see formats.py
 import partial  # noqa: E402 - the SHARED progressive transcript; see runners/partial.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
@@ -799,32 +800,11 @@ def _transcribe_regions(audio, clips, rate, job, row, total, transcribing_since,
     return segments
 
 
-#: Options this engine cannot honour, and the sentence each is refused with.
-#:
-#: **Refused, never ignored.** Parakeet is a transcription-only transducer: it
-#: has no translate task, no language argument (v3 detects among its 25
-#: languages and cannot be pinned to one) and no text conditioning. Accepting
-#: any of them and quietly doing something else is the failure this app treats
-#: as worst — a caller asks for English and gets French, with nothing on the
-#: row saying which engine decided. The messages name the ENGINE and the way
-#: out, because the reader's page is probably correct and simply resolved to a
-#: runner it was not written for (D302 makes that a user's choice).
-_UNSUPPORTED = {
-    "task": (
-        "the Parakeet engine only transcribes — it has no translate task. Ask "
-        "for task: 'transcribe', or switch this capability to a Whisper engine "
-        "on the AI Models page, which translates into English."),
-    "language": (
-        "the Parakeet engine has no 'language' option — it detects the "
-        "language itself (25 European languages on parakeet-tdt-0.6b-v3) and "
-        "cannot be pinned to one. Drop the option, or switch this capability "
-        "to a Whisper engine on the AI Models page."),
-    "initialPrompt": (
-        "the Parakeet engine has no 'initialPrompt' — a transducer decodes "
-        "audio with no text to condition on, so names and jargon cannot be "
-        "hinted the way they can on Whisper. Drop the option, or switch this "
-        "capability to a Whisper engine on the AI Models page."),
-}
+#: This runner's own code, as `runners/engine_options.py` and the registry
+#: spell it. A literal because a worker cannot import the registry (its venv
+#: has no `fused_render`), and `tests/test_ai_engine_options.py` pins that
+#: every code that table names is a registered runner.
+RUNNER_CODE = "parakeet-mlx"
 
 
 def generate(body):
@@ -851,13 +831,15 @@ def generate(body):
     if not out or not out_text:
         raise ValueError("'out' and 'outText' must be where to write the transcript")
 
-    task = str(body.get("task") or "transcribe")
-    if task != "transcribe":
-        raise ValueError(_UNSUPPORTED["task"])
-    if str(body.get("language") or ""):
-        raise ValueError(_UNSUPPORTED["language"])
-    if str(body.get("initialPrompt") or ""):
-        raise ValueError(_UNSUPPORTED["initialPrompt"])
+    task = str(body.get("task") or engine_options.TRANSCRIBE)
+    # The BACKSTOP, not the first refusal: the endpoint asks the same question
+    # of the same module before a job row exists, so an ordinary caller is told
+    # instantly rather than after a multi-gigabyte download and a load. This
+    # copy is here because neither the bridge nor the endpoint is the only door
+    # into this process — the same reason `speakers_or_raise` is called twice.
+    engine_options.unsupported_or_raise(
+        RUNNER_CODE, task=task, language=str(body.get("language") or ""),
+        initial_prompt=str(body.get("initialPrompt") or ""))
 
     # `is None`, not `get("vad", True)`: a JSON null is "not specified", and a
     # default reached only by an absent KEY inverts for the caller that spreads

@@ -69,7 +69,8 @@
  *     always a real position in the recording and never ahead of one. And
  *     Parakeet REFUSES three options rather than ignoring them —
  *     task: "translate", `language` (it detects its own, among 25 European
- *     languages) and `initialPrompt` — each with a message naming the engine.
+ *     languages) and `initialPrompt` — each rejecting .type "bad_request"
+ *     BEFORE a job opens, with a message naming the engine and the way out.
  *     The MODEL is not interchangeable between them — each engine loads its own
  *     format — so pick a repo from fused.ai.models.catalog() rather than
  *     hardcoding one.

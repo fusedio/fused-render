@@ -281,7 +281,7 @@ rec.estimatedSpeakers;              // 3 — only on a run that had to work it o
 **Three engines serve this capability and one of them is not Whisper**, so two things about the call are engine-dependent:
 
 - **Progress resolution.** The MLX Whisper runner reports once per decoded window (up to 30s of audio) and Parakeet once per 60s chunk, rather than per segment, so `job.done` can sit still and then jump. It is always a real position in the recording, never ahead of one.
-- **Parakeet refuses three options rather than ignoring them**: `task: "translate"` (it only transcribes), `language` (it detects among its 25 European languages and cannot be pinned) and `initialPrompt` (a transducer has no text to condition on). Each rejects with a sentence naming the engine and telling the reader to drop the option or switch engines. If your page needs any of the three, say so in the UI or check `active` in `fused.ai.models.list()` — the user chose that engine, your page did not.
+- **Parakeet refuses three options rather than ignoring them**: `task: "translate"` (it only transcribes), `language` (it detects among its 25 European languages and cannot be pinned) and `initialPrompt` (a transducer has no text to condition on). Each rejects `bad_request` **before a job opens**, with a sentence naming the engine and telling the reader to drop the option or switch engines — so you find out immediately rather than after a download. If your page needs any of the three, say so in the UI or check `active` in `fused.ai.models.list()` — the user chose that engine, your page did not.
 
 Everything else — the result shape, the two files, `onSegment`, the speaker labels, `vad` — is identical whichever one served you.
 

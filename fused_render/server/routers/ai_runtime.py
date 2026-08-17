@@ -39,10 +39,11 @@ from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, registry, supervisor
-# The `speakers` rule, imported rather than restated. It is the SAME module the
-# two whisper runners import out of their own venvs — which is why every heavy
-# import inside it is deferred, and why reading the rule here costs nothing.
-from fused_render.ai.runners import diarize, partial
+# The `speakers` rule and the per-engine option rules, imported rather than
+# restated. They are the SAME modules the runners import out of their own venvs
+# — which is why every heavy import inside them is deferred, and why reading a
+# rule here costs nothing.
+from fused_render.ai.runners import diarize, engine_options, partial
 from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability`. It imports nothing from here.
@@ -441,6 +442,29 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     if diarizing:
         try:
             speakers = diarize.speakers_or_raise(body.get("speakers"))
+        except ValueError as e:
+            return _error(str(e), status=400)
+
+    # …and what the ENGINE that will serve this cannot do at all (D319). Three
+    # engines share this capability now and one of them — Parakeet — has no
+    # translate task, no `language` argument and no text conditioning.
+    #
+    # Asked HERE, beside the other arguments a typo deserves an answer about,
+    # because the answer is already available: `for_capability` is the same
+    # resolution `supervisor._runner_or_raise` does a few lines down, so
+    # nothing is guessed and nothing is resolved twice differently. The worker
+    # refuses again on arrival — it is not the only door — but by then the user
+    # has paid for a job row, possibly a venv build and a multi-gigabyte
+    # download to be told something that was knowable before any of it.
+    #
+    # No runner at all is NOT a 400 here: that is the 409 below, which names
+    # the machine's reason rather than the request's.
+    engine = registry.for_capability(registry.SPEECH_TO_TEXT)
+    if engine is not None:
+        try:
+            engine_options.unsupported_or_raise(
+                engine.code, task=task, language=body.get("language"),
+                initial_prompt=body.get("initialPrompt"))
         except ValueError as e:
             return _error(str(e), status=400)
 

@@ -310,26 +310,44 @@ def fake_image_runner(tmp_path, monkeypatch):
     supervisor.reset()
 
 
-@pytest.fixture()
-def fake_transcribe_runner(tmp_path, monkeypatch):
-    """A registry whose ONLY runner transcribes, with the fake worker and this
-    interpreter — so no CTranslate2, no weights, no audio."""
-    folder = tmp_path / "fake_transcribe_runner"
+def _only_transcribe_runner(tmp_path, monkeypatch, code):
+    """A registry whose ONLY runner transcribes, under `code`, with the fake
+    worker and this interpreter — so no CTranslate2, no weights, no audio.
+
+    The code is a parameter because it is not decoration since D319: the
+    endpoint asks `runners/engine_options.py` what the RESOLVED runner cannot
+    do, so a test about that answer has to be able to say which runner resolved.
+    """
+    folder = tmp_path / ("fake_runner_" + code.replace("-", "_"))
     folder.mkdir()
     (folder / "worker.py").write_text(FAKE_TRANSCRIBE_WORKER)
     runner = registry.Runner(
-        code="fake-whisper", capability=registry.SPEECH_TO_TEXT,
+        code=code, capability=registry.SPEECH_TO_TEXT,
         folder=str(folder), label="Fake whisper",
     )
     monkeypatch.setattr(registry, "_RUNNERS", (runner,))
     # See `fake_image_runner`: the catalog is keyed by runner since D293, so the
     # fake backend brings its own default.
-    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-whisper", [
+    monkeypatch.setitem(catalog.SUGGESTIONS, code, [
         {"id": "org/fake-whisper", "label": "Fake whisper", "size_gb": None, "note": ""},
     ])
     monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
     monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
-    yield runner
+    return runner
+
+
+@pytest.fixture()
+def fake_transcribe_runner(tmp_path, monkeypatch):
+    yield _only_transcribe_runner(tmp_path, monkeypatch, "fake-whisper")
+    supervisor.unload()
+    supervisor.reset()
+
+
+@pytest.fixture()
+def fake_parakeet_runner(tmp_path, monkeypatch):
+    """The same fake worker, resolving under the PARAKEET code — which is what
+    makes the endpoint's per-engine refusals reachable from a test."""
+    yield _only_transcribe_runner(tmp_path, monkeypatch, "parakeet-mlx")
     supervisor.unload()
     supervisor.reset()
 
@@ -1997,6 +2015,64 @@ def test_diarizing_WITHOUT_a_count_is_accepted_and_estimates_it(
         # count from one that arrived as a null.
         assert "speakers" not in seen, sent
         _wait_job(response.json()["jobId"])
+
+
+@pytest.mark.parametrize("sent,needle", [
+    ({"task": "translate"}, "only transcribes"),
+    ({"language": "en"}, "'language' option"),
+    ({"initialPrompt": "Acme Corp"}, "'initialPrompt'"),
+])
+def test_an_option_the_RESOLVED_engine_cannot_honour_is_refused_before_a_job_opens(
+        client, fake_parakeet_runner, recording, sent, needle):
+    """D319/AI-10g. The worker refuses these too, but by then the user has paid
+    for a job row, a venv build and a multi-gigabyte download to be told no —
+    and the runner is resolved synchronously HERE, so the answer was available
+    before any of it. Same treatment as a bad `task` or `speakers`: an instant
+    400 with the sentence `runners/engine_options.py` holds."""
+    response = _post_transcribe(client, path=recording, **sent)
+
+    assert response.status_code == 400, (sent, response.json())
+    assert needle in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
+
+
+def test_an_ORDINARY_request_to_that_engine_still_runs(
+        client, fake_parakeet_runner, recording):
+    """The check is on the value of `task` and the presence of the other two:
+    every request carries `task: "transcribe"`, and a refusal keyed on presence
+    would refuse every call the engine exists to serve."""
+    started = _post_transcribe(client, path=recording, task="transcribe",
+                               language=None, initialPrompt=None)
+
+    assert started.status_code == 200, started.json()
+    _wait_job(started.json()["jobId"])
+
+
+def test_an_engine_with_NOTHING_to_refuse_is_asked_the_same_question(
+        client, fake_transcribe_runner, recording):
+    """The table is an exception list, so a runner absent from it accepts what
+    it always did — checked because a refusal that fired for every engine would
+    take `translate` away from both whisper runners and pass every parakeet
+    test while doing it."""
+    started = _post_transcribe(client, path=recording, task="translate",
+                               language="en", initialPrompt="Acme Corp")
+
+    assert started.status_code == 200, started.json()
+    _wait_job(started.json()["jobId"])
+
+
+def test_the_endpoint_and_the_worker_refuse_an_option_by_the_SAME_rule(
+        client, fake_parakeet_runner, recording):
+    """One sentence, one place. The endpoint hands the caller whatever
+    `runners/engine_options.py` raises, which is the module the worker imports
+    out of its own venv — so a message reworded there is reworded here."""
+    from fused_render.ai.runners import engine_options
+
+    response = _post_transcribe(client, path=recording, task="translate")
+    with pytest.raises(ValueError) as raised:
+        engine_options.unsupported_or_raise("parakeet-mlx", task="translate")
+    assert response.json()["error"] == str(raised.value)
 
 
 def test_the_server_and_the_workers_READ_a_speaker_count_by_the_SAME_rule(
