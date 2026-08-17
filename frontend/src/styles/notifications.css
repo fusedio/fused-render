@@ -130,13 +130,18 @@
   border-color: var(--fg-muted);
 }
 
-/* ---- Download manager (SPEC §36) ----------------------------------------- */
-/* One card listing every long-running operation any page reported. Sits between
-   the toasts and the server card — see NotificationHost for why the column is
-   ordered by lifetime. Like the server card it positions nothing; .notif-host
-   owns placement. Deliberately the same plate as a toast (--bg-alt, 8px radius,
-   the same shadow) so the corner reads as one surface rather than three
-   competing widgets. */
+/* ---- Activity card (SPEC §36) -------------------------------------------- */
+/* ONE card for work in progress: every long-running operation a page reported
+   (.dl-row) and every scheduled message about to run or running now (.q-row,
+   further down). Sits between the toasts and the server card — see
+   NotificationHost for why the column is ordered by lifetime. Like the server
+   card it positions nothing; .notif-host owns placement. Deliberately the same
+   plate as a toast (--bg-alt, 8px radius, the same shadow) so the corner reads as
+   one surface rather than three competing widgets.
+
+   The queue used to wear this same plate in a SECOND card stacked directly above,
+   which is what made the corner read as two competing widgets after all. The
+   `dl-` prefix is the card's, `q-` is the queue row's; both live here now. */
 .dl-host {
   /* A fixed comfortable width rather than shrink-to-fit: the column is a flex
      box that sizes to its widest child, so a card left to its content width
@@ -223,12 +228,16 @@
   border-top: 1px solid var(--border);
 }
 
-.dl-row {
-  padding: 8px 10px;
+/* One rule for every row in the list, whatever kind it is — a queue row above a
+   job row gets the same hairline as two job rows do. Stated on the container
+   rather than as `.dl-row + .dl-row` / `.q-row + .q-row` pairs, which is exactly
+   the sort of thing that silently loses the boundary BETWEEN the two kinds. */
+.dl-rows > * + * {
+  border-top: 1px solid var(--border);
 }
 
-.dl-row + .dl-row {
-  border-top: 1px solid var(--border);
+.dl-row {
+  padding: 8px 10px;
 }
 
 /* A reporter that went away: dimmed, because the numbers below are the last
@@ -263,8 +272,14 @@
   font-variant-numeric: tabular-nums; /* the percentage must not jitter as it counts */
 }
 
+/* Same 16px slot as the queue row's controls below, so the ✕ column lines up down
+   the whole list instead of stepping 4px sideways where the row kind changes. */
 .dl-x {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
   padding: 0 2px;
   font-size: 11px;
   line-height: 1;
@@ -356,43 +371,18 @@
   }
 }
 
-/* ---- Queue dock (shell/QueueDock.tsx) ------------------------------------ */
+/* ---- Queue rows in that card (shell/QueueDock.tsx) ----------------------- */
 /* Work that is about to run or running now: past-due scheduled messages waiting
-   to be claimed, and the turns already in flight. Sits directly above the
-   download manager and wears the SAME plate as it — one corner, one surface, not
-   a second widget competing with the first. It positions nothing; .notif-host
-   owns placement, like every other card in this column. */
-.q-host {
-  width: min(340px, calc(100vw - 32px));
-  max-width: 100%;
-  color: var(--fg);
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 6px 20px var(--shadow-lg);
-  animation: toast-in var(--dur-med) var(--ease-out);
-  overflow: hidden;
-}
+   to be claimed, and the turns already in flight. These are ROWS, not a card —
+   they sit in .dl-rows above the job rows, which is where the same run lands once
+   its turn has ended, so one scheduled message moves down one list instead of
+   hopping between two boxes. There is no .q-host any more, and no .q-head: the
+   plate, the header, the count and the collapse are the card's. */
 
-.q-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  font-size: 12px;
-}
-
-.q-summary {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-}
-
-/* The same quiet outline the manager's Clear wears: this is the card's secondary
-   action, not its subject. */
+/* Cancel all, in the card's header beside Clear. The same quiet outline .dl-clear
+   wears — a secondary action, not the card's subject — and a different promise
+   from it: this withdraws messages that have not gone, Clear dismisses rows for
+   work that has ended. */
 .q-all {
   flex: 0 0 auto;
   padding: 2px 8px;
@@ -414,18 +404,10 @@
   cursor: default;
 }
 
-.q-rows {
-  max-height: min(40vh, 300px);
-  overflow-y: auto;
-  border-top: 1px solid var(--border);
-}
-
+/* Matches .dl-row exactly — the two kinds share one list and must not read as two
+   pasted-together tables. The separator is .dl-rows > * + *, above. */
 .q-row {
   padding: 8px 10px;
-}
-
-.q-row + .q-row {
-  border-top: 1px solid var(--border);
 }
 
 .q-row-head {
@@ -446,12 +428,19 @@
 
 /* The reason this card exists: a run parked on a permission prompt was
    unreachable. The icon is the row's way THERE, so it sits beside the ✕ that is
-   the row's way out. */
+   the row's way out.
+
+   One 16px box for every slot occupant (.q-spin below, and .dl-x on a job row
+   above), because the ✕ is a text glyph and the others are 12px icons: without the
+   min-width, a row swapping its ✕ for the claimed-state spinner drags Open ~4px
+   sideways as the entry moves queued → sending — measured, and fixed twice. */
 .q-open,
 .q-x {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-width: 16px;
   padding: 0 2px;
   font-size: 11px;
   line-height: 1;
@@ -472,6 +461,48 @@
   cursor: default;
 }
 
+/* The one ring the app uses (buttons-modal.css's .btn), stated here because these
+   controls carry no .btn class and a 12px glyph button is exactly the kind a
+   keyboard user loses. Every control in the card, both row kinds and the header:
+   one list means one tab order, and a ring that stopped at the queue rows would
+   make the job rows below them look unreachable. */
+.dl-toggle:focus-visible,
+.dl-clear:focus-visible,
+.dl-x:focus-visible,
+.q-all:focus-visible,
+.q-open:focus-visible,
+.q-x:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Where the ✕ would be on a CLAIMED row, which gets no cancel at all: the server
+   refuses `sending` on purpose, so the card offers nothing rather than a button
+   whose only outcome is a refusal. Same 16px slot as .q-x (above) so the Open
+   icon beside it does not slide as the row moves queued → sending → live, and it
+   turns, because the job of standing here is to say "brief, moving" and not
+   "stuck, control missing". Not focusable and no hover — there is nothing to
+   press; the sentence in .q-status is what explains it (roleText). Full turns, so
+   the blanket prefers-reduced-motion rule (styles/reduced-motion.css) leaves it
+   parked at 0deg rather than mid-tilt. */
+.q-spin {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  padding: 0 2px;
+  line-height: 1;
+  color: var(--fg-muted);
+  animation: q-spin 0.8s linear infinite;
+}
+
+@keyframes q-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .q-status {
   margin-top: 4px;
   font-size: 11px;
@@ -485,7 +516,9 @@
 }
 
 /* What a cancel actually did — including the half that was refused because it
-   was already away. Not a toast: it answers a button in this card. */
+   was already away. Not a toast: it answers a button in this card, and it sits at
+   the card's foot below the rows (outside the collapse, since Cancel all is in the
+   header and pressable while the list is folded). */
 .q-note {
   padding: 6px 10px 8px;
   font-size: 11px;

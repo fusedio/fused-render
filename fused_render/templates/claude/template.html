@@ -837,33 +837,69 @@
   }
   #back:hover { color: var(--fg); border-color: var(--border-strong); background: var(--surface); }
 
-  /* the scheduled-message block (see the #schedblock markup) */
+  /* the scheduled-message block (see the #schedblock markup)
+     It rides the COMPOSER'S column — same 720px measure, same 20px gutter as
+     #composer-chat below it — so it reads as a lid on that box rather than as a
+     band across the pane. No entry animation and no reserved space: the composer
+     is anchored at the bottom of #chat's flex column and #logwrap is the only
+     child that grows, so this appears into height the transcript gives up and the
+     box under the reader's cursor does not move (see applyComposerBlockState,
+     which puts a bottom-pinned transcript back at the bottom). */
   #schedblock {
     flex-shrink: 0;
-    display: flex;
-    align-items: flex-start;
-    /* WRAPS, because this pane is often 340px wide: unwrapped, the two buttons
-       kept their width and squeezed the sentence into a 60px column of single
-       words. Below the body's basis the actions take a line of their own. */
-    flex-wrap: wrap;
-    gap: 10px;
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--border);
-    /* A tint of the accent rather than a solid band: the notice has to read as
-       a state this pane is IN, not as a message in the transcript below it. */
-    background: color-mix(in srgb, var(--accent) 8%, var(--panel));
-    font-size: 12px;
-    line-height: 1.45;
+    max-width: 720px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 0 20px 6px;
   }
   #schedblock[hidden] { display: none; }
   /* Never on the landing page: there is no session there, so nothing can be
      pending "in this conversation" — the same rule #topbar and #logwrap take. */
   #chat.home #schedblock { display: none; }
-  #schedblock .sb-ic { color: var(--accent-text); flex-shrink: 0; line-height: 1.45; }
-  #schedblock .sb-body { flex: 1 1 200px; min-width: 0; }
-  #schedblock .sb-line { color: var(--fg); }
-  #schedblock .sb-why { color: var(--dim); margin-top: 2px; }
-  #schedblock .sb-acts { display: flex; gap: 6px; flex-shrink: 0; margin-left: auto; }
+  #schedblock .sb-card {
+    display: flex;
+    align-items: flex-start;
+    /* WRAPS, because this pane is often 340px wide: unwrapped, the buttons kept
+       their width and squeezed the message into a 60px column of single words.
+       Below the body's basis the actions take a line of their own. */
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    padding: 8px 11px;
+    border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+    /* Slightly tighter than the composer's 20px: a lid, not a second box of
+       equal weight. */
+    border-radius: 14px;
+    /* A tint of the accent rather than a solid band: the notice has to read as
+       a state this pane is IN, not as a message in the transcript above it. */
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  #schedblock .sb-body { flex: 1 1 190px; min-width: 0; }
+  #schedblock .sb-why { display: flex; gap: 6px; color: var(--dim); }
+  #schedblock .sb-ic { color: var(--accent-text); flex-shrink: 0; }
+  /* The scheduled message itself — the loudest thing in the card, because it is
+     the fact that explains the block. ONE line: a prompt is arbitrarily long and
+     three wrapped lines of it above the composer is the wall of text this
+     replaced. The whole text is on the title. */
+  #schedblock .sb-msg {
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* A refused cancel, in the one colour this page keeps for a loss. `:empty`
+     rather than `hidden`, so the line costs nothing when there is nothing to
+     say (see renderSchedBlock — it is written every render, keyed to the entry). */
+  #schedblock .sb-note { color: var(--error); }
+  #schedblock .sb-note:empty { display: none; }
+  #schedblock .sb-acts {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
   #schedblock .sb-acts button {
     background: transparent;
     border: 1px solid var(--border-strong);
@@ -880,7 +916,35 @@
     border-color: var(--accent);
     color: var(--accent-text);
   }
+  #schedblock .sb-acts button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
   #schedblock .sb-acts button:disabled { opacity: .55; cursor: default; }
+  /* ARMED — one press in, and the next one cancels every future run of a repeat.
+     The colour changes with the label because the button is now a different
+     question, and this is the page's only red. */
+  #schedblock .sb-acts button.armed,
+  #schedblock .sb-acts button.armed:hover:not(:disabled) {
+    border-color: var(--error);
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
+  }
+  /* The secondary action, shaped so it cannot be mistaken for the escape: no
+     border, dim, underlined like the link it behaves as. Editing a schedule
+     leaves the message pending, so a control that looked like the way out here
+     would be the banner lying (see the sb-edit handler). */
+  #schedblock .sb-acts .sb-quiet {
+    border-color: transparent;
+    color: var(--dim);
+    padding: 3px 4px;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  #schedblock .sb-acts .sb-quiet:hover:not(:disabled) {
+    border-color: transparent;
+    color: var(--fg);
+  }
   /* The box itself says it is shut, since the banner is at the other end of the
      pane and a reader who clicks into a dead textarea is owed an answer there. */
   #box:disabled {
@@ -2839,31 +2903,51 @@
       <span class="tb-file" id="banner-sub"></span>
       <span id="session" class="mono"></span>
     </div>
+    <div id="logwrap"><div id="log"></div><div id="queue"></div></div>
     <!-- A scheduled message pending IN THIS SESSION closes the composer, and this
          is the notice that says why (Akshil, 2026-08-17). The reason is CONTEXT
          POLLUTION, not politeness: a task is a session, so anything typed before
          a scheduled message fires ends up inside that task's context — the run
          reads a conversation the person who scheduled it never wrote.
 
+         DIRECTLY ABOVE THE COMPOSER, not above the log: it explains a box that
+         will not type, and a notice about a dead control belongs against the
+         control. It used to sit under the top bar, one pane-height away from the
+         thing it was about (Akshil, 2026-08-17). Arriving here costs the reader
+         nothing, because #logwrap is #chat's only `flex: 1` child — the height
+         this takes comes out of the TRANSCRIPT and the composer does not move.
+
          A banner and not a modal: the transcript stays readable and the chat
          stays navigable, which is the whole difference between "you cannot type
-         here" and "you cannot use this page". It sits ABOVE the log rather than
-         above the composer so it never moves the box the reader is looking at,
-         and it is `hidden` until a pending entry names this session — the block
-         is a fact about the schedule, so a schedule that cannot be read shows
-         nothing and blocks nothing (see applyComposerBlock). -->
-    <div id="schedblock" hidden role="status">
-      <span class="sb-ic" aria-hidden="true">⚠</span>
-      <div class="sb-body">
-        <div class="sb-line"></div>
-        <div class="sb-why"></div>
-      </div>
-      <div class="sb-acts">
-        <button id="sb-cancel" type="button">Cancel message</button>
-        <button id="sb-resched" type="button">Reschedule</button>
+         here" and "you cannot use this page". `hidden` until a pending entry
+         names this session — the block is a fact about the schedule, so a
+         schedule that cannot be read shows nothing and blocks nothing (see
+         applyComposerBlock).
+
+         The BODY is the scheduled message itself, not a paragraph about context
+         (Akshil, 2026-08-17 — "instead of this big text, show the schedule
+         message"). Seeing the words that are about to run is what makes the shut
+         box make sense; one short line above it says when, and the full text
+         rides on the title. -->
+    <div id="schedblock" hidden>
+      <div class="sb-card" role="status">
+        <div class="sb-body">
+          <div class="sb-why"><span class="sb-ic" aria-hidden="true">⏱</span><span class="sb-when"></span></div>
+          <div class="sb-msg"></div>
+          <div class="sb-note"></div>
+        </div>
+        <!-- Exactly ONE bordered control, and it is the one that actually reopens
+             the box — cancel for a one-off, stop-the-repeat for a repeat. The
+             other is a quiet link because editing a schedule leaves the message
+             pending: it is a thing you may want, never the way out. Labels are
+             written by renderSchedBlock, which is the only place that knows
+             which of the two cases this is. -->
+        <div class="sb-acts">
+          <button id="sb-stop" type="button"></button>
+          <button id="sb-edit" class="sb-quiet" type="button">Edit schedule</button>
+        </div>
       </div>
     </div>
-    <div id="logwrap"><div id="log"></div><div id="queue"></div></div>
     <!-- `display: contents` is in the stylesheet, deliberately not here: an inline
          declaration cannot be overridden by the narrow layout's collapse, and
          the CSS force flag (`important`) is forbidden in this file (D146).
@@ -7725,8 +7809,8 @@ function backHere() {
 // field is exactly what "+ New task" already does. Nothing is validated here —
 // this navigates, it does not create.
 //
-// `editId` is the second errand this same hop serves: the block banner's
-// Reschedule, which opens the form ON an entry that already exists rather than
+// `editId` is the second errand this same hop serves: the block banner's "Edit
+// schedule", which opens the form ON an entry that already exists rather than
 // on a new one. It rides the SAME `?new=1&…` deep link rather than a route of
 // its own, because the destination is one form either way and the params it
 // already consumes (target, message, session, back) are exactly what an edit
@@ -10922,14 +11006,28 @@ function scheduleResetForNewTranscript() {
 // the proximity.
 //
 // A BANNER, not a modal: the transcript stays readable and the session list
-// stays reachable. It carries the only two actions that can honestly reopen the
-// box — cancel that message, or reschedule it — because a notice that explains a
-// dead control without offering the way out is just an apology.
+// stays reachable. It carries ONE action, and that action is whichever one
+// actually reopens the box — which is not the same control in the two cases:
+//
+//   * a one-off pending message: cancelling it unblocks, full stop;
+//   * a REPEAT: cancelling the occurrence unblocks nothing, because
+//     `_materialize` arms the next one and it blocks again. The only thing that
+//     reopens the box is stopping the repeat itself — `schedule.cancel(template_id)`,
+//     which already means "no further runs" and takes the pending occurrence
+//     with it.
+//
+// The banner used to offer "Cancel this run" and "Reschedule" for both, and both
+// were wrong for a repeat: rescheduling leaves the message pending, so the block
+// survives it, and cancelling one run only moved the block to the next one — the
+// old copy said so in its own body, which was an admission that its own button
+// did not work (Akshil, 2026-08-17). A control whose only outcome leaves the user
+// still blocked does not belong in a notice about being blocked.
 const schedBlockEl = document.getElementById("schedblock");
-const schedBlockLine = schedBlockEl.querySelector(".sb-line");
-const schedBlockWhy = schedBlockEl.querySelector(".sb-why");
-const schedBlockCancel = document.getElementById("sb-cancel");
-const schedBlockResched = document.getElementById("sb-resched");
+const schedBlockWhen = schedBlockEl.querySelector(".sb-when");
+const schedBlockMsg = schedBlockEl.querySelector(".sb-msg");
+const schedBlockNote = schedBlockEl.querySelector(".sb-note");
+const schedBlockStop = document.getElementById("sb-stop");
+const schedBlockEdit = document.getElementById("sb-edit");
 const BOX_PLACEHOLDER = box.placeholder;
 
 // The pending messages that would land in this conversation, soonest first.
@@ -10939,7 +11037,18 @@ let schedBlockers = [];
 // The entry whose cancel came back refused (it was already away). Kept by ID so
 // the sentence belongs to a message rather than to the banner — see
 // renderSchedBlock.
-let schedCancelRefused = "";
+let schedStopRefused = "";
+// The entry whose STOP has been pressed once. Stopping a repeat loses every
+// future run and nothing on this page can put them back, so it takes two presses
+// — the template's own idiom (see snapAction, and the ✕ / "Back to chat" pair),
+// where the button becomes the question in place rather than raising a dialog.
+//
+// Page state and keyed by ID, not a class on the button, for the reason
+// schedStopRefused is: the 15s poll re-renders this card, and an armed button
+// that quietly disarmed itself a few seconds after the press would be worse than
+// no confirm at all. A DIFFERENT entry arriving in front clears it — that press
+// was aimed at the repeat that was on screen.
+let schedStopArmed = "";
 
 function schedBlocked() { return schedBlockers.length > 0; }
 
@@ -10982,14 +11091,19 @@ function schedWhenText(iso) {
   return "at " + at + " on " + d.toLocaleDateString();
 }
 
-// The message's own first line, which is what the user typed and therefore what
-// they will recognise — the same label the job registry gives a scheduled run.
-function schedLabel(entry) {
-  const line = String((entry && entry.message) || "").split("\n")
-    .find((l) => l.trim().length);
-  const text = (line || "").trim();
-  if (!text) return "A scheduled message";
-  return text.length > 60 ? text.slice(0, 59) + "…" : text;
+// The scheduled message itself, on one line. This is the BODY of the banner and
+// the whole of what it shows about the task (Akshil, 2026-08-17 — "instead of this
+// big text, show the schedule message"): reading the words that are about to run
+// is what makes a shut composer make sense, where a paragraph about context
+// pollution only described it.
+//
+// Whitespace COLLAPSES rather than the first line winning: a prompt that opens
+// "Read the following and:" would otherwise preview as its own preamble. The CSS
+// ellipses whatever does not fit, so nothing is cut at a fixed character count
+// that a 340px pane and a 720px one would both get wrong.
+function schedMsgLine(entry) {
+  const text = String((entry && entry.message) || "").replace(/\s+/g, " ").trim();
+  return text || "A scheduled message";
 }
 
 // A pending OCCURRENCE of a repeat carries `template_id`; a template itself
@@ -10999,43 +11113,75 @@ function schedIsRepeat(entry) {
   return !!(entry && (entry.template_id || entry.repeats || entry.rule));
 }
 
+// What id, posted to /api/schedule/cancel, actually reopens this box. For a
+// repeat that is the TEMPLATE — the occurrence is replaced the moment it is
+// skipped, so cancelling it moves the block rather than lifting it.
+function schedStopTarget(entry) {
+  return schedIsRepeat(entry) && entry.template_id
+    ? String(entry.template_id) : String((entry && entry.id) || "");
+}
+
 function renderSchedBlock() {
   const next = schedBlockers[0];
-  if (!next) { schedBlockEl.hidden = true; return; }
+  // Nothing blocking: hide it, and put the button back cold. A hidden card left
+  // holding an armed press is a destructive control one poll away from being on
+  // screen again — the class goes with the state that justified it.
+  if (!next) {
+    schedBlockEl.hidden = true;
+    schedStopArmed = "";
+    schedBlockStop.classList.remove("armed");
+    return;
+  }
   const others = schedBlockers.length - 1;
   const repeat = schedIsRepeat(next);
-  const name = '"' + schedLabel(next) + '"';
   const when = schedWhenText(next.due);
-  // The SOONEST is named and the rest are counted: naming one is what makes the
-  // banner answer "what is coming?", and a list of five would be a schedule page
-  // in a strip above a chat.
-  let line = repeat
-    ? name + " repeats — the next run is " + when + "."
-    : name + " runs " + when + ".";
-  if (others > 0) {
-    line += " And " + others + (others === 1 ? " more message" : " more messages")
-      + " after it.";
-  }
-  schedBlockLine.textContent = line;
-  // The recurring case is the one that must not read like a short wait. A repeat
-  // always has a next occurrence, so this thread is read-only until the repeat
-  // itself is changed — and cancelling one run does not do that, it skips one run
-  // and the server arms the next. Saying "cancel and carry on" here would be the
-  // banner lying about its own button.
+  // ONE short line, and it earns every word: when it goes, and the reason the box
+  // is shut — a task IS this session, so words typed first are read by that run.
+  // The SOONEST is named and the rest are counted, because naming one is what
+  // answers "what is coming?" and a list of five would be the Tasks page in a
+  // strip above a chat.
+  //
+  // The recurring case still must not read like a short wait — a repeat always
+  // has a next occurrence — but it says so in a clause, not in four lines: the
+  // honest cost now lives in the BUTTON, which stops the repeat instead of
+  // skipping one run of it.
   let why = repeat
-    ? "Messages you send now would join this task's context. This thread stays "
-      + "read-only for as long as the repeat is on — cancelling one run only "
-      + "moves the block to the next one. Reschedule to change or stop the repeat."
-    : "Messages you send now would join this task's context.";
-  // A cancel that was REFUSED has to survive the re-render the same cancel asks
-  // for. Written into the line rather than beside it, and keyed to the entry it
-  // was about, so the poll that reconciles the store cannot quietly wipe the one
-  // sentence the user needs — and a different message coming up next clears it.
-  if (schedCancelRefused === next.id) {
-    why += " That message could not be cancelled — it may already be running.";
-  }
-  schedBlockWhy.textContent = why;
-  schedBlockCancel.textContent = repeat ? "Cancel this run" : "Cancel message";
+    ? "Repeats here, next " + when + " — anything you type joins it."
+    : "Runs here " + when + " — anything you type joins it.";
+  if (others > 0) why += " " + others + " more after it.";
+  schedBlockWhen.textContent = why;
+  // The message, and the whole of it on the title: the line is one ellipsed row,
+  // and a reader who wants the rest should not have to open the Tasks page.
+  schedBlockMsg.textContent = schedMsgLine(next);
+  schedBlockMsg.title = String(next.message || "");
+  // A refusal has to survive the re-render the same click asks for. Written from
+  // page state keyed to the ENTRY, not straight onto the node, so the poll that
+  // reconciles the store cannot quietly wipe the one sentence the user needs —
+  // and a different message coming up next clears it.
+  schedBlockNote.textContent = schedStopRefused === next.id
+    ? (repeat ? "The repeat is still on — it may already be running."
+              : "Still scheduled — it may already be running.")
+    : "";
+  // The armed press belongs to the entry it was made against.
+  if (schedStopArmed && schedStopArmed !== next.id) schedStopArmed = "";
+  const armed = schedStopArmed === next.id;
+  // Say what the control DOES, and for the repeat say what it costs on the press
+  // that spends it. "Stop the repeat" is the only label here that is true: it is
+  // the one action that reopens this box, and the second press names the loss
+  // because no control on this page can put those runs back.
+  schedBlockStop.textContent = repeat
+    ? (armed ? "Cancel every future run" : "Stop the repeat")
+    : "Cancel this message";
+  schedBlockStop.title = repeat
+    ? "Stops the repeating task: this chat reopens and no further runs are scheduled"
+    : "Cancels this scheduled message, and this chat reopens";
+  schedBlockStop.classList.toggle("armed", armed);
+  // While the stop is armed the quiet slot is the way back out of it, and nothing
+  // else — a press that navigated away from a half-confirmed destructive action
+  // would leave the reader unsure which of the two things they had just done.
+  schedBlockEdit.textContent = armed ? "Keep it" : "Edit schedule";
+  schedBlockEdit.title = armed ? "Leave the repeat on"
+    : "Open this task on the Tasks page — editing it leaves this chat blocked";
   schedBlockEl.hidden = false;
 }
 
@@ -11048,7 +11194,22 @@ function renderSchedBlock() {
 // button, and a chat that cannot stop its own running turn is a worse state than
 // the one this feature prevents.
 function applyComposerBlockState() {
+  // THE LAYOUT SHIFT, handled rather than reserved. The card sits directly above
+  // the composer, so the one thing it must never do is move the box a reader is
+  // reaching for — and it does not: #logwrap is the only `flex: 1` child of
+  // #chat, so the height the card takes is height the TRANSCRIPT gives up and
+  // the composer stays exactly where it was. Nothing is animated and no space is
+  // reserved; an empty strip above every unblocked composer would be a permanent
+  // cost paid for a rare state.
+  //
+  // What DOES move is the transcript's last line, by the card's height, so a
+  // reader who was at the bottom is put back at the bottom. Measured before the
+  // render, applied only on the hidden → shown edge: on the way out the log grows
+  // downward and there is nothing to correct.
+  const wasHidden = schedBlockEl.hidden;
+  const pinned = wasHidden && nearBottom();
   renderSchedBlock();
+  if (pinned && !schedBlockEl.hidden) scrollBottom();
   const blocked = schedBlocked();
   box.disabled = blocked;
   // Short, because this box is 300px wide in the side pane and a longer line is
@@ -11071,48 +11232,91 @@ function clearComposerBlock() {
   applyComposerBlockState();
 }
 
-schedBlockCancel.addEventListener("click", async () => {
+schedBlockStop.addEventListener("click", async () => {
   const next = schedBlockers[0];
   if (!next || !next.id) return;
-  schedBlockCancel.disabled = true;
+  const repeat = schedIsRepeat(next);
+  const target = schedStopTarget(next);
+  if (!target) return;
+  // TWO PRESSES for a repeat, and only for a repeat. The write below stops the
+  // recurring task, which spends every run it would ever have made, and nothing
+  // on this page can restore them — so the first press only arms, and the label
+  // it arms into names that loss ("Cancel every future run"). A one-off is a
+  // single press: cancelling it loses one message the user can schedule again,
+  // and a confirm on that would be ceremony.
+  //
+  // The button becomes the question, in place, which is this template's idiom
+  // (snapAction's "Really go back?", the ✕ / "Back to chat" pair) rather than a
+  // dialog over a chat the reader may be about to keep using.
+  if (repeat && schedStopArmed !== next.id) {
+    schedStopArmed = String(next.id);
+    applyComposerBlockState();
+    return;
+  }
+  schedStopArmed = "";
+  schedBlockStop.disabled = true;
   try {
     // The one write this template makes to the schedule store, and it exists
     // because the block it lifts is this template's own. X-Fused is the guard
     // every mutating schedule POST requires (D3) — a header a foreign page
     // cannot send without a preflight we never answer.
+    //
+    // `target` is the TEMPLATE's id for a repeat and the entry's own for a
+    // one-off — see schedStopTarget. `schedule.cancel` already reads a template
+    // id as "no further runs" and cancels the materialized occurrence with it,
+    // so one endpoint serves both cases.
     const res = await fetch("/api/schedule/cancel", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Fused": "1" },
-      body: JSON.stringify({ id: next.id }),
+      body: JSON.stringify({ id: target }),
     });
     if (!res.ok) throw new Error(String(res.status));
     // Applied locally so the box opens on the click rather than on the next poll
     // — 15 seconds of dead composer after a successful cancel reads as a button
-    // that did nothing. The poll below is still the source of truth, and for a
-    // repeat it is what re-blocks on the occurrence the server arms next.
-    schedCancelRefused = "";
-    schedBlockers = schedBlockers.slice(1);
+    // that did nothing. The poll below is still the source of truth.
+    //
+    // A stopped repeat takes EVERY blocker that belongs to it, not just the first:
+    // the template is cancelled, so an occurrence of it left in the list would
+    // have the banner naming a run the server has already dropped.
+    schedStopRefused = "";
+    schedBlockers = repeat
+      ? schedBlockers.filter((e) => schedStopTarget(e) !== target)
+      : schedBlockers.slice(1);
     applyComposerBlockState();
   } catch (err) {
     // A cancel that raced the send is refused, not silently swallowed: the entry
     // is away, the composer stays shut, and that is the true state. Recorded
     // against the ENTRY so the reconciling poll below re-renders it rather than
     // wiping it (renderSchedBlock).
-    schedCancelRefused = String(next.id);
+    schedStopRefused = String(next.id);
     applyComposerBlockState();
   } finally {
-    schedBlockCancel.disabled = false;
+    schedBlockStop.disabled = false;
   }
   pollScheduledRuns();
 });
 
-schedBlockResched.addEventListener("click", () => {
+schedBlockEdit.addEventListener("click", () => {
   const next = schedBlockers[0];
   if (!next) return;
+  // Armed: this is the way back out, and nothing else.
+  if (schedStopArmed === next.id) {
+    schedStopArmed = "";
+    applyComposerBlockState();
+    return;
+  }
+  // NOT the escape, and shaped so it cannot be read as one (see the .sb-quiet
+  // rule). Editing a schedule leaves the message PENDING, so the block survives
+  // the trip — this is here because "make it later" or "change what it says" is
+  // a real thing to want while looking at the task that is holding the chat, not
+  // because it reopens the box.
+  //
   // The same handoff the composer's calendar button makes, pointed at an entry
-  // that already exists — one deep link, one form. What travels is the SCHEDULED
-  // message's own words, not the box's: the box is shut, and the thing being
-  // edited is that message.
+  // that already exists — one deep link, one form. The occurrence's own id is
+  // what travels even for a repeat, because the Tasks page resolves an
+  // occurrence to its template before it opens the form. What travels as the
+  // draft is the SCHEDULED message's words, not the box's: the box is shut, and
+  // the thing being edited is that message.
   openScheduler(String(next.message || ""), String(next.id || ""));
 });
 

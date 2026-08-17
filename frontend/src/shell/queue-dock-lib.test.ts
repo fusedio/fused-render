@@ -1,14 +1,17 @@
-// The queue dock's rules. The card is the one global surface for work that is
-// about to run or running now, and everything that could be got subtly wrong
-// here is about WHICH work that is: past due only, one row per entry, and a
+// The rules for the queue's rows in the one bottom-right activity card — the one
+// global surface for work that is about to run or running now. Everything that
+// could be got subtly wrong here is about WHICH work that is: past due only, one
+// row per entry, one row per unit of work across BOTH halves of the card, and a
 // Cancel all that counts only what it can actually withdraw.
 import { describe, expect, it } from "bun:test";
 import type { ScheduledMessage } from "@platform/lib/api";
-import { dockJobs, SCHEDULE_JOB_PREFIX, type Job } from "@platform/lib/jobs";
+import { jobRows, jobsSummary, SCHEDULE_JOB_PREFIX, type Job } from "@platform/lib/jobs";
 import {
+  queueCount,
   queueRows,
   roleText,
   rowCancelKind,
+  showCancelAll,
   withdrawableCount,
 } from "./queue-dock-lib";
 
@@ -92,44 +95,139 @@ describe("roleText", () => {
     expect(roleText(row, "")).toBe("Queued · due 2m ago");
   });
 
-  it("names the claimed state as its own", () => {
-    expect(roleText({ entry: entry(), role: "sending" }, "")).toBe("Starting…");
+  it("names the claimed state as its own, and says why it has no cancel", () => {
+    // The row loses its ✕ at this point, so the line has to explain the absence —
+    // a row that goes quiet with no control and no sentence reads as stuck.
+    expect(roleText({ entry: entry(), role: "sending" }, "")).toBe(
+      "Starting… · too late to cancel",
+    );
   });
 });
 
 describe("cancel", () => {
-  it("routes a live turn to the job registry and everything else to the queue", () => {
+  it("routes a live turn to the job registry and a queued one to the queue", () => {
     // Different promises: un-sending a message the sender has not taken yet, and
     // stopping a process that is running.
     expect(rowCancelKind({ entry: entry(), role: "live" })).toBe("job");
-    expect(rowCancelKind({ entry: entry(), role: "sending" })).toBe("queued");
     expect(rowCancelKind({ entry: entry(), role: "queued" })).toBe("queued");
   });
 
+  it("offers a claimed row no cancel at all — the server refuses every one", () => {
+    // `schedule.cancel_queued` allows exactly pending -> cancelled and refuses
+    // `sending` on purpose ("the helper is already away"). A button whose only
+    // possible outcome is a refusal is worse than no button.
+    expect(rowCancelKind({ entry: entry({ state: "sending" }), role: "sending" })).toBe(
+      "none",
+    );
+  });
+
   it("counts for Cancel all only what Cancel all can take", () => {
+    // live, claimed, and two waiting: Cancel all can withdraw the two.
     const rows = queueRows(
-      [entry({ id: "a" })],
-      [entry({ id: "b" })],
+      [entry({ id: "a", state: "sent" })],
+      [entry({ id: "b", state: "sending" })],
       [entry({ id: "c" }), entry({ id: "d" })],
     );
-    expect(withdrawableCount(rows)).toBe(3);
+    expect(withdrawableCount(rows)).toBe(2);
+    expect(showCancelAll(rows)).toBe(true);
+  });
+
+  it("hides Cancel all when nothing on the card can be withdrawn", () => {
+    // A dock full of work that has already gone: "all" would name zero messages.
+    const gone = queueRows(
+      [entry({ id: "a", state: "sent" })],
+      [entry({ id: "b", state: "sending" }), entry({ id: "c", state: "sending" })],
+      [],
+    );
+    expect(withdrawableCount(gone)).toBe(0);
+    expect(showCancelAll(gone)).toBe(false);
+    // And for one withdrawable row the row's own ✕ is the same action, named.
+    const one = queueRows([], [entry({ id: "b", state: "sending" })], [entry({ id: "c" })]);
+    expect(showCancelAll(one)).toBe(false);
+  });
+
+  it("changes the control set as one entry moves queued → sending → live", () => {
+    // The three snapshots the dock actually polls, for the SAME entry. What must
+    // not happen is a control decided once when the row appeared: waiting offers
+    // a withdrawal, claimed offers nothing, in flight offers the job stop.
+    const id = "e1";
+    const waiting = queueRows([], [], [entry({ id })]);
+    const claimed = queueRows([], [entry({ id, state: "sending" })], []);
+    const flight = queueRows([entry({ id, state: "sent" })], [], []);
+    expect([waiting, claimed, flight].map((rows) => rowCancelKind(rows[0]))).toEqual([
+      "queued",
+      "none",
+      "job",
+    ]);
+    // and only the waiting snapshot counts toward Cancel all
+    expect([waiting, claimed, flight].map(withdrawableCount)).toEqual([1, 0, 0]);
   });
 });
 
-describe("dockJobs", () => {
-  it("leaves the live scheduled run to the dock above, and keeps everything else", () => {
+describe("queueCount", () => {
+  it("calls only an unclaimed message waiting — a claimed one has already gone", () => {
+    // The header count's whole job is to not overstate. `sending` means the
+    // scheduler took the entry and the helper is away (which is why the row has no
+    // cancel at all), so counting it as "queued" would describe a message that is
+    // no longer withdrawable as if it were.
+    const rows = queueRows(
+      [entry({ id: "a", state: "sent" })],
+      [entry({ id: "b", state: "sending" })],
+      [entry({ id: "c" }), entry({ id: "d" })],
+    );
+    expect(queueCount(rows)).toEqual({ waiting: 2, running: 2 });
+    expect(queueCount([])).toEqual({ waiting: 0, running: 0 });
+  });
+});
+
+describe("one card, one count", () => {
+  // The header the merged card prints. Its counts come from the queue's rows and
+  // its job rows together, because there is one list and one header over it.
+  it("says queued, not running, when nothing has actually begun", () => {
+    const waiting = queueCount(queueRows([], [], [entry({ id: "c" }), entry({ id: "d" })]));
+    expect(jobsSummary([], waiting)).toBe("2 queued");
+    expect(jobsSummary([], { waiting: 1, running: 0 })).toBe("1 queued");
+  });
+
+  it("counts the queue and the jobs as one number once anything is running", () => {
+    const mixed = queueCount(queueRows([entry({ id: "a", state: "sent" })], [], [entry({ id: "c" })]));
+    // one live turn + one waiting message + one running download = three
+    expect(jobsSummary([job({ id: "d", kind: "download" })], mixed)).toBe("3 running");
+  });
+
+  it("keeps 'downloading' for a card whose work really is only downloads", () => {
+    const jobs = [job({ id: "d", kind: "download" })];
+    expect(jobsSummary(jobs, { waiting: 0, running: 0 })).toBe("1 downloading");
+    // one scheduled message alongside it and the noun has to generalise
+    expect(jobsSummary(jobs, { waiting: 1, running: 0 })).toBe("2 running");
+  });
+
+  it("describes what finished only when nothing is happening at all", () => {
+    const done = [job({ id: "a", state: "done" }), job({ id: "b", state: "done" })];
+    expect(jobsSummary(done, { waiting: 0, running: 0 })).toBe("2 finished");
+    // a queued message outranks the finished rows: it is the news
+    expect(jobsSummary(done, { waiting: 1, running: 0 })).toBe("1 queued");
+  });
+});
+
+describe("jobRows", () => {
+  it("gives a live scheduled run one row, not one in each half of the card", () => {
+    // Its queue row is directly above, carries the link to the session and prints
+    // this very job's status line. A job row beside it is the same run twice.
     const jobs = [
       job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state: "running" }),
       job({ id: "sys:ai-model:repo", state: "running" }),
     ];
-    expect(dockJobs(jobs).map((j) => j.id)).toEqual(["sys:ai-model:repo"]);
+    expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:ai-model:repo"]);
   });
 
-  it("keeps a finished scheduled run — that row is the outcome report", () => {
+  it("keeps a finished scheduled run — that row is the end of the lifecycle", () => {
+    // queued → starting → running → finished/failed, in one list: the entry has
+    // left the server's queue by now, so this row is all there is to say so.
     const jobs = [
       job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state: "error", message: "boom" }),
       job({ id: `${SCHEDULE_JOB_PREFIX}e2`, state: "done" }),
     ];
-    expect(dockJobs(jobs)).toHaveLength(2);
+    expect(jobRows(jobs)).toHaveLength(2);
   });
 });
