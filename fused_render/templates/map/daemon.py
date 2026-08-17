@@ -15,9 +15,10 @@ import sys
 import threading
 import time
 import traceback
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 # Frozen desktop launchers do not consistently put a directly executed data
 # script's directory on sys.path. Resolve sibling template modules from this
@@ -31,7 +32,17 @@ from raster_engine import RasterEngine
 from vector_engine import VectorEngine
 
 
-IDLE_TIMEOUT = int(os.environ.get("MAP_VIEWER_IDLE_TIMEOUT", "1800"))
+# 0 disables the idle exit, which is the default: every tile URL the page holds
+# embeds this process's port, so exiting silently breaks every raster already on
+# the map — and the page cannot tell that from a real tile error. Staying
+# resident costs one idle process; exiting cost a map that never recovers.
+IDLE_TIMEOUT = int(os.environ.get("MAP_VIEWER_IDLE_TIMEOUT", "0"))
+
+# A rendered tile is expensive and the URL that names it already carries every
+# input: the source fingerprint, the style revision, and this process's port. So
+# the browser may keep it, and panning back over ground it has already drawn
+# costs nothing. Metadata routes report live progress and stay uncacheable.
+TILE_CACHE_CONTROL = "public, max-age=86400"
 
 
 class MapServer(ThreadingHTTPServer):
@@ -41,6 +52,12 @@ class MapServer(ThreadingHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     server: MapServer
+    # HTTP/1.0 closes the socket after every response, so a viewport of tiles
+    # cost a viewport of TCP handshakes. Every response here carries an accurate
+    # Content-Length, which is what keep-alive needs; the timeout reaps the
+    # thread an idle connection would otherwise park forever.
+    protocol_version = "HTTP/1.1"
+    timeout = 65
 
     def log_message(self, _format, *_args):
         return
@@ -62,13 +79,15 @@ class Handler(BaseHTTPRequestHandler):
         expected = self.server.token  # type: ignore[attr-defined]
         return bool(supplied) and secrets.compare_digest(supplied, expected)
 
-    def _headers(self, status: int, content_type: str, length: int):
+    def _headers(
+        self, status: int, content_type: str, length: int, cache: str = "no-store"
+    ):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(length))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Map-Token")
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         self.end_headers()
 
     def _upstream(self, parsed):
@@ -100,8 +119,8 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         return True
 
-    def _bytes(self, status: int, body: bytes, content_type: str):
-        self._headers(status, content_type, len(body))
+    def _bytes(self, status: int, body: bytes, content_type: str, cache: str = "no-store"):
+        self._headers(status, content_type, len(body), cache)
         if self.command != "HEAD":
             try:
                 self.wfile.write(body)
@@ -169,7 +188,7 @@ class Handler(BaseHTTPRequestHandler):
             if tile is None:
                 self._json(404, {"error": "unknown source"})
             else:
-                self._bytes(200, tile, "image/png")
+                self._bytes(200, tile, "image/png", TILE_CACHE_CONTROL)
             return
 
         if len(parts) == 5 and parts[0] == "vtiles" and parts[4].endswith(".pbf"):
@@ -195,9 +214,13 @@ class Handler(BaseHTTPRequestHandler):
             if tile is None:
                 self._json(404, {"error": "unknown source"})
             elif not tile:
-                self._bytes(204, b"", "application/vnd.mapbox-vector-tile")
+                self._bytes(
+                    204, b"", "application/vnd.mapbox-vector-tile", TILE_CACHE_CONTROL
+                )
             else:
-                self._bytes(200, tile, "application/vnd.mapbox-vector-tile")
+                self._bytes(
+                    200, tile, "application/vnd.mapbox-vector-tile", TILE_CACHE_CONTROL
+                )
             return
 
         self._json(404, {"error": "not found"})
@@ -208,6 +231,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._json(403, {"error": "forbidden"})
             return
+        if parsed.path == "/shutdown":
+            self._json(200, {"ok": True, "pid": os.getpid()})
+            # serve_forever runs on the main thread; shutdown() blocks until it
+            # returns, so it cannot be called from the thread serving this
+            # request.
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+
         try:
             if parsed.path == "/describe":
                 request = self._read_json()
@@ -255,12 +286,40 @@ def _idle_monitor(server: MapServer):
             return
 
 
+def _already_serving(state_path: Path, version: str) -> bool:
+    """Whether a healthy service for this exact build is already registered.
+
+    The caller serializes spawns on a lock, but it cannot serialize its own
+    death: a render killed by its timeout while waiting for a cold start
+    releases the lock without ever recording the daemon it began, and the next
+    render starts another. Each survivor then holds a full geospatial runtime
+    and competes for the same work, which is how one slow start turns into a
+    machine full of daemons. Checking here ends it — whoever loses simply
+    exits.
+    """
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if state.get("version") != version or int(state["pid"]) == os.getpid():
+            return False
+        url = (
+            f"http://127.0.0.1:{int(state['port'])}/ping"
+            f"?t={quote(str(state['token']), safe='')}"
+        )
+        with urllib.request.urlopen(url, timeout=2) as response:
+            return json.load(response).get("version") == version
+    except (OSError, ValueError, KeyError):
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--state", required=True)
     parser.add_argument("--cache", required=True)
     parser.add_argument("--version", required=True)
     args = parser.parse_args()
+
+    if _already_serving(Path(args.state), args.version):
+        return
 
     token = secrets.token_urlsafe(32)
     server = MapServer(("127.0.0.1", 0), Handler)
@@ -285,13 +344,18 @@ def main():
         state_path,
         {
             "version": args.version,
+            # Which copy of the template this process is running, so that only
+            # its own replacement retires it. A second checkout sharing this
+            # cache directory is a different service, not a stale one.
+            "home": str(HERE),
             "port": port,
             "token": token,
             "pid": os.getpid(),
             "started_at": time.time(),
         },
     )
-    threading.Thread(target=_idle_monitor, args=(server,), daemon=True).start()
+    if IDLE_TIMEOUT > 0:
+        threading.Thread(target=_idle_monitor, args=(server,), daemon=True).start()
     try:
         server.serve_forever(poll_interval=0.25)
     finally:

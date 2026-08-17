@@ -11,7 +11,9 @@ import type { MenuItem } from "@platform/ui/ContextMenu";
 // stub has to precede the (therefore dynamic) import — same trade as
 // fs-clipboard.test.ts: the suite carries no DOM and this is cheaper than one.
 (globalThis as { location?: unknown }).location = new URL("http://x/");
-const { archiveName, buildCompressItems, freeArchivePath } = await import("@apps/explorer/lib/fs-actions");
+const { archiveName, buildCompressItems, claudeTerminalCommand, freeArchivePath } = await import(
+  "@apps/explorer/lib/fs-actions"
+);
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -112,4 +114,23 @@ test("no submenu entry carries a nested submenu (only one level is rendered)", (
   for (const it of buildCompressItems(true, () => {})) {
     if (it !== "separator") expect((it as MenuItem).submenu).toBeUndefined();
   }
+});
+
+// ---- claudeTerminalCommand ------------------------------------------------
+// This string goes to the CLIPBOARD for the user to paste into a shell, so it
+// has to survive that paste verbatim: a quote in a filename is the case that
+// would otherwise produce a broken — or a differently-valid — command.
+test("claudeTerminalCommand cd's a dir into itself and a file into its parent", () => {
+  expect(claudeTerminalCommand("/Users/a/proj", true, "/Users/a")).toBe("cd '/Users/a/proj' && claude");
+  expect(claudeTerminalCommand("/Users/a/proj/index.html", false, "/Users/a/proj")).toBe(
+    "cd '/Users/a/proj' && claude",
+  );
+  // A file at the filesystem root: normDir's own edge (see the root-parent case
+  // above), and the one input that could emit `cd '' && claude`.
+  expect(claudeTerminalCommand("/index.html", false, "")).toBe("cd '/' && claude");
+});
+
+test("claudeTerminalCommand quotes a path a shell would otherwise split or reinterpret", () => {
+  expect(claudeTerminalCommand("/Users/a/my proj", true, "/Users/a")).toBe("cd '/Users/a/my proj' && claude");
+  expect(claudeTerminalCommand("/Users/a/it's", true, "/Users/a")).toBe(`cd '/Users/a/it'\\''s' && claude`);
 });

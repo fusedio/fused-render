@@ -10,13 +10,15 @@
 // bookmark exactly like the sidebar row would.
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { navigate, navigateUrl, urlForFsPath, EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath, withPreviewFlag, EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
 import { listDir, rawUrl, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
 import { bestPeekFile, foldProbePick, isPreviewImage, peekRank } from "@apps/explorer/lib/folder-peek";
 import type { ProbePick } from "@apps/explorer/lib/folder-peek";
 import { iconForEntry } from "@platform/ui/FileIcons";
+import logoMarkDark from "@assets/logo-black-bg-transparent.png";
+import logoMarkLight from "@assets/logo-white-bg-transparent.png";
 import { armBookmark, isBookmarkMissing, splitBookmarkUrl } from "@platform/lib/bookmarks";
 import type { Bookmark } from "@platform/lib/bookmarks";
 import { bookmarkFsPath } from "@apps/explorer/sidebar/BookmarksSection";
@@ -57,8 +59,14 @@ function joinPath(dir: string, name: string): string {
   return (dir.endsWith("/") ? dir : dir + "/") + name;
 }
 
-// Display-only live preview: scaled iframe + a shield keeping clicks on the card.
+// Display-only live preview: scaled iframe + a shield keeping clicks on the
+// card. The `_preview=1` stamp is what keeps a peek from counting as an OPEN:
+// the embed shell reads it once at load (router.IS_PREVIEW) and forwards it
+// onto every /render it builds, so a card peeking at an app's entry page never
+// records the app open (GET /render records by default, D301) — without it,
+// scrolling a folder card into view reshuffles the /apps hub's recency order.
 export function LivePreview({ src }: { src: string }) {
+  src = withPreviewFlag(src);
   return (
     <span className="fhb-preview" aria-hidden="true">
       <iframe
@@ -252,7 +260,25 @@ function FolderStack({ path }: { path: string }) {
             </span>
           );
         })}
-      {shown.length === 0 && settled && <span className="fhb-note">Empty folder</span>}
+      {/* Nothing to stack: the mark stands in the card's place. Both theme
+          renders are in the DOM; CSS shows the one matching data-theme. */}
+      {shown.length === 0 && settled && (
+        <span className="fhb-note fhb-empty">
+          <img
+            className="fhb-empty-mark fhb-empty-mark-dark"
+            src={logoMarkDark}
+            alt=""
+            aria-hidden="true"
+          />
+          <img
+            className="fhb-empty-mark fhb-empty-mark-light"
+            src={logoMarkLight}
+            alt=""
+            aria-hidden="true"
+          />
+          Empty folder
+        </span>
+      )}
     </span>
   );
 }

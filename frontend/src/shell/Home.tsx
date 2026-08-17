@@ -6,7 +6,7 @@
 // Lives in the shell layer on purpose: it composes builder cards
 // (AppPreviewCard) with explorer cards and libs, which only the shell may
 // import together (scripts/check-boundaries.mjs).
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import {
@@ -34,18 +34,27 @@ const MAX_ROW = 12;
 
 // How many cards fit across the sections' shared container right now.
 // One ResizeObserver on the wrapper, one count for all three strips.
+//
+// A CALLBACK ref, not useRef+useEffect: the measured wrapper UNMOUNTS while a
+// search is live (`searching ? null : <div ref=…>`), and a mount-once effect
+// only ever saw the first element — on unmount the observer fired against the
+// detached node (clientWidth 0 → count 1) and the remounted wrapper was never
+// observed again, so clearing a search left every strip at one card per row.
+// The callback re-runs on each mount/unmount: it tears the old observer down
+// and measures the element actually on screen.
 function useStripCount() {
-  const ref = useRef<HTMLDivElement | null>(null);
   const [count, setCount] = useState(3);
-  useEffect(() => {
-    const el = ref.current;
+  const roRef = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((el: HTMLDivElement | null) => {
+    roRef.current?.disconnect();
+    roRef.current = null;
     if (!el) return;
     const measure = () =>
       setCount(Math.max(1, Math.floor((el.clientWidth + CARD_GAP) / (CARD_W + CARD_GAP))));
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    roRef.current = ro;
   }, []);
   return { ref, count };
 }
