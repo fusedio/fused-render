@@ -1163,8 +1163,10 @@ export function deleteFailureText(err: unknown, series: boolean): string {
 export const TITLE_PLACEHOLDER = "Title";
 
 // One line of a block of prose, trimmed. Used to reduce a multi-line value to
-// something an <input> can hold (it would strip the newlines anyway) and to ask
-// "is this string the message I am about to send?" below.
+// something an <input> can hold — it would strip the newlines anyway. It also
+// used to answer "is this string the message I am about to send?" for
+// sessionTitleOf; that question is the server's now, and answered by provenance
+// rather than by comparing strings.
 export function firstLine(text: string): string {
   return text.trim().split("\n")[0]?.trim() ?? "";
 }
@@ -1182,9 +1184,11 @@ export function firstLine(text: string): string {
 //      the "cloud summarised it" case, served on /api/tasks as `title` with
 //      `title_source: "ai"`;
 //   3. the session's FIRST user message, shortened — "the first message that we
-//      had". Also /api/tasks, as `title_source: "message"`: the server's own
-//      last resort is the first line of the transcript's first user prompt
-//      (tasks.py `_title` reading `tasks_store.head`);
+//      had". Also /api/tasks, as `title_source: "message"`: the first line of the
+//      transcript's first user prompt (tasks.py `_title` reading
+//      `tasks_store.head`). Its sibling `title_source: "entry"` — a row named
+//      from a message merely SCHEDULED at the session, because the transcript
+//      could not be read — is not a step here at all; see sessionTitleOf;
 //   4. nothing. The field opens blank and the user types a name.
 // Never the composed message, at any step. Steps 2 and 3 need a fetch, so they
 // live in the /api/tasks effect; 1 and 4 are what `initialTitleOf` decides
@@ -1227,24 +1231,23 @@ export function initialTitleOf(entry?: ScheduledMessage | null): string {
 // branch produced it — and that provenance is the whole reason this reads the
 // API instead of a string in the deep link.
 //
-// `ask` is the message being composed or edited, and it is here to be REFUSED.
-// A `message`-sourced title used to be dropped outright, on the grounds that it
-// was the first line of the first prompt echoed back and therefore byte-identical
-// to what the form had already derived locally. That reasoning inverted with the
-// bug above: the local derivation is now the thing we are removing, so a
-// `message`-sourced title is the ONLY way to reach step 3 — "the first message
-// that we had" — and dropping it would leave a session with no `ai-title` yet
-// falling straight through to blank.
+// The server's step 3 has TWO sources and only one of them is a name, so the
+// row says which it read (tasks.py `_title`):
 //
-// It cannot be accepted blind, though, because `_title`'s message branch has a
-// second source: when the session has no readable transcript, it falls back to
-// the first line of the earliest schedule ENTRY's message. On a task scheduled
-// from this very form that is the message being scheduled — the duplication,
-// arriving by way of the server. So the branch is accepted only when it is not
-// the head of `ask`. Checked in one direction on purpose: a stored title that
-// begins the message being sent is that message, while a longer title that
-// merely starts with it is a real first prompt the composer's draft happens to
-// echo.
+//   * `message` — the session's own first prompt, out of the transcript. Step 3
+//     itself, "the first message that we had", and taken as a name (shortened).
+//   * `entry` — no readable transcript, so the row is named from the earliest
+//     message SCHEDULED at that session. On a task made in this form that is the
+//     ask itself, which is the duplication bug arriving by way of the server, so
+//     it is refused and Title stays blank for the user to fill.
+//
+// This used to be one value, and the composed ask was passed in so the client
+// could GUESS which of the two it had: a `message` title was dropped whenever
+// the ask's first line began with it. A guess cannot tell an echo from a
+// continuation — "pull today's news and file it" begins with the session's real
+// first prompt "pull today's news" — so a session lost the name the app already
+// knew and Save sat disabled until the user retyped it. The server knows the
+// answer for certain, so it says it, and no draft is an input here at all.
 //
 // Steps 1 and 2 are taken verbatim — a name a human typed and a name Claude
 // wrote are both already names, and shortening either would edit someone's
@@ -1252,16 +1255,14 @@ export function initialTitleOf(entry?: ScheduledMessage | null): string {
 export function sessionTitleOf(
   tasks: readonly { session_id: string; title: string; title_source: string }[],
   sessionId: string,
-  ask = "",
 ): string {
   if (!sessionId) return "";
   const task = tasks.find((t) => t.session_id === sessionId);
   const title = (task?.title ?? "").trim();
   if (!title) return "";
-  if (task?.title_source !== "message") return title;
-  const composed = firstLine(ask);
-  if (composed !== "" && composed.startsWith(title)) return "";
-  return shortTitle(title);
+  if (task?.title_source === "entry") return "";
+  if (task?.title_source === "message") return shortTitle(title);
+  return title;
 }
 
 // What the Repeat checkbox does to the repeat state. Unticking CLEARS: the key
@@ -1973,11 +1974,7 @@ export default function NewJobModal({
     let alive = true;
     getTasks()
       .then(({ tasks }) => {
-        // `initialAsk`, not the live `message`: the question is whether the
-        // resolved name is the message being SCHEDULED, which is what the form
-        // opened on. Reading the live value would also refetch the whole task
-        // list on every keystroke in the description.
-        const resolved = sessionTitleOf(tasks, nameSession, initialAsk);
+        const resolved = sessionTitleOf(tasks, nameSession);
         if (!alive || !resolved) return;
         setTitle((prev) => (prev === derivedTitle ? resolved : prev));
         setInitial((prev) =>
@@ -1991,7 +1988,7 @@ export default function NewJobModal({
     return () => {
       alive = false;
     };
-  }, [editing, nameSession, derivedTitle, initialAsk]);
+  }, [editing, nameSession, derivedTitle]);
 
   // ---- Delete ------------------------------------------------------------
   // Only when EDITING, and only for something the server will actually

@@ -2129,9 +2129,13 @@ export interface Task {
   target: string; // what the task actually points at (may be that file)
   session_id: string; // "" until the first run
   title: string;
-  // Which of the three sources won: the user's own title, Claude Code's own
-  // `ai-title` record, or the first line of the first message.
-  title_source: "user" | "ai" | "message";
+  // Which source won: the user's own title, Claude Code's own `ai-title`
+  // record, the first line of the session's own first prompt (`message`), or —
+  // with no readable transcript to take that from — the first line of a message
+  // merely SCHEDULED at the session (`entry`). The last two are named apart
+  // because only `entry` can be the message a form is composing right now; see
+  // sessionTitleOf and tasks.py `_title`.
+  title_source: "user" | "ai" | "message" | "entry";
   description: string;
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
   // read this rather than each deriving a column from the newest message.

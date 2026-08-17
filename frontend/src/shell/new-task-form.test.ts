@@ -645,11 +645,11 @@ describe("naming the task", () => {
   });
 
   test("step 2: the session's own `ai-title` is what the form prefills", () => {
-    expect(sessionTitleOf([task()], "sess-1", LONG)).toBe("Porting the parquet reader");
+    expect(sessionTitleOf([task()], "sess-1")).toBe("Porting the parquet reader");
   });
 
   test("step 1 via the API: a title the user gave this thread is a name too", () => {
-    expect(sessionTitleOf([task({ title_source: "user" })], "sess-1", LONG)).toBe(
+    expect(sessionTitleOf([task({ title_source: "user" })], "sess-1")).toBe(
       "Porting the parquet reader",
     );
   });
@@ -661,55 +661,42 @@ describe("naming the task", () => {
     // message that we had", and refusing it would send a session with no
     // `ai-title` yet straight to blank.
     expect(
-      sessionTitleOf(
-        [task({ title: "port the parquet reader", title_source: "message" })],
-        "sess-1",
-        LONG,
-      ),
+      sessionTitleOf([task({ title: "port the parquet reader", title_source: "message" })], "sess-1"),
     ).toBe("port the parquet reader");
   });
 
-  test("…but not when that title IS the message being scheduled", () => {
-    // The server's message branch has a second source: with no readable
-    // transcript it falls back to the first line of the earliest schedule
-    // entry's message, which on a task scheduled from this form is the message
-    // being scheduled. Accepting that is the duplication bug arriving from the
-    // server instead of from the form.
-    const echoed = task({ title: LONG.slice(0, 200), title_source: "message" });
-    expect(sessionTitleOf([echoed], "sess-1", LONG)).toBe("");
-    // Multi-line asks too: the server takes the first line, so that is what
-    // comes back and what has to be recognised.
-    const firstLineEcho = task({ title: "summarise the inbox", title_source: "message" });
-    expect(
-      sessionTitleOf([firstLineEcho], "sess-1", "summarise the inbox\nthen file it"),
-    ).toBe("");
+  test("…but not a title the server read off a SCHEDULED ENTRY", () => {
+    // The server's second source, and the one this refuses. With no readable
+    // transcript, `_title` names the row from the earliest message scheduled at
+    // the session — which on a task made in this form is the ask itself, so
+    // taking it would be the duplication bug arriving by way of the server.
+    // `title_source: "entry"` is the server saying so, which is why nothing here
+    // has to compare strings.
+    expect(sessionTitleOf([task({ title: LONG.slice(0, 200), title_source: "entry" })], "sess-1"))
+      .toBe("");
+    expect(sessionTitleOf([task({ title: "summarise the inbox", title_source: "entry" })], "sess-1"))
+      .toBe("");
   });
 
-  test("the refusal is one-directional — a longer first prompt still counts", () => {
-    // A title that merely STARTS WITH the draft is a real first prompt the
-    // composer happens to echo the opening of; a draft that starts with the
-    // title is that title being sent back.
-    const longer = task({
-      title: "pull today's news and summarise every thread",
-      title_source: "message",
-    });
-    expect(sessionTitleOf([longer], "sess-1", "pull today's news")).toBe(
-      "pull today's news and summarise every thread",
-    );
-  });
-
-  test("and with no ask to compare against, a first message is taken as it stands", () => {
-    // The New task button reaches the form with no draft at all.
-    expect(
-      sessionTitleOf([task({ title: "port the reader", title_source: "message" })], "sess-1"),
-    ).toBe("port the reader");
+  test("a first prompt the new ask CONTINUES keeps its name", () => {
+    // THE 2026-08-17 review finding. This was refused while the client guessed
+    // at provenance: it dropped a `message` title whenever the composed ask's
+    // first line began with it, and "pull today's news and file it" begins with
+    // "pull today's news" — a real session first prompt the draft merely carries
+    // on from. Title came out blank and Save stayed disabled until the user
+    // retyped a name the app already had.
+    // The draft is not an input any more — the ask this call used to take is
+    // gone from the signature, so no composer text can take a session's own name
+    // away and the type checker is what enforces it.
+    const first = task({ title: "pull today's news", title_source: "message" });
+    expect(sessionTitleOf([first], "sess-1")).toBe("pull today's news");
   });
 
   test("no session, no match and a blank title all resolve to nothing", () => {
-    expect(sessionTitleOf([task()], "", LONG)).toBe("");
-    expect(sessionTitleOf([task()], "sess-2", LONG)).toBe("");
-    expect(sessionTitleOf([task({ title: "   " })], "sess-1", LONG)).toBe("");
-    expect(sessionTitleOf([], "sess-1", LONG)).toBe("");
+    expect(sessionTitleOf([task()], "")).toBe("");
+    expect(sessionTitleOf([task()], "sess-2")).toBe("");
+    expect(sessionTitleOf([task({ title: "   " })], "sess-1")).toBe("");
+    expect(sessionTitleOf([], "sess-1")).toBe("");
   });
 
   test("REPEAT no longer takes the name away — it only takes the session away", () => {
@@ -762,20 +749,18 @@ describe("naming the task", () => {
     expect(initialTitleOf(stored)).toBe("");
     expect(initialAskOf(stored)).toBe(LONG);
 
-    // Nor by way of the session lookup, when the server echoes it back.
+    // Nor by way of the session lookup, when the server hands the entry's own
+    // message back as the row's name (`title_source: "entry"` — the only branch
+    // that can be the message being scheduled).
     expect(
-      sessionTitleOf(
-        [task({ title: LONG.slice(0, 200), title_source: "message" })],
-        "sess-1",
-        LONG,
-      ),
+      sessionTitleOf([task({ title: LONG.slice(0, 200), title_source: "entry" })], "sess-1"),
     ).toBe("");
 
     // And nothing anywhere in the resolved chain is that long.
     for (const resolved of [
       initialTitleOf(stored),
-      sessionTitleOf([task()], "sess-1", LONG),
-      sessionTitleOf([task({ title: LONG.slice(0, 200), title_source: "message" })], "sess-1", LONG),
+      sessionTitleOf([task()], "sess-1"),
+      sessionTitleOf([task({ title: LONG.slice(0, 200), title_source: "entry" })], "sess-1"),
     ]) {
       expect(resolved.length).toBeLessThanOrEqual(TITLE_MAX);
       expect(LONG.startsWith(resolved) && resolved !== "").toBe(false);
