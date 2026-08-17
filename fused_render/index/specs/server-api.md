@@ -163,7 +163,10 @@ all of it billed to a keystroke. The warm moves it to idle.
   `WARM_WAIT_POLL_S` (0.5 s, the worker's heartbeat cadence) with a hard
   `WARM_WAIT_DEADLINE_S` ceiling (6 min — just past `runner.ABANDONED_RUN_S`, so a dead
   worker is reported not-running before the ceiling is reached), on a daemon thread that
-  cannot hold the process open. Giving up is logged once and the corpus stays cold.
+  cannot hold the process open. The search and the sweep then run **whatever ended the
+  wait** — a finished scan, a dead worker, a pruned run dir, the ceiling — because how a
+  scan ended does not tell you whether the index covers the root, and an uncovered one
+  costs one cheap `covered: false`. Giving up is logged once.
   A root whose scan was **debounce-skipped** has no entry and is not waited on: no new
   run is coming and its index is already on disk. The persisted verdict pool
   (`server/index_gitignore.py`) is what covers restarts.

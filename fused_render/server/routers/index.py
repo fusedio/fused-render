@@ -180,6 +180,11 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
     One-shot and bounded, on a daemon thread nobody joins: it waits for one
     named run and then it is done, whichever way that run ended.
 
+    The return value says how the WAIT ended, and nothing more — the caller
+    warms either way, because how a scan ended does not tell you whether the
+    index covers the root. It exists so the two ways of not-finishing can be
+    told apart in a log and in a test.
+
     Deliberately NOT `runner.status`, which is the status panel's call: it
     folds the whole event log from line 0 every time, so polling it would
     re-parse a log the waited-on scan is appending to twice a second — work
@@ -194,7 +199,8 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
         run_dir = runner._run_dir(cfg, run_id)
     except ValueError:
         # The run dir is gone (pruned, or a stubbed start that never made
-        # one). Nothing left to wait for, and the index is whatever it is.
+        # one). Nothing left to wait for; whether the index covers the root is
+        # a question for the search that follows, not for this.
         return True
     deadline = time.monotonic() + WARM_WAIT_DEADLINE_S
     cursor = 0
@@ -203,14 +209,15 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
         if ended:
             return True
         if runner._looks_abandoned(run_dir, time.time(), runner.ABANDONED_RUN_S):
-            logger.info("index: scan %s died without finishing; the search "
-                        "corpus stays cold", run_id)
+            logger.info("index: scan %s stopped reporting; warming with "
+                        "whatever the index holds", run_id)
             return False
         if time.monotonic() >= deadline:
             # Once, at info: this is a diagnosis of a stuck scan, not a
-            # failure of the warm — the next search just pays the old cost.
-            logger.info("index: gave up waiting %.0fs for scan %s; the search "
-                        "corpus stays cold", WARM_WAIT_DEADLINE_S, run_id)
+            # failure of the warm, which goes ahead regardless.
+            logger.info("index: gave up waiting %.0fs for scan %s; warming "
+                        "with whatever the index holds",
+                        WARM_WAIT_DEADLINE_S, run_id)
             return False
         time.sleep(WARM_WAIT_POLL_S)
 
@@ -234,11 +241,12 @@ def run_startup_warm() -> None:
     search answers `covered: false` cheaply, and there is nothing to sweep —
     which is exactly the boot the warm exists for. So when that happens it
     waits for the ONE scan `run_startup_scan` just spawned for this root
-    (`_startup_runs`) and then warms. That is not the general "poll for scans"
-    scheduler this deliberately is not: it is one bounded wait on one named
-    run, with a definite end (WARM_WAIT_DEADLINE_S) on a thread nobody joins.
-    A root whose scan was debounce-skipped has no entry and is not waited on —
-    there is no new run coming, and its index is already there.
+    (`_startup_runs`) and then warms — warms unconditionally, however that wait
+    ended. That is not the general "poll for scans" scheduler this deliberately
+    is not: it is one bounded wait on one named run, with a definite end
+    (WARM_WAIT_DEADLINE_S) on a thread nobody joins. A root whose scan was
+    debounce-skipped has no entry and is not waited on — there is no new run
+    coming, and its index is already there.
 
     Never raises: it runs on a thread nobody joins."""
     try:
@@ -258,7 +266,15 @@ def run_startup_warm() -> None:
         out = index_search(cfg, root)
         if not out.get("covered"):
             run_id = _startup_runs.get(root)
-            if run_id is not None and _wait_for_scan(cfg, run_id):
+            if run_id is not None:
+                # Searching again is unconditional — how the wait ENDED does
+                # not tell us whether the index covers the root. A run dir
+                # pruned mid-wait reads as a dead scan here, but `prune_runs`
+                # only removes run dirs and never touches the store, so the
+                # index may well be complete. A still-uncovered index costs
+                # one cheap `covered: false`, which is exactly what the
+                # original single-shot warm already paid.
+                _wait_for_scan(cfg, run_id)
                 out = index_search(cfg, root)
         # Unconditional, including the uncovered cases: filter_corpus is a
         # no-op on a response that is not covered, and the point is to run

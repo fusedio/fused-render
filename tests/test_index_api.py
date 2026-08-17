@@ -942,7 +942,10 @@ def test_startup_warm_gives_up_when_the_scan_never_finishes(home, tmp_path,
     began = time.monotonic()
     index_router.run_startup_warm()
     assert time.monotonic() - began < 5, "the wait is not deadline-bounded"
-    assert len(calls) == 1, "it searched again after giving up"
+    # It still searches: how the wait ended says nothing about whether the
+    # index covers the root, and an uncovered one costs a cheap `covered:
+    # false` — exactly what the original single-shot warm already paid.
+    assert len(calls) == 2
 
 
 def test_startup_warm_stops_waiting_on_a_worker_that_died(home, tmp_path,
@@ -966,7 +969,38 @@ def test_startup_warm_stops_waiting_on_a_worker_that_died(home, tmp_path,
     began = time.monotonic()
     index_router.run_startup_warm()
     assert time.monotonic() - began < 5
-    assert len(calls) == 1
+    assert len(calls) == 2
+
+
+def test_startup_warm_searches_again_when_the_run_dir_vanishes_mid_wait(
+        home, tmp_path, monkeypatch):
+    """`prune_runs` reclaims run DIRS; it never touches the store. So a run
+    dir that disappears while the warm is waiting on it says nothing about
+    whether the index covers the root — reading it as "the scan died, skip the
+    warm" silently left the pool cold for an index that was complete."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    run_dir = tmp_path / "pruned-run"
+    run_dir.mkdir()
+    calls, filtered = [], []
+
+    def search(cfg, root, **kw):
+        calls.append(root)
+        if len(calls) == 1:
+            run_dir.rmdir()  # pruned out from under the wait
+            return {"covered": False, "root": root}
+        return {"covered": True, "root": root, "entries": []}
+
+    monkeypatch.setattr(index_router, "index_search", search)
+    monkeypatch.setattr(index_router, "filter_corpus",
+                        lambda out, index_root=None: filtered.append(out) or out)
+    monkeypatch.setattr(index_router.runner, "_run_dir",
+                        lambda cfg, run_id: str(run_dir))
+    monkeypatch.setattr(index_router, "WARM_WAIT_POLL_S", 0.01)
+    monkeypatch.setitem(index_router._startup_runs, index_router.warm_root(),
+                        "run-that-was-pruned")
+    index_router.run_startup_warm()
+    assert len(calls) == 2
+    assert [out.get("covered") for out in filtered] == [True]
 
 
 def test_startup_warm_does_not_wait_when_the_root_is_covered(home, tmp_path,
