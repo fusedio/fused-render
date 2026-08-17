@@ -911,7 +911,13 @@ export default function AiModels() {
   //
   // `null` until the walk has answered, so a card says neither "you have this"
   // nor "you don't" while the page still has no idea.
-  const onDisk = data ? new Set(repos.filter((r) => r.revisions > 0).map((r) => r.id)) : null;
+  // A MAP, id → path, not a set of ids: the same walk that knows we have a model
+  // knows where it is, and Discover's Explore link needs the second half. Read
+  // from the search reply instead, that path was frozen at the moment of the
+  // search and went stale the instant a download finished (see `localCopy`).
+  const onDisk = data
+    ? new Map(repos.filter((r) => r.revisions > 0).map((r) => [r.id, r.path]))
+    : null;
   const downloading = new Set(runtime.downloading.map((d) => d.model));
 
   const runLoad = async (repo: AiModelRepo) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { discoverChrome, gateChrome, resultsSummary, suggestedSummary } from "./discoverView";
+import { discoverChrome, gateChrome, localCopy, resultsSummary, suggestedSummary } from "./discoverView";
 
 // What the Discover tab is SHOWING, from the settled query alone. Three pieces
 // of chrome that must move together — the grid, the "these are suggestions"
@@ -134,6 +134,48 @@ describe("gateChrome", () => {
   });
 });
 
+// Where a card's copy of a model lives, asked of the LIVE listing rather than
+// of the search reply that first described it.
+describe("localCopy", () => {
+  const here = new Map([["openai/whisper-large-v3", "/Users/x/.cache/hf/models--openai--whisper-large-v3"]]);
+
+  it("gives the path the live listing holds", () => {
+    expect(localCopy("openai/whisper-large-v3", here)).toBe(
+      "/Users/x/.cache/hf/models--openai--whisper-large-v3",
+    );
+  });
+
+  it("answers the SAME source the ✓ downloaded badge reads", () => {
+    // The bug this pins: the badge came from the live on-disk listing and
+    // Explore came from `model.local` in the frozen search reply. Download a
+    // model from search results and the re-walk flips the checkmark on while
+    // the reply still says "none", so the one action for the copy you just
+    // fetched never appeared. One map answers both questions now, so "we have
+    // it" and "here is where" cannot disagree — a model absent from the ORIGINAL
+    // reply but present in the listing is exactly the post-download case.
+    const afterDownload = new Map([["mlx-community/Qwen3.5-4B", "/c/models--mlx-community--Qwen3.5-4B"]]);
+    expect(afterDownload.has("mlx-community/Qwen3.5-4B")).toBe(true);
+    expect(localCopy("mlx-community/Qwen3.5-4B", afterDownload)).toBe(
+      "/c/models--mlx-community--Qwen3.5-4B",
+    );
+  });
+
+  it("says nothing while the walk has not answered", () => {
+    // `null` is "no idea yet", not "you don't have it" — offering Explore on a
+    // guess would hand someone a path that may not exist.
+    expect(localCopy("openai/whisper-large-v3", null)).toBe(null);
+  });
+
+  it("says nothing for a model that is not here", () => {
+    expect(localCopy("openai/whisper-tiny", here)).toBe(null);
+  });
+
+  it("never returns an empty path as if it were a location", () => {
+    // A blank path would render an Explore link to nowhere. Absent beats broken.
+    expect(localCopy("a/b", new Map([["a/b", ""]]))).toBe(null);
+  });
+});
+
 // The muted right-hand fact beside each heading — the thing that makes two
 // ALL-CAPS titles read as siblings rather than as one replacing the other.
 describe("heading summaries", () => {
@@ -157,6 +199,7 @@ describe("heading summaries", () => {
     expect(resultsSummary("whisper", null, "huggingface.co")).toBe('"whisper"');
     expect(resultsSummary("", null, "huggingface.co")).toBe(null);
   });
+
 
   it("counts the shortlist the same way the results are counted", () => {
     expect(suggestedSummary(11)).toBe("11 picked for this machine");

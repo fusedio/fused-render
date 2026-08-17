@@ -58,8 +58,10 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   discoverChrome,
   gateChrome,
+  localCopy,
   resultsSummary,
   suggestedSummary,
+  type OnDisk,
 } from "@shell/discoverView";
 
 // Long enough that a typed word is one request rather than five, short enough
@@ -90,7 +92,7 @@ function count(n: number | null): string | null {
 interface Downloads {
   /** Repo ids with a MATERIALISED snapshot on this disk, or null while the walk
    *  is still running. Owned by the page, so both tabs mean one thing by it. */
-  onDisk: Set<string> | null;
+  onDisk: OnDisk | null;
   downloading: Set<string>;
   /** Pulls that have STOPPED being reported and whose confirming walk has not
    *  landed yet — the far end of the same gap `pending` covers at the near end. */
@@ -170,7 +172,11 @@ function HubCard({
   // Only a COMPLETE download opens locally. "partial" means blobs with no
   // materialised snapshot, so there is no revision for the model card to
   // describe — linking there would hand someone a view that cannot load.
-  const here = model.local.state === "downloaded" && model.local.path;
+  // Where our copy is, from the LIVE listing — never from `model.local` in the
+  // search reply, which is frozen at the moment of the search and so goes stale
+  // the instant a download from these very results finishes. Same source as the
+  // badge above, which is the point (see `localCopy`).
+  const here = localCopy(model.id, downloads.onDisk);
   const dl = count(model.downloads);
   const likes = count(model.likes);
   // The Hub sends an ISO timestamp; timeAgo works in epoch seconds. An
@@ -248,13 +254,13 @@ function HubCard({
               // The same URL the Local tab's Explore builds — a raw "#" + path
               // drops the mode, so a middle-click would land on the folder
               // listing rather than the model card.
-              href={urlForFsPath(model.local.path as string, "?_mode=model_card")}
-              title={`Explore ${model.id} here — ${model.local.path}`}
+              href={urlForFsPath(here, "?_mode=model_card")}
+              title={`Explore ${model.id} here — ${here}`}
               onClick={(e) => {
                 if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
                   return;
                 e.preventDefault();
-                navigate(model.local.path as string, { isDir: true, mode: "model_card" });
+                navigate(here, { isDir: true, mode: "model_card" });
               }}
             >
               Explore
@@ -434,7 +440,7 @@ export default function AiModelsDiscover({
   settling,
   jobByModel,
 }: {
-  onDisk: Set<string> | null;
+  onDisk: OnDisk | null;
   downloading: Set<string>;
   settling: Set<string>;
   jobByModel: Map<string, Job>;

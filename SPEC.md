@@ -6271,7 +6271,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   states the Hub result cards already draw. And the cache answer is the PAGE's
   one walk, handed down, not a second walk Discover runs for itself: two walks
   meant two definitions of "on this machine" and a window where the tabs
-  disagreed about the same repo.
+  disagreed about the same repo. That handed-down answer is a **map of id →
+  path, and it answers the whole of what a card says about the local copy** —
+  the ✓, the absent Download button, *and* Explore's destination (`localCopy`).
+  Explore used to read `local.path` from the **search reply** instead, which is
+  frozen at the moment of the search: download a model from the results and the
+  re-walk turned the ✓ on while Explore stayed hidden, so the one card most
+  likely to want it offered no way to open the copy just fetched. Same fact,
+  same source, or they drift.
 - **AI-7d** **Every suggestion list is ordered SMALLEST FIRST, and the default
   is position 0.** One rule, no second field: `catalog.SUGGESTIONS` is sorted by
   ascending `size_gb` (an entry with no size sorts last), and

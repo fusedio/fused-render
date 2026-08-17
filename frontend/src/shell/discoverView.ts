@@ -87,6 +87,33 @@ export function discoverChrome(q: string, task: string): DiscoverChrome {
   };
 }
 
+/** Every model this machine holds a complete copy of, by id, pointing at where
+ *  it lives. `null` until the walk has answered. */
+export type OnDisk = ReadonlyMap<string, string>;
+
+/** Where this machine's copy of `id` is, or null if there is not one to open.
+ *
+ *  ONE source for the whole of what a card says about the local copy — the
+ *  ✓ downloaded badge, the absence of a Download button, and the Explore link
+ *  all come from this map. They used to not: the badge read this live listing
+ *  while Explore read `local` from the search reply that first described the
+ *  row. That reply is frozen at the moment of the search, so downloading a
+ *  model from the results flipped the checkmark on (the re-walk saw it) and
+ *  left Explore hidden (the reply still said "none") — no way to open the copy
+ *  you had just fetched, on the one card most likely to want it.
+ *
+ *  Two sources for one fact will always drift; the only question is when. A
+ *  path from the listing is also the fresher answer in the other direction: a
+ *  model deleted from the Local tab stops offering Explore here without a
+ *  re-search.
+ *
+ *  An empty path is treated as no path. Explore builds a URL out of this, and a
+ *  link to nowhere is worse than no link.
+ */
+export function localCopy(id: string, onDisk: OnDisk | null): string | null {
+  return onDisk?.get(id) || null;
+}
+
 /** The muted right-hand fact beside SEARCH RESULTS: what was asked, and how
  *  many came back from where.
  *
