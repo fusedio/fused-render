@@ -1517,6 +1517,19 @@ def refresh_memory() -> None:
             worker.resident_bytes = health["resident_bytes"]
 
 
+def resident_models() -> set[str]:
+    """Which models are HELD right now — no probe, no refresh, one dict read.
+
+    `describe()` answers the same question far better (state, device, bytes) and
+    charges a health request per live worker for it, which is the right trade for
+    the sidebar and the wrong one for `/api/ai/catalog`: that route is a slow
+    inventory a picker polls, and it only needs the boolean. Split out rather than
+    folded into `describe()` so the cheap answer stays cheap.
+    """
+    with _lock:
+        return {w.model for w in _workers.values()}
+
+
 def describe() -> dict:
     """The runtime as the API reports it."""
     refresh_memory()
