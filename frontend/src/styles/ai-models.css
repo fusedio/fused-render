@@ -7,11 +7,249 @@
    have no answer for — the size figure that is the whole point of the page, the
    "Explore" link, the revision drawer a card opens, and the Discover tab. */
 
-/* Cards keep their natural height: with the grid's default `stretch`, opening
-   one card's revision drawer stretched whatever card shared its row into a
-   matching column of empty space. */
+/* -- the Engines tab --------------------------------------------------------
+   Capped at the same 760px the Preferences page caps its own content column
+   at, because that is what it IS — a settings surface that moved pages, not a
+   grid. Uncapped, three selects would sit at the left edge of a four-card
+   layout with a page of empty space beside them.
+
+   The cards are .cc-mdcard, the same ones the other two tabs list models in.
+   The tab shipped in the Preferences page's `.prefs-*` vocabulary and it read
+   as three bare native controls adrift on an empty page; a setting is not made
+   more serious by being the only thing in the app that looks unfinished. */
+.am-engines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--am-gap-card);
+  max-width: 760px;
+  font-size: 13px;
+  /* The row grid's two fixed tracks, named once so the lines UNDER a row can
+     start where its control does. A note about the engine that belongs to the
+     card's left edge instead reads as a sentence about the capability. */
+  --am-engine-cap-col: 132px;
+  --am-engine-col-gap: 12px;
+}
+
+/* The one sentence above the cards: what "Automatic" means. */
+.am-engines-note {
+  margin: 0 0 2px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* Capability, control, reality — one line, and a real GRID rather than three
+   rows that each size themselves.
+
+   Flex with `min-width` on the label was three independent layouts: the label
+   column ended wherever that row's word ended, so each select started at its
+   own x and — since a select sizes to its widest option — the three controls
+   were three different widths, which left "Using MLX LM." / "Using MLX FLUX."
+   at three different x too. Three identical controls holding the same kind of
+   choice have to be one column, and a column is what a grid is.
+
+   `align-items: center` and not `baseline`: the select is a 32px box and the
+   two text runs beside it should sit on its middle, not hang off the text
+   baseline inside it. Below 620px the columns collapse to one, which stacks
+   the row rather than squeezing a select to nothing. */
+.am-engine-row {
+  display: grid;
+  grid-template-columns: var(--am-engine-cap-col) minmax(0, 260px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px var(--am-engine-col-gap);
+}
+
+@media (max-width: 620px) {
+  .am-engine-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.am-engine-cap {
+  font-weight: 600;
+}
+
+/* .field-control carries the app's canonical select skin (styles/fields.css) —
+   its own chevron, its own metrics — which is what makes this control look
+   like every other select in the app instead of like the platform's. What is
+   left here is only how it behaves in this row. */
+   `width: 100%` fills the grid's control column, which is what makes all three
+   selects the same width no matter which option is showing — a select left to
+   size itself grows to "MLX Whisper (Apple Silicon) — needs Apple Silicon…"
+   the moment somebody picks it, and the column would move under the user's
+   cursor. */
+.am-engine-select {
+  width: 100%;
+  min-width: 0;
+}
+
+/* What is actually serving the capability. Muted, because the control beside
+   it is the thing being read and this is the confirmation. */
+.am-engine-serving {
+  min-width: 0;
+  color: var(--fg-muted);
+}
+
+/* The second lines a card sometimes grows: why a stored choice is not in
+   force, and what a switch just did. Under the row rather than in it — both
+   are sentences about an event, not part of the control. */
+.am-engine-note {
+  /* Starts where the select does, so it reads as a line about the control
+     rather than about the capability naming the row. */
+  margin-left: calc(var(--am-engine-cap-col) + var(--am-engine-col-gap));
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+@media (max-width: 620px) {
+  .am-engine-note {
+    margin-left: 0;
+  }
+}
+
+/* -- section headings -------------------------------------------------------
+   BOTH tabs' sections: Local's two ("User downloaded models" by capability,
+   and "Fetched by engines") and Discover's two faces (the curated shortlist,
+   the search results), each with its capabilities as subgroups inside. The
+   bucketing itself is shell/aiModelGroups.ts; what is here is the hierarchy
+   that makes it readable: a section title over a rule, and a capability title
+   one step quieter and with NO rule of its own.
+
+   The right-hand slot of a head carries the ONE secondary fact about the group
+   — a byte subtotal on a Local capability row, "via MLX LM" on a Discover one,
+   and on Discover's section row the count and where it came from. Local's
+   section rows carry nothing there: three levels of arithmetic on one page
+   (caption total, section subtotal, capability subtotal) meant every figure was
+   correct and none of them was the one being looked for. The rule stays
+   regardless — it is what separates a heading from the cards under it. */
+
+/* One vertical scale for both tabs, ascending, so the page's gaps say what
+   they mean instead of landing on four similar numbers. Read only by the
+   `.am-*` rules below, which exist only on this page — declared here rather
+   than in tokens.css because the scale is this layout's, not the app's.
+   Every gap on the two tabs comes from one of these five. */
+.cc-main {
+  --am-gap-card: 12px; /* card to card, inside a grid */
+  --am-gap-tight: 8px; /* a heading to the note that belongs to IT */
+  --am-gap-head: 16px; /* a heading block to the first card under it */
+  --am-gap-subgroup: 24px; /* one capability to the next */
+  --am-gap-section: 32px; /* one whole section to the next, and to the controls */
+}
+
+.am-section + .am-section {
+  margin-top: var(--am-gap-section);
+}
+
+.am-section-head,
+.am-subgroup-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.am-section-head {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+  margin-bottom: var(--am-gap-head);
+}
+
+.am-section-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* One step down from the section, and deliberately NOT a second bordered rule:
+   two rules of the same weight would read as two sections rather than as a
+   section and its parts. Discover broke exactly this for a while — its
+   capability headings were `.am-section-head`s, so `TEXT GENERATION` and the
+   view's own name were drawn identically and the reader had no way to tell the
+   parent from the child. */
+.am-subgroup-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.am-subgroup + .am-subgroup {
+  margin-top: var(--am-gap-subgroup);
+}
+
+.am-subgroup-head {
+  margin-bottom: var(--am-gap-head);
+}
+
+/* A heading with a note under it keeps the SAME distance to its first card as
+   one without: the note lives inside that space rather than adding a second gap
+   on top of it. Otherwise a capability that has something to say sits its cards
+   noticeably lower than the one above it, which reads as a layout accident
+   rather than as a sentence. The note binds UPWARD — small gap above, full gap
+   below — because it belongs to the heading, and equidistant prose between two
+   headings belongs to neither. */
+.am-section-head:has(+ .am-group-note),
+.am-section-head:has(+ .am-hub-note),
+.am-subgroup-head:has(+ .am-group-note) {
+  margin-bottom: var(--am-gap-tight);
+}
+
+.am-subgroup-size {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The sentence under a heading that needs one — what a group IS, when its two
+   or three words cannot carry it.
+
+   Capped, but only just. 68ch is the textbook measure for a paragraph somebody
+   settles in to read, and these are not that: they are one or two sentences
+   under a heading, glanced at on the way to the cards. At 68ch on a wide
+   window "Transcribes on the GPU. Several times quicker than the CPU path on
+   the same Mac." broke a line for the word "Mac", which turns a caption into a
+   block and makes the reader's eye do a return sweep for one syllable. 110ch
+   fits the sentences these actually are on a normal window while still
+   stopping a note running the full 1800px of a maximised one — unbounded is
+   the worse failure, and it is the one this rule was written to prevent.
+
+   The note INSIDE a model card is a different rule (.am-suggest-note) and
+   still wraps: that one is half a card wide, which is the card's business. */
+.am-group-note {
+  margin: 0 0 var(--am-gap-head);
+  max-width: 110ch;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
+/* Cards in a row are the SAME height, and their footers line up.
+   `align-items: start` was here to stop an open revision drawer stretching the
+   card beside it — but it paid for that with a permanently ragged grid: a repo
+   with no metadata line (a CTranslate2 conversion had none until its layout
+   became evidence) is a visibly shorter card whose footer floats mid-row.
+   Ragged is the state the page is in ALL the time; a stretched neighbour is the
+   state it is in while a drawer is open, and `margin-top: auto` on the footer
+   below makes that case read as deliberate rather than as a hole. */
 .am-grid {
-  align-items: start;
+  align-items: stretch;
+}
+
+/* …which is the other half of it: the facts sit under the head, and the
+   footer sits on the floor of whatever height the row settled on. Without
+   this, stretching a card only moves its bottom edge and leaves the footer
+   under the text. */
+.am-card .cc-mdcard-foot {
+  margin-top: auto;
+  /* One Download button tall, whether or not there IS one. A footer is a repo
+     id and sometimes a button, and the button is the taller of the two — so a
+     card already downloaded (no button) sat its id several pixels lower than
+     the card beside it, and a row of four cards had four footers on three
+     baselines. The height is the button's own: 12px text at 1.5, plus its 3px
+     padding and 1px border on each side. */
+  min-height: 26px;
 }
 
 /* The two destinations named in the page's captions: the cache directory this
@@ -20,10 +258,10 @@
    where should be reachable rather than copied out by hand.
 
    Underlined only on hover: each sits in a line of plain facts ("8 cached ·
-   43 GB total", "Search results are read-only…") and a permanently underlined
-   run of text would read as the whole caption being a link rather than as one
-   word in it being one. The path wraps, because a hub path under a long
-   username is longer than the page head. */
+   43 GB total", "Searching huggingface.co, limited to…") and a permanently
+   underlined run of text would read as the whole caption being a link rather
+   than as one word in it being one. The path wraps, because a hub path under a
+   long username is longer than the page head. */
 .am-cache-dir,
 .am-hub-host {
   color: inherit;
@@ -95,17 +333,46 @@
   text-decoration: none;
 }
 
-/* The DESTRUCTIVE actions are quiet until the card is hovered or one of them is
-   focused: a grid of ✕ buttons reads as a page about deleting, and this one is
-   about looking. "Explore" is exempt — it is the card's other destination, and
-   an affordance you have to hover to discover is one most people never find. */
-.am-card .cc-mdcard-actions .cc-iconbtn:not(.am-card-explore) {
-  opacity: 0;
+/* A card's controls are ALWAYS visible — the delete ✕ and the revisions
+   chevron included, which were hidden at `opacity: 0` until the card was
+   hovered or focused.
+
+   The argument for hiding them was that a grid of ✕ buttons reads as a page
+   about deleting. What it actually produced was an icon that appeared on
+   exactly one card at a time, following the mouse rather than describing a
+   repo: in a screenshot, in a screen share, or to anyone scanning the grid
+   before touching the pointer, eleven cards had no controls and one did. That
+   is not a quieter page, it is a page whose controls have to be discovered
+   one at a time, and it made "which of these can I delete?" unanswerable
+   without hovering all of them.
+
+   Quieting them stays, by COLOUR rather than by presence: `.cc-iconbtn` is
+   already muted at rest and lights on hover, which says "secondary" without
+   saying "absent". Delete is still confirmed through the modal, so a
+   permanently visible ✕ cannot destroy anything by itself. */
+
+/* A disabled icon button, now that "at rest" is a state the user actually sees.
+   It must not read as merely muted — the enabled ones are muted too — so it
+   drops further and takes the pointer with it, and `cursor: not-allowed` is
+   what makes a hover that changes nothing legible as a refusal rather than as a
+   dead page. The `title` on every one of them says why. */
+.am-card .cc-iconbtn:disabled,
+.am-rev .cc-iconbtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
-.am-card:hover .cc-mdcard-actions .cc-iconbtn,
-.am-card:focus-within .cc-mdcard-actions .cc-iconbtn {
-  opacity: 1;
+/* …and it must not LIGHT UP under the pointer. `.cc-iconbtn:hover` carries no
+   `:not(:disabled)` guard, which never mattered while a disabled one was
+   invisible; now that every card shows its full control set, a dead ✕ that
+   washes accent on hover promises an action it will not perform. Fixed here
+   rather than on the shared class: the base rule is wrong on every surface, but
+   this page is the one that made it visible, and widening it would restyle
+   pages nothing in this change has looked at. */
+.am-card .cc-iconbtn:disabled:hover,
+.am-rev .cc-iconbtn:disabled:hover {
+  background: none;
+  color: var(--fg-muted);
 }
 
 /* -- what the model is for -------------------------------------------------- */
@@ -119,6 +386,74 @@
   align-items: baseline;
   gap: 4px 10px;
   font-size: 12px;
+  color: var(--fg-muted);
+  /* One line's worth, reserved. The row is rendered for every card now (the
+     engine tag is a fact about all of them), and a dataset with nothing to say
+     in it must hold its slot rather than collapse and shorten the card. */
+  min-height: 16px;
+}
+
+/* -- which engine loads it -------------------------------------------------- */
+/* The card's most load-bearing tag: in this app a repo belongs to a BACKEND,
+   not to a capability, and the three formats of Whisper are mutually
+   unloadable. It wears the same outline as .am-card-quant beside it — one
+   vocabulary of small facts — with the ACCENT reserved for the state that
+   answers "can I press Load": an engine that runs here. */
+.am-card-engine {
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: nowrap;
+  /* A long label in a narrow column ellipsizes rather than pushing the card's
+     other facts onto a third line. The title attribute carries the full one. */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "This is a Mac's model, on a PC" — or a model whose engine runs here fine
+   and is not the one selected. Either way it will not load right now.
+   Deliberately not the same as "nothing reads this": the download was not a
+   mistake, and the hover carries the registry's own reason.
+
+   **The tag reads the same in both states, so this styling is the signal.**
+   It used to say "needs Diffusers"; the word went because on a card the
+   reader is being told a fact, not given an instruction. What carries the
+   state now is the warning hue AND the dashed border — two channels, which is
+   the point: the dash survives greyscale, a monochrome display and every form
+   of colour blindness, so nothing here depends on distinguishing yellow from
+   the accent green beside it. `--warning-soft` is the stylesheet's existing
+   attention token and measures 8.4:1 on the card in dark and 4.9:1 in light,
+   both past AA for text this size. */
+.am-card-engine-off {
+  color: var(--warning-soft);
+  border-style: dashed;
+}
+
+/* The reason lives in the title attribute, and a tag nobody can focus is a
+   tooltip that only exists for a mouse. The unavailable states take a tab stop
+   (see AiModels.tsx) and this is what makes landing on one visible. */
+.am-card-engine:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* And the honest dead end. Quiet, because it is a fact about the repo rather
+   than a warning to act on — there is nothing to press. */
+.am-card-engine-none {
+  color: var(--fg-muted);
+  border-style: dashed;
+  opacity: 0.85;
+}
+
+/* "part of FLUX.2 klein 4B" — a repo this app fetched as a piece of something
+   else. Quiet like the dead end above, because it is a fact about the repo and
+   not a warning; SOLID-bordered unlike it, because nothing is missing here —
+   the dashes on the other two mean "this cannot load", and this one was never
+   supposed to. Same two channels, the other way round. */
+.am-card-engine-component {
   color: var(--fg-muted);
 }
 
@@ -166,6 +501,25 @@
   color: var(--fg-muted);
 }
 
+/* The facts the card's face gave up: file count, revision count, branch,
+   added date. A middot-separated run rather than a table, because it is the
+   same sentence the footer used to hold — it has just moved somewhere it is
+   read one repo at a time instead of a dozen at once. The separator belongs to
+   the item that follows it, so an absent branch leaves no dangling middot. */
+.am-drawer-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 0;
+  padding: 6px 0 2px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.am-drawer-facts > span + span::before {
+  content: "·";
+  margin: 0 8px;
+}
+
 .am-rev {
   display: flex;
   align-items: center;
@@ -197,24 +551,20 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* A drawer row's ✕ follows the drawer row it belongs to, not the whole card. */
+/* A drawer row's ✕ is smaller than a card's, and — like the card's — always
+   there rather than revealed by hovering the row it belongs to. Same reason:
+   the drawer is a list of revisions to compare, and one visible ✕ chasing the
+   pointer down it says nothing about which of them can be deleted. */
 .am-rev .cc-iconbtn {
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
-  opacity: 0;
 }
 
-.am-rev:hover .cc-iconbtn,
-.am-rev .cc-iconbtn:focus-visible {
-  opacity: 1;
-}
-
-/* -- Local / Discover, and the Discover tab itself --------------------------
-   Cards on both tabs are the same .cc-mdcard/.am-card — one model should not
-   look like two different things depending on which tab found it — so what
-   lives here is the tab strip, the query controls, and the two badges that only
-   mean something for a Hub result.
+/* -- the tab strip ----------------------------------------------------------
+   Cards on every tab are the same .cc-mdcard/.am-card — one model should not
+   look like two different things depending on which tab listed it — so what
+   lives here is only the strip itself.
 
    The strip is the ONLY thing in the page head (D256): with Prune and Refresh
    gone, the toggle sits in the same place in every state instead of sliding as
@@ -265,43 +615,108 @@
   margin: 0 0 12px;
 }
 
+/* -- the Discover tab's search ----------------------------------------------
+   At the TOP of the tab, above the curated sections, because it is what
+   somebody opened this tab to use. It spent its life below them, which meant
+   the only way to reach the search was to scroll past the shortlist it exists
+   to be an alternative to. */
 .am-hub-controls {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 4px 0 8px;
+  /* A section's worth of air under it, not a card's. This row CHANGES which
+     view is below it, and at 8px it sat flush against the heading of the thing
+     it changes — reading as part of that section rather than as the control
+     over it. */
+  margin: 0 0 var(--am-gap-section);
+}
+
+/* The box takes the width; the two menus take what they need. `flex: 1 1 260px`
+   with a min is what makes the row collapse to a stacked search-then-menus
+   layout on a narrow window instead of squeezing a search field to nothing.
+   It sits on the WRAPPER now, because the field is an input with a button
+   overlaid on it rather than a bare input. */
+.am-hub-field {
+  position: relative;
+  display: flex;
+  flex: 1 1 260px;
+  min-width: 180px;
 }
 
 .am-hub-search {
-  flex: 1 1 260px;
-  min-width: 180px;
-  padding: 7px 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Room on the right for the ✕, always — reserving it only while the button
+     is there would shift the text under the cursor on the first keystroke. */
+  padding: 7px 30px 7px 10px;
   font: inherit;
   font-size: 13px;
   color: var(--fg);
-  background: var(--bg-alt);
+  background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
 }
 
-.am-hub-select {
-  padding: 7px 10px;
+/* The platform's own clear button, removed. It empties the TEXT and leaves the
+   task filter set, which is the one outcome that looks broken — an empty search
+   box, a page of results and no suggestions, after the reader did the obvious
+   thing. Two ✕s in one field doing different things would be worse still. */
+.am-hub-search::-webkit-search-cancel-button {
+  display: none;
+}
+
+/* Ours, in the same place the platform's was, clearing both inputs. Muted until
+   hovered: it is an escape hatch, not an action the page is recommending. */
+.am-hub-clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
   font: inherit;
-  font-size: 13px;
-  color: var(--fg);
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
 }
 
-.am-hub-search:focus-visible,
-.am-hub-select:focus-visible {
+.am-hub-clear:hover {
+  color: var(--fg);
+  background: var(--ctl-quiet-bg-hover);
+}
+
+.am-hub-clear:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
 
+/* The two menus wear .field-control (styles/fields.css), the app's canonical
+   select skin, for the same reason the Engines tab's do — a native select is
+   the one control that renders as the platform's rather than as this app's.
+   What is left here is only that they do not stretch. */
+.am-hub-select {
+  flex: 0 0 auto;
+}
+
+.am-hub-search:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* The host disclosure, under the "Search results" heading — the same slot
+   .am-suggested-lede occupies under the other one, so the two faces of the tab
+   are heading, note, grid in that order either way. It rides .am-group-note's
+   spacing (the `:has` rule above binds it to its heading) and adds nothing. */
 .am-hub-note {
-  margin: 0 0 14px;
+  margin: 0 0 var(--am-gap-head);
 }
 
 /* A refetch in flight dims the results that are still on screen rather than
@@ -313,32 +728,26 @@
   transition: opacity 120ms ease-out;
 }
 
-.am-hub-state {
-  display: inline-flex;
+/* "Explore" on a search result — a word, beside the Download button, where the
+   Local tab's version is an icon among icons. Sized to sit on the same line as
+   the button rather than to match it: this navigates, the other spends
+   gigabytes, and they should not read as a matched pair of actions. */
+.am-card-explore-link {
   flex: 0 0 auto;
-  gap: 6px;
-  white-space: nowrap;
-}
-
-/* The one thing a browser tab on huggingface.co cannot tell you. */
-.am-hub-here {
-  padding: 1px 7px;
-  font-size: 11px;
-  border-radius: 999px;
-  color: var(--bg);
-  background: var(--accent);
-}
-
-.am-hub-partial {
-  padding: 1px 7px;
-  font-size: 11px;
-  border-radius: 999px;
   color: var(--fg-muted);
-  border: 1px solid var(--border);
+  text-decoration: none;
+  font-size: 12px;
 }
 
-.am-hub-gated {
-  color: var(--fg-muted);
+.am-card-explore-link:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+.am-card-explore-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 /* -- what a model is doing right now (SPEC §40) ------------------------------
@@ -461,7 +870,7 @@
   text-transform: uppercase;
   white-space: nowrap;
   border-radius: 999px;
-  /* The .am-hub-here pattern: a filled pill whose text is the PAGE background,
+  /* The .am-suggest-have pattern: a filled pill whose text is the PAGE background,
      which stays readable in both themes without a second token — dark text on
      the bright green above, white on the darker green below. */
   color: var(--bg);
@@ -509,9 +918,13 @@
   background: var(--bg-alt);
 }
 
+/* `not-allowed`, not `default`. This used to mean "busy for a moment" and now
+   means "this repo cannot be loaded here" on cards that will never offer it —
+   the button is permanently visible and permanently disabled there, so the
+   pointer has to say refused rather than idle. The `title` says why. */
 .am-card-power:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: not-allowed;
 }
 
 .am-card-power-on {
@@ -525,61 +938,97 @@
 }
 
 /* -- Suggested (the curated shortlist, SPEC §40) ------------------------------
-   Above the search box and only when nothing is typed: a handful someone has
-   chosen is the answer to "what should I even get", which is the question you
-   have before you know what to search for. */
-.am-suggested {
-  margin: 0 0 18px;
-}
+   One of the Discover tab's two faces, laid out in the LOCAL tab's vocabulary —
+   .am-section per capability, and the .am-section-head / .am-subgroup-title
+   pair for the heading — so a group of cards means the same thing on either
+   tab. What is left here is only the things that hang off that heading. */
 
-.am-suggested-head {
-  margin: 0 0 8px;
+/* How many, and from where — the right-hand slot of the heading that names
+   which face of the tab is on screen. This is the half of the distinction a
+   title alone cannot carry: "11 picked for this machine" against '"whisper" ·
+   24 on huggingface.co' says in one line both what you are looking at and who
+   chose it. Same size and colour as the runner labels below, for the same
+   reason: it qualifies the heading rather than competing with it. */
+.am-discover-summary {
+  flex: 0 0 auto;
   font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
   color: var(--fg-muted);
 }
 
-.am-suggested-group + .am-suggested-group {
-  margin-top: 14px;
-}
-
-.am-suggested-cap {
+/* The heading's right-hand end holds two things in the results state — the
+   count and the way back — so they share the one slot rather than the way back
+   pushing the title off the left. */
+.am-discover-headmeta {
   display: flex;
+  flex: 0 1 auto;
   align-items: baseline;
-  gap: 8px;
-  margin-bottom: 6px;
-  font-size: 12px;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* "← Back to suggested models", beside the count. Deliberately LOUDER than the
+   count it sits next to — it is the only control in that row and the answer to
+   the question somebody reading unwanted results is asking, so it takes the
+   foreground colour where the count stays muted. Still a text button and not a
+   filled one: it undoes, and an undo should not look like the page's main
+   action. */
+.am-hub-back {
+  flex: 0 0 auto;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
   color: var(--fg);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
-.am-suggested-cap::first-letter {
-  text-transform: uppercase;
+.am-hub-back:hover {
+  text-decoration: underline;
 }
 
-/* Why a capability cannot run here. Shown, never hidden — a missing feature
-   with no explanation is a bug report. */
-.am-suggested-why {
-  font-size: 11px;
-  color: var(--fg-muted);
+.am-hub-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
-/* Which backend the shortlist below belongs to. Quiet: it qualifies the
-   heading rather than competing with it, and it only starts mattering once a
-   capability has more than one runner. */
+/* Why a capability cannot run here, and which backend serves it when it can.
+   Both live in the head's right-hand slot, where the Local tab puts a byte
+   subtotal: quiet, qualifying the heading rather than competing with it. */
+.am-suggested-why,
 .am-suggested-runner {
+  flex: 0 0 auto;
   font-size: 11px;
   color: var(--fg-muted);
 }
 
-/* What running on that backend is like — the CPU-speed warning, above the
-   cards, where it can still change a decision. Sized to be read rather than
-   skimmed past, and indented to hang off the heading it qualifies. */
-.am-suggested-note {
-  margin: 0 0 8px;
-  max-width: 62ch;
-  color: var(--warning, var(--fg-muted));
+/* What running on that backend is like — the MLX image runner's memory
+   ceiling, MLX Whisper's GPU speed — above the cards, where it can still
+   change a decision.
+
+   MUTED, and it used to be `--warning`. Three orange paragraphs down one page
+   is how a reader learns that orange on this page means nothing; none of these
+   sentences reports a problem, they describe what a backend is LIKE, which is
+   context for a choice and not an alarm about one.
+
+   It rides .am-group-note for everything INCLUDING its spacing and the measure
+   — the 62ch override that used to be here made these the narrowest prose on
+   the page, and they are the longest sentences on it, and the -2px nudge that
+   was here is now the `:has` rule's job for every note on both tabs. */
+
+/* Why these particular models, under the SUGGESTED MODELS heading and above
+   the first capability heading. Rides .am-group-note — it is the same kind of
+   sentence as the notes under the headings below it, and giving it its own size
+   or colour would make the tab's opening line look like a banner. The extra
+   bottom margin is the only difference: it is introducing a run of sections
+   rather than captioning the one grid under it. Its opposite number is
+   .am-hub-note, which sits in the same place under the other heading and keeps
+   the smaller gap because it captions ONE grid rather than introducing a run of
+   capabilities. */
+.am-suggested-lede {
+  margin-bottom: var(--am-gap-section);
 }
 
 .am-suggest-note {
@@ -597,4 +1046,30 @@
   color: var(--bg);
   background: var(--accent);
   white-space: nowrap;
+}
+
+/* "gated" / "gated — by approval", in the ✓'s slot on a search result.
+   OUTLINED and muted where the ✓ is a filled accent chip: the ✓ is good news
+   about a model you already have, and this is a condition on one you do not.
+   Quiet on purpose — a gate is a step, not a warning, and the sentence that
+   says which step is on the hover. It is not the pill D313 deleted, because
+   that one sat beside a Download button that would 403 and this one replaces
+   that button with the link that opens the gate (`gateChrome`). */
+.am-card-gate {
+  padding: 0 6px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+/* "Accept terms" / "Request access" — the Download button's twin, because it
+   is the same act from the card's point of view (start getting this model) and
+   only the first step differs. It rides .am-card-power for its metrics and
+   drops only what a link does not have. */
+.am-card-gate-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
 }

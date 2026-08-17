@@ -637,7 +637,7 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
         return envinstall.venv_python_for(runner.folder)
 
     worker.state = "venv"
-    _report(job, state="running", kind="download", detail=f"Preparing {runner.label}…",
+    _report(job, state="running", kind="download", detail=f"Preparing {runner.short}…",
             done=None, total=None)
 
     # ROUNDS, because an install is not always one install. On a machine with no
@@ -668,12 +668,12 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
                     raise SupervisorError(str(record["error"]))
                 break
             _report(job,
-                    detail=f"Preparing {runner.label} — {record.get('stage') or 'installing'}…")
+                    detail=f"Preparing {runner.short} — {record.get('stage') or 'installing'}…")
             time.sleep(0.5)
         worker.install_key = ""
         if envinstall.is_installed(runner.folder):
             return envinstall.venv_python_for(runner.folder)
-    raise SupervisorError(f"the environment for {runner.label} did not build")
+    raise SupervisorError(f"the environment for {runner.short} did not build")
 
 
 def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
@@ -785,6 +785,18 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
                 return
             time.sleep(0.5)
         if proc.returncode != 0:
+            # **The ✕ is checked before the exit code, because the WORKER can
+            # beat this loop to it.** Both sides watch for a cancel — this loop
+            # every 0.5s, and the worker's own fetch tick every 1s, which learns
+            # about it from the reply (`worker_base.report_or_cancel`). When the
+            # worker notices first it raises `Cancelled` and exits non-zero, and
+            # the `proc.poll() is None` guard above then drops us straight here
+            # without ever asking about the ✕ — so a download the user cancelled
+            # was reported as a FAILED one, with a traceback in the message.
+            # The flag is the honest answer either way: it is server state that
+            # only a ✕ sets, and it survives the worker's death.
+            if _cancel_requested(job):
+                raise SupervisorError("cancelled")
             stderr = _tail(log)
             raise SupervisorError(stderr.strip() or f"the download exited {proc.returncode}")
         _report(job, state="done", detail="Downloaded")
@@ -837,9 +849,20 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     job = job_id_for(model)
     with _lock:
         current = _workers.get(capability)
-        if current is not None and current.model == model and current.state != "error":
+        if (current is not None and current.model == model
+                and current.runner_code == runner.code
+                and current.state != "error"):
             # Joining an in-flight bring-up hands back ITS record, so the second
             # caller watches the same thing the first one is watching.
+            #
+            # The RUNNER has to match as well as the model. One model id can be
+            # published for two backends — `openai/whisper-large-v3` exists as
+            # an MLX conversion and as a CTranslate2 one — so "the model already
+            # loading is the model you asked for" does not answer "the worker
+            # loading it is the one that should serve you". Without this, a load
+            # placed after the preference moved joined the outgoing engine's
+            # bring-up and the switch never happened. A mismatch falls through
+            # to the eviction below, which is what a change of engine means.
             return {"jobId": job, "model": model, "state": current.state}, current
         if current is not None:
             # Eviction: the weights of the old model must be released BEFORE the
@@ -1055,6 +1078,41 @@ def unload(model: str | None = None, capability: str | None = None) -> bool:
     return bool(targets)
 
 
+def evict_stale_engines() -> list[str]:
+    """Unload any resident model whose capability now resolves to a DIFFERENT
+    runner. Returns the models that were stopped.
+
+    Called when an engine preference changes (D302). One capability holds one
+    resident model (see the module docstring), and that model belongs to the
+    backend that loaded it — a Whisper model resident in the CTranslate2 worker
+    is not usable by the MLX one, they hold different formats and different
+    weights. So switching a capability's engine while a model is loaded leaves a
+    process holding gigabytes for a backend nothing will route to again: the
+    memory stays spent, the AI Models page shows it as the resident model for
+    that capability, and the next transcription starts a second worker beside
+    it. Eviction is what makes the switch mean something.
+
+    **Stated as a reconciliation rather than as "undo what that PUT did"**, and
+    that is deliberate: the caller then needs no before/after bookkeeping, the
+    call is idempotent, and it is correct for every other way the resolution can
+    move under a resident model — a runner folder finishing its build, a
+    preference edited into prefs.json by hand.
+
+    Deliberately NOT touching `_downloads`: a weights-only fetch holds no memory
+    and evicts nothing, and the bytes it is pulling stay useful — a user who
+    switches engines mid-download almost certainly wants the download.
+    """
+    with _lock:
+        stale = []
+        for worker in list(_workers.values()):
+            resolved = registry.for_capability(worker.capability)
+            if resolved is not None and resolved.code != worker.runner_code:
+                stale.append(worker)
+    for worker in stale:
+        unload(model=worker.model, capability=worker.capability)
+    return [worker.model for worker in stale]
+
+
 def unload_all() -> None:
     """Server shutdown: nothing may outlive the app.
 
@@ -1101,14 +1159,39 @@ def busy_reason(model: str) -> str | None:
 
 
 def ready_worker(capability: str, model: str | None = None) -> Worker | None:
-    """The resident, READY worker for a capability — what generation needs."""
+    """The resident, READY worker for a capability — what generation needs.
+
+    **The ENGINE is part of the question, not only the capability and the
+    model.** A worker belongs to the backend that started it, and resolution can
+    move underneath one that is already loaded: `preferred_code` re-reads
+    prefs.json on EVERY resolution with no cache, so a file edited by hand,
+    restored from a backup or synced into the home directory changes the answer
+    with no endpoint ever running. Serving the old worker anyway is the failure
+    the whole feature exists to remove — the Preferences page saying CTranslate2
+    while every transcription is answered by the resident MLX process.
+
+    So a mismatch EVICTS rather than merely declining. Returning None alone
+    would leave a worker nothing can ever route to holding its gigabytes until
+    the next PUT, which may never come; `evict_stale_engines` is exactly that
+    reconciliation, and calling it here rather than copying it keeps one
+    definition of "stale". Idempotent, so the second request pays nothing.
+
+    The resolution happens OUTSIDE `_lock` — it reads prefs.json off disk, and
+    that is not something to do while holding the table every other thread
+    wants. It costs one small JSON read per generation request, which is the
+    price of the preference meaning something between PUTs.
+    """
     with _lock:
         worker = _workers.get(capability)
         if worker is None or worker.state != "ready":
             return None
         if model is not None and worker.model != model:
             return None
-        return worker
+    resolved = registry.for_capability(capability)
+    if resolved is not None and resolved.code != worker.runner_code:
+        evict_stale_engines()
+        return None
+    return worker
 
 
 def generate_text(model: str, body: dict):
