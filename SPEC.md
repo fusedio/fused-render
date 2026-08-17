@@ -6716,11 +6716,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   has an answer for. That is a deliberate, visible crack in AI-10c's "a page
   cannot tell which engine ran", and it is the right place to put one — a loud
   refusal naming the engine and the way out beats a silent substitution the
-  page cannot see. **`vad` still means one thing** (AI-10f): Silero moved to the
-  runners root on its second caller, all three engines share it, and a `vad.py`
-  inside a runner folder is a failing test. On this engine it is a wall-clock
-  saving rather than a correctness fix, which changes why it is wanted and not
-  what it does. **The format check is on the CONFIG**: a Parakeet snapshot
+  page cannot see. **`vad` still means one thing** (AI-10f): `runners/vad.py`
+  moved out of `mlx_whisper/` on its second caller and is now shared by the two
+  MLX engines, with a `vad.py` inside any runner folder a failing test. The CT2
+  engine is unchanged and does NOT read it — faster-whisper carries its own
+  Silero and is asked for it through `vad_filter`, which is what AI-10f settled
+  and why the flag already meant one thing across those two. On this engine it
+  is a wall-clock saving rather than a correctness fix, which changes why it is
+  wanted and not what it does. **The format check is on the CONFIG**: a Parakeet snapshot
   carries `model.safetensors` like every transformers repo, so what identifies
   it is a `nemo.collections.asr.models.…` class in `config.json` — and a match
   claims the snapshot alone, or the text runners would offer to load a speech

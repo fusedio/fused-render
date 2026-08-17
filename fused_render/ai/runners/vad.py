@@ -16,8 +16,15 @@ the right home for exactly as long as there was one caller. Two callers of one
 promise is what the root is for: a copy under `parakeet_mlx/` would be two
 implementations of "what `vad: true` means", free to drift on the threshold, the
 minimum silence and the padding, and neither copy would fail a test — each would
-pass its own. Every runner reaches it through the same `sys.path` insert that
+pass its own. Its readers reach it through the same `sys.path` insert that
 reaches `worker_base`.
+
+**Its readers are the two MLX engines, not all three.** `faster_whisper/`
+neither imports this nor should: faster-whisper ships the same Silero inside
+itself and takes `vad_filter=True`, so asking for it there is one argument to a
+library that already has the model. This file exists because the MLX engines
+have no such library — which is the whole of AI-10f's argument, one engine
+further on.
 
 Three constraints shaped it, and each one closed off the obvious route:
 
