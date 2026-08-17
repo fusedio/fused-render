@@ -6530,7 +6530,13 @@ an AI Models page that could say what was on disk but not what was *running*.
   it is removed on success, on cancel AND **on error** — the one place this diverges
   from the progressive transcript (AI-10a), whose file is kept on a failure
   because 80 minutes of words is salvage; a half-denoised 32x32 blur of a
-  picture that will never exist is not.
+  picture that will never exist is not. **A kill has no unwind**, so a worker
+  ended by `_terminate` / `_kill_tree` (unload, shutdown, a wedge) leaves its
+  last frame behind — and the next render sweeps `<home>/ai/images` of any
+  preview nothing has touched for an hour. Wired to the request rather than to a
+  timer: the directory grows only when renders happen, the caller is about to
+  wait minutes anyway, and a live preview is rewritten every step so its age is
+  what tells the two apart. The image itself is never swept at any age.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
   honest number rather than two that need reconciling. What the supervisor knows

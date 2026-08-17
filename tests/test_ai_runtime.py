@@ -1752,6 +1752,82 @@ def test_a_runner_that_writes_no_preview_leaves_NOTHING_behind(client,
     assert not os.path.exists(started["previewPath"])
 
 
+def _age(path, seconds):
+    """Backdate a file, so a sweep sees it as something nobody is writing."""
+    old = time.time() - seconds
+    os.utime(path, (old, old))
+
+
+def test_a_preview_ORPHANED_BY_A_KILL_is_swept_up(tmp_path):
+    """`Sink.discard` runs on a normal unwind, and a worker does not always get
+    one: `supervisor._terminate` / `_kill_tree` end it outright on an unload, an
+    app shutdown or a wedge. What is left is `<stem>.preview.png` — and possibly
+    a `.tmp` beside it — in `~/ai/images`, a directory the user browses, with no
+    job row to explain it and nothing that would ever remove it.
+
+    So the directory is swept when the next render asks for it: the one moment
+    this is free, since the caller is about to wait minutes anyway.
+    """
+    from fused_render.server.routers import ai_runtime
+
+    room = tmp_path / "images"
+    room.mkdir()
+    orphan = room / "20260101-120000-abc.preview.png"
+    temp = room / "20260101-120000-abc.preview.png.9999.tmp"
+    kept = room / "20260101-120000-abc.png"
+    for path in (orphan, temp, kept):
+        path.write_bytes(b"x")
+        _age(path, ai_runtime._PREVIEW_TTL + 60)
+
+    ai_runtime._sweep_previews(str(room))
+    # The render itself is the artefact and is never touched, however old.
+    assert sorted(p.name for p in room.iterdir()) == ["20260101-120000-abc.png"]
+
+
+def test_a_preview_a_RENDER_IS_STILL_WRITING_survives_the_sweep(tmp_path):
+    """The one thing this must not do. A live preview is rewritten every
+    denoising step, so its mtime is always seconds old — the age threshold is
+    what separates "nobody is writing this" from "somebody is", and it is why
+    the sweep does not need to know which renders are in flight."""
+    from fused_render.server.routers import ai_runtime
+
+    room = tmp_path / "images"
+    room.mkdir()
+    live = room / "20260101-120000-def.preview.png"
+    live.write_bytes(b"x")
+
+    ai_runtime._sweep_previews(str(room))
+    assert live.exists()
+
+
+def test_the_sweep_never_breaks_a_render(tmp_path):
+    """It runs on the way in to a request that is about to work. A directory
+    that cannot be listed, or a file that cannot be removed, is worth an untidy
+    folder and never a refused render."""
+    from fused_render.server.routers import ai_runtime
+
+    ai_runtime._sweep_previews(str(tmp_path / "nothing-here"))
+
+
+def test_a_render_SWEEPS_before_it_starts(client, fake_image_runner, monkeypatch,
+                                          tmp_path):
+    """Wired to the request rather than to a timer: there is no background
+    sweeper to own, and the directory only grows when renders happen."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    from fused_render.server.routers import ai_runtime
+
+    room = tmp_path / "ai" / "images"
+    room.mkdir(parents=True)
+    orphan = room / "20250101-000000-old.preview.png"
+    orphan.write_bytes(b"x")
+    _age(orphan, ai_runtime._PREVIEW_TTL + 60)
+
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert not orphan.exists()
+    _wait_job(started["jobId"])
+
+
 def test_the_reply_carries_the_seed_even_when_none_was_asked_for(client, fake_image_runner):
     """A seed invented inside the worker and never surfaced would make every
     unseeded image unrepeatable — "make that one again" has to be possible."""
