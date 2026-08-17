@@ -79,6 +79,18 @@ offered-then-broken.
 
 Fails closed: a missing git binary, a timeout, a non-zero exit, stdout that
 isn't literally `true`, an unreadable path, any exception at all → False.
+
+Fails closed but no longer SILENTLY. Answering False for both "this is not a
+repository" (the common, correct case) and "git ran and refused" made the two
+indistinguishable, and the second one hides the Git panel on EVERY repository at
+once with nothing in the log — a real investigation concluded "not reproducible"
+from that silence. So git's stderr is captured, and a negative that CONTRADICTS
+the filesystem (a non-zero exit whose words are not "not a git repository", or
+exit zero with a negative answer for a directory that has a `.git`) is logged
+once a minute with the process's git environment, which is where a stray
+`GIT_DIR` — invisible from outside — would show up. The verdict is unchanged;
+only the silence is. See `_warn_suspicious_negative`.
+
 Self-contained apart from `../shared/appenv.py` (itself stdlib-only, env vars
 only) — the module is exec'd standalone (not imported as part of a package), so
 nothing here imports fused_render.
@@ -107,6 +119,73 @@ _ENV = {
     "GCM_INTERACTIVE": "Never",   # git-credential-manager
     "GIT_LFS_SKIP_SMUDGE": "1",   # never fetch an LFS object to answer this
 }
+
+# How often a negative that looks WRONG may be logged. The gate answers on every
+# directory the user opens, so an unthrottled line would be one per stat.
+_WARN_INTERVAL_S = 60.0
+
+# The environment that can make a healthy git answer about the WRONG repository,
+# plus the two that decide which config it reads. `git -C <repo> rev-parse`
+# honours `GIT_DIR` over `-C`, so a stray value here silently redirects the
+# question — and it is invisible from outside the process, which is exactly why
+# it belongs in the log line.
+_REPORT_ENV = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+    "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+    "HOME", "XDG_CONFIG_HOME",
+)
+
+# git's own words for the one negative that is ORDINARY. Everything else it can
+# say on the way to a non-zero exit — `detected dubious ownership`, a bad config,
+# `cannot get current working directory` — is a reason the mode disappeared that
+# a human needs to see. The exit code cannot tell them apart (all 128); the words
+# can.
+_ORDINARY_NEGATIVES = ("not a git repository",)
+
+
+def _warn_suspicious_negative(kind, path, detail):
+    """Log a negative that contradicts the filesystem, at most once a minute.
+
+    Why this exists: a gate that answers False both for "this is not a
+    repository" (the common, correct case) and for "git ran and refused" is
+    undiagnosable, and it disables the Git side panel for EVERY repository with
+    nothing whatsoever in the log. A real investigation concluded "not
+    reproducible" from that silence.
+
+    The throttle state cannot live in a module global: `_run_condition` re-execs
+    this file on every stat, so a global would be reset before it was ever read.
+    It rides on the `logging.Logger` object instead, which the logging manager
+    caches for the life of the PROCESS — the lifetime the throttle is about.
+
+    stdlib only, like the rest of this module (SPEC PY-15), and it never changes
+    the verdict: every caller has already decided to fail closed.
+    """
+    try:
+        import logging
+        import os
+        import time
+
+        log = logging.getLogger("fused_render.templates.git.condition")
+        attr = "_fused_warned_" + kind
+        now = time.monotonic()
+        last = getattr(log, attr, None)
+        if last is not None and now - last < _WARN_INTERVAL_S:
+            return
+        setattr(log, attr, now)
+
+        env = [f"{k}={os.environ[k]!r}" for k in _REPORT_ENV if os.environ.get(k)]
+        try:
+            env.append(f"cwd={os.getcwd()!r}")
+        except OSError as exc:   # the cwd was removed under this process
+            env.append(f"cwd=UNAVAILABLE ({exc})")
+        log.warning(
+            "the git mode is being hidden for %s and it looks wrong: %s — git "
+            "ran, so this is not a spawn problem. This process's git "
+            "environment is: %s",
+            path, detail, ", ".join(env) or "no git-related environment set")
+    except Exception:  # noqa: BLE001 — a gate must never fail because of its log
+        pass
 
 
 def main(path: str) -> bool:
@@ -167,14 +246,43 @@ def main(path: str) -> bool:
             env={**os.environ, **_ENV},
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            # CAPTURED, not discarded. This is the only place git says WHY it
+            # refused, and discarding it is what made "the Git panel is gone for
+            # every repository" indistinguishable from "this is not a
+            # repository". `rev-parse` writes one short line, so there is no
+            # pipe-filling risk.
+            stderr=subprocess.PIPE,
             timeout=_TIMEOUT_S,
             creationflags=(subprocess.CREATE_NO_WINDOW
                            if sys.platform == "win32" else 0),
             close_fds=False,
         )
         if proc.returncode != 0:
+            said = proc.stderr.decode("utf-8", "replace").lower()
+            if not any(phrase in said for phrase in _ORDINARY_NEGATIVES):
+                _warn_suspicious_negative(
+                    "refused", path,
+                    "git exited %s saying %r" % (
+                        proc.returncode,
+                        proc.stderr.decode("utf-8", "replace").strip()
+                        or "(nothing)"))
             return False
-        return proc.stdout.strip() == b"true"
+        if proc.stdout.strip() == b"true":
+            return True
+        # Exit ZERO with a negative answer. Ordinary for a bare repo and inside
+        # `.git`; NOT ordinary for a directory carrying a `.git` of its own,
+        # which is the shape a stray GIT_DIR produces — and it leaves no stderr
+        # at all, so the environment is the only thing that can explain it. One
+        # stat, only on the negative, and it never changes the verdict.
+        try:
+            has_git = os.path.exists(os.path.join(path, ".git"))
+        except OSError:
+            has_git = False
+        if has_git:
+            _warn_suspicious_negative(
+                "contradicted", path,
+                "it has a .git entry but `rev-parse --is-inside-work-tree` "
+                "answered %r" % proc.stdout.decode("utf-8", "replace").strip())
+        return False
     except Exception:  # noqa: BLE001 — any probe error: fail closed, quietly
         return False
