@@ -6689,6 +6689,44 @@ an AI Models page that could say what was on disk but not what was *running*.
   rows are uneven, and here that is information: this engine has a caveat, that
   one does not. The field stays on `catalog.describe()` regardless; it answers
   a question about the catalog, not about where a page prints it.
+- **AI-10g** **A THIRD engine serves transcription — `parakeet_mlx`, Apple
+  Silicon only — registered UNDER MLX Whisper so the default does not move,
+  and refusing what it cannot do rather than pretending** (D319). Parakeet-TDT
+  beats Whisper large-v3 on English word error rate, decodes several times
+  quicker again on the same Metal, is CC-BY-4.0 and does not hallucinate over
+  silence. It is still **not** the default, and that is the requirement rather
+  than a caution: v3 handles 25 European languages against Whisper's ~99, so
+  promoting it would silently regress every page relying on language detection,
+  producing a confident transcript in the wrong language instead of an error.
+  The row sits directly below `mlx-whisper`, and a user opts in per capability
+  on the Engines tab — AI-10e's machinery serving the case it was built for,
+  with no new plumbing. **The waveform reaches the library by borrowing its
+  loader.** `parakeet_mlx.transcribe` takes a path and calls `load_audio`,
+  which spawns ffmpeg (AI-10's rule again, at its sharpest — without ffmpeg the
+  library raises rather than degrading), so the runner decodes with `av` and
+  swaps the module's `load_audio` binding for the duration of one call. That
+  keeps the library's chunking AND its overlap token merge, which reimplementing
+  around `get_logmel`/`generate` would have cost; it is the same reach into
+  another package's globals AI-10c already makes for `tqdm`, guarded and
+  restored the same way, and a MISSING binding raises rather than falling
+  through to ffmpeg. Progress is the library's `chunk_callback`, which fires
+  before each chunk — so the reported position is that chunk's start: behind
+  reality, never ahead of it. **Three options are REFUSED by name**:
+  `task: "translate"`, `language` and `initialPrompt`, none of which this model
+  has an answer for. That is a deliberate, visible crack in AI-10c's "a page
+  cannot tell which engine ran", and it is the right place to put one — a loud
+  refusal naming the engine and the way out beats a silent substitution the
+  page cannot see. **`vad` still means one thing** (AI-10f): Silero moved to the
+  runners root on its second caller, all three engines share it, and a `vad.py`
+  inside a runner folder is a failing test. On this engine it is a wall-clock
+  saving rather than a correctness fix, which changes why it is wanted and not
+  what it does. **The format check is on the CONFIG**: a Parakeet snapshot
+  carries `model.safetensors` like every transformers repo, so what identifies
+  it is a `nemo.collections.asr.models.…` class in `config.json` — and a match
+  claims the snapshot alone, or the text runners would offer to load a speech
+  model as a chat model. **Nothing here has transcribed real audio under test**;
+  AI-10b and AI-10d's caveat applies unchanged, against the `parakeet-mlx` 0.5.2
+  API.
 - **AI-11** **Text generation runs on every supported desktop platform, on the
   backend that suits the machine — and TWO runners share one capability for the
   first time** (D293).
