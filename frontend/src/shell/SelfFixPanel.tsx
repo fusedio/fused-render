@@ -31,8 +31,10 @@ import {
   failureContextFromNote,
   fixSessionUrl,
   getSelfFix,
+  isSelfFixStorageKey,
   issueUrl,
   startSelfFix,
+  SELFFIX_CHANGED_EVENT,
   type SelfFixSnapshot,
 } from "@platform/lib/selffix";
 
@@ -111,13 +113,7 @@ function DescribeSection({ writable }: { writable: boolean }) {
 
 // The installation's own account: modified or stock, every report, how to get
 // a clean copy back. The version chip shows a summary of this; here it has room.
-function InstallationSection({
-  snapshot,
-  onChanged,
-}: {
-  snapshot: SelfFixSnapshot;
-  onChanged: () => void;
-}) {
+function InstallationSection({ snapshot }: { snapshot: SelfFixSnapshot }) {
   const [error, setError] = useState<string | null>(null);
   const { marker, reinstall } = snapshot;
 
@@ -171,8 +167,10 @@ function InstallationSection({
               type="button"
               onClick={async () => {
                 try {
+                  // No local re-read here: `clearSelfFix` nudges, and the
+                  // nudge is what this tab listens to. A second path would be
+                  // a second place for the two to disagree.
                   await clearSelfFix();
-                  onChanged();
                 } catch (e) {
                   setError(String((e as Error)?.message || e));
                 }
@@ -263,6 +261,30 @@ export function SelfFixPanel() {
     };
   }, [epoch]);
 
+  // RE-READ ON THE NUDGE, exactly as the version chip does, because this tab is
+  // the other half of the same state and it was the only surface not listening.
+  // A dismiss from the chip's panel, or a session stamping the install from
+  // another tab, left Preferences asserting the opposite of what the sidebar
+  // showed until the tab was remounted — the disagreeing-surfaces failure the
+  // nudge exists to prevent, arriving through the one door that had no listener.
+  //
+  // The re-read is the WHOLE of the response, so this needs no epoch guard of
+  // its own: bumping `epoch` re-runs the effect above, whose cleanup drops the
+  // previous fetch's `alive` flag. React's own teardown is the guard the chip
+  // has to hand-roll (it owns a timer chain; this owns one fetch).
+  useEffect(() => {
+    const refresh = () => setEpoch((n) => n + 1);
+    const onPing = (e: StorageEvent) => {
+      if (isSelfFixStorageKey(e.key)) refresh();
+    };
+    window.addEventListener("storage", onPing);
+    window.addEventListener(SELFFIX_CHANGED_EVENT, refresh);
+    return () => {
+      window.removeEventListener("storage", onPing);
+      window.removeEventListener(SELFFIX_CHANGED_EVENT, refresh);
+    };
+  }, []);
+
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
   if (!snapshot) return <SkeletonLines rows={4} label="Loading installation state" />;
 
@@ -272,7 +294,7 @@ export function SelfFixPanel() {
   return (
     <>
       <DescribeSection writable={snapshot.writable} />
-      <InstallationSection snapshot={snapshot} onChanged={() => setEpoch((n) => n + 1)} />
+      <InstallationSection snapshot={snapshot} />
     </>
   );
 }
