@@ -340,6 +340,12 @@ export function rowsShown(collapsed: boolean, queue: QueueCount = NO_QUEUE): Row
 // waiting, and calling that running is the kind of small lie that makes a user
 // stop believing the corner. "downloading" survives only for a card whose active
 // work is entirely downloads, which is what it always meant.
+//
+// A MIX names both halves instead of adding them up, for that same reason: one
+// live turn beside two unclaimed messages reads "1 running · 2 queued", never
+// "3 running". The sum was the same lie in a shorter sentence — it inflated how
+// much work is underway at exactly the moment a reader glances at the corner to
+// judge that.
 export function jobsSummary(jobs: Job[], queue: QueueCount = NO_QUEUE): string {
   const running = jobs.filter(isRunning);
   const live = running.length + queue.running;
@@ -354,7 +360,8 @@ export function jobsSummary(jobs: Job[], queue: QueueCount = NO_QUEUE): string {
   const pureDownloads =
     queue.waiting === 0 && queue.running === 0 && downloads === running.length;
   const noun = pureDownloads ? "downloading" : "running";
-  return active === 1 ? `1 ${noun}` : `${active} ${noun}`;
+  const head = `${live} ${noun}`;
+  return queue.waiting === 0 ? head : `${head} · ${queue.waiting} queued`;
 }
 
 // Overall progress across the running jobs, for the collapsed header's bar —

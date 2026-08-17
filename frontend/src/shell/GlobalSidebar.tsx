@@ -257,10 +257,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   menuEntries.push(
     { href: "/templates", label: "Templates", icon: TEMPLATES_ICON },
     { href: "/mounts", label: "Mounts", icon: MOUNTS_ICON },
-    // Ungated, unlike Claude Config / App Basics above: the page is useful (and
-    // says so) even with nothing scheduled yet, and there is no machine state
-    // that can make scheduling unavailable.
-    { href: "/scheduled", label: "Schedule", icon: SCHEDULED_ICON },
+    // No /scheduled entry here on purpose: Tasks is primary nav now (see the
+    // rail below). Listing the same route in the menu too would light the Tasks
+    // row and the Preferences trigger at once, since `prefsActive` treats every
+    // menu href as "you are on one of my pages" — the same double-selection the
+    // Home comment above rejects.
     { href: "/ai-models", label: "AI Models", icon: AI_MODELS_ICON, extra: residentDot },
     {
       href: "/preferences",

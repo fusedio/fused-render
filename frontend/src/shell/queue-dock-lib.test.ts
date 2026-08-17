@@ -199,17 +199,19 @@ describe("one card, one count", () => {
     expect(jobsSummary([], { waiting: 1, running: 0 })).toBe("1 queued");
   });
 
-  it("counts the queue and the jobs as one number once anything is running", () => {
+  it("names the running and the waiting halves separately in a mix", () => {
     const mixed = queueCount(queueRows([entry({ id: "a", state: "sent" })], [], [entry({ id: "c" })]));
-    // one live turn + one waiting message + one running download = three
-    expect(jobsSummary([job({ id: "d", kind: "download" })], mixed)).toBe("3 running");
+    // One live turn + one running download are underway; the past-due message is
+    // not. Adding all three into "3 running" claimed the queue had already begun
+    // — the same lie the pure-queue case above exists to avoid.
+    expect(jobsSummary([job({ id: "d", kind: "download" })], mixed)).toBe("2 running · 1 queued");
   });
 
   it("keeps 'downloading' for a card whose work really is only downloads", () => {
     const jobs = [job({ id: "d", kind: "download" })];
     expect(jobsSummary(jobs, { waiting: 0, running: 0 })).toBe("1 downloading");
     // one scheduled message alongside it and the noun has to generalise
-    expect(jobsSummary(jobs, { waiting: 1, running: 0 })).toBe("2 running");
+    expect(jobsSummary(jobs, { waiting: 1, running: 0 })).toBe("1 running · 1 queued");
   });
 
   it("describes what finished only when nothing is happening at all", () => {
