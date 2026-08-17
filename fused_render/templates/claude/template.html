@@ -857,13 +857,13 @@
      pending "in this conversation" — the same rule #topbar and #logwrap take. */
   #chat.home #schedblock { display: none; }
   #schedblock .sb-card {
+    /* A COLUMN: reason, row, then the one control right-aligned under it. Side by
+       side, the row and the button fought over a pane that is often 340px wide and
+       the row's own right-hand cell — the time, the thing it is for — was the
+       first thing to be squeezed out. */
     display: flex;
-    align-items: flex-start;
-    /* WRAPS, because this pane is often 340px wide: unwrapped, the buttons kept
-       their width and squeezed the message into a 60px column of single words.
-       Below the body's basis the actions take a line of their own. */
-    flex-wrap: wrap;
-    gap: 8px 10px;
+    flex-direction: column;
+    gap: 6px;
     padding: 8px 11px;
     border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
     /* Slightly tighter than the composer's 20px: a lid, not a second box of
@@ -875,30 +875,129 @@
     font-size: 12px;
     line-height: 1.45;
   }
-  #schedblock .sb-body { flex: 1 1 190px; min-width: 0; }
   #schedblock .sb-why { display: flex; gap: 6px; color: var(--dim); }
   #schedblock .sb-ic { color: var(--accent-text); flex-shrink: 0; }
-  /* The scheduled message itself — the loudest thing in the card, because it is
-     the fact that explains the block. ONE line: a prompt is arbitrarily long and
-     three wrapped lines of it above the composer is the wall of text this
-     replaced. The whole text is on the title. */
-  #schedblock .sb-msg {
+
+  /* ── the task row ────────────────────────────────────────────────────────────
+     The Tasks LIST view's row, TRANSCRIBED and not linked: this template cannot
+     import frontend/src/styles/tasks.css, so the geometry that file defines is
+     copied here — the 8px row gap, the ring in the leading cell, TASK-nnn in
+     tabular mono, the ellipsed name, one spacer, and the fixed right-hand cell.
+     Every colour goes through this page's own tokens, so the row is the shell's
+     shape in the chat's palette rather than a second palette smuggled in.
+
+     It is a BUTTON because the hop is a pushState into the React shell rather
+     than a document load (see openTaskOnCalendar) — an <a href> here would be a
+     link that cannot be trusted to a middle click. */
+  #schedblock .sb-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 9px;
+    /* Sits BACK from the accent-tinted card rather than on top of it, which is
+       what makes it read as a row lifted out of the notice. --panel is the one
+       surface that steps away from --surface in both themes (down in dark, up in
+       light), so the separation survives the light block. */
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 9px;
     color: var(--fg);
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color .12s, border-color .12s;
+  }
+  #schedblock .sb-row:hover {
+    background: var(--surface);
+    border-color: var(--border-strong);
+  }
+  /* Reachable before the destructive button (it is first in the DOM) and visibly
+     so — the ring is the same one every control in this card wears. */
+  #schedblock .sb-row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  /* THE spacer, and there is exactly one: tasks.css's own house rule, because a
+     second `margin-left: auto` in the same row centres the right-hand group
+     instead of pinning it. */
+  #schedblock .sb-grow { flex: 1 1 auto; min-width: 8px; }
+  #schedblock .sb-id {
+    flex: 0 0 auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .01em;
+    color: var(--dim);
+  }
+  /* An EMPTY id is "/api/tasks could not be read", not "this task has no number":
+     the cell disappears rather than holding a gap open, and the rest of the row
+     still says which message is holding the box shut (see schedTaskRec). */
+  #schedblock .sb-id:empty { display: none; }
+  /* The name, and it is the one thing here allowed to be long — so it is the one
+     thing that gives way. */
+  #schedblock .sb-name {
+    min-width: 0;
+    font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* State and time, on the right, in one cell: "Upcoming · 14:00 tomorrow". Fixed
+     rather than flexible, because the whole point of the right end of this row is
+     that the time is always readable. */
+  #schedblock .sb-meta {
+    flex: 0 0 auto;
+    color: var(--dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  /* The status ring, drawn the way the shell draws it: a 2px currentColor circle,
+     so the STATE only ever changes the hue. 14px rather than the list's 16 — this
+     row sits at 12.5px inside a banner, not at 13px in a full-width table. */
+  #schedblock .sb-ring {
+    position: relative;
+    box-sizing: border-box;
+    flex: 0 0 14px;
+    width: 14px;
+    height: 14px;
+    border: 2px solid currentColor;
+    border-radius: 999px;
+    /* Upcoming, which is what a pending message almost always is. */
+    color: var(--accent-text);
+  }
+  #schedblock .sb-ring.sb-ring--in_progress { color: var(--code-fg); }
+  #schedblock .sb-ring.sb-ring--done { color: var(--ok); }
+  #schedblock .sb-ring.sb-ring--failed { color: var(--error); }
+  #schedblock .sb-ring.sb-ring--archived { color: var(--faint); }
+  /* Settled — well or badly — carries the inner dot, so the two terminal states
+     are told apart by more than a hue. */
+  #schedblock .sb-ring.sb-ring--done::after,
+  #schedblock .sb-ring.sb-ring--failed::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: currentColor;
   }
   /* A refused cancel, in the one colour this page keeps for a loss. `:empty`
      rather than `hidden`, so the line costs nothing when there is nothing to
      say (see renderSchedBlock — it is written every render, keyed to the entry). */
   #schedblock .sb-note { color: var(--error); }
   #schedblock .sb-note:empty { display: none; }
+  /* Under the row and against its right edge — the last thing read, which is what
+     a control that spends every future run of a task should be. */
   #schedblock .sb-acts {
     display: flex;
     align-items: center;
     gap: 4px;
-    flex-shrink: 0;
-    margin-left: auto;
+    justify-content: flex-end;
   }
   #schedblock .sb-acts button {
     background: transparent;
@@ -930,20 +1029,14 @@
     color: var(--error);
     background: color-mix(in srgb, var(--error) 10%, transparent);
   }
-  /* The secondary action, shaped so it cannot be mistaken for the escape: no
-     border, dim, underlined like the link it behaves as. Editing a schedule
-     leaves the message pending, so a control that looked like the way out here
-     would be the banner lying (see the sb-edit handler). */
-  #schedblock .sb-acts .sb-quiet {
-    border-color: transparent;
-    color: var(--dim);
-    padding: 3px 4px;
-    text-decoration: underline;
-    text-underline-offset: 2px;
-  }
-  #schedblock .sb-acts .sb-quiet:hover:not(:disabled) {
-    border-color: transparent;
-    color: var(--fg);
+  /* A run in flight BREATHES, and only where motion is welcome — `no-preference`
+     rather than a `reduce` override, so reduced motion is the state that needs no
+     opt-out. The ring's hue already says "in progress" on its own. */
+  @keyframes sb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+  @media (prefers-reduced-motion: no-preference) {
+    #schedblock .sb-ring.sb-ring--in_progress {
+      animation: sb-pulse 2s ease-in-out infinite;
+    }
   }
   /* The box itself says it is shut, since the banner is at the other end of the
      pane and a reader who clicks into a dead textarea is owed an answer there. */
@@ -2956,27 +3049,47 @@
          schedule that cannot be read shows nothing and blocks nothing (see
          applyComposerBlock).
 
-         The BODY is the scheduled message itself, not a paragraph about context
-         (Akshil, 2026-08-17 — "instead of this big text, show the schedule
-         message"). Seeing the words that are about to run is what makes the shut
-         box make sense; one short line above it says when, and the full text
-         rides on the title. -->
+         The BODY IS A TASK ROW, and it is the Tasks LIST view's row rather than a
+         shape invented here (Akshil, 2026-08-17 — "this UI does not make sense to
+         me, it does not give me what I want"): a status ring, TASK-nnn, the name,
+         and when it runs at the right end. The reason above it is ONE short line,
+         because a paragraph explaining context pollution described the block
+         instead of showing what is doing it.
+
+         What the row does NOT carry is the folder and the session id, and that is
+         the user's own reasoning: "you will not show the folder because you are
+         already in that folder, you are not showing the session ID because you
+         are already there." Both are true of the page the reader is standing on,
+         so on this row they are noise where the list view needs them to tell two
+         projects apart.
+
+         The row is the LINK — it goes to the task on the Tasks calendar — and it
+         comes before the destructive button in the DOM so it comes first in tab
+         order too. Geometry copied from frontend/src/styles/tasks.css, never
+         linked: a template cannot import the shell's stylesheet. -->
     <div id="schedblock" hidden>
       <div class="sb-card" role="status">
-        <div class="sb-body">
-          <div class="sb-why"><span class="sb-ic" aria-hidden="true">⏱</span><span class="sb-when"></span></div>
-          <div class="sb-msg"></div>
-          <div class="sb-note"></div>
-        </div>
-        <!-- Exactly ONE bordered control, and it is the one that actually reopens
-             the box — cancel for a one-off, stop-the-repeat for a repeat. The
-             other is a quiet link because editing a schedule leaves the message
-             pending: it is a thing you may want, never the way out. Labels are
-             written by renderSchedBlock, which is the only place that knows
+        <div class="sb-why"><span class="sb-ic" aria-hidden="true">⏱</span><span class="sb-when"></span></div>
+        <!-- One row, one hop. `sb-grow` is the list view's single spacer: a second
+             `margin-left: auto` anywhere in here would centre the right-hand cell
+             instead of pinning it (tasks.css says so in its own header). -->
+        <button id="sb-row" class="sb-row" type="button">
+          <span class="sb-ring" aria-hidden="true"></span>
+          <span class="sb-id"></span>
+          <span class="sb-name"></span>
+          <span class="sb-grow"></span>
+          <span class="sb-meta"></span>
+        </button>
+        <div class="sb-note"></div>
+        <!-- Exactly ONE control, and it is the one that actually reopens the box —
+             cancel for a one-off, stop-the-repeat for a repeat. "Edit schedule"
+             used to sit beside it and is GONE: the row now lands on the task where
+             Edit lives with its full popover, so the banner was two doors to one
+             room and its own door did not unblock (Akshil, 2026-08-17). The label
+             is written by renderSchedBlock, which is the only place that knows
              which of the two cases this is. -->
         <div class="sb-acts">
           <button id="sb-stop" type="button"></button>
-          <button id="sb-edit" class="sb-quiet" type="button">Edit schedule</button>
         </div>
       </div>
     </div>
@@ -7844,14 +7957,18 @@ function backHere() {
 // field is exactly what "+ New task" already does. Nothing is validated here —
 // this navigates, it does not create.
 //
-// `editId` is the second errand this same hop serves: the block banner's "Edit
-// schedule", which opens the form ON an entry that already exists rather than
-// on a new one. It rides the SAME `?new=1&…` deep link rather than a route of
-// its own, because the destination is one form either way and the params it
-// already consumes (target, message, session, back) are exactly what an edit
-// needs too — `edit` only says which stored entry the form is editing. A build
-// whose Schedule page does not read `edit` yet degrades to the new-task form,
-// prefilled with this task's own words: one control too many, never a dead end.
+// `editId` is the deep link's second errand: open the form ON an entry that
+// already exists rather than on a new one. It rides the SAME `?new=1&…` link
+// rather than a route of its own, because the destination is one form either way
+// and the params it already consumes (target, message, session, back) are exactly
+// what an edit needs too — `edit` only says which stored entry the form is
+// editing, and the Tasks page is what reads it.
+//
+// NO CALLER IN THIS TEMPLATE passes it any more. The blocked-composer banner used
+// to, as its "Edit schedule" control, and that control is gone: its row lands on
+// the task where Edit lives with its full popover instead (Akshil, 2026-08-17 —
+// two doors to one room, and the banner's did not unblock). The parameter stays
+// because it is the deep link's shape, not this template's private argument.
 function openScheduler(draft, editId) {
   // The draft SURVIVES the trip: leaving for the schedule page unloads this
   // document, and coming back rebuilt the composer empty — the message the
@@ -10035,7 +10152,7 @@ function fillToolChipBody(body, seg) {
   }
   (Array.isArray(seg.images) ? seg.images : []).forEach((img) => {
     // The media type lands in a `data:` URL, so it is validated rather than
-    // trusted: base64 payload, image/* type, nothing else. A rejected image is
+    // trusted: base64 payload, an image subtype, nothing else. A rejected image is
     // skipped, not coerced — inventing `image/png` for something that said it
     // was text/html would be guessing about bytes we did not read.
     const type = String((img && img.media_type) || "");
@@ -11150,12 +11267,29 @@ function scheduleResetForNewTranscript() {
 // old copy said so in its own body, which was an admission that its own button
 // did not work (Akshil, 2026-08-17). A control whose only outcome leaves the user
 // still blocked does not belong in a notice about being blocked.
+//
+// WHAT IT SHOWS is the Tasks list view's own row — a status ring, TASK-nnn, the
+// name, and the state and time at the right end — because the second shape was
+// still wrong (Akshil, 2026-08-17 — "this UI is not good... it does not give me
+// what I want"): it explained the block in prose and then dumped the message
+// underneath as bare left-aligned text. A reader who knows the Tasks page already
+// knows how to read this row, and reusing that vocabulary is what makes the
+// banner a view of the schedule rather than a paragraph about it.
+//
+// Not on the row: the FOLDER and the SESSION ID. "You will not show the folder
+// because you are already in that folder, you are not showing the session ID
+// because you are already there" (Akshil, 2026-08-17). The list view carries both
+// because it spans projects; inside the conversation they are the context, not
+// news. The row's click is the way to everything the banner therefore leaves out.
 const schedBlockEl = document.getElementById("schedblock");
 const schedBlockWhen = schedBlockEl.querySelector(".sb-when");
-const schedBlockMsg = schedBlockEl.querySelector(".sb-msg");
+const schedBlockRow = document.getElementById("sb-row");
+const schedBlockRing = schedBlockEl.querySelector(".sb-ring");
+const schedBlockId = schedBlockEl.querySelector(".sb-id");
+const schedBlockName = schedBlockEl.querySelector(".sb-name");
+const schedBlockMeta = schedBlockEl.querySelector(".sb-meta");
 const schedBlockNote = schedBlockEl.querySelector(".sb-note");
 const schedBlockStop = document.getElementById("sb-stop");
-const schedBlockEdit = document.getElementById("sb-edit");
 const BOX_PLACEHOLDER = box.placeholder;
 
 // The pending messages that would land in this conversation, soonest first.
@@ -11204,26 +11338,31 @@ function schedDayGap(then, now) {
   return Math.round((a - b) / 86400000);
 }
 
-// When it goes, said the way a person would. Past due is "any moment now" and
-// not a time in the past: a queued message is waiting for the next sweep, so the
-// stamp on it stopped being the answer to "when?".
+// When it goes, in the ROW's vocabulary — "14:00 tomorrow", the shape tasks-lib.ts
+// `messageTime` writes into the list view's time cell: a 24-hour clock, a space,
+// and a relative day word. TWENTY-FOUR HOUR and not the locale's clock, which is
+// the one place this row departs from the rest of the template: a 12-hour locale
+// renders "02:00 PM", three characters wider in a cell that has to stay readable
+// in a 340px pane, and it would not match the time on the page this row is
+// quoting. Past due is "any moment now" and not a time in the past — a queued
+// message is waiting for the next sweep, so the stamp on it stopped being the
+// answer to "when?".
+function schedPad2(n) { return String(n).padStart(2, "0"); }
+
 function schedWhenText(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "at its scheduled time";
   if (d.getTime() <= Date.now()) return "any moment now";
-  const at = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const at = schedPad2(d.getHours()) + ":" + schedPad2(d.getMinutes());
   const gap = schedDayGap(d, new Date());
-  if (gap <= 0) return "at " + at + " today";
-  if (gap === 1) return "at " + at + " tomorrow";
-  if (gap < 7) return "at " + at + " on " + d.toLocaleDateString([], { weekday: "long" });
-  return "at " + at + " on " + d.toLocaleDateString();
+  if (gap <= 0) return at + " today";
+  if (gap === 1) return at + " tomorrow";
+  if (gap < 7) return at + " " + d.toLocaleDateString([], { weekday: "short" });
+  return at + " " + d.toLocaleDateString();
 }
 
-// The scheduled message itself, on one line. This is the BODY of the banner and
-// the whole of what it shows about the task (Akshil, 2026-08-17 — "instead of this
-// big text, show the schedule message"): reading the words that are about to run
-// is what makes a shut composer make sense, where a paragraph about context
-// pollution only described it.
+// The scheduled message on one line — the row's NAME when the tasks listing has
+// no title of its own to give (see schedTaskRec).
 //
 // Whitespace COLLAPSES rather than the first line winning: a prompt that opens
 // "Read the following and:" would otherwise preview as its own preamble. The CSS
@@ -11232,6 +11371,119 @@ function schedWhenText(iso) {
 function schedMsgLine(entry) {
   const text = String((entry && entry.message) || "").replace(/\s+/g, " ").trim();
   return text || "A scheduled message";
+}
+
+// ── the task behind the blocker ────────────────────────────────────────────
+//
+// TASK-nnn, the task's name and its state are NOT in /api/schedule — the numbers
+// are allocated per project by tasks_store and only /api/tasks hands them out.
+// So the row is filled from two reads: the schedule says what is pending and
+// when (and is the only thing the BLOCK depends on), the tasks listing says what
+// to call it.
+//
+// Cached against the blocking entry's id and refetched only when that changes,
+// because the listing carries every task on the machine and this poll runs every
+// 15 seconds: what it is fetched for — a number and a name — does not change
+// while one message sits pending. `state` can go stale by a poll, which is the
+// cheaper of the two mistakes.
+let schedTaskRow = null;
+let schedTaskRowFor = "";
+let schedTaskRowBusy = false;
+
+// The five states the shell's board defines (schedule-lib.ts BOARD_COLUMNS), and
+// the words it puts on them. Unknown is "Upcoming" here rather than the shell's
+// "Done": every entry this banner can be looking at is PENDING, so a state that
+// does not parse is a listing that has not answered yet, not a finished job.
+const SB_STATES = {
+  upcoming: "Upcoming",
+  in_progress: "In Progress",
+  done: "Done",
+  failed: "Failed",
+  archived: "Archive",
+};
+
+// The listing row for the message holding this box shut. Three ways in, cheapest
+// first: a task keyed by THIS session (a scheduled entry naming a session is
+// folded into that session's task — routers/tasks.py `_collect`), a task keyed
+// `pending:<entry id>` (the entry has no session yet), and failing both a scan
+// for the message itself. The scan is last because the listing carries only each
+// task's three newest messages, so it is the one that can legitimately miss.
+function schedFindTask(tasks, entry) {
+  const id = String((entry && entry.id) || "");
+  const mine = fused.params.get("session_id") || "";
+  const pending = "pending:" + id;
+  let byMessage = null;
+  for (const task of (tasks || [])) {
+    if (!task) continue;
+    if ((mine && task.key === mine) || task.key === pending) return task;
+    if (!byMessage && (task.messages || []).some((m) => m && m.entry_id === id)) {
+      byMessage = task;
+    }
+  }
+  return byMessage;
+}
+
+// What the row knows about this entry, or null. Keyed by id so a cache belonging
+// to the message that WAS blocking cannot label the one that is.
+function schedTaskRec(entry) {
+  return entry && schedTaskRowFor === String(entry.id) ? schedTaskRow : null;
+}
+
+// FAILS OPEN, like everything else here: an unreadable listing costs the number
+// and the state, never the row and never the block — the schedule already said
+// this message is pending, and that is the fact the composer is shut on. No
+// `schedTaskRowFor` is recorded on a failure, so the next poll tries again.
+async function schedLoadTaskRow(entry) {
+  const id = String((entry && entry.id) || "");
+  if (!id || schedTaskRowBusy || schedTaskRowFor === id) return;
+  schedTaskRowBusy = true;
+  try {
+    const res = await fetch("/api/tasks");
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    schedTaskRow = schedFindTask(data.tasks, entry);
+    schedTaskRowFor = id;
+    // The entry may have been stopped while this was in flight; renderSchedBlock
+    // reads the CURRENT blocker, so a stale answer paints nothing.
+    renderSchedBlock();
+  } catch (err) {
+    schedTaskRow = null;
+  } finally {
+    schedTaskRowBusy = false;
+  }
+}
+
+// Where the row LANDS: the Tasks page, on the calendar, which is the view that
+// answers the question a blocked chat is asking — "when does this let go?".
+//
+// The view is chosen by writing the shell's own remembered-view row rather than
+// by a param, because Scheduled.tsx reads that preference on mount and has no URL
+// param for it. Writing it is the same gesture as pressing the page's Calendar
+// button, and a denied store just means the page opens on whichever view the
+// reader last used — one press from the right one, never a dead end.
+//
+// It cannot scroll the calendar to this task's chip: nothing in the page's URL
+// addresses a chip, and the week it opens on is its own. The reader lands on the
+// calendar with the task's own week in front of them, which is where Edit, Skip
+// and the whole rule live.
+const SCHEDULE_VIEW_KEY = "fused-render:scheduled-view";
+
+function openTaskOnCalendar() {
+  try {
+    window.top.localStorage.setItem(SCHEDULE_VIEW_KEY, "calendar");
+  } catch (err) { /* denied or cross-origin — the page keeps its own last view */ }
+  // The same top-window hop openScheduler makes, and for the same reason: the
+  // target is a shell ROUTE, so pushState + "fused:navigate" is the in-app move
+  // and a real navigation is the fallback for an absent or foreign parent.
+  try {
+    const host = window.top;
+    void host.location.href;   // throws when cross-origin
+    host.history.pushState(null, "", SCHEDULE_URL);
+    host.dispatchEvent(new Event("fused:navigate"));
+    return;
+  } catch (err) { /* fall through to a real navigation */ }
+  try { window.top.location.href = SCHEDULE_URL; }
+  catch (err) { location.href = SCHEDULE_URL; }
 }
 
 // A pending OCCURRENCE of a repeat carries `template_id`; a template itself
@@ -11262,26 +11514,45 @@ function renderSchedBlock() {
   }
   const others = schedBlockers.length - 1;
   const repeat = schedIsRepeat(next);
-  const when = schedWhenText(next.due);
-  // ONE short line, and it earns every word: when it goes, and the reason the box
-  // is shut — a task IS this session, so words typed first are read by that run.
-  // The SOONEST is named and the rest are counted, because naming one is what
-  // answers "what is coming?" and a list of five would be the Tasks page in a
-  // strip above a chat.
+  // ONE SHORT REASON, and nothing else in words: the state and the time moved onto
+  // the row below, where the list view keeps them. The old line spent a sentence
+  // explaining context pollution, which described the block instead of showing
+  // what was doing it (Akshil, 2026-08-17 — "use less words", and then "this UI
+  // does not make sense to me").
   //
-  // The recurring case still must not read like a short wait — a repeat always
-  // has a next occurrence — but it says so in a clause, not in four lines: the
-  // honest cost now lives in the BUTTON, which stops the repeat instead of
-  // skipping one run of it.
+  // The SOONEST is named by the row and the rest are counted here, because naming
+  // one is what answers "what is coming?" and a list of five would be the Tasks
+  // page in a strip above a chat.
   let why = repeat
-    ? "Repeats here, next " + when + " — anything you type joins it."
-    : "Runs here " + when + " — anything you type joins it.";
+    ? "Blocked — a repeating message runs in this chat."
+    : "Blocked — a scheduled message runs in this chat.";
   if (others > 0) why += " " + others + " more after it.";
   schedBlockWhen.textContent = why;
-  // The message, and the whole of it on the title: the line is one ellipsed row,
-  // and a reader who wants the rest should not have to open the Tasks page.
-  schedBlockMsg.textContent = schedMsgLine(next);
-  schedBlockMsg.title = String(next.message || "");
+  // ── the row ──
+  //
+  // Exactly four facts: which task, what it is called, what state it is in, and
+  // when it runs. NOT the folder and NOT the session — the reader is standing in
+  // both (Akshil, 2026-08-17: "you will not show the folder because you are
+  // already in that folder, you are not showing the session ID because you are
+  // already there"). The list view shows them because it has to tell projects
+  // apart; here they would be the page repeating itself back.
+  const rec = schedTaskRec(next);
+  const state = (rec && SB_STATES[rec.status] ? rec.status : "upcoming");
+  const label = (rec && rec.failed) ? "Failed" : SB_STATES[state];
+  schedBlockRing.className = "sb-ring sb-ring--"
+    + ((rec && rec.failed) ? "failed" : state);
+  schedBlockId.textContent = (rec && rec.task_id) || "";
+  // The task's own name when the listing gave one, the scheduled words otherwise:
+  // a task keyed by this session is titled by the conversation, and a message with
+  // no session yet is titled by what it says.
+  schedBlockName.textContent = (rec && rec.title) || schedMsgLine(next);
+  schedBlockMeta.textContent = label + " · " + schedWhenText(next.due);
+  // What the row DOES, on the row — the one title in this card, and it describes
+  // the hop rather than repeating text that is already on screen. The old card put
+  // the message on a title as well as in the body, so a short message rendered
+  // twice the moment the pointer rested on it.
+  schedBlockRow.title = "Open "
+    + ((rec && rec.task_id) || "this task") + " on the Tasks calendar";
   // A refusal has to survive the re-render the same click asks for. Written from
   // page state keyed to the ENTRY, not straight onto the node, so the poll that
   // reconciles the store cannot quietly wipe the one sentence the user needs —
@@ -11304,14 +11575,34 @@ function renderSchedBlock() {
     ? "Stops the repeating task: this chat reopens and no further runs are scheduled"
     : "Cancels this scheduled message, and this chat reopens";
   schedBlockStop.classList.toggle("armed", armed);
-  // While the stop is armed the quiet slot is the way back out of it, and nothing
-  // else — a press that navigated away from a half-confirmed destructive action
-  // would leave the reader unsure which of the two things they had just done.
-  schedBlockEdit.textContent = armed ? "Keep it" : "Edit schedule";
-  schedBlockEdit.title = armed ? "Leave the repeat on"
-    : "Open this task on the Tasks page — editing it leaves this chat blocked";
+  // A title belongs to the text that was measured, and this render just replaced
+  // it — schedNameTitle writes the next one, when there is a pointer to write it
+  // for.
+  schedBlockName.removeAttribute("title");
   schedBlockEl.hidden = false;
 }
+
+// THE STRAY SECOND COPY, and its fix. The old card wrote the message onto a
+// `title` unconditionally, so a message short enough to fit rendered once in the
+// row and again in the native tooltip the moment the pointer rested on it — the
+// small boxed duplicate in the screenshot. Now the full name is offered only when
+// the cell actually clipped it.
+//
+// MEASURED WHEN THE POINTER ARRIVES, not when the row is drawn. At render time the
+// pane may still be laying out — the first paint reports every cell as clipped —
+// and a title written then would outlive the layout that justified it, which is
+// exactly the bug again with an extra step. Hover and focus are also the only two
+// moments the answer can matter.
+function schedNameTitle() {
+  if (schedBlockName.scrollWidth > schedBlockName.clientWidth + 1) {
+    schedBlockName.title = schedBlockName.textContent;
+  } else {
+    schedBlockName.removeAttribute("title");
+  }
+}
+
+schedBlockRow.addEventListener("pointerenter", schedNameTitle);
+schedBlockRow.addEventListener("focus", schedNameTitle);
 
 // Paint the block and shut the box. The box is disabled rather than merely
 // guarded so the state is visible where the hands are; `submitChat` guards
@@ -11344,6 +11635,11 @@ function applyComposerBlockState() {
   // simply clipped. The banner above carries the explanation; this only has to
   // say the box is not broken.
   box.placeholder = blocked ? "Waiting on a scheduled message…" : BOX_PLACEHOLDER;
+  // The row's number and name, fetched AFTER the card is on screen and never
+  // before the block: what shuts the composer is the schedule, and the listing
+  // only decorates the row (see schedLoadTaskRow). Guarded there against refetching
+  // for the same entry, so the 15s poll costs one read per blocking message.
+  if (blocked) schedLoadTaskRow(schedBlockers[0]);
 }
 
 function applyComposerBlock(entries) {
@@ -11424,29 +11720,45 @@ schedBlockStop.addEventListener("click", async () => {
   pollScheduledRuns();
 });
 
-schedBlockEdit.addEventListener("click", () => {
-  const next = schedBlockers[0];
-  if (!next) return;
-  // Armed: this is the way back out, and nothing else.
-  if (schedStopArmed === next.id) {
-    schedStopArmed = "";
-    applyComposerBlockState();
-    return;
-  }
-  // NOT the escape, and shaped so it cannot be read as one (see the .sb-quiet
-  // rule). Editing a schedule leaves the message PENDING, so the block survives
-  // the trip — this is here because "make it later" or "change what it says" is
-  // a real thing to want while looking at the task that is holding the chat, not
-  // because it reopens the box.
-  //
-  // The same handoff the composer's calendar button makes, pointed at an entry
-  // that already exists — one deep link, one form. The occurrence's own id is
-  // what travels even for a repeat, because the Tasks page resolves an
-  // occurrence to its template before it opens the form. What travels as the
-  // draft is the SCHEDULED message's words, not the box's: the box is shut, and
-  // the thing being edited is that message.
-  openScheduler(String(next.message || ""), String(next.id || ""));
+// THE ROW IS THE LINK, and it replaced "Edit schedule" rather than joining it
+// (Akshil, 2026-08-17). The banner used to carry an Edit control so a schedule
+// could be changed without losing the message; the row now lands on the task
+// where Edit lives with its whole popover, so the two were two doors to one room
+// — and the banner's door was the one that could not unblock.
+//
+// It does NOT reopen the composer and does not pretend to: leaving a blocked chat
+// to look at the thing blocking it is a different errand from unblocking it, and
+// the button beside it is still the only control that does the second.
+schedBlockRow.addEventListener("click", () => {
+  if (!schedBlockers[0]) return;
+  openTaskOnCalendar();
 });
+
+// ── the way back out of an armed stop ──
+//
+// There is no second button to be the "Keep it" any more, so the escape is the
+// gesture instead — .selpop's own dismissal contract (a press outside, Escape),
+// which is what the rest of this template teaches a reader to expect. Disarming
+// is always the safe direction to be wrong in: the cost of a lost arm is one more
+// press, and the cost of a stale one is every future run of a task.
+function schedDisarmStop() {
+  if (!schedStopArmed) return;
+  schedStopArmed = "";
+  applyComposerBlockState();
+}
+
+document.addEventListener("pointerdown", (ev) => {
+  if (schedStopArmed && !schedBlockEl.contains(ev.target)) schedDisarmStop();
+});
+// Capture phase and the event is CONSUMED — the same discipline the schedule
+// confirm takes: the document-level Escape binding kills a live run, and backing
+// out of a half-pressed confirm must not also do that.
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || !schedStopArmed) return;
+  ev.stopPropagation();
+  ev.preventDefault();
+  schedDisarmStop();
+}, true);
 
 async function pollScheduledRuns() {
   let data;

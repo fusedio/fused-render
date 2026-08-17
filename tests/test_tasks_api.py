@@ -1144,6 +1144,119 @@ def test_a_task_that_appears_after_the_baseline_is_unread(client,
     assert tasks["old"]["unread"] == 0
 
 
+def test_marking_a_whole_task_read_is_one_call(client, projects_dir, state_dir):
+    """The List row's own button. Per-message was the only way to clear a task,
+    so "I have seen all of this" cost one click per row — 89 of them on the
+    longest real thread."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user(f"m{n}", f"2026-08-16T0{n}:00:00Z", uuid=f"u{n}")
+        for n in range(1, 6)
+    ])
+    _write_transcript(projects_dir, "sess-b", "/p", [_user("other", T10,
+                                                           uuid="ub")])
+    assert _by_key(client)["sess-a"]["unread"] == 5
+
+    r = client.post("/api/tasks/read", json={"key": "sess-a", "all": True})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "unread": 0}
+
+    tasks = _by_key(client)
+    assert tasks["sess-a"]["unread"] == 0
+    assert all(m["unread"] is False for m in tasks["sess-a"]["messages"])
+    messages = client.get("/api/tasks/sess-a/messages").json()["messages"]
+    assert all(m["unread"] is False for m in messages)
+    # ...and only that task. A whole-task mark is still about ONE task.
+    assert tasks["sess-b"]["unread"] == 1
+
+    # It lands as the watermark, which is what "all of it" is: one integer, no
+    # id list.
+    record = json.loads((state_dir / "read.json").read_text())["sess-a"]
+    assert record["read_floor"] == 5
+    assert record["read_ids"] == []
+
+
+def test_a_whole_task_mark_leaves_a_pending_message_alone(client, projects_dir,
+                                                          state_dir):
+    """A message that has not happened has no response to have missed, so it is
+    not unread and must not be marked — otherwise it fires already-read and the
+    notification is lost silently, which is the one failure unread exists to
+    prevent."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("one", T9,
+                                                           uuid="u1")])
+    _seed_schedule([_entry("e1", "later", T12, claude_session_id="sess-a")])
+    assert _by_key(client)["sess-a"]["unread"] == 1
+
+    assert client.post("/api/tasks/read",
+                       json={"key": "sess-a", "all": True}
+                       ).json() == {"ok": True, "unread": 0}
+    record = json.loads((state_dir / "read.json").read_text())["sess-a"]
+    # MSG-001 only. The pending MSG-002 is not in the mark at all.
+    assert record["read_floor"] == 1
+    assert record["read_ids"] == []
+    assert not tasks_store.is_read(tasks_store.read_state(), "sess-a",
+                                  "MSG-002")
+
+
+def test_a_whole_task_mark_does_not_reach_a_message_that_arrives_after_it(
+        client, projects_dir, state_dir):
+    _already_using(state_dir)
+    path = _write_transcript(projects_dir, "sess-a", "/p",
+                             [_user("one", T9, uuid="u1")])
+    client.post("/api/tasks/read", json={"key": "sess-a", "all": True})
+
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(_user("two", T10, uuid="u2")) + "\n")
+    task = _by_key(client)["sess-a"]
+    assert task["unread"] == 1
+    assert task["messages"][0]["message_id"] == "MSG-002"
+
+
+def test_the_per_message_mark_is_unchanged_by_the_whole_task_one(
+        client, projects_dir, state_dir):
+    """Both live on one endpoint, and the narrow one must stay narrow: clicking
+    MSG-003 says nothing about the MSG-002 the user scrolled past."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("one", T9, uuid="u1"),
+        _user("two", T10, uuid="u2"),
+        _user("three", T11, uuid="u3"),
+    ])
+    assert client.post("/api/tasks/read",
+                       json={"key": "sess-a", "message_id": "MSG-003"}
+                       ).json() == {"ok": True, "unread": 2}
+    messages = client.get("/api/tasks/sess-a/messages").json()["messages"]
+    assert {m["message_id"]: m["unread"] for m in messages} == {
+        "MSG-003": False, "MSG-002": True, "MSG-001": True}
+
+    # And the whole-task ask then clears what is left, in one request.
+    assert client.post("/api/tasks/read",
+                       json={"key": "sess-a", "all": True}
+                       ).json() == {"ok": True, "unread": 0}
+
+
+def test_marking_a_whole_task_read_before_day_one_marks_nothing(client,
+                                                                projects_dir,
+                                                                state_dir):
+    """Nothing is unread until the baseline is stamped, so there is nothing for
+    this to clear — and it must not write a floor that would then hide the first
+    message that genuinely arrives."""
+    path = _write_transcript(projects_dir, "sess-a", "/p",
+                             [_user("one", T9, uuid="u1")])
+    assert client.post("/api/tasks/read",
+                       json={"key": "sess-a", "all": True}
+                       ).json() == {"ok": True, "unread": 0}
+    # Nothing to mark and nothing marked — the store is not even created.
+    assert "sess-a" not in tasks_store.read_state()
+    assert not (state_dir / "read.json").exists()
+
+    _by_key(client)  # stamps the baseline
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(_user("two", T10, uuid="u2")) + "\n")
+    assert _by_key(client)["sess-a"]["unread"] == 1
+
+
 def test_the_read_endpoint_refuses_nonsense(client):
     bad = client.post("/api/tasks/read", json={"key": "s", "message_id": "12"})
     assert bad.status_code == 400
@@ -1151,6 +1264,27 @@ def test_the_read_endpoint_refuses_nonsense(client):
     assert client.post("/api/tasks/read",
                        json={"key": "  ", "message_id": "MSG-001"}
                        ).status_code == 400
+    # Neither field is a client bug, not a licence to clear a whole thread.
+    missing = client.post("/api/tasks/read", json={"key": "s"})
+    assert missing.status_code == 400
+    assert "message_id" in missing.json()["detail"]
+    # ...and so is asking for both at once.
+    both = client.post("/api/tasks/read",
+                       json={"key": "s", "message_id": "MSG-001", "all": True})
+    assert both.status_code == 400
+    assert client.post("/api/tasks/read",
+                       json={"key": " ", "all": True}).status_code == 400
+
+
+def test_marking_a_whole_task_that_no_longer_exists_is_not_an_error(client,
+                                                                    state_dir):
+    r = client.post("/api/tasks/read", json={"key": "gone", "all": True})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "unread": 0}
+    # A whole-task mark is DEFINED by a thread, so with no thread there is
+    # nothing to write — not even a record for the key that was asked about.
+    assert "gone" not in tasks_store.read_state()
+    assert not (state_dir / "read.json").exists()
 
 
 def test_marking_a_task_that_no_longer_exists_is_not_an_error(client):

@@ -29,6 +29,7 @@ import {
   cancelScheduledMessage,
   getTaskMessages,
   markTaskMessageRead,
+  markWholeTaskRead,
   resendScheduledMessage,
   runScheduledNow,
   setSessionTriage,
@@ -48,7 +49,9 @@ import {
   firstLine,
   groupByColumn,
   isDraggable,
+  markAllRead,
   markRead,
+  markReadIntent,
   messageHref,
   messageTime,
   messageTone,
@@ -118,6 +121,13 @@ const ICON_PLAY = icon(<polygon points="6 3 20 12 6 21 6 3" />, 12);
 const ICON_RERUN = icon(
   <><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
     <path d="M3 3v5h5" /></>, 13);
+// Mark the whole task read. lucide `check-check` — the double tick every
+// messaging app on the machine already uses for "seen", which is exactly the
+// fact this button asserts. Deliberately NOT the single `ICON_CHECK` above: that
+// one means "this filter is on" in the popovers, and a row action wearing the
+// same glyph would read as a toggle that is currently checked.
+const ICON_MARK_READ = icon(
+  <><path d="M18 6 7 17l-5-5" /><path d="m22 10-7.5 7.5L13 16" /></>, 13);
 // Filing away, and the way back. Drawn apart because the second is not the first
 // greyed out: a person looking at an archived row has to be able to SEE that the
 // door opens both ways, and one glyph with two meanings cannot say that
@@ -472,7 +482,42 @@ function useReadSet() {
     // failed write reappears on the next poll, which is the honest outcome.
     void markTaskMessageRead(taskKey, m.message_id).catch(() => {});
   };
-  return { read, clear };
+  // The whole task, on the row's own button. The local half is one sentinel
+  // rather than an id per message (tasks-lib.markAllRead): the row's count and
+  // the dots of a thread that may not even be expanded all have to go at once,
+  // and the ids outside the loaded window are ones this component has never
+  // seen. The SERVER half is awaited by the caller — unlike a message click,
+  // nobody is navigating away, so a refusal has somewhere to be said.
+  const clearAll = (taskKey: string) => {
+    setRead((cur) => markAllRead(cur, taskKey));
+  };
+  return { read, clear, clearAll };
+}
+
+// ---- the run, for both views -------------------------------------------------
+
+/**
+ * Spend a TaskRunIntent: the ONE place either view turns `kind` into a call.
+ *
+ * The List had this inline and the Board had no run action at all (Akshil,
+ * 2026-08-17: "I have a rerun option in list, I have a rerun option in calendar,
+ * but I don't have a rerun option in Kanban"). Adding one meant either copying
+ * the two-call switch into the card's owner or lifting it here, and copying it is
+ * how the two views start disagreeing about what "Re-run" does.
+ *
+ * WHICH message and WHICH call are still not decided here — that is
+ * tasks-lib.taskRunIntent, the same function the drag's dropAction asks. This
+ * only performs it, and returns the sentence the caller should show: the server's
+ * own note when a re-send was queued rather than sent, "" when there is nothing
+ * to say. Refusals THROW, so each caller can put them in its own note line.
+ */
+async function performRun(intent: TaskRunIntent): Promise<string> {
+  if (intent.kind === "resend") {
+    const res = await resendScheduledMessage(intent.entryId);
+    return res.note ?? "";
+  }
+  await runScheduledNow(intent.entryId);
+  return "";
 }
 
 // ---- List view: one accordion per task ---------------------------------------
@@ -513,7 +558,7 @@ export function TaskList({
   const [loaded, setLoaded] = useState<Record<string, TaskMessage[]>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const { read, clear } = useReadSet();
+  const { read, clear, clearAll } = useReadSet();
 
   const toggle = (key: string) => setExpanded((cur) => toggleExpanded(cur, key));
 
@@ -557,6 +602,7 @@ export function TaskList({
           onReload={onReload}
           read={read}
           onRead={clear}
+          onReadAll={clearAll}
         />
       ))}
     </div>
@@ -576,6 +622,7 @@ function TaskNode({
   onReload,
   read,
   onRead,
+  onReadAll,
 }: {
   task: Task;
   home: string;
@@ -589,6 +636,9 @@ function TaskNode({
   onReload?: () => void;
   read: Set<string>;
   onRead: (taskKey: string, m: TaskMessage) => void;
+  /** Clear this whole task's unread locally — the optimistic half of Mark read,
+   * paired with the one server call the button makes. */
+  onReadAll: (taskKey: string) => void;
 }) {
   const view = threadView(task, loaded);
   const unread = taskUnread(task, read, loaded);
@@ -607,6 +657,10 @@ function TaskNode({
   // task be deleted?" (no: it is archived, D306) was barely true. tasks-lib
   // decides everything, by asking dropAction the same question the drag does.
   const file = archiveIntent(task);
+  // Mark read — the whole task at once, so clearing 89 unread messages is not 89
+  // clicks through 89 transcripts. Asked of the count this row is DRAWING, so
+  // the button leaves on its own press rather than on the next poll.
+  const seen = markReadIntent(task, read, loaded);
 
   // The one cancel in flight, by message id, and whatever the server said about
   // the last one that failed. Per MESSAGE rather than per thread: the sentence
@@ -625,16 +679,14 @@ function TaskNode({
     setActing(true);
     setNote("");
     try {
-      // Which call is not decided here — `kind` came out of tasks-lib, and this
-      // is the only place it is spent. Re-send answers 200 with a `note` when
-      // the new message is queued rather than away (its conversation is
-      // mid-turn), which is news of the same quiet kind as the refusal below.
-      if (intent.kind === "resend") {
-        const res = await resendScheduledMessage(intent.entryId);
-        if (res.note) setNote(res.note);
-      } else {
-        await runScheduledNow(intent.entryId);
-      }
+      // Which call is not decided here — `kind` came out of tasks-lib, and
+      // performRun above is the one place it is spent, shared with the Board's
+      // card so the two views cannot mean different things by "Re-run". Re-send
+      // answers 200 with a `note` when the new message is queued rather than away
+      // (its conversation is mid-turn), which is news of the same quiet kind as
+      // the refusal below.
+      const said = await performRun(intent);
+      if (said) setNote(said);
     } catch (e) {
       // The server's own sentence, verbatim. Its common refusal is a 409
       // because this conversation already has a turn open — two `claude
@@ -665,6 +717,29 @@ function TaskNode({
       setActing(false);
       // The row has to move lane (or come back), so re-read either way.
       onReload?.();
+    }
+  };
+
+  // Mark the whole task read. The local set goes FIRST and unconditionally: the
+  // dots and the count are what the press is about, and the page polls on a 20s
+  // interval, so waiting for the round trip would leave a row that looks like it
+  // ignored the click. The server call is one request for the whole thread
+  // (api.markWholeTaskRead) rather than one per message.
+  //
+  // No onReload: the count is already right locally, and a reload would repaint
+  // every row in the list to say the one thing this row has already said. The
+  // next poll agrees on its own — and if the write failed, that same poll is
+  // what honestly brings the dots back, under the sentence the server gave.
+  const markSeen = async () => {
+    setActing(true);
+    setNote("");
+    onReadAll(task.key);
+    try {
+      await markWholeTaskRead(task.key);
+    } catch (e) {
+      setNote((e as Error).message);
+    } finally {
+      setActing(false);
     }
   };
 
@@ -739,6 +814,27 @@ function TaskNode({
             a message row, so a list at rest grows no chrome: this applies to a
             minority of tasks and every other row would carry a button that
             does nothing. */}
+        {/* "so you don't have to open everything individually" — the whole
+            task's unread, cleared from the row that carries the count, in the
+            SAME hover-revealed group as Run now and Archive. Only on a task that
+            has unread (tasks-lib.markReadIntent): every other row would carry a
+            button whose press does nothing, which is what makes the rows where
+            it matters hard to pick out. */}
+        {seen && (
+          <button
+            type="button"
+            className="tasks-act tasks-act--seen"
+            title={seen.title}
+            aria-label={seen.label}
+            disabled={acting}
+            onClick={(e) => {
+              e.stopPropagation();
+              void markSeen();
+            }}
+          >
+            {ICON_MARK_READ}
+          </button>
+        )}
         {run && (
           <button
             type="button"
@@ -1026,6 +1122,31 @@ export function TaskBoard({
     onReload();
   };
 
+  // Run now / Re-run from a card, which the Board simply did not have (Akshil,
+  // 2026-08-17: "I have a rerun option in list, I have a rerun option in
+  // calendar, but I don't have a rerun option in Kanban"). The drag covers half
+  // of it — Upcoming → In Progress runs the pending message early — and cannot
+  // cover the other half, because re-sending a message that already went is work
+  // a gesture must not be able to consent to. So the card gets the button both
+  // other views have.
+  //
+  // Up here rather than in TaskCard, exactly like `triage` above: this is the
+  // board's own call and its refusal belongs in the board's ONE note line. The
+  // common one is a 409 because that conversation has a turn open right now, which
+  // reads as "wait", not "broken" — the same quiet line the drag's refusals use.
+  const runNow = async (intent: TaskRunIntent) => {
+    setNote(null);
+    try {
+      // performRun is shared with the List's row, so "Re-run" cannot mean two
+      // different calls on two views.
+      const said = await performRun(intent);
+      if (said) setNote(said);
+    } catch (e) {
+      setNote((e as Error).message);
+    }
+    onReload();
+  };
+
   // Shared by expanded lane bodies AND collapsed rails, so Archive — collapsed
   // by default — still catches the drop most cards are allowed.
   const dropProps = (lane: BoardColumn) => ({
@@ -1130,6 +1251,7 @@ export function TaskBoard({
                       setOverLane(null);
                     }}
                     onTriage={(status) => triage(task, status)}
+                    onRun={runNow}
                   />
                 ))}
                 {hidden > 0 && (
@@ -1167,6 +1289,7 @@ function TaskCard({
   onDragStart,
   onDragEnd,
   onTriage,
+  onRun,
 }: {
   task: Task;
   home: string;
@@ -1176,6 +1299,9 @@ function TaskCard({
   /** File this card away, or bring it back — the board owns the call so its
    * refusal lands in the board's own note line. */
   onTriage: (status: ArchiveStatus) => Promise<void>;
+  /** Run the task's next message now, or re-send the one that failed. Same
+   * arrangement and same reason as onTriage: the board makes the call. */
+  onRun: (intent: TaskRunIntent) => Promise<void>;
 }) {
   // Whether this card lifts at all, and it is not one question: a task with no
   // session (§5 — Claude Code mints the id on the first run) has nothing to
@@ -1189,11 +1315,26 @@ function TaskCard({
   // gesture starts with "expand Archive first". Same predicate as the drop, by
   // construction — archiveIntent asks dropAction.
   const file = archiveIntent(task);
+  // Run now / Re-run, which the List row and the calendar popover both already
+  // offer and this card did not. The SAME function decides it here as there
+  // (tasks-lib.taskRunIntent, which asks runNowIntent — the very function
+  // dropAction asks), so the card's button, the List's button and the drag onto
+  // In Progress can never fire different messages. Nothing about which message
+  // or which call is re-derived on this side.
+  const run = taskRunIntent(task);
   const [busy, setBusy] = useState(false);
   const triage = async (status: ArchiveStatus) => {
     setBusy(true);
     try {
       await onTriage(status);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const runNow = async (intent: TaskRunIntent) => {
+    setBusy(true);
+    try {
+      await onRun(intent);
     } finally {
       setBusy(false);
     }
@@ -1248,21 +1389,44 @@ function TaskCard({
       {/* Quiet until the card is pointed at or focused, exactly like the List's
           row actions: a lane is a column of cards, and a permanent glyph on
           every one of them would compete with the titles the lane exists to
-          show. */}
-      {file && (
-        <button
-          type="button"
-          className={
-            "tasks-act tasks-card-act " +
-            (file.restore ? "tasks-act--unarchive" : "tasks-act--archive")
-          }
-          title={file.title}
-          aria-label={`${file.label} ${task.task_id}`}
-          disabled={busy}
-          onClick={() => void triage(file.status)}
-        >
-          {file.restore ? ICON_UNARCHIVE : ICON_ARCHIVE}
-        </button>
+          show.
+
+          ONE row holding both, rather than two independently pinned buttons:
+          a card can offer Run now AND Archive (a failed task with a spent
+          message offers exactly that pair), and two absolutely-positioned
+          siblings both anchored to `right` would sit on top of each other. The
+          strip is laid out by flex and pinned once, so each button is placed by
+          the row instead of by its own coordinates. */}
+      {(run || file) && (
+        <span className="tasks-card-acts">
+          {run && (
+            <button
+              type="button"
+              className="tasks-act tasks-card-act tasks-act--run"
+              title={run.title}
+              aria-label={`${run.label} ${task.task_id}`}
+              disabled={busy}
+              onClick={() => void runNow(run)}
+            >
+              {run.rerun ? ICON_RERUN : ICON_PLAY}
+            </button>
+          )}
+          {file && (
+            <button
+              type="button"
+              className={
+                "tasks-act tasks-card-act " +
+                (file.restore ? "tasks-act--unarchive" : "tasks-act--archive")
+              }
+              title={file.title}
+              aria-label={`${file.label} ${task.task_id}`}
+              disabled={busy}
+              onClick={() => void triage(file.status)}
+            >
+              {file.restore ? ICON_UNARCHIVE : ICON_ARCHIVE}
+            </button>
+          )}
+        </span>
       )}
     </div>
   );

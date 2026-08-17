@@ -250,6 +250,57 @@ def test_a_gap_filled_in_later_collapses_the_whole_run(state_dir):
     assert record["read_floor"] == 3 and record["read_ids"] == []
 
 
+def test_a_whole_task_mark_is_one_write_and_lands_as_the_watermark(state_dir):
+    """"Mark read" on a task row. The point of the batch is that it is ONE
+    read-modify-write for a thread of any length — 89 messages was 89 of them —
+    and the compaction the single mark already had is what turns it into the
+    integer that means "all of it"."""
+    record = tasks_store.mark_read_many("t", tasks_store.message_ids(89))
+    assert record["read_floor"] == 89
+    assert record["read_ids"] == []
+    on_disk = json.loads((state_dir / "read.json").read_text())["t"]
+    assert on_disk == record
+
+    state = tasks_store.read_state()
+    assert tasks_store.read_count(state, "t", 89) == 89
+    # And nothing beyond it: a message that has not arrived yet is not read.
+    assert not tasks_store.is_read(state, "t", "MSG-090")
+
+
+def test_a_whole_task_mark_keeps_the_exact_truth_around_a_gap(state_dir):
+    """The batch marks the ids it is GIVEN and nothing else, which is what lets
+    the router leave a still-pending message alone: MSG-002 has not happened, so
+    it is not passed, and it must not come back already-read when it fires."""
+    record = tasks_store.mark_read_many("t", ["MSG-001", "MSG-003", "MSG-004"])
+    assert record["read_floor"] == 1
+    assert record["read_ids"] == ["MSG-003", "MSG-004"]
+    state = tasks_store.read_state()
+    assert not tasks_store.is_read(state, "t", "MSG-002")
+    assert tasks_store.read_count(state, "t", 4) == 3
+
+
+def test_the_batch_and_the_single_mark_are_one_mechanism(state_dir):
+    """mark_read IS mark_read_many of one, so the two cannot drift apart in what
+    they compact or what they promise."""
+    tasks_store.mark_read("a", "MSG-002")
+    tasks_store.mark_read_many("b", ["MSG-002"])
+    state = json.loads((state_dir / "read.json").read_text())
+    assert state["a"]["read_ids"] == state["b"]["read_ids"] == ["MSG-002"]
+    assert state["a"]["read_floor"] == state["b"]["read_floor"] == 0
+    # An id that is not one is not recorded as a read message.
+    record = tasks_store.mark_read_many("c", ["MSG-001", "nonsense", ""])
+    assert record["read_floor"] == 1 and record["read_ids"] == []
+
+
+def test_a_second_whole_task_mark_never_moves_another_task(state_dir):
+    tasks_store.mark_read_many("t", tasks_store.message_ids(3))
+    tasks_store.mark_read("u", "MSG-002")
+    state = tasks_store.read_state()
+    assert tasks_store.read_count(state, "t", 3) == 3
+    assert tasks_store.read_count(state, "u", 3) == 1
+    assert not tasks_store.is_read(state, "u", "MSG-001")
+
+
 def test_read_count_never_exceeds_the_thread(state_dir):
     """A mark left over from a transcript that was replaced must not drive an
     unread count negative."""

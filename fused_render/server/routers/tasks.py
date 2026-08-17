@@ -21,7 +21,8 @@ this file is written around:
   for the calendar. Separate from the listing rather than a window parameter on
   it, because the listing's three-message tail is right for an accordion and
   wrong for a time axis, and one field cannot mean both.
-* ``POST /api/tasks/read`` — mark one message read.
+* ``POST /api/tasks/read`` — mark one message read, or (``all: true``) every
+  message in one task, in one request and one store write.
 
 **What a message is.** A user prompt in the transcript, or a scheduled entry.
 Those two overlap: a scheduled message that fired IS a prompt in the transcript
@@ -60,7 +61,8 @@ posture of every module this one reads from (claude_sessions.py,
 claude_artifacts.py, schedule.py) and it is the posture here.
 
 Reads are unguarded, like every other read endpoint. The one write marks a
-message read — the same weight of change as `POST /api/claude-sessions/triage`
+message read (or a whole task's worth of them, which is the same write with a
+wider object) — the same weight of change as `POST /api/claude-sessions/triage`
 next door, which carries no guard either: it moves a badge, it does not run
 code.
 """
@@ -1051,20 +1053,50 @@ def api_tasks_scheduled(window_from: float = Query(..., alias="from"),
 
 class ReadPatch(BaseModel):
     key: str
-    message_id: str
+    # ONE message, or — with `all` — every message in the task. Exactly one of
+    # the two, and `message_id` stays optional rather than becoming a magic
+    # empty string: a request that names neither is a client bug and is told so
+    # (400) rather than quietly clearing a whole thread.
+    message_id: str | None = None
+    all: bool = False
 
 
 @router.post("/api/tasks/read")
 def api_task_read(patch: ReadPatch):
-    """Mark ONE message read, and report the task's remaining unread count.
+    """Mark ONE message read — or the WHOLE task — and report what is left.
 
-    One message, never a prefix: the user clicked MSG-003 and scrolled to it,
-    which says nothing about the MSG-002 they skipped. `tasks_store` keeps an
-    explicit set for exactly this reason.
+    One message is the default and still means only that message: the user
+    clicked MSG-003 and scrolled to it, which says nothing about the MSG-002 they
+    skipped, and `tasks_store` keeps an explicit set for exactly this reason.
+
+    `{"key": ..., "all": true}` is the other ask, and it is the same endpoint
+    rather than a sibling because it is the same sentence with a different
+    object: this verb has always been "mark read", and the only thing that
+    changed is how much. It stays ONE request either way — a task with 89
+    messages was 89 posts and 89 recounts through the per-message route, which
+    is what made "clear this task" something a person did by clicking through
+    every row.
+
+    Both are exact. The whole-task branch enumerates the thread and marks the
+    messages that are actually unread, so a message still PENDING is left alone
+    (it has not happened, so there is nothing to have missed) and cannot come
+    back already-read when it fires.
     """
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
+
+    if patch.all:
+        if patch.message_id:
+            raise HTTPException(
+                status_code=400,
+                detail="send message_id or all, not both")
+        return _read_whole_task(key)
+
+    if patch.message_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="missing message_id (or all: true to mark the task read)")
     number = tasks_store.message_number(patch.message_id)
     if number <= 0:
         raise HTTPException(
@@ -1082,3 +1114,30 @@ def api_task_read(patch: ReadPatch):
     messages = _thread(task, tasks_store.read_state(), time.time())
     return {"ok": True,
             "unread": sum(1 for m in messages if m["unread"])}
+
+
+def _read_whole_task(key: str) -> dict:
+    """Mark every message of one task read, in one store write.
+
+    The thread is parsed FIRST because it is what defines the mark: the ids come
+    from the messages that are unread right now, not from a count, so nothing
+    that has yet to happen is swept in. `_mark_unread` is then re-run over the
+    same list to recount — the same "read it back off disk" rule the
+    per-message branch follows, and for the same reason: the number the page
+    paints has to be the store's answer, not an optimistic guess.
+
+    A task that has gone (deleted transcript, expired pending entry) is not an
+    error and writes nothing: a whole-task mark is defined by a thread, and there
+    is no thread to define it.
+    """
+    task = _collect().get(key)
+    if task is None:
+        return {"ok": True, "unread": 0}
+    _place(task)
+    now = time.time()
+    messages = _thread(task, tasks_store.read_state(), now)
+    unread_ids = [m["message_id"] for m in messages if m["unread"]]
+    if unread_ids:
+        tasks_store.mark_read_many(key, unread_ids)
+        _mark_unread(messages, key, tasks_store.read_state())
+    return {"ok": True, "unread": sum(1 for m in messages if m["unread"])}

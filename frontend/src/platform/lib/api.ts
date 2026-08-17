@@ -2188,6 +2188,22 @@ export function markTaskMessageRead(
   });
 }
 
+// The whole task, in ONE request. Per-message is the right MODEL and stays the
+// default (see above), but it was also the only way to clear a task, so "I have
+// seen all of this" cost one click per row — 89 of them on the longest real
+// thread. Same endpoint, wider object: the server enumerates the thread, marks
+// the messages that are actually unread (a pending one is left alone, so it
+// cannot fire already-read) and answers with what is left, which is 0 unless
+// something arrived while the request was in flight.
+export function markWholeTaskRead(
+  key: string,
+): Promise<{ ok: boolean; unread: number }> {
+  return postJson<{ ok: boolean; unread: number }>("/api/tasks/read", {
+    key,
+    all: true,
+  });
+}
+
 // Every scheduled message in a time window, which is the one question the
 // listing above cannot answer: `Task.messages` holds only the three most recent,
 // and a calendar draws a week. Without this the grid under-draws — a task whose
