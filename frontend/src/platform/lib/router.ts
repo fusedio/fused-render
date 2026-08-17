@@ -287,9 +287,11 @@ export function navigate(
 ): void {
   // Navigating between files/dirs drops old view params (fresh query string) —
   // EXCEPT the preview pane's own state (`_side`: which of its three modes it is
-  // showing, or that it is shut — listing/pane-side.ts), which is sticky across
-  // DIRECTORY navigation: a folder hop keeps the pane as the user left it, open on
-  // the same companion or closed. Reserved (`_`-prefixed) name, so no
+  // showing, or that it is shut — listing/pane-side.ts), which is sticky FROM ONE
+  // FOLDER TO ANOTHER: such a hop keeps the pane as the user left it, open on
+  // the same companion or closed. Folder to folder and nothing else — a hop OUT OF
+  // A FILE hands it on no more than a hop INTO one does, see the carry itself
+  // below. Reserved (`_`-prefixed) name, so no
   // template-param shadowing concern, and directory-only for the same reason its
   // predecessor was: a file view hosts a template iframe whose ancestor-climb
   // (runtime.js D72 globals) reads every shell-URL param.
@@ -322,7 +324,26 @@ export function navigate(
   const current = new URLSearchParams(location.search);
   const parts: string[] = [];
   if (current.get("snapshot") === "1") parts.push("snapshot=1");
-  if (opts?.isDir === true) {
+  // FOLDER TO FOLDER ONLY — both ends, and the SOURCE end is the half added in
+  // D326. `_side` is one param name on two surfaces (the file preview's companion
+  // sidebar and this pane), read the same way since that decision but describing
+  // different columns, so it may only be handed from a page that owns the pane to a
+  // page that has one. The destination half was always here (`opts.isDir`); the
+  // source half became necessary when a shut sidebar started saying `_side=off`
+  // instead of deleting the param: closing a file's sidebar and then taking the
+  // BREADCRUMB up landed on a folder with its pane shut, for a folder that was open
+  // when the user went into the file. Back restores that folder's own url and its
+  // pane with it, so the two ways out of a file disagreed — which is what makes it
+  // a defect rather than the coupling one could argue for.
+  //
+  // Provenance comes from the `{ fsDir }` hint the navigation that landed HERE
+  // stashed (navHintIsDir). UNKNOWN counts as "not mine to hand on": a fresh load, a
+  // typed url or a caller that passed no hint cannot claim the param. The two ways
+  // to be wrong are not symmetric — guessing "carry" shuts a pane the user never
+  // shut, guessing "drop" reopens one at its documented default (an absent `_side`
+  // means open) — so the fallback goes the harmless way. The stated cost: shut a
+  // folder's pane, hard-RELOAD, then hop to a sibling, and the pane comes back open.
+  if (opts?.isDir === true && navHintIsDir() === true) {
     const side = current.get("_side");
     if (side !== null) parts.push("_side=" + encodeURIComponent(side));
   }
