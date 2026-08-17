@@ -869,6 +869,32 @@
   background: none;
 }
 
+/* Empty folder: the mark stands in for the stack the card has nothing to
+   build. Static — motion here read as a loading state, which is the one thing
+   this card is not. */
+.fhb-empty {
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fhb-empty-mark {
+  width: 40px;
+  height: 40px;
+  opacity: 0.35;
+}
+
+/* Theme pair, same rule as the hero mark: dark is the default, light takes
+   over under the [data-theme="light"] stamp on <html>. */
+.fhb-empty-mark-light,
+:root[data-theme="light"] .fhb-empty-mark-dark {
+  display: none;
+}
+
+:root[data-theme="light"] .fhb-empty-mark-light {
+  display: block;
+}
+
+
 /* The MAX_CARDS fold's "Show more": a quiet pill centered under the grid. */
 .fhb-more {
   display: flex;

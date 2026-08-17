@@ -22,7 +22,7 @@ import { describe, expect, test } from "bun:test";
   clearTimeout: globalThis.clearTimeout.bind(globalThis),
 };
 
-const { navigate, rewriteLegacyUrl } = await import("./router");
+const { navigate, rewriteLegacyUrl, withPreviewFlag } = await import("./router");
 
 // The url navigate() pushed, with the page sitting on `search` when it ran.
 // navigate reads location.search live (the framing flag is carried FORWARD, not
@@ -125,4 +125,20 @@ test("current urls pass through untouched", () => {
   );
   // A file legitimately named view/ deeper in the path must not rewrite.
   expect(rewriteLegacyUrl("/explorer/view/w/view/f")).toBe("/explorer/view/w/view/f");
+});
+
+// The `_preview=1` thumbnail stamp (D301: GET /render records an app open by
+// default; a card peek must say "I am a picture"). A miss here is invisible
+// until the /apps hub's recency order rearranges itself as cards scroll by.
+test("withPreviewFlag stamps the thumbnail param", () => {
+  expect(withPreviewFlag("/explorer/embed/w/app/index.html")).toBe(
+    "/explorer/embed/w/app/index.html?_preview=1",
+  );
+  // A bookmark's stored query (the saved view params) rides along.
+  expect(withPreviewFlag("/explorer/embed/w/d?sort=size")).toBe(
+    "/explorer/embed/w/d?sort=size&_preview=1",
+  );
+  // Idempotent: cards rebuild src every render; accumulating would reload.
+  const once = withPreviewFlag("/render?path=x");
+  expect(withPreviewFlag(once)).toBe(once);
 });

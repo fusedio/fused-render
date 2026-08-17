@@ -1,0 +1,17 @@
+{
+  "name": "fused-render-cog-vendor",
+  "private": true,
+  "description": "Build workspace that bundles the browser Cloud-Optimized GeoTIFF reader (deck.gl-geotiff) together with the deck.gl surface the map viewer uses, into self-contained ESM bundles. Not shipped; only the built bundles are committed. See README.md.",
+  "version": "0.0.0",
+  "scripts": {
+    "build": "./build.sh"
+  },
+  "dependencies": {
+    "@deck.gl/mapbox": "9.3.10",
+    "@developmentseed/deck.gl-geotiff": "0.7.0",
+    "@developmentseed/geotiff": "0.7.0",
+    "@developmentseed/proj": "0.7.0",
+    "deck.gl": "9.3.10",
+    "esbuild": "^0.25.11"
+  }
+}
