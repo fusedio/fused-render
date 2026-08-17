@@ -328,6 +328,62 @@ def test_a_dismissal_expires_with_the_version_it_was_made_on(install, monkeypatc
     assert selffix.dismissed_digest() == ""
 
 
+def test_a_dismiss_during_settles_own_walk_still_wins(install, monkeypatch):
+    """`settle` tests the dismissal BEFORE a tree walk that takes long enough
+    for the user to click Dismiss in between — and `mark_modified` would then
+    delete a dismissal it never saw. The same window SF-16 closed for
+    `reconcile`, one function over: the authoritative check is under the lock."""
+    _pristine()
+    (install / "jobs.py").write_text("patched\n")
+    selffix.settle(before=BEFORE[0], run_id="r1")
+    assert selffix.status() is not None
+
+    real_digest = selffix.tree_digest
+
+    def digest_then_dismiss(*args, **kwargs):
+        out = real_digest(*args, **kwargs)
+        monkeypatch.setattr(selffix, "tree_digest", real_digest)
+        selffix.clear()  # the user dismisses while settle is mid-walk
+        return out
+
+    monkeypatch.setattr(selffix, "tree_digest", digest_then_dismiss)
+    selffix.settle(before=BEFORE[0], run_id="r1")
+    assert selffix.status() is None
+
+
+def test_a_source_checkout_does_not_count_its_own_frontend_rebuild(install):
+    """`scripts/dev.sh` runs `vite build --watch` beside the server, so on a
+    checkout the build output is rewritten whenever the developer touches a
+    frontend file — concurrently with a fix session, which would then be blamed
+    for it."""
+    (install.parent / ".git").mkdir()  # now a source checkout
+    dist = install / "static" / "shell-dist" / "assets"
+    dist.mkdir(parents=True)
+    (dist / "index-abc123.js").write_text("built\n")
+
+    before = selffix.tree_digest()
+    (dist / "index-abc123.js").unlink()
+    (dist / "index-def456.js").write_text("rebuilt\n")  # a vite rebuild
+    assert selffix.tree_digest() == before
+
+    # ...and real source under it is still covered.
+    (install / "jobs.py").write_text("patched\n")
+    assert selffix.tree_digest() != before
+
+
+def test_a_shipped_install_still_hashes_its_build_output(install):
+    """The other half: nothing rewrites shell-dist on a real install, and a
+    session that hand-patched the bundle really has modified the app."""
+    assert not selffix.is_source_checkout()  # no .git above the package
+    dist = install / "static" / "shell-dist" / "assets"
+    dist.mkdir(parents=True)
+    (dist / "index-abc123.js").write_text("built\n")
+
+    before = selffix.tree_digest()
+    (dist / "index-abc123.js").write_text("hand-patched\n")
+    assert selffix.tree_digest() != before
+
+
 def test_reconcile_does_not_resurrect_a_marker_cleared_while_it_walked(install,
                                                                       monkeypatch):
     """`reconcile` hashes the whole tree before it writes, which is long enough
