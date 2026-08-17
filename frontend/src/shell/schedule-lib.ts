@@ -460,6 +460,27 @@ export function explorerUrl(target: string, sessionId: string): string {
   return `/explorer/view/${encoded}?_side=claude&session_id=${encodeURIComponent(sessionId)}`;
 }
 
+// The same door, for a task that has no thread to open YET.
+//
+// tasks-lib.taskHref is null until a task has a session id, and that null is
+// what left a run IN FLIGHT unreachable (Akshil, 2026-08-17: a run parked on a
+// permission prompt, and no way to get to it). The hole is structural rather
+// than a race worth waiting out — a scheduled run is claimed and sent before the
+// watcher learns which Claude session it opened, so for the whole of that window
+// the task reads `in_progress`, its key is still `pending:<entry>`, and its
+// session id is "". Hiding the only way in during exactly the minutes somebody
+// needs it is the wrong trade, so the popover's footer falls back to this.
+//
+// What it opens is the run's own FOLDER with the Claude pane on it: the same
+// `_side=claude` hop, carrying an empty `session_id`, which is precisely the hop
+// the chat's own composer makes when there is no session yet. It lands on that
+// folder's sessions — where the run in question shows up the moment it reports
+// one — instead of on nothing.
+export function folderHref(task: Task): string | null {
+  const target = task.target || task.project;
+  return target ? explorerUrl(target, "") : null;
+}
+
 // ---- Calendar: the task chip grid ---------------------------------------------
 // The calendar shows the same unit the List and the Board show — a TASK — and
 // what the time axis adds is placement:
@@ -658,10 +679,25 @@ export interface CalendarChip {
   templateId: string;
   colour: number;
   tone: string;
-  // Nothing on this day has run yet and nothing is left to run — a fully
-  // projected day, drawn as a forecast rather than a commitment.
+  // NOTHING on this day is a real message — every run in it is cron arithmetic,
+  // drawn rather than written down. True in both directions: a day still ahead
+  // of the next materialized run, and a day BEHIND now whose slots a
+  // past-anchored rule skipped and will never fill. Either way it is outlined
+  // rather than filled, because the calendar has nothing recorded to point at.
   projected: boolean;
 }
+
+// An ARCHIVED task draws NO CHIP AT ALL. Three chips at one time, two of them
+// struck through, read as noise on the grid (Akshil, 2026-08-17) — and they were
+// three genuinely different tasks, so the one-chip-per-task-per-day rule was not
+// the problem: the filed-away ones were. The calendar is for what is going to
+// happen and what did; a task that was cancelled or skipped outright is neither,
+// and the Board's Archive lane is where it is read.
+//
+// This is the TASK's status and not a RUN's, and the difference is the whole
+// nuance: a live task with one skipped occurrence still draws its chip, and that
+// skip shows as an Archive row inside the popover thread where it belongs.
+export const isArchivedTask = (task: Task): boolean => task.status === "archived";
 
 // The whole rule, in one pass. `threads` is an optional override for tasks whose
 // FULL message list the caller has fetched (GET /api/tasks ships only the last
@@ -674,6 +710,7 @@ export function taskChips(
   const out = new Map<string, CalendarChip[]>();
   for (const day of days) out.set(dayKey(day), []);
   for (const task of tasks) {
+    if (isArchivedTask(task)) continue;
     const messages = threads[task.key] ?? task.messages ?? [];
     const byDay = new Map<string, TaskMessage[]>();
     const seen = new Set<string>();
@@ -717,6 +754,110 @@ export function taskChips(
   return out;
 }
 
+// ---- Where the grid opens ------------------------------------------------------
+//
+// A 24-hour column is taller than any viewport, so the grid has to pick an hour
+// to open on. That used to be a constant — just above 7am, the band a person
+// actually schedules into — and it stopped being right the day the calendar
+// started drawing a rule's whole past (2026-08-17).
+//
+// The collision: ONE CHIP PER TASK PER DAY anchors at the day's EARLIEST slot, so
+// an hourly rule's day is a single chip at 00:00 carrying +23. Seven hours above
+// the fold, on a column that then reads as EMPTY. That was a rare oddity while
+// only future runs were drawn; past ghosts make it the common case. The anchor
+// rule is right and was argued over — the opening scroll was the wrong part.
+//
+// THE RULE, in order:
+//
+//   1. TODAY WINS, when today is in the range and has any chip at all. The
+//      now-line is what a person looks for first, and it sits an hour down from
+//      the top so there is context above it rather than a line flush to the edge.
+//   2. Otherwise the EARLIEST chip in the range, half an hour above it. The whole
+//      point is that the chip is on screen before anybody scrolls.
+//   3. Otherwise the old constant, unchanged. An empty range has nothing to aim
+//      at and must not invent something.
+//
+// Then the clamps, and it is worth being exact about which one does the work.
+//
+// The GRID'S OWN BOUNDS carry it: a target past the bottom of a 24-hour column
+// lands at the bottom, which is how a day whose only chip is at 23:00 opens ON
+// that chip instead of seven hours above it, and a negative target lands at
+// midnight, which is how the 00:00 case above comes out right.
+//
+// The LAST-CHIP bound is deliberately weak, and saying so is the point. It pulls
+// the target down far enough to keep the range's last chip on screen, but never
+// past the earliest chip itself — so in practice all it can give up is the lead.
+// Read it as: THE LEAD IS A COURTESY, AND IT IS THE FIRST THING SURRENDERED WHEN
+// THE VIEWPORT IS TIGHT. It is not, and cannot be, a fix for a range whose chips
+// simply do not fit in one screen.
+//
+// Which is the real trade, and it was a judgement call: a 00:00 chip and a 22:00
+// chip cannot both be on a 13-hour viewport, and THE EARLIEST ONE WINS. The
+// failure being fixed is a column that lies about being empty. Unused viewport is
+// the smaller cost and the reader can undo it with a scroll; the other one they
+// cannot, because nothing on screen tells them there is anything to scroll to.
+//
+// Placement is the CALLER's to trigger, and it belongs to the RANGE, not to the
+// data: re-running this on every poll would yank a reader who has scrolled back
+// to the top every twenty seconds. See ScheduleCalendar.
+
+/** The old constant, and still the answer for a range with nothing in it. */
+export const DEFAULT_SCROLL_HOUR = 7;
+
+// The lead above whatever the grid aims at. An hour over the now-line (context
+// above "now" is the point of a time axis); half an hour over a chip, which is
+// only meant to lift it off the top edge.
+const NOW_LEAD_MIN = 60;
+const CHIP_LEAD_MIN = 30;
+
+// One chip's height in px. Mirrors `.schedule-cal-chip { height: 21px }` in
+// schedule.css and is only used to ask whether a chip's BOTTOM is still on
+// screen; the wide range's extra 2px is not worth a second constant.
+const CHIP_H = 21;
+
+/**
+ * Which pixel of the 24-hour column the scroller should open on.
+ *
+ * `chips` is every chip in the visible range, in any order — only each one's
+ * `day` and its time of day matter, because all the columns share one axis.
+ * `viewportH` is the scroller's own height; 0 means "not measured yet", which
+ * makes the clamps degrade to the grid's bounds rather than misfire.
+ */
+export function scrollTarget(
+  chips: { day: string; time: Date }[],
+  days: Date[],
+  now: Date,
+  viewportH: number,
+  hourH: number,
+): number {
+  const seen = Math.max(0, viewportH);
+  const floor = Math.max(0, 24 * hourH - seen);
+  const clamp = (n: number) => Math.max(0, Math.min(n, floor));
+  const px = (minutes: number) => (minutes / 60) * hourH;
+
+  if (!chips.length) return clamp(DEFAULT_SCROLL_HOUR * hourH - 12);
+
+  const todayKey = dayKey(now);
+  if (
+    days.some((d) => dayKey(d) === todayKey) &&
+    chips.some((c) => c.day === todayKey)
+  )
+    return clamp(px(minutesOfDay(now)) - px(NOW_LEAD_MIN));
+
+  let first = minutesOfDay(chips[0].time);
+  let last = first;
+  for (const c of chips) {
+    const m = minutesOfDay(c.time);
+    if (m < first) first = m;
+    if (m > last) last = m;
+  }
+  const aim = px(first) - px(CHIP_LEAD_MIN);
+  // Far enough down that the last chip's bottom edge is still on screen.
+  const keepLast = px(last) + CHIP_H - seen;
+  // …but never past the earliest chip itself, which is the one being rescued.
+  return clamp(Math.min(Math.max(aim, keepLast), px(first)));
+}
+
 // The recurrence a chip is an occurrence of, IN WORDS — "Daily", "Every 2
 // weeks on Monday, Wednesday". Reads the rule off the template entry and hands
 // it to entryRepeatText, which is the app's single source for this wording
@@ -757,35 +898,276 @@ export function chipAccessibleName(
   return when ? `${title} — ${when}${also}` : `${title}${also}`;
 }
 
-// Future occurrences of a recurring rule exist only as server-side projections
-// (`upcoming` on the recurring template — see server/routers/schedule.py); they
-// are not messages yet, so a task's thread cannot carry them and the grid past
-// the next materialized run would otherwise be empty. This turns them into
-// synthetic messages on the task that owns the rule, deduped to the minute
-// against what the thread already holds so the next run is never drawn twice.
+// ---- A rule's own occurrences, walked here ---------------------------------------
+//
+// The server projects a rule FORWARD only (`upcoming`, schedule.py) because
+// nothing behind us will ever be MATERIALIZED: catch-up creates exactly one
+// occurrence, at the most recent slot at or before now, and the slots before it
+// are dropped for good. That is a fact about what RUNS, and the calendar was
+// reading it as a fact about what to DRAW — so a repeat anchored last Saturday
+// appeared out of nowhere on the one run that went, and its shape was invisible.
+//
+// Akshil overruled that twice (2026-08-17): "when doing a repeating [task] in the
+// past, it should show me all the chips but it should only run the last one, the
+// most last one, and then in the future as is". So the backward walk is the
+// CLIENT's, and it is a mirror of fused_render/recur.py's `_walk_*`.
+//
+// The two must not drift, so the semantics below are recur.py's and are named
+// rather than re-invented: a weekly rule counts in SUNDAY BLOCKS from the
+// anchor's own week (so "every 2 weeks on Mon+Wed" means the same fortnight
+// whichever of the two was picked as the start); a monthly rule reads its
+// nth-weekday off the anchor and SKIPS a month with no 31st or no fifth Friday
+// rather than clamping; `until` is an inclusive local DATE, so an hourly rule
+// ending "on Nov 11" keeps all of the 11th's runs and none of the 12th's. A
+// disagreement with recur.py is a bug here, never a second opinion.
+//
+// `count` is deliberately NOT applied. The server bills the budget only on
+// occurrences it actually creates — `_catch_up_base` walks the past with
+// `spend=False` precisely because those slots never existed and cost nothing —
+// so numbering the theoretical past series against `count` would be the client
+// inventing an accounting the store does not use.
+//
+// All arithmetic goes through LOCAL CALENDAR FIELDS, never a millisecond step:
+// recur.py works in naive local time, and on the two DST days of the year adding
+// 86_400_000ms lands an hour off the slot a person is looking at.
+
+/** Hard cap on one walk — the same 500 the server's own projection uses. A rule
+ * dense enough to reach it is drawn truthfully as far as the cap and no further;
+ * spinning the render thread is the one outcome that is not acceptable. */
+export const OCCURRENCE_LIMIT = 500;
+
+// A month with no 31st, or no fifth Friday, is SKIPPED rather than clamped, so a
+// walk can legitimately step over barren months. Give up after this many.
+const MAX_EMPTY_STEPS = 500;
+
+// Belt and braces around every loop below. None of them can run away — each
+// advances a monotonic cursor — but a walk driven by server data on the render
+// path gets a hard stop anyway.
+const MAX_WALK_STEPS = 20000;
+
+const daysInMonth = (y: number, m: number) => new Date(y, m + 1, 0).getDate();
+
+const isLeapYear = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+
+// The day-of-month of the `nth` `want`-weekday of that month, or 0 when the
+// month has none. recur.py `_nth_weekday_day`.
+function nthWeekdayDay(y: number, m: number, want: number, nth: number): number {
+  const first = new Date(y, m, 1).getDay();
+  const day = 1 + ((want - first + 7) % 7) + (nth - 1) * 7;
+  return day <= daysInMonth(y, m) ? day : 0;
+}
+
+const RULE_FREQS = ["hour", "day", "week", "month", "year"];
+
+/**
+ * Every occurrence of `rule` strictly after `after` and at or before `through`,
+ * in order. `anchor` is the series' first run and the series includes it, so an
+ * anchor inside the window comes back as its own occurrence.
+ *
+ * A rule this build cannot read — a `freq` a newer server invented — walks to
+ * NOTHING rather than to a guess. An unreadable schedule that draws no ghost is
+ * a thin calendar; one that draws the wrong ghost is a lie.
+ */
+export function ruleOccurrences(
+  rule: RecurrenceRule,
+  anchor: Date,
+  after: Date,
+  through: Date,
+  limit: number = OCCURRENCE_LIMIT,
+): Date[] {
+  const out: Date[] = [];
+  const born = anchor.getTime();
+  const from = after.getTime();
+  const stop = through.getTime();
+  if (Number.isNaN(born) || Number.isNaN(from) || Number.isNaN(stop)) return out;
+  if (stop <= from || limit <= 0) return out;
+  if (!RULE_FREQS.includes(rule.freq)) return out;
+
+  const interval = Math.min(99, Math.max(1, Math.floor(rule.interval || 1)));
+  const until = rule.until || "";
+  const hh = anchor.getHours();
+  const mm = anchor.getMinutes();
+  const ss = anchor.getSeconds();
+  const y = anchor.getFullYear();
+  const mo = anchor.getMonth();
+  const dd = anchor.getDate();
+  // Past the window, or past the rule's own end: either way the walk is over.
+  // `until` is compared as a DATE string so the time of day cannot decide it.
+  const done = (when: Date) =>
+    when.getTime() > stop || (!!until && dayKey(when) > until);
+  // The instant a jump-estimate should land just behind. Never before the
+  // anchor: the series does not exist before its own first run.
+  const edge = new Date(Math.max(from, born));
+  let guard = 0;
+
+  if (rule.freq === "hour" || rule.freq === "day") {
+    const stepMs = (rule.freq === "hour" ? 3_600_000 : 86_400_000) * interval;
+    // Jump to just behind `after` rather than walking from the anchor: a rule
+    // anchored last year would otherwise cost thousands of steps to draw one
+    // week. Two steps of slack absorb the DST slop a millisecond estimate
+    // carries — the field arithmetic below is what actually decides.
+    let n = Math.max(0, Math.floor((from - born) / stepMs) - 2);
+    while (out.length < limit && guard++ < MAX_WALK_STEPS) {
+      const when =
+        rule.freq === "hour"
+          ? new Date(y, mo, dd, hh + n * interval, mm, ss, 0)
+          : new Date(y, mo, dd + n * interval, hh, mm, ss, 0);
+      n += 1;
+      if (when.getTime() <= from) continue; // still catching up to `after`
+      if (done(when)) break;
+      out.push(when);
+    }
+    return out;
+  }
+
+  if (rule.freq === "week") {
+    // No `byday` means the anchor's OWN weekday — resolved against the anchor,
+    // which the rule's validator never sees, exactly as recur.py does it.
+    const days = rule.byday?.length
+      ? [...new Set(rule.byday)].sort((a, b) => a - b)
+      : [anchor.getDay()];
+    // The Sunday on or before the anchor: the block a weekly rule counts in.
+    const origin = new Date(y, mo, dd - anchor.getDay());
+    let block = 0;
+    if (startOfDay(edge).getTime() >= origin.getTime()) {
+      // Round, not floor: a DST day is 23 or 25 hours and would otherwise
+      // divide a whole week short.
+      const days7 = Math.round(
+        (startOfDay(edge).getTime() - origin.getTime()) / 86_400_000,
+      );
+      block = Math.floor(Math.floor(days7 / 7) / interval) * interval;
+    }
+    while (out.length < limit && guard++ < MAX_WALK_STEPS) {
+      const start = addDays(origin, block * 7);
+      block += interval;
+      // Every day of a block that begins after the window is after it too.
+      if (start.getTime() > stop) break;
+      let ended = false;
+      for (const day of days) {
+        const when = new Date(
+          start.getFullYear(), start.getMonth(), start.getDate() + day,
+          hh, mm, ss, 0,
+        );
+        // `>= anchor` is what makes the anchor's own week a PARTIAL one: a
+        // Wednesday anchor with byday Mon+Wed does not run on the Monday that
+        // has already gone by, but does run every Monday after.
+        if (when.getTime() < born || when.getTime() <= from) continue;
+        if (done(when)) {
+          ended = true;
+          break;
+        }
+        out.push(when);
+        if (out.length >= limit) break;
+      }
+      if (ended) break;
+    }
+    return out;
+  }
+
+  if (rule.freq === "month") {
+    const byWeekday = rule.monthly === "nth-weekday";
+    // "The second Wednesday" is read OFF the anchor rather than stated in the
+    // rule: the user picked a date, and which Wednesday of the month it is
+    // cannot then disagree with itself.
+    const nth = Math.floor((dd - 1) / 7) + 1;
+    const want = anchor.getDay();
+    const anchorMonths = y * 12 + mo;
+    const edgeMonths = edge.getFullYear() * 12 + edge.getMonth();
+    let offset =
+      edgeMonths >= anchorMonths
+        ? Math.floor((edgeMonths - anchorMonths) / interval) * interval
+        : 0;
+    let empty = 0;
+    while (out.length < limit && empty < MAX_EMPTY_STEPS && guard++ < MAX_WALK_STEPS) {
+      const total = anchorMonths + offset;
+      const my = Math.floor(total / 12);
+      const mmo = total % 12;
+      offset += interval;
+      const day = byWeekday
+        ? nthWeekdayDay(my, mmo, want, nth)
+        : dd <= daysInMonth(my, mmo) ? dd : 0;
+      if (!day) {
+        empty += 1; // no 31st / no fifth Friday: skipped, never clamped
+        continue;
+      }
+      const when = new Date(my, mmo, day, hh, mm, ss, 0);
+      // The jump landed a step short; not an empty month, so `empty` stands.
+      if (when.getTime() < born || when.getTime() <= from) continue;
+      if (done(when)) break;
+      empty = 0;
+      out.push(when);
+    }
+    return out;
+  }
+
+  let offset =
+    edge.getFullYear() >= y
+      ? Math.floor((edge.getFullYear() - y) / interval) * interval
+      : 0;
+  let empty = 0;
+  while (out.length < limit && empty < MAX_EMPTY_STEPS && guard++ < MAX_WALK_STEPS) {
+    const yy = y + offset;
+    offset += interval;
+    if (mo === 1 && dd === 29 && !isLeapYear(yy)) {
+      empty += 1; // a Feb 29 rule genuinely has nothing to say in 2027
+      continue;
+    }
+    const when = new Date(yy, mo, dd, hh, mm, ss, 0);
+    if (when.getTime() < born || when.getTime() <= from) continue;
+    if (done(when)) break;
+    empty = 0;
+    out.push(when);
+  }
+  return out;
+}
+
+// ---- Ghosts, both directions -------------------------------------------------------
+//
+// A recurring rule's occurrences that are NOT messages: the future ones the
+// server projected (`upcoming` on the recurring template — see
+// server/routers/schedule.py), and the past ones nothing ever materialized.
+// Neither is in any feed, so a task's thread cannot carry them and the grid
+// would show a rule only where it happens to have written something down. This
+// turns both into synthetic messages on the task that owns the rule.
+//
+// DEDUPE RUNS IN BOTH DIRECTIONS, and that is what keeps the one real run of a
+// past-anchored rule honest: catch-up materializes the most recent past slot at
+// that slot's OWN time, so a ghost would land on the very same minute. Every
+// projection — behind now or ahead of it — is checked against the minutes the
+// thread already holds, and drops when one is taken.
+//
 // `base` is the thread each task is known to have in the visible window (the
 // windowed endpoint's answer). It matters for the DEDUPE, not just the seed: a
 // materialized occurrence the listing's three-message tail never mentioned is
 // still a run the grid must not draw twice, and only the windowed thread knows
 // about it.
 //
-// NOTHING IS PROJECTED INTO THE PAST. A rule anchored behind us (scheduling into
-// the past is allowed now) has occurrences whose time has already gone, and
-// those runs will never happen: catch-up materializes only the MOST RECENT
-// missed slot, at that slot's own time, and the ones before it are dropped for
-// good (§9, confirmed by Akshil 2026-08-17). Drawing them as ghosts would be the
-// grid promising work that has already been decided against — the past shows
-// what happened, not what would have.
+// THE PAST GHOSTS ARE DRAW-ONLY. Nothing here asks for them to be created, and
+// the backend must not start: catch-up runs exactly one of them and drops the
+// rest for good (§9). They are a picture of the rule's shape, which is what the
+// user asked the calendar to show.
+
 export function projectedMessages(
   tasks: Task[],
   entries: ScheduledMessage[],
   base: Record<string, TaskMessage[]> = {},
   now: Date = new Date(),
+  /**
+   * The oldest instant worth drawing — the first visible day. HOW FAR BACK is
+   * the window's question and this function does not guess at it: omitted, the
+   * past is not walked at all. A default horizon would make the answer depend on
+   * a clock nobody passed in, and would draw ghosts for a caller that never
+   * asked how the past looked.
+   */
+  since?: Date,
 ): Record<string, TaskMessage[]> {
   const nowSec = Math.floor(now.getTime() / 1000);
+  // A hair before, because the walk is strictly-after: a rule that fires at
+  // local midnight must still draw on the window's own first day.
+  const back = since ? new Date(since.getTime() - 1) : null;
   const out: Record<string, TaskMessage[]> = {};
   for (const entry of entries) {
-    if (entry.state !== "recurring" || !entry.upcoming?.length) continue;
+    if (entry.state !== "recurring") continue;
     // WHICH task a projection hangs on is not obvious, and picking the first
     // match is wrong: under "new task each run" (§6) every past occurrence of
     // this rule is its OWN task, so a plain find() lands on whichever the
@@ -798,9 +1180,14 @@ export function projectedMessages(
         (m) => m.template_id === entry.id || m.entry_id === entry.id,
       ),
     );
+    // An ARCHIVED task draws no chip (taskChips), so hanging a live rule's
+    // whole forecast on one would delete the forecast. Claimants that are still
+    // drawn are preferred; an archived one is a last resort rather than a
+    // silent hole in the grid.
+    const pick = (list: Task[]) => list.find((t) => !t.session_id) ?? list[0];
     const owner =
-      claims.find((t) => !t.session_id) ??
-      claims[0] ??
+      pick(claims.filter((t) => !isArchivedTask(t))) ??
+      pick(claims) ??
       // A rule that has never run at all has no message to match on; the
       // server keys its task off the entry until the first turn mints a
       // session (§5).
@@ -812,30 +1199,56 @@ export function projectedMessages(
     const taken = new Set(
       list.filter((m) => m.kind === "scheduled").map((m) => Math.floor(m.at / 60)),
     );
-    for (const iso of entry.upcoming) {
-      const t = new Date(iso);
-      if (Number.isNaN(t.getTime())) continue;
-      const at = Math.floor(t.getTime() / 1000);
-      // Already gone: not a forecast, and never going to be a run. See above.
-      if (at <= nowSec) continue;
+    const ghost = (iso: string, at: number, state: TaskMessage["state"]) => {
       const minute = Math.floor(at / 60);
-      if (taken.has(minute)) continue;
+      if (taken.has(minute)) return;
       taken.add(minute);
       list.push({
         message_id: `${GHOST_PREFIX}${iso}`,
         kind: "scheduled",
         body: entry.message,
         at,
-        // A projection has not run and by definition never will as itself — the
-        // materialization pass mints a real message when its minute arrives.
+        // A projection has not run — a future one not yet, a past one not ever.
         ran_at: 0,
-        state: "pending",
+        state,
         unread: false,
         entry_id: entry.id,
         template_id: entry.id,
         turn: "",
         anchor: "",
       });
+    };
+
+    for (const iso of entry.upcoming ?? []) {
+      const t = new Date(iso);
+      if (Number.isNaN(t.getTime())) continue;
+      const at = Math.floor(t.getTime() / 1000);
+      // The server's projection is now-forward by construction; a stale poll can
+      // still hand over a slot that has since gone, and the past walk below owns
+      // those.
+      if (at <= nowSec) continue;
+      ghost(iso, at, "pending");
+    }
+
+    // The slots behind us that nothing ever ran. Only a RULE template has them:
+    // a cron template is computed from `now` at creation and has no anchor, so
+    // there is no past series to walk (`_catch_up_base` refuses one for exactly
+    // this reason) and the client has no cron parser to walk it with.
+    const rule = entry.rule;
+    if (!rule || !back) continue;
+    // `anchor` is on the wire — schedule.py writes it on every rule template —
+    // but not yet in the ScheduledMessage type, which belongs to another lane.
+    // Read defensively and fall back to `due`, exactly as the server does.
+    const anchorIso = (entry as { anchor?: string }).anchor || entry.due;
+    const anchor = new Date(anchorIso);
+    if (Number.isNaN(anchor.getTime())) continue;
+    for (const when of ruleOccurrences(rule, anchor, back, now)) {
+      // `missed` WITH a template_id is the app's existing reading of "that slot
+      // went by and nothing ran": tasks-lib.messageTone files it under ARCHIVE,
+      // which is §1's word for these, and schedule-lib.messageTone greys the
+      // chip rather than striking it through — a strike says somebody called
+      // the run off, and nobody called these off.
+      ghost(when.toISOString(), Math.floor(when.getTime() / 1000), "missed");
     }
   }
   return out;
@@ -847,21 +1260,29 @@ export function projectedMessages(
 //   * `windowed` — GET /api/tasks/scheduled, every scheduled message in the
 //     visible days. Authoritative and complete, and the reason the grid stops
 //     under-drawing: the listing ships only each task's three most recent.
-//   * `entries`  — the recurring templates, whose `upcoming` projections are
-//     not messages yet and so appear in neither feed.
+//   * `entries`  — the recurring templates, whose occurrences either side of now
+//     are not messages yet (ahead) or never will be (behind), and so appear in
+//     neither feed.
 //
 // Projections are layered ON TOP of the windowed thread (they were seeded from
 // it), so spreading them over it is a merge, not a clobber. A task in neither
 // gets no entry at all, which is what makes taskChips fall back to its own
 // `task.messages` — the degraded-but-useful grid when the window fetch fails.
+//
+// `days` is the visible window, and it is what bounds the BACKWARD walk: a
+// person paging three weeks back still wants to see the shape of the rule that
+// was running then, and a fixed horizon off `now` would draw nothing there.
+// Omitted, the past is not walked at all — see projectedMessages on why that is
+// a refusal to guess rather than a missing default.
 export function calendarThreads(
   tasks: Task[],
   entries: ScheduledMessage[],
   windowed: Record<string, TaskMessage[]> | null,
   now: Date = new Date(),
+  days: Date[] = [],
 ): Record<string, TaskMessage[]> {
   const base = windowed ?? {};
-  return { ...base, ...projectedMessages(tasks, entries, base, now) };
+  return { ...base, ...projectedMessages(tasks, entries, base, now, days[0]) };
 }
 
 // The windowed endpoint answers flat — one row per (task, message) — because

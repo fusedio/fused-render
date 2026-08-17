@@ -19,11 +19,18 @@
 // idea what the work is or which process is doing it, so the ✕ sets a flag the
 // reporting page reads on its next tick and acts on. The row therefore says
 // "Cancelling…" until the work actually stops, rather than lying about it.
+//
+// ONE ROW PER UNIT OF WORK in this corner (Akshil, 2026-08-17): a scheduled
+// message whose turn is still in flight is drawn by the queue dock above this
+// card, which says more about it than a job row can — where to go and answer it,
+// and a cancel that knows what it is cancelling. So those rows are filtered out
+// here rather than shown twice; see SCHEDULE_JOB_PREFIX below.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelJob,
   clearFinishedJobs,
   dismissJob,
+  dockJobs,
   fetchJobs,
   isRunning,
   jobAmount,
@@ -35,7 +42,6 @@ import {
   JOB_PING_KEY,
   type Job,
 } from "@platform/lib/jobs";
-
 const COLLAPSED_KEY = "fused-render:jobs-collapsed";
 
 function loadCollapsed(): boolean {
@@ -281,8 +287,12 @@ function JobRow({
 }
 
 export default function DownloadManager() {
-  const { jobs, refresh, patch } = useJobs();
+  const { jobs: reported, refresh, patch } = useJobs();
   const [collapsed, setCollapsed] = useState(loadCollapsed);
+  // Everything the poll returned MINUS the live scheduled runs the queue dock is
+  // already drawing. `patch`/`refresh` still work on the full list — the filter
+  // is what this card SHOWS, not what it knows.
+  const jobs = dockJobs(reported);
 
   // Nothing to say — render nothing at all. The manager is a picture of what is
   // happening now, so an empty one is not an empty card, it is no card.

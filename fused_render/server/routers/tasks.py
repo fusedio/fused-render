@@ -33,11 +33,13 @@ that never reached a transcript at all (pending, missed, cancelled). Message ids
 follow from that count and nothing else: the Nth message in time order is MSG-N
 (`tasks_store.message_ids`), so nothing has to be stored and nothing can drift.
 
-**A task key** is the session id, or `pending:<entry-id>` for a task scheduled
-for a session that does not exist yet (§5). The number a pending row is showing
-follows it onto the session id at the first run — see `tasks_store.rekey` — so
-the row the user has been watching does not silently renumber the moment it
-finally runs.
+**A task key** is the session id, or `pending:<entry-id>` for a message that
+names no session at all and so has none to be filed under yet (§5). A message
+that DOES name one — a re-send, a message scheduled out of an open chat — is
+that session's task from the moment it is created, even before it runs; see
+`_entry_session`. The number a pending row is showing follows it onto the
+session id at the first run — see `tasks_store.rekey` — so the row the user has
+been watching does not silently renumber the moment it finally runs.
 
 Every field degrades rather than fails. An unreadable transcript, a truncated
 line, a session whose cwd is gone, a store that is not there yet — each costs
@@ -553,14 +555,48 @@ def _new_task(key: str, session_id: str, path: str | None) -> dict:
     return {"key": key, "session_id": session_id, "path": path, "entries": []}
 
 
+def _entry_session(entry: dict) -> str:
+    """Which session a scheduled entry belongs to: **the answer where the run
+    has given one, else the input it named**, and "" for neither.
+
+    The two fields are not synonyms and the difference is the whole of this
+    function. `claude_session_id` is the ANSWER — the session the turn actually
+    ran in, filled in by the watcher from the run's first reporting tick.
+    `session_id` is the INPUT — "resume this conversation", empty meaning
+    "start a fresh one".
+
+    Reading only the answer meant an entry that NAMES a conversation but has
+    not run yet matched nothing, and fell to `pending:<entry-id>` — a second
+    row beside the very task it belongs to, which merged into it the moment the
+    watcher reported. Two ordinary things do that: a re-send (it carries the
+    failed run's session as its `session_id`, and queues instead of going
+    immediately whenever that conversation is mid-turn) and a message scheduled
+    out of an open chat.
+
+    **Answer first**, because the two can disagree: a resume that forked into a
+    new session RAN in `claude_session_id`, and that is the thread the message
+    is in whatever it asked for.
+
+    **"" is not an id.** A message with no `session_id` is asking for a fresh
+    session, so it must keep falling through to its own `pending:` key —
+    grouping on "" would collapse every unrelated fresh-session message in the
+    store into a single row.
+    """
+    return (str(entry.get("claude_session_id") or "")
+            or str(entry.get("session_id") or ""))
+
+
 def _collect() -> dict[str, dict]:
     """Every task on this machine: one per transcript, plus one per scheduled
-    message that has no session yet.
+    message that names no session at all.
 
-    A scheduled entry whose `claude_session_id` names a session with no
-    transcript on disk still makes a task — the session may be seconds old, or
-    the transcript may have been moved — rather than dropping the user's
-    message on the floor."""
+    A scheduled entry whose session has no transcript on disk still makes a
+    task — the session may be seconds old, it may not have been started yet
+    (`_entry_session` groups a pending entry onto the conversation it is going
+    to continue), or the transcript may have been moved — rather than dropping
+    the user's message on the floor. That task is the same one the run joins
+    later, because the key it is filed under does not change when the watcher
+    fills the answer in."""
     tasks: dict[str, dict] = {}
     for path in tasks_store.transcripts():
         session_id = os.path.splitext(os.path.basename(path))[0]
@@ -570,7 +606,7 @@ def _collect() -> dict[str, dict]:
             # A template never fires and is not a message; its materialised
             # occurrences are, and they are ordinary entries in this list.
             continue
-        session_id = str(entry.get("claude_session_id") or "")
+        session_id = _entry_session(entry)
         if session_id:
             task = tasks.get(session_id)
             if task is None:

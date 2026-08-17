@@ -207,8 +207,26 @@ def api_schedule_queue():
     calendar.
 
     Unguarded like the other reads, and side-effect-free on purpose — the tick
-    owns every state change, so opening the popover cannot change what runs."""
-    return schedule.queue()
+    owns every state change, so opening the popover cannot change what runs.
+
+    **`live` is the third list**, added for the queue dock (Akshil, 2026-08-17):
+    the entries whose TURN is still going. `schedule.queue()` deliberately stops
+    at `sending` — a spawned run has its own cancel in the job registry — but the
+    registry's row knows only a title and a status line, so a run parked on a
+    permission prompt was visible and still unreachable: nothing on screen said
+    where to go and answer it. These entries carry the target and the session the
+    turn landed in, which is exactly what an "Open in Explorer" link needs, and
+    the dock joins them onto its job rows by id (`sys:schedule:<entry id>`).
+
+    Live is `sent` with an EMPTY `turn` — the same rule the client's `isLive`
+    applies, and it is a rule about the pair: `state` says the message was sent,
+    `turn` is written once when the turn ends, so an unwritten turn is one still
+    in flight. Typically nought to two rows; a historical `sent` entry has a turn
+    and does not appear."""
+    result = schedule.queue()
+    result["live"] = [e for e in schedule.list_entries()
+                      if e.get("state") == schedule.SENT and not e.get("turn")]
+    return result
 
 
 @router.post("/api/schedule/queue/cancel")
@@ -295,6 +313,62 @@ def api_schedule_run_now(body: dict = Body(...),
         return _error(result["reason"],
                       status=404 if not result["found"] else 409)
     return {"ok": True, "entry": result["entry"]}
+
+
+@router.post("/api/schedule/resend")
+def api_schedule_resend(body: dict = Body(...),
+                        x_fused: str | None = Header(default=None)):
+    """Ask again: `{"entry_id": "..."}` -> `{"ok", "entry", "note"}`.
+
+    The Re-run button on a task whose run already went and broke. Run-now cannot
+    serve that case — it claims a PENDING entry, and the run that failed spent
+    itself — so this is the other half of the same affordance: a task is a
+    thread, and asking for the work again is a NEW message in it. The original
+    entry is left exactly as it is; `entry` in the response is the new one.
+
+    Guarded like run-now, and for the identical reason: it starts an unattended
+    agent turn on the spot.
+
+    Same three status codes and the same sentences underneath them — 404 for no
+    such id, 409 for an entry that cannot be re-sent (still pending, still
+    sending, cancelled, missed, or a template), 400 for a body without an id or
+    a target that has since been deleted. `note` rides along on SUCCESS: the new
+    message may be queued rather than away (its conversation can be mid-turn),
+    and that is a sentence to show, not an error to raise.
+
+    **The mount refusal is re-checked**, not inherited from the original's
+    creation. It passed the gate whenever it was scheduled, and a path can
+    become mount-backed after that; spawning against the stored target without
+    asking again would route around the gate the whole check exists to be."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    entry_id = body.get("entry_id")
+    if not isinstance(entry_id, str) or not entry_id.strip():
+        return _error("entry_id: required", status=400)
+    entry_id = entry_id.strip()
+
+    original = next((e for e in schedule.list_entries()
+                     if str(e.get("id") or "") == entry_id), None)
+    if original is None:
+        return _error(f"no scheduled message with id {entry_id!r}", status=404)
+
+    from fused_render.shell.mounts import is_mount_backed
+
+    if is_mount_backed(str(original.get("target") or "")):
+        return _error(
+            "target: refused — a scheduled session must not run against a "
+            "remote mount", status=400)
+
+    try:
+        result = schedule.resend(entry_id)
+    except ValueError as exc:
+        return _error(str(exc), status=400)
+    if not result["ok"]:
+        return _error(result["reason"],
+                      status=404 if not result["found"] else 409)
+    return {"ok": True, "entry": result["entry"], "note": result["reason"]}
 
 
 @router.post("/api/schedule/cancel")

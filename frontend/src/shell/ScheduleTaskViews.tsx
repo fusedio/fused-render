@@ -29,6 +29,7 @@ import {
   cancelScheduledMessage,
   getTaskMessages,
   markTaskMessageRead,
+  resendScheduledMessage,
   runScheduledNow,
   setSessionTriage,
 } from "@platform/lib/api";
@@ -55,13 +56,15 @@ import {
   ranNote,
   taskColumn,
   taskHref,
+  taskRunIntent,
   taskUnread,
   threadView,
   tildePath,
   toggleExpanded,
+  unreadCount,
   unreadMarker,
 } from "./tasks-lib";
-import type { TaskFilters } from "./tasks-lib";
+import type { TaskFilters, TaskRunIntent } from "./tasks-lib";
 
 // The page composes these from one import; re-exported here so Scheduled.tsx
 // takes its filter type, its empty value and its filter function from the same
@@ -83,7 +86,6 @@ const icon = (paths: React.ReactNode, size = 14) => (
 const ICON_SEARCH = icon(<><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></>, 13);
 const ICON_CHEVRON = icon(<polyline points="9 18 15 12 9 6" />, 13);
 const ICON_CHEVRON_DOWN = icon(<polyline points="6 9 12 15 18 9" />, 12);
-const ICON_X = icon(<><path d="M18 6 6 18" /><path d="m6 6 12 12" /></>, 11);
 const ICON_CHECK = icon(<polyline points="20 6 9 17 4 12" />, 13);
 const ICON_CIRCLE_DOT = icon(
   <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="1.5" /></>, 13);
@@ -108,6 +110,13 @@ const ICON_BAN = icon(
   <><circle cx="12" cy="12" r="9" /><path d="m5.6 5.6 12.8 12.8" /></>, 13);
 const ICON_SKIP = icon(
   <><polygon points="5 4 15 12 5 20 5 4" /><line x1="19" x2="19" y1="5" y2="19" /></>, 12);
+// The two halves of run-now, drawn apart for the same reason Cancel's are: one
+// call, but "start this early" and "start this again" are not the same sentence
+// to the person clicking. lucide `play` and `rotate-ccw`.
+const ICON_PLAY = icon(<polygon points="6 3 20 12 6 21 6 3" />, 12);
+const ICON_RERUN = icon(
+  <><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+    <path d="M3 3v5h5" /></>, 13);
 
 // ---- leaf components ---------------------------------------------------------
 
@@ -165,14 +174,33 @@ function IdChip({ id, kind }: { id: string; kind: "task" | "message" }) {
   return <span className={`tasks-id tasks-id--${kind}`}>{id}</span>;
 }
 
-/** The unread badge on a task row: the dot plus the count (§7). */
-function UnreadBadge({ count }: { count: number }) {
-  if (count <= 0) return null;
-  const label = `${count} unread`;
+/** A task's unread count as the DOT CARRYING THE NUMBER (§7,
+ * tasks-lib.unreadCount): the message dot's own hue, filled, grown from a
+ * circle into a short pill only as far as the digits need. It reads as the same
+ * mark the thread below it uses, one size up, rather than as a second badge
+ * with its own vocabulary. The true count is always the accessible name, even
+ * when the pill prints "99+". */
+function UnreadPill({ count }: { count: number }) {
+  const c = unreadCount(count);
+  if (!c) return null;
   return (
-    <span className="tasks-unread" title={label} aria-label={label}>
-      <span className="tasks-dot" aria-hidden />
-      {count}
+    <span className="tasks-count" role="img" aria-label={c.label} title={c.label}>
+      {c.text}
+    </span>
+  );
+}
+
+/** The LEADING rail slot on a task row — the same column, the same width and
+ * the same centre line as the `.tasks-rail` at the head of every message row
+ * under it, so one straight rail runs down the whole node. Drawn on every task,
+ * filled or not: a slot that appeared only on unread tasks would shift the rest
+ * of those rows sideways, which is the ragged edge this change exists to
+ * remove. */
+function UnreadRail({ count }: { count: number }) {
+  if (count <= 0) return <span className="tasks-rail" aria-hidden />;
+  return (
+    <span className="tasks-rail">
+      <UnreadPill count={count} />
     </span>
   );
 }
@@ -405,62 +433,6 @@ export function TaskFilterControls({
   );
 }
 
-/** The active-filter strip under the toolbar. */
-export function TaskFilterChips({
-  filters,
-  home = "",
-  onChange,
-}: {
-  filters: TaskFilters;
-  home?: string;
-  onChange: (next: TaskFilters) => void;
-}) {
-  const any = filters.statuses.length > 0 || filters.projects.length > 0;
-  if (!any) return null;
-  const chip = (
-    key: string,
-    keyLabel: string,
-    label: string,
-    title: string,
-    remove: () => void,
-  ) => (
-    <span className="schedule-tv-chip" key={key} title={title}>
-      <span className="schedule-tv-chip-key">{keyLabel}</span>
-      {label}
-      <button
-        type="button"
-        className="schedule-tv-chip-x"
-        aria-label={`Remove ${label} filter`}
-        onClick={remove}
-      >
-        {ICON_X}
-      </button>
-    </span>
-  );
-
-  return (
-    <div className="schedule-tv-chips">
-      {filters.statuses.map((key) =>
-        chip(`s:${key}`, "Status:", STATUS_LABELS[key] ?? key, STATUS_LABELS[key] ?? key, () =>
-          onChange({ ...filters, statuses: filters.statuses.filter((s) => s !== key) }),
-        ),
-      )}
-      {filters.projects.map((path) =>
-        chip(`p:${path}`, "Project:", basename(path), tildePath(path, home), () =>
-          onChange({ ...filters, projects: filters.projects.filter((p) => p !== path) }),
-        ),
-      )}
-      <button
-        type="button"
-        className="schedule-tv-clear"
-        onClick={() => onChange({ ...filters, statuses: [], projects: [] })}
-      >
-        Clear all
-      </button>
-    </div>
-  );
-}
-
 // ---- read bookkeeping --------------------------------------------------------
 // Clicking a message marks it read, and the dot has to go NOW: the page polls
 // on a 20-second interval, and a dot that outlives its own click reads as a
@@ -602,12 +574,52 @@ function TaskNode({
   const unread = taskUnread(task, read, loaded);
   const href = taskHref(task);
   const label = firstLine(task.title) || "(untitled)";
+  // Run now / Re-run. tasks-lib decides all of it — whether it is offered,
+  // which message it acts on, and WHICH CALL that is. The run-now half comes
+  // from the same function the drag asks (runNowIntent), so the button and the
+  // drop can never fire different messages; the re-send half is the case the
+  // drag deliberately does not have, because a gesture cannot consent to
+  // creating work that was never scheduled.
+  const run = taskRunIntent(task);
 
   // The one cancel in flight, by message id, and whatever the server said about
   // the last one that failed. Per MESSAGE rather than per thread: the sentence
   // is about one row and belongs under it.
   const [cancelling, setCancelling] = useState("");
   const [cancelErrors, setCancelErrors] = useState<Record<string, string>>({});
+  // Run-now's own pair. Per TASK, unlike cancel's: the button is on the task
+  // row and the refusal is about the task's conversation, not about one message
+  // inside it.
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState("");
+
+  const runNow = async (intent: TaskRunIntent) => {
+    setRunning(true);
+    setRunError("");
+    try {
+      // Which call is not decided here — `kind` came out of tasks-lib, and this
+      // is the only place it is spent. Re-send answers 200 with a `note` when
+      // the new message is queued rather than away (its conversation is
+      // mid-turn), which is news of the same quiet kind as the refusal below.
+      if (intent.kind === "resend") {
+        const res = await resendScheduledMessage(intent.entryId);
+        if (res.note) setRunError(res.note);
+      } else {
+        await runScheduledNow(intent.entryId);
+      }
+    } catch (e) {
+      // The server's own sentence, verbatim. Its common refusal is a 409
+      // because this conversation already has a turn open — two `claude
+      // --resume` processes on one transcript is the thing that must never
+      // happen — and that reads as "wait", not as "broken", which is why it is
+      // said in the quiet note the board's drag already uses rather than in the
+      // red line a failed cancel gets.
+      setRunError((e as Error).message);
+    } finally {
+      setRunning(false);
+      onReload?.();
+    }
+  };
 
   const openMessage = (m: TaskMessage) => {
     onRead(task.key, m);
@@ -655,6 +667,12 @@ function TaskNode({
         <span className={"tasks-caret" + (open ? " is-open" : "")} aria-hidden>
           {ICON_CHEVRON}
         </span>
+        {/* Unread LEADS this row too, on the very column the thread's own dots
+            sit on (tasks-lib.unreadCount). The caret stays outside that column,
+            in the gutter to its left, because it is the accordion's control and
+            not part of the rail — which leaves one straight line of markers
+            running from the task down through every message it holds. */}
+        <UnreadRail count={unread} />
         <StatusIcon status={taskColumn(task)} failed={task.failed} />
         <IdChip id={task.task_id} kind="task" />
         <span className="tasks-title">{label}</span>
@@ -665,6 +683,30 @@ function TaskNode({
             right-hand group in the middle of the row instead of at its end. */}
         <span className="tasks-grow" />
 
+        {/* The drag from Upcoming into In Progress, without the drag — and on
+            a task that broke, the word for doing it again over whichever call
+            can actually do it: run-now while a message is still pending,
+            re-send once the run that failed has spent it. ONE button and one
+            label either way; tasks-lib.taskRunIntent is the only thing that
+            knows which. In the SAME hover-revealed group as Edit and Cancel on
+            a message row, so a list at rest grows no chrome: this applies to a
+            minority of tasks and every other row would carry a button that
+            does nothing. */}
+        {run && (
+          <button
+            type="button"
+            className="tasks-act tasks-act--run"
+            title={run.title}
+            aria-label={run.label}
+            disabled={running}
+            onClick={(e) => {
+              e.stopPropagation();
+              void runNow(run);
+            }}
+          >
+            {run.rerun ? ICON_RERUN : ICON_PLAY}
+          </button>
+        )}
         {href && (
           <button
             type="button"
@@ -680,8 +722,11 @@ function TaskNode({
           </button>
         )}
         <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
-        <UnreadBadge count={unread} />
       </div>
+
+      {/* Why the refusal is quiet: see runNow. The class is the board's own
+          drag-error line, because this is the board's own call. */}
+      {runError && <p className="schedule-tv-note tasks-row-note">{runError}</p>}
 
       {open && (
         <div className="tasks-thread">
@@ -711,10 +756,12 @@ function TaskNode({
                       drawn on every row, filled or not, so the dots line up in
                       one column down the left edge instead of shunting the
                       rest of each unread row sideways. The word that used to
-                      follow it is gone; the dot carries the name itself. */}
+                      follow it is gone; the dot carries the name itself. It is
+                      the same `.tasks-rail` the task row above opens with —
+                      one class, therefore one column. */}
                   {mark.unread ? (
                     <span
-                      className="tasks-msg-flag"
+                      className="tasks-rail"
                       role="img"
                       aria-label={mark.label}
                       title={mark.label}
@@ -722,7 +769,7 @@ function TaskNode({
                       <span className="tasks-dot" aria-hidden />
                     </span>
                   ) : (
-                    <span className="tasks-msg-flag" aria-hidden />
+                    <span className="tasks-rail" aria-hidden />
                   )}
                   <StatusIcon status={tone.column} failed={tone.failed} label={tone.label} />
                   <span
@@ -1066,12 +1113,18 @@ function TaskCard({
         if (href) navigateUrl(href);
       }}
     >
+      {/* Unread leads here too — it sat at the far end of the head, which is
+          the same objection the List's task row just answered. What the card
+          does NOT take from the List is the always-drawn empty slot: a card's
+          head is one line above a title and a folder chip that both start at
+          the card's own edge, so reserving a permanent rail would indent the
+          ring away from the two lines under it — a worse misalignment than the
+          one it fixes. On a card the pill is simply first when there is one. */}
       <span className="schedule-tv-card-head">
+        <UnreadPill count={task.unread} />
         <StatusIcon status={taskColumn(task)} failed={task.failed} />
         <IdChip id={task.task_id} kind="task" />
         {task.live && <LivePulse />}
-        <span className="tasks-grow" />
-        <UnreadBadge count={task.unread} />
       </span>
       <span className="schedule-tv-card-title">
         {firstLine(task.title) || "(untitled)"}

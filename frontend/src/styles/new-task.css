@@ -134,3 +134,62 @@
 .new-task-past {
   color: var(--fg-muted);
 }
+
+/* -- Delete ------------------------------------------------------------------
+   The footer's destructive action, and the only way in this app to STOP a
+   repeating task. It wears the shared `.btn .btn-danger-text` vocabulary
+   (buttons-modal.css), which already gives it --error in both themes, the
+   shared :focus-visible ring, and the margin-right:auto that anchors it to the
+   far left of the footer, away from Save. What is added here is only what that
+   vocabulary does not know about: the glyph, the armed state, and one layout
+   collision.
+
+   This file is imported AFTER buttons-modal.css in the shell.css barrel, so
+   these rules win on order without an !important. The modal portals to <body>,
+   so neither `.deploy-body button` nor `.prefs-section button` can reach a
+   footer control — but every property below is declared rather than inherited
+   anyway, because `.btn`'s own grouped rules can and do. */
+.new-task-delete {
+  /* Tighter than .btn's 7px: the trash glyph reads as part of the label, not
+     as a separate affordance. */
+  gap: 6px;
+  /* Pinned properties, never `transition: all` — arming changes exactly these
+     three, and the button must not animate its width or position. */
+  transition: background-color 0.12s ease-out, border-color 0.12s ease-out,
+    color 0.12s ease-out;
+}
+
+/* The glyph takes the button's own --error rather than any ambient icon
+   colour, in both themes and in both press states. */
+.new-task-delete svg {
+  color: inherit;
+  flex: none;
+}
+
+/* Armed: the NEXT press deletes, so the control stops being a quiet text link
+   and takes the filled destructive treatment. The state is read as much as the
+   new label is — same button, visibly hotter — and the hover rule is repeated
+   so moving the mouse cannot cool it back down. */
+.new-task-delete.is-armed,
+.new-task-delete.is-armed:hover:not(:disabled) {
+  background: rgba(var(--error-rgb), 0.16);
+  border-color: var(--error);
+  color: var(--error);
+  font-weight: 600;
+}
+
+/* The one collision, and it has two halves. `.modal-dirty-hint` ("Unsaved
+   changes — close again to discard") carries margin-right:auto too, and two
+   auto margins in one flex row SPLIT the free space between them — which would
+   park Delete in the middle of the footer. And the three of them together are
+   wider than this 460px card, so the wrapping footer would drop Save alone onto
+   a second row while the hint and Delete kept the first.
+
+   So when both are up the hint takes a row of its OWN, and the action row below
+   it stays exactly what it always is: Delete far left, Save far right. A
+   deliberate two-row footer rather than an accidental one. Only while the hint
+   is present — the ordinary footer is one row. */
+.modal-footer:has(.new-task-delete) .modal-dirty-hint {
+  flex: 0 0 100%;
+  margin-right: 0;
+}

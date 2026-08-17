@@ -2117,16 +2117,29 @@ export function getTasksScheduled(
 // -- The queue (GET /api/schedule/queue) --------------------------------------
 // Nothing fires while the app is not running, and catch-up for a one-off is now
 // unbounded — so opening the app after a week away can find real work waiting.
-// `queued` is what is past due and not yet claimed, in the order it will run;
-// `running` is what is mid-flight. The Calendar draws both in its Queued strip,
-// which doubles as the cancel surface.
+// Three lists, narrowing: `queued` is past due and not yet claimed, in the order
+// it will run; `running` is claimed and spawning; `live` is a turn actually in
+// flight — sent, with no verdict yet.
+//
+// `live` is the one a person needs most and the one nothing used to report. A
+// run parked on a permission prompt looks identical to a slow one from outside,
+// so until the dock could name it there was no way to find the prompt and
+// answer it — the run just sat there.
+//
+// Nothing scheduled for LATER appears in any of them. "Queued" means about to
+// run; a list that also held next Tuesday would be answering a different
+// question, and the calendar already answers that one. The dock, bottom right,
+// is where all three are drawn and cancelled.
 export function getScheduleQueue(): Promise<{
   queued: ScheduledMessage[];
   running: ScheduledMessage[];
+  live?: ScheduledMessage[];
 }> {
-  return getJson<{ queued: ScheduledMessage[]; running: ScheduledMessage[] }>(
-    "/api/schedule/queue",
-  );
+  return getJson<{
+    queued: ScheduledMessage[];
+    running: ScheduledMessage[];
+    live?: ScheduledMessage[];
+  }>("/api/schedule/queue");
 }
 
 // Cancelling races the claim, and the server resolves it honestly: an entry
@@ -2670,6 +2683,31 @@ export function restoreScheduledMessage(id: string): Promise<{ entry: ScheduledM
 export function runScheduledNow(entryId: string): Promise<{ ok: boolean; entry: ScheduledMessage }> {
   return postJson<{ ok: boolean; entry: ScheduledMessage }>(
     "/api/schedule/run-now",
+    { entry_id: entryId },
+  );
+}
+
+// Ask again — the other half of Re-run, for the case run-now cannot serve.
+//
+// A run that already went and broke leaves NO pending entry to claim, so
+// runScheduledNow has nothing to fire. This sends the same message as a NEW
+// one: an ordinary one-off due now, resuming the session the original actually
+// ran in, so the re-ask lands in the same thread. The original entry is left
+// exactly as it was — its state, its due time and its error all stand, because
+// that run really did happen and really did break.
+//
+// `entry` is the NEW message, not the original. `note` is a sentence to show
+// beside a SUCCESS: the message may be queued rather than away (its
+// conversation can be mid-turn), which is news but not a failure.
+//
+// Rejects with the server's own sentence: 404 for no such entry, 409 for one
+// that cannot be re-sent — still pending or sending (use run-now, or wait),
+// cancelled or missed (it never went, so there is nothing to send again).
+export function resendScheduledMessage(
+  entryId: string,
+): Promise<{ ok: boolean; entry: ScheduledMessage; note?: string }> {
+  return postJson<{ ok: boolean; entry: ScheduledMessage; note?: string }>(
+    "/api/schedule/resend",
     { entry_id: entryId },
   );
 }

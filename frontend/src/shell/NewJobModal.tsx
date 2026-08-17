@@ -15,6 +15,7 @@ import { Modal } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
   getConfig,
+  getTasks,
   listDir,
   scheduleMessage,
 } from "@platform/lib/api";
@@ -143,6 +144,19 @@ const ICON_CHECK = (
   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
        strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+
+// lucide "trash-2", at the footer buttons' glyph scale. Carries the destructive
+// reading before the label is read, and stays through both press states so the
+// button does not change shape under the cursor.
+const ICON_TRASH = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    <line x1="10" y1="11" x2="10" y2="17" />
+    <line x1="14" y1="11" x2="14" y2="17" />
   </svg>
 );
 
@@ -1039,6 +1053,132 @@ export function learnedSessionOf(entry?: ScheduledMessage | null): string {
   return entry.session_id;
 }
 
+// ---- Deleting a task -----------------------------------------------------
+// The one way to STOP a repeating task. Everything else on the page cancels an
+// OCCURRENCE — the list's per-message cancel and the calendar popover's row
+// cancel both mean "skip this run", deliberately, and a rule whose runs you
+// skip one at a time keeps minting more forever (Akshil, 2026-08-17). The
+// server has always been able to do it: `schedule.cancel` on a TEMPLATE id
+// cancels the template AND its pending occurrence, which is exactly "no further
+// runs". Nothing in the UI had ever called it with a template id.
+//
+// The modal is where it belongs because the modal is already the one place a
+// template is addressable: an occurrence's Edit resolves `template_id ||
+// entry_id` (Scheduled.editEntry), so opening "tomorrow's run" of a repeating
+// task opens the RULE. The button just had to exist.
+//
+// What is cancellable is decided here rather than at the press, so a control
+// that would 404 is never drawn: `sending` is deliberately not cancellable (the
+// helper is away and the turn may have started — schedule.cancel's docstring),
+// and a terminal entry (`sent`/`missed`/`error`/`cancelled`) has nothing left
+// to stop. Only `pending` and `recurring` can be withdrawn.
+export interface DeleteAction {
+  // The id to cancel — a template's id when this is a rule, which is what
+  // makes it stop the series rather than skip one run.
+  id: string;
+  // Whether cancelling ends a SERIES. Drives every sentence below, and the
+  // reading of a 404.
+  series: boolean;
+  label: string;
+  // The second press. It names the consequence rather than asking "are you
+  // sure?", because the consequence is the whole difference between the two
+  // cases and it is not undoable from this page.
+  confirm: string;
+  title: string;
+}
+
+export function deleteActionFor(entry?: ScheduledMessage | null): DeleteAction | null {
+  if (!entry) return null;
+  const series = entry.state === "recurring";
+  if (!series && entry.state !== "pending") return null;
+  return {
+    id: entry.id,
+    series,
+    // One label for both cases — the user is deleting the task either way, and
+    // a rule that called itself "Delete schedule" would read as a third noun
+    // the page never uses. The difference is spelled out on the second press.
+    label: "Delete task",
+    confirm: series
+      ? "Delete and stop all future runs?"
+      : "Delete and cancel this run?",
+    title: series
+      ? "Deletes this task and stops all future runs. Runs it has already made are kept."
+      : "Deletes this task. It will not run.",
+  };
+}
+
+// What a press of that button decides, as a value rather than as a branch
+// buried in a handler — so "the first press cannot reach the server" is a thing
+// that can be asserted. `arm` carries no id at all; only the second press
+// produces one.
+export type DeletePress = { do: "arm" } | { do: "delete"; id: string };
+
+export function deletePress(
+  action: DeleteAction | null,
+  armed: boolean,
+): DeletePress | null {
+  if (!action) return null;
+  if (!armed) return { do: "arm" };
+  return { do: "delete", id: action.id };
+}
+
+// What the error area says when the cancel does not land. A 404 is the honest
+// race, not a failure: the run fired, or someone cancelled it in another tab —
+// so it is translated instead of showing the server's id-bearing sentence,
+// which reads as a bug. Every other status keeps the server's own words: those
+// are written for a human (see the router's 400s).
+export function deleteFailureText(err: unknown, series: boolean): string {
+  const status = (err as { status?: number } | null)?.status;
+  if (status === 404) {
+    return series
+      ? "This task is already stopped — nothing is scheduled to run from it any more."
+      : "This task is already gone — it has run, or it was cancelled somewhere else.";
+  }
+  return (err as Error | null)?.message || "The task could not be deleted.";
+}
+
+// ---- The Title field's placeholder ---------------------------------------
+// Blank is the RIGHT value for Title on a task scheduled from a chat, and this
+// is why (Akshil, 2026-08-17). Title precedence is: the user's own title, then
+// Claude Code's `ai-title` for the session, then the first line of the message
+// (tasks.py `_title`). Claude Code re-emits `ai-title` every turn, so a task
+// that leaves Title blank keeps tracking what the conversation is actually
+// about. Writing the chat's current title into the input would FREEZE it — an
+// explicit title beats `ai-title` for ever — so the task would keep the name it
+// had at the moment it was scheduled while the conversation moved on, and it
+// would be invisible because the field would look like something the user
+// typed.
+//
+// So the name is previewed as a PLACEHOLDER instead: you can see what the task
+// will be called, leaving it alone keeps the name live, and typing makes it
+// explicit and frozen — which is exactly what typing should mean.
+export const TITLE_PLACEHOLDER = "Title — optional, filled in automatically";
+
+// Which title is worth previewing. Only a task's real NAME is: the session's
+// own `ai-title`, or a title the user has already given this thread. A
+// `message`-sourced title is just the first line of the conversation's first
+// prompt echoed back, which says nothing the generic placeholder doesn't
+// already say and reads like the wrong field.
+export function sessionTitleOf(
+  tasks: readonly { session_id: string; title: string; title_source: string }[],
+  sessionId: string,
+): string {
+  if (!sessionId) return "";
+  const task = tasks.find((t) => t.session_id === sessionId);
+  if (!task || task.title_source === "message") return "";
+  return task.title.trim();
+}
+
+// …and REPEAT takes the preview away, because a repeat takes the session away.
+// A repeating task always refuses the chat's session and opens its own thread
+// (buildSchedulePayload, and learnedSessionOf's note), so there is no
+// conversation whose name would carry over — previewing one would be a lie the
+// moment the checkbox is ticked.
+export function titlePlaceholderFor(sessionTitle: string, repeating: boolean): string {
+  if (repeating) return TITLE_PLACEHOLDER;
+  return sessionTitle.trim() || TITLE_PLACEHOLDER;
+}
+
 // What the Repeat checkbox does to the repeat state. Unticking CLEARS: the key
 // goes back to "none" AND the custom rule is dropped, so nothing stays armed
 // behind a dropdown that is no longer on screen — a hidden rule would still be
@@ -1563,6 +1703,86 @@ export default function NewJobModal({
   // disables the button outright and the error says what to do by hand.
   const [replaced, setReplaced] = useState(false);
 
+  // ---- The chat's name, previewed on Title -------------------------------
+  // Sourced from /api/tasks rather than from the deep link or a new endpoint:
+  // a chat session IS a task there (tasks.py `_collect`), so the row keyed on
+  // this session already carries the resolved title AND `title_source`, which
+  // is what says whether the name is worth previewing at all. The alternative
+  // — having the chat template put its title in the URL beside `message`,
+  // `target`, `session_id` and `back` — would hand us a string with no
+  // provenance, and one that is stale from the moment the link is built.
+  //
+  // Only on a NEW task from a chat: an Edit has its own stored title, and a
+  // form opened from anywhere else has no session to name.
+  const [sessionTitle, setSessionTitle] = useState("");
+  useEffect(() => {
+    if (editing || !chatSessionId) return;
+    let alive = true;
+    getTasks()
+      .then(({ tasks }) => {
+        if (alive) setSessionTitle(sessionTitleOf(tasks, chatSessionId));
+      })
+      // A failed lookup is not worth reporting: the generic placeholder is a
+      // complete answer, and half a preview would be worse than none.
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [editing, chatSessionId]);
+
+  // ---- Delete ------------------------------------------------------------
+  // Only when EDITING, and only for something the server will actually
+  // withdraw — see deleteActionFor. null means no button at all, which is the
+  // refusal: a control that 404s on press is worse than no control.
+  const del = deleteActionFor(editing);
+  // The same two-press idiom the ✕ and Back to chat use, for the same reason
+  // and with the same 2s window — except the second label names the
+  // CONSEQUENCE rather than asking, because stopping a series is not undoable
+  // from this page and "Are you sure?" is not what the user needs to read.
+  const [delConfirm, setDelConfirm] = useState(false);
+  const delTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (delTimer.current !== null) window.clearTimeout(delTimer.current);
+    },
+    [],
+  );
+  const remove = async () => {
+    const press = deletePress(del, delConfirm);
+    if (press === null || del === null) return;
+    if (press.do === "arm") {
+      setDelConfirm(true);
+      if (delTimer.current !== null) window.clearTimeout(delTimer.current);
+      delTimer.current = window.setTimeout(() => setDelConfirm(false), 2000);
+      return;
+    }
+    if (delTimer.current !== null) window.clearTimeout(delTimer.current);
+    setDelConfirm(false);
+    setBusy(true);
+    setError(null);
+    try {
+      // A TEMPLATE id here is the whole point: the server cancels the rule AND
+      // its materialized next run, which is what "stop this recurring job"
+      // means. An occurrence id would only skip one run — which the list and
+      // the calendar popover already offer, and which is the opposite thing.
+      await cancelScheduledMessage(press.id);
+      // `onCreated` is the page's "something changed, re-read" callback
+      // (Scheduled passes `reload`), and a delete is exactly that. A separate
+      // `onDeleted` prop would read better in isolation but would need the
+      // parent to pass it, and the reload it would trigger is the identical
+      // one — so this reuses the callback rather than growing the contract.
+      onCreated();
+      onClose();
+    } catch (e) {
+      // A 404 is not a failure: the entry really is gone, so the page is
+      // re-read (its row must not linger) and the modal stays open only long
+      // enough to say why nothing happened.
+      if ((e as { status?: number }).status === 404) onCreated();
+      setBusy(false);
+      setError(deleteFailureText(e, del.series));
+    }
+  };
+
   const submit = async () => {
     setBusy(true);
     setError(null);
@@ -1653,6 +1873,25 @@ export default function NewJobModal({
       dirty={dirty}
       footer={
         <>
+          {/* Destructive, so it sits at the far left of the footer, away from
+              Save — `.btn-danger-text` carries the margin-right:auto that
+              anchors it there. Present only on an Edit, and only when the
+              entry is actually withdrawable. `type="button"`, like every
+              control in this footer: the form has no submit, so Enter never
+              reaches it. */}
+          {del && (
+            <button
+              type="button"
+              className={"btn btn-danger-text new-task-delete"
+                + (delConfirm ? " is-armed" : "")}
+              title={del.title}
+              disabled={busy}
+              onClick={remove}
+            >
+              {ICON_TRASH}
+              {delConfirm ? del.confirm : del.label}
+            </button>
+          )}
           {/* The way back completes the chat's round trip: chat → schedule →
               adjust the draft → schedule again. Only shown when a chat sent
               us here — from anywhere else there is no "back". */}
@@ -1695,14 +1934,17 @@ export default function NewJobModal({
             one-line title into the transcript and the server prefers that,
             falling back to the first line of the message. The placeholder says
             so, because a blank field with a "Title" label reads as something
-            you owe the form. */}
+            you owe the form — and when this form was opened from a chat, it
+            says it by showing that conversation's CURRENT name (see
+            titlePlaceholderFor: a preview, deliberately not a value, because a
+            value would freeze the name). */}
         <div className="schedule-form-line">
           {ICON_TITLE}
           <input
             type="text"
             className="field-control new-task-title"
             aria-label="Title"
-            placeholder="Title — optional, filled in automatically"
+            placeholder={titlePlaceholderFor(sessionTitle, repeatOn)}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />

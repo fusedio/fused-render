@@ -608,9 +608,17 @@
   box-shadow: none;
 }
 
-/* A day made only of PROJECTED occurrences — server-side cron math, not
-   messages yet. Outlined rather than filled: a forecast, not a commitment,
-   which is how Google draws future recurrences too. */
+/* A day made only of PROJECTED occurrences — recurrence arithmetic, with no
+   message written down anywhere behind it. Outlined rather than filled, which is
+   how Google draws a future recurrence too.
+
+   It runs BOTH WAYS since 2026-08-17. Ahead of now the outline reads as a
+   forecast rather than a commitment. BEHIND now it reads as a slot the rule
+   covered and nothing ever ran: a repeat anchored last Saturday shows its whole
+   shape, and only the most recent of those slots is a real run (catch-up
+   materializes exactly one). Those past ones also carry --missed's grey and
+   .is-past's fade, so a hollow grey chip behind the now-line is "this went by,
+   nothing ran" — never mistakable for the filled chip of a run that did. */
 .schedule-cal .schedule-cal-chip.is-projected {
   background: transparent;
   border-top: 1px dashed color-mix(in srgb, var(--chip, var(--accent)) 60%, var(--border));
@@ -2463,75 +2471,6 @@ input.schedule-when-field {
   color: var(--accent-soft);
 }
 
-/* -- Active-filter chips (flow FilterBar) ------------------------------------- */
-.schedule-tv-chips {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.schedule-tv-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 3px 2px 9px;
-  font-size: 11px;
-  color: var(--fg);
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-}
-
-.schedule-tv-chip-key {
-  color: var(--fg-muted);
-}
-
-.schedule-tv-chip-x,
-.prefs-section .schedule-tv-chip-x {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  align-self: center;
-  color: var(--fg-muted);
-  background: transparent;
-  border: 0;
-  border-radius: 999px;
-  cursor: pointer;
-  transition: background-color 0.08s ease, color 0.08s ease;
-}
-
-.schedule-tv-chip-x:hover:not(:disabled),
-.prefs-section .schedule-tv-chip-x:hover:not(:disabled) {
-  background: var(--row-bg-hover);
-  color: var(--fg);
-  border-color: transparent;
-}
-
-.schedule-tv-clear,
-.prefs-section .schedule-tv-clear {
-  padding: 2px 6px;
-  font: inherit;
-  font-size: 11px;
-  color: var(--fg-muted);
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-  align-self: center;
-  transition: color 0.08s ease, background-color 0.08s ease;
-}
-
-.schedule-tv-clear:hover:not(:disabled),
-.prefs-section .schedule-tv-clear:hover:not(:disabled) {
-  color: var(--fg);
-  background: var(--row-bg-hover);
-  border-color: transparent;
-}
-
 /* The sessions feed failing is a missing HALF, not a broken page. */
 .schedule-tv-note,
 .schedule-page .prefs-section > p.schedule-tv-note {
@@ -2959,8 +2898,6 @@ input.schedule-when-field {
 .schedule-tv-more:focus-visible,
 .schedule-tv-filter-btn:focus-visible,
 .schedule-tv-pop-item:focus-visible,
-.schedule-tv-chip-x:focus-visible,
-.schedule-tv-clear:focus-visible,
 .prefs-section .schedule-tv-caret:focus-visible,
 .prefs-section .schedule-tv-act:focus-visible,
 .prefs-section .schedule-tv-card:focus-visible,
@@ -2968,9 +2905,7 @@ input.schedule-when-field {
 .prefs-section .schedule-tv-rail:focus-visible,
 .prefs-section .schedule-tv-more:focus-visible,
 .prefs-section .schedule-tv-filter-btn:focus-visible,
-.prefs-section .schedule-tv-pop-item:focus-visible,
-.prefs-section .schedule-tv-chip-x:focus-visible,
-.prefs-section .schedule-tv-clear:focus-visible {
+.prefs-section .schedule-tv-pop-item:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }

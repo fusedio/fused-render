@@ -318,6 +318,45 @@ export function taskUnread(
   return Math.max(0, task.unread - cleared);
 }
 
+/**
+ * What the LEADING slot of a TASK row draws — the counterpart of unreadMarker,
+ * in the same column.
+ *
+ * The dot moved to the head of every MESSAGE row last round and the task's own
+ * unread did not move with it: it stayed a pill at the far right of the row,
+ * beside the folder chip, while the dots of its own thread led theirs. One
+ * marker in two places, and a rail that started halfway down the task (Akshil,
+ * 2026-08-17: "for the tasks you didn't bring this on the left side, only for
+ * the messages you brought. This looks odd").
+ *
+ * So it leads too. A count cannot be a bare dot, so the DOT CARRIES THE NUMBER
+ * — same hue, filled, grown from a circle into a short pill as the digits need
+ * it, and centred on the very column the message dots sit in, so the rail is
+ * straight whatever it says. Past the cap it prints "99+": the pill is a
+ * marker, not a readout, and a three-digit number in a 16px slot is neither.
+ *
+ * `label` is the accessible name and the tooltip, and it always carries the
+ * TRUE count — the cap is a drawing decision, not a rounding of the fact.
+ */
+export const UNREAD_COUNT_CAP = 99;
+
+export interface UnreadCount {
+  /** What the pill prints. */
+  text: string;
+  /** The accessible name / tooltip: the real number, uncapped. */
+  label: string;
+}
+
+/** The task row's leading count, or null when there is nothing unread — in
+ * which case the slot is still drawn, empty, exactly as a read message's is. */
+export function unreadCount(count: number): UnreadCount | null {
+  if (count <= 0) return null;
+  return {
+    text: count > UNREAD_COUNT_CAP ? `${UNREAD_COUNT_CAP}+` : String(count),
+    label: `${count} unread`,
+  };
+}
+
 // ---- the accordion -----------------------------------------------------------
 
 export interface ThreadView {
@@ -540,6 +579,170 @@ export function runNowTarget(task: Task): TaskMessage | null {
 /** Whether this task has anything to run early at all. */
 export function canRunNow(task: Task): boolean {
   return runNowTarget(task) !== null;
+}
+
+/**
+ * Whether the task READS as failed. Two things say so and the row shows the
+ * same word for both — the `failed` lane, and the flag that repaints a Done
+ * task's ring red (StatusIcon) — so both take the same verb on the button.
+ */
+export function isFailedTask(task: Task): boolean {
+  return taskColumn(task) === "failed" || task.failed;
+}
+
+/**
+ * The same move the drag makes, reachable without dragging (Akshil,
+ * 2026-08-17: "for failed tasks do we want a rerun button... same for the
+ * upcoming tasks. Do you think we should add a trigger now button... And if
+ * that is the case we'll just update the run at instead of updating the at the
+ * actual time it was scheduled").
+ *
+ * That last clause is confirmation, not a change: run-now moves `ran_at` and
+ * never touches `due`, which is exactly what the drag path already does and
+ * what ranNote above prints. NOTHING about the times moves here.
+ *
+ * WHICH message fires is not re-decided: runNowTarget is asked, the same
+ * function dropAction asks, so the button and the drag can never pick
+ * differently. Only the WORD differs — starting something early and restarting
+ * something that broke are not the same sentence to a person, even though they
+ * are one call to the server.
+ *
+ * Availability is simply "is there a pending message to claim", not the drag's
+ * lane legality: dropLanes answers a question about DROP TARGETS (which lane
+ * may receive this card), and a button has no lane. A task with nothing
+ * pending — which is most failed tasks, since the run that broke has already
+ * been spent — gets null here. That gap is what taskRunIntent below closes,
+ * now that the server has a re-send verb; this function still answers only the
+ * run-now question, so the drag and the drop can keep asking it.
+ */
+export interface RunNowIntent {
+  /** What runScheduledNow is called with. */
+  entryId: string;
+  /** Which message that is — the same one the drag would have fired. */
+  messageId: string;
+  /** Whether this reads as a restart rather than an early start. */
+  rerun: boolean;
+  /** The button's accessible name, and the word it says. */
+  label: string;
+  /** The tooltip: the consequence, including the half a person would fear. */
+  title: string;
+}
+
+export function runNowIntent(task: Task): RunNowIntent | null {
+  const m = runNowTarget(task);
+  if (!m) return null;
+  const rerun = isFailedTask(task);
+  return {
+    entryId: m.entry_id,
+    messageId: m.message_id,
+    rerun,
+    label: rerun ? "Re-run" : "Run now",
+    title: rerun
+      ? "Re-run now — the scheduled time stays put"
+      : "Run now — the scheduled time stays put",
+  };
+}
+
+// ---- one button, two calls ---------------------------------------------------
+// Re-run on a failed task used to be absent exactly when it was wanted. The
+// common failure spends its message — the run went out and broke — so there was
+// no PENDING entry left for run-now to claim, and the button that would have
+// said "Re-run" was simply not drawn. The server now has the other verb
+// (`POST /api/schedule/resend`, which sends the message AGAIN as a new one in
+// the same thread), and this is where the choice between the two is made.
+//
+// It is a pure function and it lives beside runNowIntent deliberately: the
+// component holds no rule about which call to make, and the run-now half is
+// still runNowIntent — the same function dropAction asks — so the button and
+// the drag cannot pick different messages.
+//
+// THE DRAG IS UNCHANGED. Dragging Upcoming → In Progress is still run-now and
+// nothing else: a drop on a lane is a statement about where the card belongs,
+// and turning "put this back in progress" into "send the whole message again"
+// is not something a gesture can consent to. Re-sending is a button press with
+// a word on it.
+
+export type TaskRunKind = "run-now" | "resend";
+
+export interface TaskRunIntent {
+  /** Which call: runScheduledNow or resendScheduledMessage. */
+  kind: TaskRunKind;
+  /** The schedule entry id that call is given. For "resend" it is the entry
+   * that ALREADY RAN — the server reads it, copies it, and leaves it alone. */
+  entryId: string;
+  /** Which message that is, for the caller that wants to say so. */
+  messageId: string;
+  /** Whether this reads as a restart rather than an early start. */
+  rerun: boolean;
+  /** The button's accessible name, and the word it says. */
+  label: string;
+  /** The tooltip: the consequence, including the half a person would fear. */
+  title: string;
+}
+
+/**
+ * Which message a re-send would copy: the newest one that WENT AND ENDED.
+ *
+ * `sent` and `error` are the two the server accepts (schedule.RESENDABLE), and
+ * for the reason it gives — a message that never went has nothing to send
+ * again. `pending` and `sending` are excluded here as well, but they never
+ * reach this function: a task holding one takes the run-now branch above.
+ *
+ * A chat message carries no `entry_id` and is skipped, which is correct rather
+ * than incidental: it was delivered the moment it was typed and the schedule
+ * has no record of it to copy.
+ *
+ * Newest first, because the server's list is: re-asking means asking for the
+ * LAST thing that was asked for, not the first.
+ */
+export function resendTarget(task: Task): TaskMessage | null {
+  for (const m of task.messages ?? []) {
+    if (!m.entry_id) continue;
+    if (m.state === "sent" || m.state === "error") return m;
+  }
+  return null;
+}
+
+/**
+ * What the task row's run button does — the whole decision, in one place.
+ *
+ * Order matters and says what the two verbs mean. A pending message is a
+ * message the user already asked for and has not had yet, so bringing it
+ * forward is the smaller, truer action and wins whenever it is available. Only
+ * with nothing pending does a FAILED task fall through to re-sending, which
+ * creates work that was not previously scheduled.
+ *
+ * Re-send is offered on a failed task and nowhere else. A Done task's run
+ * finished; offering to silently re-run it would make a thread grow every time
+ * someone leaned on a button, and "run this again" on work that succeeded is an
+ * ask better made in the chat, where the user can say what they want differently
+ * this time.
+ */
+export function taskRunIntent(task: Task): TaskRunIntent | null {
+  const now = runNowIntent(task);
+  if (now)
+    return {
+      kind: "run-now",
+      entryId: now.entryId,
+      messageId: now.messageId,
+      rerun: now.rerun,
+      label: now.label,
+      title: now.title,
+    };
+  if (!isFailedTask(task)) return null;
+  const m = resendTarget(task);
+  if (!m) return null;
+  return {
+    kind: "resend",
+    entryId: m.entry_id,
+    messageId: m.message_id,
+    rerun: true,
+    label: "Re-run",
+    // The tooltip carries the one thing a person needs to know before pressing
+    // it: this does not rewrite the run that failed, it asks again in the same
+    // conversation.
+    title: "Re-run — sends this message again, as a new one in the same thread",
+  };
 }
 
 /** Which lanes this card may be dropped on. Empty ⇒ do not let it lift. */
