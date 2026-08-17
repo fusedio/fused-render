@@ -29,7 +29,7 @@ import {
   trashEntry,
   buildOpenWithItems,
   friendlyFsError,
-  claudeDeepLink,
+  claudeTerminalCommand,
 } from "@apps/explorer/lib/fs-actions";
 import { fileBarMenu } from "@apps/explorer/lib/bar-menus";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
@@ -341,10 +341,12 @@ function usePreviewFileMenu(
     setMenu({ x: e.clientX, y: e.clientY, items: buildMenu() });
   };
 
-  // Open Claude Code on the file (a file cwd's into its parent and pre-fills an
-  // @-mention prompt — the same deep link the listing's row menu builds).
+  // Copy the command that starts Claude Code on this file's folder — the same
+  // clipboard hand-off the listing's row menu makes, not a launch.
   const doOpenInClaude = () => {
-    window.location.href = claudeDeepLink(fsPath, stat.is_dir, stat.name, parent);
+    copyToClipboard(claudeTerminalCommand(fsPath, stat.is_dir, parent)).then((ok) => {
+      if (ok) pushToast({ msg: "Command copied — paste it in your terminal", tone: "info" });
+    });
   };
 
   // The CRUMB BAR's menu for this file — deliberately not `buildMenu` above (see

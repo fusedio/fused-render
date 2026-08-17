@@ -11,7 +11,9 @@ import type { MenuItem } from "@platform/ui/ContextMenu";
 // stub has to precede the (therefore dynamic) import — same trade as
 // fs-clipboard.test.ts: the suite carries no DOM and this is cheaper than one.
 (globalThis as { location?: unknown }).location = new URL("http://x/");
-const { archiveName, buildCompressItems, freeArchivePath } = await import("@apps/explorer/lib/fs-actions");
+const { archiveName, buildCompressItems, claudeTerminalCommand, freeArchivePath } = await import(
+  "@apps/explorer/lib/fs-actions"
+);
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -112,4 +114,19 @@ test("no submenu entry carries a nested submenu (only one level is rendered)", (
   for (const it of buildCompressItems(true, () => {})) {
     if (it !== "separator") expect((it as MenuItem).submenu).toBeUndefined();
   }
+});
+
+// The Claude Code command goes to the CLIPBOARD, so it has to survive a paste
+// into a shell verbatim — a folder name with a space or a quote in it is the
+// whole reason this is not string concatenation.
+test("claudeTerminalCommand cd's a dir into itself and a file into its parent", () => {
+  expect(claudeTerminalCommand("/Users/a/proj", true, "/Users/a")).toBe("cd '/Users/a/proj' && claude");
+  expect(claudeTerminalCommand("/Users/a/proj/index.html", false, "/Users/a/proj")).toBe(
+    "cd '/Users/a/proj' && claude",
+  );
+});
+
+test("claudeTerminalCommand quotes paths with spaces and single quotes", () => {
+  expect(claudeTerminalCommand("/Users/a/my proj", true, "/Users/a")).toBe("cd '/Users/a/my proj' && claude");
+  expect(claudeTerminalCommand("/Users/a/it's", true, "/Users/a")).toBe(`cd '/Users/a/it'\\''s' && claude`);
 });

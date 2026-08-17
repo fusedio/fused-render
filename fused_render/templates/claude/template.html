@@ -1070,7 +1070,39 @@
   .working .star { color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
   @media (prefers-reduced-motion: reduce) { .working .star { animation: none; } }
-  .working .verb { color: var(--fg); }
+  /* The verb SHIMMERS for as long as the turn is live. The elapsed counter next
+     to it is the other liveness signal, and it is a weak one: a second that
+     ticks over once a second reads as static in peripheral vision, and the
+     token count beside it only moves when the model emits usage — a long tool
+     call leaves both sitting still while the run is perfectly healthy. A sweep
+     across the label is motion the eye catches without being read.
+     Gradient-over-text, so it costs no layout and no extra element. */
+  .working .verb {
+    color: var(--fg);
+    background: linear-gradient(90deg, var(--fg) 35%, var(--faint) 50%, var(--fg) 65%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: skel-shimmer 2.2s linear infinite;
+  }
+  /* Awaiting approval is the one phase where nothing is running: the turn is
+     blocked on the user, and a shimmer there would promise progress that only
+     their click can produce. Stopping keeps it — the kill is still in flight. */
+  .working.awaiting .verb {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: var(--fg);
+  }
+  /* Reduced motion drops the sweep, and with it the transparent fill the
+     gradient stands in for — otherwise the label would be invisible. */
+  @media (prefers-reduced-motion: reduce) {
+    .working .verb {
+      animation: none;
+      background: none;
+      -webkit-text-fill-color: var(--fg);
+    }
+  }
   .working .meta { color: var(--faint); font-size: 12px; }
   /* The stop control rides ON the working line, which exists for exactly as long
      as a run is interruptible — so the button cannot outlive what it cancels. */
@@ -5243,7 +5275,8 @@ function annSetMode(on) {
   if (!annCapable()) { annOn = false; return; }
   annOn = on;
   // STILL THE ONE WRITER — but it does not write when the URL already MEANS
-  // this. `annmode` is effectively-on: absent, or anything that is not "0".
+  // this. `annmode` is effectively-off: only an explicit "1" means armed, and
+  // absent (or anything else) means disarmed.
   //
   // The boot default calls through here with `on` derived from that very
   // reading, so on a freshly loaded entry the write was a semantic no-op that
@@ -5253,10 +5286,10 @@ function annSetMode(on) {
   // screen (`?_mode=claude`) took TWO presses of Back to undo — one for the
   // navigation, one for this normalisation landing `annmode=1` on top of it.
   //
-  // Writing "0" over an ABSENT param is not a no-op and still writes: a narrow
-  // pane really does boot disarmed (see applyNarrowView), and that push is the
-  // state change it looks like. Only the normalisation is silenced.
-  if ((fused.params.get("annmode") !== "0") !== annOn) {
+  // Writing "1" over an ABSENT param is not a no-op and still writes: arming is
+  // a state change the user asked for, and Back should undo it. Only the
+  // normalisation is silenced.
+  if ((fused.params.get("annmode") === "1") !== annOn) {
     fused.params.set("annmode", annOn ? "1" : "0");
   }
   annBtn.classList.toggle("on", annOn);
@@ -5282,9 +5315,10 @@ function annSetMode(on) {
 }
 
 annBtn.addEventListener("click", () => annSetMode(!annOn));
-// Annotate mode is ON by default: an unset param means armed, and only an
-// explicit "0" (the user slid it off, or pressed Escape) starts it disarmed.
-annSetMode(fused.params.get("annmode") !== "0");
+// Annotate mode is OFF by default: reading the pane is the common case and an
+// armed comment layer swallows the clicks that reading needs, so only an
+// explicit `annmode=1` (the user slid it on) starts it armed.
+annSetMode(fused.params.get("annmode") === "1");
 
 // ── hosted only: keeping up with a target this document cannot hear ────────
 // The split layout is told about its pane by the pane itself — one iframe, one
@@ -5341,7 +5375,7 @@ function annPollTarget() {
   // itself may have run before the host stamped anything — the switch would then
   // read "Comment" while the URL says the mode is on. Through annSetMode, the
   // one door, so the label, aria-pressed, the param and the pins agree.
-  if (has) annSetMode(fused.params.get("annmode") !== "0");
+  if (has) annSetMode(fused.params.get("annmode") === "1");
   // And a target that has GONE disarms without writing the param: annSetMode
   // refuses (annCapable is false now) after setting annOn, which is exactly the
   // "ignored, not rewritten" posture a stale `annmode` gets everywhere else. The
@@ -5633,10 +5667,11 @@ function applyNarrowView() {
   //     right thing to do (the frame is visible);
   //   * `NARROW_MQ.matches` — above the breakpoint both halves are on screen,
   //     nothing is hidden behind anything, and armed is correct;
-  //   * `narrowShown !== null` — BOOT, and only boot. Disarming there would
-  //     write annmode=0 the first time this view opened in a narrow pane, and
-  //     annotate mode is ON by default — that default belongs to the wide layout
-  //     too, and the param outlives the narrow host.
+  //   * `narrowShown !== null` — BOOT, and only boot. Boot has nothing to undo
+  //     now that annotate mode is OFF by default (annSetMode(false) over an
+  //     absent param writes nothing), and a URL that arrived carrying an
+  //     explicit `annmode=1` should keep it: the param outlives the narrow host
+  //     and belongs to the wide layout too.
   //
   // `narrowShown !== null` is deliberately NOT `narrowShown === true` — that
   // narrower test describes a Preview→Chat FLIP and nothing else, and a media
@@ -7952,8 +7987,47 @@ function showSession() {
 }
 showSession();
 
+// ── following the tail ──────────────────────────────────────────────────────
+// Whether the transcript follows new output is READER STATE, and it now lives in
+// one flag. It used to be re-derived from geometry (`nearBottom()`) at every
+// write site, including inside the typer's rAF — which made the stream fight the
+// reader: a scroll up of less than 60px was answered, in that same frame, by a
+// write of scrollTop back to the bottom, and a programmatic scrollTop write also
+// kills the gesture's inertia. Escaping meant clearing 60px inside one frame, so
+// whether "scroll up" worked at all came down to how hard the reader flicked —
+// the reported symptom, and the reason it was never reproducible on demand.
+//
+// Geometry was wrong in the other direction too: anything that SHRANK the
+// viewport mid-run (the artifact strip appearing, the composer growing as the
+// reader types) widens the gap past 60 on its own, so the follow stopped for
+// good with the reader parked short of the bottom and new text arriving
+// off-screen. A flag survives a resize; a threshold does not.
+let followTail = true;
 const scrollBottom = () => { logwrap.scrollTop = logwrap.scrollHeight; };
 const nearBottom = () => logwrap.scrollHeight - logwrap.scrollTop - logwrap.clientHeight < 60;
+// What STREAMING output uses. Everything the reader did not ask for goes through
+// here, so it can never yank someone who has scrolled away to read. The reader's
+// own actions (sending a message, opening a chat) still call scrollBottom.
+const followBottom = () => { if (followTail) scrollBottom(); };
+// A wheel/trackpad flick upward is an unambiguous "let me read", so it drops the
+// follow with NO distance threshold — that is what makes it impossible for the
+// next frame's write to out-race the gesture.
+logwrap.addEventListener("wheel", (e) => { if (e.deltaY < 0) followTail = false; }, { passive: true });
+logwrap.addEventListener("touchmove", () => { followTail = nearBottom(); }, { passive: true });
+// Everything else that moves the scrollport — scrollbar drag, keyboard, a
+// scrollIntoView, our own writes — arrives as a scroll event. `lastTop`/
+// `lastHeight` are here to tell a reader moving UP apart from the browser
+// CLAMPING scrollTop because content got shorter (the typer clamps `shown` back
+// when authoritative text is shorter, chips resolve to smaller images, the
+// working line is removed at run end). A clamp is not a gesture, and reading it
+// as one was the other way the follow died mid-turn.
+let lastTop = 0, lastHeight = 0;
+logwrap.addEventListener("scroll", () => {
+  const top = logwrap.scrollTop, h = logwrap.scrollHeight;
+  if (h >= lastHeight && top < lastTop - 1) followTail = false;
+  else if (nearBottom()) followTail = true;
+  lastTop = top; lastHeight = h;
+}, { passive: true });
 
 // Back to chats: the landing is both "start a new chat" and "open a past one".
 // Clear the session param so a reload lands on the landing page,
@@ -8093,6 +8167,10 @@ function addUser(text) {
   b.textContent = text;
   d.appendChild(b);
   log.appendChild(d);
+  // Sending is the reader asking for the tail again: it re-arms the follow that
+  // scrolling up turned off, so the answer to what they just asked streams in
+  // front of them without their having to chase it back down.
+  followTail = true;
   scrollBottom();
 }
 
@@ -8107,7 +8185,7 @@ function addAssistant(text) {
   body.textContent = text;
   d.append(dot, body);
   log.appendChild(d);
-  scrollBottom();
+  followBottom();
   return d;
 }
 
@@ -8155,7 +8233,7 @@ function addNote(text, working, glyph) {
   d.append(eye, body);
   if (working && working.el && working.el.isConnected) log.insertBefore(d, working.el);
   else log.appendChild(d);
-  scrollBottom();
+  followBottom();
 }
 
 // ── permission cards ──────────────────────────────────────────
@@ -8890,6 +8968,10 @@ function showPermissionCard(card, working) {
   if (!noPane && NARROW_MQ.matches && narrowShown) {
     fused.params.set("paneview", "chat");
   }
+  // One of the few places that still scrolls UNCONDITIONALLY, follow flag or
+  // not: the run is blocked on this card, so a reader who has scrolled away is
+  // waiting on something they cannot see. Every other mid-run write respects
+  // where they left the scrollport.
   scrollBottom();
 }
 
@@ -8926,16 +9008,15 @@ function parkResolvedCard(card) {
   if (!seg || !seg.isConnected || !el || !el.isConnected) return;
   if (el.parentNode === seg) return;   // already filed; do not drag it to the tail again
   // The move reflows everything between the card's old and new home, so read the
-  // viewport first. Sticking to the bottom is the log's own rule while a run
-  // streams (see the typer's nearBottom check); otherwise the most this may do
-  // is keep the card the user was just looking at on screen — scrolling a reader
-  // who is somewhere else entirely would be the move yanking the page.
-  const atBottom = nearBottom();
+  // viewport first. Following the tail is the log's own rule while a run streams
+  // (see followTail); otherwise the most this may do is keep the card the user
+  // was just looking at on screen — scrolling a reader who is somewhere else
+  // entirely would be the move yanking the page.
   const box = el.getBoundingClientRect();
   const port = logwrap.getBoundingClientRect();
   const wasVisible = box.bottom > port.top && box.top < port.bottom;
   seg.appendChild(el);
-  if (atBottom) scrollBottom();
+  if (followTail) scrollBottom();
   else if (wasVisible) el.scrollIntoView({ block: "nearest" });
 }
 
@@ -9003,6 +9084,10 @@ function addWorking() {
                           stats.phase === "awaiting" ? "Waiting for your approval" :
                           stats.phase === "composing" ? "Composing" :
                           stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
+    // The shimmer is the liveness signal (see .working .verb), so the one phase
+    // that is NOT progress has to say so: awaiting approval is blocked on the
+    // user, not on the model.
+    d.classList.toggle("awaiting", !stopping && stats.phase === "awaiting");
     const effort = curEffort();
     const parts = [secs + "s"];
     if (stats.tokens) parts.push("↓ " + stats.tokens + " tokens");
@@ -9010,16 +9095,26 @@ function addWorking() {
     meta.textContent = " (" + parts.join(" · ") + ")";
   };
   const timer = setInterval(draw, 1000);
+  // BOTH writers of this line are timers — this interval and the 400ms poll
+  // that calls setStats — and a browser clamps timers hard in a window that is
+  // hidden, minimised or fully occluded (Chromium down to about one wake a
+  // minute after a few minutes; WebKit App-Naps the whole page). So they stall
+  // together and the line keeps whatever second it last drew, which is exactly
+  // the "the clock stopped but the run didn't" report. One draw on the way back
+  // is the whole repair: `secs` is recomputed from `start` on every draw, never
+  // incremented, so it snaps to the truth instead of resuming from stale.
+  const onVis = () => { if (!document.hidden) draw(); };
+  document.addEventListener("visibilitychange", onVis);
   draw();
   log.appendChild(d);
-  scrollBottom();
+  followBottom();
   return {
     el: d,
     setStats(tokens, phase, retry) { stats = { tokens, phase, retry: retry || null }; draw(); },
     // Reversible: the kill can fail, and a run that is still streaming must not
     // be left wearing a "Stopping…" line it will never honour.
     setStopping(on) { stopping = on; stopBtn.disabled = on; draw(); },
-    stop: () => clearInterval(timer),
+    stop: () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVis); },
   };
 }
 
@@ -9155,6 +9250,7 @@ function makeTyper(bodyEl) {
   let shown = 0;
   let finished = false;
   let raf = null;
+  let painted = 0;   // last paint, ms — see the throttle in tick()
   const cur = document.createElement("span");
   cur.className = "cursor";
   cur.textContent = "▋";
@@ -9171,11 +9267,24 @@ function makeTyper(bodyEl) {
     }
     const remaining = target.length - shown;
     if (remaining > 0) {
-      const atBottom = nearBottom();
       const step = Math.max(1, Math.ceil(remaining / 36));  // drain in ~36 frames
       shown = Math.min(target.length, shown + step);
-      bodyEl.innerHTML = renderMd(target.slice(0, shown));
-      if (atBottom) scrollBottom();
+      // renderMd re-parses the WHOLE reply so far — marked, then DOMPurify over
+      // the result — so painting every frame is O(n) per frame and O(n²) across
+      // a long reply. What starves is the main thread, and what shares it is
+      // everything else the reader can see: the 1s elapsed counter (which drops
+      // ticks rather than queueing them, so it visibly stalls and then jumps),
+      // and their own scrolling. Capping the paint at ~25fps is not perceptible
+      // for text arriving this way, and the frame that completes the drain
+      // always paints, so the settled reply is never a frame behind.
+      const now = Date.now();
+      if (now - painted >= 40 || shown === target.length) {
+        painted = now;
+        bodyEl.innerHTML = renderMd(target.slice(0, shown));
+        // followTail, not a geometry read: this runs every frame, and a
+        // threshold evaluated here is what used to cancel the reader's scroll.
+        followBottom();
+      }
     }
     if (shown < target.length) raf = requestAnimationFrame(tick);
     else if (finished) cur.remove();
@@ -10349,7 +10458,12 @@ async function pollLoop(run_id) {
     if (reply) reply.remove();
     addError(err.message);
   } finally {
-    if (w.el.isConnected) { w.stop(); w.el.remove(); }
+    // stop() unconditionally, remove() only if it is still in the log: the
+    // guard used to cover both, so a working line that had already been
+    // detached (the run-end branch above, a history wipe) left its 1s interval
+    // running forever, holding the whole closure — one leaked timer per turn.
+    w.stop();
+    if (w.el.isConnected) w.el.remove();
     // Nothing is interruptible any more. Cleared even when the loop threw: an
     // Escape landing after this must not cancel a finished run and then mislabel
     // the NEXT turn's ending as a stop.
@@ -10713,6 +10827,38 @@ setInterval(pollScheduledRuns, SCHEDULE_POLL_MS);
 // DELETING that turn's real reply, and hung the scheduled run's answer there. The
 // same coincidence hits the live path, which strips partial rows on a match — so
 // the flag has to kill matching for both, not just for `done`.
+// A chat can be OPENED while the turn it started is still streaming, and arrive
+// with no idea that it is: the run id lives on the URL (`run`), and the two ways
+// in that do not carry it are the session list (a click, not a navigation) and a
+// boot whose URL has only `session_id`. Both used to render the mid-flight
+// transcript — which legitimately ends at the user's own message, because the
+// reply has not been written yet — and stop there, with no working line and no
+// output, while the detached claude process kept streaming into a run dir
+// nothing was watching. Reaching the same chat with Back worked only because
+// that history entry still had `run` on it.
+//
+// So ask the server, which is the only party that still knows: `live_run`
+// answers with the id of a run for this chat that is still alive. resumeRun has
+// always been able to adopt a run this frame did not start (the scheduled-send
+// path does exactly this); it just was never given the id.
+async function adoptLiveRun(session_id) {
+  if (sending || activeRun) return;   // this frame already owns a turn
+  let live = null;
+  try {
+    live = await fused.runPython(AGENT, {
+      action: "live_run", file: FILE, session_id: session_id || "",
+    }, { key: null });
+  } catch (e) {
+    return;   // a failed lookup leaves the transcript exactly as it rendered
+  }
+  const id = live && live.run_id;
+  if (!id) return;
+  // Same `replace` posture as every other `run` write: it is bookkeeping about
+  // the frame's state, not a step the reader took, so it must not cost an entry.
+  fused.params.set("run", id, { history: "replace" });
+  await resumeRun(id);
+}
+
 async function resumeRun(run_id, opts) {
   const neverShown = !!(opts && opts.neverShown);
   if (sending) return;
@@ -10997,6 +11143,11 @@ function addChatRow(list, s) {
     showSession();
     enterChat();
     await loadHistory(s.id);
+    // ...and if that chat's last turn is STILL RUNNING, pick it back up. Opening
+    // a row is one of the two arrivals that carry no `run` param (see
+    // adoptLiveRun), and without this the transcript stops at the user's
+    // message as though the turn had never been sent.
+    await adoptLiveRun(s.id);
   };
   row.onclick = open;
   row.onkeydown = (e) => { if (e.key === "Enter") open(); };
@@ -11823,6 +11974,11 @@ async function loadSnapshots() {
     // reaches that loop — and its pages are no less published for it.
     if (session_id) pollArtifacts();
     if (run_id) await resumeRun(run_id);
+    // No `run` on the URL is not proof that nothing is running: a reload after
+    // the param was dropped, a bookmark of the bare chat, or a mode switch all
+    // land here with a live turn still streaming server-side. Ask before
+    // settling for the transcript (see adoptLiveRun).
+    else if (session_id) await adoptLiveRun(session_id);
     // The run this queue was parked behind may have finished while no frame was
     // attached (`resumeRun` takes the done branch and never polls), and then
     // nothing else will ever call drainQueue for it. Firing here sends what the

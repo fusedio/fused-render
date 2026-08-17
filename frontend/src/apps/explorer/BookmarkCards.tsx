@@ -17,6 +17,8 @@ import { basename } from "@platform/lib/format";
 import { bestPeekFile, foldProbePick, isPreviewImage, peekRank } from "@apps/explorer/lib/folder-peek";
 import type { ProbePick } from "@apps/explorer/lib/folder-peek";
 import { iconForEntry } from "@platform/ui/FileIcons";
+import logoMarkDark from "@assets/logo-black-bg-transparent.png";
+import logoMarkLight from "@assets/logo-white-bg-transparent.png";
 import { armBookmark, isBookmarkMissing, splitBookmarkUrl } from "@platform/lib/bookmarks";
 import type { Bookmark } from "@platform/lib/bookmarks";
 import { bookmarkFsPath } from "@apps/explorer/sidebar/BookmarksSection";
@@ -252,7 +254,25 @@ function FolderStack({ path }: { path: string }) {
             </span>
           );
         })}
-      {shown.length === 0 && settled && <span className="fhb-note">Empty folder</span>}
+      {/* Nothing to stack: the mark stands in the card's place. Both theme
+          renders are in the DOM; CSS shows the one matching data-theme. */}
+      {shown.length === 0 && settled && (
+        <span className="fhb-note fhb-empty">
+          <img
+            className="fhb-empty-mark fhb-empty-mark-dark"
+            src={logoMarkDark}
+            alt=""
+            aria-hidden="true"
+          />
+          <img
+            className="fhb-empty-mark fhb-empty-mark-light"
+            src={logoMarkLight}
+            alt=""
+            aria-hidden="true"
+          />
+          Empty folder
+        </span>
+      )}
     </span>
   );
 }

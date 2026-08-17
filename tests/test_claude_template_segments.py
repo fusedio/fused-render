@@ -1157,6 +1157,9 @@ function flush() {
 }
 const nearBottom = () => false;
 const scrollBottom = () => {};
+// The typer follows the tail through followBottom() now (one reader-state
+// flag instead of a per-frame geometry read); stub it the same way.
+const followBottom = () => {};
 """, block, r"""
 const parent = document.createElement("span");
 const a = document.createElement("div");
@@ -1214,6 +1217,9 @@ function flush() {
 }
 const nearBottom = () => false;
 const scrollBottom = () => {};
+// The typer follows the tail through followBottom() now (one reader-state
+// flag instead of a per-frame geometry read); stub it the same way.
+const followBottom = () => {};
 """, block, r"""
 const parent = document.createElement("span");
 const body = document.createElement("div");
