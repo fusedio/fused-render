@@ -1147,28 +1147,54 @@ export function deleteFailureText(err: unknown, series: boolean): string {
   return (err as Error | null)?.message || "The task could not be deleted.";
 }
 
-// ---- The Title field's placeholder ---------------------------------------
-// Blank is the RIGHT value for Title on a task scheduled from a chat, and this
-// is why (Akshil, 2026-08-17). Title precedence is: the user's own title, then
-// Claude Code's `ai-title` for the session, then the first line of the message
-// (tasks.py `_title`). Claude Code re-emits `ai-title` every turn, so a task
-// that leaves Title blank keeps tracking what the conversation is actually
-// about. Writing the chat's current title into the input would FREEZE it — an
-// explicit title beats `ai-title` for ever — so the task would keep the name it
-// had at the moment it was scheduled while the conversation moved on, and it
-// would be invisible because the field would look like something the user
-// typed.
+// ---- Naming the task -----------------------------------------------------
+// Title is REQUIRED (Akshil, 2026-08-17), which is a change of kind and not
+// just of copy: a required field the form opens BLANK is a form that refuses to
+// save until the user does clerical work, so every path that can name the task
+// arrives with a name in the box. The field is then a name to accept or edit,
+// never a name to invent.
 //
-// So the name is previewed as a PLACEHOLDER instead: you can see what the task
-// will be called, leaving it alone keeps the name live, and typing makes it
-// explicit and frozen — which is exactly what typing should mean.
-export const TITLE_PLACEHOLDER = "Title — optional, filled in automatically";
+// The placeholder is left with only the job a placeholder can honestly do —
+// saying which field this is. It used to say "optional, filled in
+// automatically", and it used to double as a PREVIEW of the chat's own name;
+// both went with the requirement. A previewed name that Save then refuses to
+// accept is the worst of the three states.
+export const TITLE_PLACEHOLDER = "Title";
 
-// Which title is worth previewing. Only a task's real NAME is: the session's
-// own `ai-title`, or a title the user has already given this thread. A
-// `message`-sourced title is just the first line of the conversation's first
-// prompt echoed back, which says nothing the generic placeholder doesn't
-// already say and reads like the wrong field.
+// The precedence the server uses (tasks.py `_title`): the user's own title,
+// then Claude Code's `ai-title` for the session, then the first line of the
+// message. The form now mirrors it, because it has to show what the task would
+// have been called — this function is the last of the three steps, shared by
+// the two paths that need it (a chat handoff's draft, an Edit's stored prose).
+//
+// One line, and never the whole thing: an <input> would strip the newlines
+// anyway, and the first line is what `_title` itself takes.
+export function firstLine(text: string): string {
+  return text.trim().split("\n")[0]?.trim() ?? "";
+}
+
+// What Title OPENS on, synchronously — so the field is never blank on arrival
+// even on the first paint, before the tasks lookup below has answered.
+//
+// A stored title wins outright (it is the top of the precedence, and an edit
+// that quietly replaced it would be a data loss). Otherwise the first line of
+// the ask, which is `_title`'s own last resort: it is what the server would
+// have named this task, so it is the honest thing to show — and it means an
+// UNTITLED task can still be edited and saved, which a blank required field
+// would make impossible.
+export function initialTitleOf(
+  entry?: ScheduledMessage | null,
+  chatDraft?: string | null,
+): string {
+  return (entry?.title ?? "").trim() || firstLine(initialAskOf(entry, chatDraft));
+}
+
+// …and the middle step, which only /api/tasks can answer: the name the session
+// this form was opened from already carries. Only a real NAME counts — the
+// session's own `ai-title`, or a title the user has already given the thread. A
+// `message`-sourced title is the first line of the first prompt echoed back,
+// which is the same answer `initialTitleOf` already derived locally, so
+// replacing one with the other would be motion without meaning.
 export function sessionTitleOf(
   tasks: readonly { session_id: string; title: string; title_source: string }[],
   sessionId: string,
@@ -1177,16 +1203,6 @@ export function sessionTitleOf(
   const task = tasks.find((t) => t.session_id === sessionId);
   if (!task || task.title_source === "message") return "";
   return task.title.trim();
-}
-
-// …and REPEAT takes the preview away, because a repeat takes the session away.
-// A repeating task always refuses the chat's session and opens its own thread
-// (buildSchedulePayload, and learnedSessionOf's note), so there is no
-// conversation whose name would carry over — previewing one would be a lie the
-// moment the checkbox is ticked.
-export function titlePlaceholderFor(sessionTitle: string, repeating: boolean): string {
-  if (repeating) return TITLE_PLACEHOLDER;
-  return sessionTitle.trim() || TITLE_PLACEHOLDER;
 }
 
 // What the Repeat checkbox does to the repeat state. Unticking CLEARS: the key
@@ -1303,9 +1319,12 @@ export function buildSchedulePayload(form: {
   // only alternative. Never blank by the time it gets here: `saveEnabled`
   // refuses Save on an empty one.
   message: string;
-  // The FIRST field on the card, and still optional: empty is the ordinary case
-  // and the server fills a missing title in from the transcript's `ai-title`
-  // (design §4). Its position and its prominence changed; the contract did not.
+  // The FIRST field on the card, and REQUIRED as of 2026-08-17: `saveEnabled`
+  // refuses Save on a blank one, and every path that opens the form arrives with
+  // a name already in it (initialTitleOf). The wire contract is unchanged — the
+  // server still names an untitled task from the transcript's `ai-title` (design
+  // §4) — so the empty branch below stays as the honest fallback for a caller
+  // this form's gate never saw.
   title: string;
   when: string;
   // The structured rule the current choice means; null for a one-off and for
@@ -1373,8 +1392,9 @@ export function buildSchedulePayload(form: {
     ...(continued && carriesLearned ? { session_learned: true } : {}),
     // Empty means "the server decides" for the title and "there isn't one" for
     // the description — in both cases the key is better left off the wire than
-    // sent as "". A blank description only happens if `message` is blank, which
-    // the Save button already refuses.
+    // sent as "". Neither branch is reachable from the form any more: Save
+    // refuses a blank on either field. They stay because the wire contract still
+    // allows both to be absent, and a builder that sent "" would be lying.
     ...(trimmedTitle ? { title: trimmedTitle } : {}),
     ...(trimmedDescription ? { description: trimmedDescription } : {}),
     // Only ever sent on a repeating task: on a one-off there is no "each run"
@@ -1384,20 +1404,25 @@ export function buildSchedulePayload(form: {
 }
 
 // WHAT SAVE REFUSES. Pulled out of the component (it was an inline `ready`
-// expression) so the one rule this pass added is assertable: the description —
-// the big second field, the text Claude is actually sent — is REQUIRED, and
-// Title, first field though it now is, is not (design §4: left blank, the
-// server names the task from the transcript's `ai-title`, then the message's
-// first line).
+// expression) so the rules are assertable: BOTH prose fields are required — the
+// description because it is the text Claude is actually sent and a task with
+// nothing to do is not a task, and Title because a task nobody can name in a
+// list is not much better (Akshil, 2026-08-17).
 //
-// It is the SAME gate as before, deliberately: the form has always refused a
-// blank ask, and this change only moved that field down one row and gave it the
-// other field's clothes. `.trim()`, because a textarea full of newlines is not
-// an instruction. Save is `disabled` on a false — nothing here is a submit
-// handler that could be reached another way.
+// Title being required costs the user nothing, and that is the condition on
+// which it was made required: the form opens with a name in the field on every
+// path that has one to offer (initialTitleOf, and the /api/tasks lookup behind
+// it), so the gate only ever fires on a title the user deliberately cleared.
+//
+// Both use `.trim()`, because a textarea full of newlines is not an instruction
+// and a title of spaces is not a name. Save is `disabled` on a false — nothing
+// here is a submit handler that could be reached another way — and both fields
+// carry `aria-required` so the disabled button is not the only hint.
 export function saveEnabled(f: {
   // The ask / description. Required.
   message: string;
+  // The task's name. Required, and prefilled rather than asked for.
+  title: string;
   // Where it runs. Required, and the async existence check must not be failing.
   target: string;
   pathError: string | null;
@@ -1416,6 +1441,7 @@ export function saveEnabled(f: {
   return (
     !f.replaced &&
     f.message.trim() !== "" &&
+    f.title.trim() !== "" &&
     f.target.trim() !== "" &&
     f.pathError === null &&
     (f.repeatOn && f.repeat === "custom" ? f.customRule !== null : true) &&
@@ -1470,14 +1496,18 @@ export default function NewJobModal({
   // modal (QA 2026-08-14).
   const initialAsk = initialAskOf(editing, initialMessage);
   const [message, setMessage] = useState(initialAsk);
-  // The FIRST field on the card now (Akshil, 2026-08-17) but still optional and
-  // still normally left blank — Claude Code writes its own one-liner into the
-  // transcript and the server prefers that (design §4) — so the field asks for
-  // nothing and the placeholder says so. Being first changed where it sits and
-  // what it looks like, not what it means. Absent on the stored entry reads as
-  // empty, which is what an entry written before this field existed means, and
-  // is what makes the Edit round trip work either way.
-  const [title, setTitle] = useState(editing?.title ?? "");
+  // The FIRST field on the card, and REQUIRED (Akshil, 2026-08-17) — which is
+  // only reasonable because it opens PREFILLED. `initialTitleOf` is the
+  // synchronous part of the server's own precedence: a stored title, else the
+  // first line of the ask. The `ai-title` step needs a fetch and lands later
+  // (the /api/tasks effect below), which is exactly why the local derivation
+  // exists — a required field must not be blank on the first paint, and an entry
+  // written before this field existed still has to be editable.
+  //
+  // Held in a const for the same reason `initialAsk` is: the BASELINE (`initial`)
+  // has to be the identical value or an untouched Edit reads as dirty.
+  const derivedTitle = initialTitleOf(editing, initialMessage);
+  const [title, setTitle] = useState(derivedTitle);
   const [target, setTarget] = useState(editing?.target ?? initialTarget ?? "");
   // ONE date-time drives everything: a one-off runs at it, and every derived
   // repeat choice reads its parts (minute, time, weekday) — Google's model.
@@ -1845,32 +1875,49 @@ export default function NewJobModal({
   // disables the button outright and the error says what to do by hand.
   const [replaced, setReplaced] = useState(false);
 
-  // ---- The chat's name, previewed on Title -------------------------------
+  // ---- The session's own name, prefilled into Title ----------------------
   // Sourced from /api/tasks rather than from the deep link or a new endpoint:
-  // a chat session IS a task there (tasks.py `_collect`), so the row keyed on
-  // this session already carries the resolved title AND `title_source`, which
-  // is what says whether the name is worth previewing at all. The alternative
-  // — having the chat template put its title in the URL beside `message`,
-  // `target`, `session_id` and `back` — would hand us a string with no
-  // provenance, and one that is stale from the moment the link is built.
+  // a session IS a task there (tasks.py `_collect`), so the row keyed on it
+  // already carries the resolved title AND `title_source`, which is what says
+  // whether the name is a real one. The alternative — having the chat template
+  // put its title in the URL beside `message`, `target`, `session_id` and
+  // `back` — would hand us a string with no provenance, and one that is stale
+  // from the moment the link is built.
   //
-  // Only on a NEW task from a chat: an Edit has its own stored title, and a
-  // form opened from anywhere else has no session to name.
-  const [sessionTitle, setSessionTitle] = useState("");
+  // BOTH paths that have a session use it, and for the same reason: the chat
+  // this form was deep-linked from (?new=1&session_id=…), and whatever session
+  // an edited entry carries — the thread it learned, or the chat it was
+  // scheduled from. The provenance that matters elsewhere (learnedSessionOf)
+  // does not matter here: either way that conversation is where this task's name
+  // comes from, and an untitled task is exactly the case where `ai-title` is the
+  // only name that exists. Refusing to look it up would leave the user retyping
+  // a name the app already knows.
+  //
+  // It only ever replaces the DERIVED title, never a typed one and never a
+  // stored one — same discipline as the getConfig effect above, and for the same
+  // bug: `initial` moves with it, because a value the user did not type must not
+  // read as dirty and arm the close-twice guard.
+  const nameSession = (editing?.session_id || chatSessionId) ?? "";
   useEffect(() => {
-    if (editing || !chatSessionId) return;
+    // A stored title is the top of the precedence — nothing may outrank it.
+    if ((editing?.title ?? "").trim() || !nameSession) return;
     let alive = true;
     getTasks()
       .then(({ tasks }) => {
-        if (alive) setSessionTitle(sessionTitleOf(tasks, chatSessionId));
+        const resolved = sessionTitleOf(tasks, nameSession);
+        if (!alive || !resolved) return;
+        setTitle((prev) => (prev === derivedTitle ? resolved : prev));
+        setInitial((prev) =>
+          prev.title === derivedTitle ? { ...prev, title: resolved } : prev,
+        );
       })
-      // A failed lookup is not worth reporting: the generic placeholder is a
-      // complete answer, and half a preview would be worse than none.
+      // A failed lookup is not worth reporting: the derived title is already a
+      // complete, saveable answer, so the form simply keeps it.
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [editing, chatSessionId]);
+  }, [editing, nameSession, derivedTitle]);
 
   // ---- Delete ------------------------------------------------------------
   // Only when EDITING, and only for something the server will actually
@@ -2005,9 +2052,10 @@ export default function NewJobModal({
   // the two wordings differ rather than one covering both. See pastNoteFor.
   const pastNote = pastNoteFor(pickedOk ? picked : null, repeatOn, rule, new Date());
 
-  // See saveEnabled: the description is required, Title is not.
+  // See saveEnabled: both prose fields are required now, Title included.
   const ready = saveEnabled({
     message,
+    title,
     target,
     pathError,
     repeatOn,
@@ -2084,14 +2132,16 @@ export default function NewJobModal({
             leading icon, because a 14px glyph beside a 20px face read as
             debris and the gutter is what says "this is a detail".
 
-            Still OPTIONAL, and normally left alone: Claude Code writes its own
-            one-line title into the transcript and the server prefers that,
-            falling back to the first line of the message (design §4). The
-            placeholder says so, because a blank prominent field reads as
-            something you owe the form — and when this form was opened from a
-            chat it says it by showing that conversation's CURRENT name (see
-            titlePlaceholderFor: a preview, deliberately not a value, because a
-            value would freeze the name).
+            REQUIRED, and PREFILLED — the two together, because either alone
+            would be worse than what was here before (Akshil, 2026-08-17). Every
+            task the user can see in a list has a name, so the field is filled
+            from the same precedence the server uses: a stored title, this
+            session's own `ai-title`, else the first line of the ask
+            (initialTitleOf, plus the /api/tasks lookup above). What the user
+            does here is accept or edit a name, never invent one — so `ready`
+            can refuse a blank one without ever making the form feel like
+            paperwork, and `aria-required` says so rather than leaving a
+            disabled Save as the only hint.
 
             An <input>, not a textarea, and that is the whole overflow answer:
             one line that never wraps and never grows. Long text scrolls
@@ -2102,7 +2152,8 @@ export default function NewJobModal({
             type="text"
             className="new-task-field new-task-title"
             aria-label="Title"
-            placeholder={titlePlaceholderFor(sessionTitle, repeatOn)}
+            aria-required="true"
+            placeholder={TITLE_PLACEHOLDER}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             autoFocus
@@ -2112,10 +2163,12 @@ export default function NewJobModal({
               what the user types here is what Claude is sent AND what the task
               is described as (design §4 — three text fields for one thought did
               not make sense, so `description` and `message` are one field).
-              Which is also why it is REQUIRED where Title is not: an empty one
-              is a task with nothing to do. `ready` below refuses Save on it,
-              and aria-required says so to a screen reader rather than leaving a
-              disabled button as the only hint.
+              REQUIRED, as Title above now is, and for a sharper reason: an empty
+              one is a task with nothing to do. `ready` refuses Save on it, and
+              aria-required says so to a screen reader rather than leaving a
+              disabled button as the only hint. Unlike Title there is nothing
+              honest to prefill it from, so this is the one field the user really
+              does have to write.
 
               Quieter and smaller than the title, and it keeps the growth Title
               deliberately does not have: multi-line, autogrowing with the text

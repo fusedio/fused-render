@@ -128,9 +128,11 @@
    the point is that the top of the card reads as a document you type into.
 
    What survives from the boxed treatment is the INTERACTION, deliberately
-   ("the input box style copy that"): the same generous padding and hit area a
-   `.field-control` has, the same caret, and a focus state you can see. What is
-   dropped is only the chrome.
+   ("the input box style copy that"): the same generous vertical padding and hit
+   area a `.field-control` has, the ordinary caret every other field in the app
+   draws, and a focus state you can see. What is dropped is only the chrome —
+   including, since 2026-08-17, the accent rule that used to mark the focused
+   field: a stripe in a gutter of its own is chrome too.
 
    Every property below is DECLARED rather than inherited, and every selector
    carries the wrapper class as well as the field's own. deploy.css's
@@ -153,7 +155,7 @@
   min-height: 0;
 }
 
-/* The shared half: the surface, the hit area and the caret. */
+/* The shared half: the surface and the hit area. */
 .new-task-write .new-task-field {
   font: inherit;
   color: var(--fg);
@@ -162,21 +164,23 @@
   border: none;
   border-radius: 0;
   box-shadow: none;
-  /* The hit area a `.field-control` has (7px 10px), kept — a borderless field
-     still has to be easy to click into. The horizontal padding is cancelled by
-     an equal negative margin so the TEXT stays flush with the card's 16px
-     gutter (the header title and the rows below it hang off the same line)
-     while the clickable box reaches out past it. The negative margin is also
-     what puts the focus bar below in the gutter rather than over the text. */
-  padding: 6px 10px;
-  margin-inline: -10px;
+  /* VERTICAL padding only, and no negative margin cancelling a horizontal one:
+     the surface starts FLUSH with the card's 16px gutter, on the line the header
+     title and the rows below already hang off. It used to be `6px 10px` pulled
+     back by `margin-inline: -10px`, which bought a hit area reaching past the
+     gutter and a strip to draw a focus bar in — and read as a left gutter
+     nothing else on the card has (Akshil, 2026-08-17). The click target is
+     unharmed: both fields are stretched flex children, so the box still spans
+     the whole content column.
+
+     No `caret-color` either. The caret takes `color` — var(--fg) above — which
+     is what every other field in the app gets, `.field-control` included; the
+     --accent override drew a yellow-green cursor found nowhere else. */
+  padding: 6px 0;
   /* Both fields are stretched flex children, but an <input> carries an
      intrinsic `size` width that would otherwise fight a 460px card. */
   min-width: 0;
   width: auto;
-  /* The accent caret is half of the "you are typing here" signal; the bar in
-     the :focus rule below is the half that a keyboard user can actually see. */
-  caret-color: var(--accent);
 }
 
 .new-task-write .new-task-field::placeholder {
@@ -186,14 +190,13 @@
 /* FOCUS, decided — and it had to be decided, because there is no border left to
    recolour and a caret alone is not a focus indicator (it is 1px, it blinks, and
    it is invisible on an empty field with a placeholder).
-   So: a 2px accent bar down the field's left edge, sitting in the 10px gutter
-   the negative margin opens up, plus a whisper of --ctl-quiet-bg across the
-   field. An editor's active-block marker rather than a form control's ring: it
-   says WHICH of the two fields has the caret, it is full-height so it is
-   unmissable on either face, and the accent against --bg-alt clears 3:1 in both
-   themes. Drawn with an inset box-shadow and a background, so nothing reflows
-   when it appears — an `outline` would ring the whole field and put the box
-   straight back.
+   So: a whisper of --ctl-quiet-bg across the whole field, and nothing else. It
+   says WHICH of the two fields has the caret, it covers the full line-box so it
+   is unmissable on either face, and a background means nothing reflows when it
+   appears — an `outline` would ring the field and put the box straight back.
+   There was a 2px accent bar down the left edge here too, drawn in the strip the
+   old negative margin opened; it went with that strip (Akshil, 2026-08-17), so
+   the wash is now the whole signal.
    `:focus`, not `:focus-visible`: a text field matches :focus-visible on a mouse
    click anyway (the UA heuristic for anything that takes keyboard input), so the
    two select the same thing here and the plain one does not read as if the mouse
@@ -201,11 +204,10 @@
 .new-task-write .new-task-field:focus {
   outline: none;
   background: var(--ctl-quiet-bg);
-  box-shadow: inset 2px 0 0 var(--accent);
 }
 
-/* A box-shadow is dropped in forced-colours mode, so the one place a ring is the
-   right answer is the one place the bar cannot be drawn. */
+/* Forced-colours mode drops the background this focus state is made of, so the
+   one place a ring is the right answer is the one place the wash cannot land. */
 @media (forced-colors: active) {
   .new-task-write .new-task-field:focus {
     outline: 2px solid Highlight;
@@ -256,6 +258,14 @@
    reads as body text under a heading — which is also what stops two 20px fields
    from shouting at each other in a 460px card.
 
+   13px, which is not a size picked for this card: it is the repo's BODY size —
+   what `.field-control` sets for every field in the app, and what the two
+   checkboxes and the rows further down this same form already use. So the pair
+   reads as 20px heading over body copy, and the description is the same face as
+   the facts beneath it rather than a third size of its own. It was 14px, one
+   step off the title and close enough that the two looked like one field set
+   twice (Akshil, 2026-08-17).
+
    It GROWS like a note: JS sets height from scrollHeight on every change
    (NewJobModal), and the two clamps here bound it at both ends. The FLOOR is
    what keeps the card from being top-heavy — the description owns the slack in
@@ -265,16 +275,16 @@
    scrolls. Both clamp the inline height JS writes, so the measured value only
    ever picks a size between them. */
 .new-task-write .new-task-ask {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 400;
   line-height: 1.55;
   resize: none;
   overflow-wrap: anywhere;
-  /* Six lines of the 14px face plus the shared padding: the block the reference
+  /* Six lines of the 13px face plus the shared padding: the block the reference
      image gives the description, and the slack it takes. */
-  min-height: calc(14px * 1.55 * 6 + 12px);
+  min-height: calc(13px * 1.55 * 6 + 12px);
   /* Ten, then it scrolls. */
-  max-height: calc(14px * 1.55 * 10 + 12px);
+  max-height: calc(13px * 1.55 * 10 + 12px);
   overflow-y: auto;
   flex: 1 1 auto;
 }
