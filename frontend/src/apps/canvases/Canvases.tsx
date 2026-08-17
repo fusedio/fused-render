@@ -275,7 +275,7 @@ export default function Canvases() {
                 key={canvas.name}
                 className="canvas-card"
                 onClick={() => void onOpen(canvas)}
-                disabled={busy !== null}
+                disabled={busy !== null || createBusy}
               >
                 <span className="canvas-card-thumb">
                   {canvas.name.charAt(0).toUpperCase()}
