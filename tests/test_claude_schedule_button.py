@@ -158,6 +158,35 @@ def test_the_click_confirms_before_it_navigates(code):
     assert "openScheduler(" in go
 
 
+def test_no_route_through_this_button_survives_a_blocked_composer(code):
+    """"When we have a blocked panel we don't allow to type… we should not allow to
+    schedule the task as well" (Akshil, 2026-08-17). A session already holding a
+    pending scheduled message takes no further input, and a task queued from here
+    lands in that message's context exactly as a typed reply would.
+
+    What this suite owns is the ROUTE COUNT: the handoff is two clicks and one
+    Continue, and the block has to reach all three — the `disabled` attribute plus
+    the click guard for the buttons, and a guard on Continue because the 15s poll
+    can shut the chat while the confirm is still on screen. The state itself, both
+    directions and the wording live in tests/test_claude_composer_block.py; there
+    is exactly ONE of them and this reads the same one."""
+    state = code[code.index("function applyComposerBlockState("):]
+    state = state[:state.index("\n}")]
+    assert "schedBtn.disabled = blocked" in state
+    assert "const blocked = schedBlocked();" in state
+    clicks = code[code.index('document.querySelectorAll(".schedbtn")'):]
+    clicks = clicks[:clicks.index("\n});")]
+    assert "if (schedBlocked()) return;" in clicks
+    go = code[code.index('document.getElementById("schedpop-go").addEventListener'):]
+    go = go[:go.index("\n});")]
+    assert "if (schedBlocked()) return;" in go
+    assert go.index("schedBlocked()") < go.index("openScheduler(")
+    # and there is no fourth way in for it to have missed: no shortcut key, no
+    # kebab item (deleted 2026-08-16, above), and only these two callers
+    assert code.count("openSchedConfirm(") == 2
+    assert code.count("openScheduler(") == 2
+
+
 def test_the_confirm_says_what_travels(source):
     """The one thing the icon cannot say. A user who does not know the draft comes
     along will retype it on the other side, which is the failure the whole handoff
