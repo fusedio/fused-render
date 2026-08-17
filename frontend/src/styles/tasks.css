@@ -424,14 +424,16 @@
 .tasks-msg-error {
   margin: 0 0 2px;
   padding: 2px 8px 4px 12px;
-  border-left: 1px solid var(--border);
   font-size: 11px;
   color: var(--error);
 }
 
 /* -- The thread ----------------------------------------------------------------
-   Indented under its task, with a rule running down the left so a long thread
-   still reads as belonging to the row above it.
+   Indented under its task. The indent alone says the messages belong to the row
+   above them — a vertical rule down the left said it a second time, and at the
+   depth these rows sit it read as a stray line before the indentation rather
+   than as a thread guide. Nothing else in the list is fenced, so this isn't
+   either.
 
    The left padding is DERIVED, never typed: it is where the rail is, less a
    message row's own indent, so the thread's dots land on the task row's rail
@@ -446,10 +448,10 @@
   display: flex;
   align-items: center;
   gap: var(--tasks-row-gap);
-  /* 1px rule + this padding = --tasks-msg-indent, the number the thread's own
-     padding subtracts. Written as the subtraction so the two cannot drift. */
-  padding: 5px 8px 5px calc(var(--tasks-msg-indent) - 1px);
-  border-left: 1px solid var(--border);
+  /* The full indent, not indent-minus-1: the 1px used to be the rule's own
+     width, and the row has to keep landing in the same column now that the
+     rule is gone. */
+  padding: 5px 8px 5px var(--tasks-msg-indent);
   font-size: 12.5px;
   cursor: pointer;
   transition: background-color 0.08s ease;
@@ -518,7 +520,6 @@
 .tasks-thread-error {
   margin: 4px 0 0;
   padding-left: 12px;
-  border-left: 1px solid var(--border);
   font-size: 11px;
   color: var(--error);
 }

@@ -1425,6 +1425,19 @@ describe("the unread count's position", () => {
     expect(TASKS_CSS).toMatch(/--tasks-rail-w: 16px/);
     expect(SCHEDULE_CSS).toMatch(/\.schedule-ring\s*\{[^}]*flex: 0 0 16px/);
   });
+
+  it("draws no vertical rule down the thread", () => {
+    // The indent is the whole signal. A rule beside it read as a stray line
+    // sitting in front of the indentation rather than as a guide belonging to
+    // it, and nothing else in this list is fenced. Pinned because the geometry
+    // above depends on it: the message row's left padding was written as
+    // indent-minus-1 to make room for the rule's own width, so re-adding the
+    // border without re-doing the subtraction would shift every message row a
+    // pixel off the column it is supposed to share with the task above.
+    const body = TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(body).not.toContain("border-left");
+    expect(body).toMatch(/\.tasks-msg\s*\{[^}]*padding: 5px 8px 5px var\(--tasks-msg-indent\)/);
+  });
 });
 
 // ---- the status vocabulary's five hues ------------------------------------------
