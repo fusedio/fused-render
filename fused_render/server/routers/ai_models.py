@@ -79,6 +79,7 @@ import os
 import re
 import shutil
 import stat
+import time
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -1062,6 +1063,94 @@ def _article(word: str) -> str:
     """"a" or "an". A label this reads wrong ("a image to image model") is a
     sentence a page author is meant to act on, so it is worth the four lines."""
     return "an" if word[:1].lower() in "aeiou" else "a"
+
+
+class CachedModel(NamedTuple):
+    """One MODEL repo on this disk, as a caller building a picker needs it.
+
+    `capability` is what a load of it would be, or None when nothing here can
+    tell. `size` is every byte the repo occupies, measured — the same number this
+    page's own row reports.
+    """
+
+    repo_id: str
+    capability: str | None
+    size: int
+
+
+#: `cached_models()`'s memo: cache dir -> (read time, signature, answer). See the
+#: function for why there are two invalidation conditions rather than one.
+_CACHED_MODELS: dict[str, tuple[float, tuple, list[CachedModel]]] = {}
+
+#: How long a `cached_models()` answer may stand when the cache dir's own
+#: signature has not moved. Short because the cost of being wrong is a model the
+#: user just downloaded missing from a picker, and long enough that a page polling
+#: the catalog does not re-walk a 200GB cache on every render.
+_CACHED_MODELS_TTL = 5.0
+
+
+def cached_models() -> list[CachedModel]:
+    """Every model repo on this disk that something could load, with its capability.
+
+    **Exported, and read by `/api/ai/catalog`** (D323). A model the user downloaded
+    from the Discover tab's Hub search used to appear in no page's picker at all:
+    pages read the curated catalog, the curation cannot know what somebody fetched,
+    and this scan — the only thing that does know — was reachable only from the AI
+    Models page's own endpoint. So the join happens over THIS function, and the
+    capability every entry carries is the same reading `_repo` draws its Load button
+    from rather than a second copy of the inference.
+
+    Datasets, Spaces and component repos are dropped: `kind` and
+    `formats.COMPONENT_REPOS` already say those are nobody's `load()` target, and a
+    picker offering one is a Load that fails. A repo whose capability cannot be
+    inferred is KEPT with `capability=None` — "is this on the disk" is still a
+    question worth answering about it, and the caller decides whether an
+    uncategorised repo belongs in a categorised list.
+
+    **Memoised, because a page polls the catalog and this is a full tree walk.**
+    Invalidated on EITHER of two conditions, which cover different failures. The
+    cache directory's SIGNATURE — every entry's name and mtime — moves the instant a
+    new repo folder lands, so a completed download is visible on the very next read
+    and never waits out a timer; that is the bug this whole change exists to fix and
+    a TTL alone would have reintroduced it. A short TTL then backstops the case the
+    signature cannot see: bytes arriving INSIDE an already-listed repo bump
+    `blobs/`, not the repo folder, so a second revision's size would otherwise stand
+    stale indefinitely.
+    """
+    cache_dir = hub_cache_dir()
+    try:
+        entries = list(os.scandir(cache_dir))
+    except OSError:
+        entries = []
+    signature = tuple(sorted(
+        (e.name, _entry_mtime(e)) for e in entries
+    ))
+    hit = _CACHED_MODELS.get(cache_dir)
+    if hit is not None:
+        read_at, seen, answer = hit
+        if seen == signature and time.time() - read_at < _CACHED_MODELS_TTL:
+            return answer
+
+    models: list[CachedModel] = []
+    for entry in entries:
+        # Symlinked-in repo folders are followed, exactly as `_listing` follows
+        # them: moving a 40GB model off the boot volume does not stop it being a
+        # cached repo. Datasets and Spaces drop out on the prefix.
+        if not entry.name.startswith("models--") or not _entry_is_dir(entry):
+            continue
+        repo_id = _repo_id_of(entry.name)
+        if formats.component(repo_id) is not None:
+            continue
+        # The load route's own inference, asked rather than re-derived: a picker
+        # that offers a model and a `load()` that then refuses it must not be able
+        # to disagree. `cached=False` is an interrupted download's leftover folder.
+        reading = cached_capability(repo_id)
+        if not reading.cached:
+            continue
+        size = _scan_repo(os.path.join(cache_dir, entry.name)).size
+        models.append(CachedModel(repo_id, reading.capability, size))
+    _CACHED_MODELS[cache_dir] = (time.time(), signature, models)
+    return models
 
 
 def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
