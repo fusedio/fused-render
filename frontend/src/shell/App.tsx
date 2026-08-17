@@ -816,10 +816,11 @@ export default function App({ config }: { config: Config }) {
     <div id="app">
       {!IS_EMBED && sidebar}
       <div id="main">{main}</div>
-      {/* The queue dock rides the notification column (NotificationHost owns
-          where it sits). Handed in from here rather than imported there because
-          it speaks explorerUrl, which lives in this layer. */}
-      <NotificationHost queue={<QueueDock />} />
+      {/* ONE work-in-progress card in the notification column, not two: QueueDock
+          is the shell's wrapper around the platform activity card (it fills that
+          card's queue slot), handed in from here rather than imported there
+          because it speaks explorerUrl, which lives in this layer. */}
+      <NotificationHost activity={<QueueDock />} />
       {/* Opening a deployed app is requested from the path bar (a pasted https:// link) and
           from the Apps page; the modal is mounted HERE so both reach one flow (SPEC §35 CL-1). */}
       {!IS_EMBED && <CloneAppHost />}

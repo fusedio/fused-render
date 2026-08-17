@@ -284,19 +284,22 @@ describe("entryRepeatText", () => {
 // and the two dates a year where a day is not 24 hours long. None of it needs a
 // DOM, so none of it is tested through one.
 import {
+  BOARD_COLUMNS,
   GHOST_PREFIX,
+  HELD_TEXT,
   RANGE_DAYS,
   addDays,
   cancelOutcome,
   columnLabel,
   dayKey,
-  dayStatus,
   dayTone,
   firstLine,
   lateBy,
   lateText,
   messageTone,
   minutesOfDay,
+  msgCancelKind,
+  msgNote,
   folderHref,
   isProjected as isGhost,
   popoverPos,
@@ -313,6 +316,7 @@ import {
   stepRange,
   taskChips,
   taskColour,
+  taskStatus,
   threadForDay,
   turnPhase,
 } from "./schedule-lib";
@@ -320,7 +324,15 @@ import {
 // tasks-lib.messageTone is the app's single answer to "which column", and
 // runStatus consumes it. So the test composes exactly what the component
 // composes, rather than a fixture that could agree with neither.
-import { messageTone as taskMessageTone } from "./tasks-lib";
+// taskColumn and isFailedTask come from the same place the components ask, for
+// the same reason: the header pill's job is to agree with the Board about one
+// task, so the test composes the pill exactly as the popover does rather than
+// asserting against a second hand-written mapping.
+import {
+  isFailedTask,
+  messageTone as taskMessageTone,
+  taskColumn,
+} from "./tasks-lib";
 import type { Task, TaskMessage } from "@platform/lib/api";
 
 // Local wall-clock seconds — the whole point of the day maths is that it reads
@@ -1251,6 +1263,82 @@ describe("queued and running, on the row", () => {
   });
 });
 
+// ---- which cancel a row gets ---------------------------------------------------------
+// The server accepts `pending` -> `cancelled` and nothing else, and the popover
+// used to offer a cancel on `sending` anyway — a button whose ONLY outcome was
+// the refusal. The queue dock had the same defect and rowCancelKind answered it
+// there; msgCancelKind is the same answer for the thread row, and these are the
+// tests that stop the assumption coming back.
+
+describe("msgCancelKind", () => {
+  const NOW = at(2026, 7, 17, 12, 0);
+  const none = new Map<string, string>() as ReturnType<typeof queueRoles>;
+  const kind = (m: TaskMessage, roles = none) =>
+    msgCancelKind(m, queueRole(m, roles, NOW));
+
+  it("a claimed row offers no cancel — the server refuses `sending` every time", () => {
+    const claimed = msg({ at: NOW - 60, state: "sending" });
+    expect(kind(claimed)).toBe("held");
+    // And on the queue endpoint's word alone, for an entry whose own `state` the
+    // page has not caught up with yet.
+    const stale = msg({ at: NOW + 3600, entry_id: "e2" });
+    const roles = queueRoles([], [entry({ id: "e2", state: "pending" })]);
+    expect(kind(stale, roles)).toBe("held");
+  });
+
+  it("a pending row keeps its cancel, including the one that can lose the race", () => {
+    // Past due: held by the queue, so the endpoint that can answer `refused`.
+    expect(kind(msg({ at: NOW - 60 }))).toBe("queued");
+    // Still in the future: nothing to race, so the plain schedule cancel.
+    expect(kind(msg({ at: NOW + 3600 }))).toBe("scheduled");
+  });
+
+  it("a ghost has no entry to cancel", () => {
+    const ghost = msg({
+      at: NOW - 60,
+      message_id: `${GHOST_PREFIX}2026-08-17T11:59:00`,
+    });
+    expect(kind(ghost)).toBe("none");
+    // Neither has a chat message, which carries no entry id at all.
+    expect(kind(msg({ at: NOW - 60, kind: "chat", entry_id: "" }))).toBe("none");
+  });
+
+  it("a LIVE row gets no control here — the popover is not where a run is stopped", () => {
+    // `sent` with an unwritten turn: the turn is still going. The dock gives this
+    // the job registry's stop; this surface deliberately does not, because it
+    // polls neither the registry nor the queue's `live` list and the only thing
+    // it could hang the button off is turnPhase's default.
+    expect(kind(msg({ at: NOW - 60, state: "sent", turn: "" }))).toBe("none");
+    // And a turn that ended is not cancellable by anyone.
+    expect(kind(msg({ at: NOW - 60, state: "sent", turn: "done" }))).toBe("none");
+  });
+
+  it("nothing finished, missed or already cancelled offers one", () => {
+    for (const state of ["error", "missed", "cancelled", "skipped"] as const)
+      expect(kind(msg({ at: NOW - 60, state }))).toBe("none");
+  });
+});
+
+describe("msgNote", () => {
+  const NOW = at(2026, 7, 17, 12, 0);
+
+  it("a claimed row says why its cancel is gone, ahead of how late it ran", () => {
+    // `ran_at` is written at the CLAIM, so a caught-up entry in `sending` really
+    // does have a "ran 3 hours late" to report — and it must not crowd out the
+    // sentence explaining the button that just vanished.
+    const late = msg({ at: NOW - 10800, ran_at: NOW, state: "sending" });
+    expect(lateText(late)).not.toBe("");
+    expect(msgNote(late, "held")).toBe(HELD_TEXT);
+  });
+
+  it("the other rows keep the notes they had", () => {
+    expect(msgNote(msg({ at: NOW - 60 }), "queued")).toBe("queued");
+    expect(msgNote(msg({ at: NOW + 3600 }), "scheduled")).toBe("");
+    const caught = msg({ at: NOW - 10800, ran_at: NOW, state: "sent", turn: "done" });
+    expect(msgNote(caught, "none")).toBe("ran 3 hours late");
+  });
+});
+
 // ---- one status vocabulary -----------------------------------------------------------
 // Board, List and Calendar say the SAME four words. The two distinctions that
 // costs — a failed run, a projected one — are kept as visuals, and these are the
@@ -1323,34 +1411,88 @@ describe("the one status vocabulary", () => {
     expect(status(msg({ at: 1, state: "sent", turn: "done" })).detail).toBe("Ran");
   });
 
-  it("a day's pill answers for its worst run", () => {
-    const day = (...ms: TaskMessage[]) => dayStatus(ms.map(status));
-    // 9am ran fine, 2pm died: the day is not clean.
-    expect(day(
-      msg({ at: 1, state: "sent", turn: "done" }),
-      msg({ at: 2, state: "error" }),
-    )).toMatchObject({ label: "Failed", failed: true });
-    // Work in flight outranks work still coming.
-    expect(day(
-      msg({ at: 1, state: "pending" }),
-      msg({ at: 2, state: "sending" }),
-    )).toMatchObject({ label: "In Progress", failed: false });
-    // Something still to come outranks something filed away.
-    expect(day(
-      msg({ at: 1, state: "skipped" }),
-      msg({ at: 2, state: "pending" }),
-    )).toMatchObject({ label: "Upcoming" });
-    expect(day(msg({ at: 1, state: "sent", turn: "done" }))).toMatchObject({ label: "Done" });
+  // ---- the header pill is the TASK's status -----------------------------------
+  // It used to be the DAY's worst run, and these are the tests that stop it going
+  // back: the pill answers the same question the Board's lane does, about the same
+  // task, or the panel contradicts its own Run now button.
+  const pillOf = (t: Task, projected = false) =>
+    taskStatus(taskColumn(t), t.failed, projected);
+
+  it("says what the TASK is, not what the day's worst run was", () => {
+    // The case that made this wrong: a recurring rule still upcoming, whose day
+    // holds a run that broke. The day's worst run is Failed; the TASK is not.
+    const rule = task({
+      key: "daily",
+      status: "upcoming",
+      failed: false,
+      messages: [
+        msg({ at: 1, state: "error", template_id: "t1" }),
+        msg({ at: 2, state: "pending", template_id: "t1" }),
+      ],
+    });
+    // The day genuinely does contain a failure — that is not in dispute...
+    expect(status(rule.messages[0]).label).toBe("Failed");
+    // ...but the pill is about the task, and the task is Upcoming. This is the
+    // pill that used to read "Failed" beside a button reading "Run now".
+    expect(pillOf(rule)).toMatchObject({ label: "Upcoming", failed: false });
   });
 
-  it("a day is only projected when NOTHING in it is real", () => {
-    const ghost = (n: number) =>
-      msg({ at: n, message_id: `${GHOST_PREFIX}${n}` });
-    expect(dayStatus([ghost(1), ghost(2)].map(status)).projected).toBe(true);
+  it("matches what the Board lane says, for every status", () => {
+    for (const col of BOARD_COLUMNS) {
+      const t = task({ key: `k-${col.key}`, status: col.key, failed: false });
+      // The lane's own header word, and the word StatusIcon gives the card in it.
+      expect(pillOf(t)).toMatchObject({ label: col.label, column: col.key });
+    }
+    // The one place `status` and `failed` disagree: a task triaged to `done`
+    // (or live again) whose newest run broke. StatusIcon repaints it Failed on
+    // the List row and the card, so the pill says Failed too — tasks-lib's
+    // isFailedTask is the same reading.
+    for (const col of BOARD_COLUMNS) {
+      const t = task({ key: `f-${col.key}`, status: col.key, failed: true });
+      expect(isFailedTask(t)).toBe(true);
+      expect(pillOf(t)).toMatchObject({ label: "Failed", column: "failed", failed: true });
+    }
+    // And a status this build has never heard of lands where taskColumn puts it
+    // rather than inventing a sixth word.
+    const odd = task({ key: "odd", status: "quantum" as never });
+    expect(pillOf(odd).label).toBe("Done");
+  });
+
+  it("keeps the dashes as its ONE day-scoped fact, and never as a word", () => {
+    const t = task({ key: "ghosts", status: "upcoming" });
+    expect(pillOf(t, true)).toMatchObject({ label: "Upcoming", projected: true });
+    expect(pillOf(t, false).projected).toBe(false);
+  });
+
+  it("leaves the chip's own day-level cue alone — a failing day still LOOKS different", () => {
+    // The word came off the pill; the pixels did not come off the grid.
+    // dayTone is the chip's wash and it is still day-scoped, which is the whole
+    // point: a day holding a failure must not look like a clean one.
+    const days = rangeDays(rangeStart(new Date(2026, 7, 17), "week"), "week");
+    const messages = [
+      msg({ message_id: "MSG-1", at: at(2026, 7, 17, 9), state: "sent", turn: "done" }),
+      msg({ message_id: "MSG-2", at: at(2026, 7, 17, 14), state: "error" }),
+    ];
+    const t = task({ key: "mixed", status: "upcoming", failed: false, messages });
+    const chip = taskChips([t], days).get("2026-08-17")![0];
+    expect(chip.tone).toBe("error");
+    expect(chip.tone).not.toBe(dayTone([messages[0]])); // a clean day differs
+    // ...while the pill above it is the task's own word.
+    expect(pillOf(t, chip.projected)).toMatchObject({ label: "Upcoming", projected: false });
+    // A day of nothing but cron arithmetic is still outlined, and that flag is
+    // what the pill's dashes now come from.
+    const ghosts = [
+      msg({ message_id: `${GHOST_PREFIX}1`, at: at(2026, 7, 18, 9), template_id: "t1" }),
+      msg({ message_id: `${GHOST_PREFIX}2`, at: at(2026, 7, 18, 10), template_id: "t1" }),
+    ];
+    const g = taskChips([task({ key: "g", messages: ghosts })], days).get("2026-08-18")![0];
+    expect(g.projected).toBe(true);
     // One materialized run makes the day a commitment, not a forecast.
-    expect(dayStatus([ghost(1), msg({ at: 2, state: "pending" })].map(status)).projected)
-      .toBe(false);
-    expect(dayStatus([]).projected).toBe(false);
+    const mixed = taskChips(
+      [task({ key: "g2", messages: [ghosts[0], msg({ at: at(2026, 7, 18, 11) })] })],
+      days,
+    ).get("2026-08-18")![0];
+    expect(mixed.projected).toBe(false);
   });
 });
 
@@ -1765,5 +1907,225 @@ describe("projection ownership", () => {
     expect(chips[0].colour).not.toBe(chips[1].colour);
     expect(chips[0].tone).toBe("ran");
     expect(chips[1].tone).toBe("upcoming");
+  });
+});
+
+// ---- Run now / Re-run, in the calendar popover ---------------------------------
+// The action arrived on the List first and the whole risk of adding it here is
+// DRIFT: three views working out separately whether a task can be run, which one
+// it would run, and what to call it, is exactly how the status vocabulary went
+// wrong (2026-08-17). So these tests pin the coupling rather than the behaviour —
+// tasks-lib already owns and tests the decision, and what has to be true is that
+// the calendar asks it, asks it about the same thing the List does, and cannot
+// hand it something the List has never seen.
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+// GHOST_PREFIX is already in scope from the calendarThreads section above.
+import { isProjectedId } from "./schedule-lib";
+import { taskRunIntent } from "./tasks-lib";
+
+const SHELL_DIR = import.meta.dir;
+const CAL_SRC = readFileSync(join(SHELL_DIR, "ScheduleCalendar.tsx"), "utf8");
+const SCHEDULE_CSS = readFileSync(
+  join(SHELL_DIR, "../styles/schedule.css"),
+  "utf8",
+);
+const TASKS_CSS_SRC = readFileSync(
+  join(SHELL_DIR, "../styles/tasks.css"),
+  "utf8",
+);
+
+// The popover's own footer, as source. Sliced so a claim about ORDER inside it
+// cannot be satisfied by something elsewhere in the file.
+const POP_FOOTER = CAL_SRC.slice(
+  CAL_SRC.indexOf('<div className="schedule-card-actions">'),
+  CAL_SRC.indexOf("// ---- The grid"),
+);
+
+// A week that contains the fixtures' days, and its chips.
+const RUN_WEEK = rangeDays(rangeStart(new Date(2026, 7, 17), "week"), "week");
+const chipsFor = (tasks: Task[], entries: ScheduledMessage[] = []) =>
+  [...taskChips(tasks, RUN_WEEK, calendarThreads(tasks, entries, null, new Date(2026, 7, 17, 12), RUN_WEEK)).values()].flat();
+
+describe("the calendar popover's run action", () => {
+  // Thursday, still ahead of the fixture's "now".
+  const pending = msg({
+    message_id: "MSG-002", at: at(2026, 7, 20, 9), entry_id: "e-pending",
+  });
+
+  it("asks tasks-lib about the CHIP'S OWN TASK, which is the List's object", () => {
+    // The load-bearing invariant, and the one that could have been written away
+    // silently: taskChips carries the task ITSELF onto the chip, not a copy with
+    // the calendar's threads merged in. That identity is why the popover's
+    // `taskRunIntent(task)` and the List row's are literally the same call.
+    const upcoming = task({ key: "sess-1", messages: [pending] });
+    const [chip] = chipsFor([upcoming]);
+    expect(chip.task).toBe(upcoming);
+    expect(taskRunIntent(chip.task)!.entryId).toBe(
+      taskRunIntent(upcoming)!.entryId,
+    );
+  });
+
+  it("offers Run now on a future run, and sends the pending entry", () => {
+    const [chip] = chipsFor([task({ key: "sess-1", messages: [pending] })]);
+    const intent = taskRunIntent(chip.task)!;
+    expect(intent.label).toBe("Run now");
+    expect(intent.kind).toBe("run-now");
+    expect(intent.entryId).toBe("e-pending");
+  });
+
+  it("says Re-run on a task that broke — the word changes, the call may not", () => {
+    // Still pending underneath: the smaller, truer action wins and it is
+    // run-now, but the WORD is the one a person needs.
+    const withPending = task({
+      key: "sess-1", status: "failed", messages: [pending],
+    });
+    expect(taskRunIntent(withPending)).toMatchObject({
+      kind: "run-now", label: "Re-run", entryId: "e-pending",
+    });
+    // The common failed task: the run that broke SPENT its entry, so there is
+    // nothing to bring forward and the other verb is the only one left.
+    const spent = task({
+      key: "sess-2", status: "failed",
+      messages: [msg({
+        message_id: "MSG-001", at: at(2026, 7, 18, 9), entry_id: "e-broke",
+        state: "error",
+      })],
+    });
+    const [chip] = chipsFor([spent]);
+    expect(taskRunIntent(chip.task)).toMatchObject({
+      kind: "resend", label: "Re-run", entryId: "e-broke",
+    });
+  });
+
+  it("offers nothing on a Done task", () => {
+    const done = task({
+      key: "sess-1", status: "done",
+      messages: [msg({
+        message_id: "MSG-001", at: at(2026, 7, 18, 9),
+        state: "sent", turn: "done",
+      })],
+    });
+    const [chip] = chipsFor([done]);
+    expect(taskRunIntent(chip.task)).toBeNull();
+  });
+
+  it("offers nothing on a chip with no runnable message at all", () => {
+    const cancelled = task({
+      key: "sess-1", status: "archived",
+      messages: [msg({ message_id: "MSG-001", at: at(2026, 7, 18, 9), state: "cancelled" })],
+    });
+    // Archived draws no chip, so ask the pure question directly.
+    expect(taskRunIntent(cancelled)).toBeNull();
+  });
+
+  it("never fires a GHOST, which is the popover's own hazard", () => {
+    // A projected occurrence looks exactly like a pending one — same state, and
+    // an `entry_id` — but it carries the RECURRING RULE's id and was only ever
+    // drawn. The popover is the only surface whose message list holds them, so
+    // the guard is on the intent's target and not on the chip.
+    const ghost = msg({
+      message_id: `${GHOST_PREFIX}2026-08-20T09:00:00`,
+      at: at(2026, 7, 20, 9), entry_id: "rule-1", template_id: "rule-1",
+    });
+    const drawn = task({ key: "sess-1", messages: [ghost] });
+    // tasks-lib would happily target it — nothing there knows what a ghost is...
+    expect(taskRunIntent(drawn)!.messageId).toBe(ghost.message_id);
+    // ...so the calendar's guard is what stops it, and this is that guard.
+    expect(isProjectedId(taskRunIntent(drawn)!.messageId)).toBe(true);
+    expect(isProjectedId("MSG-002")).toBe(false);
+  });
+
+  it("keeps ghosts out of the object it asks about in the first place", () => {
+    // Belt and braces on the invariant above: the chip's MESSAGES hold the
+    // rule's projections, and the chip's TASK does not.
+    const rule = entry({
+      id: "rule-1", state: "recurring", rule: { freq: "day" },
+      // The server's own projection — where ghosts actually come from.
+      upcoming: [
+        new Date(2026, 7, 19, 9).toISOString(),
+        new Date(2026, 7, 20, 9).toISOString(),
+      ],
+    });
+    const owner = task({
+      key: "pending:rule-1", session_id: "",
+      messages: [msg({ at: at(2026, 7, 17, 9), template_id: "rule-1", entry_id: "rule-1" })],
+    });
+    const chips = chipsFor([owner], [rule]);
+    expect(chips.some((c) => c.messages.some((m) => isProjectedId(m.message_id)))).toBe(true);
+    for (const c of chips)
+      expect((c.task.messages ?? []).some((m) => isProjectedId(m.message_id))).toBe(false);
+  });
+});
+
+describe("where the popover's run action is drawn", () => {
+  it("asks tasks-lib exactly once, and about `task`", () => {
+    // One call site, on the task — never on the merged list two lines below it,
+    // which is where the ghosts are.
+    expect((CAL_SRC.match(/taskRunIntent\(/g) ?? []).length).toBe(1);
+    expect(CAL_SRC).toContain("taskRunIntent(task)");
+    // ...and the guard sits on the result of it.
+    expect(CAL_SRC).toContain("isProjectedId(intent.messageId)");
+  });
+
+  it("sits in the footer beside Edit and Open in Explorer, and LAST", () => {
+    expect(POP_FOOTER).toContain("{run && (");
+    expect(POP_FOOTER.indexOf("ICON_EDIT")).toBeLessThan(
+      POP_FOOTER.indexOf("ICON_INBOX"),
+    );
+    expect(POP_FOOTER.indexOf("ICON_INBOX")).toBeLessThan(
+      POP_FOOTER.indexOf("schedule-cal-pop-run"),
+    );
+  });
+
+  it("is not the panel's default action", () => {
+    // Secondary like its neighbours: the only button here that starts work must
+    // not be the one that looks pre-pressed.
+    expect(POP_FOOTER).toContain('className="btn btn-secondary schedule-cal-pop-run"');
+    expect(POP_FOOTER).not.toContain("btn-primary");
+  });
+
+  it("takes its word and its glyph from the intent, never from the markup", () => {
+    expect(POP_FOOTER).toContain("{run.label}");
+    expect(POP_FOOTER).toContain("run.rerun ? ICON_RERUN : ICON_PLAY");
+    expect(POP_FOOTER).toContain("title={run.title}");
+    // No third word invented here.
+    expect(POP_FOOTER).not.toMatch(/>\s*(Run now|Re-run|Rerun|Trigger)/);
+  });
+
+  it("closes on a clean run and stays only to say something", () => {
+    // The lifecycle decision, read out of the source because it is the thing a
+    // screenshot cannot show: the panel is anchored to a chip that the run
+    // itself changes, so a clean success dismisses it and a refusal (or the
+    // re-send's queued `note`) keeps it, with the server's own sentence.
+    const body = CAL_SRC.slice(
+      CAL_SRC.indexOf("const runTask = async"),
+      CAL_SRC.indexOf("// Two cancels, one button"),
+    );
+    expect(body).toContain("if (said) setError(said);");
+    expect(body).toContain("else onClose();");
+    // Reloaded on BOTH paths — the grid has to re-read either way.
+    expect((body.match(/onReload\(\)/g) ?? []).length).toBe(2);
+    expect(body).toContain("setError((e as Error).message)");
+  });
+
+  it("is quiet at rest, blue under the pointer, and never transitions `all`", () => {
+    const at_ = SCHEDULE_CSS.indexOf(".schedule-cal-pop-run,");
+    expect(at_).toBeGreaterThan(-1);
+    const block = SCHEDULE_CSS.slice(at_, SCHEDULE_CSS.indexOf("/* The recurring rule", at_));
+    // Nothing paints the RESTING box, so it matches Edit and Open in Explorer.
+    // Read as its own block: the hover rule below it is allowed all the colour.
+    const rest = block.slice(0, block.indexOf("}") + 1);
+    expect(rest).not.toContain("background:");
+    expect(rest).not.toContain("color:");
+    expect(rest).not.toContain("border-color:");
+    expect(block).not.toContain("transition: all");
+    // The same hue the List's own run button uses, at the same mixes.
+    expect(block).toContain("color: var(--status-upcoming);");
+    expect(TASKS_CSS_SRC).toContain("color: var(--status-upcoming);");
+    for (const mix of ["12%", "32%"]) expect(block).toContain(mix);
+    // Armoured against the page's two hover skins.
+    expect(block).toContain(".prefs-section .schedule-cal-pop-run:hover:not(:disabled)");
   });
 });

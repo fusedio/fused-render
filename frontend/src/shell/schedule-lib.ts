@@ -603,7 +603,19 @@ export function taskColour(key: string): number {
 // widen it.
 export const GHOST_PREFIX = "GHOST-";
 
-export const isProjected = (m: TaskMessage) => m.message_id.startsWith(GHOST_PREFIX);
+/**
+ * The same question asked of an ID ALONE, for the callers that hold a pointer to
+ * a message rather than the message.
+ *
+ * tasks-lib's run intents are the case: they carry the `messageId` they act on,
+ * and a ghost's "entry id" is the RECURRING RULE's, not a message's — spending
+ * it would fire something the calendar only ever DREW. Nothing may turn a
+ * projection into a run (§9: catch-up materializes exactly one past slot and
+ * drops the rest for good), so the check has to be available where the id is.
+ */
+export const isProjectedId = (messageId: string) => messageId.startsWith(GHOST_PREFIX);
+
+export const isProjected = (m: TaskMessage) => isProjectedId(m.message_id);
 
 // How a single message PAINTS on the calendar — a CSS class, and since
 // 2026-08-17 nothing but a CSS class. Every word the calendar puts on screen now
@@ -1389,6 +1401,81 @@ export function queueRole(
   return "";
 }
 
+/**
+ * Which cancel a thread row gets, and the ONE place that decides it — the same
+ * job `rowCancelKind` does for the queue dock (queue-dock-lib.ts), kept here so
+ * the popover's markup and its click handler cannot disagree about whether a row
+ * is withdrawable.
+ *
+ * The rule is the SERVER'S, not the popover's idea of what looks cancellable.
+ * `schedule.cancel_queued` accepts exactly `pending` → `cancelled`, so:
+ *
+ * * **scheduled** — pending and still in the future — is a plain
+ *   `cancelScheduledMessage`. Nothing has claimed it, so nothing can race.
+ * * **queued** — pending, and held by the queue — goes through `cancelQueued`,
+ *   the only endpoint that can answer honestly when the claim wins the race: the
+ *   entry comes back `refused` and `cancelOutcome` puts the server's sentence on
+ *   screen. That refusal is a real answer to a real attempt, and it is exactly
+ *   why this row keeps its button.
+ * * **held** — `sending`: claimed, the helper already away — gets NO control,
+ *   and the row says why in its place. The server refuses this state EVERY time
+ *   ("cancelled" would be a claim it cannot make good on), so the button's only
+ *   possible outcome is a refusal, and a button that can only fail is worse than
+ *   no button. The row that was queued a second ago must not simply go quiet
+ *   either — a control that vanishes without a word reads as a bug — hence a
+ *   fourth value rather than folding this into `none`.
+ * * **none** — everything else. A projected ghost has no entry to cancel; a
+ *   finished, missed or cancelled run has nothing left to stop.
+ *
+ * A LIVE row — `sent` with a turn still running — is deliberately `none` and not
+ * the dock's `"job"`. The dock earns its ✕ by polling the job registry and
+ * joining the queue's `live` list onto it; the popover has neither feed, and a
+ * stop button here would rest on `turnPhase("")`, which DEFAULTS to "running"
+ * for a field the server has not written yet. A process-killing control hung off
+ * a defaulted field is precisely the promise this module must not make. "Open in
+ * Explorer" is the popover's way TO a running turn; the dock is where it stops.
+ */
+export type MsgCancelKind = "scheduled" | "queued" | "held" | "none";
+
+export function msgCancelKind(m: TaskMessage, role: QueueRole): MsgCancelKind {
+  if (!m.entry_id || isProjected(m)) return "none";
+  // The claimed state, on EITHER witness: the queue endpoint calling it running,
+  // or the message's own `sending`. Tested before `pending` so an entry the
+  // server has already claimed cannot fall through to a button on the strength
+  // of a stale `state` the second feed has since corrected.
+  if (role === "running" || m.state === "sending") return "held";
+  if (m.state !== "pending") return "none";
+  return role === "queued" ? "queued" : "scheduled";
+}
+
+/**
+ * The words that stand in for a claimed row's cancel.
+ *
+ * The dock's own sentence, minus the half this row already has: `roleText` says
+ * "Starting… · too late to cancel" because a dock row carries no status word,
+ * while a thread row says "In Progress" right beside this. Only the part the
+ * reader cannot get anywhere else is repeated.
+ */
+export const HELD_TEXT = "too late to cancel";
+
+/**
+ * The row's second line of fact, when it has one — decided here rather than in
+ * the markup so it stays tied to the control the row was given.
+ *
+ * A catch-up says how far behind it ran (`at` vs `ran_at`, never the chip's
+ * position); a queued one says it is waiting to be claimed, which "Upcoming"
+ * alone does not.
+ */
+export function msgNote(m: TaskMessage, kind: MsgCancelKind): string {
+  // Why the control is missing outranks a retrospective fact. `ran_at` is
+  // written at the CLAIM, so a caught-up entry in `sending` genuinely does have
+  // a "ran 2 days late" to report — and it answers a question nobody is asking
+  // while a button they were about to press has just gone. It comes back
+  // unchanged the moment the state moves on.
+  if (kind === "held") return HELD_TEXT;
+  return lateText(m) || (kind === "queued" ? "queued" : "");
+}
+
 // Cancelling races the claim, and the server resolves it honestly: an entry it
 // has already handed to the sender comes back REFUSED, not cancelled. Saying so
 // is the whole point — a silent drop teaches the user the button lies.
@@ -1524,30 +1611,53 @@ export function runStatus(m: TaskMessage, tone: RunTone): RunStatus {
   };
 }
 
-// A whole day of a task reads as one pill, so the pill has to answer for every
-// run in it. Failures first, then work in flight, then work still coming: a day
-// whose 9am ran fine and whose 2pm died must not read as a clean Done. Same
-// ordering as TONE_RANK above, in the five-column vocabulary.
-const COLUMN_RANK: BoardColumn[] = [
-  "failed", "in_progress", "upcoming", "archived", "done",
-];
-
-// A column this build has never heard of ranks LAST, not first: an unreadable
-// status must not silently promote itself to the day's headline.
-const statusRank = (s: RunStatus) => {
-  const i = COLUMN_RANK.indexOf(s.column);
-  return i < 0 ? COLUMN_RANK.length : i;
-};
-
-/** The pill over a chip's popover: the day's worst run, and projected only when
- * NOTHING that day is real — one materialized run makes the day a commitment. */
-export function dayStatus(runs: RunStatus[]): RunStatus {
-  let best: RunStatus | null = null;
-  for (const r of runs) if (!best || statusRank(r) < statusRank(best)) best = r;
-  const projected = runs.length > 0 && runs.every((r) => r.projected);
-  if (!best)
-    return { column: "done", failed: false, projected: false, label: columnLabel("done"), detail: "" };
-  return { ...best, projected, label: columnLabel(best.column) };
+/**
+ * THE POPOVER HEADER'S PILL: one TASK's status, in the same five words.
+ *
+ * This replaced a `dayStatus` that ranked the runs on the chip's DAY (failed >
+ * in_progress > upcoming > archived > done) and put the worst one's word in the
+ * header. That is a different question from the one the header asks, and the two
+ * answers were visibly disagreeing: a recurring rule whose TASK is `upcoming`
+ * but whose day holds one failed run wore a pill reading "Failed" beside a
+ * footer button reading "Run now" — two facts about one task, in one panel.
+ *
+ * The pill sits beside `TASK-023` in that header, so it labels the TASK, not the
+ * column of runs under it — the same noun the List's row and the Board's card
+ * are, and therefore the same word. Nothing is lost by the change: each run's
+ * own outcome is already the word at the end of its row in the thread below
+ * (runStatus above), which is where a day-level fact belongs.
+ *
+ * WHY THE COLUMN IS AN ARGUMENT, again: `taskColumn` lives in tasks-lib, which
+ * imports this file, so asking it here would be a cycle. The caller reads
+ * `taskColumn(task)` and `task.failed` — the exact two values it hands
+ * StatusIcon on the List and the Board — and this turns them into the word.
+ *
+ * `failed` collapses into the COLUMN rather than staying a flag beside it, which
+ * is the same bridge runStatus makes and matches StatusIcon's own text exactly:
+ * a task triaged to `done` whose newest run broke says Failed, and so does a
+ * task the server already filed under `failed`.
+ *
+ * `projected` is the one DAY-scoped thing the pill still carries, and
+ * deliberately not as a word: the dashes say "nothing on this day is written
+ * down yet", a glance-level cue the chip itself also wears. Dropping a visual
+ * distinction is not part of dropping a duplicated word.
+ */
+export function taskStatus(
+  column: BoardColumn,
+  failed: boolean,
+  projected = false,
+): RunStatus {
+  const c = failed ? "failed" : column;
+  return {
+    column: c,
+    failed: c === "failed",
+    projected,
+    label: columnLabel(c),
+    // A task has no finer reading to keep: `detail` exists for the run-level
+    // words runStatus folds away ("Missed", "Stopped reporting"), and a task's
+    // status IS the column.
+    detail: "",
+  };
 }
 
 // ---- Keeping a popover on screen ---------------------------------------------------

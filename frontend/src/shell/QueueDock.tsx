@@ -1,5 +1,18 @@
-// The queue dock — one card in the bottom-right column for work that is about to
-// run or running now (Akshil, 2026-08-17).
+// The queue half of the ONE bottom-right activity card: work that is about to run
+// or running now (Akshil, 2026-08-17).
+//
+// It used to be a card of its own, stacked directly above the download manager,
+// and it is not any more — "this queue and notification thing should be same no?
+// why duplicate popups? just replace the queue -> thinking -> done". Same corner,
+// same plate, same shape, same kind of thing (work in progress) under two headers
+// and two counts, and a scheduled run appeared in the top card while it waited and
+// the bottom one once it had finished: one run changing container mid-life. So this
+// module no longer draws a card. It polls, it renders ROWS, and it hands them to
+// DownloadManager, which owns the plate, the one header, the one count, the one
+// list and Clear. The lifecycle is one list now:
+//
+//     queued → starting → running → finished / failed
+//        \______ these rows ______/     \__ a job row __/
 //
 // WHAT COUNTS AS QUEUED is the whole definition, and it is the server's, not a
 // filter invented here: `GET /api/schedule/queue` answers with what is PAST DUE
@@ -16,10 +29,14 @@
 // It is also the only place Cancel all now lives: the calendar's Queued strip was
 // removed and this replaces the global surface that went with it.
 //
-// Placement is NotificationHost's (it takes this as its `queue` slot, and the
-// slot exists because platform may not import shell). Empty means NO CARD — not
-// an empty state, not a header saying "nothing queued": a picture of work that
-// is about to happen has nothing to draw when none is.
+// WHY THE SHELL COMPOSES THE CARD instead of platform polling the queue itself:
+// `explorerUrl` — and `cancelOutcome`, and `relativeDue` — live in
+// shell/schedule-lib, and platform may not import shell
+// (frontend/scripts/check-boundaries.mjs). Rather than inject three functions
+// downward, the dependency runs the way the boundary already allows: shell imports
+// platform's card and fills its `queue` slot with the parts only shell can build.
+// Placement is still NotificationHost's, which takes this whole thing as its one
+// `activity` entry.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelQueued,
@@ -35,12 +52,14 @@ import {
   type Job,
 } from "@platform/lib/jobs";
 import { navigateUrl } from "@platform/lib/router";
+import DownloadManager from "@platform/ui/DownloadManager";
 import { cancelOutcome, explorerUrl, firstLine } from "@shell/schedule-lib";
 import {
+  queueCount,
   queueRows,
   roleText,
   rowCancelKind,
-  withdrawableCount,
+  showCancelAll,
   type QueueRow,
 } from "@shell/queue-dock-lib";
 
@@ -51,9 +70,9 @@ const POLL_MS = 6000;
 
 // The job registry is where a LIVE turn reports its progress, and its line —
 // "waiting for permission", "working · 4210 tokens" — is the most useful string
-// in this card, so the dock joins it onto the entry by id rather than inventing a
-// status of its own. DownloadManager drops those same rows (`dockJobs`), so one
-// run occupies one row in this corner.
+// in this card, so the row joins it onto the entry by id rather than inventing a
+// status of its own. That same job is filtered out of the job rows below
+// (`jobRows`), so one run occupies one row in one list.
 interface Snapshot {
   queued: ScheduledMessage[];
   running: ScheduledMessage[];
@@ -65,7 +84,7 @@ const EMPTY: Snapshot = { queued: [], running: [], live: [] };
 // `live` is the router's third list (server/routers/schedule.py) — entries whose
 // turn is still in flight. api.ts's declared return type predates it; the cast is
 // narrow and the field is optional, so a server that does not send it degrades to
-// a dock without live rows rather than to a crash.
+// a card without live rows rather than to a crash.
 type QueuePayload = Awaited<ReturnType<typeof getScheduleQueue>> & {
   live?: ScheduledMessage[];
 };
@@ -95,8 +114,8 @@ function useQueue(): { snap: Snapshot; jobs: Job[]; refresh: () => void } {
           });
         } catch {
           // The LAST snapshot stays. An unreadable queue is not an empty one, and
-          // blanking the card would take a live run off the screen (this card is
-          // where it lives — DownloadManager drops those rows) on one bad probe.
+          // blanking these rows would take a live run off the screen (they are
+          // where it lives — the job rows drop it) on one bad probe.
         }
         // Only when there is a live turn to describe. The status line comes from
         // the job registry, which DownloadManager is already polling — asking for
@@ -151,6 +170,23 @@ const ICON_OPEN = (
   </svg>
 );
 
+// lucide `loader-circle`, same house rule as ICON_OPEN. It stands where a ✕
+// cannot: a claimed entry is a brief state the server will not withdraw, and the
+// slot has to look occupied on purpose rather than empty by accident. Decorative
+// — the sentence under the title is what carries the meaning.
+const ICON_STARTING = (
+  <span className="q-spin" aria-hidden="true">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M21 12a9 9 0 1 1-6.219-8.56"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  </span>
+);
+
 function Row({
   row,
   jobLine,
@@ -164,6 +200,10 @@ function Row({
 }) {
   const [busy, setBusy] = useState(false);
   const { entry } = row;
+  // Recomputed every render, and the row is re-rendered from a fresh snapshot on
+  // every poll — so the control set follows the entry through queued → sending →
+  // live rather than being decided once when the row first appeared.
+  const kind = rowCancelKind(row);
   // The session the turn landed in first, the one it was told to resume second:
   // a run that has started has a real conversation to open, and one that has not
   // opens the folder with the Claude pane on it — which is where its words are
@@ -171,9 +211,12 @@ function Row({
   const href = explorerUrl(entry.target, entry.claude_session_id || entry.session_id || "");
 
   const cancel = async () => {
+    // No control is drawn for a claimed row; if one somehow fires (the entry got
+    // claimed between render and press) do nothing rather than ask for a refusal.
+    if (kind === "none") return;
     setBusy(true);
     try {
-      if (rowCancelKind(row) === "job") {
+      if (kind === "job") {
         // The job registry's cancel really stops the run (schedule.py owns the
         // process), unlike a page-owned job where it is only a request.
         await cancelJob(SCHEDULE_JOB_PREFIX + entry.id);
@@ -209,16 +252,26 @@ function Row({
         >
           {ICON_OPEN}
         </button>
-        <button
-          type="button"
-          className="q-x"
-          onClick={cancel}
-          disabled={busy}
-          title={row.role === "live" ? "Stop this run" : "Cancel this message"}
-          aria-label={row.role === "live" ? `Stop ${title}` : `Cancel ${title}`}
-        >
-          ✕
-        </button>
+        {kind === "none" ? (
+          // A claimed entry has no cancel — the server refuses `sending` on
+          // purpose — so the slot holds a spinner instead of a dead button: it
+          // keeps the row's controls from jumping sideways when the state moves,
+          // and says the row is working rather than stuck. The WORDS are in
+          // .q-status (roleText), because a title tooltip is not reachable by
+          // keyboard and this is the only explanation the row gets.
+          ICON_STARTING
+        ) : (
+          <button
+            type="button"
+            className="q-x"
+            onClick={cancel}
+            disabled={busy}
+            title={kind === "job" ? "Stop this run" : "Cancel this message"}
+            aria-label={kind === "job" ? `Stop ${title}` : `Cancel ${title}`}
+          >
+            ✕
+          </button>
+        )}
       </div>
       <div className="q-status">{roleText(row, jobLine)}</div>
     </div>
@@ -231,10 +284,10 @@ export default function QueueDock() {
   const [busy, setBusy] = useState(false);
 
   const rows = queueRows(snap.live, snap.running, snap.queued);
-  // Nothing about to run and nothing running — no card. The same rule the
-  // download manager applies to itself, for the same reason.
-  if (rows.length === 0) return null;
-
+  // Nothing about to run and nothing running means NO ROWS, not an empty state —
+  // and whether that leaves a card at all is the card's own question now, because
+  // the job rows share it. DownloadManager renders nothing when both halves are
+  // empty, which is the same rule as before applied once instead of twice.
   const lines = new Map<string, string>();
   for (const job of jobs) {
     if (job.id.startsWith(SCHEDULE_JOB_PREFIX) && isRunning(job)) {
@@ -242,9 +295,12 @@ export default function QueueDock() {
     }
   }
   // Cancel all is the QUEUE's — the rows the server would withdraw if asked right
-  // now. A live turn is not one of them (it has its own ✕, which stops a running
-  // process), so the button counts only what it can actually take.
-  const withdrawable = withdrawableCount(rows);
+  // now, which is `pending` and nothing else. A live turn is not one of them (it
+  // has its own ✕, which stops a running process) and neither is a claimed one
+  // (the server refuses `sending`), so the button counts only what it can take —
+  // and disappears when nothing left in the card is withdrawable. It is not the
+  // card's Clear and never becomes it: Clear dismisses rows for work that ENDED.
+  const offerCancelAll = showCancelAll(rows);
 
   const cancelAll = async () => {
     setBusy(true);
@@ -260,12 +316,19 @@ export default function QueueDock() {
   };
 
   return (
-    <div className="q-host">
-      <div className="q-head">
-        <span className="q-summary">
-          {rows.length === 1 ? "1 in the queue" : `${rows.length} in the queue`}
-        </span>
-        {withdrawable > 1 && (
+    <DownloadManager
+      queue={{
+        ...queueCount(rows),
+        rows: rows.map((row) => (
+          <Row
+            key={row.entry.id}
+            row={row}
+            jobLine={lines.get(row.entry.id) ?? ""}
+            onDone={refresh}
+            onNote={setNote}
+          />
+        )),
+        cancelAll: offerCancelAll ? (
           <button
             type="button"
             className="q-all"
@@ -275,20 +338,11 @@ export default function QueueDock() {
           >
             Cancel all
           </button>
-        )}
-      </div>
-      <div className="q-rows">
-        {rows.map((row) => (
-          <Row
-            key={row.entry.id}
-            row={row}
-            jobLine={lines.get(row.entry.id) ?? ""}
-            onDone={refresh}
-            onNote={setNote}
-          />
-        ))}
-      </div>
-      {note && <div className="q-note">{note}</div>}
-    </div>
+        ) : null,
+        // Only ever the answer to a cancel pressed in this card, so it lives with
+        // the card rather than as a toast that would outlive the rows it is about.
+        note: note ? <div className="q-note">{note}</div> : null,
+      }}
+    />
   );
 }

@@ -14,11 +14,16 @@
 // them: it is the one entry that outlives any toast, so it must not shuffle as
 // toasts come and go. Styling is .notif-host in shell.css.
 //
-// The column is ordered by LIFETIME, which is why the download manager (SPEC
-// §36) sits between the toasts and the server card: a toast is seconds, a
-// background job is minutes, the server card outlives the session. Anything
-// long-lived must be below anything short-lived, or a job's rows would shift
-// under the pointer every time an unrelated "Path copied" arrived and expired.
+// The column is ordered by LIFETIME, which is why the activity card (SPEC §36)
+// sits between the toasts and the server card: a toast is seconds, work in
+// progress is minutes, the server card outlives the session. Anything long-lived
+// must be below anything short-lived, or a job's rows would shift under the
+// pointer every time an unrelated "Path copied" arrived and expired.
+//
+// That is ONE entry in the column, not two. The scheduled-message queue used to
+// take a card of its own directly above the manager and it is now folded into it
+// (see DownloadManager's header): same corner, same plate, same kind of thing, so
+// two headers over one lifecycle was the bug.
 //
 // Panes keep their attribution for free: in panel/tab mode each pane is its
 // own document, so a pane's toast renders in THAT pane's bottom-right corner,
@@ -33,14 +38,17 @@ import ServerStatusBanner from "@platform/ui/ServerStatusBanner";
 import { dismissToast, useToasts } from "@platform/lib/toast";
 import { IS_EMBED } from "@platform/lib/router";
 
-// `queue` is the QUEUE DOCK's slot, and a slot rather than an import because of
-// the layering: the dock has to offer "Open in Explorer", the one answer to
-// which lives in shell/schedule-lib (explorerUrl), and platform may not import
-// shell (frontend/scripts/check-boundaries.mjs). So the shell hands the node in
-// and this file keeps owning where it sits — directly ABOVE the download
-// manager, which is the same lifetime story one step earlier: a queued message
-// is work that has not started, a job is work already in progress.
-export default function NotificationHost({ queue }: { queue?: ReactNode }) {
+// `activity` is the ONE work-in-progress card, handed in rather than imported
+// because of the layering: its queue rows have to offer "Open in Explorer", the
+// one answer to which lives in shell/schedule-lib (explorerUrl), and platform may
+// not import shell (frontend/scripts/check-boundaries.mjs). So the shell composes
+// the card (shell/QueueDock.tsx wraps DownloadManager with its queue slot) and
+// this file keeps owning where the one entry sits.
+//
+// Omitted, the bare download manager stands in its place: platform is not made to
+// depend on a shell that may not be there, and a host mounted without a scheduler
+// above it still shows the jobs pages report.
+export default function NotificationHost({ activity }: { activity?: ReactNode }) {
   const toasts = useToasts();
   return (
     <div className="notif-host">
@@ -59,8 +67,7 @@ export default function NotificationHost({ queue }: { queue?: ReactNode }) {
           />
         </div>
       ))}
-      {!IS_EMBED && queue}
-      {!IS_EMBED && <DownloadManager />}
+      {!IS_EMBED && (activity ?? <DownloadManager />)}
       {!IS_EMBED && <ServerStatusBanner />}
     </div>
   );

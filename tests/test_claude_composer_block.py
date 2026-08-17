@@ -10,13 +10,21 @@ refused — "why can't we block it until the next task is scheduled? why only on
 hour?" — because a message due tomorrow pollutes exactly as much as one due in
 ten minutes.
 
+The ESCAPE is not the same control in the two cases, and getting that wrong was
+the banner's first shape (Akshil, 2026-08-17). A one-off unblocks when it is
+cancelled. A repeat does not: `_materialize` arms the next occurrence, so
+cancelling one run moves the block instead of lifting it, and rescheduling leaves
+the message pending so the block survives that too. The only thing that reopens
+the box for a repeat is stopping the repeat — `schedule.cancel(template_id)` —
+and because that spends every future run, it takes two presses.
+
 Structural assertions over the template source, the same approach
 test_claude_message_anchor.py and test_claude_schedule_pill.py take: inline
 vanilla JS in a 12000-line document, so what can be pinned is that the wiring
 exists and that the properties it would be easy to get wrong stay true. Here
 those are: it blocks on a pending entry naming THIS session, it does NOT block
-when the schedule cannot be read, it names the soonest of several, and the
-recurring case says what it really costs.
+when the schedule cannot be read, it shows the scheduled message, it sits against
+the composer it is shutting, and its one action actually unblocks.
 """
 import os
 import re
@@ -136,94 +144,223 @@ def test_the_block_reads_the_poll_that_already_runs(code):
 # ------------------------------------------------------- what the banner says
 
 
-def test_it_is_a_banner_above_the_chat_and_not_a_modal(source):
-    """The transcript stays readable and the session list stays reachable. It sits
-    above the LOG rather than above the composer so it never moves the box the
-    reader is looking at."""
+def test_the_banner_sits_directly_above_the_composer(source):
+    """It explains a box that will not type, so it belongs against that box. Above
+    the LOG it was a pane-height away from the thing it was about (Akshil,
+    2026-08-17) — a notice about the composer, docked to the top bar."""
     assert '<div id="schedblock"' in source
-    assert source.index('<div id="schedblock"') < source.index('<div id="logwrap">')
-    banner = source[source.index('<div id="schedblock"'):]
-    banner = banner[:banner.index("\n    </div>")]
-    assert 'id="sb-cancel"' in banner and 'id="sb-resched"' in banner
+    at = source.index('<div id="schedblock"')
+    assert source.index('<div id="logwrap">') < at, "below the transcript"
+    assert at < source.index('<form id="inputbox"'), "above the composer"
+    # and it rides the COMPOSER'S column, not the pane's width: same measure and
+    # same gutter as #composer-chat, so it reads as a lid on that box rather than
+    # as a band across the pane
+    card = source[source.index("  #schedblock {"):source.index("  #schedblock[hidden]")]
+    composer = source[source.index("  #composer-chat {"):]
+    composer = composer[:composer.index("\n  }")]
+    for shared in ("max-width: 720px;", "width: 100%;", "margin: 0 auto;"):
+        assert shared in card and shared in composer
+    assert "20px" in card, "the composer's own side gutter"
+
+
+def test_the_arriving_banner_does_not_move_the_composer(code, source):
+    """The one thing a card directly above the input must never do. It does not,
+    by LAYOUT rather than by reserved space: #logwrap is #chat's only `flex: 1`
+    child, so the height comes out of the transcript and the composer stays put.
+    The transcript's last line is what moves, so a reader who was at the bottom is
+    put back there — measured before the render, applied on the shown edge only."""
+    state = _fn(code, "function applyComposerBlockState(")
+    assert "const wasHidden = schedBlockEl.hidden;" in state
+    assert "const pinned = wasHidden && nearBottom();" in state
+    assert state.index("nearBottom()") < state.index("renderSchedBlock()")
+    assert "if (pinned && !schedBlockEl.hidden) scrollBottom();" in state
+    # no reserved strip and no entry animation: #schedblock is `display: none`
+    # when hidden, so an unblocked composer pays nothing for it
+    assert "#schedblock[hidden] { display: none; }" in source
+    css = source[source.index("  #schedblock {"):source.index("  #schedblock[hidden]")]
+    assert "animation" not in css and "height" not in css
+
+
+def test_the_body_is_the_scheduled_message_itself(code):
+    """"Instead of this big text, show the schedule message" (Akshil, 2026-08-17).
+    Reading the words that are about to run is what makes the shut box make sense;
+    a paragraph about context pollution only described it. One ellipsed line, with
+    the whole text on the title."""
+    render = _fn(code, "function renderSchedBlock(")
+    assert "schedBlockMsg.textContent = schedMsgLine(next);" in render
+    assert 'schedBlockMsg.title = String(next.message || "");' in render
+    line = _fn(code, "function schedMsgLine(")
+    # whitespace COLLAPSES rather than the first line winning: a prompt opening
+    # "Read the following and:" would otherwise preview as its own preamble
+    assert 'replace(/\\s+/g, " ")' in line
+    # and nothing is cut at a fixed character count — the CSS ellipses it
+    assert "slice(" not in line and "length > " not in line
 
 
 def test_it_names_the_soonest_and_counts_the_rest(code):
     """Naming one is what makes the banner answer "what is coming?"; a list of five
-    would be the Schedule page in a strip above a chat."""
+    would be the Tasks page in a strip above a chat. The count is a fragment, not
+    a sentence with a plural branch — "1 more after it." reads fine."""
     sort = _fn(code, "function schedPendingHere(")
     assert 'String(a.due || "").localeCompare(String(b.due || ""))' in sort
     render = _fn(code, "function renderSchedBlock(")
     assert "const next = schedBlockers[0];" in render
     assert "const others = schedBlockers.length - 1;" in render
-    assert "more message" in render and "more messages" in render
+    assert 'why += " " + others + " more after it.";' in render
 
 
-def test_the_recurring_case_does_not_read_like_a_short_wait(code):
-    """A repeat always has a next occurrence, so the thread is read-only until the
-    repeat itself changes — and cancelling one run does not do that, it skips one
-    run and the server arms the next. Saying "cancel and carry on" here would be
-    the banner lying about its own button."""
+def test_the_reason_is_one_line_and_states_the_consequence(code):
+    """The user's own reason, in a clause. Four lines of explanation for one fact
+    was the complaint (Akshil, 2026-08-17 — "use less words"), and a banner that
+    said "please wait" would be asking for manners rather than naming a cost."""
     render = _fn(code, "function renderSchedBlock(")
-    assert "repeats — the next run is" in render
-    assert "read-only for as long as the repeat is on" in render
-    assert "moves the block to the next one" in render
-    # and the button says what it really does to a repeat
-    assert '"Cancel this run" : "Cancel message"' in render
-    # a recurring OCCURRENCE carries template_id; the template itself repeats/rule
+    assert render.count("anything you type joins it.") == 2
+    assert "Repeats here, next " in render
+    assert "Runs here " in render
+    # the four lines it replaced are gone
+    for gone in ("read-only for as long as", "moves the block to the next one",
+                 "would join this task's context", "Reschedule to change"):
+        assert gone not in code, f"the old paragraph survives: {gone!r}"
+
+
+def test_a_recurring_occurrence_is_recognised(code):
+    """A recurring OCCURRENCE carries `template_id`; a template itself carries
+    `repeats` or `rule`. Which it is decides both the copy and — the substantive
+    part — which id the one write posts."""
     is_repeat = _fn(code, "function schedIsRepeat(")
     for field in ("template_id", "repeats", "rule"):
         assert field in is_repeat
 
 
-def test_the_why_line_says_context_and_not_politeness(code):
-    """The user's own reason. A banner that said "please wait" would be asking for
-    manners; this one is stating a consequence."""
+# ---------------------------------------------------------------- the escape
+
+
+def test_the_primary_action_is_the_one_that_actually_unblocks(code):
+    """THE substantive fix. Cancelling one occurrence of a repeat unblocks nothing
+    — `_materialize` arms the next one and it blocks again — so the id posted for a
+    repeat is the TEMPLATE's. `schedule.cancel` reads a template id as "no further
+    runs" and cancels the materialized occurrence with it, which is exactly the
+    escape this case needs; one endpoint still serves both."""
+    target = _fn(code, "function schedStopTarget(")
+    assert "schedIsRepeat(entry) && entry.template_id" in target
+    assert "String(entry.template_id)" in target
+    handler = code[code.index('schedBlockStop.addEventListener("click"'):]
+    handler = handler[:handler.index("\n});")]
+    assert "const target = schedStopTarget(next);" in handler
+    assert "JSON.stringify({ id: target })" in handler
+    # and the label names the two different things it does
     render = _fn(code, "function renderSchedBlock(")
-    assert render.count("would join this task's context") == 2
+    assert '"Cancel every future run" : "Stop the repeat"' in render
+    assert '"Cancel this message"' in render
 
 
-# ------------------------------------------------------------- the two escapes
+def test_stopping_a_repeat_takes_two_presses_and_the_second_names_the_cost(code):
+    """Not undoable from here: the write spends every run the task would ever have
+    made, and no control on this page puts them back. The template's own idiom —
+    the button becomes the question in place (snapAction, the ✕ / "Back to chat"
+    pair) — rather than a dialog over a chat the reader may keep using. A ONE-OFF
+    is a single press: it loses one message that can be scheduled again."""
+    handler = code[code.index('schedBlockStop.addEventListener("click"'):]
+    handler = handler[:handler.index("\n});")]
+    arm = handler.index('if (repeat && schedStopArmed !== next.id) {')
+    assert arm < handler.index('fetch("/api/schedule/cancel"'), "arms before it writes"
+    assert "schedStopArmed = String(next.id);" in handler
+    render = _fn(code, "function renderSchedBlock(")
+    # the armed label is the CONSEQUENCE, not "Confirm" or "Really?"
+    assert '"Cancel every future run"' in render
+    # and there is a way back out of the armed state
+    assert 'armed ? "Keep it" : "Edit schedule"' in render
+    back = code[code.index('schedBlockEdit.addEventListener("click"'):]
+    back = back[:back.index("\n});")]
+    assert "if (schedStopArmed === next.id) {" in back
+    assert back.index("schedStopArmed") < back.index("openScheduler(")
 
 
-def test_cancel_is_the_one_write_and_it_carries_the_guard(code):
+def test_the_armed_press_survives_the_poll_and_belongs_to_its_entry(code):
+    """The card re-renders every 15s under the poll. An armed button that quietly
+    disarmed itself a few seconds after the press would be worse than no confirm at
+    all — so it is page state keyed by id, not a class the render throws away. A
+    different message arriving in front clears it: that press was aimed at the
+    repeat that was on screen."""
+    render = _fn(code, "function renderSchedBlock(")
+    assert 'if (schedStopArmed && schedStopArmed !== next.id) schedStopArmed = "";' in render
+    assert "const armed = schedStopArmed === next.id;" in render
+    assert 'schedBlockStop.classList.toggle("armed", armed);' in render
+    # and an emptied blocker list disarms rather than leaving it hot: a hidden
+    # card holding an armed press is a destructive control one poll away from
+    # being on screen again
+    empty = render[:render.index("const others")]
+    assert 'schedStopArmed = "";' in empty
+    assert 'schedBlockStop.classList.remove("armed");' in empty
+
+
+def test_the_stop_is_the_one_write_and_it_carries_the_guard(code):
     """The template's only write to the schedule store, and it exists because the
     block it lifts is this template's own. X-Fused is the guard every mutating
     schedule POST requires (D3)."""
     assert '"/api/schedule/cancel"' in code
-    handler = code[code.index('schedBlockCancel.addEventListener("click"'):]
+    assert code.count('fetch("/api/schedule/cancel"') == 1
+    handler = code[code.index('schedBlockStop.addEventListener("click"'):]
     handler = handler[:handler.index("\n});")]
     assert '"X-Fused": "1"' in handler
     assert 'method: "POST"' in handler
-    assert 'JSON.stringify({ id: next.id })' in handler
-    # applied locally so the box opens on the click, then reconciled — for a
-    # repeat, the reconcile is what re-blocks on the occurrence armed next
-    assert "schedBlockers = schedBlockers.slice(1);" in handler
+    # applied locally so the box opens on the click, then reconciled
     assert "pollScheduledRuns();" in handler
+    # a STOPPED repeat takes every blocker that belongs to it, not just the first:
+    # the template is gone, so an occurrence of it left in the list would have the
+    # banner naming a run the server has already dropped
+    assert "schedBlockers = repeat" in handler
+    assert "schedBlockers.filter((e) => schedStopTarget(e) !== target)" in handler
+    assert "schedBlockers.slice(1)" in handler
 
 
-def test_a_refused_cancel_survives_the_poll_that_follows_it(code):
+def test_a_refused_stop_survives_the_poll_that_follows_it(code):
     """A cancel that raced the send is refused, and saying so once is not enough:
     the same click asks for a reconciling read, and a message written straight onto
     the banner was wiped by the re-render a second later. So the refusal is
     recorded against the ENTRY and re-stated every render until that entry is no
     longer the one holding the composer shut."""
-    handler = code[code.index('schedBlockCancel.addEventListener("click"'):]
+    handler = code[code.index('schedBlockStop.addEventListener("click"'):]
     handler = handler[:handler.index("\n});")]
-    assert "schedCancelRefused = String(next.id);" in handler
-    assert 'schedCancelRefused = "";' in handler, "a cancel that worked clears it"
+    assert "schedStopRefused = String(next.id);" in handler
+    assert 'schedStopRefused = "";' in handler, "a stop that worked clears it"
     render = _fn(code, "function renderSchedBlock(")
-    assert "if (schedCancelRefused === next.id)" in render
+    assert "schedStopRefused === next.id" in render
     assert "may already be running" in render
+    # the repeat's refusal says the repeat is still on, not "still scheduled":
+    # what failed there was stopping a job, not skipping a message
+    assert "The repeat is still on" in render
 
 
-def test_reschedule_reuses_the_composer_s_own_deep_link(code):
-    """One form, one route: `/scheduled?new=1&…` is what the composer's calendar
-    button already hands the Schedule page, and `edit` only says which stored entry
-    the form is opening on."""
-    handler = code[code.index('schedBlockResched.addEventListener("click"'):]
+def test_editing_the_schedule_is_offered_but_never_as_the_way_out(code, source):
+    """It is a legitimate thing to want while looking at the task holding the chat,
+    and it is NOT an escape: an edited schedule leaves the message pending, so the
+    block survives the trip. Offering it as the way out was the old banner's lie.
+    So it is shaped as a quiet link against one bordered primary, and its own
+    tooltip says the chat stays blocked."""
+    handler = code[code.index('schedBlockEdit.addEventListener("click"'):]
     handler = handler[:handler.index("\n});")]
     assert "openScheduler(" in handler
     assert "next.id" in handler
+    render = _fn(code, "function renderSchedBlock(")
+    assert "editing it leaves this chat blocked" in render
+    # one bordered control in the row, and it is the one that unblocks
+    banner = source[source.index('<div id="schedblock"'):]
+    banner = banner[:banner.index('<form id="inputbox"')]
+    assert banner.count("<button") == 2
+    assert 'id="sb-stop" type="button"' in banner
+    assert 'id="sb-edit" class="sb-quiet"' in banner
+    assert "#schedblock .sb-acts .sb-quiet {" in source
+    quiet = source[source.index("#schedblock .sb-acts .sb-quiet {"):]
+    assert "border-color: transparent;" in quiet[:quiet.index("}")]
+
+
+def test_the_edit_link_reuses_the_composer_s_own_deep_link(code):
+    """One form, one route: `/scheduled?new=1&…` is what the composer's calendar
+    button already hands the Tasks page, and `edit` only says which stored entry
+    the form is opening on. The OCCURRENCE's id travels even for a repeat, because
+    the Tasks page resolves an occurrence to its template before opening the
+    form."""
     opener = _fn(code, "function openScheduler(")
     assert 'SCHEDULE_URL + "?new=1"' in opener
     assert '"&edit=" + encodeURIComponent(editId)' in opener

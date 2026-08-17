@@ -951,12 +951,21 @@
 /* The row's second fact, when it has one: "ran 2 days late" for a catch-up
    (`at` vs `ran_at` — the chip never moves for it), "queued" for a message that
    is past due and waiting to be claimed, which the word "Upcoming" alone does
-   not say. Never a status: the status is the four words beside it. */
+   not say, and "too late to cancel" for one already claimed. Never a status: the
+   status is the four words beside it. schedule-lib.msgNote picks which. */
 .schedule-cal-msg-note {
   flex: none;
   color: var(--warning-strong);
   font-size: 11px;
   white-space: nowrap;
+}
+
+/* "too late to cancel" is a plain fact, not the amber that "queued" and "ran 2
+   days late" are: those flag something about the run, this one only explains why
+   the row's cancel is not there. Amber would read as a fault in a state that is
+   ordinary and lasts seconds. */
+.schedule-cal-msg-note.is-held {
+  color: var(--fg-muted);
 }
 
 /* One of Upcoming / In Progress / Done / Archive, and nothing else. */
@@ -1002,6 +1011,38 @@
   cursor: default;
 }
 
+/* Where the cancel would be on a CLAIMED row (`sending`), which gets none: the
+   server refuses that state on purpose, so the row offers nothing rather than a
+   button whose only possible outcome is a refusal (schedule-lib.msgCancelKind).
+
+   The SAME 24px box as .schedule-cal-msg-act above, and that is the point: a row
+   flips queued → sending while it is being looked at, and without the matching
+   slot the note and the status word beside it jump 24px sideways at the moment a
+   button disappears — which is exactly what makes a deliberate absence read as a
+   glitch. It turns, because standing here has to say "brief, in hand" rather
+   than "stuck, control missing".
+
+   Not a button: nothing to press, no hover, not in the tab order. The words are
+   .schedule-cal-msg-note (is-held above), reachable without a pointer. Full
+   turns, so the blanket prefers-reduced-motion rule (styles/reduced-motion.css)
+   parks it back at 0deg instead of mid-tilt. */
+.schedule-cal-msg-held {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--fg-muted);
+  animation: schedule-cal-held-spin 0.8s linear infinite;
+}
+
+@keyframes schedule-cal-held-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* The action row: pinned to the foot of the card, never scrolled with the
    thread. `.schedule-card-actions` already carries `margin-top: auto`; what it
    needs here is the refusal to SHRINK, or a 24-row thread squeezes the buttons
@@ -1023,6 +1064,37 @@
 .schedule-cal-popover .btn svg {
   margin-right: 5px;
   transform: translateY(2px);
+}
+
+/* -- Run now / Re-run, in the chip popover's footer ----------------------------
+   QUIET AT REST, like the two buttons beside it. It is the only control in this
+   panel that STARTS something (Edit and Open in Explorer both just look), so it
+   must not read as the default press — which rules out .btn-primary and is why
+   nothing here touches the resting box at all.
+
+   The hue arrives only under the pointer, and it is the same "upcoming" blue
+   tasks.css gives `.tasks-act--run`, at the same 12%/32% mixes: one action, one
+   colour, across List, Board and Calendar. Blue rather than Cancel's red because
+   this one starts work instead of withdrawing it.
+
+   Properties are named individually — never `transition: all`, which would also
+   animate the border-colour a hover skin sets and leave the edge lagging behind
+   the fill. The `.prefs-section` twin is for SPECIFICITY: this popover lives
+   inside a prefs section, where `.prefs-section button:hover` paints an accent
+   edge and `.prefs-section .btn-secondary:hover` an fg-muted one, and a bare
+   0,2,0 selector only ties with the second of those. Focus is untouched: the
+   shared `.btn:focus-visible` ring already outlines it. */
+.schedule-cal-pop-run,
+.prefs-section .schedule-cal-pop-run {
+  transition: color 0.08s ease, background-color 0.08s ease,
+    border-color 0.08s ease;
+}
+
+.schedule-cal-pop-run:hover:not(:disabled),
+.prefs-section .schedule-cal-pop-run:hover:not(:disabled) {
+  color: var(--status-upcoming);
+  background: color-mix(in srgb, var(--status-upcoming) 12%, transparent);
+  border-color: color-mix(in srgb, var(--status-upcoming) 32%, transparent);
 }
 
 /* The recurring rule's own pill (list view) and a projected run's (popover). */

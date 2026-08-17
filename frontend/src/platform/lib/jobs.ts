@@ -79,20 +79,23 @@ export function isRunning(job: Job): boolean {
 export const SCHEDULE_JOB_PREFIX = "sys:schedule:";
 
 /**
- * What the download manager DRAWS, which is not everything it knows.
+ * Which jobs get a row of their own, which is not every job the card knows.
  *
- * One row per unit of work in the bottom-right corner: while a scheduled
- * message's turn is live the queue dock above the manager draws it — with the
- * link to the session it is running in, and a cancel that knows what it is
- * cancelling — so drawing it here too would be one run in two rows, each saying
- * half of the same thing.
+ * ONE ROW PER UNIT OF WORK, and since the queue and the jobs now share a single
+ * card (Akshil, 2026-08-17 — "this queue and notification thing should be same
+ * no?") that rule is enforced inside one list rather than between two cards. A
+ * scheduled message whose turn is live already has a row at the top of this card:
+ * the queue's, which carries the link to the session it is running in and a
+ * cancel that knows what it is cancelling, and which prints THIS job's status
+ * line under its title (queue-dock-lib `roleText`). A job row beside it would be
+ * the same run twice, each half saying half of the same thing.
  *
- * Only while it is RUNNING. Once the turn has ended the job row is the outcome
- * report (finished, failed, cancelled) and the dock, being a picture of work
- * still to come, carries nothing of the sort — so a terminal row keeps its place
- * and its ✕.
+ * Only while it is RUNNING. Once the turn has ended the entry drops out of the
+ * server's queue entirely, and this job row is the outcome report (finished,
+ * failed, cancelled) — the last state of the one lifecycle the card draws. So a
+ * terminal row keeps its place, its ✕, and its place in Clear.
  */
-export function dockJobs(jobs: Job[]): Job[] {
+export function jobRows(jobs: Job[]): Job[] {
   return jobs.filter((j) => !(j.id.startsWith(SCHEDULE_JOB_PREFIX) && isRunning(j)));
 }
 
@@ -204,20 +207,47 @@ export function jobStatusLine(job: Job): string {
   return job.detail;
 }
 
-// The collapsed header line: what the manager says when its rows are folded
-// away. Counts what is HAPPENING, and falls back to describing what finished
-// only when nothing is — a header reading "2 running" next to a list of four
-// finished rows is the common case, and the running ones are the news.
-export function jobsSummary(jobs: Job[]): string {
+/** The queue's contribution to the one header count: how many scheduled entries
+ *  the card is showing above the job rows, split by whether their turn has
+ *  actually begun. `waiting` is past-due-and-unclaimed plus claimed-and-spawning;
+ *  `running` is a turn in flight. Zero of both = a card with no queue half (a
+ *  platform-only mount, or simply nothing scheduled). */
+export interface QueueCount {
+  waiting: number;
+  running: number;
+}
+
+const NO_QUEUE: QueueCount = { waiting: 0, running: 0 };
+
+// The one header line for the whole card — the queue's rows and the job rows
+// under a single count, because they are one list of one kind of thing and two
+// headers over one corner is what this replaced.
+//
+// Counts what is HAPPENING, and falls back to describing what finished only when
+// nothing is: a header reading "2 running" over a list of four finished rows is
+// the common case, and the running ones are the news. Terminal rows are still
+// reachable — they are in the list, and Clear counts them.
+//
+// The NOUN is the honest one for the mix. Nothing has actually begun yet ⇒
+// "queued", never "running": a past-due message the scheduler has not claimed is
+// waiting, and calling that running is the kind of small lie that makes a user
+// stop believing the corner. "downloading" survives only for a card whose active
+// work is entirely downloads, which is what it always meant.
+export function jobsSummary(jobs: Job[], queue: QueueCount = NO_QUEUE): string {
   const running = jobs.filter(isRunning);
-  if (running.length === 0) {
+  const live = running.length + queue.running;
+  const active = live + queue.waiting;
+  if (active === 0) {
     const failed = jobs.filter((j) => j.state === "error").length;
     if (failed > 0) return failed === 1 ? "1 failed" : `${failed} failed`;
     return jobs.length === 1 ? "1 finished" : `${jobs.length} finished`;
   }
+  if (live === 0) return active === 1 ? "1 queued" : `${active} queued`;
   const downloads = running.filter((j) => j.kind === "download").length;
-  const noun = downloads === running.length ? "downloading" : "running";
-  return running.length === 1 ? `1 ${noun}` : `${running.length} ${noun}`;
+  const pureDownloads =
+    queue.waiting === 0 && queue.running === 0 && downloads === running.length;
+  const noun = pureDownloads ? "downloading" : "running";
+  return active === 1 ? `1 ${noun}` : `${active} ${noun}`;
 }
 
 // Overall progress across the running jobs, for the collapsed header's bar —

@@ -1,5 +1,6 @@
-// The download manager — one card at the foot of the notification stack showing
-// every long-running operation any page reported (SPEC §36, D244).
+// The activity card — ONE card at the foot of the notification stack for every
+// piece of work in progress: the long-running operations any page reported (SPEC
+// §36, D244) and the scheduled messages about to run or running now.
 //
 // It exists because that work used to be invisible the moment you looked away
 // from it: a page pulling an 8GB model drew its own bar inside itself, and the
@@ -10,37 +11,51 @@
 // reported by a page in a different browser tab, or by a detached Python worker
 // posting to /api/jobs itself.
 //
-// Placement and stacking belong to NotificationHost, exactly like the server
-// card below it: this component positions nothing. It sits ABOVE that card and
-// BELOW the toasts, because those are the three lifetimes in the column — a
-// toast is seconds, a job is minutes, the server card outlives the session.
+// IT IS ONE CARD, and that is the recent change (Akshil, 2026-08-17): "this queue
+// and notification thing should be same no? why duplicate popups? just replace
+// the queue -> thinking -> done". The queue used to draw its own card stacked
+// directly above this one — same corner, same plate, same shape, same kind of
+// thing — so a scheduled run appeared in the top card while it waited and the
+// bottom one once it had finished. One run, changing container mid-life, under two
+// headers and two counts. Now there is one container and one lifecycle in it:
 //
-// Cancel is a REQUEST, not a kill (jobs.py `request_cancel`): the shell has no
-// idea what the work is or which process is doing it, so the ✕ sets a flag the
-// reporting page reads on its next tick and acts on. The row therefore says
-// "Cancelling…" until the work actually stops, rather than lying about it.
+//     queued → starting → running → finished / failed
 //
-// ONE ROW PER UNIT OF WORK in this corner (Akshil, 2026-08-17): a scheduled
-// message whose turn is still in flight is drawn by the queue dock above this
-// card, which says more about it than a job row can — where to go and answer it,
-// and a cancel that knows what it is cancelling. So those rows are filtered out
-// here rather than shown twice; see SCHEDULE_JOB_PREFIX below.
-import { useCallback, useEffect, useRef, useState } from "react";
+// The first three of those states are the QUEUE's rows and the last is a job row,
+// which is why the queue arrives as a slot (`queue` below) rather than being
+// polled here: those rows have to offer "Open in Explorer", whose one answer lives
+// in shell/schedule-lib, and platform may not import shell
+// (frontend/scripts/check-boundaries.mjs). So the shell renders the rows and this
+// card owns everything shared — the plate, the one header, the one count, the one
+// scrolling list, the collapse, and Clear.
+//
+// Placement and stacking still belong to NotificationHost: this component
+// positions nothing. It sits ABOVE the server card and BELOW the toasts, because
+// those are the three lifetimes in the column — a toast is seconds, work in
+// progress is minutes, the server card outlives the session.
+//
+// Cancel is a REQUEST, not a kill, for a JOB row (jobs.py `request_cancel`): the
+// shell has no idea what the work is or which process is doing it, so the ✕ sets
+// a flag the reporting page reads on its next tick and acts on. The row therefore
+// says "Cancelling…" until the work actually stops, rather than lying about it. A
+// queue row's ✕ is a different promise and the shell owns it.
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   cancelJob,
   clearFinishedJobs,
   dismissJob,
-  dockJobs,
   fetchJobs,
   isRunning,
   jobAmount,
   jobFraction,
+  jobRows,
   jobStatusLine,
   jobsSummary,
   overallFraction,
   pollInterval,
   JOB_PING_KEY,
   type Job,
+  type QueueCount,
 } from "@platform/lib/jobs";
 const COLLAPSED_KEY = "fused-render:jobs-collapsed";
 
@@ -286,17 +301,41 @@ function JobRow({
   );
 }
 
-export default function DownloadManager() {
+/**
+ * The queue half of this card, handed in by the shell.
+ *
+ * Data and nodes, not a component: the count has to reach the ONE header and the
+ * rows have to land in the ONE list, and the rows themselves can only be built in
+ * shell (they speak `explorerUrl`). So the shell renders exactly the parts that
+ * are its own — the rows, the Cancel all button, the sentence answering it — and
+ * hands over the numbers this card needs to describe them.
+ */
+export interface QueueSlot extends QueueCount {
+  /** The queue's rows, already rendered, in lifecycle order (running first, then
+   *  starting, then waiting). Each is a `.q-row`, a sibling of the `.dl-row`s. */
+  rows: ReactNode;
+  /** Cancel all, when the shell has 2+ genuinely withdrawable rows. */
+  cancelAll?: ReactNode;
+  /** What a cancel actually did, including the half that was refused. */
+  note?: ReactNode;
+}
+
+export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
   const { jobs: reported, refresh, patch } = useJobs();
   const [collapsed, setCollapsed] = useState(loadCollapsed);
-  // Everything the poll returned MINUS the live scheduled runs the queue dock is
-  // already drawing. `patch`/`refresh` still work on the full list — the filter
-  // is what this card SHOWS, not what it knows.
-  const jobs = dockJobs(reported);
+  // Everything the poll returned MINUS the live scheduled runs the queue's own
+  // rows are already drawing, one row per unit of work in one list.
+  // `patch`/`refresh` still work on the full list — the filter is what this card
+  // SHOWS, not what it knows.
+  const jobs = jobRows(reported);
+  const count: QueueCount = { waiting: queue?.waiting ?? 0, running: queue?.running ?? 0 };
+  const queued = count.waiting + count.running;
 
-  // Nothing to say — render nothing at all. The manager is a picture of what is
-  // happening now, so an empty one is not an empty card, it is no card.
-  if (jobs.length === 0) return null;
+  // Nothing to say — render nothing at all, no chrome. The card is a picture of
+  // what is happening now, so an empty one is not an empty state with a header
+  // reading "nothing queued", it is no card. Both halves have to be empty: a
+  // queue row with no jobs is still work in progress worth a card.
+  if (jobs.length === 0 && queued === 0) return null;
 
   const overall = overallFraction(jobs);
   // What "Clear" would actually take — which includes stalled rows, since those
@@ -335,9 +374,14 @@ export default function DownloadManager() {
           <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
             ⌄
           </span>
-          <span className="dl-summary">{jobsSummary(jobs)}</span>
+          <span className="dl-summary">{jobsSummary(jobs, count)}</span>
         </button>
         {overall !== null && <span className="dl-pct">{Math.round(overall * 100)}%</span>}
+        {/* Two actions, and they are not the same one twice: Cancel all withdraws
+            messages that have not gone yet (the shell's, and only when 2+ rows
+            genuinely can be), Clear dismisses rows for work that has ENDED. So a
+            terminal row is clearable without a live one being touched. */}
+        {queue?.cancelAll}
         {clearable > 0 && (
           <button className="dl-clear" onClick={clear} title="Dismiss finished">
             Clear
@@ -359,12 +403,20 @@ export default function DownloadManager() {
           </div>
         )
       ) : (
+        // ONE list, in lifecycle order: the queue's rows first (running, then
+        // starting, then waiting) and the job rows under them, which is where the
+        // same run lands once its turn has ended. A scheduled message therefore
+        // moves down this list rather than jumping between two cards.
         <div className="dl-rows">
+          {queue?.rows}
           {jobs.map((job) => (
             <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
           ))}
         </div>
       )}
+      {/* Below the rows and OUTSIDE the collapse: it answers Cancel all, which is
+          in the header and pressable while the list is folded away. */}
+      {queue?.note}
     </div>
   );
 }

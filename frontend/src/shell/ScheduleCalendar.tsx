@@ -61,6 +61,25 @@
 // column comes from tasks-lib.messageTone, the wording from
 // schedule-lib.runStatus.
 //
+// AND THE PILL AND THE ROWS ARE SCOPED DIFFERENTLY ON PURPOSE. The pill is the
+// TASK's status (tasks-lib.taskColumn, via schedule-lib.taskStatus) because it
+// sits beside TASK-023 in the header and a chip IS a task — the same noun the
+// List and the Board show, so the same word. Each ROW is its own run's status.
+// The pill used to be the day's WORST run, which is how it came to read "Failed"
+// beside a "Run now" button on a rule whose task was merely upcoming; the memo
+// that fixed it carries the argument. Day-level facts still reach the eye
+// through pixels — the chip's wash (schedule-lib.dayTone) and the dashed ring on
+// a projected row — never through a second, contradicting word.
+//
+// RUN NOW / RE-RUN IS IN THE POPOVER FOOTER, and it is the List's button rather
+// than a second one: tasks-lib.taskRunIntent decides whether it appears, which
+// message it fires, which of the two calls that is, and which of the two words it
+// says. All three views therefore agree by construction (Akshil, 2026-08-17:
+// "let's have it in all views why just list view? for future and failed
+// events"). The popover CLOSES on a clean run and stays only to show a sentence —
+// see runTask, where the reasoning is, because the panel is anchored to a chip
+// that the run itself changes.
+//
 // CHIPS ARE PLACED BY `at`, which is always the time the message was SCHEDULED
 // for. `ran_at` is when it went. A task due Monday and caught up on Wednesday
 // stays in Monday's column and the popover row says "ran 2 days late" — moving
@@ -82,6 +101,8 @@ import {
   getTaskMessages,
   getTasksScheduled,
   markTaskMessageRead,
+  resendScheduledMessage,
+  runScheduledNow,
 } from "@platform/lib/api";
 import type { ScheduledMessage, Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
@@ -90,13 +111,14 @@ import {
   calendarThreads,
   cancelOutcome,
   chipAccessibleName,
-  dayStatus,
   folderHref,
   groupScheduled,
   dayKey,
   firstLine,
-  lateText,
+  isProjectedId,
   minutesOfDay,
+  msgCancelKind,
+  msgNote,
   popoverPos,
   queueRole,
   queueRoles,
@@ -109,10 +131,11 @@ import {
   scrollTarget,
   stepRange,
   taskChips,
+  taskStatus,
   threadForDay,
   windowBounds,
 } from "./schedule-lib";
-import type { CalendarChip, CalendarRange, QueueRole } from "./schedule-lib";
+import type { CalendarChip, CalendarRange, MsgCancelKind, QueueRole } from "./schedule-lib";
 // Where a click GOES is owned by tasks-lib, and by nothing else: taskHref opens
 // the thread, messageHref opens the one turn inside it. The calendar used to
 // build that url itself out of explorerUrl, which silently dropped the message
@@ -122,7 +145,27 @@ import type { CalendarChip, CalendarRange, QueueRole } from "./schedule-lib";
 // tasks-lib's answer, and the calendar now says the Board's words, so it asks
 // rather than deciding. Aliased because schedule-lib exports a same-named
 // function that produces a CSS class — the two are documented at both ends.
-import { messageTone as taskMessageTone, openMessageHref, taskHref } from "./tasks-lib";
+// taskRunIntent is imported for the third time in the app and for the same
+// reason: Run now / Re-run is ONE decision — whether it is offered, which
+// message it acts on, which of the two calls that is, and which word goes on the
+// button. The List asks, the Board's drag asks, and the calendar popover now
+// asks. Three views working it out separately is how the status vocabulary went
+// wrong, and this one has the most rope to hang itself with: the popover's own
+// thread list holds PROJECTED rows the other two views have never seen, so the
+// intent is asked of the TASK (the same object the List hands it) and never of
+// the merged list below.
+// taskColumn is imported for the header PILL, and for the same reason the button
+// beside it asks tasks-lib: which column a task is in is one answer, given once.
+// The pill used to answer a different question (the day's worst run) and could
+// therefore contradict the button — see the `pill` memo below.
+import {
+  messageTone as taskMessageTone,
+  openMessageHref,
+  taskColumn,
+  taskHref,
+  taskRunIntent,
+} from "./tasks-lib";
+import type { TaskRunIntent } from "./tasks-lib";
 // The Board's own status ring, reused rather than re-drawn: one vocabulary means
 // one glyph too, so a Done row in the popover is the same mark as a Done card on
 // the board — red on Failed, and dashed (below) when it is only projected.
@@ -163,6 +206,26 @@ export const ICON_CANCEL = icon(<><circle cx="12" cy="12" r="9" /><path d="M8 8l
 export const ICON_NOTES = icon(<><line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="14" y2="17" /></>);
 export const ICON_RESTORE = icon(<><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /></>);
 export const ICON_INBOX = icon(<><path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></>);
+// Run now, and the word for doing it AGAIN. Two glyphs rather than one, for the
+// reason the archive pair is two: a person looking at a task that broke has to
+// see that this restarts it, and a play triangle says "start", not "again".
+// Deliberately the SAME geometry as ScheduleTaskViews' pair (lucide `play` and
+// `rotate-ccw`) so one action is one mark across List, Board and Calendar —
+// copied rather than imported only because those two are module-private there
+// and this file may not edit them.
+//
+// ICON_RESTORE above is a rotate-ccw variant too, and the two are kept apart on
+// purpose: that one is Unskip (put a cancelled occurrence BACK), this one is
+// Re-run (send it again). Different arcs, and they never appear in one row.
+const ICON_PLAY = icon(<polygon points="6 3 20 12 6 21 6 3" />);
+const ICON_RERUN = icon(
+  <><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+    <path d="M3 3v5h5" /></>,
+);
+// lucide `loader-circle`, same recipe as the rest. It stands where a cancel
+// cannot: a claimed entry is a brief state the server will not withdraw, and
+// that slot has to look occupied on purpose rather than empty by accident.
+const ICON_STARTING = icon(<path d="M21 12a9 9 0 1 1-6.219-8.56" />);
 
 const clockTime = (d: Date) =>
   d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -251,6 +314,10 @@ function ChipPopover({
   const ref = useRef<HTMLDivElement>(null);
   const [thread, setThread] = useState<TaskMessage[] | null>(null);
   const [busy, setBusy] = useState("");
+  // Its own flag rather than a share of `busy`: that one is a MESSAGE id, and it
+  // greys one thread row's cancel. This greys a footer button, and the two can
+  // legitimately be about different messages at once.
+  const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
   useDismiss(ref, onClose);
 
@@ -316,16 +383,92 @@ function ChipPopover({
   // the Claude pane on it, and says why there.
   const threadHref = taskHref(task) ?? folderHref(task);
 
-  // Two cancels, one button. A QUEUED or RUNNING entry goes through the queue
-  // endpoint, which is the only one that can answer honestly when the race is
-  // lost: an entry already claimed for sending comes back `refused`, and that
-  // sentence goes up rather than the popover closing as if it had worked.
-  // Everything still in the future is a plain schedule cancel.
-  const cancelMessage = async (m: TaskMessage, role: QueueRole) => {
+  // Run now / Re-run, the List's and the Board's action, reachable from the one
+  // surface the calendar has for a task (Akshil, 2026-08-17: "can we have the
+  // rerun in calendar view also... let's have it in all views why just list
+  // view? for future and failed events").
+  //
+  // NOT RE-DERIVED, and asked of `task` — the exact expression the List row
+  // uses, on the exact same object — so the calendar cannot offer the action
+  // when the List would not, cannot say a different word, and cannot send a
+  // different entry id. Everything about it is tasks-lib's: whether at all,
+  // which of the two calls, which message, and the label ("Run now" while
+  // something is still pending, "Re-run" once the task reads as failed).
+  //
+  // The one thing added here, and it is a guard rather than a rule: a PROJECTED
+  // row must never be fired. The popover is the only place in the app whose
+  // message list holds ghosts, and a ghost's `entry_id` is the recurring RULE's,
+  // so spending it would ask the server to run something that was only ever
+  // drawn. `task.messages` are the server's own and hold no ghosts today, which
+  // makes this unreachable — it is here so it stays unreachable if the popover
+  // ever hands its merged list (which does hold them) to this function.
+  const run = useMemo(() => {
+    const intent = taskRunIntent(task);
+    if (!intent || isProjectedId(intent.messageId)) return null;
+    return intent;
+  }, [task]);
+
+  // THE POPOVER'S LIFECYCLE AROUND A RUN, which is the whole difficulty: this
+  // panel is anchored to a chip, and running the task CHANGES that chip. So it
+  // closes on a clean success and stays only when there is a sentence to read —
+  // the shape the queued cancel below already has, for a stronger reason here.
+  //
+  // Re-anchoring was considered and is not defined. `openChip` holds a snapshot
+  // taken at click time and the grid never re-derives it, so a panel left open
+  // would go on describing the run that has just gone. Worse for the re-send
+  // half: it creates a one-off due NOW, which belongs to TODAY's column — very
+  // often not this chip's day at all — so there is no chip on this day for the
+  // new message to be anchored to. Closing is also the only option that cannot
+  // leave the panel pinned to a chip the next poll has removed.
+  //
+  // The exception is the useful one. A 409 ("that conversation already has a
+  // turn open") reads as WAIT, not as broken, and a re-send answers 200 with a
+  // `note` when the new message was queued rather than sent — neither changed
+  // this chip, so staying put is honest, and staying put is the only way the
+  // sentence gets read. Both land in the same quiet line a refused cancel uses.
+  const runTask = async (intent: TaskRunIntent) => {
+    setRunning(true);
+    setError("");
+    try {
+      // WHICH call is not decided here: `kind` came out of tasks-lib and this is
+      // the only place it is spent.
+      let said = "";
+      if (intent.kind === "resend") {
+        said = (await resendScheduledMessage(intent.entryId)).note ?? "";
+      } else {
+        await runScheduledNow(intent.entryId);
+      }
+      // The grid has to re-read either way — a pending run has become sent, or a
+      // failed task has grown a new pending message somewhere in the window.
+      onReload();
+      if (said) setError(said);
+      else onClose();
+    } catch (e) {
+      // The server's own sentence, verbatim, and a reload anyway: if the refusal
+      // was the honest race (it fired while this was open) the grid corrects
+      // itself to whatever actually happened.
+      setError((e as Error).message);
+      onReload();
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  // Two cancels, one button, and msgCancelKind says which. A QUEUED entry goes
+  // through the queue endpoint, which is the only one that can answer honestly
+  // when the race is lost: an entry claimed for sending between paint and press
+  // comes back `refused`, and that sentence goes up rather than the popover
+  // closing as if it had worked. Everything still in the future is a plain
+  // schedule cancel.
+  const cancelMessage = async (m: TaskMessage, kind: MsgCancelKind) => {
+    // Nothing is drawn for `held` or `none`, so nothing should reach here — and
+    // if it somehow does, do nothing rather than ask the server for the refusal
+    // it would certainly give. The row already says why it has no control.
+    if (kind !== "queued" && kind !== "scheduled") return;
     setBusy(m.message_id);
     setError("");
     try {
-      if (role) {
+      if (kind === "queued") {
         const r = await cancelQueued([m.entry_id]);
         const said = cancelOutcome(r.cancelled ?? [], r.refused ?? []);
         setError(said);
@@ -352,12 +495,26 @@ function ChipPopover({
     day: "numeric",
   });
 
-  // The day's pill, in the one vocabulary: the column comes from tasks-lib, the
-  // word from schedule-lib, and the two facts the word folds away (failed,
-  // projected) come back as the pill's colour and its dashes.
-  const day = useMemo(
-    () => dayStatus(chip.messages.map((m) => runStatus(m, taskMessageTone(m)))),
-    [chip.messages],
+  // THE HEADER'S PILL IS THE TASK'S STATUS — `taskColumn(task)` and
+  // `task.failed`, the exact two values the List's row and the Board's card hand
+  // StatusIcon, so the three views cannot say different words about one task.
+  //
+  // It was the DAY's worst run until 2026-08-17 (schedule-lib.dayStatus, now
+  // gone), and that made this panel argue with itself: a recurring rule whose
+  // task is Upcoming but whose day holds one failed run showed a pill reading
+  // "Failed" next to the footer button reading "Run now". Two facts, one panel,
+  // disagreeing — and the pill sits beside TASK-023 in this header, so it is
+  // labelling that task and not that column. Each run's own outcome is still on
+  // its own row in the thread below, which is where a day-level word belongs.
+  //
+  // `chip.projected` is the one day-scoped thing left on it and is not a word:
+  // the dashes say nothing on this day is written down yet. The chip on the grid
+  // keeps its own day-level cues (schedule-lib.dayTone paints the wash, and a
+  // day holding a failure still reads differently from a clean one) — those are
+  // pixels, they were never the duplicated fact, and they stay.
+  const pill = useMemo(
+    () => taskStatus(taskColumn(task), task.failed, chip.projected),
+    [task, chip.projected],
   );
 
   const nowSec = Math.floor(Date.now() / 1000);
@@ -366,15 +523,17 @@ function ChipPopover({
     const status = runStatus(m, taskMessageTone(m));
     const role = queueRole(m, roles, nowSec);
     const t = new Date(m.at * 1000);
-    // A running entry is cancellable too — that is what the strip's own cancel
-    // did, and it is the burst case's only brake. The server still gets to
-    // refuse it, which is the whole point of routing through cancelQueued.
-    const cancellable =
-      !!m.entry_id && !status.projected && (m.state === "pending" || role === "running");
-    // The row's second line of fact, when there is one. A catch-up says how far
-    // behind it ran (`at` vs `ran_at` — never the chip's position); a queued one
-    // says it is waiting to be claimed, which "Upcoming" alone does not.
-    const note = lateText(m) || (role === "queued" ? "queued" : "");
+    // ONE decision, recomputed every render from the freshly-polled queue, so
+    // the row's control follows the entry through scheduled → queued → held
+    // instead of being reasoned out again beside the markup. schedule-lib owns
+    // the rule — and the tests for it — including the one that used to be wrong
+    // here: a `sending` entry gets no cancel, because the server refuses that
+    // state every single time and a button that can only fail is worse than
+    // none. The RACE still keeps its button (`queued`), and its refusal still
+    // comes back through cancelOutcome; a row we already know is claimed when we
+    // draw it is a different situation, and only the race justifies the offer.
+    const kind = msgCancelKind(m, role);
+    const note = msgNote(m, kind);
     return (
       <li key={m.message_id} className="schedule-cal-msg">
         <button
@@ -403,34 +562,46 @@ function ChipPopover({
           {m.unread && (
             <span className="schedule-cal-msg-unread" role="img" aria-label="Unread" />
           )}
-          {note && <span className="schedule-cal-msg-note">{note}</span>}
+          {note && (
+            <span
+              className={
+                "schedule-cal-msg-note" + (kind === "held" ? " is-held" : "")
+              }
+            >
+              {note}
+            </span>
+          )}
           {/* The app's word, and only ever one of its five. */}
           <span className="schedule-cal-msg-state">{status.label}</span>
         </button>
-        {cancellable && (
+        {kind === "held" ? (
+          // A claimed entry has no cancel, so the slot holds a turning glyph
+          // rather than a dead button: the same 24px box, so the note and the
+          // status word beside it do not slide sideways the instant the entry
+          // moves queued → sending, and it moves, because standing here has to
+          // say "brief, in hand" and not "stuck, control missing". Nothing to
+          // press and nothing to tab to — the WORDS are the note above
+          // (schedule-lib.msgNote), because a title tooltip is not reachable by
+          // keyboard and this is the only explanation the row gets.
+          <span className="schedule-cal-msg-held" aria-hidden="true">
+            {ICON_STARTING}
+          </span>
+        ) : kind !== "none" ? (
           <button
             type="button"
             className="schedule-cal-msg-act"
             disabled={busy === m.message_id}
             aria-label={
-              role === "running"
-                ? `Cancel the ${clockTime(t)} run, which is already going`
-                : m.template_id
-                  ? `Skip the ${clockTime(t)} run`
-                  : `Cancel the ${clockTime(t)} message`
+              m.template_id
+                ? `Skip the ${clockTime(t)} run`
+                : `Cancel the ${clockTime(t)} message`
             }
-            title={
-              role === "running"
-                ? "Cancel this run"
-                : m.template_id
-                  ? "Skip this run"
-                  : "Cancel this message"
-            }
-            onClick={() => cancelMessage(m, role)}
+            title={m.template_id ? "Skip this run" : "Cancel this message"}
+            onClick={() => cancelMessage(m, kind)}
           >
-            {m.template_id && role !== "running" ? ICON_SKIP : ICON_CANCEL}
+            {m.template_id ? ICON_SKIP : ICON_CANCEL}
           </button>
-        )}
+        ) : null}
       </li>
     );
   };
@@ -457,11 +628,11 @@ function ChipPopover({
         )}
         <span
           className={
-            `schedule-state schedule-state--${day.column}` +
-            (day.projected ? " is-projected" : "")
+            `schedule-state schedule-state--${pill.column}` +
+            (pill.projected ? " is-projected" : "")
           }
         >
-          {day.label}
+          {pill.label}
         </span>
       </div>
 
@@ -510,6 +681,26 @@ function ChipPopover({
           <button type="button" className="btn btn-secondary"
                   onClick={() => navigateUrl(threadHref)}>
             {ICON_INBOX} Open in Explorer
+          </button>
+        )}
+        {/* LAST in the row, and secondary like its neighbours, because it must
+            not read as this panel's default press: Edit and Open in Explorer
+            both only look at things, and this one starts work. Last also puts it
+            last in the tab order, so nobody arrives on it by pressing Tab once.
+            The word is tasks-lib's — Run now, or Re-run on a task that broke —
+            and the title carries the half a person would fear (the scheduled
+            time does not move; a re-send is a NEW message in the same thread).
+            The visible label IS the accessible name, so no aria-label doubles
+            it. */}
+        {run && (
+          <button
+            type="button"
+            className="btn btn-secondary schedule-cal-pop-run"
+            disabled={running}
+            title={run.title}
+            onClick={() => void runTask(run)}
+          >
+            {run.rerun ? ICON_RERUN : ICON_PLAY} {run.label}
           </button>
         )}
       </div>
