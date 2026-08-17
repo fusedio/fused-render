@@ -58,7 +58,7 @@ fused-render/
 │   │       ├── run.py          # /api/run
 │   │       ├── env.py          # script-venv install loader: /api/env/install|progress|cancel (PY-18/D173)
 │   │       ├── jobs.py         # background-job registry: /api/jobs report|list|cancel|dismiss|clear (SPEC §36/D244)
-│   │       ├── selffix.py      # self-fix: /api/selffix start|read|clear — a Claude session on THIS install (SPEC §42/D308)
+│   │       ├── selffix.py      # self-fix: /api/selffix start|read|clear — a Claude session on THIS install (SPEC §42/D322)
 │   │       └── export.py       # /api/export
 │   ├── executor.py             # runner: in-process for first-party helpers, subprocess for user code (D72)
 │   ├── _child.py               # worker-process entry (subprocess path)

@@ -7261,7 +7261,7 @@ world from one the user typed.
 
 ---
 
-## 42. Self-Fix — A Claude Session on This Installation (D308)
+## 42. Self-Fix — A Claude Session on This Installation (D322)
 
 Goal: when the app fails on a machine we cannot see, the user has one more
 option than "dismiss it and hope" — they can ask Claude to look at the failure
