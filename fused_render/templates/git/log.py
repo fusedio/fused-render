@@ -105,6 +105,21 @@ MAX_PROMPT_DIFF_BYTES = 80_000
 MAX_PROMPT_DIFF_LINES = 1_500
 MAX_PROMPT_FILES = 100
 
+# The `conflicts` read has its own pair of budgets, and they are smaller again
+# than the `pending` ones for a different reason: a conflicted file is sent WHOLE
+# (the markers only mean something in their surroundings), so the bound is on how
+# much whole-file text one prompt may carry, not on how much of a patch. Ten
+# files is already an unusual merge; a repository-wide conflict of hundreds is a
+# situation to hand back to the command line rather than to a model, and the
+# payload says so instead of quietly sending the first few as if they were all.
+MAX_CONFLICT_FILES = 10
+MAX_CONFLICT_BYTES = 60_000
+
+# The three lines git writes into a conflicted file. Recognised here so a binary
+# or marker-less unmerged file can be reported as such, and mirrored in ops.py,
+# which refuses to APPLY content that still contains them.
+CONFLICT_MARKERS = ("<<<<<<< ", "=======", ">>>>>>> ")
+
 # `git status` is unbounded in principle (a build tree can hold 100k untracked
 # files). Bounded on the way in — bytes off the pipe — and again on the way out.
 MAX_STATUS_BYTES = 4_000_000
@@ -813,7 +828,7 @@ def _check_op(op, sha, entry):
     (with the target's cwd) to run. Cheap string checks come first, always.
     """
     if op not in ("overview", "log", "commit", "worktree", "branches", "stashes",
-                  "pending"):
+                  "pending", "conflicts"):
         raise _Refused("bad-op", f"Unknown operation: {op}")
     if op == "commit" and not _SHA_RE.match(sha or ""):
         raise _Refused("bad-sha", "That is not a commit id.")
@@ -1048,6 +1063,137 @@ def _pending(root, rel, branch):
     }
 
 
+def _operation_in_flight(root):
+    """Which multi-step operation git is part-way through, and against what.
+
+    Returns `(operation, theirs, summary)` — all three `None` when the tree is
+    not mid-anything. Read from the ref/marker files in the git dir rather than
+    parsed out of `git status`'s prose, because that prose is localised and
+    reworded between releases while the marker names are plumbing.
+
+    Only the operations that can leave an unmerged index are recognised, which is
+    the same set that can produce the conflict this read exists to describe. A
+    `None` operation with unmerged paths is a real state, not a bug: `git
+    checkout --merge` and a conflicted `stash pop` both leave one with no
+    operation to continue.
+    """
+    gitdir = _git(root, "rev-parse", "--absolute-git-dir",
+                  allow=(0, 128)).decode("utf-8", "replace").strip()
+    if not gitdir or not os.path.isdir(gitdir):
+        return None, None, None
+
+    def head_of(name):
+        raw = _git(root, "rev-parse", "--short", name, allow=(0, 128, 1))
+        sha = raw.decode("utf-8", "replace").strip()
+        return sha or None
+
+    def first_line(*parts):
+        path = os.path.join(gitdir, *parts)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                return handle.readline(500).strip() or None
+        except OSError:
+            return None
+
+    # A rebase is a directory, not a ref, and it is checked FIRST: a conflicted
+    # rebase step also writes REBASE_HEAD, so asking about single refs first
+    # would report the step's parent instead of the rebase.
+    for sub in ("rebase-merge", "rebase-apply"):
+        if os.path.isdir(os.path.join(gitdir, sub)):
+            onto = first_line(sub, "head-name")
+            if onto and onto.startswith("refs/heads/"):
+                onto = onto[len("refs/heads/"):]
+            return "rebase", onto, first_line(sub, "message")
+    for marker, name in (("MERGE_HEAD", "merge"),
+                         ("CHERRY_PICK_HEAD", "cherry-pick"),
+                         ("REVERT_HEAD", "revert")):
+        if os.path.exists(os.path.join(gitdir, marker)):
+            return name, head_of(marker), first_line("MERGE_MSG")
+    return None, None, None
+
+
+def _conflict_body(root, rel, budget):
+    """One unmerged file as text-with-markers, or a flag saying it is not text.
+
+    The file is read from the WORKING TREE, which is where git wrote the markers —
+    the index holds the three unmerged stages separately and none of them is the
+    marked-up text a resolution has to replace.
+
+    `budget` is the bytes left for this file across the whole payload, so a merge
+    of one enormous file and a merge of many small ones share one ceiling.
+    Truncated on a CHARACTER boundary after decoding (a byte slice can split a
+    UTF-8 sequence) and reported, so the prompt can say the file was cut rather
+    than let a model resolve a hunk whose closing marker it never saw.
+    """
+    full = os.path.join(root, *rel.split("/"))
+    try:
+        with open(full, "rb") as handle:
+            raw = handle.read(budget + 1)
+    except OSError:
+        return "", False, True          # unreadable: named, not read
+    truncated = len(raw) > budget
+    if truncated:
+        raw = raw[:budget]
+    if b"\0" in raw:
+        return "", True, False          # binary: named, never sent to a model
+    text = raw.decode("utf-8", "replace")
+    while truncated and text and len(text.encode("utf-8")) > budget:
+        text = text[:-1]
+    return text, False, truncated
+
+
+def _conflicts(root, rel, branch):
+    """The unmerged paths and their marker text — the model's context (GT-19).
+
+    A READ, and it lives here for the same reason `_pending` does: it forks
+    `git diff --diff-filter=U` and reads files, changes no ref, no index and
+    nothing on disk. The write half is `ops.py`'s `resolve`, which is where the
+    confirmation-and-refusal machinery belongs.
+
+    Deliberately **UNSCOPED**, unlike almost every other read here. A conflict is
+    a state of the whole repository and of the operation in flight: a merge is not
+    half-finished for `pkg/` and finished elsewhere, so a view scoped to a folder
+    that hid the conflicts outside it would describe a situation that does not
+    exist. Each entry carries `in_scope` instead, which is what the view needs —
+    it may SHOW every conflict and may only offer to write the ones `ops.py`
+    would accept (GT-13).
+
+    `empty` is the first-class "there is nothing to resolve" answer (GT-9), and it
+    is about the CONFLICT, not about how many files were listed: a cap reached
+    reports `files_truncated` with `empty` false, because "we showed you none of
+    them" must never read as "there are none".
+    """
+    operation, theirs, summary = _operation_in_flight(root)
+    names, name_capped = _name_list(
+        root, ("diff", "--name-only", "--diff-filter=U", "-z", *_pathspec("")))
+    shown = names[:MAX_CONFLICT_FILES]
+    files = []
+    budget = MAX_CONFLICT_BYTES
+    for name in shown:
+        content, binary, truncated = _conflict_body(root, name, max(budget, 0))
+        budget -= len(content.encode("utf-8"))
+        files.append({
+            "path": name,
+            "in_scope": (not rel) or name == rel or name.startswith(rel + "/"),
+            "binary": binary,
+            "content": content,
+            "truncated": truncated,
+        })
+    return {
+        "ok": True,
+        "operation": operation,
+        "theirs": theirs,
+        "summary": summary,
+        "branch": branch,
+        "scope": rel,
+        "files": files,
+        "files_truncated": name_capped or len(names) > len(shown),
+        "empty": not names,
+        "max_files": MAX_CONFLICT_FILES,
+        "max_bytes": MAX_CONFLICT_BYTES,
+    }
+
+
 def main(
     file: str,
     op: str = "overview",
@@ -1091,6 +1237,10 @@ def main(
             branch, detached, head, _ = _head(root)
             return _pending(root, rel,
                             branch or (("detached at " + head) if head else None))
+        if op == "conflicts":
+            branch, detached, head, _ = _head(root)
+            return _conflicts(root, rel,
+                              branch or (("detached at " + head) if head else None))
         if op == "stashes":
             stashes, truncated = _stashes(root)
             return {"ok": True, "stashes": stashes, "truncated": truncated}
