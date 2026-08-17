@@ -175,27 +175,31 @@
   margin-top: auto;
 }
 
-/* The destination named in the Local tab's caption: the cache directory this
-   machine fills. The caption states WHERE, and where should be reachable rather
-   than copied out by hand.
+/* The two destinations named in the page's captions: the cache directory this
+   machine fills (Local) and the host this page queries (Discover). One rule,
+   because they are the same idea on either tab — the caption states WHERE, and
+   where should be reachable rather than copied out by hand.
 
-   Underlined only on hover: it sits in a line of plain facts ("8 cached ·
-   43 GB total") and a permanently underlined run of text would read as the
-   whole caption being a link rather than as one word in it being one. The path
-   wraps, because a hub path under a long username is longer than the page
-   head. */
-.am-cache-dir {
+   Underlined only on hover: each sits in a line of plain facts ("8 cached ·
+   43 GB total", "Searching huggingface.co, limited to…") and a permanently
+   underlined run of text would read as the whole caption being a link rather
+   than as one word in it being one. The path wraps, because a hub path under a
+   long username is longer than the page head. */
+.am-cache-dir,
+.am-hub-host {
   color: inherit;
   text-decoration: none;
   overflow-wrap: anywhere;
 }
 
-.am-cache-dir:hover {
+.am-cache-dir:hover,
+.am-hub-host:hover {
   color: var(--fg);
   text-decoration: underline;
 }
 
-.am-cache-dir:focus-visible {
+.am-cache-dir:focus-visible,
+.am-hub-host:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 3px;
@@ -534,6 +538,81 @@
   margin: 0 0 12px;
 }
 
+/* -- the Discover tab's search ----------------------------------------------
+   At the TOP of the tab, above the curated sections, because it is what
+   somebody opened this tab to use. It spent its life below them, which meant
+   the only way to reach the search was to scroll past the shortlist it exists
+   to be an alternative to. */
+.am-hub-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+/* The box takes the width; the two menus take what they need. `flex: 1 1 260px`
+   with a min is what makes the row collapse to a stacked search-then-menus
+   layout on a narrow window instead of squeezing a search field to nothing. */
+.am-hub-search {
+  flex: 1 1 260px;
+  min-width: 180px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* The two menus wear .field-control (styles/fields.css), the app's canonical
+   select skin, for the same reason the Engines tab's do — a native select is
+   the one control that renders as the platform's rather than as this app's.
+   What is left here is only that they do not stretch. */
+.am-hub-select {
+  flex: 0 0 auto;
+}
+
+.am-hub-search:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.am-hub-note {
+  margin: 0 0 14px;
+}
+
+/* A refetch in flight dims the results that are still on screen rather than
+   replacing them with a spinner: the old answer is still the best one we have
+   until the new one lands, and swapping it for empty space makes typing feel
+   like the page is breaking. */
+.am-hub-stale {
+  opacity: 0.55;
+  transition: opacity 120ms ease-out;
+}
+
+/* "Explore" on a search result — a word, beside the Download button, where the
+   Local tab's version is an icon among icons. Sized to sit on the same line as
+   the button rather than to match it: this navigates, the other spends
+   gigabytes, and they should not read as a matched pair of actions. */
+.am-card-explore-link {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  text-decoration: none;
+  font-size: 12px;
+}
+
+.am-card-explore-link:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+.am-card-explore-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
 /* -- what a model is doing right now (SPEC §40) ------------------------------
    The runtime row sits between what a model IS and the meta line, because it is
    the answer to a different question — not "what did I download" but "what is
@@ -750,6 +829,16 @@
 .am-suggested-note {
   margin-top: -2px;
   max-width: 62ch;
+}
+
+/* The line that names the curated view for what it is, above the first
+   capability heading. Rides .am-group-note — it is the same kind of sentence
+   as the notes under the headings below it, and giving it its own size or
+   colour would make the tab's opening line look like a banner. The extra
+   bottom margin is the only difference: it is introducing a run of sections
+   rather than captioning the one grid under it. */
+.am-suggested-lede {
+  margin-bottom: 16px;
 }
 
 .am-suggest-note {

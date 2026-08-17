@@ -5695,35 +5695,140 @@ loads weights, imports a framework, or touches the network.
 
 ---
 
-## 39. Discover — RETIRED (D312)
+## 39. Discover — The Hub, Narrowed to What This App Can Run (D255, D313)
 
-The Hub search this section specified is gone: the box, the task filter, the
-sort, the read-only result grid, `POST /api/ai-models/hub/search`, `GET
-/api/ai-models/hub/tasks` and `routers/hub_models.py` with them. **HS-1 through
-HS-8 no longer describe anything.**
+Goal: §37 answers "what did I already download". This answers the other half —
+"what is out there" — and the two are only worth anything **together**, because
+the Hub does not know your disk and a browser tab open on huggingface.co cannot
+tell you that the model you are reading about is already cached, was last read
+three weeks ago, and would cost nothing to open.
 
-What retired it is HS-1's own amendment read to its conclusion. The rule
-shipped as "search tells you what a result would COST before a click you cannot
-make here", and D258 then made the CURATED entries downloadable — leaving the
-search results as the only cards on the page that could not be acted on, under
-a caption that had to say so out loud. A search over tens of thousands of repos
-in front of a page that can load about a dozen of them is not a browsing
-feature with a rough edge; a model runs here only if a registered engine reads
-its weight format (see the Local tab's engine tag), so the shortlist §40's
-catalog serves was always the honest extent of the answer.
-
-Two properties this section argued for survive it, and both are now free.
-HS-2's join — "already on this machine, and what it costs" — is what the ✓ on
-a suggested card states, answered from the page's own cache walk rather than
-from a second one inside the search. HS-4's consent posture ("nothing reaches
-the network until the tab is open") is stronger than it was: with
-`hub_models.py` deleted, this app makes no outbound request of its own at all,
-and the only traffic the page can cause is a download somebody pressed a button
-for. HS-1a's guarded-POST asymmetry existed to protect the outbound call and
-went with it.
-
-The Discover TAB stays — it is where §40's catalog is read, and where a machine
-with an empty cache gets its first model.
+- **HS-0** **Everything on this tab is downloadable, and the constraint is the
+  feature** (D313). A repo runs here only if a registered engine reads its
+  weight format, so a search that returned whatever the Hub returned put
+  embedding models, fill-mask models and gated repos in front of a page that
+  could act on none of them — and admitted it in a caption reading "Search
+  results are read-only". **The filter is the registry's, not a list**: a
+  candidate tag survives only if `registry.capability_for_task` maps it to a
+  capability some runner serves, which is the SAME function that decides
+  whether a repo already on disk gets a Load button. Searchable and loadable
+  therefore cannot drift, and a new runner makes its filter appear without an
+  edit to the module that talks to the Hub. Four tags qualify today, against
+  the twenty-six the menu used to offer. A row is dropped for an unrunnable
+  tag, for NO tag (a repo that cannot be classified cannot be promised), and
+  for `gated`/`private` — both downloadable only after something happens
+  elsewhere, and a card that has to hedge about its own button is what this
+  rule exists to remove. Every surviving row carries a non-null `capability`,
+  which is what the Download button hands to the runtime.
+- **HS-0a** **The menu constrains what can be ASKED; the row filter constrains
+  what comes BACK.** They are not the same guarantee: an unfiltered query lets
+  the Hub answer with anything it likes, so the supported-tag pass runs over
+  every reply regardless of what was asked. A task the app cannot run is
+  refused with a 400 rather than searched for and returned empty — an empty
+  grid reads as "the Hub has no summarization models", which blames the wrong
+  party. Because the pass throws most of an unfiltered page away, the request
+  **over-fetches (4x, capped) and truncates AFTER filtering**, so `limit` means
+  "rows you will be shown"; with a task filter the Hub has already constrained
+  and the request asks for exactly what it shows.
+- **HS-0b** **One grid at a time, and the search box is at the top** (D313). A
+  curated shortlist answers "what should I even get" — the question somebody
+  has BEFORE they know what to type — so results REPLACE the suggestions rather
+  than stacking under them, and clearing the box brings them back. The box sits
+  above the sections because it is what the tab is for; underneath them, the
+  only way to reach it was to scroll past the thing it is an alternative to.
+  The curated view names itself ("Suggested models — picked to run on this
+  machine..."), because three capability headings and a grid do not distinguish
+  "a handful somebody picked" from "everything installable". That line, the
+  grid and the host disclosure are one decision in one place
+  (`shell/discoverView.ts`), since every way they can disagree is the page
+  making a false claim about itself.
+- **HS-1** **AMENDED (D258): downloading is offered, and the reasoning is
+  unchanged.** The original rule was that a download needs a progress surface, a
+  cancel and an answer for a half-finished pull — none of which existed, so the
+  button did not either. Local inference (§40) built exactly that, so Discover
+  now downloads through it — from the search results as well as the shortlist
+  since D313. This module still never writes to the cache itself: it asks the
+  runner's worker to, and the job registry shows it.
+- **HS-1a** **Search is a guarded POST; the rest of Discover is an ordinary
+  read.** The app's rule is that reads are unguarded GETs (WF-5), and the reason
+  is D36's: a foreign page can fire a request but the browser will not let it
+  read the reply. That protects the RESPONSE and says nothing about the REQUEST
+  — and search is the one read in this app that LEAVES the machine, calling the
+  Hub with the user's token attached (HS-3). Unguarded, a blind cross-origin GET
+  could spend someone's credential and their rate limit while learning nothing,
+  which the same-origin policy does not prevent. Rather than bolt a guard onto a
+  GET — leaving a shape that contradicts the stated rule and invites the next
+  reader to copy it — the route takes the shape its effect deserves: an outward
+  effect is a POST, and POSTs carry `X-Fused`. `hub/tasks` stays a GET beside
+  it, a static glossary that touches nothing. **What earns the guard is the
+  outbound call, not the router**, and the asymmetry inside one module is the
+  clearest possible statement of that. Still not authentication (D3 stands).
+- **HS-2** **The join is the feature.** Every result is cross-referenced against
+  the local scan before it is returned, so a card says **downloaded** (with what
+  it costs on disk and when it was last read), **partly downloaded**, or
+  **not downloaded**. `partial` is a real state and not a rounding of the other
+  two: an interrupted pull leaves a repo folder holding blobs and no
+  materialised snapshot, and calling that "downloaded" sends someone to a model
+  that cannot load. The line is "has at least one snapshot" — and the page holds
+  the same line, so only a **downloaded** result opens its model card. A partial
+  one links to the Hub like an absent one does, because there is no revision for
+  the card to describe and linking there would hand someone the very failure the
+  distinction exists to prevent.
+- **HS-3** **The server fetches; the page never does.** One place holds the
+  token, bounds the timeout, caches, and can be audited for what this app sends
+  to a third party. The **host is fixed** — only the query string varies, so no
+  request can point this at another server — with `HF_ENDPOINT` (the standard
+  mirror override `huggingface_hub` honours) the one exception, and it is still
+  checked to be an http(s) URL before it is used. The query is **encoded**, never
+  concatenated: a search for `a&b=c` is a search, not a second parameter. The
+  sort is a **fixed set** of names, so a client can never pass a raw field
+  through to the Hub.
+- **HS-4** **Nothing reaches the network until Discover is opened, and nothing
+  at all until something is typed.** The app is a local file explorer; a page
+  that quietly queried a third party on mount would be a surprise. Selecting the
+  tab is the consent, the caption names the host being asked, and the query is
+  debounced — a burst of typing is one request — with identical queries inside a
+  short TTL answered from memory, because search-as-you-type would otherwise put
+  one request per keystroke on a public API. An EMPTY box makes no request at
+  all: the curated view is served from the local catalog, so asking the Hub for
+  "the most downloaded models" and then not rendering them would be an outbound
+  call for nothing. **Errors are never cached:** the network comes back, and the
+  next keystroke has to be allowed to find out.
+- **HS-5** **The local half of a result is never served stale, and is scoped to
+  the results.** The Hub's answer holds for the TTL; what is on this disk does
+  not, so the join runs on every request, outside the cache — a model deleted a
+  second ago must stop claiming to be downloaded, or its card links to a folder
+  that is no longer there. It can afford that because it costs what the RESULTS
+  cost rather than what the cache costs: one `scandir` of the cache root to map
+  ids to folder names, then a measure of only the handful of rows that turned
+  out to be present. The §37 listing would answer this too, but it also reads
+  every repo's model card, config and safetensors headers to say what each model
+  is FOR — work no row here needs, and work a debounced keystroke must not pay
+  for across a cache of hundreds of repos.
+- **HS-6** **Sizes are recovered, and say so.** `safetensors.parameters` is a
+  dtype -> count map, so bytes come from summing `count * bits / 8` — the same
+  arithmetic and the same `≈` the model card uses on local files (HF-17), so one
+  model cannot be 16GB on one tab and 8GB on the other. A repo with no
+  safetensors metadata reports **no size** rather than a guessed one: a number
+  someone plans a 16GB download around must not be invented.
+- **HS-7** **One vocabulary across both tabs.** A result's task label and its
+  hover sentence come from the same glossary the cached cards use (HF-18), so
+  "image + text to text" means the same thing wherever it appears. The task
+  FILTERS, though, are the Hub's own `pipeline_tag` values, listed explicitly in
+  the module that talks to the Hub — deriving them by reversing the glossary is
+  the tempting version and it is wrong, because several labels there ("image
+  generation", "video generation") are this app's reading of a diffusers
+  `_class_name` rather than tags anyone publishes under, and a filter built from
+  one would quietly return nothing. Every offered filter resolves to a label the
+  glossary explains AND to a capability a runner serves (HS-0), and a test pins
+  both.
+- **HS-8** **A far side that is unhappy is a sentence, not a 500.** Unreachable,
+  rate-limiting, refusing without a token, answering with HTML — each produces a
+  200 carrying an empty result and an explanation the page can show, because the
+  request this server received was fine and the distinction matters to whoever
+  is looking at it. Every field of a result is optional: the Hub returns what it
+  returns, an older deployment may refuse an `expand[]` field entirely, and a
+  missing field is one a card leaves out rather than an exception.
 
 ---
 

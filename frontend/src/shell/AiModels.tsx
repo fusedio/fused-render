@@ -742,9 +742,10 @@ function SectionHead({ title }: { title: string }) {
 }
 
 export default function AiModels() {
-  // Local is the default. No tab here queries a third party any more — the Hub
-  // search box that did is gone — so the only thing that leaves this machine is
-  // a download somebody pressed a button for.
+  // Local is the default, and Discover is the only thing on this page that
+  // touches the network — so nothing is sent to a third party until someone
+  // asks for it. The tab is not mounted until selected, which is also what
+  // keeps the query from firing on page load.
   //
   // **The tab lives in the URL, not in state** (`?tab=discover`), the pattern
   // Preferences already uses for its own tabs: it makes the choice
@@ -1008,11 +1009,12 @@ export default function AiModels() {
             <h2 className="cc-heading">AI Models</h2>
             <div className="cc-caption cc-mono">
               {tab === "discover" ? (
-                // Not "models on the Hugging Face Hub" any more. The tab used
-                // to search it and now lists a curation, and a caption naming
-                // the Hub over a shortlist of a dozen invites the reader to
-                // look for the search box that is gone.
-                "Models this machine can run, ready to download"
+                // What the tab is FOR, and the constraint in the same breath.
+                // It said "Models on the Hugging Face Hub", which was true of a
+                // search returning fill-mask models nothing here could load —
+                // and the whole point of D313 is that this tab now only shows
+                // what this machine could actually download and run.
+                "Models on the Hugging Face Hub this app can run"
               ) : tab === "engines" ? (
                 // Not the cache path: this tab is not about the disk, and a
                 // caption naming a directory over a panel of engine pickers is
@@ -1084,7 +1086,7 @@ export default function AiModels() {
                 aria-selected={tab === "discover"}
                 className={"am-tab" + (tab === "discover" ? " active" : "")}
                 onClick={() => setTab("discover")}
-                title="Models this machine can run, ready to download"
+                title="Search the Hugging Face Hub for models this app can run"
               >
                 Discover
               </button>
@@ -1195,7 +1197,7 @@ export default function AiModels() {
                   : "No Hugging Face cache on this machine — the first download from the Hub creates it."}
               </p>
               <button type="button" className="btn btn-secondary" onClick={() => setTab("discover")}>
-                Browse models
+                Search the Hub
               </button>
             </div>
           ))}

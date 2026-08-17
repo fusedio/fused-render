@@ -2158,6 +2158,89 @@ export function deleteAiModels(
   return postJson<AiModelsDeleteResult>("/api/ai-models/delete", { targets });
 }
 
+// -- Hub search (POST /api/ai-models/hub/search) -------------------------------
+// The other half of the AI models page: what the Hugging Face Hub has THAT THIS
+// APP CAN RUN, with every result already told apart from what this disk holds
+// (`local`). The server makes the outbound request — this module never talks to
+// huggingface.co — so one place holds the token, the timeout and the cache.
+//
+// Every row is downloadable (D313): the server drops anything whose pipeline
+// tag no runner serves, anything with no tag at all, and anything gated or
+// private. `capability` is therefore never null, and it is what a Download
+// button hands to `downloadAiModel`.
+export interface HubModelLocal {
+  /** "downloaded" has a materialised snapshot; "partial" is an interrupted pull. */
+  state: "downloaded" | "partial" | "none";
+  size?: number;
+  files?: number;
+  lastUsed?: number | null;
+  /** Ready for navigate(path, {isDir:true}) — absent unless it is here. */
+  path?: string;
+  dir?: string;
+}
+
+export interface HubModel {
+  id: string;
+  /** Friendly task label — the SAME vocabulary the cached cards use. */
+  task: string | null;
+  taskHelp: string | null;
+  pipelineTag: string | null;
+  /** Which runner would load this. Never null — the server drops rows it
+   *  cannot classify rather than guessing a capability for them. */
+  capability: string;
+  library: string | null;
+  downloads: number | null;
+  likes: number | null;
+  updated: string | null;
+  params: number | null;
+  /** Bytes recovered from the dtype map — an estimate, and shown with "≈". */
+  estimatedSize: number | null;
+  local: HubModelLocal;
+  url: string;
+}
+
+export interface HubSearchResult {
+  models: HubModel[];
+  query: { q: string; task: string; sort: string; limit: number };
+  /** Present INSTEAD of results when the Hub could not be reached or refused. */
+  error?: string;
+  endpoint?: string;
+  authenticated?: boolean;
+}
+
+export type HubSort = "downloads" | "likes" | "updated" | "created";
+
+export function searchHubModels(opts: {
+  q?: string;
+  task?: string;
+  sort?: HubSort;
+  limit?: number;
+}): Promise<HubSearchResult> {
+  // A POST, unlike every other read in this file. Search is the one that leaves
+  // the machine — the server calls the Hub with the user's token — so it takes
+  // the shape its effect deserves and carries the D3 guard with it. See the
+  // endpoint's docstring.
+  return postJson<HubSearchResult>("/api/ai-models/hub/search", {
+    q: opts.q,
+    task: opts.task,
+    sort: opts.sort,
+    limit: opts.limit,
+  });
+}
+
+export interface HubTask {
+  /** The Hub's own pipeline tag — what the filter actually sends. */
+  tag: string;
+  label: string;
+  help: string | null;
+}
+
+/** The task filters the page may offer — only the ones a registered runner
+ *  serves, which is why this is asked of the server rather than listed here. */
+export function getHubTasks(): Promise<{ tasks: HubTask[] }> {
+  return getJson<{ tasks: HubTask[] }>("/api/ai-models/hub/tasks");
+}
+
 // -- Local inference (GET/POST /api/ai/runtime, /api/ai/catalog) ---------------
 // What this machine is HOLDING IN MEMORY, as opposed to what it has on disk
 // (the AI models endpoints above). A model here is a resident process with a
