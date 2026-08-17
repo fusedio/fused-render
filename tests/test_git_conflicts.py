@@ -39,6 +39,10 @@ pytestmark = pytest.mark.skipif(not git_available(), reason="git binary not inst
 
 def _load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
+    # Asserted, never ignored: a None spec or loader means the module did not
+    # load, so every assertion below would be checking a module that was never
+    # executed — a green test over nothing.
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

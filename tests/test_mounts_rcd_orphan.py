@@ -42,10 +42,12 @@ class _FakeChild:
         self.killed += 1
         self._alive = False
 
-    def wait(self, timeout=None):
+    def wait(self, timeout: float | None = None):
         self.waited += 1
         if self._alive:
-            raise mounts_mod.subprocess.TimeoutExpired("rclone", timeout)
+            # TimeoutExpired wants a real number; a bare `wait()` (no timeout)
+            # still has to raise, so 0 stands in for "no budget given".
+            raise mounts_mod.subprocess.TimeoutExpired("rclone", timeout or 0)
         return 0
 
     def poll(self):

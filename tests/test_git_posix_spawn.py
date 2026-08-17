@@ -140,6 +140,10 @@ def test_ignore_oracle_reaches_posix_spawn(recorder, tmp_path):
 def _load(name, filename):
     spec = importlib.util.spec_from_file_location(
         name, os.path.join(_TPL, filename))
+    # Asserted, never ignored: a None spec or loader means the module did not
+    # load, so every assertion below would be checking a module that was never
+    # executed — a green test over nothing.
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -455,7 +459,11 @@ def test_every_git_spawn_in_the_repo_can_posix_spawn():
             argv = node.args[0] if node.args else None
             if isinstance(argv, (ast.List, ast.Tuple)) and argv.elts:
                 first = argv.elts[0]
-                if isinstance(first, ast.Constant) and not os.path.dirname(first.value):
+                # `isinstance(..., str)` is a real narrowing, not a type-checker
+                # appeasement: an ast.Constant holds any literal, and only a
+                # STRING argv[0] is a program name to test for a dirname.
+                if (isinstance(first, ast.Constant) and isinstance(first.value, str)
+                        and not os.path.dirname(first.value)):
                     problems.append(f"{where}: argv[0] is the bare name "
                                     f"{first.value!r} — CPython forks")
 
@@ -527,9 +535,10 @@ def test_the_sweep_actually_catches_each_violation(tmp_path):
         assert _is_git_argv(call), f"not recognised as a git spawn:\n{src}"
         kwargs, unresolved = _spawn_keywords(tree, call)
         argv = call.args[0] if call.args else None
-        bare = (isinstance(argv, (ast.List, ast.Tuple)) and argv.elts
-                and isinstance(argv.elts[0], ast.Constant)
-                and not os.path.dirname(argv.elts[0].value))
+        first = (argv.elts[0] if isinstance(argv, (ast.List, ast.Tuple)) and argv.elts
+                 else None)
+        bare = (isinstance(first, ast.Constant) and isinstance(first.value, str)
+                and not os.path.dirname(first.value))
         cf = kwargs.get("close_fds")
         bad_cf = cf is None or not (isinstance(cf, ast.Constant) and cf.value is False)
         cwd = kwargs.get("cwd")

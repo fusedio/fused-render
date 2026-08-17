@@ -54,6 +54,11 @@ pytestmark = pytest.mark.skipif(not git_available(), reason="git binary not inst
 @pytest.fixture(scope="module")
 def reader():
     spec = importlib.util.spec_from_file_location("git_log_render", READER)
+    # Asserted rather than ignored or cast: a None spec/loader means log.py did
+    # not load, and every payload below would then be built from a module that
+    # was never executed — the unverifiable-reads-as-fine shape this whole file
+    # exists to prevent. Same guard as test_git_reader.py's loader.
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

@@ -244,6 +244,10 @@ _GATE_LOGGER = "fused_render.templates.git.condition"
 @pytest.fixture
 def gate():
     spec = importlib.util.spec_from_file_location("git_condition_diag", _GATE)
+    # Asserted, never ignored: a None spec or loader means the module did not
+    # load, so every assertion below would be checking a module that was never
+    # executed — a green test over nothing.
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     # The throttle rides on the persistent logger, so it survives between the
@@ -306,6 +310,7 @@ def test_gate_warning_is_throttled_across_re_execs(gate, caplog, tmp_path):
         with caplog.at_level("WARNING", logger=_GATE_LOGGER):
             for _ in range(20):
                 spec = importlib.util.spec_from_file_location("git_cond_re", _GATE)
+                assert spec is not None and spec.loader is not None
                 fresh = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(fresh)      # a new module object each time
                 fresh.main(str(tmp_path))
