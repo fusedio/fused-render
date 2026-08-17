@@ -2867,6 +2867,17 @@ input.schedule-when-field {
   outline-offset: -1px;
 }
 
+/* The card's id line. Its status ring became CONDITIONAL on 2026-08-17: the lane
+   header directly above already carries that lane's ring, so on a card whose status
+   IS its lane the ring only repeated a mark the column had just made. It is still
+   drawn where the two disagree — a `failed` task filed under Done, whose header
+   says nothing about the failure — and which cards those are is decided in
+   ScheduleTaskViews.TaskCard, not here.
+
+   The `gap` therefore has up to three things to space, and the height this line has
+   to keep — the same with a ring in it as without, or a lane of cards jitters by
+   the width of a glyph — is tasks.css's `--tasks-card-head-h`, stated there because
+   the action strip that depends on it is defined there. */
 .schedule-tv-card-head {
   display: flex;
   align-items: center;

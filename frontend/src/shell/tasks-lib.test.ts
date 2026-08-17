@@ -1371,9 +1371,9 @@ describe("the unread count's position", () => {
       VIEWS.indexOf('<span className="schedule-tv-card-head">'),
       VIEWS.indexOf('<span className="schedule-tv-card-foot">'),
     );
-    // Not in the head any more — the head is the card's marks only.
+    // Not in the head any more — the head is the card's id and live ping only.
     const headOnly = head.slice(0, head.indexOf('className="schedule-tv-card-name"'));
-    expect(headOnly).toContain("<StatusIcon");
+    expect(headOnly).toContain("<IdChip");
     expect(headOnly).not.toContain("<UnreadPill");
     // After the title, and OUTSIDE it. Inside was the first attempt, so that the
     // count would flow after the title's last word — but that element clamps to
@@ -1390,41 +1390,70 @@ describe("the unread count's position", () => {
 
   it("keeps the row's ONE flex spacer and adds no auto margin", () => {
     // Free space is split equally between every `auto` margin, so a second one
-    // centres the right-hand group instead of pushing it to the end. Moving the
-    // pill across the row must not smuggle one in: the separation comes from the
-    // row's `gap`, and `.tasks-grow` stays the only spacer.
+    // centres the right-hand group instead of pushing it to the end. Neither mark
+    // may smuggle one in as it crosses the row: the separation comes from the row's
+    // `gap`, and `.tasks-grow` stays the only spacer on both kinds of row.
     expect((TASKS_CSS.match(/margin-left: auto/g) ?? []).length).toBe(0);
     expect(TASKS_CSS).toMatch(/\.tasks-grow\s*\{[^}]*flex: 1 1 auto/);
     expect(TASKS_CSS).toMatch(/\.tasks-row\s*\{[^}]*gap: var\(--tasks-row-gap\)/);
+    expect(TASKS_CSS).toMatch(/\.tasks-msg\s*\{[^}]*gap: var\(--tasks-row-gap\)/);
+    expect(TASKS_CSS).toMatch(/\.tasks-dot\s*\{[^}]*flex: 0 0 7px/);
+    expect(TASKS_CSS).not.toMatch(/\.tasks-dot\s*\{[^}]*margin/);
     // Not on the card either: its own wrapper carries a `gap`, so the pill needs
     // no margin of its own anywhere.
     expect(TASKS_CSS).not.toMatch(/\.schedule-tv-card-title \.tasks-count\s*\{/);
     expect(SCHEDULE_CSS).toMatch(/\.schedule-tv-card-name\s*\{[^}]*gap: 6px/);
   });
 
-  it("still leads every MESSAGE row, which is the one that is scanned", () => {
-    // The dot's move to the left edge is not undone by any of this: a thread IS
-    // read down its left edge. Only the task's total moved.
-    expect((VIEWS.match(/className="tasks-rail"/g) ?? []).length).toBeGreaterThan(1);
-    expect(VIEWS).not.toContain("tasks-msg-flag");
+  it("trails every MESSAGE row's title too, in the same order as the task row", () => {
+    // The dot used to LEAD its row, in a reserved slot on the rail, and that was
+    // the count's own bug one indent in: the mark announced before the words it is
+    // about. Worse, the task row above had already been fixed, so the thread read
+    // as a different dialect of the same page (Akshil, 2026-08-17). Both halves of
+    // unread now trail their titles; only the position moved.
     const thread = VIEWS.slice(VIEWS.indexOf('className={"tasks-msg"'));
-    expect(thread.indexOf('className="tasks-rail"')).toBeLessThan(
-      thread.indexOf("<StatusIcon"),
+    const body = thread.indexOf('className="tasks-msg-body"');
+    const dot = thread.indexOf('className="tasks-dot"');
+    expect(body).toBeGreaterThan(-1);
+    expect(dot).toBeGreaterThan(body);
+    // ...and therefore after the ring, the kind glyph and the id too.
+    expect(dot).toBeGreaterThan(thread.indexOf("<StatusIcon"));
+    expect(dot).toBeGreaterThan(thread.indexOf('className="tasks-msg-kind"'));
+    expect(dot).toBeGreaterThan(thread.indexOf("<IdChip"));
+    // Before the spacer, so it hugs the title rather than joining the trailing
+    // metadata group — the same placement the task row's count has.
+    expect(dot).toBeLessThan(thread.indexOf('className="tasks-grow"'));
+    // The reserved head slot is gone with it: nothing renders `.tasks-rail` and the
+    // rule itself is no longer in the stylesheet.
+    expect(VIEWS).not.toContain('className="tasks-rail"');
+    expect(TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(".tasks-rail");
+    expect(VIEWS).not.toContain("tasks-msg-flag");
+    // A SIBLING of the title, never inside it: the body ellipsises its overflow,
+    // so a dot in there would vanish on exactly the longest lines.
+    expect(thread).toMatch(
+      /className="tasks-msg-body">\{firstLine\(m\.body\)[^}]*\}<\/span>/,
     );
   });
 
-  it("derives the thread's indent from the rail rather than typing it twice", () => {
-    // The column is placed once (--tasks-rail-x) and the thread reaches it by
-    // subtracting a message row's own indent. Hand-tune either side separately
-    // and the column bends — which is the bug that geometry fixed.
+  it("derives every indent from the rail rather than typing it twice", () => {
+    // The rail is placed once (--tasks-rail-x): it is where a TASK row's ring
+    // stands. A MESSAGE row's ring stands one ring slot and one gap to its right,
+    // and THAT is derived too, then the thread's padding is derived from it by
+    // subtracting a message row's own left padding. Hand-tune any of the three
+    // separately and the columns part company, which is the bug this geometry
+    // exists to prevent.
     expect(TASKS_CSS).toContain("--tasks-rail-x: calc(");
-    expect(TASKS_CSS).toContain(
-      "calc(var(--tasks-rail-x) - var(--tasks-msg-indent))",
+    expect(TASKS_CSS).toMatch(
+      /--tasks-msg-ring-x: calc\(\s*var\(--tasks-rail-x\) \+ var\(--tasks-rail-w\) \+ var\(--tasks-row-gap\)\s*\);/,
     );
-    // ...and the rail slot is the RING's width, centred, which is what puts a 7px
-    // dot on the exact centre line of the ring on the task row above it.
-    expect(TASKS_CSS).toMatch(/\.tasks-rail\s*\{[^}]*justify-content:\s*center/);
-    expect(TASKS_CSS).toMatch(/\.tasks-rail\s*\{[^}]*flex:\s*0 0 var\(--tasks-rail-w\)/);
+    expect(TASKS_CSS).toContain(
+      "calc(var(--tasks-msg-ring-x) - var(--tasks-msg-indent))",
+    );
+    // The slot the derivation is made of is the RING's width. This is the whole
+    // reason the offset survived the dot leaving the head: the empty slot used to
+    // push the thread's rings into their column, so its width had to be written
+    // down before it could be deleted, or every message row would have slid left
+    // into the task row's own column.
     expect(TASKS_CSS).toMatch(/--tasks-rail-w: 16px/);
     expect(SCHEDULE_CSS).toMatch(/\.schedule-ring\s*\{[^}]*flex: 0 0 16px/);
   });
@@ -1464,6 +1493,112 @@ function statusHues(selector: string): Record<string, string> {
   }
   return out;
 }
+
+// ---- where the status ring is drawn, and where it is not -----------------------
+// The ring is the page's status vocabulary, so the question is not whether it is
+// good but whether each place it appears is SAYING something there. On a board card
+// it usually was not: the lane header states the lane, and every card in that lane
+// then said it again next to its id (Akshil, 2026-08-17 — "just repetitive here").
+//
+// But "repetitive" is a claim about AGREEMENT, and `failed` is a flag beside
+// `status` rather than a value of it, so the two can disagree — a broken run triaged
+// to Done, or live again (server routers/tasks.py `_failed`). On those cards the
+// ring was the only at-rest mark saying the run broke, and deleting it outright lost
+// a signal rather than a repetition. So the rule is conditional, and it is pinned
+// from both ends: the RULE as logic over `isFailedTask` and `taskColumn`, which is
+// what the card asks, and the CALL SITE as source, because "only when it disagrees
+// with the lane" is a claim about markup no unit of pure logic can hold.
+
+describe("the board card's status ring", () => {
+  /** The card's markup, from its head down to the action strip beside it. */
+  const CARD = VIEWS.slice(
+    VIEWS.indexOf('<span className="schedule-tv-card-head">'),
+    VIEWS.indexOf('className="tasks-card-acts"'),
+  );
+
+  /** Exactly what the card asks: does the ring say anything the lane has not? */
+  const saysSomething = (t: Task) => isFailedTask(t) && taskColumn(t) !== "failed";
+
+  it("says nothing extra on a card whose status IS its lane", () => {
+    // The common card, and the whole of what was asked for. Every lane, including
+    // Failed itself — a failed card in the Failed lane is the agreement case, and
+    // its header has already said the word.
+    for (const status of ["upcoming", "in_progress", "done", "archived"] as const) {
+      expect(saysSomething(task({ status }))).toBe(false);
+    }
+    expect(saysSomething(task({ status: "failed", failed: true }))).toBe(false);
+    // A lane the client does not recognise is filed under Done (taskColumn), and it
+    // agrees with the lane it was filed into, so it draws nothing either.
+    expect(saysSomething(task({ status: "invented-later" as Task["status"] }))).toBe(false);
+  });
+
+  it("draws on a failed task filed somewhere other than Failed", () => {
+    // The two directions `_failed` documents: a broken run the user triaged away,
+    // and one whose session is live again. Both sit under a header that says nothing
+    // about the failure, so the ring is the card's only at-rest tell — the Re-send
+    // button is hover-revealed, and a control is not a signal.
+    expect(saysSomething(task({ status: "done", failed: true }))).toBe(true);
+    expect(saysSomething(task({ status: "in_progress", failed: true }))).toBe(true);
+    expect(saysSomething(task({ status: "archived", failed: true }))).toBe(true);
+  });
+
+  it("asks that rule at the call site, through the one helper that knows it", () => {
+    // `isFailedTask` is the single notion of "reads as failed" (the failed lane, or
+    // the flag that repaints a Done ring red). A second inline reading of
+    // `task.failed` here is how the card and the List row would drift apart.
+    expect(CARD).toContain("{failedOffLane && <StatusIcon status={lane} failed />}");
+    expect(CARD).toContain("<IdChip");
+    const card = VIEWS.slice(VIEWS.indexOf("function TaskCard("));
+    expect(card).toContain('isFailedTask(task) && lane !== "failed"');
+    expect(card).toContain("const lane = taskColumn(task)");
+  });
+
+  it("changes nothing about the ring itself — same component, hue and size", () => {
+    // Conditional, not restyled: a second failure marker with its own look would be
+    // a new word in a vocabulary this round was pruning.
+    expect(CARD).not.toContain("schedule-ring");
+    expect(SCHEDULE_CSS).toContain(".schedule-ring--failed,");
+    expect(SCHEDULE_CSS).toContain("color: var(--status-failed);");
+    expect(SCHEDULE_CSS).toMatch(/\.schedule-ring\s*\{[^}]*flex: 0 0 16px/);
+  });
+
+  it("stays on the lane header, which is the one place it always says something", () => {
+    // Both forms of the header: the open lane, and the collapsed rail it becomes.
+    for (const cls of ["schedule-tv-lane-head", "schedule-tv-rail"]) {
+      const at = VIEWS.indexOf(`"${cls}"`);
+      expect(at).toBeGreaterThan(-1);
+      expect(VIEWS.slice(at, VIEWS.indexOf("</button>", at))).toContain(
+        "<StatusIcon status={col.key} />",
+      );
+    }
+  });
+
+  it("stays UNconditional on a List row and in the Calendar, which have no lane", () => {
+    const from = VIEWS.indexOf('className={"tasks-row"');
+    const row = VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
+    // Not gated on anything: a flat row and a day cell have no header above them, so
+    // the ring is the only thing that files them at all.
+    expect(row).toContain("<StatusIcon status={taskColumn(task)} failed={task.failed} />");
+    expect(VIEWS.slice(VIEWS.indexOf('className={"tasks-msg"'))).toContain("<StatusIcon");
+    expect(SCHEDULE_CSS).toContain(".schedule-cal-popover .schedule-ring");
+  });
+
+  it("holds the head's line whether or not a ring is standing in it", () => {
+    // Two failures this prevents. The strip is pinned over the head and centred on
+    // it, and the title starts one card `gap` below — clearance that came free while
+    // EVERY head held a 16px ring; a ringless head is one 11px id chip and the
+    // strip's opaque buttons reach over the title's first line on hover. And with
+    // the ring conditional, a head left to its contents would stand 16px on a
+    // failed-off-lane card and 13px on its neighbour, so a lane would jitter by the
+    // width of a glyph. One stated line answers both, and it is the ring's own
+    // height, so the two cases are exactly the same size.
+    expect(TASKS_CSS).toMatch(/--tasks-card-head-h: 16px/);
+    expect(TASKS_CSS).toMatch(
+      /\.tasks-card-wrap \.schedule-tv-card-head\s*\{[^}]*min-height: var\(--tasks-card-head-h\)/,
+    );
+    expect(SCHEDULE_CSS).toMatch(/\.schedule-ring\s*\{[^}]*height: 16px/);
+  });
+});
 
 describe("the status ring's five hues", () => {
   const LANES = [

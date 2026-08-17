@@ -45,33 +45,45 @@
   border-top: 1px solid var(--border);
 }
 
-/* -- The leading rail's geometry ------------------------------------------------
-   ONE column down the whole node. On a MESSAGE row the thing standing in it is
-   the unread dot; on the TASK row above it is the status ring — the same 16px
-   slot on the same centre line, so the node still reads as one column even
-   though the two rows say different things in it.
+/* -- The rail's geometry --------------------------------------------------------
+   TWO columns down the node, one ring slot apart, and every indent on the page is
+   derived from the first of them.
 
-   The task row's own unread COUNT is no longer in this column. It led the row
-   for a day and that was a day too long: a number at the very start of a row
-   made the messages outrank the task they belong to (Akshil, 2026-08-17). It
-   trails the title now — see `.tasks-count` — and the rail loses nothing by it,
-   because the ring that took its place is exactly as wide.
+   `--tasks-rail-x` is the rail: where the TASK row's status ring stands. Every
+   task row in the list opens on it, which is what makes the list scannable down
+   its left edge.
 
-   The two rows are indented differently on purpose — the thread hangs under its
-   task — so the column can only stay straight if ONE number decides where it
-   is and the other indents are derived from it. That number is
-   `--tasks-rail-x`: how far the column sits from the node's left edge. The task
-   row reaches it by its own padding plus the caret gutter; the thread reaches it
-   by subtracting a message row's indent from it. Retune any part and both move
-   together; hand-tune one and they part company, which is the whole bug. */
+   `--tasks-msg-ring-x` is where a MESSAGE row's own ring stands — exactly one ring
+   slot plus one gap to the right of the rail, so the thread is visibly indented
+   under the task it belongs to by the width of a whole mark rather than by a
+   number someone liked.
+
+   Two marks have left the rail, and both for the same reason. The task row's
+   unread COUNT led it first, and a number at the very start of a row made the
+   messages outrank the task they belong to; then the message row's unread DOT was
+   found doing the identical thing one indent in, which also left the thread
+   reading as a different dialect from the row above it (Akshil, 2026-08-17). Both
+   trail their titles now — `.tasks-count` and `.tasks-dot`.
+
+   The dot's departure is why `--tasks-msg-ring-x` is written down. The message
+   row's ring used to be pushed into its column by the empty slot the dot reserved
+   at the head of the row; with that slot gone the offset has to be stated, or the
+   whole thread slides left into the task's own column and the indent that says
+   "these belong to that" disappears. So the offset is DERIVED from the rail and
+   the ring slot it used to be made of, and the thread's padding is derived from
+   THAT — never typed. Retune any part and every indent moves together; hand-tune
+   one and they part company, which is the whole bug. */
 .tasks-node {
   --tasks-row-pad: 12px; /* the task row's left padding */
   --tasks-caret-w: 16px; /* the disclosure gutter, OUTSIDE the rail */
   --tasks-row-gap: 8px; /* the flex gap every row here uses */
-  --tasks-rail-w: 16px; /* the status ring's width — what the column is sized to */
-  --tasks-msg-indent: 13px; /* a message row's 1px rule + its own padding */
+  --tasks-rail-w: 16px; /* the status ring's width — what a rail slot is sized to */
+  --tasks-msg-indent: 13px; /* a message row's own left padding */
   --tasks-rail-x: calc(
     var(--tasks-row-pad) + var(--tasks-caret-w) + var(--tasks-row-gap)
+  );
+  --tasks-msg-ring-x: calc(
+    var(--tasks-rail-x) + var(--tasks-rail-w) + var(--tasks-row-gap)
   );
 }
 
@@ -153,10 +165,24 @@
 /* -- Unread ------------------------------------------------------------------
    The MESSAGE row's dot, in `--activity` — the hue the page reserves for
    something happening or waiting to be seen, and the same one the live ping
-   wears. This is the alert half of unread: one mark per message, leading the row
-   it is about, so a thread is scanned down its left edge. The task row's COUNT is
-   the other half and is deliberately not this colour any more; see
-   `.tasks-count`. */
+   wears. This is the alert half of unread: one loud mark per unread message. The
+   task row's COUNT is the quiet half — a total rather than an alert — and is
+   deliberately not this colour any more; see `.tasks-count`.
+
+   It sits immediately AFTER the message's title (2026-08-17), where the count sits
+   on the row above. Leading the row, in a reserved slot on the rail, it was the
+   same inverted priority the count had — the mark announced before the words it is
+   about — and it was that on the one page whose other half had already been fixed,
+   so a thread read as a different dialect from the task it hangs under. Only the
+   position moved: same hue, same meaning.
+
+   `flex: 0 0 7px` and no margin. The row's `gap` is the separation; an `auto`
+   margin here would be the second one in the row, and flex answers two by
+   splitting the free space between them, which re-centres the trailing group
+   instead of pushing it to the end.
+
+   Nothing is drawn at all on a read message. Trailing a title there is no column
+   to hold open — which is the whole reason the empty rail slot could go with it. */
 .tasks-dot {
   display: inline-block;
   width: 7px;
@@ -166,19 +192,14 @@
   background: var(--activity);
 }
 
-/* The rail slot itself, at the head of every MESSAGE row. Its width is the status
-   ring's, and its contents are centred: that is what puts a 7px dot on the exact
-   centre line of the ring on the task row above, so the column stays straight
-   down the node. Drawn even when empty — a slot that appeared only on unread rows
-   would shift every cell of those rows sideways, and a ragged left edge is
-   exactly what a scan cannot follow. */
-.tasks-rail {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--tasks-rail-w);
-  flex: 0 0 var(--tasks-rail-w);
-}
+/* No reserved slot at the head of a MESSAGE row any more. There was one — the ring
+   slot's width, contents centred, drawn even when empty so the dots could not
+   shunt the unread rows sideways — and the dot's move to the end of the title is
+   what retired it. The width it used to contribute has NOT been dropped, only
+   moved into the geometry: `--tasks-msg-ring-x` above is the rail plus that slot
+   plus a gap, so the thread's rings stay in the column the slot used to push them
+   into. Deleting the slot without that would have slid every message row 24px left
+   into the task row's own column. */
 
 /* The count — the task row's "and there are N of them", sitting immediately
    AFTER the title text (2026-08-17). Two things changed together and they are one
@@ -328,13 +349,39 @@
    card still stretches to fill it.
 
    They sit over the card HEAD's right end, which is empty on every card: the head
-   holds the unread pill, the ring, the id and the live ping, all left-aligned
-   and none of them growing. The title below is clamped to two lines and starts
-   on the next line down, so nothing is covered. */
+   holds the id, the live ping and — on the minority of cards where it disagrees
+   with the lane — a status ring, all left-aligned and none of them growing. The
+   title below starts on the next line down, so nothing is covered, and that
+   clearance is what `--tasks-card-head-h` exists to keep true. */
 .tasks-card-wrap {
+  /* The head's line. It was 16px tall by accident until 2026-08-17, because every
+     card's head held a 16px status ring, and the `top` on `.tasks-card-acts` below
+     was quietly measured off that — the strip's 22px buttons are centred on the
+     head and their lower edge stops just short of the title.
+
+     The ring is CONDITIONAL now (ScheduleTaskViews.TaskCard: it is drawn only when
+     it says something the lane header has not), so that accident holds on some
+     cards and not others. Both failures matter. Without the ring the head is one
+     11px id chip, about 13px, and the strip reaches over the title's first line on
+     hover, where its opaque `--bg` skin sits on the words. And a head that were
+     simply left to its contents would stand 16px on a failed-off-lane card and
+     13px on its neighbour, so a lane of cards would jitter by the width of a glyph
+     — a worse tell than the repetition the ring's removal was undoing.
+
+     So the line is stated once here rather than being a side effect of a glyph,
+     and the head holds it whether or not a ring is standing in it. */
+  --tasks-card-head-h: 16px;
   position: relative;
   display: flex;
   align-self: stretch;
+}
+
+/* Board cards only: `.schedule-tv-card-head` is schedule.css's, and this is the
+   one place it has a strip pinned over it. `min-height`, not `height`: the ring is
+   sized to exactly this line, so holding the floor is all that is needed and a
+   fixed height would clip anything the head is given later. */
+.tasks-card-wrap .schedule-tv-card-head {
+  min-height: var(--tasks-card-head-h);
 }
 
 /* One STRIP, pinned once, holding however many actions this card offers — Run
@@ -348,6 +395,9 @@
    press that opens the chat. Only the buttons take them back. */
 .tasks-card-acts {
   position: absolute;
+  /* Centred on the head's line: the card's own 8px top padding plus half of
+     `--tasks-card-head-h`, less half a 22px button. Which is why the head has to
+     keep that height even now that nothing 16px tall stands in it. */
   top: 5px;
   right: 6px;
   /* Above the card it overlays; the card sets no z-index of its own. */
@@ -430,13 +480,15 @@
    than as a thread guide. Nothing else in the list is fenced, so this isn't
    either.
 
-   The left padding is DERIVED, never typed: it is where the rail is, less a
-   message row's own indent, so the thread's dots land on the task row's rail
-   above them. See the geometry block at the top of this file. */
+   The left padding is DERIVED, never typed: it is where a message row's ring
+   belongs, less the row's own indent, so every ring in the thread lands one ring
+   slot to the right of the task row's — the indent the screenshot of this thread
+   was taken with, and the one the dot's old head slot used to provide by
+   accident. See the geometry block at the top of this file. */
 .tasks-thread {
   display: flex;
   flex-direction: column;
-  padding: 2px 12px 8px calc(var(--tasks-rail-x) - var(--tasks-msg-indent));
+  padding: 2px 12px 8px calc(var(--tasks-msg-ring-x) - var(--tasks-msg-indent));
 }
 
 .tasks-msg {
@@ -508,9 +560,9 @@
   white-space: nowrap;
 }
 
-/* The message row's own unread slot is `.tasks-rail`, defined with the rest of
-   the rail's geometry near the top of this file — one class for the task row
-   and its messages, because they are one column. */
+/* The message row's own unread mark is `.tasks-dot`, defined with the rest of the
+   unread vocabulary near the top of this file — beside the task row's count,
+   because the two are one decision and have to keep answering to it together. */
 
 .tasks-thread-error {
   margin: 4px 0 0;

@@ -51,6 +51,7 @@ import {
   groupByColumn,
   heldMessages,
   isDraggable,
+  isFailedTask,
   markAllRead,
   markRead,
   markReadIntent,
@@ -987,11 +988,13 @@ function TaskNode({
         <span className={"tasks-caret" + (open ? " is-open" : "")} aria-hidden>
           {ICON_CHEVRON}
         </span>
-        {/* The ring opens the row, and it stands in the very column the thread's
-            own dots sit on (tasks.css `--tasks-rail-x`) — same width, same centre
-            line, so one straight column runs from the task down through every
-            message it holds. The caret stays outside that column, in the gutter to
-            its left, because it is the accordion's control and not part of it.
+        {/* The ring opens the row, and it stands in the column every task row's
+            ring stands in (tasks.css `--tasks-rail-x`), which is also the column
+            the thread below is measured from — its own rings hang exactly one ring
+            slot to the right of this one, so the indent that says "these belong to
+            that" is a whole mark wide rather than an arbitrary gap. The caret stays
+            outside the column, in the gutter to its left, because it is the
+            accordion's control and not part of it.
 
             The unread COUNT deliberately does NOT lead here. It did for a day and
             it inverted the row's priority: the title is what a list is scanned
@@ -1132,25 +1135,6 @@ function TaskNode({
                     }
                   }}
                 >
-                  {/* Unread LEADS the row (tasks-lib.unreadMarker). The slot is
-                      drawn on every row, filled or not, so the dots line up in
-                      one column down the left edge instead of shunting the
-                      rest of each unread row sideways. The word that used to
-                      follow it is gone; the dot carries the name itself. It is
-                      the same `.tasks-rail` the task row above opens with —
-                      one class, therefore one column. */}
-                  {mark.unread ? (
-                    <span
-                      className="tasks-rail"
-                      role="img"
-                      aria-label={mark.label}
-                      title={mark.label}
-                    >
-                      <span className="tasks-dot" aria-hidden />
-                    </span>
-                  ) : (
-                    <span className="tasks-rail" aria-hidden />
-                  )}
                   <StatusIcon status={tone.column} failed={tone.failed} label={tone.label} />
                   <span
                     className="tasks-msg-kind"
@@ -1161,6 +1145,38 @@ function TaskNode({
                   </span>
                   <IdChip id={m.message_id} kind="message" />
                   <span className="tasks-msg-body">{firstLine(m.body) || "(empty)"}</span>
+                  {/* Unread TRAILS the title (tasks-lib.unreadMarker), exactly as
+                      the task row's count trails its own. It led the row in a
+                      reserved slot for a day, and that was the same inverted
+                      reading priority the count had: a mark in front of every
+                      unread line announced the marks before the words they are
+                      about, and the task row above having already been fixed made
+                      the thread under it read as a different dialect of the same
+                      page (Akshil, 2026-08-17).
+
+                      Only the POSITION moved. It still means unread and it is
+                      still `--activity`, the loud per-message half of the pair —
+                      the task's neutral total is the quiet half. Drawn only when
+                      the message IS unread: trailing the title there is no column
+                      to hold open, so the empty slot the old head needed is gone
+                      with it.
+
+                      A sibling of the title, never inside it: `.tasks-msg-body`
+                      ellipsises its overflow, so a dot inside a long line would be
+                      truncated away on exactly the rows that have most to say —
+                      the same trap the Board card's clamp set for the count.
+
+                      No margin of its own: the row's `gap` is the separation, and
+                      free space here is split equally between every `auto` margin,
+                      so one more would re-centre the trailing group. */}
+                  {mark.unread && (
+                    <span
+                      className="tasks-dot"
+                      role="img"
+                      aria-label={mark.label}
+                      title={mark.label}
+                    />
+                  )}
                   <span className="tasks-grow" />
                   {/* The one thing about a message a person can still CHANGE:
                       its time or its wording, before it goes out. Quiet and on
@@ -1577,6 +1593,17 @@ function TaskCard({
   // In Progress can never fire different messages. Nothing about which message
   // or which call is re-derived on this side.
   const run = taskRunIntent(task);
+  // The lane this card is IN. Not passed down: `groupByColumn` files every card
+  // by `taskColumn`, so asking it here is asking the same function that decided
+  // which lane header the card is sitting under — a prop would be a second
+  // opinion about a fact the board has already settled.
+  const lane = taskColumn(task);
+  // Whether the ring would SAY anything on this card. See the head below: the
+  // ring is drawn only when it disagrees with the lane, and `isFailedTask` is the
+  // one place that knows what "reads as failed" means (the failed lane, or the
+  // flag that repaints a Done ring red). The lane check is what turns that into
+  // "disagrees": in the failed lane the two agree and the header has said it.
+  const failedOffLane = isFailedTask(task) && lane !== "failed";
   const [busy, setBusy] = useState(false);
   const triage = async (status: ArchiveStatus) => {
     setBusy(true);
@@ -1621,11 +1648,42 @@ function TaskCard({
           if (open) onOpen(open);
         }}
       >
-        {/* The head is the card's marks — ring, id, live ping — and nothing else.
-            The unread count is NOT one of them: it belongs to the title, exactly
-            as it does on a List row, and the same objection applies to a card's
-            head as to a row's start (Akshil, 2026-08-17 — the count in front broke
-            the reading priority).
+        {/* The head is the card's marks — the id, the live ping, and a status ring
+            only when that ring has something to say.
+
+            The ring earns its place on a card by DISAGREEING with the lane, and is
+            silent when it would only repeat it. A card is never read outside the
+            lane it was filed into, and that lane's header already carries the ring
+            and the word ("◯ UPCOMING 9"), so on the common card — status and lane
+            being the same fact — the ring next to the id was the column saying its
+            own name a second time (Akshil, 2026-08-17: "that is just repetitive
+            here").
+
+            Which leaves the one card where they are NOT the same fact. `failed` is
+            a flag beside `status`, not a value of it, and the two disagree in
+            exactly one direction (server routers/tasks.py `_failed`): a broken run
+            triaged to Done or Archive, or one whose session is live again, keeps
+            the flag while the lane says something else. Those cards sit under a
+            header that does not mention the failure, and the red ring is the only
+            thing on them at rest that does — the hover-revealed Re-send is not a
+            signal, it is a control. So the ring is conditional, not absent, and
+            `failedOffLane` above is the whole rule.
+
+            Nothing about the ring itself changes: same component, same
+            `--status-failed` token, same 16px. And the head holds
+            `--tasks-card-head-h` whether or not the ring is in it (tasks.css), so a
+            card does not change height when it gains or loses one — a lane of cards
+            that jittered by the width of a glyph would be a worse tell than the
+            repetition this removed.
+
+            List and Calendar keep their ring unconditionally: a row in a flat list
+            and a chip in a day cell have no lane above them, so there the ring is
+            the only thing that files them at all.
+
+            The unread count is NOT one of the head's marks either: it belongs to
+            the title, exactly as it does on a List row, and the same objection
+            applies to a card's head as to a row's start (Akshil, 2026-08-17 — the
+            count in front broke the reading priority).
 
             So title and count are wrapped TOGETHER, as one shrink-wrapped line
             the count trails. It cannot go INSIDE the title element: that is a
@@ -1638,7 +1696,7 @@ function TaskCard({
             fills its clamp pushes the count onto a line of its own, where it is
             still there to read. */}
         <span className="schedule-tv-card-head">
-          <StatusIcon status={taskColumn(task)} failed={task.failed} />
+          {failedOffLane && <StatusIcon status={lane} failed />}
           <IdChip id={task.task_id} kind="task" />
           {task.live && <LivePulse />}
         </span>
