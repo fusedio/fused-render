@@ -6518,8 +6518,13 @@ an AI Models page that could say what was on disk but not what was *running*.
   no file, no branch in either denoising loop, and no device sync (the latents
   reach the sink as a closure, so a no-op never pulls them off the GPU). Frames
   land by `os.replace` from a temp beside the target, because the page is
-  reading the file through `/api/fs/raw` while the worker rewrites it. And it is
-  removed on success, on cancel AND **on error** — the one place this diverges
+  reading the file through `/api/fs/raw` while the worker rewrites it — and
+  **nothing escapes the sink**, because it is called from the one interruption
+  point in a render that runs for minutes: a full disk, or a Windows lock held
+  by the page's own `<img>` over the destination, must cost the thumbnail and
+  never the picture. A sink that fails three times in a row switches itself off
+  rather than paying a device sync and a doomed syscall per remaining step. And
+  it is removed on success, on cancel AND **on error** — the one place this diverges
   from the progressive transcript (AI-10a), whose file is kept on a failure
   because 80 minutes of words is salvage; a half-denoised 32x32 blur of a
   picture that will never exist is not.

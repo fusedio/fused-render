@@ -113,6 +113,17 @@ MAX_SIDE = 32
 #: packing would have to move it into the table — worth doing then, not now.
 TOKEN_STRIDE = 16
 
+#: Consecutive failed frames before a sink switches itself off.
+#:
+#: A preview never costs a render (see `Sink.add`), so a failure is swallowed —
+#: but a PERMANENT failure swallowed silently is a device sync plus a doomed
+#: syscall on every one of a hundred steps. Three in a row is the line: the
+#: failure this most expects is a Windows lock held by the page's own `<img>`
+#: over the destination, which is transient by nature, and a sink that gave up
+#: on the first unlucky step would throw the feature away over nothing. The
+#: count resets on any frame that lands.
+MAX_FAILURES = 3
+
 
 def token_grid(width, height) -> tuple:
     """The `(h, w)` token grid a render of `width` x `height` denoises in.
@@ -416,6 +427,7 @@ class Sink:
         #: render with no entry in `PROJECTIONS` pays nothing at all.
         self.wanted = bool(self.path and PROJECTIONS.get(model_key or ""))
         self._previous = None
+        self._failures = 0
 
     def add(self, latents, sigma, grid=None) -> None:
         """Offer the step just taken. Writes a frame from the second one on.
@@ -431,9 +443,48 @@ class Sink:
         index `i`, diffusers' scheduler has moved from `sigmas[i]` to
         `sigmas[i+1]`, and mflux's `config.scheduler.sigmas` indexes the same
         way off the callback's `t`.
+
+        **NOTHING escapes this method, and that is the whole of it.** It is
+        called from inside a denoising callback, which is the one interruption
+        point in a `pipe()` / `generate_image()` call that runs for minutes — so
+        an exception here does not fail a thumbnail, it unwinds the render and
+        destroys work that was going to succeed. The failures are real and are
+        not hypothetical: `save` on a full disk, `os.replace` against a Windows
+        lock held by the page's own `<img>` reading this very file through
+        `/api/fs/raw` (the hazard `discard` already swallows, one line of
+        reasoning below), a device that has fallen over inside `latents()`, a
+        latent shape nobody predicted. Both runners' `_sigma_after` helpers
+        state this invariant; this is where it is actually kept.
+
+        Broad on purpose — a list of expected exception types is a promise
+        about a third-party library's failure modes, and getting that list
+        wrong costs a render. What a failure DOES cost is the temp file it may
+        have left, which is removed here, and eventually the feature: after
+        `MAX_FAILURES` in a row the sink turns itself into the same working
+        no-op an unfitted model gets, rather than paying a device sync and a
+        doomed syscall on every remaining step.
         """
         if not self.wanted:
             return
+        try:
+            self._add(latents, sigma, grid)
+        except Exception:  # noqa: BLE001 - see the docstring; a render is at stake
+            self._failures += 1
+            # A `save` that landed and a `replace` that did not leaves a temp in
+            # a directory the user browses. It is this method's to clean up:
+            # `discard` runs at the end of the render, and until then one per
+            # failed step would accumulate.
+            try:
+                os.remove(self._temp_path())
+            except OSError:
+                pass
+            if self._failures >= MAX_FAILURES:
+                self.wanted = False
+        else:
+            self._failures = 0
+
+    def _add(self, latents, sigma, grid) -> None:
+        """`add` without the guard — everything that is allowed to raise."""
         tokens, grid = _tokens(latents(), grid)
         sigma = float(sigma)
         previous, self._previous = self._previous, (tokens, sigma)

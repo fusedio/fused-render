@@ -325,6 +325,102 @@ def test_a_no_op_sink_never_asks_for_the_LATENTS(preview, tmp_path):
         sink.add(fetch, sigma=1.0, grid=(4, 4))
 
 
+# -- a preview may never cost a render -------------------------------------------
+#
+# The sink is called from inside a denoising callback, which is the one place a
+# minutes-long render can be interrupted. Anything that escapes `add` unwinds
+# `pipe()` / `generate_image()` and destroys work that was going to succeed —
+# so the whole of `add` is guarded, and the failures are real ones: a full disk
+# during `save`, a Windows lock held by the page's own <img> during `replace`
+# (the exact hazard `discard` already swallows), a shape nobody predicted.
+
+
+def test_a_frame_that_CANNOT_BE_WRITTEN_does_not_unwind_the_render(preview, tmp_path,
+                                                                   monkeypatch):
+    """A full disk at step 40 of 100 must cost the thumbnail, not the image."""
+    def boom(src, dst):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(preview.os, "replace", boom)
+    out = str(tmp_path / "a.preview.png")
+    with preview.sink(out, KEY) as sink:
+        sink.add(lambda: _tokens(0.0), sigma=1.0, grid=(4, 4))
+        sink.add(lambda: _tokens(0.0), sigma=0.5, grid=(4, 4))
+        # …and the temp file it failed on does not accumulate, one per step, in
+        # a directory the user browses.
+        assert os.listdir(tmp_path) == []
+
+
+def test_LATENTS_that_cannot_even_be_READ_do_not_unwind_the_render(preview, tmp_path):
+    """The closure runs inside the guard too: it is a device read, and a device
+    that has fallen over is not a reason to lose the render's other minutes."""
+    def fetch():
+        raise RuntimeError("the GPU disagreed")
+
+    with preview.sink(str(tmp_path / "a.preview.png"), KEY) as sink:
+        sink.add(fetch, sigma=1.0, grid=(4, 4))
+    assert os.listdir(tmp_path) == []
+
+
+def test_a_SHAPE_nobody_predicted_does_not_unwind_the_render(preview, tmp_path):
+    """`_tokens` raises on a grid that does not hold the tokens it was given —
+    loudly, because both workers compute the grid from a width and height they
+    already have. Loud must still mean "no preview", not "no picture"."""
+    with preview.sink(str(tmp_path / "a.preview.png"), KEY) as sink:
+        sink.add(lambda: _tokens(0.0, count=9), sigma=1.0, grid=(4, 4))
+        sink.add(lambda: _tokens(0.0, count=9), sigma=0.5, grid=(4, 4))
+    assert os.listdir(tmp_path) == []
+
+
+def test_a_sink_that_KEEPS_failing_switches_itself_off(preview, tmp_path, monkeypatch):
+    """A permanently broken write is a syscall per step for the rest of a
+    100-step render, plus a device sync per step to feed it. After
+    `MAX_FAILURES` in a row the sink stops asking for the latents at all —
+    which is the same no-op an unfitted model gets."""
+    def boom(src, dst):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(preview.os, "replace", boom)
+    reads = []
+    with preview.sink(str(tmp_path / "a.preview.png"), KEY) as sink:
+        for step in range(preview.MAX_FAILURES + 4):
+            def fetch():
+                reads.append(1)
+                return _tokens(0.0)
+
+            sink.add(fetch, sigma=1.0 - step * 0.1, grid=(4, 4))
+        assert sink.wanted is False
+    # One read for the first (predecessor-only) step, then one per failure.
+    assert len(reads) == preview.MAX_FAILURES + 1
+
+
+def test_a_frame_that_LANDS_forgives_the_ones_that_did_not(preview, tmp_path,
+                                                           monkeypatch):
+    """Consecutive, not cumulative: the Windows collision this guards against is
+    transient by nature — the page's `<img>` releases the file — and a sink that
+    latched off after three unlucky steps of a long render would have thrown the
+    feature away over nothing."""
+    real_replace = os.replace
+    failing = [True]
+
+    def flaky(src, dst):
+        if failing[0]:
+            raise PermissionError("the page has it open")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(preview.os, "replace", flaky)
+    with preview.sink(str(tmp_path / "a.preview.png"), KEY) as sink:
+        for step in range(preview.MAX_FAILURES):
+            sink.add(lambda: _tokens(0.0), sigma=1.0 - step * 0.1, grid=(4, 4))
+        failing[0] = False
+        sink.add(lambda: _tokens(0.0), sigma=0.1, grid=(4, 4))
+        assert sink.wanted is True
+        failing[0] = True
+        for step in range(preview.MAX_FAILURES - 1):
+            sink.add(lambda: _tokens(0.0), sigma=0.05 - step * 0.01, grid=(4, 4))
+        assert sink.wanted is True
+
+
 # -- atomicity -------------------------------------------------------------------
 
 
@@ -404,20 +500,26 @@ def test_the_preview_is_GONE_when_the_render_FAILS_too(preview, tmp_path):
     assert os.listdir(tmp_path) == []
 
 
-def test_nothing_is_left_behind_when_a_frame_fails_MID_WRITE(preview, tmp_path,
-                                                             monkeypatch):
+def test_nothing_is_left_behind_when_the_RENDER_dies_mid_frame(preview, tmp_path,
+                                                               monkeypatch):
     """The temp file is the one thing that can outlive its writer. It is in the
-    directory the user browses, so it goes with everything else."""
+    directory the user browses, so it goes with everything else — including
+    when the render itself fails while a frame is half-written."""
     out = str(tmp_path / "a.preview.png")
+    real_replace = os.replace
 
-    def boom(src, dst):
-        raise OSError("no space left on device")
+    def leave_the_temp(src, dst):
+        # A `save` that landed and a `replace` that did not: the state a killed
+        # or failed write leaves behind.
+        raise RuntimeError("interrupted between save and replace")
 
-    monkeypatch.setattr(preview.os, "replace", boom)
-    with pytest.raises(OSError):
+    with pytest.raises(RuntimeError):
         with preview.sink(out, KEY) as sink:
             sink.add(lambda: _tokens(0.0), sigma=1.0, grid=(4, 4))
+            monkeypatch.setattr(preview.os, "replace", leave_the_temp)
             sink.add(lambda: _tokens(0.0), sigma=0.5, grid=(4, 4))
+            monkeypatch.setattr(preview.os, "replace", real_replace)
+            raise RuntimeError("the render exploded")
     assert os.listdir(tmp_path) == []
 
 
