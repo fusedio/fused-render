@@ -1,17 +1,28 @@
 """Silero VAD over ONNX Runtime: which parts of a recording contain speech.
 
 **Why this file exists at all is PARITY, not performance.** `fused.ai.transcribe`
-takes a `vad` flag, and until now the two whisper engines meant different things
-by it: `faster_whisper` runs a real Silero VAD filter over the waveform and
-drops the silence, while this runner could only map the flag onto
+takes a `vad` flag, and the engines serving that capability must mean the same
+thing by it: `faster_whisper` runs a real Silero VAD filter over the waveform
+and drops the silence, while the MLX runner could only map the flag onto
 mlx-whisper's per-window `no_speech_threshold`. Same public API, same argument,
 two behaviours — which is the one thing a second runner for a capability is not
 allowed to be (SPEC AI-10c).
 
+**It sits at the runners ROOT**, beside `worker_base.py`, `formats.py`,
+`diarize.py` and `partial.py`, and it moved here the moment a SECOND engine
+needed it (D319 — the Parakeet runner). It began inside `mlx_whisper/` because
+one runner used it and the CT2 engine had faster-whisper's own copy; that was
+the right home for exactly as long as there was one caller. Two callers of one
+promise is what the root is for: a copy under `parakeet_mlx/` would be two
+implementations of "what `vad: true` means", free to drift on the threshold, the
+minimum silence and the padding, and neither copy would fail a test — each would
+pass its own. Every runner reaches it through the same `sys.path` insert that
+reaches `worker_base`.
+
 Three constraints shaped it, and each one closed off the obvious route:
 
 * **Not `faster_whisper`'s copy of Silero.** It is right there and it is the
-  same model — but importing it would pull `ctranslate2` into the MLX runner's
+  same model — but importing it would pull `ctranslate2` into an MLX runner's
   venv, which is the whole thing the runner-folder split exists to prevent (a
   Metal-only environment does not get to carry a CPU inference engine because
   one utility module lives inside it).
@@ -21,7 +32,11 @@ Three constraints shaped it, and each one closed off the obvious route:
   is ungated (the rule `catalog.py` states about gated repos applies to
   everything this app downloads, not only to models a user picks) and the file
   is 2.2MB. Nothing here shells out, and no system ffmpeg is involved — the
-  waveform arrives already decoded by `worker.py`'s `av` path.
+  waveform arrives already decoded by the calling `worker.py`'s `av` path.
+
+**Stdlib, numpy and onnxruntime only — no import of `fused_render`**, the same
+constraint `formats.py` and `diarize.py` document: every runner reads this on
+its own interpreter, with the app's package deliberately off its path.
 
 The model is a STREAMING detector: 512 samples in, one speech probability out,
 plus a recurrent state that must be carried to the next window. That is why this
@@ -33,11 +48,10 @@ frame-energy detector, which is the failure mode that looks like it works.
 import os
 import sys
 
-# The shared format module sits one directory up, in `runners/` — the same path
-# insert `worker.py` makes, repeated because this module is also imported by
-# path on its own (by its test, and by anything that wants the region maths
-# without onnxruntime).
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# `formats` sits in THIS directory now — the same insert `worker.py` makes,
+# repeated because this module is also imported by path on its own (by its
+# test, and by anything that wants the region maths without onnxruntime).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import formats  # noqa: E402 - the path insert above is what makes it importable
 

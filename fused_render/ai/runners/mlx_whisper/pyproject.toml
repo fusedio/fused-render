@@ -29,7 +29,8 @@
 #                   MLX half comes from mlx's own allocator (see `memory()`)
 #   av              the ffmpeg LIBRARIES, in-process, with no binary to find.
 #                   The reason `worker.py` never calls `subprocess`.
-#   onnxruntime     runs Silero VAD (`vad.py`), so `vad: true` means the same
+#   onnxruntime     runs Silero VAD (`../vad.py`, shared since D319), so
+#                   `vad: true` means the same
 #                   thing here as it does on the CTranslate2 runner. Chosen
 #                   over the two alternatives that already contain this exact
 #                   model: importing faster-whisper's copy would drag

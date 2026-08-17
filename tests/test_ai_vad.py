@@ -23,19 +23,38 @@ import pytest
 
 VAD_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "fused_render", "ai", "runners", "mlx_whisper", "vad.py",
+    "fused_render", "ai", "runners", "vad.py",
 )
 
 
 @pytest.fixture(scope="module")
 def vad():
-    """Imported by path, like the workers: it ships inside a runner folder and
-    is never importable as `fused_render.ai.runners.…` in production."""
-    spec = importlib.util.spec_from_file_location("mlx_whisper_vad", VAD_PATH)
+    """Imported by path, the way a runner reaches it: it sits at the runners
+    ROOT (D319, since a second engine needed it) and is reached through the
+    same `sys.path` insert that reaches `worker_base`, never as
+    `fused_render.ai.runners.…`."""
+    spec = importlib.util.spec_from_file_location("runners_vad", VAD_PATH)
     assert spec is not None and spec.loader is not None, VAD_PATH
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_no_runner_carries_a_COPY_of_the_detector():
+    """The structural half of "vad: true means one thing" (AI-10f, D319).
+
+    Silero moved to the runners root the moment a second engine needed it, and
+    a `vad.py` back inside a runner folder is the drift that move exists to
+    prevent: two copies of the threshold, the minimum silence and the padding,
+    neither of which would fail a behavioural test because each would pass its
+    own.
+    """
+    runners = os.path.dirname(VAD_PATH)
+    for name in sorted(os.listdir(runners)):
+        folder = os.path.join(runners, name)
+        if not os.path.isfile(os.path.join(folder, "worker.py")):
+            continue
+        assert not os.path.exists(os.path.join(folder, "vad.py")), name
 
 
 class FakeSession:

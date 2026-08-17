@@ -1162,7 +1162,7 @@ def test_vad_false_means_the_DETECTOR_IS_NOT_RUN(monkeypatch, loaded, tmp_path):
 
 # -- the VAD filter, and what it does to time ------------------------------------
 #
-# The detector itself is `tests/test_ai_mlx_whisper_vad.py`'s. What is driven
+# The detector itself is `tests/test_ai_vad.py`'s. What is driven
 # here is the WIRING: how many calls the regions produce, where their timestamps
 # land, what the progress bar is denominated in, and what a cancel means once
 # there is more than one call to cancel between.

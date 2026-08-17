@@ -55,20 +55,20 @@ import sys
 import threading
 import time
 
-# The base sits one directory up, in `runners/` — see mlx_text/worker.py.
+# The base sits one directory up, in `runners/` — see mlx_text/worker.py — and
+# so, since D319, does every module two engines share.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-# …and THIS folder, for `vad`. Python already puts a script's own directory on
-# the path, so in production this line changes nothing — but the supervisor is
-# not the only thing that loads this file: the tests import it by path, where
-# sys.path[0] is whatever the test runner's is, and a sibling module that
-# resolves only under one of the two loaders is a test suite exercising a
-# different import than the one that ships.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import diarize  # noqa: E402 - the SHARED speaker labelling; see runners/diarize.py
 import formats  # noqa: E402 - the shared format checks; see formats.py
 import partial  # noqa: E402 - the SHARED progressive transcript; see runners/partial.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
+
+# `vad` is imported where it is USED rather than here, and stays that way: it is
+# reached through the same insert (it moved to `runners/` in D319, when the
+# Parakeet engine became its second caller), but every reader of it is inside a
+# function so that a test can stand it in and so that a machine with no
+# detector never pays for the import.
 
 #: The loaded model's snapshot PATH, not the model. See the module docstring:
 #: `mlx_whisper` owns the object, in `transcribe.ModelHolder`, and a second

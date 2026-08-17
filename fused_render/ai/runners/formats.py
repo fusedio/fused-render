@@ -103,13 +103,16 @@ COMPONENT_REPOS = {
     "onnx-community/silero-vad": {
         "file": "onnx/model.onnx",
         "of": None,
-        "owner": "MLX Whisper",
+        # Not "MLX Whisper" since D319: the Parakeet engine reads the same
+        # `runners/vad.py`, and a card naming one of the two engines that use
+        # it would be wrong on whichever machine is running the other.
+        "owner": "MLX transcription",
         "part": "speech detector",
         "what": (
-            "The 2MB Silero detector the MLX Whisper engine uses to find the "
-            "speech in a recording and skip the silence — fetched with any "
-            "whisper download so an offline machine still has it. Deleting it "
-            "costs a slower transcription, not a broken one."
+            "The 2MB Silero detector the MLX transcription engines use to find "
+            "the speech in a recording and skip the silence — fetched with any "
+            "of their model downloads so an offline machine still has it. "
+            "Deleting it costs a slower transcription, not a broken one."
         ),
     },
     "csukuangfj/sherpa-onnx-pyannote-segmentation-3-0": {

@@ -98,14 +98,14 @@ def test_every_component_repo_says_what_it_is_a_part_of():
 
 def test_the_vad_reads_its_file_from_the_registry():
     """`vad.py` names the detector, and the page names it too. One copy: the
-    module under a runner folder imports the shared one, so a moved repo cannot
+    shared module at the runners root reads `formats`, so a moved repo cannot
     quietly become an unexplained row."""
     import importlib.util
     import os
 
     path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "fused_render", "ai", "runners", "mlx_whisper", "vad.py",
+        "fused_render", "ai", "runners", "vad.py",
     )
     spec = importlib.util.spec_from_file_location("vad_for_formats", path)
     module = importlib.util.module_from_spec(spec)

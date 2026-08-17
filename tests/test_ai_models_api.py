@@ -1707,7 +1707,7 @@ def test_a_two_megabyte_helper_reads_the_same_way(client, hub):
 
     row = _repo_row(client, "onnx-community/silero-vad")
 
-    assert row["component"]["owner"] == "MLX Whisper"
+    assert row["component"]["owner"] == "MLX transcription"
     assert row["component"]["part"] == "speech detector"
     # An engine's component, not a model's — nothing to point at, and the prose
     # says the cost of deleting it is a slower transcription rather than a
@@ -1727,12 +1727,12 @@ def test_an_ordinary_model_is_not_a_component(client, hub):
 @requires_symlinks
 def test_loading_a_component_is_refused_by_name(client, hub):
     """`cached_capability` is what the load route refuses with (D307). "a
-    speech detector that belongs to MLX Whisper" is a far more useful sentence
-    than the "model repo" reading it used to produce."""
+    speech detector that belongs to MLX transcription" is a far more useful
+    sentence than the "model repo" reading it used to produce."""
     _repo(hub, "models--onnx-community--silero-vad", blobs={"w": 10},
           snapshots={"c1": {"model.onnx": "w"}}, refs={"main": "c1"})
 
     reading = ai_models_mod.cached_capability("onnx-community/silero-vad")
 
     assert reading.cached is True and reading.capability is None
-    assert reading.looks_like == "a speech detector that belongs to MLX Whisper"
+    assert reading.looks_like == "a speech detector that belongs to MLX transcription"
