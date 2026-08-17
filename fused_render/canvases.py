@@ -166,6 +166,8 @@ def _run_cli(args: list[str], timeout: float) -> tuple[subprocess.CompletedProce
             [*cli.command, *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=_cli_env(cli),
         )
@@ -363,6 +365,8 @@ def api_canvases_token(x_fused: str | None = Header(default=None)):
                 [sys.executable, shim],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=TOKEN_TIMEOUT,
                 env=_cli_env(cli),
             )
@@ -656,6 +660,8 @@ class _SyncManager:
                 [*cli.command, "workbench", "canvas", "push", self.dir, "--canvas", self.name],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=PUSH_TIMEOUT,
                 env=_cli_env(cli),
             )
@@ -705,6 +711,7 @@ class _SyncManager:
             probe = subprocess.run(
                 [*cli.command, *base, "--dry-run"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
+                encoding="utf-8", errors="replace",
                 env=_cli_env(cli),
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -721,6 +728,7 @@ class _SyncManager:
             applied = subprocess.run(
                 [*cli.command, *base, "--force"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
+                encoding="utf-8", errors="replace",
                 env=_cli_env(cli),
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -735,6 +743,7 @@ class _SyncManager:
             recheck = subprocess.run(
                 [*cli.command, *base, "--dry-run"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
+                encoding="utf-8", errors="replace",
                 env=_cli_env(cli),
             )
         except (subprocess.TimeoutExpired, OSError):
