@@ -250,14 +250,44 @@ class _Refused(Exception):
 # ------------------------------------------------------------------ invocation
 
 
+
+# ---------------------------------------------------------------- how git is run
+#
+# argv[0] is an ABSOLUTE path, and that is load-bearing rather than tidy. With
+# libproj resident in the host process a plain fork() runs PROJ's pthread_atfork
+# child handler into a SIGSEGV before exec, so the child dies with signal 11 and
+# empty output and NO exception — every git answer becomes a silent negative.
+# CPython avoids fork only when EVERY clause holds
+# (`subprocess.py::_execute_child`): `os.path.dirname(executable)` truthy,
+# `close_fds` false, `cwd is None`, no preexec_fn/pass_fds/start_new_session.
+# `close_fds=False` alone is NOT enough, which is what the previous version of
+# this comment got wrong: a bare "git" has dirname "" and forks regardless, and
+# so does any call that passes `cwd=`. All three parts together, or none of them
+# work. `-C <root>` is what replaces `cwd=`.
+_GIT_BIN = None
+
+
+def _git_bin():
+    """An absolute path to git, resolved once. Bare name as a last resort so a
+    PATH-less environment still raises the FileNotFoundError callers expect."""
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
+
 def _argv(root, args):
-    return ["git", "--no-pager", *_CONFIG, "-C", root, *args]
+    return [_git_bin(), "--no-pager", *_CONFIG, "-C", root, *args]
 
 
 def _popen_kwargs():
     return {
         "env": {**os.environ, **_ENV},
         "stdin": subprocess.DEVNULL,
+        # See the note above _argv: required to reach posix_spawn, and only in
+        # combination with the absolute argv[0] and no `cwd=`.
+        "close_fds": False,
         "creationflags": (subprocess.CREATE_NO_WINDOW
                           if sys.platform == "win32" else 0),
     }

@@ -8,6 +8,60 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------- how git is run
+#
+# THE bug behind "the Git side panel is disabled for every repository". With
+# libproj resident in this process — and it becomes resident the moment any map /
+# geotiff / zarr template or daemon imports rasterio or pyproj — a plain `fork()`
+# runs PROJ's pthread_atfork child handler straight into a SIGSEGV, *before*
+# exec. The child dies with signal 11, so `returncode == -11` with empty stdout
+# and stderr and NO exception, because the spawn itself worked. Every call site
+# here then fails closed on a git that never ran, for every repository at once,
+# and it looks exactly like "not a repository".
+#
+# `close_fds=False` is the well-known half of the fix and it is NOT sufficient.
+# CPython reaches posix_spawn only when every clause of this holds
+# (`subprocess.py::_execute_child`):
+#
+#     _USE_POSIX_SPAWN and os.path.dirname(executable) and preexec_fn is None
+#     and not close_fds and not pass_fds and cwd is None and ... and umask < 0
+#
+# Two were being violated across the whole codebase: argv[0] was the BARE NAME
+# "git" (dirname "" — falsy), and some callers passed `cwd=`. Either one alone
+# forces the fork path however carefully close_fds is set. So all three parts are
+# required together, and `tests/test_git_posix_spawn.py` pins them as behaviour.
+_GIT_BIN: str | None = None
+
+
+def git_bin() -> str:
+    """An ABSOLUTE path to git, so CPython can posix_spawn it.
+
+    Resolved once and cached: `shutil.which` walks PATH, and these calls run on
+    every directory the user opens. Falling back to the bare name keeps a
+    PATH-less environment behaving as it did before (a fork, and a
+    FileNotFoundError we already report) rather than raising from here.
+    """
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
+
+def _spawn_kwargs() -> dict:
+    """The kwargs every git spawn here shares. See the note above.
+
+    `cwd` is deliberately absent, not None-by-omission: adding one silently
+    reintroduces the fork. Every caller passes `-C <path>` to git instead, which
+    is stricter anyway — it cannot be changed by this process's cwd.
+    """
+    return {
+        "close_fds": False,
+        "creationflags": (subprocess.CREATE_NO_WINDOW
+                          if sys.platform == "win32" else 0),
+    }
+
+
 # Every git call site here fails CLOSED, which is right — but "git said no" and
 # "git could not be run at all" are very different facts and used to look
 # identical from the outside AND leave nothing in the log. A spawn failure (no
@@ -186,12 +240,12 @@ def _empty_git_dir():
         try:
             root = tempfile.mkdtemp(prefix="fused-render-emptygit-")
             subprocess.run(
-                ["git", "init", "-q", root],
+                [git_bin(), "init", "-q", root],
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=5,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                **_spawn_kwargs(),
             )
             _EMPTY_GIT_DIR = os.path.join(root, ".git")
         except (OSError, subprocess.SubprocessError):
@@ -237,12 +291,16 @@ class _IgnoreOracle:
             env = {**os.environ, "GIT_DIR": empty, "GIT_WORK_TREE": repo_root}
         try:
             self.proc = subprocess.Popen(
-                ["git", "-C", repo_root, "check-ignore", "--stdin", "-z", "-v", "-n"],
+                [git_bin(), "-C", repo_root,
+                 "check-ignore", "--stdin", "-z", "-v", "-n"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
+                # DEVNULL, unlike the one-shot calls: this co-process outlives
+                # the call, and an unread stderr PIPE on a long-lived child can
+                # fill and deadlock it. Its failures surface through `broken`.
                 stderr=subprocess.DEVNULL,
                 env=env,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                **_spawn_kwargs(),
             )
         except OSError as e:
             _warn_git_unusable("check-ignore co-process", e)
@@ -307,7 +365,7 @@ def _repo_toplevel(path):
     seen during the walk itself."""
     try:
         proc = subprocess.run(
-            ["git", "-C", path, "rev-parse", "--show-toplevel"],
+            [git_bin(), "-C", path, "rev-parse", "--show-toplevel"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             # CAPTURED, not discarded: this is the only place git says WHY it
@@ -316,7 +374,7 @@ def _repo_toplevel(path):
             # pipe-filling risk (unlike the long-lived oracle below).
             stderr=subprocess.PIPE,
             timeout=5,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            **_spawn_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         _warn_git_unusable("rev-parse --show-toplevel", e)
@@ -398,12 +456,12 @@ def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:
         # failure incl. "not a git repository".
         payload = b"".join(os.fsencode(n) + b"\0" for n in rel_names)
         proc = subprocess.run(
-            ["git", "-C", cwd, "check-ignore", "--stdin", "-z"],
+            [git_bin(), "-C", cwd, "check-ignore", "--stdin", "-z"],
             input=payload,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,       # captured for the same reason as above
             timeout=5,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            **_spawn_kwargs(),
         )
     except (OSError, subprocess.SubprocessError) as e:
         _warn_git_unusable("check-ignore", e)

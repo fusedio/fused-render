@@ -143,6 +143,41 @@ _REPORT_ENV = (
 # can.
 _ORDINARY_NEGATIVES = ("not a git repository",)
 
+# THE bug this gate shipped, and the reason the Git panel vanished for every
+# repository at once. With libproj resident in the host process — and it becomes
+# resident the moment any map / geotiff / zarr template or daemon imports
+# rasterio or pyproj — a plain fork() runs PROJ's pthread_atfork child handler
+# into a SIGSEGV *before* exec. The child dies with signal 11: `returncode ==
+# -11`, empty stdout, empty stderr, and NO exception, because the spawn itself
+# succeeded. This gate then answered False on a git that never ran.
+#
+# CPython avoids fork only when EVERY clause of this holds
+# (`subprocess.py::_execute_child`):
+#
+#     _USE_POSIX_SPAWN and os.path.dirname(executable) and preexec_fn is None
+#     and not close_fds and not pass_fds and cwd is None and ... and umask < 0
+#
+# This gate already passed `close_fds=False`, which is why it looked correct. It
+# was violating two other clauses: argv[0] was the bare name "git" (dirname "" —
+# falsy) and it passed `cwd=`. Either one alone forces the fork path. All three
+# parts are required together; `tests/test_git_posix_spawn.py` pins them.
+_GIT_BIN = None
+
+
+def _git_bin():
+    """An absolute path to git, resolved once per exec of this module.
+
+    The module is re-exec'd per stat so the cache is short-lived, and that is
+    fine: `shutil.which` is a handful of stats and the alternative — a bare name
+    — is what forks. The bare-name fallback keeps a PATH-less environment raising
+    the FileNotFoundError the caller already handles.
+    """
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
 
 def _warn_suspicious_negative(kind, path, detail):
     """Log a negative that contradicts the filesystem, at most once a minute.
@@ -240,9 +275,12 @@ def main(path: str) -> bool:
         # (3) git is the authority. `--is-inside-work-tree` is false for a bare
         # repo and inside `.git`, which is what we want; exit 128 ("not a git
         # repository") is the ordinary negative and lands in the same False.
+        # argv[0] ABSOLUTE and NO `cwd=`, both load-bearing — see _git_bin.
+        # `-C cwd` already pins the repository, and it is stricter than `cwd=`
+        # was: it cannot be changed by this process's working directory.
         proc = subprocess.run(
-            ["git", "--no-pager", "-C", cwd, "rev-parse", "--is-inside-work-tree"],
-            cwd=cwd,
+            [_git_bin(), "--no-pager", "-C", cwd,
+             "rev-parse", "--is-inside-work-tree"],
             env={**os.environ, **_ENV},
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,

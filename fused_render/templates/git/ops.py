@@ -220,24 +220,50 @@ class _Refused(Exception):
 # ------------------------------------------------------------------ invocation
 
 
+
+# ---------------------------------------------------------------- how git is run
+#
+# argv[0] is an ABSOLUTE path, and that is load-bearing rather than tidy. With
+# libproj resident in the host process a plain fork() runs PROJ's pthread_atfork
+# child handler into a SIGSEGV before exec, so the child dies with signal 11 and
+# empty output and NO exception — every git answer becomes a silent negative.
+# CPython avoids fork only when EVERY clause holds
+# (`subprocess.py::_execute_child`): `os.path.dirname(executable)` truthy,
+# `close_fds` false, `cwd is None`, no preexec_fn/pass_fds/start_new_session.
+# `close_fds=False` alone is NOT enough, which is what the previous version of
+# this comment got wrong: a bare "git" has dirname "" and forks regardless, and
+# so does any call that passes `cwd=`. All three parts together, or none of them
+# work. `-C <root>` is what replaces `cwd=`.
+_GIT_BIN = None
+
+
+def _git_bin():
+    """An absolute path to git, resolved once. Bare name as a last resort so a
+    PATH-less environment still raises the FileNotFoundError callers expect."""
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
+
 def _argv(root, args):
     """log.py's twin. `-C <root>` on everything, so a relative pathspec means
     exactly one thing and no `cd` can change it."""
-    return ["git", "--no-pager", *_CONFIG, "-C", root, *args]
+    return [_git_bin(), "--no-pager", *_CONFIG, "-C", root, *args]
 
 
 def _popen_kwargs():
     return {
         "env": {**os.environ, **_ENV},
         "stdin": subprocess.DEVNULL,
-        # close_fds=False matches every other subprocess spawn in this codebase
-        # (app_git.py documents the crash at length): with libproj resident, a
-        # plain fork() runs PROJ's pthread_atfork child handler into a SIGSEGV
-        # before exec, and close_fds=False is what makes CPython take the
-        # posix_spawn path that runs no atfork handlers. It matters more here
-        # than in the reader: a read that dies before exec is a refused read,
-        # while a `git commit` that dies before exec is work the user believes
-        # they recorded.
+        # close_fds=False is NECESSARY for the posix_spawn path and, on its own,
+        # NOT SUFFICIENT — the older version of this comment claimed otherwise
+        # and the whole app shipped forking anyway. See the note above _argv:
+        # argv[0] must also be absolute and no `cwd=` may be passed. It matters
+        # more here than in the reader: a read that dies before exec is a
+        # refused read, while a `git commit` that dies before exec is work the
+        # user believes they recorded.
         "close_fds": False,
         "creationflags": (subprocess.CREATE_NO_WINDOW
                           if sys.platform == "win32" else 0),
