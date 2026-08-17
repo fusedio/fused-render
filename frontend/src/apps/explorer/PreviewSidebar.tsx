@@ -46,6 +46,7 @@ import {
   MIN_W,
   CONTENT_MIN_W,
 } from "@apps/explorer/lib/side-width";
+import { getSideWidth, setSideWidth } from "@apps/explorer/lib/side-store";
 
 // The split container's class, and the drag's frame of reference. Looked up from
 // the divider with `closest` rather than handed down as a ref: the two live in
@@ -69,8 +70,10 @@ export function PreviewSideSlot() {
 
 // The width the column OPENS at, and its floors, live in lib/side-width — a
 // share of the split container (30% normally, 50% on a small one) clamped into
-// the two floors. Nothing is stored: a drag lasts the life of the page and a
-// refresh gets the layout's answer again.
+// the two floors. A DRAGGED width lives in lib/side-store, a module variable for
+// the life of the document: nothing is written to storage of any kind, so a drag
+// holds across the shell's navigation (this component remounts per file) and a
+// refresh gets the layout's answer again. That module's header argues the policy.
 
 export interface SidebarEntry {
   mode: string;
@@ -103,13 +106,20 @@ export default function PreviewSidebar({
   // (SideChrome writes the split down), so this is the only way out of it.
   onClose: () => void;
 }) {
-  // Seeded from the VIEWPORT, because a state initialiser runs before there is
-  // any layout to measure. It is a stand-in only — the layout effect below
-  // replaces it with the container's own answer before the browser paints, so
-  // this value reaches the screen only if the container cannot be measured at
-  // all (detached, display:none), where the viewport is the honest guess.
-  const [width, setWidth] = useState(() =>
-    defaultSideWidth(typeof window === "undefined" ? 0 : window.innerWidth),
+  // A width the user DRAGGED earlier in this document wins outright (lib/
+  // side-store) — that is what makes the divider hold still while you walk from
+  // file to file, since this component remounts on every one of those hops.
+  //
+  // Failing that, seeded from the VIEWPORT, because a state initialiser runs
+  // before there is any layout to measure. It is a stand-in only — the layout
+  // effect below replaces it with the container's own answer before the browser
+  // paints, so this value reaches the screen only if the container cannot be
+  // measured at all (detached, display:none), where the viewport is the honest
+  // guess.
+  const [width, setWidth] = useState(
+    () =>
+      getSideWidth() ??
+      defaultSideWidth(typeof window === "undefined" ? 0 : window.innerWidth),
   );
   // The divider, and through it the split container (see SPLIT_SEL).
   const dividerRef = useRef<HTMLDivElement>(null);
@@ -123,7 +133,11 @@ export default function PreviewSidebar({
   // Mount-only, and deliberately not re-run on container resize: the ResizeObserver
   // below only ever narrows the column, so a window the user widens keeps the
   // width they are looking at instead of springing back to the share.
+  //
+  // Skipped entirely once a drag has been recorded: the measured default is the
+  // answer to "how wide should this open", which is a question already answered.
   useLayoutEffect(() => {
+    if (getSideWidth() !== null) return;
     const w = splitEl()?.getBoundingClientRect().width ?? 0;
     if (w > 0) setWidth(defaultSideWidth(w));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -131,6 +145,10 @@ export default function PreviewSidebar({
 
   // A window narrower than the two floors together must not leave the content
   // column at nothing: clamp on every container resize, not only on drag.
+  //
+  // The clamp does NOT write the module store: it narrows what is on screen, which
+  // is not the same as the user choosing a narrower column, so widening the window
+  // back re-reads the dragged number instead of the clamped one.
   useEffect(() => {
     const el = splitEl();
     if (!el) return;
@@ -156,15 +174,22 @@ export default function PreviewSidebar({
     const divider = e.currentTarget;
     divider.setPointerCapture(e.pointerId);
     divider.classList.add("dragging");
+    // What the drag has moved the divider to, if it moved at all. Recorded to the
+    // module store on POINTER-UP and not on every move: a COMPLETED drag is the
+    // choice (lib/side-store), and a click on the divider that moves nothing must
+    // not turn the measured default into a remembered number.
+    let dragged: number | null = null;
     const onMove = (ev: PointerEvent) => {
       const rect = splitEl()?.getBoundingClientRect();
       if (!rect) return;
       const max = rect.width - CONTENT_MIN_W;
       if (max < MIN_W) return; // container too narrow to express a split
       const next = Math.min(max, Math.max(MIN_W, rect.right - ev.clientX));
+      dragged = next;
       setWidth((w) => (w === next ? w : next));
     };
     const onUp = () => {
+      if (dragged !== null) setSideWidth(dragged);
       divider.classList.remove("dragging");
       divider.removeEventListener("pointermove", onMove);
       divider.removeEventListener("pointerup", onUp);
