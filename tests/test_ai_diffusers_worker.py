@@ -95,6 +95,17 @@ READ_BY_THE_PIPELINE = {
 TRANSFORMER_BYTES = 7_751_106_000
 
 
+class _Flag:
+    def __init__(self):
+        self._set = False
+
+    def set(self):
+        self._set = True
+
+    def is_set(self):
+        return self._set
+
+
 class FakeBase:
     """`worker_base`, recording what the runner asked it to fetch."""
 
@@ -104,6 +115,18 @@ class FakeBase:
     def __init__(self):
         self.snapshot_calls = []
         self.file_calls = []
+        self.ticks = []
+        self.CANCEL = _Flag()
+        #: Set by a test to have the Nth tick answer "the ✕ was pressed".
+        self.cancel_on_tick = None
+
+    def report(self, job=None, **fields):
+        self.ticks.append({"job": job, **fields})
+
+    def report_or_cancel(self, job=None, **fields):
+        self.ticks.append({"job": job, **fields})
+        if self.cancel_on_tick is not None and len(self.ticks) >= self.cancel_on_tick:
+            self.CANCEL.set()
 
     def download_snapshot(self, model_id, allow_patterns=None,
                           ignore_patterns=None, **kwargs):
@@ -239,3 +262,344 @@ def test_the_gguf_repo_is_a_registered_component(base, monkeypatch):
     entry = formats.COMPONENT_REPOS[call["repo"]]
     assert entry["file"] == call["file"]
     assert entry["of"] == MODEL
+
+
+# -- the live preview (SPEC §40) -------------------------------------------------
+#
+# The second thing this runner does per step, beside reporting: project the
+# model's denoised estimate to a 32x32 PNG the page can point an <img> at. The
+# arithmetic and the file lifecycle belong to `runners/preview.py` and are
+# tested there; what is pinned HERE is the wiring only — that the latents and
+# the sigma this pipeline hands the callback reach that module correctly, and
+# that a pipeline with no fitted projection renders exactly as it did before.
+#
+# No torch and no weights: the pipeline is a fake that drives the callback the
+# way diffusers does, with numpy latents of the shape a real klein render holds.
+
+
+class FakeTensor:
+    """A latent tensor, with the three calls the callback makes on it.
+
+    `.detach().to("cpu", dtype).numpy()` — one transfer rather than
+    `.float().cpu()`'s two, which is the whole reason the worker spells it this
+    way, so the fake insists on it.
+    """
+
+    def __init__(self, array, on_read=None):
+        self._array = array
+        self._on_read = on_read
+
+    def detach(self):
+        return self
+
+    def to(self, device, dtype):
+        assert device == "cpu", device
+        if self._on_read is not None:
+            self._on_read()
+        return self
+
+    def numpy(self):
+        return self._array
+
+
+class FakePipe:
+    """Enough of a diffusers pipeline to run the denoising loop.
+
+    The sigma schedule is klein's shape: one more entry than there are steps and
+    ending at zero, already advanced past `sigmas[step]` by the time the
+    callback runs — which is the off-by-one the worker's `_sigma_after` exists
+    to get right.
+    """
+
+    def __init__(self, vae_class="AutoencoderKLFlux2", sigmas=None, on_read=None,
+                 latents=None, latents_per_step=None):
+        self.vae = type(vae_class, (), {})()
+        self.scheduler = types.SimpleNamespace(
+            sigmas=sigmas or [1.0, 0.9, 0.7, 0.4, 0.0])
+        self.on_read = on_read
+        self.latents = latents
+        #: One array per step, when a test needs the latents to actually MOVE —
+        #: identical latents mean zero velocity, and a zero velocity makes the
+        #: denoised estimate equal the latent at every sigma, which is how a
+        #: test can look like it pins the sigma indexing without pinning it.
+        self.latents_per_step = latents_per_step
+        self.watch = None
+
+    def __call__(self, prompt=None, height=None, width=None, guidance_scale=None,
+                 num_inference_steps=None, generator=None,
+                 callback_on_step_end=None):
+        import numpy
+
+        tokens = (height // 16) * (width // 16)
+        array = (self.latents if self.latents is not None
+                 else numpy.zeros((1, tokens, 128), dtype=numpy.float32))
+        for step in range(num_inference_steps):
+            held = array if self.latents_per_step is None else self.latents_per_step[step]
+            callback_on_step_end(self, step, 0, {
+                "latents": FakeTensor(held, on_read=self.on_read)})
+            if self.watch is not None:
+                self.watch(step)
+        return types.SimpleNamespace(images=[FakeSavedImage()])
+
+
+class FakeSavedImage:
+    def save(self, path):
+        with open(path, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n")
+
+
+def fake_torch():
+    """`torch`, for the two things `generate` asks of it."""
+    torch = types.ModuleType("torch")
+    torch.float32 = "float32"
+
+    class Generator:
+        def __init__(self, device=None):
+            self.device = device
+
+        def manual_seed(self, seed):
+            self.seed = seed
+            return self
+
+    torch.Generator = Generator
+    return torch
+
+
+def loaded_worker(monkeypatch, base, pipe):
+    """The worker with `pipe` already loaded, as `load` would leave it."""
+    monkeypatch.setitem(sys.modules, "torch", fake_torch())
+    worker = load_worker(monkeypatch, base)
+    worker._loaded.update({"pipe": pipe, "seed_device": "cpu",
+                           "vae": type(pipe.vae).__name__})
+    return worker
+
+
+def _request(tmp_path, **over):
+    from fused_render.ai.runners import preview
+
+    out = str(tmp_path / "fox.png")
+    return {"prompt": "a red fox", "out": out, "job": "sys:ai-image:abc",
+            "width": 512, "height": 512, "steps": 4,
+            "outPreview": preview.preview_path(out), **over}
+
+
+def test_the_vae_CLASS_NAME_is_what_the_projection_table_is_keyed_by(monkeypatch, base):
+    """Captured at load, off the VAE rather than off the repo id or the
+    pipeline: the latent space a fitted matrix belongs to is the autoencoder's,
+    and two checkpoints sharing one VAE share one projection."""
+    pipe = FakePipe()
+    pipe.to = lambda device: None
+    torch = fake_torch()
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.backends = types.SimpleNamespace(mps=None)
+    torch.bfloat16 = "bfloat16"
+    diffusers = types.ModuleType("diffusers")
+    diffusers.AutoPipelineForText2Image = types.SimpleNamespace(
+        from_pretrained=lambda *a, **k: pipe)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+
+    worker = load_worker(monkeypatch, base)
+    worker.load("some/other-model", None)
+    assert worker._loaded["vae"] == "AutoencoderKLFlux2"
+
+
+def test_a_thumbnail_appears_from_the_SECOND_step_and_is_GONE_at_the_end(
+        monkeypatch, base, tmp_path):
+    """Step 1 has no predecessor, so it has no velocity and no estimate — and
+    the last frame is duplicate bytes once the real PNG lands."""
+    seen = []
+    pipe = FakePipe()
+    request = _request(tmp_path)
+    pipe.watch = lambda step: seen.append(os.path.exists(request["outPreview"]))
+    worker = loaded_worker(monkeypatch, base, pipe)
+    worker.generate(request)
+
+    assert seen == [False, True, True, True]
+    assert os.listdir(tmp_path) == ["fox.png"]
+
+
+def _frame_pixels(path):
+    from PIL import Image
+
+    import numpy
+
+    with Image.open(path) as image:
+        return image.size, numpy.frombuffer(
+            image.convert("RGB").tobytes(), dtype=numpy.uint8).tolist()
+
+
+def _expected_frame(preview, previous, current, sigma_previous, sigma_current):
+    """The bytes `_write` would produce for one estimate, computed the same way.
+
+    Through `preview`'s own `denoised` and `project` rather than a second
+    implementation of the arithmetic — what is under test here is which SIGMAS
+    the worker paired with which latents, not whether the maths is right (that
+    is `test_ai_image_preview.py`'s job).
+    """
+    import numpy
+
+    estimate = preview.denoised(previous, current, sigma_previous, sigma_current)
+    rgb = preview.project(estimate, "AutoencoderKLFlux2")
+    return numpy.asarray(rgb * 255.0 + 0.5, dtype=numpy.uint8).reshape(-1).tolist()
+
+
+def test_the_thumbnail_is_the_estimate_at_the_sigma_just_REACHED(
+        monkeypatch, base, tmp_path):
+    """The wiring's one real risk: an off-by-one on `scheduler.sigmas` reads the
+    level the run has LEFT rather than the one it arrived at — a preview that is
+    permanently one step stale and looks perfectly fine.
+
+    Two things make this actually pin it, and both were missing:
+
+    * **The latents MOVE.** With the same array every step the velocity is zero,
+      and a zero velocity makes `denoised` return the latent at any sigma
+      whatsoever — so the assertion passed just as happily against
+      `sigmas[step]`.
+    * **The frame examined is not the LAST one.** The schedule ends at sigma 0,
+      where the estimate degenerates to the latent again for the same reason. So
+      this reads the frame written mid-render, where the two indexings give
+      genuinely different pixels — and asserts that it is the one and not the
+      other.
+    """
+    import numpy
+
+    rng = numpy.random.default_rng(7)
+    sigmas = [1.0, 0.9, 0.7, 0.318, 0.0]
+    steps = [rng.standard_normal((1, 32 * 32, 128)).astype(numpy.float32) * 2.0
+             for _ in range(4)]
+    pipe = FakePipe(sigmas=sigmas, latents_per_step=steps)
+    worker = loaded_worker(monkeypatch, base, pipe)
+    # The worker's OWN reading of `preview.py` — a runner reaches it by path, so
+    # `fused_render.ai.runners.preview` is a second module object with its own
+    # `Sink` class, and patching that one would patch nothing the worker uses.
+    preview = worker.preview
+    request = _request(tmp_path)
+    # Snapshot each frame as it lands: the clean exit removes the file, and the
+    # frame that discriminates is mid-render anyway.
+    shots = []
+    pipe.watch = lambda step: shots.append(
+        _frame_pixels(request["outPreview"])
+        if os.path.exists(request["outPreview"]) else None)
+    worker.generate(request)
+
+    # After step index 2 the pair is (latents[1] at sigmas[2], latents[2] at
+    # sigmas[3]) — the level the scheduler has ARRIVED at.
+    right = _expected_frame(preview, steps[1], steps[2], sigmas[2], sigmas[3])
+    # …and this is what reading `sigmas[step]` instead would have produced: the
+    # same two latents, paired with the two levels one entry earlier.
+    stale = _expected_frame(preview, steps[1], steps[2], sigmas[1], sigmas[2])
+    assert right != stale, "the schedule chosen cannot tell the two apart"
+
+    size, pixels = shots[2]
+    assert size == (preview.MAX_SIDE, preview.MAX_SIDE)
+    assert pixels == right
+    assert pixels != stale
+
+
+def _order_spies(monkeypatch, worker, base, events):
+    """Record every frame write and every progress tick, in the order they happen."""
+    real_write = worker.preview.Sink._write
+
+    def spy_write(self, rgb, grid):
+        events.append("frame")
+        return real_write(self, rgb, grid)
+
+    real_report = base.report_or_cancel
+
+    def spy_report(job=None, **fields):
+        events.append("tick %d" % fields["done"])
+        return real_report(job=job, **fields)
+
+    monkeypatch.setattr(worker.preview.Sink, "_write", spy_write)
+    monkeypatch.setattr(base, "report_or_cancel", spy_report)
+
+
+def test_the_FRAME_is_written_BEFORE_the_tick_that_announces_it(monkeypatch, base,
+                                                                tmp_path):
+    """The order is load-bearing and reads as arbitrary, so it is pinned rather
+    than left to be tidied up later.
+
+    `done` on the tick is exactly what `runtime.js` turns into the cache-busted
+    `&step=N` preview URL. Report first and a page can be handed step N's URL
+    before step N's PNG exists — `watchJob` polls about every 700ms and the
+    write is about 68ms, so the window is real. The first frame 404s, which is
+    survivable; the nastier half is that the URL is keyed by the step and will
+    never be requested again, so a fetch landing in that window caches the
+    PREVIOUS frame's bytes under step N's URL and that step shows a stale
+    picture for its whole duration.
+
+    Step 1 has no frame at all — a velocity needs two latents — which is the
+    documented early-404 and not this bug.
+    """
+    events = []
+    worker = loaded_worker(monkeypatch, base, FakePipe())
+    _order_spies(monkeypatch, worker, base, events)
+    worker.generate(_request(tmp_path))
+    assert events == ["tick 1", "frame", "tick 2", "frame", "tick 3",
+                      "frame", "tick 4"]
+
+
+def test_a_cancel_is_still_honoured_on_the_tick_it_arrives_on(monkeypatch, base,
+                                                             tmp_path):
+    """The cost of writing the frame first: the ✕ is learned one frame-write
+    later than it was. What must NOT change is which tick honours it — the
+    reply to the report is the only channel a cancel has, so the raise still
+    happens on that same callback and never a step later. A cancelled render
+    writing one extra frame is free; it is discarded on the way out."""
+    worker = loaded_worker(monkeypatch, base, FakePipe())
+    base.cancel_on_tick = 3          # the opening report, then two steps
+    with pytest.raises(base.Cancelled):
+        worker.generate(_request(tmp_path))
+    # Two `report_or_cancel` ticks reached, i.e. it unwound inside the second
+    # step's callback rather than carrying on into a third.
+    assert [tick["done"] for tick in base.ticks] == [0, 1, 2]
+    assert os.listdir(tmp_path) == []
+
+
+def test_a_VAE_with_no_fitted_projection_renders_exactly_as_BEFORE(
+        monkeypatch, base, tmp_path):
+    """No file, no branch — and no device sync either: the latents are handed
+    over as a closure precisely so a no-op sink never touches them."""
+    def touched():
+        raise AssertionError("a no-op preview pulled the latents off the device")
+
+    pipe = FakePipe(vae_class="AutoencoderKL", on_read=touched)
+    worker = loaded_worker(monkeypatch, base, pipe)
+    worker.generate(_request(tmp_path))
+    assert os.listdir(tmp_path) == ["fox.png"]
+
+
+def test_a_request_that_named_no_preview_file_renders_exactly_as_BEFORE(
+        monkeypatch, base, tmp_path):
+    """A worker request from before this feature carries no `outPreview`."""
+    def touched():
+        raise AssertionError("a no-op preview pulled the latents off the device")
+
+    pipe = FakePipe(on_read=touched)
+    worker = loaded_worker(monkeypatch, base, pipe)
+    request = _request(tmp_path)
+    del request["outPreview"]
+    worker.generate(request)
+    assert os.listdir(tmp_path) == ["fox.png"]
+
+
+def test_the_thumbnail_is_removed_when_the_render_is_CANCELLED(
+        monkeypatch, base, tmp_path):
+    """A ✕ means the user does not want this picture, at any resolution."""
+    pipe = FakePipe()
+    worker = loaded_worker(monkeypatch, base, pipe)
+    base.cancel_on_tick = 4          # the opening report, then three steps
+    with pytest.raises(base.Cancelled):
+        worker.generate(_request(tmp_path))
+    assert os.listdir(tmp_path) == []
+
+
+def test_a_pipeline_with_NO_sigma_schedule_still_RENDERS(monkeypatch, base, tmp_path):
+    """A preview must never be able to raise out of a denoising callback and
+    lose a render that was going to succeed."""
+    pipe = FakePipe()
+    pipe.scheduler = None
+    worker = loaded_worker(monkeypatch, base, pipe)
+    worker.generate(_request(tmp_path))
+    assert os.listdir(tmp_path) == ["fox.png"]

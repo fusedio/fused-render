@@ -1709,6 +1709,161 @@ def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner
     assert open(started["path"], "rb").read(8) == b"\x89PNG\r\n\x1a\n"
 
 
+def test_the_reply_says_where_the_LIVE_PREVIEW_will_be(client, fake_image_runner):
+    """The third path this API hands out, and it is decided here for the same
+    reason the other two are: the server owns where user files go. Derived
+    through `preview.preview_path`, never string-munged out of `path` — the
+    worker that writes this file and the reply that advertises it have to name
+    the same one, and a second spelling of the suffix is how they disagree."""
+    from fused_render.ai.runners import preview
+
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert started["previewPath"] == preview.preview_path(started["path"])
+    assert os.path.dirname(started["previewPath"]) == os.path.dirname(started["path"])
+    _wait_job(started["jobId"])
+
+
+def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner,
+                                                       monkeypatch):
+    """The advertised path and the requested one are the same string, because
+    they come from the same call rather than from two agreeing spellings."""
+    captured = {}
+    real_start = supervisor.start_image
+
+    def spy(model, request, job):
+        captured.update(request)
+        return real_start(model, request, job)
+
+    monkeypatch.setattr(supervisor, "start_image", spy)
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert captured["outPreview"] == started["previewPath"]
+    _wait_job(started["jobId"])
+
+
+def _skill_section(title):
+    """The body of one `## ` section of `skills/fused-render-ai/SKILL.md`.
+
+    That file is what a page author actually reads — the bridge's own comments
+    are for whoever maintains the bridge — so it is the copy of this API that
+    can be wrong without anything noticing.
+    """
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "skills", "fused-render-ai", "SKILL.md")
+    source = open(path, encoding="utf-8").read()
+    start = source.index("## " + title)
+    end = source.find("\n## ", start + 1)
+    return source[start:end if end != -1 else len(source)]
+
+
+def test_the_SKILL_names_every_field_an_image_resolves_with(client, fake_image_runner):
+    """Read off the ENDPOINT rather than listed here, because a hand-written
+    list in a test is a third copy that can drift with the other two. This is
+    the check that would have caught `previewPath` and `previewUrl` shipping
+    with the skill still describing the API without them: the route grew two
+    fields and the document a page author reads did not.
+
+    `url` and `previewUrl` are added because they are the bridge's own, built
+    on top of the reply rather than returned by it.
+    """
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    fields = set(started) | {"url", "previewUrl"}
+    section = _skill_section("Images: `fused.ai.image({prompt, ...})`")
+    assert sorted(field for field in fields if field not in section) == []
+    _wait_job(started["jobId"])
+
+
+def test_a_runner_that_writes_no_preview_leaves_NOTHING_behind(client,
+                                                               fake_image_runner):
+    """The preview is a promise about a path, not about a file. A model with no
+    fitted projection — and every worker built before this existed — renders
+    exactly as it did, and the advertised path simply never appears."""
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "done", row
+    assert os.path.isfile(started["path"])
+    assert not os.path.exists(started["previewPath"])
+
+
+def _age(path, seconds):
+    """Backdate a file, so a sweep sees it as something nobody is writing."""
+    old = time.time() - seconds
+    os.utime(path, (old, old))
+
+
+def test_a_preview_ORPHANED_BY_A_KILL_is_swept_up(tmp_path):
+    """`Sink.discard` runs on a normal unwind, and a worker does not always get
+    one: `supervisor._terminate` / `_kill_tree` end it outright on an unload, an
+    app shutdown or a wedge. What is left is `<stem>.preview.png` — and possibly
+    a `.tmp` beside it — in `~/ai/images`, a directory the user browses, with no
+    job row to explain it and nothing that would ever remove it.
+
+    So the directory is swept when the next render asks for it: the one moment
+    this is free, since the caller is about to wait minutes anyway.
+    """
+    from fused_render.server.routers import ai_runtime
+
+    room = tmp_path / "images"
+    room.mkdir()
+    orphan = room / "20260101-120000-abc.preview.png"
+    temp = room / "20260101-120000-abc.preview.png.9999.tmp"
+    kept = room / "20260101-120000-abc.png"
+    for path in (orphan, temp, kept):
+        path.write_bytes(b"x")
+        _age(path, ai_runtime._PREVIEW_TTL + 60)
+
+    ai_runtime._sweep_previews(str(room))
+    # The render itself is the artefact and is never touched, however old.
+    assert sorted(p.name for p in room.iterdir()) == ["20260101-120000-abc.png"]
+
+
+def test_a_preview_a_RENDER_IS_STILL_WRITING_survives_the_sweep(tmp_path):
+    """The one thing this must not do. A live preview is rewritten every
+    denoising step, so its mtime is always seconds old — the age threshold is
+    what separates "nobody is writing this" from "somebody is", and it is why
+    the sweep does not need to know which renders are in flight."""
+    from fused_render.server.routers import ai_runtime
+
+    room = tmp_path / "images"
+    room.mkdir()
+    live = room / "20260101-120000-def.preview.png"
+    live.write_bytes(b"x")
+
+    ai_runtime._sweep_previews(str(room))
+    assert live.exists()
+
+
+def test_the_sweep_never_breaks_a_render(tmp_path):
+    """It runs on the way in to a request that is about to work. A directory
+    that cannot be listed, or a file that cannot be removed, is worth an untidy
+    folder and never a refused render."""
+    from fused_render.server.routers import ai_runtime
+
+    ai_runtime._sweep_previews(str(tmp_path / "nothing-here"))
+
+
+def test_a_render_SWEEPS_before_it_starts(client, fake_image_runner, monkeypatch,
+                                          tmp_path):
+    """Wired to the request rather than to a timer: there is no background
+    sweeper to own, and the directory only grows when renders happen."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    from fused_render.server.routers import ai_runtime
+
+    room = tmp_path / "ai" / "images"
+    room.mkdir(parents=True)
+    orphan = room / "20250101-000000-old.preview.png"
+    orphan.write_bytes(b"x")
+    _age(orphan, ai_runtime._PREVIEW_TTL + 60)
+
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert not orphan.exists()
+    _wait_job(started["jobId"])
+
+
 def test_the_reply_carries_the_seed_even_when_none_was_asked_for(client, fake_image_runner):
     """A seed invented inside the worker and never surfaced would make every
     unseeded image unrepeatable — "make that one again" has to be possible."""
@@ -2910,6 +3065,122 @@ def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
     assert value["segments"][0]["end"] == 1.5
     assert value["language"] == "en" and value["duration"] == 1.5
     assert value["url"] == "/api/fs/raw?path=/t/out.json"
+
+
+def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.png"'):
+    """Run `aiImage` out of runtime.js under node, against stubs.
+
+    `_run_ai_transcribe`'s harness for the other half of the same API: the
+    function is lifted out and driven with its closure stubbed, because what
+    matters is the object it hands the page rather than the DOM it built it in.
+
+    `ticks` is a JS array of job records the fake watcher replays through
+    `onProgress`, and they are echoed back untouched so a test can prove the
+    bridge annotated a COPY rather than the row the manager is drawing.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own image glue")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    start = source.index("  function aiImage(opts)")
+    end = source.index("\n  }\n", start) + 4
+    fn = source[start:end]
+
+    prelude = """
+      const started = {jobId: "sys:ai-image:x", path: "/t/a.png", seed: 7,
+                       steps: 4, previewPath: PREVIEW};
+      const window = {location: {search: "?path=/pages/p.html"}};
+      const aiPost = () => Promise.resolve(started);
+      const rawUrl = (p) => "/api/fs/raw?path=" + p;
+      const stat = () => Promise.reject(new Error("no stat"));
+      const rows = TICKS;
+      const watchJob = () => ({
+        watch: (cb) => {
+          for (const row of rows) if (cb) cb(row);
+          return Promise.resolve(RECORD);
+        },
+        get: () => Promise.resolve(RECORD),
+        stop() {}, cancel: () => Promise.resolve(true),
+      });
+      const progress = [];
+    """.replace("PREVIEW", preview).replace("TICKS", ticks).replace("RECORD", record)
+    call = """
+      aiImage({prompt: "a fox", onProgress: (job) => progress.push(job)}).then(
+        (value) => console.log(JSON.stringify({ok: true, value, progress, rows})),
+        (err) => console.log(JSON.stringify(
+          {ok: false, message: err.message, type: err.type, progress, rows})),
+      );
+    """
+    out = subprocess.run(["node", "-e", prelude + fn + call],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+RUNNING = '{state: "running", done: %d, total: 4}'
+
+
+def test_every_progress_tick_carries_a_READY_TO_USE_preview_url():
+    """A page sets this as an `<img>` src and gets a picture emerging out of
+    noise. Built here rather than by every caller, for the same reason `url`
+    is — and CACHE-BUSTED BY STEP, because the preview is one path overwritten
+    in place and a browser handed the same URL twice shows frame 2 forever."""
+    settled = _run_ai_image(ticks="[%s, %s]" % (RUNNING % 1, RUNNING % 2))
+    assert settled["ok"] is True, settled
+    assert [tick["previewUrl"] for tick in settled["progress"]] == [
+        "/api/fs/raw?path=/t/a.preview.png&step=1",
+        "/api/fs/raw?path=/t/a.preview.png&step=2",
+    ]
+
+
+def test_the_tick_a_page_sees_is_a_COPY_of_the_row_the_manager_is_drawing():
+    """The record belongs to the job manager and every other watcher of that
+    row sees the same object — a field written onto it here would travel."""
+    settled = _run_ai_image(ticks="[%s]" % (RUNNING % 1))
+    assert settled["rows"] == [{"state": "running", "done": 1, "total": 4}]
+    assert settled["progress"][0]["done"] == 1
+
+
+@pytest.mark.parametrize("state", ["done", "error", "cancelled"])
+def test_the_LAST_tick_has_no_preview_because_the_file_is_already_gone(state):
+    """`watch` calls back with the TERMINAL record too, and by the time a row
+    reaches one the worker's sink has discarded the preview — `Sink.__exit__`
+    runs before `generate()` returns, which is before the row can be marked.
+
+    So a page that keeps its `<img>` pointed at the latest `previewUrl` would
+    end every render on a guaranteed 404: a blank flash exactly where the
+    finished picture should appear. Null is the honest answer, and it is the
+    same answer on a cancel and an error — there is no frame there either."""
+    settled = _run_ai_image(record='{state: "%s"}' % state,
+                            ticks="[%s, {state: '%s', done: 4, total: 4}]"
+                                  % (RUNNING % 3, state))
+    ticks = settled["progress"]
+    assert ticks[0]["previewUrl"] == "/api/fs/raw?path=/t/a.preview.png&step=3"
+    assert ticks[1]["previewUrl"] is None, ticks[1]
+
+
+def test_the_resolved_image_carries_the_url_and_a_NULL_preview():
+    """Same fact from the other side: the resolved object names the real PNG,
+    and `previewUrl` is null because the file it would name has been deleted.
+    A URL to a file that is gone is worse than no URL — a page can test null."""
+    settled = _run_ai_image()
+    assert settled["ok"] is True, settled
+    assert settled["value"]["url"] == "/api/fs/raw?path=/t/a.png"
+    assert settled["value"]["previewUrl"] is None
+
+
+def test_a_render_with_no_preview_hands_the_page_NULL_rather_than_a_dead_url():
+    """A model whose latent space has no fitted projection writes no frames, and
+    a URL pointing at a file that will never exist is worse than nothing: a page
+    can test `previewUrl` but cannot test an `<img>` that 404s."""
+    settled = _run_ai_image(ticks="[%s]" % (RUNNING % 1), preview="undefined")
+    assert settled["ok"] is True, settled
+    assert settled["progress"][0]["previewUrl"] is None
+    assert settled["value"]["previewUrl"] is None
 
 
 @pytest.mark.parametrize("opts", [

@@ -43,7 +43,7 @@ from fused_render.ai import catalog, registry, supervisor
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
 # rule here costs nothing.
-from fused_render.ai.runners import diarize, engine_options, partial
+from fused_render.ai.runners import diarize, engine_options, partial, preview
 from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
@@ -86,6 +86,60 @@ def _images_dir() -> str:
     directory = os.path.join(home_dir(), "ai", "images")
     os.makedirs(directory, exist_ok=True)
     return directory
+
+
+#: How long a preview frame has to sit untouched before a sweep takes it.
+#:
+#: An hour, which is far longer than it needs to be and deliberately so. A LIVE
+#: preview is rewritten every denoising step, so its mtime is always seconds
+#: old — the threshold is not really a timeout, it is the line between "nobody
+#: is writing this" and "somebody is", and it is what lets the sweep run without
+#: knowing which renders are in flight. Erring long costs an orphan an extra
+#: hour on disk; erring short would delete the picture a user is watching.
+_PREVIEW_TTL = 3600
+
+
+def _sweep_previews(directory: str) -> None:
+    """Remove preview frames that no render is writing any more.
+
+    `preview.Sink.discard` runs on the way out of a render and takes the
+    thumbnail with it — but only on a normal unwind, and a worker does not
+    always get one. `supervisor._terminate` / `_kill_tree` end the process
+    outright when a model is unloaded, the app shuts down, or a worker wedges,
+    and what survives is a `<stem>.preview.png` (plus, if the kill landed
+    between the save and the replace, a `.<pid>.tmp` beside it) in
+    `<home>/ai/images` — a directory the user browses, holding a file with no
+    job row to explain it and nothing that would ever remove it.
+
+    Swept HERE, on the way into a render, rather than by a background timer: it
+    is the moment this is free (the caller is about to wait minutes) and the
+    only moment it is needed (the directory grows only when renders happen), and
+    a timer would be a lifecycle to own for a few kilobytes.
+
+    Matched by `preview.SUFFIX` appearing anywhere in the name, which covers the
+    frame and its temp in one test and cannot match a render's own
+    `<timestamp>-<uid>.png`. **The image itself is never touched at any age** —
+    it is the artefact the whole feature exists to produce.
+
+    Best-effort throughout, for the reason `discard` is: this runs at the front
+    of a request that is about to work, and an untidy folder is worth more than
+    a refused render. A directory that cannot be listed and a file that cannot
+    be removed are both simply left.
+    """
+    cutoff = time.time() - _PREVIEW_TTL
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return
+    for name in names:
+        if preview.SUFFIX not in name:
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+        except OSError:
+            pass
 
 
 def _transcripts_dir() -> str:
@@ -464,9 +518,14 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
 
     uid = secrets.token_hex(6)
     job = supervisor.image_job_id(uid)
+    images = _images_dir()
+    # Before the render, not after: a preview orphaned by a killed worker has no
+    # unwind coming that would clean it up, so the next request is the only
+    # thing that will ever look. See `_sweep_previews`.
+    _sweep_previews(images)
     # Time-ordered and unique: the folder sorts chronologically in the explorer,
     # and two renders in the same second still land on different files.
-    path = os.path.join(_images_dir(), f"{time.strftime('%Y%m%d-%H%M%S')}-{uid}.png")
+    path = os.path.join(images, f"{time.strftime('%Y%m%d-%H%M%S')}-{uid}.png")
 
     request = {
         "prompt": prompt.strip(),
@@ -476,6 +535,20 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         "guidance": guidance,
         "seed": seed,
         "out": path,
+        # …and where the picture-in-progress goes while it denoises, so a page
+        # has something to show through a render that takes minutes. Derived
+        # through `preview.preview_path` rather than spelled here, for the
+        # reason `outPartial` is: the worker that writes this file and the reply
+        # that advertises it must name the same one, and a second spelling of
+        # the suffix is how they come to disagree. A sibling of the image for
+        # the same reason the transcript's three are siblings — the server owns
+        # where user files go.
+        #
+        # Sent unconditionally. Whether a preview HAPPENS is the worker's answer
+        # (it needs a fitted projection for the model's latent space), and a
+        # route that tried to predict it would need this process to know what a
+        # runner venv it cannot import has a matrix for.
+        "outPreview": preview.preview_path(path),
     }
     try:
         supervisor.start_image(model, request, job)
@@ -490,6 +563,13 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     return {
         "jobId": job,
         "path": path,
+        # Canonical, because this goes back to a page that will put it in a
+        # `/api/fs/raw` URL — a Windows path that reached it backslashed would
+        # not match what the shell stored for the same file. It is a promise
+        # about a PATH, not about a file: a model with no fitted projection
+        # writes nothing there, and `fused.ai.image` treats a missing preview
+        # as the ordinary case rather than as an error.
+        "previewPath": canonical_fs_path(request["outPreview"]),
         "model": model,
         "prompt": request["prompt"],
         "width": request["width"],
