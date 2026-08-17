@@ -78,22 +78,32 @@ def test_prose_in_the_widened_sections_keeps_the_narrow_measure():
     assert _decl(_read(_CSS), ".schedule-page .prefs-section > p", "max-width")
 
 
-# -- 2. failure states stay legible in the list --------------------------------
+# -- 2. failure states stay legible in the tree/board views --------------------
+# The Inbox-style row list is gone (the List view is the flow-app tree, the
+# Board its kanban — ScheduleTaskViews.tsx). A failed run now folds into the
+# Done column, so the ONLY thing separating it from a clean run is the red
+# status ring — which makes that ring the invariant worth pinning.
 
-@pytest.mark.parametrize("state,token", [("error", "--error"), ("missed", "--warning")])
-def test_row_failure_states_paint_an_edge(state, token):
-    """The list view's rows flag error/missed with a coloured left stripe; a
-    pill alone disappears in a column of rows that are otherwise identical."""
-    stripe = _decl(_read(_CSS), f".schedule-row--{state}", "border-left")
-    assert stripe, f".schedule-row--{state} must paint its edge"
-    assert f"var({token})" in stripe, (
-        f"the {state} stripe is {stripe!r}, which does not carry var({token}) — "
-        f"the state is no longer legible at a glance")
+def test_a_failed_run_does_not_wear_the_done_green():
+    """`.schedule-ring--failed` must repaint the ring via its own token; if it
+    ever stops, a dead turn reads as a clean run in a column of green rings."""
+    css = _read(_CSS)
+    failed = _decl(css, ".schedule-ring--failed,\n.schedule-ring--failed.schedule-ring--done", "color")
+    assert failed and "var(--status-failed)" in failed, (
+        "the failed ring must carry var(--status-failed), or a failed run is "
+        "indistinguishable from a clean one inside the Done column")
 
 
-def test_row_titles_hold_one_line():
-    """The row's scan column: a multi-line prompt must clamp to one ellipsised
+def test_the_failed_override_outweighs_the_done_hue():
+    """Both classes sit on one element; the override only wins while its
+    selector stays MORE specific than `.schedule-ring--done`'s. The compound
+    selector is that guarantee — pin its presence, not the cascade."""
+    assert ".schedule-ring--failed.schedule-ring--done" in _read(_CSS)
+
+
+def test_tree_titles_hold_one_line():
+    """The tree's scan column: a multi-line prompt must clamp to one ellipsised
     line or long tasks push every row below them out of rhythm."""
     css = _read(_CSS)
-    assert _decl(css, ".schedule-row-title", "white-space") == "nowrap"
-    assert _decl(css, ".schedule-row-title", "text-overflow") == "ellipsis"
+    assert _decl(css, ".schedule-tv-title", "white-space") == "nowrap"
+    assert _decl(css, ".schedule-tv-title", "text-overflow") == "ellipsis"

@@ -353,6 +353,11 @@ def _no_startup_index_scan(monkeypatch):
         return None
 
     monkeypatch.setattr(index_routes, "startup_scan", _skip)
+    # The same hook also warms the home page's search corpus on a detached
+    # thread. Harmless to the index, but it sweeps `git check-ignore` over the
+    # developer's real home and outlives the test that spawned it — so it goes
+    # too. Its own tests call `run_startup_warm()` directly.
+    monkeypatch.setattr(index_routes, "startup_warm", lambda: None)
     # Same hazard by a second door: GET /api/fs/list notes the folder for the
     # index freshness check (scan-incremental.md §5), which runs on a background
     # thread and can call runner.start. A test listing any path under the

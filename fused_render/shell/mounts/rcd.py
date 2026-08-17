@@ -636,6 +636,13 @@ def _rclone_should_persist() -> bool:
 
 _rcd_lock = threading.Lock()
 
+# How long a freshly spawned rcd gets to answer `core/pid` before we give up on
+# it (and tear it down — see _terminate_child). Named rather than inline so a
+# test can reach the give-up path without waiting out the real budget.
+_RCD_STARTUP_TIMEOUT_S = 10.0
+# Grace between SIGTERM and SIGKILL when tearing that daemon down.
+_RCD_TERMINATE_GRACE_S = 2.0
+
 
 def ensure_rcd() -> int:
     """Port of a live rcd daemon, spawning one (detached) if none answers.
@@ -695,7 +702,7 @@ def _ensure_rcd_locked() -> int:
     # clears the inherited RCLONE_RC_* namespace, which could otherwise
     # reconfigure the interface out from under us.
     auth = (_RCD_RC_USER, secrets.token_urlsafe(32))
-    subprocess.Popen(
+    child = subprocess.Popen(
         [bin_, "rcd", "--use-server-modtime",
          f"--rc-addr=127.0.0.1:{port}",
          f"--log-file={log_path}", "--log-level", "INFO"],
@@ -709,15 +716,58 @@ def _ensure_rcd_locked() -> int:
         # Job either way; on macOS app.py SIGTERMs it explicitly on quit).
         start_new_session=_rclone_should_persist(),
     )
-    deadline = time.time() + 10
-    while time.time() < deadline:
+    deadline = time.time() + _RCD_STARTUP_TIMEOUT_S
+    while True:
         try:
             pid = _rc(port, "core/pid", timeout=2, auth=auth).get("pid", 0)
             write_rcd_state(port, pid, log_path, auth)
             return port
         except RuntimeError:
+            if time.time() >= deadline:
+                break
             time.sleep(0.2)
-    raise RuntimeError("rclone rcd did not come up within 10s")
+    # Give up — but do NOT walk away from the child we just started. The mount
+    # health loop retries automount on a timer, once per mount record, so
+    # orphaning the daemon here leaks one abandoned `rclone rcd` per mount per
+    # cycle, forever (in dev it is setsid-detached, so nothing else ever reaps
+    # it either). Measured on a real machine as 14 orphans spanning eight days.
+    # That process/fd pressure inside the long-lived server process is what
+    # starves unrelated `subprocess.run` calls in the same process — and every
+    # git call site in the app fails CLOSED and silently when its subprocess
+    # cannot be spawned or overruns its timeout, which is how "the Git side
+    # panel is disabled for every repository" presents.
+    _terminate_child(child)
+    raise RuntimeError(
+        f"rclone rcd did not come up within {_RCD_STARTUP_TIMEOUT_S:g}s")
+
+
+def _terminate_child(child) -> None:
+    """Best-effort teardown of a spawned rcd that never became usable.
+
+    SIGTERM first (rclone flushes its log and exits), escalating to SIGKILL if
+    it is still alive after a short grace — the same escalation the mount
+    lifecycle uses elsewhere. Every step is guarded: this runs on an error path
+    whose own exception (the RuntimeError the caller is about to raise) is the
+    one that matters, and a child that died on its own already raises
+    ProcessLookupError/OSError here.
+    """
+    try:
+        child.terminate()
+    except Exception:  # noqa: BLE001 — already gone, or no signal to send
+        pass
+    try:
+        child.wait(timeout=_RCD_TERMINATE_GRACE_S)
+        return
+    except Exception:  # noqa: BLE001 — TimeoutExpired, or a fake with no wait
+        pass
+    try:
+        child.kill()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        child.wait(timeout=_RCD_TERMINATE_GRACE_S)
+    except Exception:  # noqa: BLE001 — reaping is best-effort
+        pass
 
 
 _KILL_TIMEOUT_S = 5.0

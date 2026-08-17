@@ -218,34 +218,53 @@ revision delete removes the snapshot, the blobs no other revision references
 (resolved through their links), the refs pointing at that commit, and the whole
 repo when it was the last revision.
 
-### `/api/ai-models/hub/*` — Hub search, joined to the cache (SPEC §39, D255)
+### `/api/ai-models/hub/*` — Hub search, narrowed and joined (SPEC §39, D255, D313)
 
-`POST /api/ai-models/hub/search {q, task, sort, limit}` (`X-Fused` guarded) →
+`POST /api/ai-models/hub/search {q, task, sort, limit}` (`X-Fused` guarded) ->
 `{models, query, endpoint, authenticated}` or, when the far side is unhappy,
 `{models: [], error}` with a 200 — the request this server got was fine and the
 page has a sentence to show. Each model is `{id, task, taskHelp, pipelineTag,
-library, downloads, likes, updated, gated, private, tags, params, estimatedSize,
-local, url}`, where `local` is `{state: "downloaded"|"partial"|"none", size,
-files, lastUsed, path, dir}`.
-`GET /api/ai-models/hub/tasks` → the offered filters as `{tag, label, help}`,
-an unguarded read like every other (WF-5): a static glossary that touches
-nothing. Search is the asymmetry, and deliberate. It downloads nothing either,
-but it is the one read that LEAVES the machine — an outbound call carrying the
-user's Hub token — and D36's protection is the browser refusing to show a
-foreign page the *response*, which does nothing about the *request*. Unguarded,
-a blind cross-origin GET could spend someone's credential and rate limit while
-learning nothing. So the route takes the shape its effect deserves rather than
-the rule acquiring a guarded-GET exception.
+capability, library, downloads, likes, updated, params, estimatedSize, local,
+url}`, where `local` is `{state: "downloaded"|"partial"|"none", size, files,
+lastUsed, path, dir}`.
+
+**Every row is one an engine here could LOAD** (D313, narrowed by D316), which
+is what `capability` is for — it is never null and it is what the page hands to
+`/api/ai/runtime/download`. `_model_row` drops a result whose `pipeline_tag` no
+registered runner serves, one with no tag at all, and anything `private`. The
+classification is `registry.capability_for_task`, the same function behind the
+Local tab's Load button, so a search result and a cached card cannot disagree
+about whether a kind of model is runnable. **Gated repos are NOT dropped**
+(D316): the row carries `gated` as `"auto"` (accept the licence while signed
+in), `"manual"` (the owner grants access by hand) or `null`, and the card turns
+that into a pill plus — when the reply's `authenticated` is false — a link to
+the repo's Hub page in place of the Download button, so a gate is a step rather
+than a missing search result.
+`GET /api/ai-models/hub/tasks` -> the offered filters as `{tag, label, help}`,
+built by running an editorially-ordered candidate tag list through that same
+function (`supported_tags()`): four tags today, twenty-six before. It is an
+unguarded read like every other (WF-5): a static glossary that touches nothing.
+Search is the asymmetry, and deliberate. It downloads nothing itself, but it is
+the one read that LEAVES the machine — an outbound call carrying the user's Hub
+token — and D36's protection is the browser refusing to show a foreign page the
+*response*, which does nothing about the *request*. Unguarded, a blind
+cross-origin GET could spend someone's credential and rate limit while learning
+nothing. So the route takes the shape its effect deserves rather than the rule
+acquiring a guarded-GET exception. A `task` nothing here runs is a 400, not an
+empty grid.
 
 `hub_models.py` is the only outbound request this feature makes. The host is
 fixed (`HF_ENDPOINT` honoured but validated as http(s)), the query string is
 `urlencode`d, the sort is a fixed map so no raw field reaches the Hub, and the
 token (`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`/`$HF_HOME/token`) is sent and never
-returned. Answers are memoised for a short TTL — search-as-you-type would
-otherwise be one request per keystroke — but **errors are not cached** and the
-**local join runs on every request**, outside the cache, so a model deleted a
+returned. An unfiltered query **over-fetches 4x (capped at 200) and truncates
+after the supported-tag pass**, so `limit` means rows shown rather than rows
+requested; a filtered one asks for exactly what it shows, since the Hub has
+already constrained it. Answers are memoised for a short TTL — search-as-you-type
+would otherwise be one request per keystroke — but **errors are not cached** and
+the **local join runs on every request**, outside the cache, so a model deleted a
 second ago stops claiming to be downloaded. That join is scoped to the rows
-being returned: one `scandir` of the cache root for id→folder, then `_scan_repo`
+being returned: one `scandir` of the cache root for id->folder, then `_scan_repo`
 + `_revisions` for only the results actually present. It deliberately does NOT
 go through `_listing()`, which additionally reads every repo's card, config and
 safetensors headers — metadata no Hub row uses. Sizes are recovered from

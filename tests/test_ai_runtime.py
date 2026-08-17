@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from fused_render import jobs
 from fused_render.ai import catalog, registry, supervisor
+from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
 
 #: The real `_ensure_venv`, captured at import — before any fixture replaces it.
@@ -309,26 +310,44 @@ def fake_image_runner(tmp_path, monkeypatch):
     supervisor.reset()
 
 
-@pytest.fixture()
-def fake_transcribe_runner(tmp_path, monkeypatch):
-    """A registry whose ONLY runner transcribes, with the fake worker and this
-    interpreter — so no CTranslate2, no weights, no audio."""
-    folder = tmp_path / "fake_transcribe_runner"
+def _only_transcribe_runner(tmp_path, monkeypatch, code):
+    """A registry whose ONLY runner transcribes, under `code`, with the fake
+    worker and this interpreter — so no CTranslate2, no weights, no audio.
+
+    The code is a parameter because it is not decoration since D319: the
+    endpoint asks `runners/engine_options.py` what the RESOLVED runner cannot
+    do, so a test about that answer has to be able to say which runner resolved.
+    """
+    folder = tmp_path / ("fake_runner_" + code.replace("-", "_"))
     folder.mkdir()
     (folder / "worker.py").write_text(FAKE_TRANSCRIBE_WORKER)
     runner = registry.Runner(
-        code="fake-whisper", capability=registry.SPEECH_TO_TEXT,
+        code=code, capability=registry.SPEECH_TO_TEXT,
         folder=str(folder), label="Fake whisper",
     )
     monkeypatch.setattr(registry, "_RUNNERS", (runner,))
     # See `fake_image_runner`: the catalog is keyed by runner since D293, so the
     # fake backend brings its own default.
-    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-whisper", [
+    monkeypatch.setitem(catalog.SUGGESTIONS, code, [
         {"id": "org/fake-whisper", "label": "Fake whisper", "size_gb": None, "note": ""},
     ])
     monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
     monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
-    yield runner
+    return runner
+
+
+@pytest.fixture()
+def fake_transcribe_runner(tmp_path, monkeypatch):
+    yield _only_transcribe_runner(tmp_path, monkeypatch, "fake-whisper")
+    supervisor.unload()
+    supervisor.reset()
+
+
+@pytest.fixture()
+def fake_parakeet_runner(tmp_path, monkeypatch):
+    """The same fake worker, resolving under the PARAKEET code — which is what
+    makes the endpoint's per-engine refusals reachable from a test."""
+    yield _only_transcribe_runner(tmp_path, monkeypatch, "parakeet-mlx")
     supervisor.unload()
     supervisor.reset()
 
@@ -427,6 +446,282 @@ def test_resolution_skips_a_runner_that_cannot_run(monkeypatch):
     assert resolved is not None and resolved.code == "mlx-text"
 
 
+def test_speech_to_text_prefers_MLX_on_a_mac_and_CTranslate2_everywhere_else(
+        monkeypatch):
+    """The ordering the table was built for, finally used by a second capability.
+
+    Apple Silicon transcribed on its CPU cores until D302 because CTranslate2
+    has no Metal backend. The MLX row sits ABOVE the CT2 one, so a Mac takes it
+    and no other platform loses anything — which is the property that had to
+    hold before this could ship, since speech to text was deliberately the first
+    capability that worked everywhere (AI-10).
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    resolved = registry.for_capability(registry.SPEECH_TO_TEXT)
+    assert resolved is not None and resolved.code == "mlx-whisper"
+
+    for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64"),
+                            ("Darwin", "x86_64")):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        resolved = registry.for_capability(registry.SPEECH_TO_TEXT)
+        assert resolved is not None and resolved.code == "faster-whisper", (
+            f"{system}/{machine} lost speech to text")
+
+
+def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
+        monkeypatch):
+    """Image generation is arranged like the other two: MLX takes the Macs (D310).
+
+    One 4.6GB repo instead of the ~10.1GB two-repo split, ~8x quicker to load
+    and ~15-20% quicker per image. The memory ceiling behind the old inversion
+    is a known accepted risk, not a resolved one — a ~23.6GB allocator pool on a
+    34GB machine, and nothing run on a 16GB Mac — and the way back is the engine
+    preference, which is why the Diffusers half of this test matters as much as
+    the MLX half.
+
+    Pinned as a test because the ordering is invisible in a diff of the table:
+    it decides what every Mac's image generation does, and nothing else fails
+    when a row moves.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+
+    resolved = registry.for_capability(registry.IMAGE_GENERATION)
+    assert resolved is not None and resolved.code == "mflux-image"
+    # …and Diffusers is still AVAILABLE on the same machine, which is what makes
+    # the preference below a way BACK rather than a setting with nowhere to go.
+    assert registry.by_code("diffusers-image").available().ok is True
+
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image")
+    resolution = registry.resolve(registry.IMAGE_GENERATION)
+    assert resolution.runner.code == "diffusers-image" and resolution.honoured
+    # Switching also moves the suggestion list, since a repo belongs to a
+    # backend: the MLX conversion is unloadable by diffusers and vice versa.
+    assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
+        "black-forest-labs/FLUX.2-klein-4B"]
+
+    # Windows and Linux never see the MLX row at all, preference or none.
+    for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64")):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        assert registry.for_capability(
+            registry.IMAGE_GENERATION).code == "diffusers-image"
+
+
+def test_the_mflux_preference_is_dropped_off_apple_silicon(monkeypatch):
+    """The same synced-prefs.json rule as the whisper runners: an image
+    preference set on a Mac must not take image generation away on a PC."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "mflux-image")
+
+    resolution = registry.resolve(registry.IMAGE_GENERATION)
+    assert resolution.runner.code == "diffusers-image"
+    assert "Apple Silicon" in resolution.ignored_reason
+
+
+# -- the engine preference (D302) ------------------------------------------------
+#
+# `prefs.engine_for_capability` is patched rather than a prefs.json written,
+# because what is under test here is the RESOLUTION — which preference wins,
+# and what happens to one that cannot. The file half is
+# `tests/test_shell_prefs.py`'s, driven through the endpoint.
+
+
+def _prefer(monkeypatch, capability, code):
+    monkeypatch.setattr(
+        registry, "preferred_code",
+        lambda asked, cap=capability, chosen=code: chosen if asked == cap
+        else registry.AUTO)
+
+
+def test_an_engine_preference_overrides_the_registry_order(monkeypatch):
+    """The whole point of the feature: a Mac that would resolve to MLX can be
+    told to use CTranslate2 instead — for a language it handles better, or to
+    compare the two — and that choice is what LOADS, not just what is stored."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "faster-whisper")
+
+    resolution = registry.resolve(registry.SPEECH_TO_TEXT)
+    assert resolution.runner.code == "faster-whisper"
+    assert resolution.honoured and resolution.ignored_reason == ""
+    # And it is the same answer every consumer gets — the supervisor, the
+    # catalog and the API all go through this one call (D293's fix, which a
+    # second copy of the preference logic would undo).
+    assert registry.for_capability(registry.SPEECH_TO_TEXT).code == "faster-whisper"
+    assert catalog._runner_for(registry.SPEECH_TO_TEXT).code == "faster-whisper"
+
+
+def test_a_preference_for_a_runner_that_cannot_run_HERE_is_ignored(monkeypatch):
+    """The rule that makes this safe to store at all.
+
+    prefs.json travels: it is a plain file in a home directory people sync,
+    copy between machines and restore from backups. A preference for MLX
+    Whisper set on a Mac and honoured on a Windows box would take speech to
+    text away entirely — a capability silently gone is a bug report, while a
+    preference that quietly does nothing is recoverable. So the ordering
+    decides instead, and the REASON comes back so the page can say so.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "mlx-whisper")
+
+    resolution = registry.resolve(registry.SPEECH_TO_TEXT)
+    assert resolution.runner.code == "faster-whisper", "the capability survived"
+    assert resolution.requested == "mlx-whisper", "the choice is not rewritten"
+    assert not resolution.honoured
+    # The registry's own words, not a second copy written for the page.
+    assert "Apple Silicon" in resolution.ignored_reason
+    assert "windows" in resolution.ignored_reason
+
+
+def test_a_preference_naming_something_that_is_not_a_runner_is_ignored(monkeypatch):
+    """A prefs.json written by a NEWER build and opened by an older one, or
+    hand-edited. Not an assert: an unreadable preference must cost the
+    preference, never the capability."""
+    _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "whisper-9000")
+    resolution = registry.resolve(registry.SPEECH_TO_TEXT)
+    assert resolution.runner is not None
+    assert "not a runner this build knows" in resolution.ignored_reason
+
+
+def test_a_preference_for_the_WRONG_capabilitys_runner_is_ignored(monkeypatch):
+    """Runner codes are global and capabilities are not, so a stale or
+    hand-edited file can pair them wrongly. Loading a Whisper runner for text
+    generation would fail at the first `/generate` with something unreadable."""
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "faster-whisper")
+    resolution = registry.resolve(registry.TEXT_GENERATION)
+    assert resolution.runner is not None
+    assert resolution.runner.capability == registry.TEXT_GENERATION
+    assert "does not do" in resolution.ignored_reason
+
+
+def test_a_broken_preferences_file_costs_the_preference_and_nothing_else(
+        monkeypatch):
+    """`preferred_code` is on the path of every load, download and page render.
+    A preferences store that cannot be read must not make local inference
+    unavailable — the capability is a property of the machine, not of a JSON
+    file."""
+    def _explode(capability):
+        raise OSError("prefs.json is a directory")
+
+    monkeypatch.setattr("fused_render.shell.prefs.engine_for_capability", _explode)
+    assert registry.preferred_code(registry.SPEECH_TO_TEXT) == registry.AUTO
+    assert registry.for_capability(registry.SPEECH_TO_TEXT) is not None
+
+
+def test_auto_is_honoured_by_definition(monkeypatch):
+    """"Ignored" has to mean something, so the default must not report itself as
+    overruled — a page that showed "your preference was ignored" on every fresh
+    machine would teach the user to ignore the message."""
+    resolution = registry.resolve(registry.SPEECH_TO_TEXT)
+    assert resolution.requested == registry.AUTO
+    assert resolution.honoured and resolution.ignored_reason == ""
+
+
+def test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served(monkeypatch):
+    """Resolution moves under models that are already loaded, and until now the
+    only thing that noticed was `evict_stale_engines` — which has exactly ONE
+    caller, the prefs PUT handler.
+
+    That is not enough, because `preferred_code` re-reads prefs.json on every
+    resolution with no cache: a file edited by hand, restored from a backup or
+    synced into the home directory moves the answer with no PUT ever running.
+    The result was a page reporting CTranslate2 while every transcription was
+    still served by the resident MLX worker — the exact "which engine served
+    me?" confusion the whole feature exists to remove.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(supervisor, "_terminate", lambda worker: None)
+    _prefer(monkeypatch, registry.SPEECH_TO_TEXT, registry.AUTO)
+    worker = supervisor.Worker(model="org/w", capability=registry.SPEECH_TO_TEXT,
+                               runner_code="mlx-whisper", token="t", state="ready")
+    monkeypatch.setitem(supervisor._workers, registry.SPEECH_TO_TEXT, worker)
+
+    assert supervisor.ready_worker(registry.SPEECH_TO_TEXT) is worker
+
+    _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "faster-whisper")
+
+    assert supervisor.ready_worker(registry.SPEECH_TO_TEXT) is None
+    # …and it is GONE, not merely refused. A worker nothing will ever route to
+    # again, holding gigabytes, is the precise waste `evict_stale_engines`
+    # exists to prevent; declining to serve it without unloading it would leak
+    # that memory until a PUT that may never come.
+    assert supervisor._workers.get(registry.SPEECH_TO_TEXT) is None
+
+
+def test_a_load_JOINING_one_in_flight_checks_the_engine_too(monkeypatch, fake_runner):
+    """The other place a worker is reused without being started.
+
+    Same model, different backend, is a real pair — `openai/whisper-large-v3`
+    exists as both an MLX conversion and a CTranslate2 one — so "the model
+    already loading is the model you asked for" is not the same question as
+    "the worker loading it is the one that should serve you".
+    """
+    monkeypatch.setattr(supervisor, "_terminate", lambda worker: None)
+    stale = supervisor.Worker(model="m", capability=registry.TEXT_GENERATION,
+                              runner_code="some-other-runner", token="t",
+                              state="loading")
+    monkeypatch.setitem(supervisor._workers, registry.TEXT_GENERATION, stale)
+
+    _reply, worker = supervisor._start_resident("m", registry.TEXT_GENERATION)
+
+    assert worker is not stale, "it joined a bring-up of the wrong engine"
+    assert worker.runner_code == fake_runner.code
+
+
+def test_describe_tells_AVAILABLE_apart_from_ACTIVE(monkeypatch):
+    """The distinction the public API needed (`fused.ai.models.list()`).
+
+    Availability is a fact about the hardware; active is a fact about this
+    capability right now. They were the same answer while resolution was purely
+    first-available, so every reader took "available" to mean "this is what
+    serves me". On an Apple Silicon machine BOTH whisper runners are available
+    and exactly one is active — a page that cannot tell them apart cannot say
+    which engine transcribed for it.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    rows = {row["code"]: row for row in registry.describe()}
+    assert rows["mlx-whisper"]["available"] and rows["faster-whisper"]["available"]
+    assert rows["mlx-whisper"]["active"] is True
+    assert rows["faster-whisper"]["active"] is False
+
+    _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "faster-whisper")
+    rows = {row["code"]: row for row in registry.describe()}
+    assert rows["mlx-whisper"]["active"] is False
+    assert rows["faster-whisper"]["active"] is True
+    # Availability did not move — it is not the thing the preference changes.
+    assert rows["mlx-whisper"]["available"] is True
+
+
+def test_describe_engines_carries_every_choice_with_its_own_reason(monkeypatch):
+    """What the Preferences page renders. The greyed-out control's explanation
+    comes from the registry (`available().reason`) rather than being written
+    again in the UI, because the UI cannot know it — it is a fact about this
+    machine and this backend."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    rows = {row["capability"]: row for row in registry.describe_engines()}
+    speech = rows[registry.SPEECH_TO_TEXT]
+
+    assert speech["selected"] == registry.AUTO
+    assert speech["effective"] == "faster-whisper"
+    assert speech["ignoredReason"] is None
+    choices = {choice["code"]: choice for choice in speech["choices"]}
+    assert set(choices) == {"mlx-whisper", "parakeet-mlx", "faster-whisper"}
+    assert choices["mlx-whisper"]["available"] is False
+    assert "Apple Silicon" in choices["mlx-whisper"]["reason"]
+    assert choices["faster-whisper"]["reason"] is None
+    # Every capability is listed, servable here or not — a preference the user
+    # cannot see is one they cannot fix.
+    assert set(rows) == set(registry.capabilities())
+
+
 def test_the_unavailable_reason_names_EVERY_runner_not_just_the_first(monkeypatch):
     """A capability with two runners must not answer for only the first of them.
 
@@ -444,13 +739,18 @@ def test_the_unavailable_reason_names_EVERY_runner_not_just_the_first(monkeypatc
     # capability unservable on a machine MLX has already turned down.
     ghost = registry.Runner(
         code="transformers-text", capability=registry.TEXT_GENERATION,
-        folder="/nowhere", label="Transformers (PyTorch)")
+        folder="/nowhere", label="Transformers (PyTorch)",
+        short_label="Transformers")
     monkeypatch.setattr(
         registry, "_RUNNERS", (registry.by_code("mlx-text"), ghost))
 
     reason = registry.unavailable_reason(registry.TEXT_GENERATION)
     assert "not built yet" in reason, reason
-    assert "Transformers (PyTorch)" in reason, reason
+    # The SHORT name. This sentence is read wherever a capability has to
+    # explain itself — a card, a job row, an API error — and none of those is
+    # the engine picker, which is the one surface that keeps the qualifier.
+    assert "Transformers" in reason, reason
+    assert "(PyTorch)" not in reason, reason
     # The supervisor raises the same sentence rather than deriving its own.
     with pytest.raises(supervisor.SupervisorError) as caught:
         supervisor.load("org/x", registry.TEXT_GENERATION)
@@ -485,6 +785,51 @@ def test_a_capability_nothing_can_serve_still_resolves_to_nothing(monkeypatch):
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("mlx-text"),))
     assert registry.for_capability(registry.TEXT_GENERATION) is None
+
+
+def test_every_runner_has_both_names_and_they_differ_only_by_the_qualifier():
+    """Two names per backend, and a registered runner must set both.
+
+    `Runner.short` falls back to the long name so a stand-in built in a test
+    renders as something, and that fallback is exactly what would hide a
+    forgotten `short_label` on a real row — the tag would silently go back to
+    "MLX FLUX (Apple Silicon)" with nothing failing. So it is required here.
+
+    The shape is also pinned: the short name is a PREFIX of the long one and
+    the remainder is a parenthetical. That is not how the value is derived —
+    deriving it would make the name a side effect of someone's punctuation —
+    but it is what makes the pair one backend rather than two, and a row whose
+    two names disagree about what the thing is called is worth a failure.
+    """
+    for runner in registry.all_runners():
+        assert runner.short_label, f"{runner.code} has no short name"
+        assert runner.short == runner.short_label
+        rest = runner.label[len(runner.short_label):].strip()
+        assert runner.label.startswith(runner.short_label) and (
+            rest == "" or (rest.startswith("(") and rest.endswith(")"))), (
+            f"{runner.code}: {runner.label!r} is not {runner.short_label!r} "
+            f"plus a qualifier")
+
+
+def test_the_picker_keeps_the_qualifier_and_everything_else_drops_it():
+    """The one surface that shows a platform qualifier is the engine picker.
+
+    That is the whole point of the split: on the picker the reader is CHOOSING
+    between backends and "(Apple Silicon)" is the difference between two
+    options; everywhere else they are being told what is happening on a machine
+    they are already sitting at.
+    """
+    engines = registry.describe_engines()
+    choices = [c for row in engines for c in row["choices"]]
+    assert any("(" in c["label"] for c in choices), choices
+    # …and the summary line beside it, and the runner rows every other surface
+    # reads, carry the short one.
+    for row in engines:
+        if row["effective"]:
+            assert "(" not in (row["effectiveShortLabel"] or "")
+    for row in registry.describe():
+        assert "(" not in row["shortLabel"], row
+        assert row["label"].startswith(row["shortLabel"])
 
 
 def test_every_suggested_model_names_a_runner_that_exists():
@@ -573,6 +918,43 @@ def test_transformers_and_whisper_suggestions_show_snapshot_size_estimates():
     assert actual == expected
 
 
+def test_every_suggestion_list_is_ordered_smallest_first():
+    """One ordering rule, and the default is whatever it puts at position 0.
+
+    The user was shown the trade — a bare `fused.ai.transcribe()` now loads
+    `Systran/faster-whisper-small` rather than the turbo model — and chose one
+    rule over a separate default field. So this is the rule, asserted rather
+    than left to the eye: sorted by ascending `size_gb`, with an entry that has
+    no size sorting LAST (an unknown download must never lead a list, since
+    leading it means being what a no-model call silently starts).
+    """
+    for code, entries in catalog.SUGGESTIONS.items():
+        keys = [(e["size_gb"] is None, e["size_gb"] or 0.0) for e in entries]
+        assert keys == sorted(keys), (
+            f"{code} is not smallest-first: "
+            f"{[(e['id'], e['size_gb']) for e in entries]}")
+
+
+def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch):
+    """`default_for` is position 0, and position 0 is the smallest — end to end.
+
+    Named per capability because these are the ids a no-model call reaches for,
+    and the whole point of the change is that they are now the SMALL ones.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    assert catalog.default_for(registry.TEXT_GENERATION) == \
+        "mlx-community/Qwen3.5-2B-MLX-4bit"
+    assert catalog.default_for(registry.SPEECH_TO_TEXT) == \
+        "mlx-community/whisper-small-mlx"
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    assert catalog.default_for(registry.TEXT_GENERATION) == "Qwen/Qwen3-1.7B"
+    assert catalog.default_for(registry.SPEECH_TO_TEXT) == \
+        "Systran/faster-whisper-small"
+
+
 def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
     """A Windows machine must not be shown MLX repos, or told it has no runner.
 
@@ -589,6 +971,8 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
     assert text["available"] is True and text["reason"] is None
     assert text["runner"] == "transformers-text"
     assert text["runnerLabel"] == "Transformers (PyTorch)"
+    # Both names travel, and the Discover heading uses the short one.
+    assert text["runnerShortLabel"] == "Transformers"
     assert not any(m["id"].startswith("mlx-community/") for m in text["models"])
     # …and the default a bare `fused.ai.image()`-style call would reach for is
     # the loadable one, not the first entry of some other machine's list.
@@ -602,13 +986,18 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
     assert all(m["id"].startswith(("mlx-community/", "prism-ml/")) for m in text["models"])
 
 
-def test_the_cpu_warning_reaches_the_page_before_the_download(monkeypatch):
+def test_the_cpu_warning_reaches_the_page(monkeypatch):
     """The PyTorch runner says what using it is LIKE, and the catalog carries it.
 
     torch from PyPI is CPU-only on Windows, so the ordinary outcome there is a
-    model that works and answers at walking pace. That is worth knowing BEFORE
-    an 8GB pull, and nothing else on the page can say it: the device a model
-    really got is a measurement that does not exist until one has loaded.
+    model that works and answers at walking pace. Nothing else on the page can
+    say it: the device a model really got is a measurement that does not exist
+    until one has loaded.
+
+    The sentence is rendered under that engine's row on the Engines tab (D315),
+    not over the Discover sections it used to head; this asserts the CATALOG
+    still carries it, which is the contract that does not depend on where a
+    page prints it.
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
@@ -825,6 +1214,45 @@ def test_a_download_that_throws_reports_the_failure_too(fake_runner, monkeypatch
     assert "RuntimeError" in row["message"]
     # The in-flight table is cleared too, so a retry is not refused as a join.
     assert supervisor.describe()["downloading"] == []
+
+
+def test_a_download_the_WORKER_stopped_reports_cancelled_not_error(
+        fake_runner, monkeypatch):
+    """Both sides of a download watch for the ✕, and the worker can win.
+
+    This loop polls every 0.5s; the worker's fetch ticks every 1s and learns
+    about the ✕ from the reply, raises `Cancelled` and exits non-zero. When that
+    lands first — a quarter of cancels, on the two loops' periods alone — the
+    `proc.poll() is None` guard drops straight through to the exit code without
+    ever asking about the ✕, and the user who pressed Cancel was told their
+    download had FAILED, with the worker's traceback as the reason.
+
+    Driven through a process that is already gone, because that is exactly the
+    state the race leaves behind and the only one that reproduces it every time.
+    """
+    job = supervisor.JOB_PREFIX + "org-stopped"
+    jobs.upsert({"id": job, "title": "org/stopped", "kind": "download",
+                 "state": "running", "cancellable": True}, server=True)
+    jobs.request_cancel(job)
+
+    class AlreadyExited:
+        """The worker noticed the ✕ and was gone before our first poll."""
+
+        pid = -1
+        returncode = 1
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen",
+                        lambda *args, **kwargs: AlreadyExited())
+
+    supervisor._fetch_only(fake_runner, "org/stopped", job)
+
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "cancelled"
+    # And no traceback dressed up as an explanation on a row nobody needs one for.
+    assert not row.get("message")
 
 
 def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path):
@@ -1142,8 +1570,18 @@ def test_the_worker_stderr_never_goes_to_an_undrained_pipe():
 def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
     body = client.get("/api/ai/runtime").json()
     assert {r["code"] for r in body["runners"]} == {
-        "mlx-text", "transformers-text", "diffusers-image", "faster-whisper"}
+        "mlx-text", "transformers-text", "diffusers-image", "mflux-image",
+        "faster-whisper", "mlx-whisper", "parakeet-mlx"}
     assert body["loaded"] == []
+    # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
+    # since with a preference in the middle "available" stopped meaning "this is
+    # what serves me". A capability nothing can serve here has no active runner,
+    # which is why this counts rather than requiring one.
+    for capability in {r["capability"] for r in body["runners"]}:
+        active = [r for r in body["runners"]
+                  if r["capability"] == capability and r["active"]]
+        assert len(active) <= 1, active
+        assert all(r["available"] for r in active)
 
 
 def test_every_mutating_route_carries_the_guard(client):
@@ -1466,6 +1904,41 @@ def test_the_transcribe_reply_settles_the_request_before_anything_runs(
     _wait_job(reply["jobId"])
 
 
+def test_the_reply_names_the_PARTIAL_transcript_too(
+        client, fake_transcribe_runner, recording):
+    """A page tailing the transcript must not have to string-munge one path out
+    of another — that is the rule `outputText` already follows, and it is the
+    same rule for the same reason: the derivation lives in one place
+    (`runners/partial.py`), and a page that reimplemented it would break
+    silently the day the suffix changed."""
+    reply = _post_transcribe(client, path=recording).json()
+
+    assert reply["outputPartial"] == reply["output"][:-len(".json")] + ".partial.jsonl"
+    assert reply["outputPartial"] == partial.partial_path(reply["output"])
+    _wait_job(reply["jobId"])
+
+
+def test_the_partial_path_reaches_the_WORKER_as_well_as_the_page(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """Advertising a path nothing writes would be worse than not advertising
+    one: a page would tail a file that never appears and show an empty
+    transcript for the whole run, with no error anywhere to explain it."""
+    seen = {}
+    real = supervisor.start_transcribe
+    monkeypatch.setattr(supervisor, "start_transcribe",
+                        lambda model, request, job: (seen.update(request),
+                                                     real(model, request, job)))
+
+    reply = _post_transcribe(client, path=recording).json()
+    _wait_job(reply["jobId"])
+
+    assert seen["outPartial"] == reply["outputPartial"]
+    # A SIBLING of the two the request already named, not a third location:
+    # `_transcripts_dir()` is where the server decided user files go.
+    assert (os.path.dirname(seen["outPartial"])
+            == os.path.dirname(seen["out"]) == os.path.dirname(seen["outText"]))
+
+
 def test_transcribing_needs_a_file_that_actually_exists(
         client, fake_transcribe_runner, recording, tmp_path):
     """Refused with a 400 BEFORE a job row opens. A path typo should be an
@@ -1491,6 +1964,152 @@ def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
                            ({"vad": True}, True), ({"vad": False}, False)):
         started = _post_transcribe(client, path=recording, **sent).json()
         assert seen["vad"] is expected, sent
+        _wait_job(started["jobId"])
+
+
+def test_a_BAD_speaker_count_is_refused_before_a_job_opens(
+        client, fake_transcribe_runner, recording):
+    """A count that was meant and is unusable, and this is the server's copy of
+    that rule — `runtime.js` refuses first, but the bridge is not the only door
+    into this endpoint and a rule enforced only in JavaScript is not enforced.
+
+    None of these is a request to estimate: `0` and `-1` are arithmetic gone
+    wrong, `true` is a copy-paste of the `diarize` flag, `"2"` is an <input>
+    read without a parseInt. Reading any of them as "work it out yourself"
+    would turn a caller's mistake into a quietly different transcript.
+
+    Before a job row opens, like the `path` check above — this one would
+    otherwise open a row that survives a multi-second model load to die.
+    """
+    for sent in ({"diarize": True, "speakers": 0},
+                 {"diarize": True, "speakers": -1},
+                 {"diarize": True, "speakers": True},
+                 {"diarize": True, "speakers": 2.5},
+                 {"diarize": True, "speakers": "2"},
+                 {"diarize": True, "speakers": 10_000}):
+        response = _post_transcribe(client, path=recording, **sent)
+        assert response.status_code == 400, sent
+        assert "speakers" in response.json()["error"], sent
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
+
+
+def test_diarizing_WITHOUT_a_count_is_accepted_and_estimates_it(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """D318: the count is a hint. Omitted — or sent as an explicit null, which
+    is what a page spreading an options object with an unset key produces — the
+    job starts and the worker is told to diarize with no `speakers` key at all,
+    which its clustering reads as "estimate"."""
+    seen = {}
+    real = supervisor.start_transcribe
+    monkeypatch.setattr(supervisor, "start_transcribe",
+                        lambda model, request, job: (seen.update(request),
+                                                     real(model, request, job)))
+    for sent in ({"diarize": True}, {"diarize": True, "speakers": None},
+                 {"diarize": True, "speakers": ""}):
+        seen.clear()
+        response = _post_transcribe(client, path=recording, **sent)
+        assert response.status_code == 200, (sent, response.json())
+        assert seen["diarize"] is True, sent
+        # ABSENT rather than null: the worker never has to tell an unspecified
+        # count from one that arrived as a null.
+        assert "speakers" not in seen, sent
+        _wait_job(response.json()["jobId"])
+
+
+@pytest.mark.parametrize("sent,needle", [
+    ({"task": "translate"}, "only transcribes"),
+    ({"language": "en"}, "'language' option"),
+    ({"initialPrompt": "Acme Corp"}, "'initialPrompt'"),
+])
+def test_an_option_the_RESOLVED_engine_cannot_honour_is_refused_before_a_job_opens(
+        client, fake_parakeet_runner, recording, sent, needle):
+    """D319/AI-10g. The worker refuses these too, but by then the user has paid
+    for a job row, a venv build and a multi-gigabyte download to be told no —
+    and the runner is resolved synchronously HERE, so the answer was available
+    before any of it. Same treatment as a bad `task` or `speakers`: an instant
+    400 with the sentence `runners/engine_options.py` holds."""
+    response = _post_transcribe(client, path=recording, **sent)
+
+    assert response.status_code == 400, (sent, response.json())
+    assert needle in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
+
+
+def test_an_ORDINARY_request_to_that_engine_still_runs(
+        client, fake_parakeet_runner, recording):
+    """The check is on the value of `task` and the presence of the other two:
+    every request carries `task: "transcribe"`, and a refusal keyed on presence
+    would refuse every call the engine exists to serve."""
+    started = _post_transcribe(client, path=recording, task="transcribe",
+                               language=None, initialPrompt=None)
+
+    assert started.status_code == 200, started.json()
+    _wait_job(started.json()["jobId"])
+
+
+def test_an_engine_with_NOTHING_to_refuse_is_asked_the_same_question(
+        client, fake_transcribe_runner, recording):
+    """The table is an exception list, so a runner absent from it accepts what
+    it always did — checked because a refusal that fired for every engine would
+    take `translate` away from both whisper runners and pass every parakeet
+    test while doing it."""
+    started = _post_transcribe(client, path=recording, task="translate",
+                               language="en", initialPrompt="Acme Corp")
+
+    assert started.status_code == 200, started.json()
+    _wait_job(started.json()["jobId"])
+
+
+def test_the_endpoint_and_the_worker_refuse_an_option_by_the_SAME_rule(
+        client, fake_parakeet_runner, recording):
+    """One sentence, one place. The endpoint hands the caller whatever
+    `runners/engine_options.py` raises, which is the module the worker imports
+    out of its own venv — so a message reworded there is reworded here."""
+    from fused_render.ai.runners import engine_options
+
+    response = _post_transcribe(client, path=recording, task="translate")
+    with pytest.raises(ValueError) as raised:
+        engine_options.unsupported_or_raise("parakeet-mlx", task="translate")
+    assert response.json()["error"] == str(raised.value)
+
+
+def test_the_server_and_the_workers_READ_a_speaker_count_by_the_SAME_rule(
+        client, fake_transcribe_runner, recording):
+    """One sentence, one place. The endpoint hands the caller whatever
+    `runners/diarize.py` raises, so a rule that changes there changes here —
+    which is the point of the server importing the module the workers import
+    rather than restating it."""
+    from fused_render.ai.runners import diarize
+
+    response = _post_transcribe(client, path=recording, diarize=True, speakers=0)
+    with pytest.raises(ValueError) as raised:
+        diarize.speakers_or_raise(0)
+    assert response.json()["error"] == str(raised.value)
+
+
+def test_diarize_and_speakers_reach_the_worker_and_default_to_OFF(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """Additive: a call that does not ask for speakers must send `diarize`
+    false and no `speakers` at all, so the worker writes exactly the transcript
+    it always did."""
+    seen = {}
+    real = supervisor.start_transcribe
+    monkeypatch.setattr(supervisor, "start_transcribe",
+                        lambda model, request, job: (seen.update(request),
+                                                     real(model, request, job)))
+    for sent, expected in (({}, None), ({"diarize": False}, None),
+                           ({"diarize": None}, None),
+                           ({"diarize": True, "speakers": 3}, 3)):
+        seen.clear()
+        started = _post_transcribe(client, path=recording, **sent).json()
+        assert seen["diarize"] is (expected is not None), sent
+        assert seen.get("speakers") == expected, sent
+        if expected is None:
+            # Not a null, ABSENT — the worker's own `speakers_or_raise` never
+            # sees an argument for a run that did not ask for one.
+            assert "speakers" not in seen, sent
         _wait_job(started["jobId"])
 
 
@@ -2184,7 +2803,8 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
     assert resolved == ["org/default", "org/other"], resolved
 
 
-def _run_ai_transcribe(readfile, record, node_required=True):
+def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a"}',
+                       extra=None):
     """Run `aiTranscribe` out of runtime.js under node, against stubs.
 
     The same extraction the claude suites use (`tests/test_claude_narrow.py`):
@@ -2194,7 +2814,11 @@ def _run_ai_transcribe(readfile, record, node_required=True):
     typed rejection from an untyped one.
 
     `readfile` is JS for the body of the stub `readFile`; `record` is the job
-    row `watch` resolves with. Returns the settled outcome as a dict.
+    row `watch` resolves with; `opts` is the argument object as JS, so a caller
+    can drive the argument checks that reject before any of the stubs are ever
+    reached. `extra` is one more JS `key: expression` reported alongside the
+    rejection, for a test that cares about a field beyond the usual three.
+    Returns the settled outcome as a dict.
     """
     import shutil
     import subprocess
@@ -2210,26 +2834,38 @@ def _run_ai_transcribe(readfile, record, node_required=True):
 
     prelude = f"""
       const started = {{jobId: "sys:ai-transcribe:x", output: "/t/out.json",
-                        outputText: "/t/out.txt", path: "/t/a.m4a",
+                        outputText: "/t/out.txt",
+                        outputPartial: "/t/out.partial.jsonl", path: "/t/a.m4a",
                         model: "m", task: "transcribe"}};
       const window = {{location: {{search: "?path=/pages/p.html"}}}};
       const aiPost = () => Promise.resolve(started);
       const rawUrl = (p) => "/api/fs/raw?path=" + p;
       const stat = () => Promise.reject(new Error("no stat"));
       const readFile = () => {readfile};
+      // A caller with no `onSegment` must make no request of its own. The
+      // bridge swallows tail failures on purpose, so an unstubbed `fetch`
+      // would let a regression here pass silently as a rejected promise
+      // nobody reads — this one is LOUD instead.
+      globalThis.fetch = (url) => {{
+        console.log(JSON.stringify({{ok: false, unexpectedFetch: String(url)}}));
+        process.exit(0);
+      }};
       const watchJob = () => ({{
         watch: () => Promise.resolve({record}),
         get: () => Promise.resolve({record}),
         stop() {{}}, cancel: () => Promise.resolve(true),
       }});
     """
+    # Not an f-string: the body below is JS object literals, and doubling every
+    # brace to smuggle one substitution through would make it unreadable.
     call = """
-      aiTranscribe({path: "a.m4a"}).then(
+      aiTranscribe(OPTS).then(
         (value) => console.log(JSON.stringify({ok: true, value})),
         (err) => console.log(JSON.stringify(
-          {ok: false, message: err.message, type: err.type, jobId: err.jobId})),
+          {ok: false, message: err.message, type: err.type, jobId: err.jobId,
+           EXTRA})),
       );
-    """
+    """.replace("OPTS", opts).replace("EXTRA", extra or '"_": null')
     out = subprocess.run(["node", "-e", prelude + fn + call],
                          capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
@@ -2273,11 +2909,605 @@ def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
     assert value["url"] == "/api/fs/raw?path=/t/out.json"
 
 
+@pytest.mark.parametrize("opts", [
+    '{path: "a.m4a", diarize: true, speakers: 0}',
+    '{path: "a.m4a", diarize: true, speakers: -2}',
+    '{path: "a.m4a", diarize: true, speakers: true}',
+    '{path: "a.m4a", diarize: true, speakers: 2.5}',
+    '{path: "a.m4a", diarize: true, speakers: "2"}',
+    '{path: "a.m4a", diarize: true, speakers: NaN}',
+    '{path: "a.m4a", diarize: true, speakers: 101}',
+])
+def test_diarizing_with_an_UNUSABLE_speaker_count_rejects_BEFORE_a_job_opens(opts):
+    """The bridge's half of the count check, beside the `path` check and for
+    the same reason: the caller fails synchronously with an actionable sentence
+    instead of watching a row open and die.
+
+    Every value here is a count that was MEANT — omitting it is the estimating
+    path (D318) and is tested below, but a wrong number is a typo and reading
+    it as "estimate" would hide it.
+
+    `speakers: true` is in the list deliberately — `{diarize: true, speakers:
+    true}` is a plausible copy-paste, and a language where `true` is not a
+    number is the only thing between it and a transcript labelled entirely
+    "Speaker 1". So is `"2"`: a count read out of an <input> without a parseInt
+    is the common way this argument arrives wrong.
+    """
+    settled = _run_ai_transcribe('Promise.resolve("{}")', '{state: "done"}', opts=opts)
+    assert settled["ok"] is False, settled
+    assert settled["type"] == "bad_request", settled
+    assert "speakers" in settled["message"]
+
+
+def test_the_bridges_speaker_bound_is_the_SAME_NUMBER_python_enforces():
+    """Four copies of one rule — `runtime.js`, the endpoint, and each worker —
+    and this is the copy no other test can reach: JS cannot import
+    `diarize.MAX_SPEAKERS`, so the bound is restated in the bridge and nothing
+    but this comparison stops the two drifting.
+
+    Read out of the SOURCE and then driven through the real function, because
+    either half alone is weak: a number that matches but is never applied, or a
+    rejection at some bound that is not Python's. `diarize.py:speakers_or_raise`
+    and D309 both claim the four enforcement points are identical, and this is
+    what makes that claim true rather than aspirational.
+    """
+    from fused_render.ai.runners import diarize
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    transcribe = source[source.index("  function aiTranscribe(opts)"):]
+    transcribe = transcribe[:transcribe.index("\n  }\n")]
+    assert f"const MAX_SPEAKERS = {diarize.MAX_SPEAKERS};" in transcribe
+
+    # …and the boundary is inclusive on both sides, in both languages.
+    assert diarize.speakers_or_raise(diarize.MAX_SPEAKERS) == diarize.MAX_SPEAKERS
+    at_the_bound = _run_ai_transcribe(
+        'Promise.resolve(JSON.stringify({text: "x", segments: []}))', '{state: "done"}',
+        opts='{path: "a.m4a", diarize: true, speakers: %d}' % diarize.MAX_SPEAKERS)
+    assert at_the_bound["ok"] is True, at_the_bound
+    over = _run_ai_transcribe(
+        'Promise.resolve("{}")', '{state: "done"}',
+        opts='{path: "a.m4a", diarize: true, speakers: %d}' % (diarize.MAX_SPEAKERS + 1))
+    assert over["ok"] is False and over["type"] == "bad_request"
+
+
+def test_asking_for_speakers_properly_gets_the_labels_and_the_legend_back():
+    """The success path with `diarize`, through the real function: the reply
+    carries the transcript's legend so a page can build a colour map without
+    walking thousands of segments, and each segment carries its own label."""
+    written = ('Promise.resolve(JSON.stringify({text: "hello hi", '
+               'segments: [{start: 0, end: 1, text: "hello", speaker: "Speaker 1"}, '
+               '{start: 1, end: 2, text: "hi", speaker: "Speaker 2"}], '
+               'speakers: ["Speaker 1", "Speaker 2"], language: "en", duration: 2}))')
+    settled = _run_ai_transcribe(written, '{state: "done"}',
+                                 opts='{path: "a.m4a", diarize: true, speakers: 2}')
+    assert settled["ok"] is True, settled
+    assert settled["value"]["speakers"] == ["Speaker 1", "Speaker 2"]
+    assert settled["value"]["segments"][1]["speaker"] == "Speaker 2"
+
+
+@pytest.mark.parametrize("opts", [
+    '{path: "a.m4a", diarize: true}',
+    '{path: "a.m4a", diarize: true, speakers: null}',
+    '{path: "a.m4a", diarize: true, speakers: ""}',
+])
+def test_diarizing_WITHOUT_a_count_is_the_estimating_path_not_a_rejection(opts):
+    """D318. All three spellings of "I did not say" reach the server, and the
+    reply carries `estimatedSpeakers` — the count the clustering settled on,
+    which a caller who passed one would already know and does not get."""
+    written = ('Promise.resolve(JSON.stringify({text: "hello hi", '
+               'segments: [{start: 0, end: 1, text: "hello", speaker: "Speaker 1"}], '
+               'speakers: ["Speaker 1"], estimatedSpeakers: 2, '
+               'language: "en", duration: 2}))')
+    settled = _run_ai_transcribe(written, '{state: "done"}', opts=opts)
+    assert settled["ok"] is True, settled
+    assert settled["value"]["estimatedSpeakers"] == 2
+    assert settled["value"]["speakers"] == ["Speaker 1"]
+
+
+def test_a_run_that_was_GIVEN_the_count_reports_no_estimate():
+    """The field means "estimated", not "resolved": a caller who supplied the
+    number gets no key back, and the transcript on disk has none either."""
+    written = ('Promise.resolve(JSON.stringify({text: "hi", '
+               'segments: [{start: 0, end: 1, text: "hi", speaker: "Speaker 1"}], '
+               'speakers: ["Speaker 1"], language: "en", duration: 1}))')
+    settled = _run_ai_transcribe(written, '{state: "done"}',
+                                 opts='{path: "a.m4a", diarize: true, speakers: 1}')
+    assert settled["ok"] is True, settled
+    assert "estimatedSpeakers" not in settled["value"]
+
+
+def test_a_call_that_does_not_ask_for_speakers_is_unchanged():
+    """`diarize` defaults false, so the count is not required and nothing about
+    the reply gains a value — the whole feature is additive or it is a breaking
+    change to every page already calling this."""
+    good = ('Promise.resolve(JSON.stringify({text: "hello", '
+            'segments: [{start: 0, end: 1, text: "hello"}], language: "en"}))')
+    settled = _run_ai_transcribe(good, '{state: "done"}')
+    assert settled["ok"] is True, settled
+    assert "speakers" not in settled["value"]
+    assert "speaker" not in settled["value"]["segments"][0]
+
+
+def test_a_FAILED_transcription_still_says_where_the_salvage_is():
+    """A run that dies at minute 80 of 90 writes no `.json` at all, and the
+    `.partial.jsonl` the worker deliberately LEAVES behind is the only place
+    those 80 minutes survive. The POST reply named that path — but the caller
+    of `fused.ai.transcribe` never sees the reply, only the rejection, so
+    without this the file is documented, written, and unreachable from the one
+    situation it exists for."""
+    settled = _run_ai_transcribe('Promise.reject(new Error("no file"))',
+                                 '{state: "error", message: "the decoder exploded"}',
+                                 extra="outputPartial: err.outputPartial")
+    assert settled["ok"] is False and settled["type"] == "ai_error"
+    assert settled["outputPartial"] == "/t/out.partial.jsonl"
+
+
 def test_a_cancelled_row_rejects_as_cancelled_not_as_an_error():
     settled = _run_ai_transcribe('Promise.reject(new Error("no file"))',
                                  '{state: "cancelled"}')
     assert settled["ok"] is False and settled["type"] == "cancelled"
     assert "cancelled" in settled["message"]
+
+
+# -- the progressive transcript, as a page sees it ---------------------------------
+#
+# `_run_ai_transcribe` above stubs `watch` into a single resolved promise, so
+# it cannot see the poll loop at all. This second harness drives the real one:
+# the file GROWS between ticks, exactly as a worker appending to it makes it,
+# and `fetch` is a real ranged reader over those bytes. What is proved is the
+# part a page must not have to write itself — that `onSegment` fires in order,
+# once each, while the run is still going.
+
+
+def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
+                               partial_path='"/t/out.partial.jsonl"',
+                               ranged=True, on_segment=True, slow_ms=0,
+                               terminal='{state: "done"}', readfile=None,
+                               fetch_after=None):
+    """Drive `aiTranscribe` through a real poll loop over a growing file.
+
+    `lines` is a list of JS strings, one per tick: the WHOLE partial file as it
+    stands when that tick fires, so a caller writes the file's history rather
+    than a diff. `final` is the transcript JSON `readFile` resolves with.
+    `ranged=False` makes the stub server ignore `Range` and answer 200 with the
+    whole file, which is the behaviour a proxy in front of `/api/fs/raw` could
+    impose and which must not duplicate a single segment.
+
+    `terminal` is the record `watch` finally resolves with — `null` for a row
+    that aged out, an `error`/`cancelled` row for the failure paths — and
+    `readfile` overrides what `readFile` does, so a failure can be driven all
+    the way through with the poll loop and the tail both real. `fetch_after` is
+    JS for a replacement `fetch` installed the moment `watch` returns, which is
+    how a read attempted AFTER the run is over — the terminal drain — can be
+    made to fail on its own without disturbing the tail that ran before it.
+
+    Returns `{settled, segments, segmentsAtSettle, fetches}` — the outcome,
+    every `onSegment` argument in the order it arrived, how many of them had
+    arrived at the moment the promise settled, and every request the bridge
+    made.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own transcription glue")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    start = source.index("  function aiTranscribe(opts)")
+    fn = source[start:source.index("\n  }\n", start) + 4]
+
+    prelude = """
+      const started = {jobId: "sys:ai-transcribe:x", output: "/t/out.json",
+                       outputText: "/t/out.txt", outputPartial: PARTIAL,
+                       path: "/t/a.m4a", model: "m", task: "transcribe"};
+      const window = {location: {search: "?path=/pages/p.html"}};
+      const aiPost = () => Promise.resolve(started);
+      const rawUrl = (p) => "/api/fs/raw?path=" + p;
+      const callHeaders = (extra) => Object.assign({"X-Fused-Call": "1"}, extra);
+      const readFile = () => READFILE;
+      const RANGED = IS_RANGED;
+      const HISTORY = LINES;
+      const FETCH_AFTER = AFTER_FETCH;
+      const fetches = [];
+      let onDisk = "";
+      globalThis.fetch = async (url, init) => {
+        const headers = (init && init.headers) || {};
+        fetches.push({url, range: headers.Range || null});
+        // The bytes are taken WHEN THE REQUEST IS SERVED, before the latency
+        // below, because that is what `/api/fs/raw` does: it opens the file
+        // now and the delay is the answer travelling back. Snapshotting after
+        // the sleep would hand every slow read the future contents of the
+        // file, which quietly hides the bug this models — a segment appended
+        // while a read is in flight is one that read CANNOT have seen.
+        const body = Buffer.from(onDisk, "utf8");
+        // A read still in flight when the row goes done, which is the ordinary
+        // case on a real machine and the one where the drain could interleave
+        // with the tail and deliver a segment twice.
+        if (SLOW_MS) await new Promise((r) => setTimeout(r, SLOW_MS));
+        const match = /bytes=(\\d+)-/.exec(headers.Range || "");
+        const from = match ? Number(match[1]) : 0;
+        if (!RANGED) {
+          return {ok: true, status: 200,
+                  arrayBuffer: async () => body.buffer.slice(
+                    body.byteOffset, body.byteOffset + body.byteLength)};
+        }
+        // What /api/fs/raw really answers, verified against it: 206 with the
+        // tail, 416 once the offset is at or past the end.
+        if (from >= body.length) {
+          return {ok: false, status: 416, arrayBuffer: async () => new ArrayBuffer(0)};
+        }
+        const slice = body.subarray(from);
+        return {ok: true, status: 206,
+                arrayBuffer: async () => slice.buffer.slice(
+                  slice.byteOffset, slice.byteOffset + slice.byteLength)};
+      };
+      const watchJob = () => ({
+        // The real loop's shape, down to the last callback: `watch` reports
+        // EVERY record it sees and only then returns the terminal one (see
+        // watchJob's `onUpdate(record)` above `if (record.state !== "running")`),
+        // so the terminal tick starts a tail of its own. A row that aged out is
+        // the one case with nothing to report — the record is null.
+        watch: async (onUpdate) => {
+          for (const state of HISTORY) {
+            onDisk = state;
+            if (typeof onUpdate === "function") onUpdate({state: "running", done: 1});
+            await new Promise((r) => setTimeout(r, 5));
+          }
+          if (TERMINAL && typeof onUpdate === "function") onUpdate(TERMINAL);
+          // Swapped in AFTER the terminal tick has started whatever tail it
+          // was going to, so only reads belonging to the settled run see it.
+          if (FETCH_AFTER) globalThis.fetch = FETCH_AFTER;
+          return TERMINAL;
+        },
+        get: () => Promise.resolve(TERMINAL),
+        stop() {}, cancel: () => Promise.resolve(true),
+      });
+      const heard = [];
+    """
+    prelude = (prelude.replace("PARTIAL", partial_path)
+               .replace("SLOW_MS", str(int(slow_ms)))
+               .replace("IS_RANGED", "true" if ranged else "false")
+               .replace("LINES", json.dumps(lines))
+               .replace("TERMINAL", terminal)
+               .replace("AFTER_FETCH", fetch_after or "null")
+               .replace("READFILE",
+                        readfile or "Promise.resolve(%s)" % json.dumps(json.dumps(final))))
+    # The report is taken AFTER a settle window, not at resolution. A read
+    # still in flight when the promise resolves would otherwise deliver its
+    # segments into `heard` after the snapshot was printed — so a bridge that
+    # let the drain race the tail would look clean here, which is the one
+    # failure this harness exists to see.
+    call = """
+      const report = (payload) => {
+        // Counted the instant the promise settles, and printed after the
+        // window below: the gap between the two is a segment that arrived
+        // AFTER the caller was already told the run was over.
+        const atSettle = heard.length;
+        setTimeout(() => console.log(JSON.stringify(
+          Object.assign(payload, {segments: heard, segmentsAtSettle: atSettle,
+                                  fetches}))), 120);
+      };
+      const options = Object.assign(OPTS, LISTENER);
+      aiTranscribe(options).then(
+        (value) => report({settled: {ok: true, value}}),
+        (err) => report({settled: {ok: false, message: err.message, type: err.type,
+                                   output: err.output,
+                                   outputPartial: err.outputPartial}}),
+      );
+    """.replace("OPTS", opts).replace(
+        "LISTENER",
+        "{onSegment: (s) => heard.push(s)}" if on_segment
+        # …but still an `onProgress`, so the poll loop ticks exactly as it does
+        # for the caller under test. Without one, `watch(null)` would never
+        # reach the branch that decides whether to tail.
+        else "{onProgress: () => {}}")
+    out = subprocess.run(["node", "-e", prelude + fn + call],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def _jsonl(*segments):
+    """The partial file's contents after those segments, as the worker writes
+    it: `json.dumps(..., ensure_ascii=False)` per line, newline-terminated."""
+    return "".join(json.dumps(s, ensure_ascii=False) + "\n" for s in segments)
+
+
+def test_a_page_gets_each_segment_WHILE_the_file_is_still_decoding():
+    """The deliverable. A page must not have to implement file tailing to get a
+    streaming transcript — it passes `onSegment` and the bridge does it, off
+    the poll it was already running for `onProgress`."""
+    one = {"start": 0.0, "end": 1.5, "text": "hello"}
+    two = {"start": 1.5, "end": 3.0, "text": "world"}
+    run = _run_ai_transcribe_tailing(
+        ["", _jsonl(one), _jsonl(one, two)],
+        {"text": "hello world", "segments": [one, two], "language": "en"})
+
+    assert run["settled"]["ok"] is True, run["settled"]
+    assert run["segments"] == [one, two]
+
+
+def test_a_segment_the_TAIL_already_delivered_is_not_delivered_again():
+    """The final transcript is the completeness backstop — it is read anyway,
+    and it is the only source that is guaranteed whole — so it drains whatever
+    the tail did not reach. Which makes double delivery the hazard: a page
+    appending a cue per callback would end with the transcript twice."""
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    two = {"start": 1.0, "end": 2.0, "text": "two"}
+    three = {"start": 2.0, "end": 3.0, "text": "three"}
+    run = _run_ai_transcribe_tailing(
+        # The last two land between the final tick and the row going done — the
+        # ordinary case, since the worker removes the partial file the moment
+        # the transcript lands.
+        [_jsonl(one)],
+        {"text": "one two three", "segments": [one, two, three]})
+
+    assert run["segments"] == [one, two, three]
+
+
+def test_a_tail_still_IN_FLIGHT_when_the_row_finishes_cannot_double_deliver():
+    """The ordinary case on a real machine, not an edge: the last read is
+    started by the last tick and the row goes `done` under it. If the final
+    drain ran without settling that read, it would see `delivered` from before
+    the read landed, resend those segments, and the tail would then deliver
+    them again — the transcript twice, out of order in the middle."""
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    two = {"start": 1.0, "end": 2.0, "text": "two"}
+    run = _run_ai_transcribe_tailing(
+        [_jsonl(one), _jsonl(one, two)], {"text": "one two", "segments": [one, two]},
+        slow_ms=30)
+
+    assert run["segments"] == [one, two]
+
+
+def test_a_run_whose_partial_file_never_appears_still_delivers_EVERY_segment():
+    """404 for the whole run — an older server that advertises no partial path,
+    a transcripts directory on a filesystem that lost it, a worker too fast to
+    ever be caught mid-run. `onSegment` is a promise about segments, not about
+    the file they arrived through."""
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        ["", "", ""], {"text": "one", "segments": [one]},
+        partial_path="undefined")
+
+    assert run["segments"] == [one]
+    # Nothing was tailed, because there was nothing to tail — not a request per
+    # tick against a path the reply never named.
+    assert [f for f in run["fetches"] if f["range"]] == []
+
+
+def test_the_tail_asks_for_the_BYTES_IT_HAS_NOT_SEEN(  # noqa: N802
+):
+    """Byte offsets, not "read the file and skip the lines I know" — which on a
+    90-minute transcript re-downloads a megabyte every 700ms for the length of
+    the run. `/api/fs/raw` answers Range for local files (206 + content-range,
+    416 past the end), which was verified against the route rather than assumed
+    from the fact that it uses FileResponse.
+
+    **The first segment is deliberately multibyte**, because that is the only
+    place the bytes-not-characters rule is observable. Get it wrong downstream
+    and the reader lands mid-line, fails to parse, and falls back to the final
+    drain — the right transcript by the slow path, with nothing to see. Here it
+    is a number, and a wrong one is a wrong number.
+    """
+    one = {"start": 0.0, "end": 1.0, "text": "café 日本語"}
+    two = {"start": 1.0, "end": 2.0, "text": "two"}
+    line = _jsonl(one)
+    assert len(line.encode()) > len(line), "the first line must be multibyte"
+    run = _run_ai_transcribe_tailing(
+        [line, _jsonl(one, two)], {"text": "x", "segments": [one, two]})
+
+    ranges = [f["range"] for f in run["fetches"] if f["range"]]
+    assert ranges[0] == "bytes=0-"
+    # Exactly the end of the first line, in BYTES — so a `Range` that reset to
+    # zero, or one counting characters, is a different number here.
+    assert ranges[1] == "bytes=%d-" % len(line.encode())
+    assert ranges[1] != "bytes=%d-" % len(line)
+    assert run["segments"] == [one, two]
+
+
+def test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place():
+    """Offsets are bytes and the text is written unescaped, so "café" is five
+    bytes of four characters. A tail that advanced by string LENGTH drifts by
+    one byte per accent and three per CJK character, then starts reading from
+    inside the previous line — delivering it a second time, in pieces.
+
+    The first line here is deliberately many bytes wider than it is characters:
+    a one-accent line drifts by exactly one byte, which lands on the newline
+    and accidentally still works. This one lands well inside the JSON.
+    """
+    one = {"start": 0.0, "end": 1.0, "text": "café ünïcøde 日本語 ✓"}
+    two = {"start": 1.0, "end": 2.0, "text": "naïve"}
+    assert len(_jsonl(one).encode()) - len(_jsonl(one)) > 10, "not multibyte enough"
+    run = _run_ai_transcribe_tailing(
+        [_jsonl(one), _jsonl(one, two)],
+        {"text": "x", "segments": [one, two]})
+
+    assert run["segments"] == [one, two]
+
+
+def test_a_server_that_IGNORES_the_range_still_delivers_each_segment_once():
+    """`/api/fs/raw` honours Range today, but a 200 carrying the whole file is
+    a legal answer to a Range request and anything in front of the route could
+    give one. Re-reading from zero must not re-deliver what was already sent."""
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    two = {"start": 1.0, "end": 2.0, "text": "two"}
+    run = _run_ai_transcribe_tailing(
+        [_jsonl(one), _jsonl(one, two)], {"text": "one two", "segments": [one, two]},
+        ranged=False)
+
+    assert run["segments"] == [one, two]
+
+
+def test_a_caller_with_NO_onSegment_makes_exactly_the_requests_it_always_did():
+    """The additive promise, and the one a page cannot see: a bridge that
+    tailed unconditionally would put a second request on every poll of every
+    existing transcription, for a file nobody is reading."""
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    final = {"text": "one", "segments": [one]}
+    history = [_jsonl(one), _jsonl(one)]
+
+    # An `onProgress`-only caller: the loop ticks twice, and the partial file
+    # is sitting right there with a segment in it. Zero requests is the claim.
+    quiet = _run_ai_transcribe_tailing(history, final, on_segment=False)
+    assert quiet["settled"]["ok"] is True, quiet["settled"]
+    assert quiet["fetches"] == []
+
+    # …and with `onSegment`, one tail per tick and no more — no second loop.
+    # Three ticks, not two: `watch` reports the terminal record as well, and
+    # that last tail is what carries the segments written between the final
+    # running tick and the row finishing.
+    loud = _run_ai_transcribe_tailing(history, final)
+    assert len([f for f in loud["fetches"] if f["range"]]) == 3
+
+
+def test_the_bridge_tails_the_path_the_ROUTE_advertised(client,
+                                                        fake_transcribe_runner,
+                                                        recording):
+    """The two halves meeting. The route's `outputPartial` is what the bridge
+    reads, so a suffix changed on one side and not the other is caught here
+    rather than as an empty transcript on a page."""
+    reply = _post_transcribe(client, path=recording).json()
+    _wait_job(reply["jobId"])
+
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        [_jsonl(one)], {"text": "one", "segments": [one]},
+        partial_path=json.dumps(reply["outputPartial"]))
+    assert run["segments"] == [one]
+    assert run["fetches"][0]["url"].endswith(reply["outputPartial"])
+
+
+def test_a_FAILED_run_delivers_its_last_segments_BEFORE_it_rejects():
+    """`onSegment` must stop when the promise settles, and the failure path is
+    the one that did not honour that.
+
+    `watch` reports the terminal record too, so an `error` or `cancelled` row
+    starts one last tail — and a tail from the tick before it can still be in
+    flight anyway. The success path settles `tailChain` before it drains, but
+    the failure path threw straight out of the `.then`, so those reads landed
+    afterwards and called `onSegment` on a promise the caller had already seen
+    reject. A page that clears its transcript pane on the rejection then gets a
+    cue painted into the cleared pane, from a run it was told was over.
+
+    Waiting is the right answer rather than suppressing: those segments are
+    real — they decoded before the run died — and delivering them BEFORE the
+    rejection is exactly the salvage this feature is for.
+
+    And waiting is only HALF of it, which is why the segment here lands where
+    it does. The read from the tick before is still in flight when `one` is
+    appended, so it cannot have seen it, and the terminal tick's `tail()`
+    declines to start another while one is in flight. Settling the chain and
+    rejecting therefore delivered nothing at all: `err.outputPartial` pointed
+    at a file holding a segment `onSegment` never got. The success path drains
+    the finished `.json` for exactly this reason; the failure path has no
+    `.json`, so it re-reads the partial file one last time instead.
+    """
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        # The segment lands on the last running tick, and the read over it is
+        # still in flight when the row goes `error` under it.
+        ["", _jsonl(one)], {"text": "", "segments": []},
+        terminal='{state: "error", message: "the decoder exploded"}',
+        readfile='Promise.reject(new Error("no transcript"))',
+        slow_ms=30)
+
+    assert run["settled"]["ok"] is False, run["settled"]
+    assert run["settled"]["type"] == "ai_error"
+    assert run["segments"] == [one], run["segments"]
+    # The whole assertion: nothing arrived after the caller was told it failed.
+    assert run["segmentsAtSettle"] == len(run["segments"]), run
+
+
+def test_a_CANCELLED_run_also_stops_calling_onSegment_once_it_rejects():
+    """Same rule on the other terminal state. A page cancels a transcription
+    to make it stop; a cue arriving after `cancel()` resolved is the one thing
+    a Stop button must not do."""
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        ["", _jsonl(one)], {"text": "", "segments": []},
+        terminal='{state: "cancelled"}',
+        readfile='Promise.reject(new Error("no transcript"))',
+        slow_ms=30)
+
+    assert run["settled"]["ok"] is False and run["settled"]["type"] == "cancelled"
+    # Delivered, not dropped: a cancel removes the partial file, but whatever
+    # decoded before the ✕ landed is still the honest answer to what was heard,
+    # and the same final read carries it on both terminal states.
+    assert run["segments"] == [one], run["segments"]
+    assert run["segmentsAtSettle"] == len(run["segments"]), run
+
+
+def test_a_run_whose_ROW_AGED_OUT_and_whose_TRANSCRIPT_IS_GONE_still_drains():
+    """The third terminal path, and it had the same hole.
+
+    `watch` resolving null means the row finished and aged out under a sleeping
+    tab, so the transcript is read as the real witness — and when THAT fails
+    too, this is a failed run whose only artefact is the `.partial.jsonl` the
+    rejection names. `done()`'s drain never ran (it is inside the `.then` that
+    the read failure skipped), and its `.catch` rejected without one, so the
+    segments in the file the caller is being pointed at were never delivered.
+    """
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        # Same shape as the live-failure test: appended under an in-flight read
+        # that cannot have seen it, and there is no terminal tick at all here
+        # to start another (a null record is reported to nobody).
+        ["", _jsonl(one)], {"text": "", "segments": []},
+        terminal="null",
+        readfile='Promise.reject(new Error("no transcript"))',
+        slow_ms=30)
+
+    assert run["settled"]["ok"] is False, run["settled"]
+    assert "no longer being reported" in run["settled"]["message"]
+    assert run["settled"]["outputPartial"] == "/t/out.partial.jsonl"
+    assert run["segments"] == [one], run["segments"]
+    assert run["segmentsAtSettle"] == len(run["segments"]), run
+
+
+def test_a_FINAL_DRAIN_THAT_FAILS_does_not_replace_the_runs_own_error():
+    """Best-effort, like every other read of this file. The rejection a caller
+    switches on is the run's — "the decoder exploded", typed `ai_error` — and a
+    partial file that has already been removed, or a fetch that throws, must not
+    turn that into a network error with a different `type`."""
+    run = _run_ai_transcribe_tailing(
+        [""], {"text": "", "segments": []},
+        terminal='{state: "error", message: "the decoder exploded"}',
+        readfile='Promise.reject(new Error("no transcript"))',
+        fetch_after='() => { throw new Error("the socket died"); }')
+
+    assert run["settled"]["ok"] is False, run["settled"]
+    assert run["settled"]["type"] == "ai_error"
+    assert "decoder exploded" in run["settled"]["message"], run["settled"]
+
+
+def test_a_failure_that_AGED_OUT_still_says_where_the_salvage_is():
+    """The gap the live `error` path already closed, on the path a long run is
+    most likely to take.
+
+    A transcription long enough to fail at minute 80 is long enough for its row
+    to be dropped after retention while the tab sleeps, and then `watch`
+    resolves null and `done()` fails because there is no `.json` — a failed
+    run. That fallback rejection carried no paths at all, so the caller could
+    not name the `.partial.jsonl` the worker deliberately left behind, in
+    precisely the case the file exists for. The paths are not guessed here:
+    they are the ones the POST reply named, held in `started` since the run
+    opened.
+    """
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        [_jsonl(one)], {"text": "", "segments": []},
+        terminal="null",
+        readfile='Promise.reject(new Error("no transcript"))')
+
+    assert run["settled"]["ok"] is False, run["settled"]
+    assert run["settled"]["type"] == "ai_error"
+    assert "no longer being reported" in run["settled"]["message"]
+    assert run["settled"]["output"] == "/t/out.json"
+    assert run["settled"]["outputPartial"] == "/t/out.partial.jsonl"
 
 
 def test_both_artefact_bridges_survive_a_row_that_aged_out():
@@ -2553,3 +3783,163 @@ def test_both_ai_paths_close_a_stream_the_same_way(client, fake_runner, monkeypa
     # payload the NON-streaming reply returns.
     assert set(done) == {"type", "ok", "result"}
     assert set(done["result"]) == {"text", "model", "usage"}
+
+
+# -- which capability a load without one gets (D321) ---------------------------
+# The trap this closes: an omitted `capability` used to mean TEXT GENERATION
+# unconditionally, so `fused.ai.models.load("mlx-community/FLUX.2-Klein-4B-4bit")`
+# went to mlx-lm and surfaced as a FileNotFoundError about a config.json the repo
+# has never had. It fired twice — a whisper repo did the same thing through
+# Preload — because a silent default turns "you omitted an argument" into a wrong
+# runner that reports itself as a corrupt model.
+
+
+@pytest.fixture()
+def hub(tmp_path, monkeypatch):
+    """An empty hub cache, pointed at by HF_HUB_CACHE — the same fixture
+    `test_ai_models_api.py` uses, because the load route now reads the very
+    listing that page reads. Every other HF var is cleared so a developer
+    machine's real cache cannot answer for the test's."""
+    for var in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "XDG_CACHE_HOME"):
+        monkeypatch.delenv(var, raising=False)
+    d = tmp_path / "hub"
+    d.mkdir()
+    monkeypatch.setenv("HF_HUB_CACHE", str(d))
+    return d
+
+
+def _cached_repo(hub, repo_id, *, files=(), dirs=(), config=None):
+    """One cached repo with a `main` revision holding `files` and `dirs`."""
+    repo = hub / ("models--" + repo_id.replace("/", "--"))
+    snapshot = repo / "snapshots" / "c0ffee"
+    snapshot.mkdir(parents=True)
+    for name in files:
+        (snapshot / name).write_bytes(b"")
+    for name in dirs:
+        (snapshot / name).mkdir()
+    if config is not None:
+        (snapshot / "config.json").write_text(json.dumps(config))
+    refs = repo / "refs"
+    refs.mkdir(parents=True)
+    (refs / "main").write_text("c0ffee")
+    return repo
+
+
+@pytest.fixture()
+def dispatched(monkeypatch):
+    """Records what the route asked the supervisor to load, without loading.
+
+    The question every test below asks is WHICH CAPABILITY the route resolved,
+    and that is decided before any process exists — so the supervisor is a
+    recorder here rather than a fake worker.
+    """
+    calls = []
+
+    def fake_load(model, capability, *, weights_only=False):
+        calls.append({"model": model, "capability": capability,
+                      "weightsOnly": weights_only})
+        return {"jobId": "job", "model": model, "state": "loading"}
+
+    monkeypatch.setattr(supervisor, "load", fake_load)
+    return calls
+
+
+def _load(client, body):
+    return client.post("/api/ai/runtime/load", json=body, headers={"X-Fused": "1"})
+
+
+def test_a_load_without_a_capability_reads_the_cached_repos_format(
+        client, hub, dispatched):
+    """The reported bug. An mflux conversion has no config.json at all, so the
+    old default sent it to mlx-lm; its component folders say image generation
+    beyond doubt."""
+    repo_id = next(iter(formats.MFLUX_VARIANTS))
+    _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
+    assert _load(client, {"model": repo_id}).status_code == 200
+    assert dispatched == [{"model": repo_id, "capability": registry.IMAGE_GENERATION,
+                           "weightsOnly": False}]
+
+
+def test_a_cached_text_repo_without_a_capability_still_loads_as_text(
+        client, hub, dispatched):
+    """The back-compat half, and the reason this is inference rather than a
+    required argument: every page that calls `load(id)` for a chat model today
+    keeps working."""
+    _cached_repo(hub, "org/chat", files=("model.safetensors",),
+                 config={"architectures": ["LlamaForCausalLM"]})
+    assert _load(client, {"model": "org/chat"}).status_code == 200
+    assert dispatched[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_a_cached_repo_with_no_task_but_readable_weights_is_text(
+        client, hub, dispatched):
+    """A directory of safetensors says nothing about the modality — but the only
+    runners that read one are the two TEXT runners, so their shared capability
+    is the answer rather than a guess."""
+    _cached_repo(hub, "org/mystery", files=("model.safetensors",))
+    assert _load(client, {"model": "org/mystery"}).status_code == 200
+    assert dispatched[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_an_uncached_suggested_repo_takes_the_catalogs_capability(
+        client, hub, dispatched):
+    """Nothing on disk to read, and no network call added to this path: the
+    catalog already knows what every repo this app RECOMMENDS is for, which is
+    the whole of the whisper-Preload case."""
+    assert _load(client, {"model": "Systran/faster-whisper-small"}).status_code == 200
+    assert dispatched[0]["capability"] == registry.SPEECH_TO_TEXT
+
+
+def test_an_uncached_unknown_repo_still_defaults_to_text_generation(
+        client, hub, dispatched):
+    """The one case inference cannot answer without bytes. It keeps the old
+    default rather than refusing a cold load, and the runner's own format check
+    is what names the mismatch if the guess was wrong."""
+    assert _load(client, {"model": "org/never-seen"}).status_code == 200
+    assert dispatched[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_a_cached_repo_no_engine_reads_is_refused_by_name(client, hub, dispatched):
+    """Not a FileNotFoundError from inside a library, and not a bare "unknown
+    capability": the repo, what it looks like, and what to pass."""
+    _cached_repo(hub, "org/gguf-only", files=("model.gguf", "README.md"))
+    response = _load(client, {"model": "org/gguf-only"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "org/gguf-only" in message
+    assert "gguf" in message
+    assert "capability" in message
+    assert registry.IMAGE_GENERATION in message and registry.SPEECH_TO_TEXT in message
+    assert dispatched == []
+
+
+def test_an_explicit_capability_still_wins_over_the_format(client, hub, dispatched):
+    """Inference governs the OMITTED case only. A caller who names a capability
+    gets it, right or wrong — that is what makes this additive."""
+    repo_id = next(iter(formats.MFLUX_VARIANTS))
+    _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
+    assert _load(client, {"model": repo_id,
+                          "capability": registry.TEXT_GENERATION}).status_code == 200
+    assert dispatched[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_download_infers_the_capability_the_same_way(client, hub, dispatched):
+    """`/download` takes the same default through the same helper, so it had the
+    same bug: a Download on the AI Models page fetched an image model into the
+    text runner's idea of what to fetch."""
+    repo_id = next(iter(formats.MFLUX_VARIANTS))
+    _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
+    response = client.post("/api/ai/runtime/download", json={"model": repo_id},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert dispatched == [{"model": repo_id, "capability": registry.IMAGE_GENERATION,
+                           "weightsOnly": True}]
+
+
+def test_download_refuses_an_unreadable_cached_repo_too(client, hub, dispatched):
+    _cached_repo(hub, "org/gguf-only", files=("model.gguf",))
+    response = client.post("/api/ai/runtime/download", json={"model": "org/gguf-only"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "org/gguf-only" in response.json()["error"]
+    assert dispatched == []

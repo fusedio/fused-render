@@ -1560,6 +1560,10 @@ def _start(file: str, message: str, session_id: str, model: str,
     try:
         with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
              _private_open(os.path.join(run_dir, "err.log")) as err:
+            # posix-spawn-exempt: `cmd` is the CLAUDE CLI argv (built by
+            # _claude_argv), never git — checked by hand. The git spawn in this
+            # file is the `git()` helper above, which resolves an absolute
+            # argv[0] and passes close_fds=False like every other one.
             proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                     cwd=_workdir(file),
                                     stdin=stdin_fh or subprocess.DEVNULL,
@@ -1612,8 +1616,12 @@ def _commit_turn(file: str, message: str) -> None:
         if subject else "Claude turn"
 
     def git(*args):
+        # ABSOLUTE argv[0]: close_fds=False alone does NOT reach posix_spawn —
+        # CPython forks unless os.path.dirname(executable) is truthy, and a fork
+        # with libproj resident dies with SIGSEGV before exec (rc -11, silently).
+        import shutil
         return subprocess.run(
-            ["git", "-C", app_dir, "-c", "user.name=Fused",
+            [shutil.which("git") or "git", "-C", app_dir, "-c", "user.name=Fused",
              "-c", "user.email=apps@fused.io", *args],
             capture_output=True, text=True, timeout=30, close_fds=False)
 
@@ -1661,6 +1669,63 @@ def _alive(run_dir: str) -> bool:
             return _pid_alive(fh.read().strip())
     except OSError:
         return False
+
+
+# How far back a live-run lookup bothers to look. Run dirs are named
+# "<YYYYmmdd-HHMMSS>-<hex>", so a reverse sort is newest-first and a run that is
+# still going is by construction among the newest few — a turn does not outlive
+# 60 later ones. The cap is what keeps this O(1)-ish on a machine that has been
+# chatting for weeks, since nothing prunes RUNS.
+_LIVE_SCAN_LIMIT = 60
+
+
+def _live_run(file: str, session_id: str = "") -> dict:
+    """The id of a run for `file` that is STILL GOING, or "" if there is none.
+
+    The page can only re-attach to a run whose id it has, and until this existed
+    the id lived in exactly one place: the `run` param on a single history entry.
+    Navigating away from that entry (Back, then re-opening the chat from the
+    session list) lost it for good — the detached claude process kept writing
+    into RUNS/<id>/out.jsonl with nothing watching, and the chat rendered its
+    half-written transcript as if the turn had never started. Asking the server
+    "is anything still running for this chat?" is the missing half: `resumeRun`
+    was always able to adopt a run this frame did not start.
+
+    Matched on the TARGET first, and on the session only when the caller names
+    one. Two ids can identify the same chat — the session the run resumed
+    (`resumed_from` in meta.json) and the session the CLI minted for it (written
+    to the `session` file by the first poll that sees one, because
+    `--fork-session` can hand back a NEW id and the sidecar row then points at
+    that one) — so either matching is a match.
+    """
+    file = os.path.abspath(file)
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)[:_LIVE_SCAN_LIMIT]
+    except OSError:
+        return {"run_id": ""}
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if os.path.abspath(meta.get("file", "")) != file:
+            continue
+        if session_id:
+            own = ""
+            try:
+                with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
+                    own = fh.read().strip()
+            except OSError:
+                pass
+            if session_id not in (meta.get("resumed_from", ""), own):
+                continue
+        # Liveness LAST: it is the only check that touches a pid, and the two
+        # above have already thrown out everything that is not this chat.
+        if _alive(run_dir):
+            return {"run_id": name}
+    return {"run_id": ""}
 
 
 def _retry_info(row: dict):
@@ -2298,6 +2363,13 @@ def _poll(run_id: str) -> dict:
         try:
             _record_session(meta["file"], new_session, meta.get("message", ""),
                             meta.get("resumed_from", ""))
+            # The id the CLI minted for this run, next to the id it resumed.
+            # `--fork-session` makes those two different, and _record_session
+            # then repoints the sidecar row at the NEW one — so a page that
+            # later asks "is anything running for this chat?" (see _live_run)
+            # would be holding an id meta.json has never heard of.
+            with _private_open(os.path.join(run_dir, "session")) as fh:
+                fh.write(new_session)
             open(marker, "w", encoding="utf-8").close()
         except OSError:
             pass  # sidecar bookkeeping must never break the chat itself
@@ -2932,7 +3004,14 @@ def _history(file: str, session_id: str) -> dict:
     prose around them. User turns keep just `text`: there is nothing structured
     about a typed message, and the app-state block is stripped from it BEFORE
     anything else reads it (below), which is also why segments cannot become a
-    second route back for the block the user never saw."""
+    second route back for the block the user never saw.
+
+    User turns DO carry `uuid`, the transcript record's own id. It is the one
+    field a restored turn can be addressed by from outside this page: the Tasks
+    list reads the same uuid off the same record (`_prompt`, server/routers/
+    tasks.py) and links a message as `?msg=<uuid>`, so the chat can scroll to the
+    turn a person clicked instead of to the top of the conversation. "" on a
+    record that has none — the template treats the key as optional throughout."""
     if _bad_id(session_id):
         return {"turns": []}
     file = os.path.abspath(file)
@@ -2991,7 +3070,8 @@ def _history(file: str, session_id: str) -> dict:
             text = _strip_app_state(text)
             if text.strip() and not text.startswith(("<local-command", "<command-name")):
                 close_stretch()  # before the user turn, or the segments land on it
-                turns.append({"role": "user", "text": text})
+                turns.append({"role": "user", "text": text,
+                              "uuid": str(row.get("uuid") or "")})
             else:
                 # Everything else on a `user` row belongs to the assistant's
                 # reply: tool_result blocks are what its tool segments are
@@ -3085,6 +3165,14 @@ def main(action: str = "start", file: str = "", message: str = "",
         if not file:
             return {"error": "missing target file (no _file param?)"}
         return _sessions(file)
+    if action == "live_run":
+        # "Is a run for this chat still going?" — the lookup a page needs when it
+        # arrives without a `run` param but the turn it started is still
+        # streaming somewhere. `session_id` is optional: without one this
+        # answers for the target as a whole.
+        if not file:
+            return {"error": "missing target file (no _file param?)"}
+        return _live_run(file, session_id)
     if action == "defaults":
         if not file:
             return {"error": "missing target file (no _file param?)"}

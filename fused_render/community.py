@@ -49,6 +49,23 @@ import sys
 import tempfile
 import time
 
+
+# An ABSOLUTE git path is required to reach posix_spawn, not merely tidy: CPython
+# forks unless `os.path.dirname(executable)` is truthy, and a fork in a process
+# with libproj resident dies with SIGSEGV before exec (rc -11, no output, no
+# exception). `close_fds=False` alone does NOT achieve this — see
+# fused_render/server/gitignore.py and tests/test_git_posix_spawn.py.
+_GIT_BIN = None
+
+
+def _git_bin():
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
+
 REPO_URL = os.environ.get(
     "FUSED_RENDER_COMMUNITY_REPO",
     "https://github.com/fusedio/fused-render-community-apps.git",
@@ -129,7 +146,7 @@ def _git(cwd, *args, timeout=GIT_TIMEOUT):
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     try:
         return subprocess.run(
-            ["git", "-C", cwd, *IDENTITY, *args],
+            [_git_bin(), "-C", cwd, *IDENTITY, *args],
             capture_output=True, text=True, timeout=timeout, env=env,
             close_fds=False,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,

@@ -41,11 +41,62 @@
   max-width: 760px;
 }
 
-/* The card grid this section used to declare is gone — the list view now
-   renders Inbox-style rows (see .schedule-list below). What survives is the
-   card's INNER vocabulary (-head, -when, -why, -actions, .schedule-state):
-   the calendar popover and the rows still describe a run with it, so a task
-   reads the same wherever it is met. */
+/* -- Full-height page ---------------------------------------------------------
+   This page is a PANE, not a run of page: the title and toolbar are fixed
+   furniture and the view under them takes every remaining pixel, scrolling
+   inside itself (Akshil, 2026-08-16 — "make it take the full available page
+   height"). `.prefs-page`'s own 24px gap and 18px top padding were sized for
+   stacked settings cards; here they only pushed the surface down, so both come
+   in to 12px once the description line is gone.
+
+   The page stops scrolling and the views scroll instead — which is what lets
+   the calendar and board size themselves off the window rather than a magic
+   `calc(100vh - …)`. `min-height: 0` on every link of the chain is what makes
+   a flex child allowed to be SHORTER than its content; without it each one
+   floors at its content height and the inner scroller never engages. */
+.schedule-page {
+  padding-top: 12px;
+  /* `.prefs-page`'s 32px bottom padding was breathing room under a stack of
+     cards; under a full-height pane it is just a strip of dead page. */
+  padding-bottom: 12px;
+  gap: 12px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.schedule-page > .schedule-header h1 {
+  margin: 0;
+}
+
+.schedule-page > .prefs-section.schedule-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* The three views, each filling what the toolbar leaves and scrolling inside. */
+.schedule-page .schedule-main > .schedule-cal,
+.schedule-page .schedule-main > .schedule-tv-tree,
+.schedule-page .schedule-main > .schedule-tv-board {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.schedule-page .schedule-main > .schedule-cal {
+  display: flex;
+  flex-direction: column;
+}
+
+.schedule-page .schedule-main > .schedule-tv-tree {
+  overflow-y: auto;
+}
+
+/* The card grid this section used to declare is gone — the List/Board views
+   are now the flow-app tree + kanban (see "-- Task views" below). What
+   survives is the card's INNER vocabulary (-head, -when, -why, -actions,
+   .schedule-state): the calendar popover still describes a run with it. */
 
 .schedule-card-head {
   display: flex;
@@ -122,8 +173,12 @@
   gap: 12px;
 }
 
-.schedule-toolbar .schedule-new {
-  margin-left: auto;
+/* The toggle owns the row's single auto margin, so everything after it —
+   search, Status, + New task — is pushed to the right edge as one group and
+   keeps its natural gaps. Hiding the filters on the calendar therefore cannot
+   move either end of the row. */
+.schedule-toolbar .schedule-form-seg {
+  margin-right: auto;
 }
 
 /* Segmented pair built from .btn-secondary: the active half gets the quiet
@@ -199,24 +254,38 @@
   color: var(--error);
 }
 
-/* -- Week calendar --------------------------------------------------------------
-   The grid is one shared 8-column template (a fixed time gutter + 7 equal days)
-   used by BOTH the sticky day-header row and the scrollable body, so the columns
-   cannot drift out of line. Inside a day column everything is absolutely
-   positioned off the hour ruler: 1 hour = 44px (HOUR_H in ScheduleCalendar.tsx —
-   the two must move together). */
+/* -- The calendar ---------------------------------------------------------------
+   One shared grid template — a fixed time gutter plus N equal day columns — used
+   by the sticky day-header row, the Queued strip and the scrollable body, so the
+   columns cannot drift out of line. `--cal-days` is set on `.schedule-cal` by the
+   component (7 for the week, 4 for Google's "4 days"); everything else reads it,
+   which is the whole cost of the second range.
+
+   Inside a day column everything is absolutely positioned off the hour ruler:
+   1 hour = 44px (HOUR_H in ScheduleCalendar.tsx — the two must move together). */
 
 .schedule-cal {
+  --cal-days: 7;
+  --cal-gutter: 56px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg-alt);
   overflow: hidden;
 }
 
+/* WRAPS RATHER THAN CLIPS, which is what gives first in a narrow window.
+   `‹ Today ›` and the toggle+month group collide somewhere around 460px of
+   surface, and `.schedule-cal` is `overflow: hidden` — so without this the thing
+   that disappears is the RIGHTMOST one, the month, the one piece of the bar that
+   is orientation rather than a control. Wrapping instead drops the whole
+   right-hand group (`.schedule-cal-bar-end`, below) onto a second line, still
+   right-aligned by its auto margin and still month-last, with `‹ Today ›`
+   unmoved on the first. Nothing is clipped and nothing slides left. */
 .schedule-cal-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 8px 12px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
@@ -226,13 +295,41 @@
   gap: 6px;
 }
 
-/* "August 2026" on the bar's right edge — controls on the left, where-you-are
-   on the right (Akshil, 2026-08-14). Body colour and a step larger than UI
-   text, because it is the page's orientation, not a control. */
-.schedule-cal-range {
+/* THE RIGHT-HAND END OF THE BAR: the range toggle, then the month. It exists to
+   hold THE BAR'S ONE AUTO MARGIN — free space is split EQUALLY among every auto
+   margin in a flex line, so putting one on the toggle and another on the month
+   would not push either to the end, it would strand the toggle in the middle of
+   nowhere. That is the trap this codebase has fallen into twice (see
+   `.schedule-toolbar .schedule-form-seg` above, and the toolbar note further
+   down). One margin, on the box everything at that end lives in, and DOM order
+   then does the rest: `‹ Today ›  ……  [ 4 days | Week ]  August 2026`.
+
+   The second job is the wrapped row. Grouping is what keeps the pair together
+   when the bar runs out of width: the group wraps as one and its auto margin
+   right-aligns it on the new line, where an ungrouped month would have dropped
+   below the toggle and gone back to the LEFT edge.
+
+   Note what is NOT here: any part of the toggle's own appearance. That is
+   `.schedule-form-seg`'s single definition above — shared with the page's
+   List / Board / Calendar switch and the New task form's Once / On a schedule
+   pair — and the two already agree on height, padding and type, so there is
+   nothing to modify. Only where it sits. */
+.schedule-cal-bar-end {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   margin-left: auto;
+}
+
+/* "August 2026" stays the rightmost thing on the bar — controls first,
+   where-you-are last (Akshil, 2026-08-14). Body colour and a step larger than UI
+   text, because it is the page's orientation, not a control. `nowrap` so the
+   label cannot buy room by breaking "Aug 30 – Sep 2, 2026" across two lines: a
+   tight bar is meant to wrap the flex line above, not to shred this label. */
+.schedule-cal-range {
   font-size: 16px;
   color: var(--fg);
+  white-space: nowrap;
 }
 
 /* ‹ Today › read as REAL buttons — the borderless glyph version looked like
@@ -242,9 +339,13 @@
   padding: 0 10px;
 }
 
-.schedule-cal-head {
+.schedule-cal-head,
+.schedule-cal-grid {
   display: grid;
-  grid-template-columns: 56px repeat(7, 1fr);
+  grid-template-columns: var(--cal-gutter) repeat(var(--cal-days), 1fr);
+}
+
+.schedule-cal-head {
   border-bottom: 1px solid var(--border);
 }
 
@@ -290,14 +391,30 @@
   font-weight: 500;
 }
 
+/* There is no all-day row. The Queued strip that used to sit here — where
+   Google Calendar puts its all-day band — was removed on 2026-08-17: queued
+   work is a MESSAGE, its siblings are listed in the task's popover thread, and
+   a band across the whole week said otherwise. The queue's two states now mark
+   the thread rows they belong to (.schedule-cal-msg-note), with the cancel
+   there as well. */
+
 .schedule-cal-scroll {
   overflow-y: auto;
-  max-height: 560px;
+  /* Takes whatever the page has left rather than a fixed 560px box — the
+     grid is the page's main surface, so it gets the window (Akshil,
+     2026-08-16). The floor keeps it usable in a short window. */
+  flex: 1 1 auto;
+  min-height: 320px;
+  /* Scrolls, but wears no scrollbar (Akshil, 2026-08-16): the grid's own
+     hour lines say where you are, and the gutter read as a broken column. */
+  scrollbar-width: none;
+}
+
+.schedule-cal-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .schedule-cal-grid {
-  display: grid;
-  grid-template-columns: 56px repeat(7, 1fr);
   position: relative;
 }
 
@@ -352,29 +469,32 @@
   background: var(--error);
 }
 
-/* One run: a Google Calendar chip, copied deliberately (Akshil, 2026-08-14 —
-   the first cut's outlined boxes read as clutter). Solid accent fill, small
-   radius, dark text on the fill, one line of "what, then when". A button,
-   because it opens the popover — buttons get focus rings and Enter for free.
+/* -- The chip: one task, one day ------------------------------------------------
+   A coloured bar plus a tint of the same colour, not a solid fill: the colour
+   here identifies the TASK (eight hues, --task-c0…7, indexed off the task key),
+   and eight solid fills would each need their own readable text colour in two
+   themes. A bar and a wash keep the text at --fg throughout, so a hue only has
+   to be distinguishable — which is what it is for.
 
-   State is carried the way Google carries calendar colours — by the fill:
-   upcoming runs (projections included, exactly as Google draws future
-   recurrences) in the accent; already-ran in a quiet wash; the two failure
-   shapes in their colours. Past chips fade, like Google's. */
-.schedule-cal .schedule-cal-event {
+   FIXED one line tall, always. A message has a start time and no duration, so
+   there is nothing for a height to encode; Google draws a short event exactly
+   this way. Do not make this grow with the message count — that is what the
+   `+N` badge is for. */
+.schedule-cal .schedule-cal-chip {
   position: absolute;
-  /* --lane is set inline per box; the z-index computed HERE rather than
+  /* --lane is set inline per chip; the z-index computed HERE rather than
      inline is what lets the :hover rule below outrank it. */
   z-index: calc(var(--lane, 0) + 1);
   display: flex;
   gap: 4px;
-  align-items: baseline;
+  align-items: center;
   height: 21px;
-  padding: 2px 8px;
-  border-radius: 4px;
+  padding: 0 6px;
   border: none;
-  background: var(--accent);
-  color: var(--bg);
+  border-left: 3px solid var(--chip, var(--accent));
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--chip, var(--accent)) 22%, var(--bg-alt));
+  color: var(--fg);
   font: inherit;
   font-size: 11px;
   line-height: 1.5;
@@ -384,70 +504,37 @@
   transition: filter 0.1s ease;
 }
 
+/* The 4-day range exists for WIDTH — four columns are wide enough to read a
+   task title, so the label gets a step of size and a little more room. */
+.schedule-cal.is-wide .schedule-cal-chip {
+  height: 23px;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
 /* Emil's rule for a surface touched dozens of times a day: the hover is a
-   brightness nudge and a whisker of shadow, nothing moves. The z raise keeps
-   a chip readable over a same-slot neighbour the moment the pointer is on any
+   brightness nudge and a whisker of shadow, nothing moves. The z raise keeps a
+   chip readable over a same-slot neighbour the moment the pointer is on any
    visible part of it.
 
    The `button.` in the selector is load-bearing, not decoration: the settings
    page ships `.prefs-section button:hover:not(:disabled)` at (0,3,1), which
-   outranked a (0,3,0) chip hover and repainted every hovered chip in the
-   grey button skin (QA 2026-08-14 — "the hover color is very bad"). The
-   element type lifts these to (0,4,1), and each tone restates its own fill so
-   nothing is left for the grey rule to win. */
-.schedule-cal button.schedule-cal-event:hover:not(:disabled),
-.schedule-cal button.schedule-cal-event:focus-visible {
-  background: var(--accent);
-  color: var(--bg);
-  border: none;
-  filter: brightness(1.12);
+   outranked a (0,3,0) chip hover and repainted every hovered chip in the grey
+   button skin (QA 2026-08-14 — "the hover color is very bad"). The element type
+   lifts these to (0,4,1), and each tone restates its own fill so nothing is
+   left for the grey rule to win. */
+.schedule-cal button.schedule-cal-chip:hover:not(:disabled),
+.schedule-cal button.schedule-cal-chip:focus-visible {
+  background: color-mix(in srgb, var(--chip, var(--accent)) 34%, var(--bg-alt));
+  border-left: 3px solid var(--chip, var(--accent));
+  color: var(--fg);
   box-shadow: 0 1px 4px var(--shadow-sm);
   z-index: 8;
 }
 
-.schedule-cal button.schedule-cal-event--sent:hover:not(:disabled),
-.schedule-cal button.schedule-cal-event--sent:focus-visible {
-  background: color-mix(in srgb, var(--success) 30%, var(--bg-alt));
-  color: var(--fg);
-}
-
-.schedule-cal button.schedule-cal-event--sending:hover:not(:disabled),
-.schedule-cal button.schedule-cal-event--sending:focus-visible {
-  background: color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
-}
-
-.schedule-cal button.schedule-cal-event--missed:hover:not(:disabled),
-.schedule-cal button.schedule-cal-event--missed:focus-visible {
-  background: color-mix(in srgb, var(--warning) 40%, var(--bg-alt));
-  color: var(--fg);
-}
-
-.schedule-cal button.schedule-cal-event--error:hover:not(:disabled),
-.schedule-cal button.schedule-cal-event--error:focus-visible {
-  background: color-mix(in srgb, var(--error) 55%, var(--bg-alt));
-  color: var(--fg);
-}
-
-.schedule-cal button.schedule-cal-event--skipped:hover:not(:disabled),
-.schedule-cal button.schedule-cal-event--skipped:focus-visible {
-  background: transparent;
-  /* Skipped is the one chip with a real border, so hover must restate its
-     colour too — `.prefs-section button:hover` otherwise repaints the edge
-     in the accent (QA 2026-08-15, same trap as the fills above). */
-  border: 1px solid var(--border);
-  color: var(--fg-muted);
-  filter: none;
-  box-shadow: none;
-}
-
-/* No local prefers-reduced-motion block: styles/reduced-motion.css collapses
-   every animation-duration and transition-duration to 0.01ms !important
-   globally, so per-component repeats were dead weight (audit 2026-08-16). */
-
-/* The two halves of a chip share one line, and the TEXT is the half that
-   gives: flex-basis auto + min-width 0 lets it ellipsise instead of shoving
-   the time out of the box (a three-lane cluster is ~70px wide). */
-.schedule-cal .schedule-cal-event-text {
+/* The title is the half that gives: flex-basis auto + min-width 0 lets it
+   ellipsise instead of shoving the badges out of the box. */
+.schedule-cal .schedule-cal-chip-text {
   flex: 1 1 auto;
   min-width: 0;
   font-weight: 500;
@@ -456,93 +543,178 @@
   text-overflow: ellipsis;
 }
 
-.schedule-cal .schedule-cal-event-time {
+/* Recurring chips carry a small ↻ — the one fact about a chip that the grid
+   itself cannot show, since a repeat is a rule and the grid only draws runs. */
+.schedule-cal .schedule-cal-chip-rep {
+  flex: none;
+  opacity: 0.8;
+  font-size: 11px;
+}
+
+/* The `+N`: how many MORE of this task's messages fall on this day, nested
+   inside the anchor. An hourly rule reads `+23` here rather than filling the
+   column with 24 identical chips. */
+.schedule-cal .schedule-cal-chip-more {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--chip, var(--accent)) 55%, var(--bg-alt));
+  color: var(--fg);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.schedule-cal .schedule-cal-chip-time {
   flex: 0 0 auto;
   white-space: nowrap;
-  opacity: 0.85;
+  color: var(--fg-muted);
 }
 
 /* Three or more lanes and the chip has no room for both facts. The title is
-   the one that identifies the run; the time is already read off the row's
+   the one that identifies the task; the time is already read off the chip's
    position on the hour ruler, so it is what goes. The class is set from
    `lanes` in ScheduleCalendar (the number is already computed there) rather
    than a container query — one source, no second layout system. */
-.schedule-cal .schedule-cal-event.is-narrow .schedule-cal-event-time {
+.schedule-cal .schedule-cal-chip.is-narrow .schedule-cal-chip-time {
   display: none;
+}
+
+/* -- Chip tones ------------------------------------------------------------------
+   The task's colour says WHICH task; the tone says how the day went. The tone
+   never takes the whole chip — it moves the wash and, where it matters, the
+   bar — so a failed run is still recognisably the same task as the clean ones
+   beside it. */
+
+/* Work in flight: the wash deepens toward the accent, the colour the whole app
+   uses for "now". */
+.schedule-cal .schedule-cal-chip--sending {
+  background: color-mix(in srgb, var(--chip, var(--accent)) 40%, var(--bg-alt));
 }
 
 /* Already ran, ran fine: a quiet wash — the calendar's read is "that
    happened", not a call to action. */
-.schedule-cal .schedule-cal-event--sent {
-  background: color-mix(in srgb, var(--success) 30%, var(--bg-alt));
-  color: var(--fg);
-}
-
-.schedule-cal .schedule-cal-event--sending {
-  background: color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
-  color: var(--bg);
-}
-
-.schedule-cal .schedule-cal-event--missed {
-  background: color-mix(in srgb, var(--warning) 40%, var(--bg-alt));
-  color: var(--fg);
-}
-
-.schedule-cal .schedule-cal-event--error {
-  background: color-mix(in srgb, var(--error) 55%, var(--bg-alt));
-  color: var(--fg);
-}
-
-/* A projected future run of a recurring rule: dashed outline, no fill — a
-   forecast, not a commitment, exactly how Google draws future recurrences.
-   The class shipped in the markup with NO rule behind it, so ghosts rendered
-   identical to real pending chips (QA 2026-08-15, third sighting). Hover
-   restates everything for the usual `.prefs-section button:hover` reason. */
-.schedule-cal .schedule-cal-event--ghost {
-  background: transparent;
-  border: 1px dashed color-mix(in srgb, var(--accent) 70%, var(--border));
+.schedule-cal .schedule-cal-chip--ran {
+  background: color-mix(in srgb, var(--chip, var(--accent)) 10%, var(--bg-alt));
   color: var(--fg-muted);
 }
 
-.schedule-cal button.schedule-cal-event--ghost:hover:not(:disabled),
-.schedule-cal button.schedule-cal-event--ghost:focus-visible {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border: 1px dashed color-mix(in srgb, var(--accent) 70%, var(--border));
-  color: var(--fg);
-  filter: none;
+.schedule-cal .schedule-cal-chip--error {
+  border-left-color: var(--error);
+  background: color-mix(in srgb, var(--error) 26%, var(--bg-alt));
+}
+
+.schedule-cal button.schedule-cal-chip--error:hover:not(:disabled),
+.schedule-cal button.schedule-cal-chip--error:focus-visible {
+  border-left-color: var(--error);
+  background: color-mix(in srgb, var(--error) 38%, var(--bg-alt));
+}
+
+/* A missed occurrence stays on its ORIGINAL past slot, greyed — it is not in
+   the queue and never will be, and moving it (or dropping it) is what would
+   make history unreadable. Greyed, not red: nothing went wrong, the app just
+   was not running. */
+.schedule-cal .schedule-cal-chip--missed {
+  border-left-color: var(--fg-muted);
+  background: color-mix(in srgb, var(--fg-muted) 16%, var(--bg-alt));
+  color: var(--fg-muted);
+}
+
+.schedule-cal button.schedule-cal-chip--missed:hover:not(:disabled),
+.schedule-cal button.schedule-cal-chip--missed:focus-visible {
+  border-left-color: var(--fg-muted);
+  background: color-mix(in srgb, var(--fg-muted) 24%, var(--bg-alt));
+  color: var(--fg-muted);
 }
 
 /* A skipped run stays ON the calendar, struck through — "this one was called
    off, the schedule continues". Disappearing outright read as data loss. */
-.schedule-cal .schedule-cal-event--skipped {
+.schedule-cal .schedule-cal-chip--skipped {
+  border-left-color: var(--border);
   background: transparent;
-  border: 1px solid var(--border);
   color: var(--fg-muted);
   text-decoration: line-through;
 }
 
+.schedule-cal button.schedule-cal-chip--skipped:hover:not(:disabled),
+.schedule-cal button.schedule-cal-chip--skipped:focus-visible {
+  border-left-color: var(--border);
+  background: color-mix(in srgb, var(--fg-muted) 10%, transparent);
+  color: var(--fg-muted);
+  box-shadow: none;
+}
+
+/* A day made only of PROJECTED occurrences — recurrence arithmetic, with no
+   message written down anywhere behind it. Outlined rather than filled, which is
+   how Google draws a future recurrence too.
+
+   It runs BOTH WAYS since 2026-08-17. Ahead of now the outline reads as a
+   forecast rather than a commitment. BEHIND now it reads as a slot the rule
+   covered and nothing ever ran: a repeat anchored last Saturday shows its whole
+   shape, and only the most recent of those slots is a real run (catch-up
+   materializes exactly one). Those past ones also carry --missed's grey and
+   .is-past's fade, so a hollow grey chip behind the now-line is "this went by,
+   nothing ran" — never mistakable for the filled chip of a run that did. */
+.schedule-cal .schedule-cal-chip.is-projected {
+  background: transparent;
+  border-top: 1px dashed color-mix(in srgb, var(--chip, var(--accent)) 60%, var(--border));
+  border-right: 1px dashed color-mix(in srgb, var(--chip, var(--accent)) 60%, var(--border));
+  border-bottom: 1px dashed color-mix(in srgb, var(--chip, var(--accent)) 60%, var(--border));
+  color: var(--fg-muted);
+}
+
+.schedule-cal button.schedule-cal-chip.is-projected:hover:not(:disabled),
+.schedule-cal button.schedule-cal-chip.is-projected:focus-visible {
+  background: color-mix(in srgb, var(--chip, var(--accent)) 14%, transparent);
+  color: var(--fg);
+}
+
 /* The past recedes, exactly as Google fades what has already happened. */
-.schedule-cal .schedule-cal-event.is-past {
-  opacity: 0.55;
+.schedule-cal .schedule-cal-chip.is-past {
+  opacity: 0.62;
 }
 
-.schedule-cal .schedule-cal-event.is-past:hover,
-.schedule-cal .schedule-cal-event.is-past:focus-visible {
-  opacity: 0.8;
+.schedule-cal .schedule-cal-chip.is-past:hover,
+.schedule-cal .schedule-cal-chip.is-past:focus-visible {
+  opacity: 0.85;
 }
 
-/* -- Details popover -------------------------------------------------------------
-   Reuses the card's inner vocabulary (.schedule-card-*) on a floating surface, so
-   a run reads the same whether met as a card or as a box on the grid. */
+/* No local prefers-reduced-motion block: styles/reduced-motion.css collapses
+   every animation-duration and transition-duration to 0.01ms !important
+   globally, so per-component repeats were dead weight (audit 2026-08-16). */
+
+/* -- The chip popover -----------------------------------------------------------
+   The chip popover is the MITIGATION for the one accepted cost of the
+   one-chip-per-task-per-day rule: a task's 7pm run has no chip at 7pm, and this
+   is where it is named, timed and reachable. It is therefore not a tooltip —
+   it is the thread.
+
+   THE SHAPE, and the bug it fixes (screenshots, 2026-08-17). An hourly rule
+   lists 24 rows, which ran the card past the bottom of the window and put Open
+   in Explorer / Edit out of reach; the title, meanwhile, was being shrunk by
+   flex to a fraction of a line and sliced through the middle of its glyphs.
+   Both are the same mistake — a flex column whose children all shrink. So:
+   every part except the thread is `flex: none`, the thread alone takes the slack
+   and scrolls (`flex: 1 1 auto; min-height: 0`, and the min-height is what
+   actually lets it shrink below its content), and the header and the action row
+   are therefore always on screen whatever the thread does.
+
+   `position: fixed` is the other half: an absolutely-positioned panel is clipped
+   by the first scrolling ancestor, and the grid it opens over scrolls. Fixed
+   means the viewport is the only box it has to fit in, which is what
+   schedule-lib.popoverPos places it inside. */
 
 .schedule-cal-popover {
   position: fixed;
   z-index: 1000;
-  width: 340px;
+  width: 360px;
+  max-height: min(70vh, 560px);
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 18px;
+  gap: 12px;
+  padding: 16px;
+  /* Nothing escapes the card; everything that could overflow scrolls inside it
+     (the thread) or clamps (the title). */
+  overflow: hidden;
   background: var(--bg-popover, var(--bg-alt));
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -562,21 +734,68 @@
 
 /* (No local reduced-motion block — see styles/reduced-motion.css.) */
 
-/* The prompt as the popover's headline: body colour, a step up, room to
-   wrap — scrolling only past a genuinely long prompt. */
+/* Pinned: the head names the task and carries its status, and neither may be
+   scrolled away by a long thread. */
+.schedule-cal-pop-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The task's colour, restated where the thread is read — so the popover and the
+   chip that opened it are visibly the same task. */
+.schedule-cal-swatch {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 3px;
+  background: var(--chip, var(--accent));
+}
+
+.schedule-cal-pop-id {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--fg-muted);
+}
+
+.schedule-cal-pop-rep {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The pill sits at the head's right edge — its ONE auto margin. */
+.schedule-cal-pop-head .schedule-state {
+  margin-left: auto;
+}
+
+/* The task title as the popover's headline: body colour, a step up, room to
+   wrap over three lines and then an ellipsis.
+
+   `flex: none` is the fix for the sliced title (screenshot, 2026-08-17): as an
+   ordinary flex child it shrank to whatever height was left over, which cut the
+   last visible line through the middle of its letters. It now takes the height
+   it needs, and the clamp — whole lines, with a "…" — is what decides where a
+   very long title stops. */
 .schedule-pop-title {
+  flex: none;
   font-size: 14px;
   font-weight: 500;
+  line-height: 1.4;
   color: var(--fg);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 130px;
-  overflow-y: auto;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* Icon-labelled fact rows, one per line — the Google event-card shape. The
-   icon column is fixed so the text edges align down the list. */
+   icon column is fixed so the text edges align down the list. Pinned like the
+   head: these are the task's identity, not its history. */
 .schedule-pop-rows {
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -603,27 +822,360 @@
   white-space: nowrap;
 }
 
-/* The prose rows (repeat rule, permissions) wrap instead — they are read,
-   not recognised — but an unbroken token must not push the popover wide. */
+/* The prose rows wrap instead — they are read, not recognised — but an
+   unbroken token must not push the popover wide, and a description written as
+   an essay must not take the card: three lines, then an ellipsis. */
 .schedule-pop-row span {
   min-width: 0;
   overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* -- The thread inside the popover ---------------------------------------------
+   That day's messages first, with their REAL times, then the rest of the thread
+   newest-first. This is the half of the design that pays for one chip a day. */
+
+.schedule-cal-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* The ONLY part of the popover that scrolls, and the only one that gives: it
+     takes whatever height the pinned parts leave (`1 1 auto`) and `min-height:
+     0` is what actually lets it go below its content — without it a flex child
+     refuses to shrink, the card grows past the viewport instead, and the action
+     row goes out of reach. That was the hourly rule's 24-row bug. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.schedule-cal-thread-head {
+  position: sticky;
+  top: 0;
+  /* Above the rows scrolling under it. A ghost's ring is painted at opacity
+     0.75, which makes it its own stacking context at z-index 0 — and a LATER
+     sibling at 0 wins on DOM order, so the ring showed through the sticky
+     label's own background (QA 2026-08-17). */
+  z-index: 1;
+  padding: 2px 0;
+  background: var(--bg-popover, var(--bg-alt));
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.schedule-cal-msgs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.schedule-cal-msg {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* A message row is a button because clicking it opens the transcript at that
+   message — and that click is what marks it read. Armoured explicitly:
+   `.prefs-section button` would otherwise hand it the grey control skin. */
+.schedule-cal-popover .schedule-cal-msg-open {
+  /* Declared, not inherited: `.prefs-section button` pins every unarmoured
+     button to align-self:flex-start, and a per-property cascade means a more
+     specific block that stays silent about it still gets it. */
+  align-self: center;
+
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.1s ease;
+}
+
+.schedule-cal-popover .schedule-cal-msg-open:hover:not(:disabled),
+.schedule-cal-popover .schedule-cal-msg-open:focus-visible {
+  background: var(--row-bg-hover);
+  border: none;
+  color: var(--fg);
+}
+
+/* A task with no session yet has nothing to open — the row stays readable and
+   stops pretending to be a link. */
+.schedule-cal-popover .schedule-cal-msg-open.is-inert {
+  cursor: default;
+}
+
+/* -- The row's status mark ------------------------------------------------------
+   The BOARD's ring (.schedule-ring, ScheduleTaskViews.StatusIcon), not a mark of
+   the calendar's own: one vocabulary means one glyph, so a Done row here is the
+   same thing as a Done card there — including the red that a failed run keeps
+   while the word beside it reads "Done".
+
+   Only the SIZE is the calendar's. The board draws 16px against 12.5px card
+   titles; a popover row is 12px text and a thread can be 24 of them, so the ring
+   comes down to 11 and the terminal dot with it. */
+
+.schedule-cal-ring {
+  flex: none;
+  display: inline-flex;
+}
+
+.schedule-cal-popover .schedule-ring {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 11px;
+}
+
+.schedule-cal-popover .schedule-ring--failed::after,
+.schedule-cal-popover .schedule-ring--done::after {
+  width: 5px;
+  height: 5px;
+}
+
+/* A PROJECTED run: the word says "Upcoming" like any other scheduled run, so
+   the ring is what tells them apart — dashed and lightened, the same "forecast,
+   not commitment" the ghost chip on the grid wears. */
+.schedule-cal-ring.is-ghost .schedule-ring {
+  border-style: dashed;
+  opacity: 0.75;
+}
+
+/* Fixed, so the bodies line up down the list and the column reads as a time
+   column rather than as ragged prose. */
+.schedule-cal-msg-time {
+  flex: none;
+  width: 62px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-cal-msg-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.schedule-cal-msg-unread {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+/* The row's second fact, when it has one: "ran 2 days late" for a catch-up
+   (`at` vs `ran_at` — the chip never moves for it), "queued" for a message that
+   is past due and waiting to be claimed, which the word "Upcoming" alone does
+   not say, and "too late to cancel" for one already claimed. Never a status: the
+   status is the four words beside it. schedule-lib.msgNote picks which. */
+.schedule-cal-msg-note {
+  flex: none;
+  color: var(--warning-strong);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* "too late to cancel" is a plain fact, not the amber that "queued" and "ran 2
+   days late" are: those flag something about the run, this one only explains why
+   the row's cancel is not there. Amber would read as a fault in a state that is
+   ordinary and lasts seconds. */
+.schedule-cal-msg-note.is-held {
+  color: var(--fg-muted);
+}
+
+/* One of Upcoming / In Progress / Done / Archive, and nothing else. */
+.schedule-cal-msg-state {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* The per-row write (cancel a waiting message, skip a run). Quiet until the row
+   is pointed at — the same posture the tree's actions take. */
+.schedule-cal-popover .schedule-cal-msg-act {
+  /* Declared, not inherited: `.prefs-section button` pins every unarmoured
+     button to align-self:flex-start, and a per-property cascade means a more
+     specific block that stays silent about it still gets it. */
+  align-self: center;
+
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.1s ease;
+}
+
+.schedule-cal-popover .schedule-cal-msg-act:hover:not(:disabled),
+.schedule-cal-popover .schedule-cal-msg-act:focus-visible {
+  background: var(--row-bg-hover);
+  border: none;
+  color: var(--error);
+}
+
+.schedule-cal-popover .schedule-cal-msg-act:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Where the cancel would be on a CLAIMED row (`sending`), which gets none: the
+   server refuses that state on purpose, so the row offers nothing rather than a
+   button whose only possible outcome is a refusal (schedule-lib.msgCancelKind).
+
+   The SAME 24px box as .schedule-cal-msg-act above, and that is the point: a row
+   flips queued → sending while it is being looked at, and without the matching
+   slot the note and the status word beside it jump 24px sideways at the moment a
+   button disappears — which is exactly what makes a deliberate absence read as a
+   glitch. It turns, because standing here has to say "brief, in hand" rather
+   than "stuck, control missing".
+
+   Not a button: nothing to press, no hover, not in the tab order. The words are
+   .schedule-cal-msg-note (is-held above), reachable without a pointer. Full
+   turns, so the blanket prefers-reduced-motion rule (styles/reduced-motion.css)
+   parks it back at 0deg instead of mid-tilt. */
+.schedule-cal-msg-held {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--fg-muted);
+  animation: schedule-cal-held-spin 0.8s linear infinite;
+}
+
+@keyframes schedule-cal-held-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The action row: pinned to the foot of the card, never scrolled with the
+   thread. `.schedule-card-actions` already carries `margin-top: auto`; what it
+   needs here is the refusal to SHRINK, or a 24-row thread squeezes the buttons
+   to a sliver of themselves. */
+.schedule-cal-popover .schedule-card-actions {
+  flex: none;
+}
+
+/* The refusal line ("Already running — too late to cancel.") sits between the
+   thread and the buttons, and is the one thing that must not be clipped. */
+.schedule-cal-popover .schedule-card-why {
+  flex: none;
 }
 
 /* Buttons with icons: the glyph sits on the text line with a small gap.
    The list rows' actions renamed away from -card- and still set their icons
    flush against the label without this (Bugbot, PR #541). */
 .schedule-card-actions .btn svg,
-.schedule-row-actions .btn svg,
 .schedule-cal-popover .btn svg {
   margin-right: 5px;
   transform: translateY(2px);
+}
+
+/* -- Run now / Re-run, in the chip popover's footer ----------------------------
+   QUIET AT REST, like the two buttons beside it. It is the only control in this
+   panel that STARTS something (Edit and Open in Explorer both just look), so it
+   must not read as the default press — which rules out .btn-primary and is why
+   nothing here touches the resting box at all.
+
+   The hue arrives only under the pointer, and it is the same "upcoming" blue
+   tasks.css gives `.tasks-act--run`, at the same 12%/32% mixes: one action, one
+   colour, across List, Board and Calendar. Blue rather than Cancel's red because
+   this one starts work instead of withdrawing it.
+
+   Properties are named individually — never `transition: all`, which would also
+   animate the border-colour a hover skin sets and leave the edge lagging behind
+   the fill. The `.prefs-section` twin is for SPECIFICITY: this popover lives
+   inside a prefs section, where `.prefs-section button:hover` paints an accent
+   edge and `.prefs-section .btn-secondary:hover` an fg-muted one, and a bare
+   0,2,0 selector only ties with the second of those. Focus is untouched: the
+   shared `.btn:focus-visible` ring already outlines it. */
+.schedule-cal-pop-run,
+.prefs-section .schedule-cal-pop-run {
+  transition: color 0.08s ease, background-color 0.08s ease,
+    border-color 0.08s ease;
+}
+
+.schedule-cal-pop-run:hover:not(:disabled),
+.prefs-section .schedule-cal-pop-run:hover:not(:disabled) {
+  color: var(--status-upcoming);
+  background: color-mix(in srgb, var(--status-upcoming) 12%, transparent);
+  border-color: color-mix(in srgb, var(--status-upcoming) 32%, transparent);
 }
 
 /* The recurring rule's own pill (list view) and a projected run's (popover). */
 .schedule-state--recurring {
   color: var(--accent-soft);
   border-color: var(--accent);
+  border-style: dashed;
+}
+
+/* -- The one status vocabulary on a pill ----------------------------------------
+   Upcoming / In Progress / Done / Failed / Archive — the app's five words, worn
+   by the calendar popover's header. Only work HAPPENING and work that BROKE take
+   a colour; the rest stay quiet, because a popover that opens with a coloured
+   badge on every task says nothing. */
+.schedule-state--upcoming,
+.schedule-state--done,
+.schedule-state--archived {
+  color: var(--fg-muted);
+}
+
+.schedule-state--in_progress {
+  color: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* Failure is a WORD now, not a red ring inside Done (Akshil, 2026-08-17): "if we
+   can't show failed tasks, then let's have a failed status, and show it
+   everywhere". The red stays as reinforcement — the same token
+   `.schedule-ring--failed` uses — but it is no longer the only thing carrying
+   the fact. */
+.schedule-state--failed {
+  color: var(--error);
+  border-color: currentColor;
+}
+
+/* A projected run keeps its word too ("Upcoming"), and the dashes are what say
+   nothing has been written down yet — the pill of a ghost chip. */
+.schedule-state.is-projected {
+  border-style: dashed;
+}
+
+/* The LIST cards' own tone vocabulary (schedule-lib.stateTone), which is a
+   different question — "what did the scheduler do with this entry" — and keeps
+   its own words there. */
+.schedule-state--skipped {
+  color: var(--fg-muted);
   border-style: dashed;
 }
 
@@ -748,97 +1300,10 @@
   font-weight: 500;
 }
 
-/* -- List view: the Inbox's row anatomy ------------------------------------
-   Full-width rows, one per task — pill + bold one-line title + time right,
-   muted meta under, quiet actions last. The card grid read as "cards, not a
-   list" next to the Inbox (Akshil, 2026-08-15). Failure tones keep a left
-   stripe so an errored run still flags itself without a filled card. */
-
-.schedule-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.schedule-row {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg);
-}
-
-.schedule-row--error {
-  border-left: 3px solid var(--error);
-}
-
-.schedule-row--missed {
-  border-left: 3px solid var(--warning);
-}
-
-.schedule-row--skipped,
-.schedule-row--cancelled {
-  opacity: 0.7;
-}
-
-.schedule-row-line {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.schedule-row-title {
-  flex: 1;
-  min-width: 0;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.schedule-row-line .schedule-card-when {
-  /* Shrinkable, unlike the popover's: a recurring row's "when" is a whole
-     cron reading, and flex:none would let a long one shove the title out of
-     the row. Never below 90px, so a date always survives the squeeze. */
-  flex: 0 1 auto;
-  min-width: 90px;
-  margin-left: auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-align: right;
-}
-
-.schedule-row-meta {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-  margin: 0;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-
-.schedule-row-meta code {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.schedule-row-actions {
-  display: flex;
-  gap: 8px;
-}
-
-/* Compact controls — a row's actions are secondary to its text, like the
-   Inbox's quiet per-row controls. Doubled with .prefs-section for the usual
-   specificity armor over the page's button skins. 28px, shared with the
-   popover's actions below: the same three verbs (Edit / Cancel / Open in
-   Explorer) were 26px in a row and 30px in a popover (audit 2026-08-16). */
-.schedule-row-actions .btn,
-.prefs-section .schedule-row-actions .btn,
+/* The Inbox-style row list this section once styled is gone — the List view is
+   now the flow-app tree (see "-- Task views" below). Only the calendar
+   popover's compact controls survive from it. Doubled with .prefs-section /
+   .deploy-body for the usual specificity armor over the page's button skins. */
 .schedule-cal-popover .btn,
 .prefs-section .schedule-cal-popover .btn,
 .deploy-body .schedule-cal-popover .btn {
@@ -897,7 +1362,9 @@
   border-top: 1px solid var(--border);
   border-radius: 0 0 8px 8px;
   margin-top: 4px;
-  color: var(--accent);
+  /* Plain text, not accent (Akshil, 2026-08-16): the hairline and the
+     position already say it is the odd row out, and the accent read as a
+     link into somewhere else rather than one more choice in the list. */
   font-weight: 500;
 }
 
@@ -1795,150 +2262,6 @@ input.schedule-when-field {
   min-height: 66px;
 }
 
-/* -- Board view: the Inbox board's shape over the scheduler's states ---------
-   Fixed-width columns, dot + count heads, compact cards — copied from
-   core_apps/sessions/inbox.html deliberately (Akshil, 2026-08-14), so a board
-   is a board wherever it appears. No drag here: these columns are the loop's
-   facts, not triage labels. */
-
-.schedule-board {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  overflow-x: auto;
-}
-
-.schedule-board-col {
-  width: 260px;
-  flex: none;
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  display: flex;
-  flex-direction: column;
-  max-height: 640px;
-}
-
-.schedule-board-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--border);
-  font-weight: 600;
-  font-size: 12px;
-}
-
-.schedule-board-count {
-  color: var(--fg-muted);
-  font-weight: 400;
-  font-size: 11px;
-}
-
-.schedule-board-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-  margin-right: 6px;
-  background: var(--fg-muted);
-}
-
-.schedule-board-head--upcoming .schedule-board-dot { background: var(--accent); }
-.schedule-board-head--ran .schedule-board-dot { background: var(--success); }
-.schedule-board-head--attention .schedule-board-dot { background: var(--warning); }
-
-.schedule-board-cards {
-  padding: 8px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-/* A compact card, and a BUTTON (opens Edit / the Inbox). Doubled parent in the
-   selector for the usual reason: the settings page's `.prefs-section button`
-   skin out-specifies a single class. */
-/* align-self + width are what make the column a COLUMN: `.prefs-section
-   button` pins every button to align-self:flex-start, so each card
-   shrink-wrapped its own longest line and a column of four had four widths
-   (audit 2026-08-16). */
-.schedule-board .schedule-board-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: stretch;
-  align-self: stretch;
-  width: 100%;
-  box-sizing: border-box;
-  font: inherit;
-  text-align: left;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 10px;
-  color: var(--fg);
-  cursor: pointer;
-}
-
-.schedule-board .schedule-board-card:hover {
-  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
-}
-
-.schedule-board-card-name {
-  font-weight: 600;
-  font-size: 12px;
-  line-height: 1.35;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-}
-
-.schedule-board-card-meta {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-  font-size: 10.5px;
-  color: var(--fg-muted);
-}
-
-/* A recurring card's time is a cron reading of any length — ellipsise it
-   before it widens the card past its column. */
-.schedule-board-card-time {
-  margin-left: auto;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* A recurring card's SECOND meta line: the rule on one, the next actual run on
-   the other ("next in 22h"). The rule alone answered "how often", never
-   "when" (audit 2026-08-16). */
-.schedule-board-card-next {
-  font-size: 10.5px;
-  color: var(--fg-muted);
-}
-
-/* An empty column is a STATE, not a stray line of prose. It was rendering the
-   card's error-text class, left-aligned and flush against the head — read as a
-   broken card (audit 2026-08-16). Centred, with enough height that the four
-   columns keep a shared baseline while the board fills up. */
-.schedule-board-empty {
-  margin: 0;
-  padding: 20px 12px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-
-.schedule-board-cards:has(.schedule-board-empty) {
-  min-height: 160px;
-  justify-content: center;
-}
-
 /* -- Focus ring: one, and ours ---------------------------------------------
    Every control in this feature is a bespoke button (a chip, a disc, a slot, a
    crumb, a calendar box) rather than a `.btn`, so none of them was reached by
@@ -1946,7 +2269,9 @@ input.schedule-when-field {
    what keyboard users actually saw, in a UI with no other blue in it (audit
    2026-08-16). Doubled with the two scope classes for the usual reason: the
    page and the modal each ship a `button` skin these have to outrank. */
-.schedule-cal-event:focus-visible,
+.schedule-cal-chip:focus-visible,
+.schedule-cal-msg-open:focus-visible,
+.schedule-cal-msg-act:focus-visible,
 .schedule-picker-row:focus-visible,
 .schedule-time-slot:focus-visible,
 .schedule-menu-item:focus-visible,
@@ -1955,8 +2280,9 @@ input.schedule-when-field {
 .schedule-recur-day:focus-visible,
 .schedule-picker-crumb:focus-visible,
 .schedule-when-field:focus-visible,
-.schedule-board-card:focus-visible,
-.deploy-body .schedule-cal-event:focus-visible,
+.deploy-body .schedule-cal-chip:focus-visible,
+.deploy-body .deploy-body .schedule-cal-msg-open:focus-visible,
+.deploy-body .schedule-cal-msg-act:focus-visible,
 .deploy-body .schedule-picker-row:focus-visible,
 .deploy-body .schedule-time-slot:focus-visible,
 .deploy-body .schedule-menu-item:focus-visible,
@@ -1965,7 +2291,9 @@ input.schedule-when-field {
 .deploy-body .schedule-recur-day:focus-visible,
 .deploy-body .schedule-picker-crumb:focus-visible,
 .deploy-body .schedule-when-field:focus-visible,
-.prefs-section .schedule-cal-event:focus-visible,
+.prefs-section .schedule-cal-chip:focus-visible,
+.prefs-section .prefs-section .schedule-cal-msg-open:focus-visible,
+.prefs-section .schedule-cal-msg-act:focus-visible,
 .prefs-section .schedule-picker-row:focus-visible,
 .prefs-section .schedule-time-slot:focus-visible,
 .prefs-section .schedule-menu-item:focus-visible,
@@ -1973,8 +2301,718 @@ input.schedule-when-field {
 .prefs-section .schedule-mini-cal-nav:focus-visible,
 .prefs-section .schedule-recur-day:focus-visible,
 .prefs-section .schedule-picker-crumb:focus-visible,
-.prefs-section .schedule-when-field:focus-visible,
-.prefs-section .schedule-board-card:focus-visible {
+.prefs-section .schedule-when-field:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* -- Task views: the tree (List) and the kanban (Board) ------------------------
+   shell/ScheduleTaskViews.tsx — a port of the flow app's task-board widget
+   (TreeView/TreeRows, KanbanColumn/BoardView, StatusIcon, LivePulse, the
+   search + status toolbar) into this app's plain CSS. Flow is Tailwind, so
+   every utility it composes is spelled out here against the theme tokens; the
+   numbers (16px ring, 20px indent, 52px collapsed rail, 260px lane, the 8px
+   inner dot) are its numbers, kept so the two products describe a unit of work
+   the same way.
+
+   Two house rules this whole section obeys. First, everything below lives
+   inside `.prefs-section`, whose `button` skin (a bordered 5px/12px pill) out-
+   specifies a single class — so every custom button here is written with the
+   `.prefs-section` scope as well, or the page repaints it. Second: no
+   `transition: all` anywhere. It animates the border-color the hover skin sets
+   AND the width the layout sets, which reads as a flash; each rule names the
+   one property it means. */
+
+/* -- The status ring — the vocabulary both views are read by ------------------
+   Bordered circle, hue by column, and an inner dot on the terminal state so
+   "done" is legible without colour (flow StatusIcon). */
+.schedule-ring {
+  position: relative;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  box-sizing: border-box;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+}
+
+.schedule-ring--upcoming { color: var(--status-upcoming); }
+.schedule-ring--in_progress { color: var(--status-progress); }
+.schedule-ring--done { color: var(--status-done); }
+.schedule-ring--archived { color: var(--status-archived); }
+
+/* Failed is a COLUMN of its own since 2026-08-17, and the red is its hue rather
+   than an override. The second selector stays because the override case has not
+   gone away: a row whose column is Done but whose `failed` flag is set (an older
+   caller, or a task the server still files under done) must still read red, and
+   it has to outrank the done green to do it. */
+.schedule-ring--failed,
+.schedule-ring--failed.schedule-ring--done { color: var(--status-failed); }
+
+/* Settled — well or badly — is the state that carries the inner dot. */
+.schedule-ring--failed::after,
+.schedule-ring--done::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+/* Work happening NOW is the one state that moves. Motion-safe: the pulse is
+   decoration, and reduced-motion users get the hue alone. */
+@keyframes schedule-tv-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .schedule-ring--in_progress {
+    animation: schedule-tv-pulse 2s ease-in-out infinite;
+  }
+
+  .schedule-tv-pulse::before {
+    animation: schedule-tv-pulse 1.6s ease-in-out infinite;
+  }
+}
+
+/* The live ping: a solid dot under a larger translucent one (flow LivePulse). */
+.schedule-tv-pulse {
+  position: relative;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+}
+
+.schedule-tv-pulse::before,
+.schedule-tv-pulse::after {
+  content: "";
+  position: absolute;
+  border-radius: 999px;
+  background: var(--status-upcoming);
+}
+
+.schedule-tv-pulse::before {
+  inset: -1px;
+  opacity: 0.5;
+}
+
+.schedule-tv-pulse::after {
+  inset: 0;
+}
+
+/* -- Folder chip: WHERE the row's work happened ------------------------------
+   Was flow's initials-in-a-circle avatar, which in flow stands for an AGENT.
+   A directory is not a person, so the circle was claiming something untrue
+   (Akshil, 2026-08-16). A plain folder glyph + the folder's name; the full
+   path (with ~ for home) is the tooltip. */
+.schedule-tv-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.schedule-tv-folder-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  opacity: 0.75;
+}
+
+.schedule-tv-id-name {
+  font-size: 11px;
+  color: var(--fg-muted);
+  max-width: 160px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* -- Toolbar: search + status filter ------------------------------------------
+   Given `flex: 1` so the view toggle and + New task keep the right-hand
+   positions they already had; on the calendar this block is not rendered at
+   all and the toolbar falls back to its old layout untouched. */
+/* Right-aligned, riding immediately left of "+ New task" (Akshil,
+   2026-08-16). The free space is pushed by the VIEW TOGGLE's `margin-right:
+   auto` (see .schedule-toolbar .schedule-form-seg below), not by an auto
+   margin here — flex distributes free space EQUALLY across every auto
+   margin in the row, so putting one here and another on `.schedule-new`
+   split the gap in half and parked these controls in the middle of the
+   toolbar. One auto margin, on the item everything else should sit after. */
+.schedule-tv-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.schedule-tv-search {
+  position: relative;
+  display: flex;
+  width: 260px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.schedule-tv-search-icon {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  pointer-events: none;
+  color: var(--fg-muted);
+}
+
+.schedule-tv-search .schedule-tv-search-input {
+  width: 100%;
+  min-width: 0;
+  padding-left: 28px;
+  font-size: 12px;
+}
+
+.schedule-tv-pop-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.schedule-tv-filter-btn,
+.prefs-section .schedule-tv-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  align-self: center;
+  transition: border-color 0.08s ease, background-color 0.08s ease;
+}
+
+.schedule-tv-filter-btn:hover:not(:disabled),
+.prefs-section .schedule-tv-filter-btn:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
+}
+
+.schedule-tv-filter-btn svg {
+  color: var(--fg-muted);
+}
+
+.schedule-tv-filter-count {
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(var(--accent-rgb), 0.16);
+  color: var(--accent-soft);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* Absolute, and nothing between it and the page clips: the toolbar is a plain
+   flex row with no overflow of its own. */
+.schedule-tv-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: 190px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--bg-popover);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px var(--shadow-md);
+}
+
+.schedule-tv-pop-item,
+.prefs-section .schedule-tv-pop-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  align-self: stretch;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.08s ease;
+}
+
+.schedule-tv-pop-item:hover:not(:disabled),
+.prefs-section .schedule-tv-pop-item:hover:not(:disabled) {
+  background: var(--row-bg-hover);
+  border-color: transparent;
+}
+
+.schedule-tv-pop-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  flex: 0 0 13px;
+  color: var(--accent-soft);
+}
+
+/* The sessions feed failing is a missing HALF, not a broken page. */
+.schedule-tv-note,
+.schedule-page .prefs-section > p.schedule-tv-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* -- Tree (List view) ---------------------------------------------------------
+   One bordered card, hairlines between TOP-LEVEL nodes only: a rule and its
+   runs are one thing, and ruling between them would break the group up. */
+.schedule-tv-tree {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.schedule-tv-tree > .schedule-tv-node + .schedule-tv-node {
+  border-top: 1px solid var(--border);
+}
+
+.schedule-tv-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.08s ease;
+}
+
+.schedule-tv-row:hover {
+  background: var(--row-bg-hover);
+}
+
+.schedule-tv-indent {
+  flex: 0 0 auto;
+}
+
+.schedule-tv-caret,
+.prefs-section .schedule-tv-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  padding: 0;
+  align-self: center;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  /* transform, not `all`: the row's own background is transitioning too, and
+     one rule owning both made the caret smear on hover. */
+  transition: transform 0.12s ease, color 0.08s ease;
+}
+
+.schedule-tv-caret.is-open {
+  transform: rotate(90deg);
+}
+
+.schedule-tv-caret:hover:not(:disabled),
+.prefs-section .schedule-tv-caret:hover:not(:disabled) {
+  color: var(--fg);
+  background: transparent;
+  border-color: transparent;
+}
+
+.schedule-tv-caret-gap {
+  width: 16px;
+  flex: 0 0 16px;
+}
+
+.schedule-tv-label {
+  flex: 0 0 auto;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.schedule-tv-title {
+  min-width: 0;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.schedule-tv-grow {
+  flex: 1 1 auto;
+}
+
+.schedule-tv-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+/* The scheduler's own writes — quiet until the row is pointed at, because they
+   apply to a minority of rows and a permanent column of icons would out-shout
+   the work itself. Kept reachable by keyboard: focus-within reveals them. */
+.schedule-tv-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity 0.08s ease;
+}
+
+.schedule-tv-row:hover .schedule-tv-acts,
+.schedule-tv-row:focus-within .schedule-tv-acts {
+  opacity: 1;
+}
+
+.schedule-tv-act,
+.prefs-section .schedule-tv-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  align-self: center;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.08s ease, color 0.08s ease;
+}
+
+.schedule-tv-act:hover:not(:disabled),
+.prefs-section .schedule-tv-act:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
+.schedule-tv-act:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A failed Cancel/Unskip says so under its own row — the 404 race is a real
+   answer ("it already sent"), not a page-level fault. */
+.schedule-tv-row-error {
+  margin: 0;
+  padding: 0 12px 8px 56px;
+  font-size: 11px;
+  color: var(--error);
+}
+
+.schedule-tv-empty {
+  margin: 0;
+  padding: 40px 12px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+/* -- Kanban (Board view) ------------------------------------------------------ */
+/* The board is a PANE, not a run of page: it takes the window's remaining
+   height and each lane scrolls inside it (flow's `h-full min-h-0` plus the
+   per-lane `overflow-y-auto`). Without the height the lanes all stretch to the
+   tallest, and an empty Upcoming became 800px of grey beside a full Done. */
+.schedule-tv-board {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  /* Height comes from the page's flex chain now, not a magic viewport calc
+     that had to be re-guessed every time the header changed (2026-08-16). */
+  min-height: 320px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.schedule-tv-lane {
+  display: flex;
+  flex-direction: column;
+  width: 260px;
+  flex: 0 0 260px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.schedule-tv-lane-head,
+.prefs-section .schedule-tv-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  align-self: stretch;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.08s ease;
+}
+
+.schedule-tv-lane-head:hover:not(:disabled),
+.prefs-section .schedule-tv-lane-head:hover:not(:disabled) {
+  background: var(--row-bg-hover);
+  border-color: transparent;
+}
+
+.schedule-tv-lane-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.schedule-tv-lane-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+.schedule-tv-lane-body {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px;
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.05);
+}
+
+.schedule-tv-board .schedule-tv-card,
+.prefs-section .schedule-tv-board .schedule-tv-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  align-self: stretch;
+  gap: 5px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.08s ease;
+}
+
+.schedule-tv-board .schedule-tv-card:hover:not(:disabled),
+.prefs-section .schedule-tv-board .schedule-tv-card:hover:not(:disabled) {
+  background: var(--bg);
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+}
+
+/* -- Drag: moving a card between lanes ---------------------------------------
+   Native HTML5 drag. A draggable card says so with the grab cursor; while one
+   is in flight, every lane that would accept it lifts slightly, and the lane
+   under the pointer says "here" with the accent — the same 14% wash the
+   dropdowns speak. The card left behind ghosts. */
+.schedule-tv-board .schedule-tv-card.is-draggable,
+.prefs-section .schedule-tv-board .schedule-tv-card.is-draggable {
+  cursor: grab;
+}
+
+.schedule-tv-board .schedule-tv-card.is-draggable:active,
+.prefs-section .schedule-tv-board .schedule-tv-card.is-draggable:active {
+  cursor: grabbing;
+}
+
+.schedule-tv-board .schedule-tv-card.is-dragging,
+.prefs-section .schedule-tv-board .schedule-tv-card.is-dragging {
+  opacity: 0.35;
+}
+
+.schedule-tv-lane-body.is-drop-legal {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: -1px;
+}
+
+.schedule-tv-lane-body.is-drop-over,
+.schedule-tv-rail.is-drop-over,
+.prefs-section .schedule-tv-rail.is-drop-over {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.schedule-tv-rail.is-drop-legal,
+.prefs-section .schedule-tv-rail.is-drop-legal {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: -1px;
+}
+
+.schedule-tv-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.schedule-tv-card-title {
+  font-size: 12.5px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.schedule-tv-card-next {
+  font-size: 10.5px;
+  color: var(--fg-muted);
+}
+
+.schedule-tv-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.schedule-tv-more,
+.prefs-section .schedule-tv-more {
+  width: 100%;
+  align-self: stretch;
+  box-sizing: border-box;
+  margin-top: 2px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.08s ease, border-color 0.08s ease;
+}
+
+.schedule-tv-more:hover:not(:disabled),
+.prefs-section .schedule-tv-more:hover:not(:disabled) {
+  color: var(--fg);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
+}
+
+.schedule-tv-showing {
+  margin: 0;
+  padding: 2px 4px 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* The collapsed lane: flow's 52px rail, with the label set vertically and the
+   count pinned to the foot. Archive is closed by default — it is the one lane
+   nobody opens this page to read — and clicking the rail opens it again. */
+.schedule-tv-rail,
+.prefs-section .schedule-tv-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 52px;
+  flex: 0 0 52px;
+  min-height: 220px;
+  box-sizing: border-box;
+  padding: 8px 6px;
+  align-self: stretch;
+  font: inherit;
+  color: var(--fg);
+  background: rgba(var(--tint), 0.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.08s ease;
+}
+
+.schedule-tv-rail:hover:not(:disabled),
+.prefs-section .schedule-tv-rail:hover:not(:disabled) {
+  background: var(--row-bg-hover);
+  border-color: var(--border);
+}
+
+.schedule-tv-rail-label {
+  margin-top: 8px;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.schedule-tv-rail-count {
+  margin-top: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+/* -- Focus: the page's own ring, on every bespoke control added above --------- */
+.schedule-tv-row:focus-visible,
+.schedule-tv-caret:focus-visible,
+.schedule-tv-act:focus-visible,
+.schedule-tv-card:focus-visible,
+.schedule-tv-lane-head:focus-visible,
+.schedule-tv-rail:focus-visible,
+.schedule-tv-more:focus-visible,
+.schedule-tv-filter-btn:focus-visible,
+.schedule-tv-pop-item:focus-visible,
+.prefs-section .schedule-tv-caret:focus-visible,
+.prefs-section .schedule-tv-act:focus-visible,
+.prefs-section .schedule-tv-card:focus-visible,
+.prefs-section .schedule-tv-lane-head:focus-visible,
+.prefs-section .schedule-tv-rail:focus-visible,
+.prefs-section .schedule-tv-more:focus-visible,
+.prefs-section .schedule-tv-filter-btn:focus-visible,
+.prefs-section .schedule-tv-pop-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }

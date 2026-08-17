@@ -1020,7 +1020,7 @@ def test_a_cache_filesystem_without_sparse_files_falls_back(base, monkeypatch,
                         lambda model_id, repo_type="model": str(tmp_path))
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
     monkeypatch.setattr(base, "_repo_files",
-                        lambda model_id, include=None, ignore=None, revision="main":
+                        lambda model_id, include=None, allow=None, ignore=None, revision="main":
                         ("c0m", [("model.safetensors", 10)]))
     monkeypatch.setattr(base, "_sparse_ok", lambda folder: False)
 
@@ -1057,7 +1057,7 @@ def test_a_failed_segmented_fetch_falls_back_to_snapshot_download(base, monkeypa
 
     monkeypatch.setattr(base, "_hub_file_meta", boom)
     monkeypatch.setattr(base, "_repo_files",
-                        lambda model_id, include=None, ignore=None, revision="main":
+                        lambda model_id, include=None, allow=None, ignore=None, revision="main":
                         ("c0m", [("model.safetensors", 10)]))
 
     assert base.download_snapshot("org/m") == "/cache/snapshots/abc"
@@ -1077,7 +1077,7 @@ def test_the_fallback_does_not_inherit_our_half_written_parts(base, monkeypatch,
     monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
     monkeypatch.setattr(base, "_repo_files",
-                        lambda model_id, include=None, ignore=None, revision="main":
+                        lambda model_id, include=None, allow=None, ignore=None, revision="main":
                         ("c0m", [("model.safetensors", len(payload))]))
     _fake_hub(monkeypatch,
               snapshot_download=lambda model_id, **kwargs: "/cache/snapshots/abc",
@@ -1111,7 +1111,7 @@ def test_download_file_falls_back_like_the_snapshot_does(base, monkeypatch, tmp_
         monkeypatch.setattr(base, "_repo_files", boom)
     else:
         monkeypatch.setattr(base, "_repo_files",
-                            lambda repo, include=None, ignore=None, revision="main":
+                            lambda repo, include=None, allow=None, ignore=None, revision="main":
                             ("c0m", [(include, len(payload))]))
         monkeypatch.setattr(base, "_hub_file_meta", boom)
 
@@ -1179,7 +1179,7 @@ def test_download_file_returns_the_path_to_the_one_file(base, monkeypatch,
     _wire(base, monkeypatch, tmp_path, url, len(payload))
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
     monkeypatch.setattr(base, "_repo_files",
-                        lambda model_id, include=None, ignore=None, revision="main":
+                        lambda model_id, include=None, allow=None, ignore=None, revision="main":
                         ("c0m", [(include, len(payload))]))
 
     path = base.download_file("org/m", "q4.gguf")

@@ -12,7 +12,9 @@ Four routes and one rule each:
   and which runners this machine can even use. In-memory plus one health probe
   per live worker, so the sidebar can poll it.
 * `POST /api/ai/runtime/load` — make a model resident. Returns a JOB ID
-  immediately; a cold load is a multi-GB download and nothing waits on it.
+  immediately; a cold load is a multi-GB download and nothing waits on it. A
+  `capability` left out is INFERRED from what the repo is, never defaulted —
+  see `_inferred_capability`, and D321 for the bug that made it so.
 * `POST /api/ai/runtime/unload` — release the weights.
 * `POST /api/ai/runtime/download` — fetch without loading, for the AI Models
   page, where the verb is "Download" and the user is not asking to run anything
@@ -37,7 +39,15 @@ from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, registry, supervisor
+# The `speakers` rule and the per-engine option rules, imported rather than
+# restated. They are the SAME modules the runners import out of their own venvs
+# — which is why every heavy import inside them is deferred, and why reading a
+# rule here costs nothing.
+from fused_render.ai.runners import diarize, engine_options, partial
 from fused_render.server.common import _error, _require_fused
+# The AI Models page's reading of the local cache, imported rather than
+# re-derived: see `_inferred_capability`. It imports nothing from here.
+from fused_render.server.routers.ai_models import cached_capability
 
 router = APIRouter()
 
@@ -96,11 +106,73 @@ def _model_of(body: dict) -> str:
     return model.strip()
 
 
-def _capability_of(body: dict, default: str = registry.TEXT_GENERATION) -> str:
-    capability = body.get("capability")
+def _inferred_capability(model: str) -> tuple[str | None, str | None]:
+    """What to load `model` AS when the caller did not say, or why we cannot tell.
+
+    **The omitted `capability` used to mean text generation, silently** (D321),
+    which is a wrong-runner dispatch dressed up as a corrupt model: an MLX
+    diffusion repo reached mlx-lm and raised `FileNotFoundError: config.json`,
+    a repo that has never had one, while `/api/ai/image` rendered from the same
+    snapshot perfectly — because that route is capability-bound by construction
+    and this one was not. The same shape fired earlier through Preload with a
+    whisper repo.
+
+    Four questions, cheapest-honest first, and none of them touches the network:
+
+    1. **The local snapshot**, read by `ai_models.cached_capability` — the very
+       reading the AI Models page puts its engine tag and its Load button on.
+       Asked of that module rather than re-derived here, so the card and the
+       load cannot disagree about what a repo is.
+    2. **The catalog**, for a repo not on disk yet. Every id this app itself
+       recommends belongs to a runner, so the whisper-Preload case is answered
+       before a byte is fetched.
+    3. **Text generation**, for a repo that is neither — the old default, kept
+       deliberately. A cold load of an unknown id cannot be classified without
+       downloading it, and refusing one would break every page that preloads a
+       chat model by id. The cost of a wrong guess here is bounded by the
+       runner's own format check (`runners/formats.py`), which names the format
+       it got and the format it needs instead of letting a library error escape.
+    4. …except when the repo IS on disk and nothing here reads it. That is the
+       one case where guessing has no excuse, and it answers with a sentence
+       naming the repo, what it looks like, and what to pass.
+    """
+    reading = cached_capability(model)
+    if reading.capability is not None:
+        return reading.capability, None
+    catalogued = catalog.capability_of(model)
+    if catalogued is not None:
+        return catalogued, None
+    if not reading.cached:
+        return registry.TEXT_GENERATION, None
+    looks = (f"it looks like {reading.looks_like}" if reading.looks_like
+             else "no engine that ships here reads its files")
+    return None, (
+        f"cannot tell what {model} is for, so 'capability' cannot be left out: "
+        f"it is in this machine's model cache and {looks}. Pass one of "
+        f"{', '.join(registry.capabilities())} — for example "
+        f"fused.ai.models.load({model!r}, {{capability: "
+        f"{registry.TEXT_GENERATION!r}}})."
+    )
+
+
+def _resolve_capability(body: dict, model: str) -> tuple[str | None, object]:
+    """`(capability, None)`, or `(None, an error response)`.
+
+    An explicitly passed capability is validated and used unchanged — this
+    governs the OMITTED case only, which is what makes it additive.
+    """
+    requested = body.get("capability")
+    if requested is not None:
+        capability = requested if isinstance(requested, str) else ""
+        if capability not in registry.capabilities():
+            return None, _error(f"unknown capability {requested!r}", status=400)
+        return capability, None
+    capability, why = _inferred_capability(model)
     if capability is None:
-        return default
-    return capability if isinstance(capability, str) else ""
+        # 400, like every other "this request cannot be acted on as written":
+        # the fix is an argument the caller can add.
+        return None, _error(why, status=400)
+    return capability, None
 
 
 @router.get("/api/ai/runtime")
@@ -132,9 +204,9 @@ def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=Non
     model = _model_of(body)
     if not model:
         return _error("'model' must be a Hugging Face repo id", status=400)
-    capability = _capability_of(body)
-    if capability not in registry.capabilities():
-        return _error(f"unknown capability {body.get('capability')!r}", status=400)
+    capability, refusal = _resolve_capability(body, model)
+    if refusal is not None:
+        return refusal
     try:
         return supervisor.load(model, capability)
     except supervisor.SupervisorError as e:
@@ -172,9 +244,9 @@ def api_ai_download(body: dict = Body(...), x_fused: str | None = Header(default
     model = _model_of(body)
     if not model:
         return _error("'model' must be a Hugging Face repo id", status=400)
-    capability = _capability_of(body)
-    if capability not in registry.capabilities():
-        return _error(f"unknown capability {body.get('capability')!r}", status=400)
+    capability, refusal = _resolve_capability(body, model)
+    if refusal is not None:
+        return refusal
     try:
         return supervisor.load(model, capability, weights_only=True)
     except supervisor.SupervisorError as e:
@@ -349,6 +421,53 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
             f"'task' must be {_TRANSCRIBE_TASKS[0]!r} (same language) or "
             f"{_TRANSCRIBE_TASKS[1]!r} (into English), not {task!r}", status=400)
 
+    # Speaker labels, and the optional count that fixes how many there are.
+    # Checked BEFORE the model is resolved and before a job row exists, with the
+    # other arguments a typo deserves an answer about — `runtime.js` refuses the
+    # same request first, but the bridge is not the only door: a page can POST
+    # here, and so can anything else on this machine holding the `X-Fused`
+    # header.
+    #
+    # An ABSENT count is not a refusal (D318): `speakers_or_raise` answers None
+    # and the worker's clustering estimates it. Only a bad explicit value —
+    # `0`, `-1`, `true`, `"2"` — is a 400, and it still is.
+    #
+    # The rule comes from `runners/diarize.py`, the module the workers import
+    # out of their own venvs, so the sentence a caller reads here is the same
+    # sentence the worker would have raised. `bool(...)` and not `is None`: this
+    # one has no true default to invert (D320's trap), it is off unless asked
+    # for, so a JSON null and an absent key mean the same thing.
+    diarizing = bool(body.get("diarize"))
+    speakers = None
+    if diarizing:
+        try:
+            speakers = diarize.speakers_or_raise(body.get("speakers"))
+        except ValueError as e:
+            return _error(str(e), status=400)
+
+    # …and what the ENGINE that will serve this cannot do at all (D319). Three
+    # engines share this capability now and one of them — Parakeet — has no
+    # translate task, no `language` argument and no text conditioning.
+    #
+    # Asked HERE, beside the other arguments a typo deserves an answer about,
+    # because the answer is already available: `for_capability` is the same
+    # resolution `supervisor._runner_or_raise` does a few lines down, so
+    # nothing is guessed and nothing is resolved twice differently. The worker
+    # refuses again on arrival — it is not the only door — but by then the user
+    # has paid for a job row, possibly a venv build and a multi-gigabyte
+    # download to be told something that was knowable before any of it.
+    #
+    # No runner at all is NOT a 400 here: that is the 409 below, which names
+    # the machine's reason rather than the request's.
+    engine = registry.for_capability(registry.SPEECH_TO_TEXT)
+    if engine is not None:
+        try:
+            engine_options.unsupported_or_raise(
+                engine.code, task=task, language=body.get("language"),
+                initial_prompt=body.get("initialPrompt"))
+        except ValueError as e:
+            return _error(str(e), status=400)
+
     model = _model_of(body) or catalog.default_for(registry.SPEECH_TO_TEXT)
     if not model:
         # See `api_ai_image`: no runner and no curated default are different
@@ -386,8 +505,26 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         # of the documented default. `task` and `language` use `or` above and
         # are null-safe already; this was the one that inverted.
         "vad": True if body.get("vad") is None else bool(body.get("vad")),
+        # Speaker labels on every segment, plus a top-level list of them in the
+        # written JSON. Off unless asked for, so an existing caller's transcript
+        # is byte-identical — and `speakers` is only sent when it is meaningful,
+        # rather than as a null the worker would have to re-validate as absent.
+        "diarize": diarizing,
+        # `speakers is not None`, not `diarizing`: a diarized run whose count
+        # was left out sends no key at all rather than a null the worker would
+        # have to re-read as absence. Same rule as before D318 made the count
+        # optional — the key is present exactly when it carries a number.
+        **({"speakers": speakers} if speakers is not None else {}),
         "out": out_base + ".json",
         "outText": out_base + ".txt",
+        # …and where the segments land AS they are decoded, so a page has a
+        # transcript to render before the run finishes. Derived through
+        # `partial.partial_path` rather than spelled here, because the worker
+        # that writes this file and the reply that advertises it must name the
+        # same one — and a second spelling of the suffix is how they come to
+        # disagree. A sibling of the other two for the same reason they are
+        # siblings: the server owns where user files go.
+        "outPartial": partial.partial_path(out_base + ".json"),
     }
     try:
         supervisor.start_transcribe(model, request, job)
@@ -401,6 +538,11 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         "path": canonical_fs_path(source),
         "output": canonical_fs_path(request["out"]),
         "outputText": canonical_fs_path(request["outText"]),
+        # The progressive transcript, canonicalised like its two siblings —
+        # `runtime.js` tails it through `/api/fs/raw`, so it is the same URL
+        # with the same Windows hazard, and a third path that skipped this
+        # would be the one that broke there.
+        "outputPartial": canonical_fs_path(request["outPartial"]),
         "model": model,
         "task": task,
     }

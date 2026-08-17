@@ -36,7 +36,8 @@
  *     the download-manager record, and that row's ✕ really stops it. Rejects
  *     with .type "cancelled" | "ai_error" | "unavailable" (no image runner on
  *     this machine — the reason is in the message).
- *   fused.ai.transcribe({path, model, language, task, onProgress})
+ *   fused.ai.transcribe({path, model, language, task, diarize, speakers,
+ *                        onProgress, onSegment})
  *                  -> Promise<{output, url, text, segments, language, ...}>
  *     Speech to text, locally (SPEC §40). Takes a path to an audio or video
  *     file on THIS machine — nothing is uploaded — resolved beside this page
@@ -47,6 +48,50 @@
  *     fires with the download-manager record, whose done/total are SECONDS OF
  *     AUDIO, and that row's ✕ really stops it. The transcript is a file, so
  *     `output` and its `url` outlive the tab.
+ *     onSegment(segment) gives the transcript AS IT DECODES — every segment,
+ *     in order, exactly once, without the page implementing any of it. It
+ *     rides the poll onProgress already costs (no second loop, and no extra
+ *     request at all for a caller that does not pass it), reading a
+ *     `.partial.jsonl` the worker appends to; whatever that misses is
+ *     delivered from the finished transcript, so the promise holds even for a
+ *     run that ended before the first poll. Segments arrive in the same shape
+ *     `segments` has, `speaker` included when diarizing.
+ *     Which engine transcribes depends on the machine and on the user's
+ *     preference (SPEC AI-10e) — MLX Whisper on Apple Silicon, CTranslate2
+ *     elsewhere, and Parakeet TDT if a Mac's owner chose it on the Engines tab
+ *     — and the reply is the same shape whichever ran, so a page never has to
+ *     ask. `vad` (default true) runs the same Silero speech detector on all
+ *     three, and timestamps are always positions in the ORIGINAL file even
+ *     though the silence between them was never transcribed. Two things do
+ *     differ. The RESOLUTION of the progress: MLX Whisper reports once per
+ *     decoded window (up to 30s of audio) and Parakeet once per 60s chunk
+ *     rather than per segment, so `done` can sit still and then jump — it is
+ *     always a real position in the recording and never ahead of one. And
+ *     Parakeet REFUSES three options rather than ignoring them —
+ *     task: "translate", `language` (it detects its own, among 25 European
+ *     languages) and `initialPrompt` — each rejecting .type "bad_request"
+ *     BEFORE a job opens, with a message naming the engine and the way out.
+ *     The MODEL is not interchangeable between them — each engine loads its own
+ *     format — so pick a repo from fused.ai.models.catalog() rather than
+ *     hardcoding one.
+ *     `diarize: true` labels WHO said each segment. `speakers` — the number of
+ *     people in the recording — is an OPTIONAL hint: give it and it is obeyed
+ *     exactly, leave it out and the count is estimated from the voices, and the
+ *     reply then carries `estimatedSpeakers` saying what it decided. An
+ *     estimate can be wrong, so pass the count whenever you know it. A count
+ *     that is present and unusable (0, 2.5, "2", true, over 100) still rejects
+ *     immediately with .type "bad_request" rather than opening a job — it is a
+ *     typo, not a request to estimate. Every segment gains `speaker` ("Speaker 1",
+ *     "Speaker 2", … — or null where the recording has words but nobody the
+ *     segmenter could hear), and the reply gains `speakers`, the list of labels
+ *     that actually landed on a segment, ready to build a colour map from.
+ *     Default false, so a call without it is unchanged in every byte. Every
+ *     engine runs the same two models through the same code, so the labels do
+ *     not depend on which one served you. It is a fast pre-pass over the whole
+ *     recording and does NOT change what done/total mean: they stay seconds of
+ *     audio of the transcript, and diarization reports as its own stage on the
+ *     row instead. First use on a machine downloads ~33MB, so it needs a
+ *     network that once; after that it works offline.
  *   fused.watchJob(id) -> {get, watch, stop, cancel}
  *     Observe a job this page did NOT create — the server-owned work that
  *     fused.ai.models.load() and image generation start. The read side of the
@@ -2603,9 +2648,71 @@
       err.type = "bad_request";
       return Promise.reject(err);
     }
+    // `speakers` is OPTIONAL with `diarize` (D318) — omitted, the clustering
+    // estimates how many people are in the recording; given, it is obeyed
+    // exactly. What is refused HERE is a count that was MEANT and is wrong, in
+    // the same place `path` is checked and for the same reason: a row that
+    // opens and immediately dies is a worse answer than a rejection, and this
+    // one would open after a multi-second model load.
+    //
+    // Underneath, the clustering takes either a number of speakers or a cosine
+    // distance threshold; this app sets that threshold once (diarize.py's
+    // CLUSTER_THRESHOLD) so a caller never has to. An estimate can be wrong,
+    // which is why a caller who KNOWS the count should still pass it — the
+    // reply carries `estimatedSpeakers` when it was worked out rather than
+    // given. The server and both workers enforce the identical rule
+    // (fused_render/ai/runners/diarize.py); this copy exists to make the
+    // failure instant, not to be the only one.
+    //
+    // `Number.isInteger` and not `typeof === "number"`: `2.7` is a caller who
+    // computed the count and got it wrong, and NaN is what a bad parseInt
+    // produces. `true` fails it too, which matters — `{diarize: true, speakers:
+    // true}` is a plausible copy-paste that would otherwise mean one speaker.
+    //
+    // The upper bound is `diarize.py`'s MAX_SPEAKERS, restated because JS
+    // cannot import it. It is not decoration: without it `{speakers: 500}`
+    // passed here and was refused by the server instead, which is a working
+    // refusal but makes "all four checks enforce the same rule" false on the
+    // one copy no Python test can reach. `tests/test_ai_runtime.py` reads this
+    // number back out of the source and drives it through the real function,
+    // so the two cannot drift silently.
+    // undefined / null / "" are the three spellings of "I did not say", and
+    // they have to be the same three Python reads that way (`speakers_or_raise`
+    // answers None for all of them) — otherwise a form that submits an empty
+    // field is refused by the bridge and accepted by the endpoint.
+    if (opts.diarize && opts.speakers !== undefined && opts.speakers !== null
+        && opts.speakers !== "") {
+      const MAX_SPEAKERS = 100;
+      if (
+        !Number.isInteger(opts.speakers) ||
+        opts.speakers < 1 ||
+        opts.speakers > MAX_SPEAKERS
+      ) {
+        const err = new Error(
+          "fused.ai.transcribe({diarize: true}): 'speakers' must be a " +
+            "whole number of people from 1 to " + MAX_SPEAKERS +
+            ", e.g. {diarize: true, speakers: 2} — or leave it out and the " +
+            "count is estimated from the recording.",
+        );
+        err.type = "bad_request";
+        return Promise.reject(err);
+      }
+    }
     const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+    // The PROGRESSIVE transcript: segments as they are decoded, rather than the
+    // whole thing when the recording finishes. A page must not have to
+    // implement file tailing to get one, which is what this callback is — the
+    // worker appends each finished segment to `outputPartial`, and the poll
+    // loop below reads whatever is new each time it ticks for `onProgress`.
+    //
+    // NULL unless the caller asked, and that is load-bearing rather than
+    // tidiness: every request made below is one that every existing
+    // transcription would otherwise start making, once per poll, for a file
+    // nobody is reading.
+    const onSegment = typeof opts.onSegment === "function" ? opts.onSegment : null;
     const body = {};
-    for (const key of ["path", "model", "language", "task", "initialPrompt", "vad"]) {
+    for (const key of ["path", "model", "language", "task", "initialPrompt", "vad",
+                       "diarize", "speakers"]) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
     // The page's own path, so a RELATIVE `path` resolves beside this page —
@@ -2618,6 +2725,139 @@
     if (ownPath) body.base = ownPath;
     return aiPost("/api/ai/transcribe", body).then((started) => {
       const watcher = watchJob(started.jobId);
+      // ---- the progressive transcript --------------------------------------
+      //
+      // `started.outputPartial` is a `.partial.jsonl` beside the transcript:
+      // one segment per line, appended and flushed by the worker as each is
+      // decoded, and REMOVED the moment the real transcript lands. So this is
+      // a best-effort early view and never the source of truth — the final
+      // `.json` is read at the end regardless, and drains whatever the tail
+      // did not reach. That is what makes "every segment, exactly once, in
+      // order" true even when the tail sees nothing at all: a worker that
+      // finished before the first poll, a page that woke up late, an older
+      // server that advertises no partial path.
+      //
+      // Delivered COUNT, not delivered contents, is how the two are
+      // reconciled: the file's Nth line is the transcript's Nth segment by
+      // construction (both engines append in the order they build the list),
+      // so the drain is `segments.slice(delivered)`.
+      let delivered = 0;
+      // Where the next read starts, in BYTES. The text is written unescaped
+      // UTF-8, so "café" is five bytes of four characters and a reader
+      // counting string length would drift one byte per accent and start
+      // parsing mid-line.
+      let offset = 0;
+      let pending = "";
+      let tailing = false;
+      // A line that will not parse means the reader has lost the file's frame,
+      // and there is no way to re-sync (the bytes are already consumed). Stop
+      // tailing rather than emit nonsense; the final drain covers the rest.
+      let broken = false;
+      const decoder = onSegment && typeof TextDecoder === "function"
+        ? new TextDecoder("utf-8") : null;
+      const deliver = (segment) => {
+        // Counted BEFORE the call, so a callback that throws cannot make the
+        // final drain resend the segment it threw on.
+        delivered += 1;
+        onSegment(segment);
+      };
+      const readNew = async () => {
+        const from = offset;
+        const res = await fetch(rawUrl(started.outputPartial), {
+          headers: callHeaders({ Range: "bytes=" + from + "-" }),
+        });
+        // 416: nothing new since last time. 404: not written yet, or already
+        // removed because the transcript landed. Neither is a failure — this
+        // file is an optimisation, never the result.
+        if (res.status === 416 || res.status === 404) return;
+        if (!res.ok && res.status !== 206) return;
+        let bytes = new Uint8Array(await res.arrayBuffer());
+        // A 200 answering a Range request is legal — anything in front of the
+        // route could give one — and carries the whole file rather than the
+        // tail. Dropping what was already consumed is what stops a segment
+        // being delivered twice in that case.
+        if (res.status !== 206) {
+          if (bytes.length <= from) return;
+          bytes = bytes.subarray(from);
+        }
+        offset = from + bytes.length;
+        // `stream: true`, because a read can land in the middle of a multibyte
+        // character — the offsets are bytes and nothing aligns them to runes.
+        pending += decoder.decode(bytes, { stream: true });
+        const lines = pending.split("\n");
+        // Whatever followed the last newline: normally "", and a half-written
+        // line if a read ever lands between the worker's write and its flush.
+        pending = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let segment;
+          try {
+            segment = JSON.parse(line);
+          } catch (_unparseable) {
+            // The frame is lost and the bytes are already consumed, so there
+            // is no re-syncing. Stop rather than emit nonsense; the final
+            // drain still delivers this segment and every one after it.
+            broken = true;
+            return;
+          }
+          deliver(segment);
+        }
+      };
+      // Reads only what has been appended since the last tick, by BYTE RANGE.
+      // `/api/fs/raw` answers 206 for a local file and 416 once the offset is
+      // at or past the end — verified against the route, not assumed from the
+      // fact that it hands off to FileResponse. Re-reading the whole file
+      // every poll would cost a megabyte a tick on a long transcript to learn
+      // a few hundred new bytes.
+      //
+      // Serialised through one chain rather than fired per tick: two reads in
+      // flight would race on `offset` and could deliver out of order. `tailing`
+      // then keeps at most one waiting, so a slow read cannot build a queue of
+      // them behind a poll loop that keeps ticking.
+      let tailChain = Promise.resolve();
+      const tail = () => {
+        if (!onSegment || !decoder || tailing || broken || !started.outputPartial) {
+          return tailChain;
+        }
+        tailing = true;
+        tailChain = tailChain
+          .then(readNew)
+          // Swallowed deliberately: a failed tail costs the preview and
+          // nothing else, and there is nobody to reject to — this runs beside
+          // the caller's promise rather than inside it.
+          .catch(() => {})
+          .then(() => { tailing = false; });
+        return tailChain;
+      };
+      // The FAILURE path's answer to the drain `done()` does over the finished
+      // `.json`. There is no transcript on that path — that is what failing
+      // means — so the partial file is read one last time instead, and the
+      // segments it holds are the ones `err.outputPartial` is pointing at.
+      //
+      // It has to bypass `tail()` rather than call it, and that is the whole
+      // point rather than a shortcut: `tail()` declines while a read is in
+      // flight, and the terminal tick almost always fires with one in flight,
+      // so the last segments — appended after that read took its snapshot —
+      // were exactly the ones it would decline to fetch. Waiting on the chain
+      // and rejecting therefore delivered nothing new at all.
+      //
+      // Ordering is preserved by settling `tailChain` FIRST, the same way
+      // `done()` does: nothing is in flight by the time this reads, so it
+      // cannot interleave with a tail or double-deliver by racing `delivered`.
+      const drainPartial = () =>
+        tailChain
+          .then(() => {
+            // `tailing` is deliberately not consulted — the chain above has
+            // settled, so there is nobody left to race. `broken` and a missing
+            // path still rule it out: a lost frame cannot be re-synced, and an
+            // absent `outputPartial` has nothing to read.
+            if (!onSegment || !decoder || broken || !started.outputPartial) return;
+            return readNew();
+          })
+          // Best-effort, like every read of this file. A final drain that
+          // fails costs the last few cues; replacing the run's own typed
+          // rejection with a fetch error would cost the caller the reason.
+          .catch(() => {});
       // The transcript file is the result; the row only said when to read it.
       //
       // TYPED on failure, like every other rejection this bridge produces. The
@@ -2629,8 +2869,26 @@
       // on the one failure it could most easily explain. `aiImage` has no
       // equivalent exposure because its `done()` does no I/O.
       const done = () =>
-        readFile(started.output)
+        // Any tail still in flight is settled FIRST, so the drain below cannot
+        // interleave with it and deliver a segment out of order — or twice,
+        // by reading `delivered` while a read was about to raise it.
+        tailChain
+          .then(() => readFile(started.output))
           .then(JSON.parse)
+          .then((written) => {
+            // The completeness backstop. The transcript is read anyway and is
+            // the only source guaranteed whole, so whatever the tail did not
+            // reach is delivered here — which covers a worker that finished
+            // before the first poll, a tab asleep through the whole run, a
+            // partial file that never existed, and the last segments, which
+            // are written and then removed inside one tick almost every time.
+            if (onSegment) {
+              for (const segment of (written.segments || []).slice(delivered)) {
+                deliver(segment);
+              }
+            }
+            return written;
+          })
           .then((written) => ({
             ...started,
             url: rawUrl(started.output),
@@ -2638,6 +2896,16 @@
             segments: written.segments,
             language: written.language,
             duration: written.duration,
+            // The transcript's legend, and undefined unless `diarize` was
+            // asked for. Read from the FILE like everything else here, so a
+            // page never has to know which engine wrote it.
+            speakers: written.speakers,
+            // …and how many people the clustering decided there were, present
+            // only on a run that had to work it out (D318). A caller who
+            // passed `speakers` already has this number and gets undefined
+            // here, which is the honest shape: the field means "estimated",
+            // not "resolved".
+            estimatedSpeakers: written.estimatedSpeakers,
           }))
           .catch((cause) => {
             const err = new Error(
@@ -2648,7 +2916,15 @@
             err.cause = cause;
             throw err;
           });
-      return watcher.watch(onProgress).then((record) => {
+      // ONE poll loop, not two. The tail rides the tick `onProgress` already
+      // costs, so a page asking for both pays one `/api/jobs` poll and one
+      // ranged read per interval — and a caller passing neither gets exactly
+      // the argument this has always taken, which is what keeps the request
+      // count of every existing call unchanged.
+      const onTick = onSegment
+        ? (record) => { if (onProgress) onProgress(record); tail(); }
+        : onProgress;
+      return watcher.watch(onTick).then((record) => {
         if (!record) {
           // The row is gone — and since the manager stopped evicting live
           // SERVER work under its cap, that no longer happens MID-RUN. It means
@@ -2669,7 +2945,25 @@
             const err = new Error("the transcription job is no longer being reported");
             err.type = "ai_error";
             err.jobId = started.jobId;
-            throw err;
+            // The salvage, on the path a long run is most likely to take. A
+            // transcription long enough to fail at minute 80 is long enough
+            // for its row to age out while the tab sleeps, and reaching here
+            // means `done()` could not read the transcript — so this IS a
+            // failed run, with a `.partial.jsonl` sitting beside where the
+            // `.json` should have been. Without these the caller is told the
+            // run is gone and given nothing to salvage it from, which is the
+            // same gap the live `error` branch below closes.
+            //
+            // Not derived from a naming rule: these are the paths the POST
+            // reply named, held since the run opened, so this never points a
+            // caller at a file the server never confirmed.
+            err.output = started.output;
+            err.outputPartial = started.outputPartial;
+            // Drained for the same reason the live failure below is: reaching
+            // here means `done()`'s own drain never ran (the transcript read it
+            // hangs off is what failed), so without this the caller is handed
+            // the partial file's path and none of the segments in it.
+            return drainPartial().then(() => { throw err; });
           });
         }
         if (record.state === "done") return done();
@@ -2680,7 +2974,36 @@
         );
         err.type = record.state === "cancelled" ? "cancelled" : "ai_error";
         err.jobId = started.jobId;
-        throw err;
+        // Where the salvage is. A run that dies at minute 80 of 90 writes no
+        // `.json` at all, and the worker deliberately LEAVES its
+        // `.partial.jsonl` behind — every segment that decoded before it fell
+        // over. The POST reply named that path, but a caller of this bridge
+        // never sees the reply, only this rejection, so without these two the
+        // file is written for a situation it cannot be reached from. Carried
+        // on a `cancelled` too, where the file is gone and the fields simply
+        // describe what would have been: one shape for both, rather than a
+        // caller having to know which rejection populates them.
+        err.output = started.output;
+        err.outputPartial = started.outputPartial;
+        // Any tail still in flight is settled FIRST, for the same reason
+        // `done()` settles it: `watch` reports the terminal record before it
+        // returns, so an `error` or `cancelled` row starts one last tail — and
+        // a read from the tick before it can still be in flight regardless.
+        // Thrown straight from here, those reads land AFTER the caller's
+        // promise has rejected and call `onSegment` on a run the page has
+        // already been told is over, painting a cue into a pane it just
+        // cleared.
+        //
+        // Then ONE more read, which is what makes "before the rejection"
+        // mean every segment rather than only the ones a read already had.
+        // Waiting alone delivered nothing new: the in-flight read's snapshot
+        // predates the last segments by definition, and the terminal tick's
+        // `tail()` declines to start another while that read is going. The
+        // success path has the finished `.json` to drain instead; here the
+        // partial file IS the artefact, and the two fields above are pointing
+        // straight at it, so the run must not reject holding segments it
+        // never handed over.
+        return drainPartial().then(() => { throw err; });
       });
     });
   }
@@ -2688,6 +3011,13 @@
   const aiModels = {
     list: () => fetch("/api/ai/runtime", { headers: callHeaders({}) }).then((r) => r.json()),
     catalog: () => fetch("/api/ai/catalog", { headers: callHeaders({}) }).then((r) => r.json()),
+    // `opts.capability` says WHICH RUNNER gets the repo ("text-generation",
+    // "text-to-image", "automatic-speech-recognition"). Left out, the server
+    // infers it from what the repo is — the cached snapshot's format first, then
+    // the catalog, then text generation for a cold unknown id (D321). Pass it
+    // whenever the page already knows: inference cannot read a repo that is not
+    // downloaded yet, and this argument is the difference between a whisper
+    // model loading and mlx-lm reporting it as a corrupt text model.
     load: (model, opts) =>
       aiPost("/api/ai/runtime/load", { model, ...(opts || {}) }),
     download: (model, opts) =>

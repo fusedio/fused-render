@@ -4554,6 +4554,75 @@ caller that wants the log on purpose.
   never the traceback overlay — and `ai_unavailable` reads as *"AI is not
   available on this server."*
 
+- **GT-19** **A merge conflict, and a failed operation, can be taken to an AI —
+  and NOTHING it says reaches the working tree without a confirmation.** Two
+  situations, one button (the same sparkle as GT-18), one panel, and one model:
+  **`claude-sonnet-5`**, named explicitly rather than left on the cheap default,
+  because reconciling two versions of a file is not the shape of work the default
+  is for. `effort` stays low — the thinking budget is not what decides whether a
+  merge is understood, and it is the latency the user waits through.
+
+  **The conflict case is the primary one.** A conflicted row in the change lists
+  carries the sparkle, ahead of Stage — on a conflicted file the resolution is
+  what the user came for, and Stage is the act that ENDS the conflict, so
+  offering them the other way round invites a `git add` of a file that still has
+  markers in it. Which rows are conflicted is the READER's answer
+  (`_status`'s `conflicted`, git's own porcelain rule: a `U` on either side, plus
+  `AA`/`DD`) and never re-derived in the view — a seven-case mirror with no way
+  to notice it drifting is how the button appears on the wrong rows.
+
+  The context the model gets is `log.py op="conflicts"`: the unmerged paths with
+  their **working-tree marker text** (the index's three stages are not the text a
+  resolution replaces), the operation in flight — merge / rebase / cherry-pick /
+  revert, read from the git dir's marker files rather than parsed out of `git
+  status`'s localised prose — and the branch. The read is deliberately
+  **UNSCOPED**, unlike almost every other read in §33: a merge is not
+  half-finished for one folder, so hiding the conflicts outside the open scope
+  would describe a state that does not exist. Each entry carries `in_scope`
+  instead, so the view SHOWS every conflict and offers to write only the ones
+  `ops.py` would accept (GT-13). Capped in file count and total bytes with the
+  truncation reported, so a prompt built from it is bounded and the panel can say
+  the model saw only part of the file. A binary or unreadable unmerged file is
+  NAMED and never read — the answer there is `git checkout --ours/--theirs`, not
+  a model.
+
+  **Nothing is applied by the button that asked.** The answer streams into a
+  review panel above the toolbar; Apply asks (GT-16's `ask` mechanism, and
+  `resolve` is in `DESTRUCTIVE_OPS` for exactly that reason: it overwrites the
+  only copy of what git left behind), and the confirmation is rendered INSIDE the
+  panel rather than in a list section — the question belongs next to the text it
+  writes, and a conflicted file is listed in both the staged and the changes
+  section, so there is no single row to attach it to. A pending `ask=resolve:…`
+  that survived a refresh is dropped rather than answered: the resolved text
+  lives in memory, so its Yes could only fail.
+
+  `ops.py op="resolve"` writes ONE file's text and does **nothing else** — no
+  `git add`, no commit. Marking a conflict resolved is a separate act the user did
+  not press, so the file lands unmerged-in-the-index and the ordinary Stage
+  button is still what resolves it. It refuses: a path that is not currently
+  unmerged (`--diff-filter=U` is the authority, which is what stops this being a
+  general-purpose "overwrite any file" write), more than one path, empty content,
+  oversized content, and — the refusal that makes the feature safe to point at a
+  model — content that still carries conflict markers. Written through a temp
+  file and `os.replace`, because a half-overwritten conflicted file is worse than
+  no write. A model that declines answers `UNRESOLVABLE` and gets **no Apply at
+  all**.
+
+  **The operation-error case is secondary and produces advice only.** A failed
+  mutation's `flash` carries the sparkle; the model gets the error text plus the
+  repository's branch/upstream/ahead-behind/dirty state and returns what it means
+  and what to run. There is no Apply, and this view will not run a command a
+  model picked — that is a different feature and a much larger one.
+
+  Every `fused.ai` rejection is this view's own sentence, never the traceback
+  overlay: `ai_unavailable`, `model_loading`, `unavailable`, `cancelled`,
+  `timeout` and `bad_request` each read as an ordinary answer. The button is
+  disabled while a call is in flight and while a proposal is on screen (one panel,
+  one subject), and Cancel drops the panel — honestly, since `fused.ai.cancel`
+  only reaches a LOCAL generation and this asks for a Claude model. Mount-backed
+  targets never reach any of it: `_locate` refuses a mount in both modules and the
+  gate never offers the view (GT-4 / MD-11).
+
 **See also §34** (`file_history`), the other history view. It is complementary
 rather than an alternative: this one drives the repository's own commit graph and
 index, i.e. everything git already knows about; that one reads Claude Code's
@@ -5695,7 +5764,7 @@ loads weights, imports a framework, or touches the network.
 
 ---
 
-## 39. Discover — Searching the Hub From the AI Models Page (D255)
+## 39. Discover — The Hub, Narrowed to What This App Can Run (D255, D313, D314)
 
 Goal: §37 answers "what did I already download". This answers the other half —
 "what is out there" — and the two are only worth anything **together**, because
@@ -5703,18 +5772,107 @@ the Hub does not know your disk and a browser tab open on huggingface.co cannot
 tell you that the model you are reading about is already cached, was last read
 three weeks ago, and would cost nothing to open.
 
+- **HS-0** **Everything on this tab is RUNNABLE HERE, and the constraint is the
+  feature** (D313, narrowed by D316). A repo runs here only if a registered
+  engine reads its weight format, so a search that returned whatever the Hub
+  returned put embedding models and fill-mask models in front of a page that
+  could act on none of them — and admitted it in a caption reading "Search
+  results are read-only". **The filter is the registry's, not a list**: a
+  candidate tag survives only if `registry.capability_for_task` maps it to a
+  capability some runner serves, which is the SAME function that decides
+  whether a repo already on disk gets a Load button. Searchable and loadable
+  therefore cannot drift, and a new runner makes its filter appear without an
+  edit to the module that talks to the Hub. Four tags qualify today, against
+  the twenty-six the menu used to offer. A row is dropped for an unrunnable
+  tag, for NO tag (a repo that cannot be classified cannot be promised), and
+  for `private` — nothing an ordinary account does reaches a private repo, so
+  a card for one could never be actioned by the person reading it. Every
+  surviving row carries a non-null `capability`, which is what the Download
+  button hands to the runtime.
+- **HS-0d** **The constraint is "an engine here can run it", NOT "nothing
+  further is asked of the user" — so gated repos are results** (D316). They
+  were dropped alongside private ones, on the rule that every card must carry a
+  working button; that drew the line one step too tight and quietly removed
+  several of the best-known models on the Hub from a search that claimed to
+  cover it. **A gate the reader can open is a step, not a wall.** The gate
+  travels on the row (`gated`: `"auto"` — accept the licence while signed in;
+  `"manual"` — the owner grants access by hand; `null`), and the card spends it
+  on the ACTION as well as the label: with a token on this machine it is an
+  ordinary Download, and without one the button is replaced by a link to the
+  repo's own Hub page reading "Accept terms" or "Request access". That is what
+  keeps this from being the `gated` pill D313 deleted, which named the problem
+  and left a button that would 403 sitting next to it. `manual` earns its own
+  words because somebody told to "accept the terms" on an approval-gated repo
+  goes looking for a button that is not there; an unrecognised truthy gate is
+  read as `manual`, the stricter of the two. **There is no credentials UI and
+  this does not add one**: the token is read where `huggingface_hub` reads it
+  (`HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `$HF_HOME/token`), the search reply
+  carries only the boolean `authenticated`, and the hover names
+  `huggingface-cli login` rather than offering a box to paste a secret into.
+- **HS-0a** **The menu constrains what can be ASKED; the row filter constrains
+  what comes BACK.** They are not the same guarantee: an unfiltered query lets
+  the Hub answer with anything it likes, so the supported-tag pass runs over
+  every reply regardless of what was asked. A task the app cannot run is
+  refused with a 400 rather than searched for and returned empty — an empty
+  grid reads as "the Hub has no summarization models", which blames the wrong
+  party. Because the pass throws most of an unfiltered page away, the request
+  **over-fetches (4x, capped) and truncates AFTER filtering**, so `limit` means
+  "rows you will be shown"; with a task filter the Hub has already constrained
+  and the request asks for exactly what it shows.
+- **HS-0b** **One grid at a time, and the search box is at the top** (D313). A
+  curated shortlist answers "what should I even get" — the question somebody
+  has BEFORE they know what to type — so results REPLACE the suggestions rather
+  than stacking under them, and clearing the box brings them back. The box sits
+  above the sections because it is what the tab is for; underneath them, the
+  only way to reach it was to scroll past the thing it is an alternative to.
+  **The way back is a CONTROL, not a thing to work out** (D317): "clearing the
+  box" is only obvious for a query somebody typed, and the state that stranded
+  people was a task picked from the select with an empty box — nothing to
+  clear, no suggestions, and the route back is guessing that the menu's first
+  option restores them. Two affordances, both resetting **query and task
+  together in one act** (`showsReset`, and `clearSearch` in the component): an
+  ✕ inside the search field, and "← Back to suggested models" in the results
+  heading row. Escape in the box does the same. A control that emptied only the
+  text would be the worst of the three outcomes — the reader does the obvious
+  thing, the box goes empty, and the suggestions still do not come back — which
+  is why the platform's own `type="search"` ✕ is hidden rather than relied on.
+- **HS-0c** **Each face names itself, in the same slot, in the same words'
+  worth of chrome** (D314). One grid replacing another is only legible if the
+  new one says what it is: "Suggested models" and "Search results", each with
+  one muted right-hand fact — `11 picked for this machine` against
+  `"whisper" · 24 on huggingface.co`, which is the count and the PROVENANCE in
+  one line. **The count states what came back, never what did not**: it is
+  absent while a request is in flight, and absent again when the search FAILED.
+  A soft failure answers 200 with an `error` and `models: []`, and a count taken
+  from that array's length reads `0 on huggingface.co` — the heading reporting
+  that the Hub has none of these, beside a banner saying we never heard back,
+  which is the opposite of D316's point that a gated hit is missing rather than
+  absent. What was ASKED survives a failure and still shows; what came BACK does
+  not exist, so `resultsSummary` takes the failure as a required argument rather
+  than inferring it from a length. Under each heading sits its own note, in the same place: why these
+  eleven for the shortlist, which host is being asked for the results. The two
+  faces are therefore heading, note, grid in that order either way, and the
+  difference between them is a label rather than the presence or absence of a
+  paragraph — which was a difference only visible to somebody watching it
+  happen, so a reader who searched, scrolled and looked back up had nothing on
+  screen telling them which grid they were in. The heading is one string, not
+  two conditions (`chrome.heading`), so the page cannot claim to be both. **It
+  is the SECTION tier, and the capabilities under it are subgroups** — the
+  Local tab's exact shape, where "User downloaded models" sits over a rule and
+  its capability rows are quieter ALL-CAPS titles with no rule of their own.
+  Drawn as a second `.am-section-head` the view's name and `TEXT GENERATION`
+  were twins (same caps, same weight, same muted suffix, same full-width line),
+  and two levels rendered identically are no levels at all. The heading, that
+  line, the grid and the host disclosure are one decision in one place
+  (`shell/discoverView.ts`), since every way they can disagree is the page
+  making a false claim about itself.
 - **HS-1** **AMENDED (D258): downloading is offered, and the reasoning is
   unchanged.** The original rule was that a download needs a progress surface, a
   cancel and an answer for a half-finished pull — none of which existed, so the
   button did not either. Local inference (§40) built exactly that, so Discover
-  now downloads through it. What still holds: search, filter and sort tell you
-  what a result would COST before the click, and this module still never writes
-  to the cache itself — it asks the runner's worker to, and the job registry
-  shows it. Downloading gigabytes onto someone's
-  disk is a separate decision with a separate cost (free space, a progress
-  surface, a resumable transfer, a half-written cache to clean up) and is
-  deliberately not part of this. Every route is a GET, so none carries the D3
-  `X-Fused` guard: there is nothing to guard.
+  now downloads through it — from the search results as well as the shortlist
+  since D313. This module still never writes to the cache itself: it asks the
+  runner's worker to, and the job registry shows it.
 - **HS-1a** **Search is a guarded POST; the rest of Discover is an ordinary
   read.** The app's rule is that reads are unguarded GETs (WF-5), and the reason
   is D36's: a foreign page can fire a request but the browser will not let it
@@ -5749,14 +5907,17 @@ three weeks ago, and would cost nothing to open.
   concatenated: a search for `a&b=c` is a search, not a second parameter. The
   sort is a **fixed set** of names, so a client can never pass a raw field
   through to the Hub.
-- **HS-4** **Nothing reaches the network until Discover is opened.** The app is
-  a local file explorer; a page that quietly queried a third party on mount
-  would be a surprise. Selecting the tab is the consent, the caption names the
-  host being asked, and the query is debounced — a burst of typing is one
-  request — with identical queries inside a short TTL answered from memory,
-  because search-as-you-type would otherwise put one request per keystroke on a
-  public API. **Errors are never cached:** the network comes back, and the next
-  keystroke has to be allowed to find out.
+- **HS-4** **Nothing reaches the network until Discover is opened, and nothing
+  at all until something is typed.** The app is a local file explorer; a page
+  that quietly queried a third party on mount would be a surprise. Selecting the
+  tab is the consent, the caption names the host being asked, and the query is
+  debounced — a burst of typing is one request — with identical queries inside a
+  short TTL answered from memory, because search-as-you-type would otherwise put
+  one request per keystroke on a public API. An EMPTY box makes no request at
+  all: the curated view is served from the local catalog, so asking the Hub for
+  "the most downloaded models" and then not rendering them would be an outbound
+  call for nothing. **Errors are never cached:** the network comes back, and the
+  next keystroke has to be allowed to find out.
 - **HS-5** **The local half of a result is never served stale, and is scoped to
   the results.** The Hub's answer holds for the TTL; what is on this disk does
   not, so the join runs on every request, outside the cache — a model deleted a
@@ -5769,13 +5930,11 @@ three weeks ago, and would cost nothing to open.
   is FOR — work no row here needs, and work a debounced keystroke must not pay
   for across a cache of hundreds of repos.
 - **HS-6** **Sizes are recovered, and say so.** `safetensors.parameters` is a
-  dtype → count map, so bytes come from summing `count * bits / 8` — the same
+  dtype -> count map, so bytes come from summing `count * bits / 8` — the same
   arithmetic and the same `≈` the model card uses on local files (HF-17), so one
   model cannot be 16GB on one tab and 8GB on the other. A repo with no
   safetensors metadata reports **no size** rather than a guessed one: a number
-  someone plans a 16GB download around must not be invented. `gated` is surfaced
-  before anyone tries, because "accept the licence on the Hub first" is worth
-  knowing in advance rather than as a 403.
+  someone plans a 16GB download around must not be invented.
 - **HS-7** **One vocabulary across both tabs.** A result's task label and its
   hover sentence come from the same glossary the cached cards use (HF-18), so
   "image + text to text" means the same thing wherever it appears. The task
@@ -5785,7 +5944,8 @@ three weeks ago, and would cost nothing to open.
   generation", "video generation") are this app's reading of a diffusers
   `_class_name` rather than tags anyone publishes under, and a filter built from
   one would quietly return nothing. Every offered filter resolves to a label the
-  glossary explains, and a test pins that.
+  glossary explains AND to a capability a runner serves (HS-0), and a test pins
+  both.
 - **HS-8** **A far side that is unhappy is a sentence, not a 500.** Unreachable,
   rate-limiting, refusing without a token, answering with HTML — each produces a
   200 carrying an empty result and an explanation the page can show, because the
@@ -6073,6 +6233,33 @@ an AI Models page that could say what was on disk but not what was *running*.
   rather than destructive), no per-segment UI, and no cache lock — the etag names
   the content, so two instances write identical bytes at identical offsets and
   the loser of a rename race falls back rather than corrupting anything.
+- **AI-5j** **A load that omits `capability` INFERS it, and refuses rather than
+  guessing when it cannot.** The omitted argument used to mean text generation
+  unconditionally, which is a wrong-runner dispatch wearing a library error:
+  `fused.ai.models.load("mlx-community/FLUX.2-Klein-4B-4bit")` reached mlx-lm and
+  raised `FileNotFoundError: config.json` — a file that repo has never had —
+  while `/api/ai/image` rendered from the same snapshot, because that route is
+  capability-bound by construction and this one was not. The same shape had
+  already fired once through Preload with a whisper repo. `POST
+  /api/ai/runtime/load` and `/download` now resolve an absent capability in four
+  steps: (1) the LOCAL SNAPSHOT, read through the AI Models page's own
+  `cached_capability` — the same join of task label, decisive format
+  (`runners/formats.py`) and registry that the page draws its Load button from,
+  so a card offering Load and a load refusing cannot disagree — plus one
+  addition, that a non-decisive format whose readers all share one capability
+  answers with it (a bare directory of safetensors is read only by the two TEXT
+  runners, which is what keeps every existing `load(id)` on an unlabelled chat
+  repo working); (2) `catalog.capability_of`, since every repo this app
+  RECOMMENDS belongs to a runner and knowing costs a dict lookup rather than a
+  Hub round trip; (3) text generation, unchanged, for an id that is neither —
+  a cold load cannot be classified without downloading it, refusing one would
+  break every page that preloads a chat model, and a wrong guess is bounded by
+  the runner's own format check; (4) a **400 naming the repo, what it looks like
+  and what to pass**, for the one case with no excuse: the repo IS cached and
+  nothing here reads it. **No network call is added to either route** — every
+  step reads the local cache or a module constant. An explicitly passed
+  capability is validated and used unchanged, so this governs only the omitted
+  case.
 - **AI-8b** **A runner whose weights live outside RSS supplies its own memory
   probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
   arrays; the image runner needs it for an unrelated reason and the number was
@@ -6161,7 +6348,44 @@ an AI Models page that could say what was on disk but not what was *running*.
   states the Hub result cards already draw. And the cache answer is the PAGE's
   one walk, handed down, not a second walk Discover runs for itself: two walks
   meant two definitions of "on this machine" and a window where the tabs
-  disagreed about the same repo.
+  disagreed about the same repo. That handed-down answer is a **map of id →
+  path, and it answers the whole of what a card says about the local copy** —
+  the ✓, the absent Download button, *and* Explore's destination (`localCopy`).
+  Explore used to read `local.path` from the **search reply** instead, which is
+  frozen at the moment of the search: download a model from the results and the
+  re-walk turned the ✓ on while Explore stayed hidden, so the one card most
+  likely to want it offered no way to open the copy just fetched. Same fact,
+  same source, or they drift.
+- **AI-7d** **Every suggestion list is ordered SMALLEST FIRST, and the default
+  is position 0.** One rule, no second field: `catalog.SUGGESTIONS` is sorted by
+  ascending `size_gb` (an entry with no size sorts last), and
+  `catalog.default_for()` returns the first entry — which is what a `model`-less
+  `POST /api/ai/image` or `/api/ai/transcribe` loads. **The consequence is
+  accepted, not overlooked**: a bare `fused.ai.transcribe()` gets
+  `Systran/faster-whisper-small` (or `mlx-community/whisper-small-mlx`) rather
+  than the turbo checkpoint, and a bare text default is the 2B/1.7B. The
+  alternative — order by recommendation and mark the default with its own field
+  — was considered and rejected, because two orderings that can silently
+  disagree cost more than the accuracy a no-model call gives up. Reordering a
+  list so the "best" model leads is therefore a REGRESSION of this requirement,
+  not a fix; `tests/test_ai_runtime.py` asserts the sort and the four defaults.
+- **AI-7e** **A repo THIS APP downloaded as part of something else says whose it
+  is, and is never offered a Load** (D308). Two repos land in the Hub cache that
+  no user chose — `unsloth/FLUX.2-klein-4B-GGUF`, the quantized transformer
+  AI-9b's recipe swaps in (2.4GB), and `onnx-community/silero-vad`, the speech
+  detector AI-10f pre-fetches (2MB). Both listed as peers of real models with the
+  quiet "no engine" tag, which is true and explains nothing: deleting the first
+  breaks the image model that needs it, deleting the second costs a slower
+  transcription. The listing carries `component` (`owner`, `part`, `of`, `what`)
+  and the card wears "part of FLUX.2 klein 4B" instead of an engine tag, with the
+  consequence in its hover. **They stay on the page and stay deletable**: this
+  page's job includes showing what is eating the disk, so hiding 2.4GB would be
+  the opposite of it. The registry is `runners/formats.py`'s `COMPONENT_REPOS`,
+  for the reason `MFLUX_VARIANTS` is there — the ids are named inside runner
+  folders that are separate venvs the server cannot import, the workers read the
+  FILENAME back out of it rather than keeping a second copy, and a test asserts
+  every recipe's component repo appears there, so a new recipe cannot
+  reintroduce an unexplained row.
 - **AI-9** **Image generation is job-backed, and the reply decides everything
   but the pixels.** `POST /api/ai/image` answers immediately with a `jobId` to
   watch AND with the **path** and the **seed** already settled — so no second
@@ -6212,18 +6436,57 @@ an AI Models page that could say what was on disk but not what was *running*.
   → a ~2.6GB Q4_K_M GGUF), because "which quantization of which part is safe" is
   the same editorial judgement `catalog.py` makes about what to suggest, not
   something to infer from a file listing. A model absent from the table is not
-  unsupported — it loads the ordinary way. The recipe also decides what NOT to
-  download: the base repo's own `transformer/` is exactly the weights the
-  quantized file replaces, and fetching it would cost several GB for components
-  that are then ignored — but it skips the WEIGHT files, never the subfolder,
-  because `from_single_file` reads that subfolder's config and a "download" that
-  leaves a cache which cannot load offline has not done what the button said.
+  unsupported — it loads the ordinary way. The recipe also decides what IS
+  downloaded, **as an allow-list of what `from_pretrained` reads** (`keep`:
+  `model_index.json` plus the component subfolders, and the transformer's
+  `config.json` but not its weights) — never a deny-list of what to skip (D308).
+  A deny-list has to predict every extra bundle a repo may carry, and the first
+  one it met defeated it: FLUX.2 klein also ships its transformer as a
+  root-level `flux-2-klein-4b.safetensors`, 7.75GB the pipeline never opens and
+  no `transformer/*` pattern matched, so the skip list saved nothing and the
+  recipe cost 18.6GB where the model needs 10.8. The transformer's config is
+  kept because `from_single_file` reads that subfolder's config and a "download"
+  that leaves a cache which cannot load offline has not done what the button
+  said. `allow_patterns` and `ignore_patterns` are both first-class arguments of
+  `download_snapshot`, applied by one filter (`worker_base.selects`, hub's own
+  precedence — ignore wins) to the bar's total, the segmented fetch and the
+  fallback alike.
   **A scoped download measures itself against a scoped total**: one file out of
   a repo that publishes a dozen quantizations counts that file, and a pull that
   ignores a subfolder does not count it. Summing the whole repo either way is
   how a 2.6GB fetch came to read as a fraction of 30GB and then jump to
   complete; the reported figure is also capped at the total, since the disk walk
   sees siblings the download was never fetching.
+- **AI-9d** **Image generation has an MLX runner too, and like the other two
+  multi-runner capabilities it takes the Macs by default** (D310). `mflux_image`
+  renders FLUX on Metal from a single `mlx-community`
+  conversion whose components are all already 4-bit — so where the torch path
+  needs AI-9b's recipe (a ~2.6GB GGUF transformer plus ~8.2GB of base-repo
+  components — 10.8GB in all), this is one ~4.6GB snapshot with nothing skipped. On the
+  machine it was measured on it loads ~8x faster, halves cold time-to-first-image
+  and is ~15-20% quicker per image. **Its memory ceiling is an accepted risk
+  rather than a resolved one**, and is recorded because the failure it would
+  produce will not look like an ordering decision: MLX's allocator reserved a
+  ~23.6GB high-water pool during those renders — larger than torch's driver
+  allocation for the same picture — on a 34GB machine already several GB into
+  swap, and nothing has been run on the 16GB Macs that AI-9b's own note says
+  full-precision FLUX already OOMs. The way back is the engine preference
+  (AI-10e), which serves this case in both directions, and the runner's `note`
+  names the ceiling **on the Engines tab, under the picker that is the way
+  back** (D315) — it used to sit over Discover's image-generation section,
+  which is a page about downloads and two clicks from the only control that
+  answers it. Everything a page can see is
+  unchanged: same `/generate` body, same reply, same denoising-step row, same ✕,
+  and the SAME DEFAULTS (28 steps, guidance 4.0 — diffusers' numbers, not
+  mflux's own 4 and 1.0), because switching engines is a performance decision and
+  must not silently change what an unparameterised render means. Two mechanical
+  differences are worth naming: progress comes from mflux's per-model CALLBACK
+  REGISTRY rather than a callback argument, so the hook is registered once at
+  load and reads the live request from a slot (registering per call appends, and
+  the tenth render would report ten times); and the PNG is saved with
+  `overwrite=True`, because mflux's default resolves a collision by writing
+  somewhere else, and the server has already told the caller where the image
+  will be.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
   honest number rather than two that need reconciling. What the supervisor knows
@@ -6253,9 +6516,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   choice is the point of the bullet: mlx-whisper would be quicker on Apple
   Silicon and would have made ASR a *third* Apple-Silicon-only feature, and an
   app whose local AI is something most users read about is not the app this is
-  meant to be. An `mlx_whisper` runner may be added later ABOVE this one — the
-  registry's first-match-wins ordering (AI-2) exists for exactly that, and this
-  would be the first capability to use it. Both Whisper directions ship:
+  meant to be. An `mlx_whisper` runner **has since been added ABOVE this one**
+  (AI-10c, D302) — the registry's first-match-wins ordering (AI-2) existed for
+  exactly that — so a Mac transcribes on Metal and every other platform still
+  arrives here. Both Whisper directions ship:
   `task: "transcribe"` (same language) and `task: "translate"` (into English)
   are one flag to the model, so omitting either would only buy a second change
   later — but the value is **named, never silently defaulted**, since
@@ -6385,6 +6649,156 @@ an AI Models page that could say what was on disk but not what was *running*.
   that PyAV opens the container formats users will point at it. A first real
   transcription is the outstanding verification, and until it happens this
   section describes a design that is proven only down to the model's door.
+- **AI-10c** **Apple Silicon transcribes on the GPU: an `mlx_whisper` runner
+  ABOVE the CTranslate2 one, indistinguishable to a page** (D302). AI-10 chose
+  CTranslate2 so the capability would exist everywhere and said an MLX runner
+  could be added later above it; this is that addition, and it is the first use
+  AI-2's ordering has had for a capability that already worked. Macs take MLX;
+  Windows, Linux and Intel macOS are untouched, which is the property that had
+  to hold. **The result dict, the two output files, the job row and the
+  seconds-of-audio progress are identical**, because `fused.ai.transcribe` is
+  about audio and not about backends — a page must not be able to tell which
+  ran. Three things cost work to keep that promise. **The audio is decoded in
+  this process**: `mlx_whisper.transcribe(path)` calls openai-whisper's
+  `load_audio()`, which spawns `ffmpeg` — the binary this app deliberately does
+  not ship — so the runner decodes with `av` to 16 kHz mono float32 and passes
+  the WAVEFORM, which the library accepts on the same argument. This is the same
+  rule AI-10 states, at the one place where following it is not free.
+  **Progress is borrowed rather than invented**: `transcribe()` is one blocking
+  call, so there is no per-segment tick to carry `done` — and reporting nothing
+  would freeze a bar that AI-10a and `runtime.js` promise moves in seconds of
+  audio. Chunking the audio here was rejected (whisper's own window seeking is
+  what keeps it accurate across a boundary, so hand-rolled chunks trade
+  transcript quality for a progress bar); instead the library's internal frame
+  counter is read by swapping the `tqdm` binding in its module for the duration
+  of the call. That is a reach into another package's internals and is treated
+  as one — guarded, restored on every path, and degrading to honest
+  indeterminate ticks rather than a made-up percentage if a future version
+  stops keeping a bar. It is coarser than faster-whisper's (one update per
+  decoded window, up to 30s of audio) and never ahead of reality. It also makes
+  the ✕ better than the CT2 runner's: the hook sits inside the decode loop, so
+  an abandoned transcription raises at the next window instead of running the
+  file to its end. **Memory is MLX's own accounting**, not RSS — Metal's
+  unified buffers are real and RSS cannot see them (AI-8a's argument, and the
+  reason a resident model would otherwise be priced at nothing).
+- **AI-10d** **The MLX runner has never transcribed real audio under test
+  either, and its dependency on a library INTERNAL is the part to watch.**
+  AI-10b's caveat applies unchanged — no CI can run Metal — with one addition
+  specific to this runner: the progress hook depends on `mlx_whisper.transcribe`
+  keeping a module-level `tqdm` binding, which is not part of its API. Both
+  branches are tested (borrowed, and absent), and the contract was verified by
+  hand against mlx-whisper 0.4.3 on an Apple Silicon machine: an `av` decode of
+  a real recording fed straight into `transcribe`, whose counter reported seven
+  windows over a 198-second file. What that verification did NOT cover is
+  transcription quality, the container formats users will point at it, and the
+  behaviour of a recording long enough to matter.
+- **AI-10f** **`vad` means the same thing on both whisper engines** (D320).
+  `fused.ai.transcribe` has always taken the flag, and until now the two
+  runners answered it differently: faster-whisper runs a Silero VAD filter and
+  drops the silence, while the MLX runner could only map it onto mlx-whisper's
+  per-window `no_speech_threshold`. Same API, same argument, two behaviours —
+  which is the one thing AI-10c says a second runner may not be. The MLX runner
+  now runs Silero itself, from the ONNX export on `onnxruntime`: **not**
+  faster-whisper's copy (that would drag `ctranslate2` into a Metal-only venv,
+  defeating the folder split) and **not** the PyTorch one (gigabytes for a 2MB
+  model). The repo is ungated, which the download rule requires of everything
+  this app fetches and not only of models a user picks. **Silence is dropped and
+  each speech region is transcribed on its own**, with every timestamp mapped
+  back to original-recording time. That is chunking, which AI-10c rejects for
+  progress — and the difference is where the cut falls: a VAD boundary is by
+  construction half a second of silence, where a sentence has already ended,
+  whereas a fixed offset cuts through one. What is still lost is conditioning
+  ACROSS a gap (`condition_on_previous_text` works inside one call), and
+  carrying the previous region's text in as a prompt was rejected rather than
+  forgotten: it invites the model to continue a sentence that finished before
+  the pause, which is the known route to a repetition loop. **Progress stays in
+  seconds of the ORIGINAL recording**: the borrowed frame counter denominates
+  whatever waveform the library was handed, so once silence is removed it
+  counts seconds of SPEECH, and reporting that against a total of the whole file
+  would be two units in one bar — a 90-minute recording with 30 minutes of
+  silence finishing at 60/90 and stopping. The counter is mapped through the
+  same region table the timestamps are. **A detector that cannot be fetched
+  degrades to transcribing everything**, saying so on the row and in the log,
+  rather than failing a transcription that works without it — but it is fetched
+  during Download precisely so an offline machine still has it.
+- **AI-10e** **Which engine serves a capability is a user preference, and an
+  unusable one is IGNORED rather than obeyed** (D302). Runner selection was
+  implicit — first-match-wins over registry order, filtered by availability —
+  which was a complete answer while the order was decided by hardware. With two
+  capabilities carrying two runners each, `prefs.json` gains `engines`:
+  capability → `"auto"` (the default, and the absence of a key, meaning exactly
+  the previous behaviour) or a runner code. `registry.resolve()` honours it, and
+  every consumer goes through that one call, so the supervisor, the catalog and
+  the API cannot disagree about which backend is in play. **A preference naming
+  a runner that cannot run HERE is dropped and the ordering decides**, with the
+  reason carried out for the page to show. That asymmetry is the design rather
+  than a safety net: prefs.json is a plain file in a home directory people sync,
+  copy and restore, so a preference set on a Mac must not arrive on a Windows
+  machine and take speech to text away — a preference that quietly does nothing
+  is recoverable, a capability that has silently vanished is a bug report. The
+  stored value is never corrected on read either, because a choice the user can
+  neither see nor restore is worse than one that is not in force today. Three
+  consequences are surfaced rather than left to be discovered: changing an
+  engine EVICTS that capability's resident model (one capability holds one, and
+  it belongs to the backend that loaded it), the AI Models suggestions change
+  with it (a suggestion is only meaningful for the backend that will load it,
+  AI-11a/D293), and the runner rows in `fused.ai.models.list()` now carry
+  `active` beside `available` — the same answer until a preference could sit
+  between them, and different the moment one can.
+- **AI-10f** **What a backend is LIKE reads under the picker that chooses it**
+  (D315). A runner's `note` — MLX FLUX's memory ceiling, MLX Whisper's GPU
+  speed, PyTorch's NVIDIA-or-CPU — renders as a muted line beneath its
+  capability's row on the Engines tab, for the **effective** runner only, the
+  same discipline the "Using MLX LM." line above it follows. It used to head
+  the matching capability section on Discover, which was wrong twice: three of
+  six runners have a note, so those sections were blotchy and the sentences
+  read as noise; and the FLUX one is not a fact but the **instruction AI-9c's
+  accepted risk depends on** — the sentence that tells a 16GB Mac to switch
+  back to Diffusers — which has to be beside the control that switches. The
+  rows are uneven, and here that is information: this engine has a caveat, that
+  one does not. The field stays on `catalog.describe()` regardless; it answers
+  a question about the catalog, not about where a page prints it.
+- **AI-10g** **A THIRD engine serves transcription — `parakeet_mlx`, Apple
+  Silicon only — registered UNDER MLX Whisper so the default does not move,
+  and refusing what it cannot do rather than pretending** (D319). Parakeet-TDT
+  beats Whisper large-v3 on English word error rate, decodes several times
+  quicker again on the same Metal, is CC-BY-4.0 and does not hallucinate over
+  silence. It is still **not** the default, and that is the requirement rather
+  than a caution: v3 handles 25 European languages against Whisper's ~99, so
+  promoting it would silently regress every page relying on language detection,
+  producing a confident transcript in the wrong language instead of an error.
+  The row sits directly below `mlx-whisper`, and a user opts in per capability
+  on the Engines tab — AI-10e's machinery serving the case it was built for,
+  with no new plumbing. **The waveform reaches the library by borrowing its
+  loader.** `parakeet_mlx.transcribe` takes a path and calls `load_audio`,
+  which spawns ffmpeg (AI-10's rule again, at its sharpest — without ffmpeg the
+  library raises rather than degrading), so the runner decodes with `av` and
+  swaps the module's `load_audio` binding for the duration of one call. That
+  keeps the library's chunking AND its overlap token merge, which reimplementing
+  around `get_logmel`/`generate` would have cost; it is the same reach into
+  another package's globals AI-10c already makes for `tqdm`, guarded and
+  restored the same way, and a MISSING binding raises rather than falling
+  through to ffmpeg. Progress is the library's `chunk_callback`, which fires
+  before each chunk — so the reported position is that chunk's start: behind
+  reality, never ahead of it. **Three options are REFUSED by name**:
+  `task: "translate"`, `language` and `initialPrompt`, none of which this model
+  has an answer for. That is a deliberate, visible crack in AI-10c's "a page
+  cannot tell which engine ran", and it is the right place to put one — a loud
+  refusal naming the engine and the way out beats a silent substitution the
+  page cannot see. **`vad` still means one thing** (AI-10f): `runners/vad.py`
+  moved out of `mlx_whisper/` on its second caller and is now shared by the two
+  MLX engines, with a `vad.py` inside any runner folder a failing test. The CT2
+  engine is unchanged and does NOT read it — faster-whisper carries its own
+  Silero and is asked for it through `vad_filter`, which is what AI-10f settled
+  and why the flag already meant one thing across those two. On this engine it
+  is a wall-clock saving rather than a correctness fix, which changes why it is
+  wanted and not what it does. **The format check is on the CONFIG**: a Parakeet snapshot
+  carries `model.safetensors` like every transformers repo, so what identifies
+  it is a `nemo.collections.asr.models.…` class in `config.json` — and a match
+  claims the snapshot alone, or the text runners would offer to load a speech
+  model as a chat model. **Nothing here has transcribed real audio under test**;
+  AI-10b and AI-10d's caveat applies unchanged, against the `parakeet-mlx` 0.5.2
+  API.
 - **AI-11** **Text generation runs on every supported desktop platform, on the
   backend that suits the machine — and TWO runners share one capability for the
   first time** (D293).
@@ -6528,12 +6942,17 @@ world from one the user typed.
     body: it sends things, and every test that builds an app would otherwise
     spawn whatever the developer's store held) and does not sleep before its
     first pass.
-  - **SCH-3b** **A bound on how late is still worth sending**
-    (`FUSED_RENDER_SCHEDULE_MAX_LATE`, default 24h). Unbounded catch-up is its
-    own bug: a message meant for Tuesday's standup, fired unattended on Friday
-    against a repo that has moved on, is worse than one that never fired. Past
-    the bound an entry becomes `missed` — visible, never sent. `GET /api/schedule`
-    reports the bound, because the page cannot explain a `missed` entry without it.
+  - **SCH-3b** **Missed work QUEUES and runs when the app next opens; there is no
+    bound by default.** The earlier design bounded catch-up at 24h on the reasoning
+    that a message meant for Tuesday's standup, fired unattended on Friday, is worse
+    than one that never fired. That reasoning was sound about *unattended* firing and
+    is answered directly now rather than by a timer: the queue is visible before it
+    runs (the Calendar's Queued strip), every entry in it can be cancelled, and a
+    running one carries its own cancel. Given a cancel affordance, a bound only
+    throws work away silently. `FUSED_RENDER_SCHEDULE_MAX_LATE` still reinstates a
+    bound where an operator wants one, and only then does an entry become `missed`.
+    `GET /api/schedule` reports `max_late_seconds: null` when unbounded — the page
+    must read null as "no bound", never as zero.
 - **SCH-4** **The claim is written before the spawn.** An entry becomes `sending`
   *before* the helper is launched, so a process that dies mid-spawn leaves it
   `sending` rather than `pending` and the next boot does not resend it; a sweep
@@ -6814,11 +7233,81 @@ world from one the user typed.
   computed from the latest occurrence ever created (never earlier than now).
   Everything downstream — claim-before-spawn, job rows, the event log, the
   watcher — handles only one-shots, unchanged.
-- **SCH-13** **A missed recurring run is SKIPPED, never caught up.** Occurrences
-  carry `max_late: 120` where one-shots keep the day-long global bound: replaying
-  "daily at 9am" at 2pm is not what the words meant, and the next run is already
-  coming. The two minutes absorb tick jitter only. The missed verdict is worded
-  as "skipped", and the next materialization rolls past every missed slot.
+- **SCH-13** **A recurring backlog COALESCES to its latest run, never replays.**
+  Where a one-shot missed by a week still runs (SCH-3b), a repeat missed five times
+  runs **once** — replaying "daily at 9am" five times into one thread is not what
+  the words meant. `_coalesce` walks the recurrence before `_materialize`, keeps the
+  most recent missed occurrence and counts the rest onto it as `skipped` /
+  `skipped_note`, announced as a single event ("4 earlier runs skipped") rather than
+  four. Occurrences no longer carry `max_late: 120`; a legacy one is cleared by the
+  coalescer. `count`/`until` budgets are spent by skipped runs, following the same
+  rule `create` already applies.
+- **SCH-13a** **A repeating template LEARNS its thread on the first run.** A task is
+  a Claude session, so a repeat appends into one thread and `new_task_each_run` is
+  the opt-out — but that does not fall out for free, and assuming it did was a real
+  bug. A template is created with **no** session, because none exists yet: Claude
+  Code mints the id on the first turn. So when a run reports the session it actually
+  ran in, `_chain_session` writes that id back onto the TEMPLATE's `session_id`, and
+  every later occurrence inherits it. Three guards, each of which is a bug if
+  dropped: write only while the field is empty, so a re-report cannot thrash it and a
+  session the user chose deliberately is never overwritten; never write when the
+  template is set to fork; and fix up any ALREADY-materialized pending occurrence in
+  the same pass, because `tick` materializes the next run before the previous turn
+  reports, so run 2 normally already exists carrying `""`. `_busy_sessions` must also
+  union `session_id` with `claude_session_id`, or run 2 resumes run 1's thread while
+  its turn is still open. The `session_id` (input, "resume this") and
+  `claude_session_id` (answer, "what it ran in") split is preserved throughout: this
+  propagates run 1's ANSWER into run 2's INPUT, and never conflates the two on one
+  entry. The writeback also stamps **`session_learned`** on the entry, because a
+  `session_id` has two possible authors — a chat handoff the user supplied, which a
+  repeat must refuse, and this — and only the moment of writing knows which. It rides
+  with the id everywhere the id goes (`_materialize` copies both; `create` accepts it
+  so an edit, which is cancel + re-create, can re-state it) and is never invented for
+  a supplied id. Absent means NOT learned, which is what every entry stored before it
+  existed is.
+- **SCH-13b** **A rule anchored in the PAST runs once, on its most recent slot.**
+  A past-anchored template used to run nothing until its next future slot, because
+  `_materialize` computes from `base = now` and the anchor only sets the pattern
+  (time of day, weekday, nth-weekday). That is right for "monthly on the second
+  Wednesday" but reads as broken beside a past one-off, which fires immediately.
+  So a rule template with no occurrences yet walks anchor → now and materializes
+  **the latest slot at or before now**, at that slot's own time, marked `catch_up`.
+  The latest, not the anchor: "the oldest thing you missed" is rarely what anyone
+  wants re-run, and this is the rule `_coalesce` already applies to a repeat missed
+  while the app was shut — the same walk, extracted as `_walk_latest` and shared,
+  with `spend=True` for the coalescer (it bills `made` and counts `skipped`) and
+  `spend=False` here. Intervening slots are never materialized and never reported:
+  nothing happened at those times, so nothing is drawn at them either.
+- **SCH-13c** **A due message DEFERS while that conversation has a live turn.**
+  `_busy_sessions` only ever knew about scheduled sends, so a message due while the
+  user was mid-turn in the same session spawned a second `claude --resume` against
+  one transcript. Liveness is now asked of the same rule the session badge uses —
+  extracted to `fused_render/session_liveness.py` rather than duplicated, because it
+  is a 16KB tail read plus a housekeeping filter plus a `turn_duration` end-marker
+  plus two windows, and a scheduler that disagreed with the badge on any one of them
+  would hold a message the page calls safe. **Deferred, never dropped:** nothing is
+  written, so the entry stays `pending` and cannot be swept `missed` (catch-up is
+  unbounded by default). An unreadable or absent transcript answers "not live", so a
+  bad read can never park a message for ever. The user is never blocked from their
+  own chat — the machine waits, not the person.
+- **SCH-13d** **`POST /api/schedule/run-now` sends a pending message early and
+  leaves its `due` alone.** The Board's Upcoming → In Progress drag means "run it
+  now", and the schedule time is a fact about what was asked for, so history keeps
+  it and the row reads as having run early (`at` is scheduled-for, `ran_at` is when
+  it went; see SCH-15). Reuses `_claim`, the single `pending → sending` transition,
+  so claim-before-spawn is unchanged and run-now races a tick exactly as two ticks
+  race each other. Anything not pending is refused 409 with its own sentence.
+  Running one occurrence early leaves its template's rule, `made` and `due` alone.
+  A conversation with a live turn is refused rather than forced — a drag gesture
+  cannot consent to two processes on one transcript (SCH-13c).
+- **SCH-15** **`at` is when a message was scheduled for and never moves; `ran_at`
+  is when it actually went.** They were one field, and matching a run to its
+  transcript prompt overwrote the due time — so a task scheduled two days ago and
+  caught up today jumped to today's column. A calendar places chips by `at`, so the
+  chip stays on the day the work was asked for and the row says it ran late; the
+  Board's run-now case is the same field pair read the other way round. `last_active`
+  maxes over both, so a caught-up task still sorts as today's news while its chip
+  stays put.
 - **SCH-14** **Cron is parsed in-house** (`fused_render/cron.py`): `*`, numbers,
   ranges, lists, `/n` steps, dow 0–7 with both 0 and 7 as Sunday, and the
   standard dom-OR-dow rule; all arithmetic in naive LOCAL time because "daily at

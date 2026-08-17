@@ -49,9 +49,11 @@ from __future__ import annotations
 import calendar
 from datetime import date, datetime, timedelta
 
-# The vocabulary. Deliberately four words and not RFC 5545's — this is what the
+# The vocabulary. Deliberately five words and not RFC 5545's — this is what the
 # form offers, and a rule the form cannot produce is a rule nobody can edit.
-FREQUENCIES = ("day", "week", "month", "year")
+# Ordered shortest-to-longest, which is also the order the repeat menu lists
+# them in and the order the "expected one of …" sentence below reads out.
+FREQUENCIES = ("hour", "day", "week", "month", "year")
 # What "monthly" can mean, and the reason this module exists: "day" is the
 # anchor's day-of-month, "nth-weekday" is "the second Wednesday".
 MONTHLY_MODES = ("day", "nth-weekday")
@@ -232,6 +234,22 @@ def _nth_weekday_day(year: int, month: int, want: int, nth: int) -> int:
     return day if day <= calendar.monthrange(year, month)[1] else 0
 
 
+def _walk_hour(anchor: datetime, interval: int, after: datetime):
+    """The only frequency that fires more than once a day, and the only one
+    whose step is smaller than the unit `until` is measured in — which is why
+    `_walk`'s date comparison is spelled out there rather than here: "ends on
+    Nov 11" lets every one of the 11th's runs happen, and stops."""
+    step = timedelta(hours=interval)
+    when = anchor
+    if when <= after:
+        when = anchor + step * ((after - anchor) // step)
+        while when <= after:
+            when += step
+    while True:
+        yield when
+        when += step
+
+
 def _walk_day(anchor: datetime, interval: int, after: datetime):
     step = timedelta(days=interval)
     when = anchor
@@ -336,7 +354,9 @@ def _walk(rule: dict, anchor: datetime, after: datetime):
     interval = rule["interval"]
     until = date.fromisoformat(rule["until"]) if "until" in rule else None
 
-    if freq == "day":
+    if freq == "hour":
+        walk = _walk_hour(anchor, interval, after)
+    elif freq == "day":
         walk = _walk_day(anchor, interval, after)
     elif freq == "week":
         walk = _walk_week(anchor, interval, rule.get("byday"), after)
@@ -349,7 +369,9 @@ def _walk(rule: dict, anchor: datetime, after: datetime):
         for when in walk:
             # INCLUSIVE: a run falling ON the end date still happens. "Ends on
             # Nov 11" reads as "the 11th is the last day it can run", and the
-            # comparison is on the DATE so the time of day cannot decide it.
+            # comparison is on the DATE so the time of day cannot decide it —
+            # which is what makes an HOURLY rule end where a person expects,
+            # with all twenty-four of the last day's runs and none the day after.
             if until is not None and when.date() > until:
                 return
             yield when
