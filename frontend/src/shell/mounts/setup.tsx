@@ -377,8 +377,8 @@ function GoogleClientSetup({
 
 // A browser sign-in for any OAuth provider (D219, D223). The server spawns
 // `rclone authorize "<backend>"`, which runs its own loopback callback server
-// and opens the SYSTEM browser itself — so unlike the Fused login
-// (lib/account.ts) there is no URL for us to window.open, and the client's whole
+// and opens the SYSTEM browser itself — so unlike the (since-removed) in-app
+// Fused login there is no URL for us to window.open, and the client's whole
 // job is start → poll → report. Completion is polled because there is no push
 // channel; `in_flight` dropping without `ok` is the failure case, and it covers
 // the abandoned browser tab.
@@ -584,8 +584,7 @@ export function OAuthSignIn({
     }
     // `canceled: false` is not "nothing happened" — it usually means the
     // sign-in COMPLETED in the gap before the click landed, so the result is
-    // reconciled rather than discarded (lib/account.ts does the same, for the
-    // same reason).
+    // reconciled rather than discarded.
     let status: RemoteOAuthStatus | null = null;
     if (!canceled) {
       try {

@@ -7,9 +7,9 @@ every change set back upstream with `fused canvas push` — the embedded
 workbench iframe picks up the pushed change itself, no reload from this page.
 
 Provider note: canvas commands authenticate with `fused login`
-(~/.fused/credentials, Auth0 PKCE) — a DIFFERENT provider from the
-`fused cloud login` store account.py manages (~/.openfused). Same CLI binary
-(the `fused` package resolved by fusedcli.fused_cli()), different credential
+(~/.fused/credentials, Auth0 PKCE) — a DIFFERENT provider from the fused
+CLI's own `fused cloud login` store (~/.openfused). Same CLI binary (the
+`fused` package resolved by fusedcli.fused_cli()), different credential
 stores; this module owns the `fused login` side. Unlike `cloud login
 --no-browser`, plain `fused login` never prints its authorize URL — it opens
 the browser itself and blocks on a localhost callback — so the login endpoint
@@ -27,7 +27,8 @@ re-taken right after clone so the pull's own writes never echo into a push.
 observability/tests — the workspace page doesn't act on it.
 
 No import of anything under fused_render.server (server includes this router —
-keep it acyclic); the X-Fused guard is duplicated locally like account.py does.
+keep it acyclic); the X-Fused guard is duplicated locally, same as other
+shell/* routers.
 """
 from __future__ import annotations
 
@@ -124,9 +125,8 @@ def _credentials_file() -> str:
 
 
 def _logged_in() -> bool:
-    # Presence-only, same rationale as fusedcli.fused_cloud_logged_in(): the
-    # CLI refreshes an expired-but-refreshable token silently; the CLI stays
-    # the authority at action time.
+    # Presence-only: the CLI refreshes an expired-but-refreshable token
+    # silently; the CLI stays the authority at action time.
     return os.path.isfile(_credentials_file())
 
 
@@ -234,8 +234,7 @@ def api_canvases_status():
         "logged_in": _logged_in(),
         # Credentials-file mtime: a re-login over a STALE-but-present store
         # never flips logged_in, so the client watches this stamp change to
-        # know the browser flow completed (same trick as account.py's
-        # creds_stamp).
+        # know the browser flow completed.
         "creds_stamp": stamp,
         "login_in_flight": _reap_login() is not None,
         "workbench_base_url": WORKBENCH_BASE_URL,

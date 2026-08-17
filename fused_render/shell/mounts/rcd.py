@@ -578,7 +578,7 @@ def rclone_bin() -> str | None:
        A stale/wrong override (not a file) is ignored so it can't shadow a real
        rclone in a dev checkout.
     2. The packaged macOS app bundle (py2app sets sys.frozen = "macosx_app",
-       same check as deploy.py's _setup_cli_hint): rclone at
+       same check as fusedcli.setup_cli_hint): rclone at
        Contents/Resources/bin/rclone (D103, build_dmg.sh).
     3. The system rclone on PATH (dev checkout, or a host that installed it)."""
     override = os.environ.get("FUSED_RENDER_RCLONE_BIN")

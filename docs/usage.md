@@ -255,8 +255,6 @@ The gear at the sidebar's bottom-left opens **Preferences**:
   buttons. **Your own `.html` views are never touched** — their CSS stays
   entirely yours; see the authoring skill for how to follow the desktop
   preference if you want to.
-- **Deploy to Fused account** — the opt-in toggle for the preview header's
-  Deploy button.
 - **Call log** — whether the app records the API calls your pages make, how
   much of each run's parameters it keeps, and how long records are kept. See
   [Call log](#call-log) below.
@@ -307,11 +305,11 @@ specific binary per process. If the CLI isn't installed, calls reject with an
 
 ## Export for hosted serving
 
-The **Deploy** button (see [Deploy to a hosted URL](../README.md#deploy-to-a-hosted-url)
-in the README) exports and publishes a page for you. For scripting, the running
-server also exposes a programmatic export (`POST /api/export`) that packs a page
-and its `runPython`/`rawUrl` dependencies into a portable bundle a hosting layer
-can serve — see [EXPORT.md](EXPORT.md) for the bundle format and rules.
+The running server exposes a programmatic export (`POST /api/export`) that
+packs a page and its `runPython`/`rawUrl` dependencies into a portable bundle
+a hosting layer can serve — see [EXPORT.md](EXPORT.md) for the bundle format
+and rules. Publishing a bundle is left to the `fused` CLI directly (`fused
+share create`) rather than to this app.
 
 ## Call log
 

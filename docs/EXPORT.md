@@ -13,16 +13,14 @@ curl -X POST http://127.0.0.1:1777/api/export \
   -d '{"page": "/abs/path/to/page.html", "out": "/abs/path/to/bundle"}'
 ```
 
-You rarely need to call this yourself: the shell's **Deploy** button (SPEC §19,
-`fused_render/deploy.py`) runs the same export into a temporary bundle and hands
-it straight to `fused share create --public` on a hosted environment, returning
-the minted URL. Manual export remains the path for driving the hosting layer
-yourself.
+To actually publish a page to a hosted URL, hand the exported bundle to the
+`fused` CLI directly (`fused share create --public`), which mints the URL on a
+hosted environment.
 
 `page` and `out` must both be absolute filesystem paths (same convention as
 every other endpoint). Export is **non-destructive** — it never deletes an existing
 file — so `out` must be **empty** (or not yet exist); a non-empty `out` is rejected.
-Re-export to a fresh directory (the Deploy flow always uses a new temp dir). Three
+Re-export to a fresh directory. Three
 optional fields tune the bundle: `include` (extra page-relative files to bundle as
 assets) and `exclude` (files to drop from the bundle) — see "Choosing which files
 are bundled" below, both arrays of relative paths defaulting to empty — and
@@ -96,10 +94,9 @@ It applies **page-wide** — to every served route uniformly (the page shell, ea
 mount-wide caching. This is safe against a redeploy serving stale content: the
 hosting layer folds the full bundle into each route's cache key, so any content
 change re-hashes it (and the `_asset` route's HTTP Range reads cache correctly
-because the `Range` header is part of that key). The Deploy modal (SPEC §19,
-DP-17) exposes it as a checkbox + duration picker (default 1h) and re-exports on
-every deploy so the manifest always carries the current choice; a direct
-`POST /api/export` caller sets it the same way.
+because the `Range` header is part of that key). A `POST /api/export` caller
+sets `cache_max_age` in the request body; re-export whenever the choice changes
+so the manifest carries the current value.
 
 The manifest field is only **one** of the two ways this choice reaches a hosting
 layer — see the fused repo's spec/serve/fused-render.md § Caching for the full
@@ -107,18 +104,16 @@ picture. An **AWS** environment's `build_html_artifact` reads this manifest fiel
 directly, so it works on both a fresh `share create` and a later `share repoint`
 (redeploy). A managed **Fused** environment does not read the manifest field for
 caching at all — it is a mount-level control-plane setting, sent as an explicit
-`share create --cache-max-age` (the Deploy modal's `deploy_page` sends both, so
-either backend gets it correctly) — and it is fixed for the life of a mount
-token; a `repoint` cannot change it, so `deploy_page` withholds the flag on
-redeploys there and persists the setting that is actually live. To actually
-change caching on a managed environment, the Deploy modal offers a "Deploy as
-new URL" action (`force_new`) that mints a fresh `share create` with the new
-setting at a new URL.
+`share create --cache-max-age` (a caller wanting both backends to work correctly
+sends both) — and it is fixed for the life of a mount token; a `repoint` cannot
+change it, so it must be withheld on redeploys there and persisted separately
+as the setting that is actually live. To actually change caching on a managed
+environment, mint a fresh `share create` at a new URL with the new setting.
 
 See spec/caching/serve.md for how the AWS dispatcher honors it (result caching,
 cache-key scoping, the `X-Openfused-Cache` hit/miss header) and
-`fused share cache-clear <token>` / the Deploy modal's "Clear cache" action (DP-18)
-for forcing a recompute on either backend without changing this setting.
+`fused share cache-clear <token>` for forcing a recompute on either backend
+without changing this setting.
 
 ## The portable subset of `window.fused`
 
@@ -175,12 +170,13 @@ Some conditions are **warnings**, not errors — they don't block export:
   the hosted runtime resolves the computed path to that key, so `fused.rawUrl("data/" +
   name)` resolves fine. (A call like that is a string *prefix* plus an expression, so it
   is treated as computed — it is **not** mis-bundled as a literal `data/` target.)
-  This warning is **suppressed when a manifest-declared file actually lands as a
-  `bundle` asset** in the Deploy list — the list then shows what backs the call. It is
-  keyed on the surviving asset, not the raw manifest globs: a manifest file that is also
-  a literal `rawUrl`/`readFile` target counts as `rawUrl`, and one dropped by `exclude`
-  is gone — either way no `bundle` row remains, so the warning still fires. A
-  per-deployment `include` (Deploy modal / `/api/export`) never suppresses it, since that
+  This warning is **suppressed when a manifest-declared file actually lands in the
+  bundle as an asset** — internally, once it backs the call it is no longer counted
+  as an unresolved manifest entry. It is keyed on the surviving asset, not the raw
+  manifest globs: a manifest file that is also a literal `rawUrl`/`readFile` target
+  is folded into that literal reference instead, and one dropped by `exclude` is
+  gone — either way the manifest entry no longer backs anything, so the warning
+  still fires. A per-`/api/export`-call `include` never suppresses it, since that
   selection isn't checked in with the page.
 - **Excluding a referenced file.** Dropping a file the page literally references is
   honored, but the page's call to it will 404 when hosted.
@@ -203,28 +199,18 @@ layer a user selection on top:
   set. Dropping an auto-detected target warns (its call 404s when hosted); dropping
   a file you only added via `include` is silent.
 
-The Deploy modal (SPEC §19) drives these from its editable "Will publish" list —
-add files from the page's folder, add everything, remove a file, or reset to the
-auto-detected default — and persists the selection on the deployment record so a
-reopened modal reloads it. `/api/export` exposes the same two fields for driving a
-bundle by hand.
+`/api/export` exposes both fields directly in its request body for driving a
+bundle by hand — there is no UI in this app for editing the set interactively;
+a caller wanting that built a "Will publish" list on top of these two fields.
 
-Each asset in the list is labelled by how it is exposed, so it is clear which
-bundled files are web-fetchable via `rawUrl`/`readFile`:
-
-- **`rawUrl`** — a literal `fused.rawUrl()`/`readFile()` reference the scan found;
-  the page fetches it via rawUrl/readFile.
-- **`bundle`** — a file declared in the page's `<script type="application/fused-bundle">`
-  manifest (below). These **auto-show up** in the list — they back a *computed*
-  rawUrl/readFile path, so the manifest is how they get bundled without a literal.
-- **`added`** — a file you added by hand ("Add files" / "Add all in folder").
-
-All three are served read-only by the `_asset` route regardless of label.
+Whatever backs a bundled asset — a literal `rawUrl()`/`readFile()` reference,
+the page's own bundle manifest (below), or an explicit `include` — it is served
+read-only by the `_asset` route the same way.
 
 ### The page's own bundle manifest (checked in, reproducible)
 
-`include`/`exclude` above are the per-deployment selection (kept on the deployment
-record). To declare the bundle set **in the repo** — reviewable, reproducible, and
+`include`/`exclude` above are a per-call selection, not checked in with the
+page. To declare the bundle set **in the repo** — reviewable, reproducible, and
 travelling inside the single HTML file — add one embedded manifest block to the page:
 
 ```html
@@ -245,8 +231,8 @@ travelling inside the single HTML file — add one embedded manifest block to th
   stripped from the HTML before the dependency scan, so its JSON body is never misread as a
   `fused.*` call.
 - **`exclude` is not honored here** (it would publish the withheld file names in the served
-  page source) — it is warned about; drop files via the Deploy modal / `/api/export`
-  `exclude` instead.
+  page source) — it is warned about; drop files via `/api/export`'s `exclude`
+  instead.
 
 This is the clean way to back a **computed** asset call: declare `"include": ["data/*.json"]`
 and fetch with `fused.rawUrl("data/" + name)` — the glob bundles the files and the hosted
