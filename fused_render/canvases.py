@@ -77,10 +77,11 @@ _FRESH_WINDOW_S = 10.0
 _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 
 # Base URL of the hosted workbench, for the workspace iframe. The CLI's own
-# env selection (FUSED_ENV) maps to different hosts; production is the
-# overwhelmingly common case, and the override keeps staging testable.
+# env selection (FUSED_ENV) maps to different hosts; unstable is the current
+# default while embed-auth ships there first, and the override keeps other
+# environments testable.
 WORKBENCH_BASE_URL = os.environ.get(
-    "FUSED_RENDER_WORKBENCH_URL", "https://www.fused.io"
+    "FUSED_RENDER_WORKBENCH_URL", "https://unstable.fused.io"
 )
 
 
