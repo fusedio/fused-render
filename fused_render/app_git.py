@@ -99,6 +99,7 @@ def _git(app_dir: str, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [_git_bin(), "-C", app_dir, *_IDENTITY, *args],
         capture_output=True, text=True, timeout=_GIT_TIMEOUT,
+        encoding="utf-8", errors="replace",
         close_fds=False,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )

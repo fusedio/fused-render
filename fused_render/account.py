@@ -193,6 +193,8 @@ def _start_login(cli, return_url: str | None) -> _ActiveLogin:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
     )
     login = _ActiveLogin(proc=proc)
@@ -374,6 +376,8 @@ def _run_env_cmd(args: list[str]) -> JSONResponse | None:
             [*cli.command, "env", *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=ENV_CMD_TIMEOUT,
             env=child_env(cli),
         )
@@ -406,6 +410,8 @@ def _probe_orgs(cli) -> dict:
             [*cli.command, "cloud", "orgs"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=ORGS_TIMEOUT,
             env=child_env(cli),
         )
@@ -617,6 +623,8 @@ def api_account_setup(body: dict = Body(...), x_fused: str | None = Header(defau
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 env=child,
             )
         except OSError as e:
@@ -714,7 +722,8 @@ def api_account_logout(
         args += ["--env", env_name]
     try:
         proc = subprocess.run(
-            args, capture_output=True, text=True, timeout=LOGOUT_TIMEOUT, env=child_env(cli)
+            args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=LOGOUT_TIMEOUT, env=child_env(cli)
         )
     except subprocess.TimeoutExpired:
         return _error(f"`fused cloud logout` timed out after {int(LOGOUT_TIMEOUT)}s")

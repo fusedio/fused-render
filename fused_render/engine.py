@@ -237,6 +237,7 @@ def _probe(exe: str) -> tuple[dict | None, str, bool]:
         proc = subprocess.run(
             [exe, "-c", _PROBE],
             capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, env=_child_env(),
+            encoding="utf-8", errors="replace",
             close_fds=False,
         )
     except (FileNotFoundError, PermissionError, NotADirectoryError) as e:
@@ -490,6 +491,7 @@ def _probe_app_packages(exe: str) -> dict | None:
         proc = subprocess.run(
             [exe, "-c", _APP_PACKAGES_PROBE],
             capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, env=_child_env(),
+            encoding="utf-8", errors="replace",
             close_fds=False,
         )
     except (OSError, subprocess.SubprocessError) as e:

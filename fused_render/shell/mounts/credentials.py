@@ -111,7 +111,8 @@ def _rclone_config_dump(bin_: str) -> dict:
     _remote_label just degrades to bare names rather than raising."""
     try:
         out = subprocess.run(
-            [bin_, "config", "dump"], capture_output=True, text=True, timeout=10
+            [bin_, "config", "dump"], capture_output=True, text=True, timeout=10,
+            encoding="utf-8", errors="replace"
         ).stdout
         cfg = json.loads(out) if out.strip() else {}
         return cfg if isinstance(cfg, dict) else {}
@@ -231,10 +232,12 @@ def _rclone_state() -> dict:
     if bin_:
         try:
             version = subprocess.run(
-                [bin_, "version"], capture_output=True, text=True, timeout=10
+                [bin_, "version"], capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="replace"
             ).stdout.splitlines()[0]
             remotes_out = subprocess.run(
-                [bin_, "listremotes"], capture_output=True, text=True, timeout=10
+                [bin_, "listremotes"], capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="replace"
             ).stdout
             names = [r.strip() for r in remotes_out.splitlines() if r.strip()]
             return _rclone_state_view(version, names, bin_)
@@ -494,7 +497,8 @@ def _credential_probe(bin_: str, name: str) -> str:
             [bin_, "lsd", f"{name}:", "--max-depth", "1",
              "--contimeout", "5s", "--timeout", "10s",
              "--retries", "1", "--low-level-retries", "2"],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace")
     except (OSError, subprocess.TimeoutExpired):
         return "inconclusive"
     if r.returncode == 0:
