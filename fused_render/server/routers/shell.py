@@ -48,7 +48,15 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # asymmetry is why test_shell_routes.py now derives this list from the shell's own
 # route table rather than trusting the next page to remember.
 @router.get("/scheduled")
+# Canvases (legacy-workbench local development): the listing page and the
+# per-canvas workspace (/canvases/<name>, matched by the wildcard below).
+@router.get("/canvases")
 def shell_page(shell_path: str = Depends(get_shell_path)):
+    return FileResponse(shell_path)
+
+
+@router.get("/canvases/{name}")
+def shell_canvas_workspace(name: str, shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 
 # Pre-rename URL shapes; the client rewrites them in place at boot
