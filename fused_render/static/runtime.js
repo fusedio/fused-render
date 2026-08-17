@@ -35,7 +35,8 @@
  *     always repeatable. Minutes long: onProgress fires per denoising step with
  *     the download-manager record, and that row's ✕ really stops it. Each tick
  *     also carries previewUrl — a ~32x32 thumbnail of the image so far, ready
- *     for an <img> src — so there is a picture to watch rather than a counter;
+ *     for an <img> src — so there is a picture to watch rather than a counter.
+ *     It can 404 (the first step writes no frame), so hide it on error, and
  *     swap to url on resolve. Rejects with .type "cancelled" | "ai_error" |
  *     "unavailable" (no image runner on this machine — reason in the message).
  *   fused.ai.transcribe({path, model, language, task, diarize, speakers,
@@ -2600,12 +2601,18 @@
   // The URL is built HERE, cache-busted by step, for the same reason `url` is:
   // otherwise every page that wants this writes the same two lines, and the one
   // that forgets the cache-buster gets a browser showing frame 2 for a minute.
-  // It is null until the first frame exists (the first step has no preview —
-  // two latents are needed to estimate a picture) and stays null for a model
-  // whose latent space has no fitted projection, so a page must treat a broken
-  // or missing image as ordinary. On resolve, SWAP TO `url`: the last preview
-  // is the finished picture at a thirtieth of the resolution, and the file it
-  // points at is deleted the moment the real PNG lands.
+  // It is null when this render has no preview file at all. When it is a URL,
+  // the file behind it may still be MISSING — the first step writes no frame
+  // (two latents are needed to estimate a picture), and a model whose latent
+  // space has no fitted projection never writes one. So an <img> pointed here
+  // can 404, which is ordinary rather than an error: give it an onerror that
+  // hides it, or start it hidden and show it on load. Predicting that here
+  // would mean this bridge carrying its own copy of a rule that lives in
+  // `runners/preview.py`, and being wrong about it on some future model.
+  //
+  // On resolve, SWAP TO `url`: the last preview is the finished picture at a
+  // thirtieth of the resolution, and the file it points at is deleted the
+  // moment the real PNG lands.
   function aiImage(opts) {
     opts = opts || {};
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {

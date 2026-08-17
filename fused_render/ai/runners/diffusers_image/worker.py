@@ -192,8 +192,9 @@ def load(model_id, fetched):
     # The key the live preview's projection table is keyed by, captured HERE
     # because the VAE is what defines the latent space a fitted matrix belongs
     # to — not the pipeline and not the repo id, either of which would need a
-    # new table row for every checkpoint that shares one autoencoder. A class
-    # `preview.PROJECTIONS` has no entry for simply gets no preview.
+    # new table row for every checkpoint that shares one autoencoder. A VAE
+    # class that `preview.PROJECTIONS` has no entry for gets no preview at all,
+    # which is what keeps this additive for every other pipeline.
     vae = getattr(pipe, "vae", None)
     _loaded["vae"] = None if vae is None else type(vae).__name__
     # See `worker_base.STATE["device"]`: on Windows the PyPI torch wheel is
