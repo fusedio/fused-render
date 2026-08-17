@@ -1729,6 +1729,22 @@ last shell query in the same `.html.json` sidecar the `claude` chat template
   LSN-3 keys "a session already exists" off, and **one reader** (`_stored_session`)
   serves both the `GET` and that gate so the two cannot disagree about whether a
   file has a session.
+  - **The RESTORE GATE reads the stripped query too** (LSN-4/5): "opened with an
+    empty query" means empty *of session params*, so a url carrying nothing but
+    `?_side=off` — which a close click writes, where it used to delete the param —
+    is still a bare open and still gets its replay. And because the restore replaces
+    the WHOLE query, the LIVE url's omitted params are carried through the write
+    (`restoredSearch`): otherwise a replay would silently reopen a sidebar the user
+    had just shut. Nothing to replay writes nothing at all, so a `_side`-only
+    sidecar cannot reopen it by replacing the query with an empty one either.
+  - **RECENTS strips the same params** (§29): it captures `currentUrl()` verbatim on
+    every url change and lands on disk, so without this every close of the sidebar
+    was persisted and every later open from the Recents list came up shut — the
+    preference simply moved house. **BOOKMARKS deliberately do NOT strip**: SB-2 says
+    a bookmark captures the URL verbatim and it is an explicit "save this view"
+    gesture, which is how `_mode`, sort and a chosen `_side` companion all end up in
+    one. Same param, opposite answer, because one capture is chosen and the other is
+    a side effect.
 
 ## 22. Explorer Search — Streamed Recursive Walk (M14)
 
