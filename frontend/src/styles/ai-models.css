@@ -80,21 +80,36 @@
 }
 
 /* -- section headings -------------------------------------------------------
-   The Local tab's two sections ("User downloaded models" by capability, and
-   "Fetched by engines"), and — since the Discover tab was rebuilt in the same
-   vocabulary — one per capability there too. The bucketing itself is
-   shell/aiModelGroups.ts; what is here is the hierarchy that makes it readable:
-   a section title over a rule, and a capability title one step quieter.
+   BOTH tabs' sections: Local's two ("User downloaded models" by capability,
+   and "Fetched by engines") and Discover's two faces (the curated shortlist,
+   the search results), each with its capabilities as subgroups inside. The
+   bucketing itself is shell/aiModelGroups.ts; what is here is the hierarchy
+   that makes it readable: a section title over a rule, and a capability title
+   one step quieter and with NO rule of its own.
 
    The right-hand slot of a head carries the ONE secondary fact about the group
-   — a byte subtotal on a Local capability row, "via MLX LM" on a Discover one.
-   The section rows above them carry nothing there any more: three levels of
-   arithmetic on one page (caption total, section subtotal, capability subtotal)
-   meant every figure was correct and none of them was the one being looked
-   for. The rule stays regardless — it is what separates a heading from the
-   cards under it. */
+   — a byte subtotal on a Local capability row, "via MLX LM" on a Discover one,
+   and on Discover's section row the count and where it came from. Local's
+   section rows carry nothing there: three levels of arithmetic on one page
+   (caption total, section subtotal, capability subtotal) meant every figure was
+   correct and none of them was the one being looked for. The rule stays
+   regardless — it is what separates a heading from the cards under it. */
+
+/* One vertical scale for both tabs, ascending, so the page's gaps say what
+   they mean instead of landing on four similar numbers. Read only by the
+   `.am-*` rules below, which exist only on this page — declared here rather
+   than in tokens.css because the scale is this layout's, not the app's.
+   Every gap on the two tabs comes from one of these five. */
+.cc-main {
+  --am-gap-card: 12px; /* card to card, inside a grid */
+  --am-gap-tight: 8px; /* a heading to the note that belongs to IT */
+  --am-gap-head: 16px; /* a heading block to the first card under it */
+  --am-gap-subgroup: 24px; /* one capability to the next */
+  --am-gap-section: 32px; /* one whole section to the next, and to the controls */
+}
+
 .am-section + .am-section {
-  margin-top: 28px;
+  margin-top: var(--am-gap-section);
 }
 
 .am-section-head,
@@ -108,7 +123,7 @@
 .am-section-head {
   border-bottom: 1px solid var(--border);
   padding-bottom: 6px;
-  margin-bottom: 14px;
+  margin-bottom: var(--am-gap-head);
 }
 
 .am-section-title {
@@ -119,7 +134,10 @@
 
 /* One step down from the section, and deliberately NOT a second bordered rule:
    two rules of the same weight would read as two sections rather than as a
-   section and its parts. */
+   section and its parts. Discover broke exactly this for a while — its
+   capability headings were `.am-section-head`s, so `TEXT GENERATION` and the
+   view's own name were drawn identically and the reader had no way to tell the
+   parent from the child. */
 .am-subgroup-title {
   margin: 0;
   font-size: 12px;
@@ -130,11 +148,24 @@
 }
 
 .am-subgroup + .am-subgroup {
-  margin-top: 20px;
+  margin-top: var(--am-gap-subgroup);
 }
 
 .am-subgroup-head {
-  margin-bottom: 8px;
+  margin-bottom: var(--am-gap-head);
+}
+
+/* A heading with a note under it keeps the SAME distance to its first card as
+   one without: the note lives inside that space rather than adding a second gap
+   on top of it. Otherwise a capability that has something to say sits its cards
+   noticeably lower than the one above it, which reads as a layout accident
+   rather than as a sentence. The note binds UPWARD — small gap above, full gap
+   below — because it belongs to the heading, and equidistant prose between two
+   headings belongs to neither. */
+.am-section-head:has(+ .am-group-note),
+.am-section-head:has(+ .am-hub-note),
+.am-subgroup-head:has(+ .am-group-note) {
+  margin-bottom: var(--am-gap-tight);
 }
 
 .am-subgroup-size {
@@ -160,7 +191,7 @@
    The note INSIDE a model card is a different rule (.am-suggest-note) and
    still wraps: that one is half a card wide, which is the card's business. */
 .am-group-note {
-  margin: 0 0 10px;
+  margin: 0 0 var(--am-gap-head);
   max-width: 110ch;
   font-size: 12px;
   line-height: 1.5;
@@ -185,6 +216,13 @@
    under the text. */
 .am-card .cc-mdcard-foot {
   margin-top: auto;
+  /* One Download button tall, whether or not there IS one. A footer is a repo
+     id and sometimes a button, and the button is the taller of the two — so a
+     card already downloaded (no button) sat its id several pixels lower than
+     the card beside it, and a row of four cards had four footers on three
+     baselines. The height is the button's own: 12px text at 1.5, plus its 3px
+     padding and 1px border on each side. */
+  min-height: 26px;
 }
 
 /* The two destinations named in the page's captions: the cache directory this
@@ -559,7 +597,11 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 0 0 8px;
+  /* A section's worth of air under it, not a card's. This row CHANGES which
+     view is below it, and at 8px it sat flush against the heading of the thing
+     it changes — reading as part of that section rather than as the control
+     over it. */
+  margin: 0 0 var(--am-gap-section);
 }
 
 /* The box takes the width; the two menus take what they need. `flex: 1 1 260px`
@@ -590,11 +632,12 @@
   outline-offset: -1px;
 }
 
-/* The host disclosure, under the SEARCH RESULTS heading — the same slot
+/* The host disclosure, under the "Search results" heading — the same slot
    .am-suggested-lede occupies under the other one, so the two faces of the tab
-   are heading, note, grid in that order either way. */
+   are heading, note, grid in that order either way. It rides .am-group-note's
+   spacing (the `:has` rule above binds it to its heading) and adds nothing. */
 .am-hub-note {
-  margin: 0 0 14px;
+  margin: 0 0 var(--am-gap-head);
 }
 
 /* A refetch in flight dims the results that are still on screen rather than
@@ -821,31 +864,12 @@
    pair for the heading — so a group of cards means the same thing on either
    tab. What is left here is only the things that hang off that heading. */
 
-/* The heading that names WHICH face is on screen — SUGGESTED MODELS or SEARCH
-   RESULTS — sitting above everything either one renders.
-
-   It reuses .am-section-head so the two titles are unmistakably the same kind
-   of thing (that is the point: a swap between them should read as one label
-   changing, not as the page rearranging itself), and then differs in exactly
-   two ways so it does not read as a FOURTH capability section stacked with the
-   three below it: a heavier rule, and a title at full strength where a
-   capability's is muted. Parent, not sibling — stated by weight, which is the
-   only vocabulary a run of identical ALL-CAPS heads has left. */
-.am-discover-head {
-  border-bottom-width: 2px;
-  margin-bottom: 12px;
-}
-
-.am-discover-title {
-  color: var(--fg);
-}
-
-/* How many, and from where — the right-hand slot the capability heads fill with
-   "via MLX Whisper". This is the half of the distinction a title alone cannot
-   carry: "11 picked for this machine" against '"whisper" · 24 on
-   huggingface.co' says in one line both what you are looking at and who chose
-   it. Same size and colour as the runner label beside it, for the same reason:
-   it qualifies the heading rather than competing with it. */
+/* How many, and from where — the right-hand slot of the heading that names
+   which face of the tab is on screen. This is the half of the distinction a
+   title alone cannot carry: "11 picked for this machine" against '"whisper" ·
+   24 on huggingface.co' says in one line both what you are looking at and who
+   chose it. Same size and colour as the runner labels below, for the same
+   reason: it qualifies the heading rather than competing with it. */
 .am-discover-summary {
   flex: 0 0 auto;
   font-size: 11px;
@@ -871,12 +895,10 @@
    sentences reports a problem, they describe what a backend is LIKE, which is
    context for a choice and not an alarm about one.
 
-   It rides .am-group-note for everything else INCLUDING the measure — the
-   62ch override that used to be here made these the narrowest prose on the
-   page, and they are the longest sentences on it. */
-.am-suggested-note {
-  margin-top: -2px;
-}
+   It rides .am-group-note for everything INCLUDING its spacing and the measure
+   — the 62ch override that used to be here made these the narrowest prose on
+   the page, and they are the longest sentences on it, and the -2px nudge that
+   was here is now the `:has` rule's job for every note on both tabs. */
 
 /* Why these particular models, under the SUGGESTED MODELS heading and above
    the first capability heading. Rides .am-group-note — it is the same kind of
@@ -884,9 +906,11 @@
    or colour would make the tab's opening line look like a banner. The extra
    bottom margin is the only difference: it is introducing a run of sections
    rather than captioning the one grid under it. Its opposite number is
-   .am-hub-note, which sits in the same place under the other heading. */
+   .am-hub-note, which sits in the same place under the other heading and keeps
+   the smaller gap because it captions ONE grid rather than introducing a run of
+   capabilities. */
 .am-suggested-lede {
-  margin-bottom: 16px;
+  margin-bottom: var(--am-gap-section);
 }
 
 .am-suggest-note {

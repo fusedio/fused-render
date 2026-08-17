@@ -5738,8 +5738,7 @@ three weeks ago, and would cost nothing to open.
   only way to reach it was to scroll past the thing it is an alternative to.
 - **HS-0c** **Each face names itself, in the same slot, in the same words'
   worth of chrome** (D314). One grid replacing another is only legible if the
-  new one says what it is: `SUGGESTED MODELS` and `SEARCH RESULTS`, in the
-  ALL-CAPS section-head treatment the capability groups already use, each with
+  new one says what it is: "Suggested models" and "Search results", each with
   one muted right-hand fact — `11 picked for this machine` against
   `"whisper" · 24 on huggingface.co`, which is the count and the PROVENANCE in
   one line. Under each heading sits its own note, in the same place: why these
@@ -5749,12 +5748,16 @@ three weeks ago, and would cost nothing to open.
   paragraph — which was a difference only visible to somebody watching it
   happen, so a reader who searched, scrolled and looked back up had nothing on
   screen telling them which grid they were in. The heading is one string, not
-  two conditions (`chrome.heading`), so the page cannot claim to be both; it
-  carries a **heavier rule and an unmuted title** so it reads as the parent of
-  the capability heads below rather than as a fourth one among them. The
-  heading, that line, the grid and the host disclosure are one decision in one
-  place (`shell/discoverView.ts`), since every way they can disagree is the
-  page making a false claim about itself.
+  two conditions (`chrome.heading`), so the page cannot claim to be both. **It
+  is the SECTION tier, and the capabilities under it are subgroups** — the
+  Local tab's exact shape, where "User downloaded models" sits over a rule and
+  its capability rows are quieter ALL-CAPS titles with no rule of their own.
+  Drawn as a second `.am-section-head` the view's name and `TEXT GENERATION`
+  were twins (same caps, same weight, same muted suffix, same full-width line),
+  and two levels rendered identically are no levels at all. The heading, that
+  line, the grid and the host disclosure are one decision in one place
+  (`shell/discoverView.ts`), since every way they can disagree is the page
+  making a false claim about itself.
 - **HS-1** **AMENDED (D258): downloading is offered, and the reasoning is
   unchanged.** The original rule was that a download needs a progress surface, a
   cancel and an answer for a half-finished pull — none of which existed, so the

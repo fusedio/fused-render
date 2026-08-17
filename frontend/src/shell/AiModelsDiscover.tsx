@@ -268,15 +268,22 @@ function Suggested({
   return (
     <>
       {catalog.map((group) => (
-        <section className="am-section" key={group.capability}>
-          {/* The Local tab's section heading, exactly: an ALL-CAPS title over a
-              rule, with the one secondary fact about the group at the far right
-              — there a byte subtotal, here WHICH backend will load these.
-              It used to be a lowercase run of inline text ("text generation
-              via MLX LM") that read as a caption belonging to the card under
-              it rather than as a heading over all of them, so the same page
-              said "these things go together" two different ways on two tabs. */}
-          <div className="am-section-head">
+        <div className="am-subgroup" key={group.capability}>
+          {/* The Local tab's CAPABILITY heading, exactly: an ALL-CAPS title
+              with the one secondary fact about the group at the far right —
+              there a byte subtotal, here WHICH backend will load these — and
+              no rule of its own, because the rule belongs to the section this
+              sits inside.
+
+              It was an `.am-section-head` with a rule for a while, which drew
+              it identically to the heading naming the whole view: same caps,
+              same weight, same muted right-hand suffix, same full-width line.
+              Two levels rendered as twins is no levels, and "TEXT GENERATION"
+              read as a sibling of "Suggested models" rather than as one of its
+              parts. Before that it was a lowercase run of inline text ("text
+              generation via MLX LM") that read as a caption belonging to the
+              first card rather than a heading over all of them. */}
+          <div className="am-subgroup-head">
             <h3 className="am-subgroup-title">{group.capability.replace(/-/g, " ")}</h3>
             {/* WHICH backend will load these, named. One capability can have
                 two runners now (text generation: MLX on Apple Silicon, PyTorch
@@ -313,7 +320,7 @@ function Suggested({
               that orange here means nothing — what a backend is like is
               context for a choice, not an alarm about one. */}
           {group.available && group.runnerNote && (
-            <p className="am-group-note am-suggested-note">{group.runnerNote}</p>
+            <p className="am-group-note">{group.runnerNote}</p>
           )}
           <div className="cc-mdgrid am-grid">
             {group.models.map((m) => {
@@ -368,7 +375,7 @@ function Suggested({
               );
             })}
           </div>
-        </section>
+        </div>
       ))}
     </>
   );
@@ -569,89 +576,89 @@ export default function AiModelsDiscover({
       {downloadError && <ErrorBanner>{downloadError}</ErrorBanner>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
 
-      {/* WHICH of the two grids this is, named, in the same heading language
-          the capability sections below use — an ALL-CAPS title over a rule with
-          one muted fact at the far right. It exists because the two faces of
-          this tab used to differ only by whether a paragraph of prose was
-          present: search, scroll through the results, look back up, and nothing
-          on screen said whether these cards were vetted suggestions or whatever
-          the Hub returned.
+      {/* ONE section, whichever face is showing, named at the top — the Local
+          tab's exact shape: a section title over a rule, with the capabilities
+          as quieter, unruled subgroups inside it.
 
-          The rule under it is heavier and the title is not muted, which is what
-          keeps it from reading as a fourth capability: it is the PARENT of the
-          section heads below, not another one of them. `chrome.heading` is one
-          string rather than two conditions, so the page cannot claim to be
-          both. */}
-      <div className="am-section-head am-discover-head">
-        <h3 className="am-subgroup-title am-discover-title">{chrome.heading}</h3>
-        {summary && <span className="am-discover-summary">{summary}</span>}
-      </div>
+          The heading exists because the two faces of this tab used to differ
+          only by whether a paragraph of prose was present: search, scroll
+          through the results, look back up, and nothing on screen said whether
+          these cards were vetted suggestions or whatever the Hub returned. It
+          is the SECTION tier and not a fourth capability — `chrome.heading` is
+          one string rather than two conditions, so the page cannot claim to be
+          both at once. */}
+      <section className="am-section">
+        <div className="am-section-head">
+          <h3 className="am-section-title">{chrome.heading}</h3>
+          {summary && <span className="am-discover-summary">{summary}</span>}
+        </div>
 
-      {/* One grid at a time. A query replaces the shortlist; clearing the box
-          brings it back, which is what makes the box safe to type in. */}
-      {searching ? (
-        <>
-          {/* Said plainly, once, and only while a query is live: this is the
-              one place in the app that asks a third party a question. Under the
-              heading it belongs to, where the shortlist puts its own note — the
-              two states are the same three things in the same order, which is
-              what makes swapping one for the other legible. It no longer has to
-              admit that the answers are useless: the sentence that used to end
-              "Search results are read-only" is gone because the results are
-              not. */}
-          {chrome.showsSearchNote && (
-            <p className="cc-caption am-hub-note">
-              Searching{" "}
-              <a
-                className="am-hub-host"
-                href={hostUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                title={`Open ${host} in a new tab`}
-              >
-                {host}
-              </a>
-              , limited to models an engine here can load.
-            </p>
-          )}
-          {loading && models === null && <p className="cc-empty">Asking {host}…</p>}
-          {models !== null && models.length === 0 && !error && (
-            <p className="cc-empty">
-              Nothing on {host} matches that — among the models this app can run.
-            </p>
-          )}
-          {models !== null && models.length > 0 && (
-            <div className={"cc-mdgrid am-grid" + (loading ? " am-hub-stale" : "")}>
-              {models.map((m) => (
-                <HubCard key={m.id} model={m} downloads={downloads} />
-              ))}
-            </div>
-          )}
-        </>
-      ) : (
-        <>
-          {/* Why these particular eleven, under the heading that named them.
-              The heading says WHICH grid this is; this says what "suggested"
-              was decided by, because "a handful somebody picked for this
-              machine" and "everything you can install" are very different
-              answers to the question the reader arrived with. It also names the
-              way out, since the control that answers "and if I want something
-              else?" is the box at the top of the tab.
+        {/* One grid at a time. A query replaces the shortlist; clearing the box
+            brings it back, which is what makes the box safe to type in. */}
+        {searching ? (
+          <>
+            {/* Said plainly, once, and only while a query is live: this is the
+                one place in the app that asks a third party a question. Under
+                the heading it belongs to, where the shortlist puts its own note
+                — the two states are the same three things in the same order,
+                which is what makes swapping one for the other legible. It no
+                longer has to admit that the answers are useless: the sentence
+                that used to end "Search results are read-only" is gone because
+                the results are not. */}
+            {chrome.showsSearchNote && (
+              <p className="cc-caption am-hub-note">
+                Searching{" "}
+                <a
+                  className="am-hub-host"
+                  href={hostUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`Open ${host} in a new tab`}
+                >
+                  {host}
+                </a>
+                , limited to models an engine here can load.
+              </p>
+            )}
+            {loading && models === null && <p className="cc-empty">Asking {host}…</p>}
+            {models !== null && models.length === 0 && !error && (
+              <p className="cc-empty">
+                Nothing on {host} matches that — among the models this app can run.
+              </p>
+            )}
+            {models !== null && models.length > 0 && (
+              <div className={"cc-mdgrid am-grid" + (loading ? " am-hub-stale" : "")}>
+                {models.map((m) => (
+                  <HubCard key={m.id} model={m} downloads={downloads} />
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {/* Why these particular eleven, under the heading that named them.
+                The heading says WHICH grid this is; this says what "suggested"
+                was decided by, because "a handful somebody picked for this
+                machine" and "everything you can install" are very different
+                answers to the question the reader arrived with. It also names
+                the way out, since the control that answers "and if I want
+                something else?" is the box at the top of the tab.
 
-              It renders with the sections and never over the results grid
-              (`showsPreamble`, pinned in discoverView.test.ts): a line reading
-              "picked to run on this machine" standing over a page of Hub
-              search results describes cards that are not there. */}
-          {chrome.showsPreamble && catalog !== null && catalog.length > 0 && (
-            <p className="am-group-note am-suggested-lede">
-              Picked to run on this machine with the engines you have. Search above for
-              anything else on Hugging Face.
-            </p>
-          )}
-          {catalog === null && <p className="cc-empty">Reading the model catalog…</p>}
-          {catalog !== null && <Suggested catalog={catalog} downloads={downloads} />}
-        </>
-      )}
+                It renders with the sections and never over the results grid
+                (`showsPreamble`, pinned in discoverView.test.ts): a line reading
+                "picked to run on this machine" standing over a page of Hub
+                search results describes cards that are not there. */}
+            {chrome.showsPreamble && catalog !== null && catalog.length > 0 && (
+              <p className="am-group-note am-suggested-lede">
+                Picked to run on this machine with the engines you have. Search above for
+                anything else on Hugging Face.
+              </p>
+            )}
+            {catalog === null && <p className="cc-empty">Reading the model catalog…</p>}
+            {catalog !== null && <Suggested catalog={catalog} downloads={downloads} />}
+          </>
+        )}
+      </section>
     </>
   );
 }
