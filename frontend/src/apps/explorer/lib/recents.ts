@@ -11,6 +11,7 @@ import { useEffect, useRef } from "react";
 import { getRecents, postRecentOpen, putRecentsCollapsed } from "@platform/lib/api";
 import type { RecentEntry, RecentsResult } from "@platform/lib/api";
 import { useEventCounter } from "@platform/lib/hooks";
+import { stripSessionParams } from "@platform/lib/session-params";
 import { IS_EMBED, VIEW_PREFIX, currentUrl, fsPathFromLocation, rootedFsPath } from "@platform/lib/router";
 
 export type { RecentEntry };
@@ -175,6 +176,25 @@ export function hydrateRecents(): Promise<void> {
   );
 }
 
+// SESSION-ONLY PARAMS ARE STRIPPED FIRST (LSN-12, D326). Recents is an AUTOMATIC
+// capture that lands on disk: this hook fires on every `fused:urlchange`, so
+// without this a click that CLOSES the file preview's companion sidebar
+// (`?_side=off`) is recorded, and every later open from the Recents list comes up
+// shut — the sidebar's state persisted for good, by a write the user never asked
+// for, which is the exact thing D326 exists to stop. The URL a recent replays must
+// hold what the file WAS, not what the chrome around it was doing.
+//
+// Deliberately NOT applied to BOOKMARKS: a bookmark is an explicit "save this
+// view" gesture and SB-2 says it captures the URL verbatim, which is how `_mode`,
+// sort and a chosen `_side` companion all end up in one. Same param, opposite
+// answer, because one capture is chosen and the other is a side effect.
+function stripRecordedParams(url: string): string {
+  const q = url.indexOf("?");
+  if (q < 0) return url;
+  const kept = stripSessionParams(url.slice(q + 1));
+  return kept === "" ? url.slice(0, q) : url.slice(0, q + 1) + kept;
+}
+
 // Record an open (or a live param update) of the current file view. The
 // server dedupes by target fs path — a re-record of an already-listed file
 // moves it to the top and replaces its url — and no-ops for anything that is
@@ -185,7 +205,7 @@ export function hydrateRecents(): Promise<void> {
 export function recordRecentOpen(url: string, title?: string | null): Promise<void> {
   return enqueue(async () => {
     try {
-      await postRecentOpen(url, title);
+      await postRecentOpen(stripRecordedParams(url), title);
       await refresh();
     } catch (e) {
       console.error("[fused] failed to record recent open:", e);
