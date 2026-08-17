@@ -43,7 +43,6 @@ import {
   archiveIntent,
   basename,
   cancelIntent,
-  cardOpenIntent,
   dropAction,
   dropLanes,
   filterTasks,
@@ -57,10 +56,10 @@ import {
   messageTime,
   messageTone,
   messageWhenTitle,
+  openThreadIntent,
   projectOptions,
   ranNote,
   taskColumn,
-  taskHref,
   taskRunIntent,
   taskUnread,
   threadView,
@@ -71,7 +70,7 @@ import {
 } from "./tasks-lib";
 import type {
   ArchiveStatus,
-  CardOpenIntent,
+  OpenThreadIntent,
   TaskFilters,
   TaskRunIntent,
 } from "./tasks-lib";
@@ -526,6 +525,40 @@ async function performRun(intent: TaskRunIntent): Promise<string> {
   return "";
 }
 
+/**
+ * Spend an OpenThreadIntent: the ONE place either view opens a conversation.
+ *
+ * Both gestures that go to a thread come through here — the Board card's click
+ * and the List row's Open chat button. The Board had this inline and the List's
+ * button navigated and marked nothing, so the same gesture to the same href came
+ * back with the badge cleared or not depending on which view you were in (the
+ * List's button was the one place that still disagreed). Lifting it is the same
+ * move performRun made above, for the same reason: two copies is how the two
+ * views start disagreeing again.
+ *
+ * WHETHER anything is marked is not decided here — that is
+ * tasks-lib.openThreadIntent, which answers `markRead: false` when the count is
+ * already zero and offers no intent at all for a task with no session. This only
+ * performs it.
+ *
+ * The local clear goes FIRST, so the pill cannot outlive its own press (the page
+ * polls on a 20s interval). The server call is ONE whole-task request, fired and
+ * forgotten: the press is leaving the page, so a refusal has nobody left to be
+ * shown to, and a write that failed comes back honestly on the next poll. The
+ * navigation is OUTSIDE the guard and never waits on the write.
+ */
+function performOpen(
+  taskKey: string,
+  intent: OpenThreadIntent,
+  clearAll: (taskKey: string) => void,
+): void {
+  if (intent.markRead) {
+    clearAll(taskKey);
+    void markWholeTaskRead(taskKey).catch(() => {});
+  }
+  navigateUrl(intent.href);
+}
+
 // ---- List view: one accordion per task ---------------------------------------
 
 export function TaskList({
@@ -648,7 +681,13 @@ function TaskNode({
 }) {
   const view = threadView(task, loaded);
   const unread = taskUnread(task, read, loaded);
-  const href = taskHref(task);
+  // Open chat. Where it goes and whether going there also clears the thread —
+  // one answer, from the same function the Board card asks (openThreadIntent),
+  // because it is the same gesture to the same href and must come back with the
+  // same badge. Null means no session yet (§5): no button at all, so nothing is
+  // offered and nothing is marked. Asked with the count this row is DRAWING, so
+  // a second press on an already-cleared task posts nothing.
+  const chat = openThreadIntent(task, unread);
   const label = firstLine(task.title) || "(untitled)";
   // Run now / Re-run. tasks-lib decides all of it — whether it is offered,
   // which message it acts on, and WHICH CALL that is. The run-now half comes
@@ -753,6 +792,16 @@ function TaskNode({
     onRead(task.key, m);
     const to = messageHref(task, m);
     if (to) navigateUrl(to);
+  };
+
+  // Open chat: the thread, and the unread cleared on the way out — the same
+  // performer the Board card's click spends (performOpen), so the two gestures
+  // cannot disagree. Deliberately NOT markSeen above: that one is a press that
+  // STAYS on this page, so it awaits the write and has somewhere to say a
+  // refusal; this one is leaving, so it fires and forgets and never holds up the
+  // hop. `onReadAll` is the local half, the same one markSeen uses.
+  const openChat = (intent: OpenThreadIntent) => {
+    performOpen(task.key, intent, onReadAll);
   };
 
   const cancel = async (m: TaskMessage, entryId: string) => {
@@ -880,7 +929,16 @@ function TaskNode({
             {file.restore ? ICON_UNARCHIVE : ICON_ARCHIVE}
           </button>
         )}
-        {href && (
+        {/* The one gesture in this row that OPENS the conversation — so it is
+            the one that also clears the thread, exactly as the Board card's
+            click does: it lands the reader in the very thread this row's count
+            is pointing at, and a pill still sitting there afterwards would be
+            pointing at what the press just showed them. Both sides ask
+            tasks-lib.openThreadIntent and both spend it through performOpen; the
+            row's OWN click is untouched above (onToggle — it expands the
+            accordion and opens nothing, so there is nothing to infer), and a
+            message click still marks only its own turn. */}
+        {chat && (
           <button
             type="button"
             className="tasks-act"
@@ -888,7 +946,7 @@ function TaskNode({
             aria-label="Open chat"
             onClick={(e) => {
               e.stopPropagation();
-              navigateUrl(href);
+              openChat(chat);
             }}
           >
             {ICON_OPEN}
@@ -1163,22 +1221,13 @@ export function TaskBoard({
 
   // Opening a card: the conversation, and the unread cleared on the way out.
   //
-  // Up here with triage and runNow because the read set lives here, and it is
-  // the same pairing the List's message rows make (openMessage above) — the mark
-  // goes local FIRST so the pill cannot outlive its own click, then to the
-  // server as ONE whole-task request.
-  //
-  // Fire and forget, and the navigation never waits on it: the click is leaving
-  // this page, so there is nobody left to show a refusal to, and a write that
-  // failed comes back honestly on the next poll. Whether there is anything to
-  // mark at all is tasks-lib's answer (cardOpenIntent), not this handler's, so
-  // a card with nothing unread posts nothing.
-  const openCard = (task: Task, intent: CardOpenIntent) => {
-    if (intent.markRead) {
-      clearAll(task.key);
-      void markWholeTaskRead(task.key).catch(() => {});
-    }
-    navigateUrl(intent.href);
+  // Up here with triage and runNow because the read set lives here — performOpen
+  // needs the local half, and this is where it is. Everything else about what
+  // opening a thread means (mark local-first, ONE whole-task request, fire and
+  // forget, navigate regardless) lives in performOpen, shared with the List row's
+  // Open chat button so the same gesture cannot mean two things on two views.
+  const openCard = (task: Task, intent: OpenThreadIntent) => {
+    performOpen(task.key, intent, clearAll);
   };
 
   // Shared by expanded lane bodies AND collapsed rails, so Archive — collapsed
@@ -1349,7 +1398,7 @@ function TaskCard({
   /** Open the conversation, marking the thread read on the way. The board owns
    * it because the board owns the read set — and it is only ever called with a
    * non-null intent, so this card cannot navigate to nowhere. */
-  onOpen: (intent: CardOpenIntent) => void;
+  onOpen: (intent: OpenThreadIntent) => void;
 }) {
   // Whether this card lifts at all, and it is not one question: a task with no
   // session (§5 — Claude Code mints the id on the first run) has nothing to
@@ -1358,10 +1407,11 @@ function TaskCard({
   // only fail. tasks-lib.dropLanes holds both halves.
   const draggable = isDraggable(task);
   // Where the click goes and whether it also clears the thread's unread — one
-  // answer, from tasks-lib. Null means the card has nowhere to go (no session
-  // yet), and then the click does nothing at all: no navigation, and no mark
-  // either, since nothing was shown to the reader.
-  const open = cardOpenIntent(task, unread);
+  // answer, from tasks-lib, and the SAME answer the List row's Open chat button
+  // gets. Null means the card has nowhere to go (no session yet), and then the
+  // click does nothing at all: no navigation, and no mark either, since nothing
+  // was shown to the reader.
+  const open = openThreadIntent(task, unread);
   // Archive without dragging. The drag stays as the accelerator, but it cannot
   // be the ONLY way: the lane it aims at is collapsed by default, so the whole
   // gesture starts with "expand Archive first". Same predicate as the drop, by

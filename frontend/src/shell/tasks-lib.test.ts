@@ -20,7 +20,6 @@ import {
   canCancel,
   canRunNow,
   cancelIntent,
-  cardOpenIntent,
   dayLabel,
   dropAction,
   dropLanes,
@@ -43,6 +42,7 @@ import {
   messageWhenTitle,
   nextRunAt,
   openMessageHref,
+  openThreadIntent,
   projectOptions,
   ranNote,
   readKey,
@@ -1099,42 +1099,70 @@ describe("the mark-read action", () => {
   });
 });
 
-describe("clicking a board card", () => {
-  it("asks tasks-lib where the click goes and whether it marks", () => {
-    // One answer, one function — the card holds no rule of its own, and cannot
-    // navigate to null because a null intent is not offered to onOpen.
-    expect(CARD).toContain("cardOpenIntent(task, unread)");
-    expect(CARD).toContain("if (open) onOpen(open);");
-    // The pill it draws is the MERGED count, so it goes on this very click.
-    expect(CARD).toContain("<UnreadPill count={unread} />");
-    expect(BOARD).toContain("taskUnread(task, read)");
+describe("opening a thread, from either view", () => {
+  it("is ONE rule and ONE performer, asked by both gestures", () => {
+    // The rule (does this mark?) is tasks-lib's, and neither view re-derives it.
+    expect(CARD).toContain("openThreadIntent(task, unread)");
+    expect(NODE).toContain("openThreadIntent(task, unread)");
+    // The performing half is lifted too, for the same reason performRun was:
+    // two copies of "mark local, fire the POST, navigate" is how the two views
+    // start disagreeing again. Exactly one definition, and both views spend it.
+    expect((VIEWS.match(/function performOpen\(/g) ?? []).length).toBe(1);
+    expect(BOARD).toContain("performOpen(task.key, intent, clearAll)");
+    expect(NODE).toContain("performOpen(task.key, intent, onReadAll)");
+    // And the whole-task POST exists in exactly two places: the shared performer,
+    // and the List row's own Mark read button (which stays on the page and awaits
+    // it). No third mark-read path.
+    expect((VIEWS.match(/markWholeTaskRead\(/g) ?? []).length).toBe(2);
   });
 
-  it("marks the whole thread read, through the call that already exists", () => {
-    expect(BOARD).toContain("const openCard = (task: Task, intent: CardOpenIntent)");
-    // Guarded by the intent, so an ordinary click on a read card posts nothing.
-    expect(BOARD).toContain("if (intent.markRead) {");
-    // The local half first (the pill has to go now), then ONE whole-task
-    // request — the same pair the List row's button makes, and no second way to
-    // mark read: the board never loops over messages.
-    expect(BOARD).toContain("clearAll(task.key)");
-    expect(BOARD).toContain("markWholeTaskRead(task.key)");
-    expect(BOARD).not.toContain("markTaskMessageRead");
+  it("marks the whole thread read, local half first", () => {
+    const at = VIEWS.indexOf("function performOpen(");
+    const fn = VIEWS.slice(at, VIEWS.indexOf("\n}", at));
+    // Guarded by the intent, so an ordinary press on a read task posts nothing —
+    // and a task with no session never gets here at all, because there is no
+    // intent to spend.
+    expect(fn).toContain("if (intent.markRead) {");
+    // Local first (the pill has to go on the press, not 20s later), then ONE
+    // whole-task request. Never a loop over messages.
+    expect(fn.indexOf("clearAll(taskKey)")).toBeGreaterThan(
+      fn.indexOf("if (intent.markRead) {"),
+    );
+    expect(fn.indexOf("markWholeTaskRead(taskKey)")).toBeGreaterThan(
+      fn.indexOf("clearAll(taskKey)"),
+    );
+    expect(fn).not.toContain("markTaskMessageRead");
   });
 
   it("navigates regardless, and never waits on the write", () => {
-    // Fire and forget: the click is leaving the page, so a refusal has nobody
+    const at = VIEWS.indexOf("function performOpen(");
+    const fn = VIEWS.slice(at, VIEWS.indexOf("\n}", at));
+    // Fire and forget: the press is leaving the page, so a refusal has nobody
     // left to be shown to, and the navigation must not be held up or cancelled
     // by it.
-    expect(BOARD).toContain("void markWholeTaskRead(task.key).catch(() => {});");
-    expect(BOARD).toContain("navigateUrl(intent.href);");
-    expect(BOARD).not.toContain("await markWholeTaskRead");
-    // The mark is INSIDE the guard and the navigation is outside it.
-    const guard = BOARD.indexOf("if (intent.markRead) {");
-    expect(BOARD.indexOf("navigateUrl(intent.href);")).toBeGreaterThan(
-      BOARD.indexOf("}", BOARD.indexOf("markWholeTaskRead(task.key)")),
+    expect(fn).toContain("void markWholeTaskRead(taskKey).catch(() => {});");
+    expect(fn).not.toContain("await markWholeTaskRead");
+    // The mark is INSIDE the guard and the navigation is OUTSIDE it, so a read
+    // task still opens.
+    expect(fn.indexOf("navigateUrl(intent.href);")).toBeGreaterThan(
+      fn.indexOf("}", fn.indexOf("markWholeTaskRead(taskKey)")),
     );
-    expect(guard).toBeGreaterThan(-1);
+  });
+
+  it("offers nothing on a task with no session, in either view", () => {
+    // Both sides gate their gesture on the intent being non-null, so neither can
+    // navigate to nowhere and neither marks a thread it never showed.
+    expect(CARD).toContain("if (open) onOpen(open);");
+    expect(ROW).toContain("{chat && (");
+  });
+
+  it("draws the MERGED count on both sides, so the badge goes on the press", () => {
+    expect(CARD).toContain("<UnreadPill count={unread} />");
+    expect(BOARD).toContain("taskUnread(task, read)");
+    // The List asks with the count the row is drawing (local marks included),
+    // which is what stops a second press from posting again.
+    expect(NODE).toContain("taskUnread(task, read, loaded)");
+    expect(ROW).toContain("<UnreadRail count={unread} />");
   });
 
   it("keeps the card's actions OUT of the click, by being siblings of it", () => {
@@ -1154,24 +1182,44 @@ describe("clicking a board card", () => {
     expect(acts).toContain("void triage(file.status)");
   });
 
-  it("leaves the List's task row alone — its own gesture opens nothing", () => {
-    // The row's click TOGGLES the accordion; it does not open a conversation, so
-    // there is nothing it could have shown the reader and nothing to mark.
+  it("is the row's Open chat button and NOT the row itself", () => {
+    // The row's own click TOGGLES the accordion; it does not open a conversation,
+    // so there is nothing it could have shown the reader and nothing to mark.
     // Marking a whole task read on a press that merely expands it would clear
-    // messages nobody has seen.
-    expect(ROW).toContain("onClick={onToggle}");
-    expect(ROW).not.toContain("cardOpenIntent");
-    // The row DOES carry an explicit "Open chat" button, and it is deliberately
-    // untouched here: it is a named action with its own stopPropagation, sitting
-    // beside this row's own Mark read button, and the ask was about the Board's
-    // card. (If it should mark too, that is one more line in the same place —
-    // openMessage's neighbour — not a second mark-read path.)
+    // messages nobody has seen. Read off the row div's OWN handlers, so a comment
+    // naming the intent cannot make this pass.
+    const gesture = ROW.slice(0, ROW.indexOf('<span className={"tasks-caret"'));
+    expect(gesture).toContain("onClick={onToggle}");
+    expect(gesture).toContain("onToggle();");
+    expect(gesture).not.toContain("openChat");
+    expect(gesture).not.toContain("performOpen");
+    expect(gesture).not.toContain("navigateUrl");
+    // The mark rides on the explicit, named action instead — which keeps its own
+    // stopPropagation, so pressing it never also toggles the row.
     const openBtn = ROW.indexOf('title="Open chat"');
     expect(openBtn).toBeGreaterThan(-1);
-    expect(ROW.indexOf("navigateUrl(href)")).toBeGreaterThan(openBtn);
-    // The per-message path is untouched: a message click still marks its one
-    // message and nothing more.
+    const btn = ROW.slice(openBtn);
+    expect(btn.indexOf("e.stopPropagation();")).toBeLessThan(
+      btn.indexOf("openChat(chat);"),
+    );
+    // And it no longer navigates behind tasks-lib's back: the bare href is gone
+    // from this file entirely, so there is no way left to open a thread without
+    // asking the intent first.
+    expect(ROW).not.toContain("navigateUrl(href)");
+    expect(VIEWS).not.toContain("taskHref(");
+  });
+
+  it("leaves the per-message click alone — one turn, one message", () => {
+    // A message row lands on its OWN anchor, so it marks that one message. That
+    // distinction is the whole reason read state is per message, and neither the
+    // card nor Open chat may collapse it.
     expect(VIEWS).toContain("onRead(task.key, m);");
+    expect(VIEWS).toContain("markTaskMessageRead(taskKey, m.message_id)");
+    const at = VIEWS.indexOf("const openMessage = (m: TaskMessage)");
+    const fn = VIEWS.slice(at, VIEWS.indexOf("\n  };", at));
+    expect(fn).toContain("messageHref(task, m)");
+    expect(fn).not.toContain("markWholeTaskRead");
+    expect(fn).not.toContain("onReadAll");
   });
 });
 
@@ -1483,15 +1531,17 @@ describe("lane order", () => {
   });
 });
 
-// ---- clicking a card ---------------------------------------------------------
-// A click on a Board card opens the thread the unread pill is pointing at, so it
-// clears it (Akshil, 2026-08-17: "when i click from kanban on unread task it
-// should register it read correct?").
+// ---- opening a thread --------------------------------------------------------
+// Opening a thread clears the unread the gesture was pointing at (Akshil,
+// 2026-08-17: "when i click from kanban on unread task it should register it read
+// correct?") — and that is a rule about OPENING, not about the Board, so the
+// Board card's click and the List row's Open chat button ask this one function
+// rather than one each.
 
-describe("cardOpenIntent", () => {
+describe("openThreadIntent", () => {
   it("opens the thread and marks it read when there is something unread", () => {
     const t = task({ unread: 3 });
-    const intent = cardOpenIntent(t)!;
+    const intent = openThreadIntent(t)!;
     // The same href taskHref gives — the conversation, with no per-turn anchor,
     // which is exactly why the mark is whole-task rather than per message.
     expect(intent.href).toBe(taskHref(t)!);
@@ -1499,25 +1549,25 @@ describe("cardOpenIntent", () => {
   });
 
   it("opens without marking when nothing is unread", () => {
-    const intent = cardOpenIntent(task({ unread: 0 }))!;
+    const intent = openThreadIntent(task({ unread: 0 }))!;
     expect(intent.href).toBe(taskHref(task())!);
-    // No POST on an ordinary card click.
+    // No POST on an ordinary press.
     expect(intent.markRead).toBe(false);
   });
 
-  it("takes the DISPLAYED count, so a second click posts nothing", () => {
+  it("takes the DISPLAYED count, so a second press posts nothing", () => {
     const t = task({ unread: 3 });
     // What taskUnread returns once this task has been cleared locally.
-    expect(cardOpenIntent(t, 0)!.markRead).toBe(false);
-    expect(cardOpenIntent(t, taskUnread(t, markAllRead(new Set(), t.key)))!.markRead)
+    expect(openThreadIntent(t, 0)!.markRead).toBe(false);
+    expect(openThreadIntent(t, taskUnread(t, markAllRead(new Set(), t.key)))!.markRead)
       .toBe(false);
   });
 
   it("does nothing at all for a task with no session — not even the mark", () => {
     // §5: the id is minted on the first run, so there is no conversation to
-    // open, and marking a thread read on a click that showed the reader nothing
+    // open, and marking a thread read on a press that showed the reader nothing
     // would clear a badge for messages they never saw.
-    expect(cardOpenIntent(task({ session_id: "", unread: 4 }))).toBe(null);
+    expect(openThreadIntent(task({ session_id: "", unread: 4 }))).toBe(null);
   });
 });
 

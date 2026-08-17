@@ -957,26 +957,38 @@ export function markReadIntent(
   };
 }
 
-// ---- opening a card ----------------------------------------------------------
-// A click on a Board card opens the conversation, and until now it opened it and
-// marked nothing: the card carried an unread pill, the click took the reader
-// into the very thread that pill was pointing at, and the pill was still there
-// when they came back (Akshil, 2026-08-17: "when i click from kanban on unread
-// task it should register it read correct?"). Yes.
+// ---- opening a thread --------------------------------------------------------
+// A gesture that opens the conversation used to open it and mark nothing: the
+// card (or the row) carried an unread pill, the press took the reader into the
+// very thread that pill was pointing at, and the pill was still there when they
+// came back (Akshil, 2026-08-17: "when i click from kanban on unread task it
+// should register it read correct?"). Yes.
 //
-// WHOLE-TASK, not one message, and that follows from the href: a card links
+// This is deliberately NOT the Board's rule. It is the rule for OPENING A
+// THREAD, and both gestures that do that ask it: the Board card's click and the
+// List row's "Open chat" button. They go to the same place (taskHref) by the
+// same gesture, so they must come back with the same badge — a mark that
+// depended on which view you happened to be in would be a coin toss, not a
+// rule. Hence the view-neutral name: one function, one behaviour, two callers.
+//
+// WHOLE-TASK, not one message, and that follows from the href: both link
 // taskHref — the thread, with no per-turn anchor — so what the reader is shown is
 // the conversation, not one turn of it. That is precisely the case
 // api.markWholeTaskRead exists for, and it is the same call the List row's Mark
 // read button makes. There is no second way to mark read here.
 //
 // The two things are ORDERED but not coupled: the mark is a side effect of
-// opening, so a card with nothing unread still opens, and a failed write must
-// not cost the navigation (the caller fires and forgets — the click is leaving
-// the page, exactly as the per-message path already argued).
+// opening, so a thread with nothing unread still opens, and a failed write must
+// not cost the navigation (callers fire and forget — the press is leaving the
+// page, exactly as the per-message path already argued).
+//
+// What this does NOT cover, and must not: the List task ROW's own click, which
+// toggles the accordion and opens nothing (there is no "you have seen it" to
+// infer from expanding a row), and a MESSAGE click, which lands on its own turn
+// and therefore marks that one message.
 
-export interface CardOpenIntent {
-  /** Where the click goes. Never empty: a card with nowhere to go has no
+export interface OpenThreadIntent {
+  /** Where the press goes. Never empty: a gesture with nowhere to go has no
    * intent at all, so the caller cannot navigate to null. */
   href: string;
   /** Whether opening this also clears the task's unread. */
@@ -984,20 +996,20 @@ export interface CardOpenIntent {
 }
 
 /**
- * What a click on the card does, or null when it does NOTHING — which is the
- * `pending:<entry>` case: a task that has never run has no session id (§5) and
- * therefore no conversation to open. That click was inert before this change and
- * stays inert, including the mark: marking a thread read on a click that showed
- * the reader nothing would clear a badge for messages they never saw.
+ * What opening this task's thread does, or null when it does NOTHING — which is
+ * the `pending:<entry>` case: a task that has never run has no session id (§5)
+ * and therefore no conversation to open. That press was inert before this change
+ * and stays inert, including the mark: marking a thread read on a press that
+ * showed the reader nothing would clear a badge for messages they never saw.
  *
  * `unread` defaults to the server's count and may be passed as the DISPLAYED one
- * (taskUnread, so local marks count), which is what stops a second click on an
- * already-cleared card from posting again.
+ * (taskUnread, so local marks count), which is what stops a second press on an
+ * already-cleared task from posting again.
  */
-export function cardOpenIntent(
+export function openThreadIntent(
   task: Task,
   unread: number = task.unread,
-): CardOpenIntent | null {
+): OpenThreadIntent | null {
   const href = taskHref(task);
   if (!href) return null;
   return { href, markRead: unread > 0 };
