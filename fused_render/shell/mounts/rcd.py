@@ -208,6 +208,7 @@ def _pid_looks_like_rcd(pid: int) -> bool:
         out = subprocess.run(
             ["ps", "-o", "command=", "-p", str(pid)],
             capture_output=True, text=True, timeout=_PS_TIMEOUT_S,
+            encoding="utf-8", errors="replace",
         ).stdout.lower()
     except (OSError, subprocess.SubprocessError):
         return False

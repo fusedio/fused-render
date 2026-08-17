@@ -228,6 +228,8 @@ def install_fused() -> dict:
             [sys.executable, "-m", "pip", "install", requirement],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=INSTALL_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -284,6 +286,8 @@ def _run_share(env_name: str, args: list[str], timeout: float = SHARE_TIMEOUT):
             [*cli.command, "share", *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=_child_env(cli, env_name),
         )

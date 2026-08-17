@@ -535,6 +535,12 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     assert seen["kwargs"]["close_fds"] is False
     assert "cwd" not in seen["kwargs"]
     assert "start_new_session" not in seen["kwargs"]
+    # text=True alone decodes stdout/stderr with locale.getpreferredencoding —
+    # ASCII on a GUI-launched server with no LANG/LC_ALL — so the first em dash
+    # or curly quote in the helper's JSON result (echoed prompt, app name/title,
+    # model output) raised UnicodeDecodeError instead of returning a run_id.
+    assert seen["kwargs"]["encoding"] == "utf-8"
+    assert seen["kwargs"]["errors"] == "replace"
     assert started_threads  # the sidecar-recording poll thread was kicked off
 
 

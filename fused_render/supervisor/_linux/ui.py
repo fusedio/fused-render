@@ -35,7 +35,8 @@ def _dialog_tool() -> str:
 
 def _run(argv: list[str]) -> "subprocess.CompletedProcess | None":
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=_DIALOG_TIMEOUT_S)
+        return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=_DIALOG_TIMEOUT_S)
     except (OSError, subprocess.TimeoutExpired):
         return None
 

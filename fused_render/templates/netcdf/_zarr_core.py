@@ -719,7 +719,8 @@ def _read_system(store, var, index, bins, max_cells):
             else os.path.abspath(sys.path[0]))  # runner exec()s without __file__
     params = {"store": store, "var": var, "index": index, "bins": bins, "max_cells": max_cells}
     r = subprocess.run([py, "-c", _WORKER, here], input=json.dumps(params),
-                       capture_output=True, text=True, timeout=120, env=env)
+                       capture_output=True, text=True, timeout=120, env=env,
+                       encoding="utf-8", errors="replace")
     if r.returncode != 0:
         return {"error": f"system engine failed: {r.stderr[-500:]}"}
     return json.loads(r.stdout.strip().splitlines()[-1])
