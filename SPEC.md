@@ -6854,6 +6854,31 @@ an AI Models page that could say what was on disk but not what was *running*.
   copies are now one, which is the actual fix; joining rather than picking is
   the answer because there is no rule for choosing between two reasons that is
   not a guess about which the reader meant.
+- **AI-11e** **A model the user DOWNLOADED is in `catalog()` too, and it cannot
+  become the default** (D323). The curation is a shortlist, not a whitelist: the
+  Discover tab's Hub search downloads any repo the user chooses, and until now the
+  bytes landed in the cache and the model then appeared in **no page's picker at
+  all** — every page reads `fused.ai.models.catalog()`, which was the curation and
+  nothing else, and `fused.ai.models.list()` reports only resident workers and
+  in-flight fetches, so no merged view existed anywhere. `/api/ai/catalog` now
+  unions each capability's curated list with the cached repos whose inferred
+  capability matches, and every entry carries `source` (`"curated"`/`"cached"`),
+  `downloaded` and `loaded` beside the `{id, label, size_gb, note}` a picker
+  already reads — so three shipped apps gained the models with no change to any of
+  them, which is why the union is in the payload rather than in each page.
+  **Appended, never merged into the ordering.** `entry.default`,
+  `catalog.default_for()` and `catalog.for_capability()` still answer over the
+  curated list alone, because `default_for()` is what a bare `fused.ai.image()` or
+  `fused.ai.transcribe()` loads and AI-11a's smallest-first rule would otherwise
+  let a 3KB folder off the disk decide it. The cached tail is sorted by that same
+  rule so the halves read as one list. The inference is `ai_models`' own — the very
+  reading the Load button is drawn from — because a picker offering a model and a
+  `load()` refusing it must not be able to disagree (D321); repos with no inferable
+  capability, component repos and datasets are therefore not injected anywhere,
+  since inventing a capability is the bug D321 closed. The scan is memoised on the
+  cache directory's signature **plus** a short TTL, and the signature half is not
+  optional: a memo that outlived a completed download would hide the model the user
+  just fetched, which is precisely the bug being fixed.
 - **AI-11d** **Reasoning is OFF by default, because it is invisible and the CPU
   path cannot afford it.** Qwen3's chat template defaults `enable_thinking` to
   true and three of the four curated models are Qwen3, so an ordinary question

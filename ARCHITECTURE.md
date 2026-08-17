@@ -279,10 +279,15 @@ loaded:[{model,capability,runner,state,residentBytes,loadedAt,jobId}],
 downloading:[{model,capability,jobId,startedAt}], totalResidentBytes}`.
 `downloading` is weights landing on disk — no memory, no eviction, no worker row —
 and it is in this reply rather than only in the job list because it is what tells
-a page whether to read job rows at all (AI-5a). `GET /api/ai/catalog` → the curated
-suggestions per capability, and nothing about what is on this disk: the cache is
-the AI-models listing's question, joined by the page so both its tabs mean one
-thing by it. `POST /api/ai/runtime/load|unload|download` — `X-Fused` guarded, since
+a page whether to read job rows at all (AI-5a). `GET /api/ai/catalog` → per capability,
+the curated suggestions **and the models this disk already holds** (D323), each
+entry carrying `source: "curated"|"cached"`, `downloaded` and `loaded` beside
+`{id,label,size_gb,note}`. The cached half comes from `ai_models.cached_models()` —
+the AI-models listing's own scan and its own capability inference, memoised there,
+imported here rather than re-derived — and is APPENDED, so `default`,
+`catalog.default_for()` and `catalog.for_capability()` keep resolving over the
+curated list alone and a bare `fused.ai.image()` cannot load an arbitrary repo off
+the disk. `POST /api/ai/runtime/load|unload|download` — `X-Fused` guarded, since
 they start processes and write gigabytes; `load` and `download` return a `{jobId}`
 into the download manager rather than blocking.
 
