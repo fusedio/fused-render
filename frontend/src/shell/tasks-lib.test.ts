@@ -6,9 +6,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { BOARD_COLUMNS } from "./schedule-lib";
+import type { BoardColumn } from "./schedule-lib";
 import {
   ALL_MESSAGES,
   EMPTY_FILTERS,
+  LANE_SORTS,
   MESSAGE_ANCHOR_PARAM,
   PREVIEW_MESSAGES,
   UNREAD_COUNT_CAP,
@@ -18,6 +20,7 @@ import {
   canCancel,
   canRunNow,
   cancelIntent,
+  cardOpenIntent,
   dayLabel,
   dropAction,
   dropLanes,
@@ -28,6 +31,8 @@ import {
   isDraggable,
   isFailedTask,
   isUnread,
+  laneTime,
+  lastRunAt,
   markAllRead,
   markRead,
   markReadIntent,
@@ -36,6 +41,7 @@ import {
   messageTime,
   messageTone,
   messageWhenTitle,
+  nextRunAt,
   openMessageHref,
   projectOptions,
   ranNote,
@@ -43,6 +49,7 @@ import {
   resendTarget,
   runNowIntent,
   runNowTarget,
+  sortLane,
   taskColumn,
   taskHref,
   taskRunIntent,
@@ -1092,6 +1099,82 @@ describe("the mark-read action", () => {
   });
 });
 
+describe("clicking a board card", () => {
+  it("asks tasks-lib where the click goes and whether it marks", () => {
+    // One answer, one function — the card holds no rule of its own, and cannot
+    // navigate to null because a null intent is not offered to onOpen.
+    expect(CARD).toContain("cardOpenIntent(task, unread)");
+    expect(CARD).toContain("if (open) onOpen(open);");
+    // The pill it draws is the MERGED count, so it goes on this very click.
+    expect(CARD).toContain("<UnreadPill count={unread} />");
+    expect(BOARD).toContain("taskUnread(task, read)");
+  });
+
+  it("marks the whole thread read, through the call that already exists", () => {
+    expect(BOARD).toContain("const openCard = (task: Task, intent: CardOpenIntent)");
+    // Guarded by the intent, so an ordinary click on a read card posts nothing.
+    expect(BOARD).toContain("if (intent.markRead) {");
+    // The local half first (the pill has to go now), then ONE whole-task
+    // request — the same pair the List row's button makes, and no second way to
+    // mark read: the board never loops over messages.
+    expect(BOARD).toContain("clearAll(task.key)");
+    expect(BOARD).toContain("markWholeTaskRead(task.key)");
+    expect(BOARD).not.toContain("markTaskMessageRead");
+  });
+
+  it("navigates regardless, and never waits on the write", () => {
+    // Fire and forget: the click is leaving the page, so a refusal has nobody
+    // left to be shown to, and the navigation must not be held up or cancelled
+    // by it.
+    expect(BOARD).toContain("void markWholeTaskRead(task.key).catch(() => {});");
+    expect(BOARD).toContain("navigateUrl(intent.href);");
+    expect(BOARD).not.toContain("await markWholeTaskRead");
+    // The mark is INSIDE the guard and the navigation is outside it.
+    const guard = BOARD.indexOf("if (intent.markRead) {");
+    expect(BOARD.indexOf("navigateUrl(intent.href);")).toBeGreaterThan(
+      BOARD.indexOf("}", BOARD.indexOf("markWholeTaskRead(task.key)")),
+    );
+    expect(guard).toBeGreaterThan(-1);
+  });
+
+  it("keeps the card's actions OUT of the click, by being siblings of it", () => {
+    // Archive / Run now sit in a strip pinned over the card, outside the card's
+    // own <button>: a press cannot bubble into a button it is not inside, so it
+    // neither navigates nor marks.
+    const clickAt = CARD.indexOf("if (open) onOpen(open);");
+    const actsAt = CARD.indexOf('className="tasks-card-acts"');
+    expect(clickAt).toBeGreaterThan(-1);
+    expect(actsAt).toBeGreaterThan(clickAt);
+    // The card's button closes before the strip opens.
+    expect(CARD.lastIndexOf("</button>", actsAt)).toBeGreaterThan(clickAt);
+    // And the strip's own buttons ask for the run and the filing, nothing else.
+    const acts = CARD.slice(actsAt);
+    expect(acts).not.toContain("onOpen");
+    expect(acts).toContain("void runNow(run)");
+    expect(acts).toContain("void triage(file.status)");
+  });
+
+  it("leaves the List's task row alone — its own gesture opens nothing", () => {
+    // The row's click TOGGLES the accordion; it does not open a conversation, so
+    // there is nothing it could have shown the reader and nothing to mark.
+    // Marking a whole task read on a press that merely expands it would clear
+    // messages nobody has seen.
+    expect(ROW).toContain("onClick={onToggle}");
+    expect(ROW).not.toContain("cardOpenIntent");
+    // The row DOES carry an explicit "Open chat" button, and it is deliberately
+    // untouched here: it is a named action with its own stopPropagation, sitting
+    // beside this row's own Mark read button, and the ask was about the Board's
+    // card. (If it should mark too, that is one more line in the same place —
+    // openMessage's neighbour — not a second mark-read path.)
+    const openBtn = ROW.indexOf('title="Open chat"');
+    expect(openBtn).toBeGreaterThan(-1);
+    expect(ROW.indexOf("navigateUrl(href)")).toBeGreaterThan(openBtn);
+    // The per-message path is untouched: a message click still marks its one
+    // message and nothing more.
+    expect(VIEWS).toContain("onRead(task.key, m);");
+  });
+});
+
 // ---- filters -----------------------------------------------------------------
 
 describe("filters", () => {
@@ -1149,7 +1232,7 @@ describe("filters", () => {
 });
 
 describe("groupByColumn", () => {
-  it("gives every lane a list and keeps the server's order inside it", () => {
+  it("gives every lane a list and keeps the server's order on a tie", () => {
     const map = groupByColumn([
       task({ key: "a", status: "done" }),
       task({ key: "b", status: "upcoming" }),
@@ -1167,6 +1250,274 @@ describe("groupByColumn", () => {
     const map = groupByColumn([task({ key: "x", status: FAILED })]);
     expect(map.get("failed")!.map((t) => t.key)).toEqual(["x"]);
     expect(map.get("done")).toEqual([]);
+  });
+});
+
+// ---- per-lane order ----------------------------------------------------------
+// The Board's ONE exception to "the client keeps the server's order", and the
+// reason for it: a lane of future work is read to find out what happens NEXT,
+// which is the opposite direction from every lane about the past.
+
+const SEC = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+
+/** A task in one lane, holding exactly the messages given (no fixture ones). */
+function laned(key: string, status: Task["status"], messages: TaskMessage[]): Task {
+  return task({ key, status, messages, message_count: messages.length });
+}
+
+/** A pending run: never ran, so `at` is the only time it has. */
+const due = (iso: string, over: Partial<TaskMessage> = {}) =>
+  msg({ state: "pending", at: SEC(iso), ran_at: 0, ...over });
+
+/** A run that happened. `ran_at` defaults to `at` — the ordinary, on-time case. */
+const ran = (at: string, ranAt: string = at, over: Partial<TaskMessage> = {}) =>
+  msg({ state: "sent", at: SEC(at), ran_at: SEC(ranAt), ...over });
+
+const keys = (map: Map<BoardColumn, Task[]>, lane: BoardColumn) =>
+  (map.get(lane) ?? []).map((t) => t.key);
+
+describe("nextRunAt / lastRunAt", () => {
+  it("takes the EARLIEST pending message as the next run", () => {
+    // Newest-first by `at`, as the server sends them: October, then Friday.
+    const t = laned("a", "upcoming", [due("2026-10-01T09:00:00"), due("2026-08-21T09:00:00")]);
+    expect(nextRunAt(t)).toBe(SEC("2026-08-21T09:00:00"));
+  });
+
+  it("has no next run when the window holds nothing pending", () => {
+    expect(nextRunAt(laned("a", "done", [ran("2026-08-16T09:00:00")]))).toBe(null);
+    expect(nextRunAt(laned("a", "upcoming", []))).toBe(null);
+  });
+
+  it("dates the last run by when it RAN, not by what it was due for", () => {
+    // Caught up: due Thursday, actually ran Sunday. `at` is the wrong answer.
+    const t = laned("a", "done", [ran("2026-08-13T09:00:00", "2026-08-16T11:00:00")]);
+    expect(lastRunAt(t)).toBe(SEC("2026-08-16T11:00:00"));
+  });
+
+  it("falls back to `at` for a run with no ran_at, and skips the ones that never ran", () => {
+    // A missed one-off never ran, so `at` is the closest time it has — and it
+    // is the event the Failed lane exists to show, so it must still have one.
+    const missed = laned("a", "failed", [
+      msg({ state: "missed", at: SEC("2026-08-15T09:00:00"), ran_at: 0 }),
+    ]);
+    expect(lastRunAt(missed)).toBe(SEC("2026-08-15T09:00:00"));
+    // Pending / cancelled / skipped date no run at all, even though they have
+    // an `at` — this is what stops a recurring task's FUTURE occurrence from
+    // dragging a settled card to the top of Done.
+    for (const state of ["pending", "cancelled", "skipped"] as const) {
+      const t = laned("b", "done", [msg({ state, at: SEC("2026-10-01T09:00:00"), ran_at: 0 })]);
+      expect(lastRunAt(t)).toBe(null);
+    }
+    expect(lastRunAt(laned("c", "done", []))).toBe(null);
+  });
+
+  it("ignores a future occurrence when dating a settled task's last run", () => {
+    const t = laned("a", "done", [
+      due("2026-10-01T09:00:00"), // next week's occurrence, not a run
+      ran("2026-08-16T10:00:00"),
+    ]);
+    expect(lastRunAt(t)).toBe(SEC("2026-08-16T10:00:00"));
+  });
+});
+
+describe("lane order", () => {
+  it("puts the SOONEST run at the top of Upcoming — the one ascending lane", () => {
+    // Handed over in the server's order (`last_active` descending), which says
+    // nothing about what runs next: the October task was touched most recently.
+    const tasks = [
+      laned("oct", "upcoming", [due("2026-10-01T09:00:00")]),
+      laned("friday", "upcoming", [due("2026-08-21T09:00:00")]),
+      laned("soon", "upcoming", [due("2026-08-16T12:10:00")]),
+      laned("tomorrow", "upcoming", [due("2026-08-17T09:00:00")]),
+    ];
+    expect(keys(groupByColumn(tasks), "upcoming")).toEqual([
+      "soon", "tomorrow", "friday", "oct",
+    ]);
+    // The exception is the Board's alone: the same list, read by the List, is
+    // still exactly what the server sent.
+    expect(filterTasks(tasks, EMPTY_FILTERS).map((t) => t.key)).toEqual([
+      "oct", "friday", "soon", "tomorrow",
+    ]);
+  });
+
+  it("orders Upcoming by the earliest pending message, not the newest one", () => {
+    const tasks = [
+      // Its newest message is October, but it fires on Tuesday.
+      laned("both", "upcoming", [due("2026-10-01T09:00:00"), due("2026-08-18T09:00:00")]),
+      laned("one", "upcoming", [due("2026-08-20T09:00:00")]),
+    ];
+    expect(keys(groupByColumn(tasks), "upcoming")).toEqual(["both", "one"]);
+  });
+
+  it("puts the most recent RUN at the top of Done, by when it ran", () => {
+    const tasks = [
+      laned("onTime", "done", [ran("2026-08-16T10:00:00")]),
+      // Due Thursday, caught up on Sunday at 11:00 — the newest run of the three.
+      laned("caught", "done", [ran("2026-08-13T09:00:00", "2026-08-16T11:00:00")]),
+      laned("old", "done", [ran("2026-08-15T09:00:00")]),
+    ];
+    // By `ran_at`, which is when the work actually happened.
+    expect(keys(groupByColumn(tasks), "done")).toEqual(["caught", "onTime", "old"]);
+    // Ordering by `at` — what it was DUE for — would have filed Sunday's run
+    // two days back, behind work that finished before it. This is that claim,
+    // written down so the fallback cannot quietly become the primary key.
+    expect(keys(groupByColumn(tasks), "done")).not.toEqual(["onTime", "old", "caught"]);
+  });
+
+  it("orders Failed the same way — most recent run first", () => {
+    const tasks = [
+      laned("broke-old", FAILED, [
+        msg({ state: "error", at: SEC("2026-08-14T09:00:00"), ran_at: SEC("2026-08-14T09:01:00") }),
+      ]),
+      laned("broke-now", FAILED, [
+        msg({ state: "error", at: SEC("2026-08-16T09:00:00"), ran_at: SEC("2026-08-16T09:02:00") }),
+      ]),
+    ];
+    expect(keys(groupByColumn(tasks), "failed")).toEqual(["broke-now", "broke-old"]);
+  });
+
+  it("puts the most recently started work at the top of In Progress", () => {
+    const tasks = [
+      laned("earlier", "in_progress", [
+        msg({ state: "sending", at: SEC("2026-08-16T09:00:00"), ran_at: SEC("2026-08-16T09:00:00") }),
+      ]),
+      laned("later", "in_progress", [
+        msg({ state: "sending", at: SEC("2026-08-16T11:30:00"), ran_at: SEC("2026-08-16T11:30:00") }),
+      ]),
+    ];
+    expect(keys(groupByColumn(tasks), "in_progress")).toEqual(["later", "earlier"]);
+  });
+
+  it("leaves Archive in the server's own order", () => {
+    // Deliberately NOT sorted by any time: nobody scans Archive by time-to-run,
+    // and it holds cancelled and skipped messages that date no run at all.
+    const tasks = [
+      laned("first", "archived", [msg({ state: "cancelled", at: SEC("2026-08-10T09:00:00"), ran_at: 0 })]),
+      laned("second", "archived", [ran("2026-08-16T11:00:00")]),
+      laned("third", "archived", []),
+    ];
+    expect(keys(groupByColumn(tasks), "archived")).toEqual(["first", "second", "third"]);
+  });
+
+  it("keeps a tie in the server's order, in BOTH directions", () => {
+    const sameRun = (key: string) => laned(key, "done", [ran("2026-08-16T10:00:00")]);
+    const sameDue = (key: string) => laned(key, "upcoming", [due("2026-08-20T09:00:00")]);
+    // The point of the test is that reversing the INPUT reverses the output and
+    // nothing else: the sort never invents an order of its own for equal keys,
+    // so two cards cannot trade places between two polls of the same data.
+    expect(keys(groupByColumn([sameRun("a"), sameRun("b")]), "done")).toEqual(["a", "b"]);
+    expect(keys(groupByColumn([sameRun("b"), sameRun("a")]), "done")).toEqual(["b", "a"]);
+    expect(keys(groupByColumn([sameDue("a"), sameDue("b")]), "upcoming")).toEqual(["a", "b"]);
+    expect(keys(groupByColumn([sameDue("b"), sameDue("a")]), "upcoming")).toEqual(["b", "a"]);
+  });
+
+  it("re-sorting the same list twice is the same list", () => {
+    // Idempotence is what the 20-second poll actually needs: the second render
+    // of unchanged data must be identical to the first.
+    const tasks = [
+      laned("oct", "upcoming", [due("2026-10-01T09:00:00")]),
+      laned("soon", "upcoming", [due("2026-08-16T12:10:00")]),
+      laned("none", "upcoming", [ran("2026-08-15T09:00:00")]),
+    ];
+    const once = keys(groupByColumn(tasks), "upcoming");
+    expect(keys(groupByColumn(groupByColumn(tasks).get("upcoming")!), "upcoming")).toEqual(once);
+  });
+
+  it("sends a task with no usable time to the END of its lane, both directions", () => {
+    const upcoming = [
+      // First in the server's list, and with nothing pending to be sorted by.
+      laned("timeless", "upcoming", [ran("2026-08-15T09:00:00")]),
+      laned("empty", "upcoming", []),
+      laned("soon", "upcoming", [due("2026-08-16T12:10:00")]),
+      laned("later", "upcoming", [due("2026-08-20T09:00:00")]),
+    ];
+    // Last, not first, even though ascending would otherwise reward a small
+    // key — and among themselves in the server's order.
+    expect(keys(groupByColumn(upcoming), "upcoming")).toEqual([
+      "soon", "later", "timeless", "empty",
+    ]);
+    const done = [
+      laned("nothing", "done", []),
+      laned("ran", "done", [ran("2026-08-16T10:00:00")]),
+    ];
+    expect(keys(groupByColumn(done), "done")).toEqual(["ran", "nothing"]);
+  });
+
+  it("never mutates the list it was handed", () => {
+    const tasks = [
+      laned("oct", "upcoming", [due("2026-10-01T09:00:00")]),
+      laned("soon", "upcoming", [due("2026-08-16T12:10:00")]),
+    ];
+    groupByColumn(tasks);
+    expect(tasks.map((t) => t.key)).toEqual(["oct", "soon"]);
+  });
+
+  it("names every lane's order exactly once, for every lane the board draws", () => {
+    // A lane added to the board without an entry here would fall through to
+    // whatever `undefined` sorts as.
+    expect(Object.keys(LANE_SORTS).sort()).toEqual(
+      BOARD_COLUMNS.map((c) => c.key as string).sort(),
+    );
+    // The one ascending lane, and the one that sorts nothing.
+    const asc = BOARD_COLUMNS.filter((c) => LANE_SORTS[c.key].dir === "asc" &&
+      LANE_SORTS[c.key].key !== "server").map((c) => c.key);
+    expect(asc).toEqual(["upcoming"]);
+    expect(LANE_SORTS.archived.key).toBe("server");
+  });
+
+  it("has no time to sort a lane by when the lane keeps the server's order", () => {
+    const t = laned("a", "archived", [ran("2026-08-16T10:00:00")]);
+    expect(laneTime(t, "archived")).toBe(null);
+    expect(laneTime(t, "done")).toBe(SEC("2026-08-16T10:00:00"));
+    expect(laneTime(laned("b", "upcoming", [due("2026-08-20T09:00:00")]), "upcoming"))
+      .toBe(SEC("2026-08-20T09:00:00"));
+  });
+
+  it("sorts one lane on its own, for the lane it is asked about", () => {
+    // sortLane is per-lane by construction: the same two tasks, asked as
+    // Upcoming and as Done, come back in opposite orders.
+    const a = laned("a", "done", [ran("2026-08-16T10:00:00")]);
+    const b = laned("b", "done", [ran("2026-08-16T11:00:00")]);
+    expect(sortLane([a, b], "done").map((t) => t.key)).toEqual(["b", "a"]);
+    expect(sortLane([a, b], "archived").map((t) => t.key)).toEqual(["a", "b"]);
+  });
+});
+
+// ---- clicking a card ---------------------------------------------------------
+// A click on a Board card opens the thread the unread pill is pointing at, so it
+// clears it (Akshil, 2026-08-17: "when i click from kanban on unread task it
+// should register it read correct?").
+
+describe("cardOpenIntent", () => {
+  it("opens the thread and marks it read when there is something unread", () => {
+    const t = task({ unread: 3 });
+    const intent = cardOpenIntent(t)!;
+    // The same href taskHref gives — the conversation, with no per-turn anchor,
+    // which is exactly why the mark is whole-task rather than per message.
+    expect(intent.href).toBe(taskHref(t)!);
+    expect(intent.markRead).toBe(true);
+  });
+
+  it("opens without marking when nothing is unread", () => {
+    const intent = cardOpenIntent(task({ unread: 0 }))!;
+    expect(intent.href).toBe(taskHref(task())!);
+    // No POST on an ordinary card click.
+    expect(intent.markRead).toBe(false);
+  });
+
+  it("takes the DISPLAYED count, so a second click posts nothing", () => {
+    const t = task({ unread: 3 });
+    // What taskUnread returns once this task has been cleared locally.
+    expect(cardOpenIntent(t, 0)!.markRead).toBe(false);
+    expect(cardOpenIntent(t, taskUnread(t, markAllRead(new Set(), t.key)))!.markRead)
+      .toBe(false);
+  });
+
+  it("does nothing at all for a task with no session — not even the mark", () => {
+    // §5: the id is minted on the first run, so there is no conversation to
+    // open, and marking a thread read on a click that showed the reader nothing
+    // would clear a badge for messages they never saw.
+    expect(cardOpenIntent(task({ session_id: "", unread: 4 }))).toBe(null);
   });
 });
 
