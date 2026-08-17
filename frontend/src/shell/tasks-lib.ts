@@ -373,18 +373,66 @@ export function allReadKey(taskKey: string, observation: string): string {
  *   * ONE observation-stamped sentinel, for the only part arithmetic cannot
  *     reach — the messages outside the window, which are why the row must not go
  *     on saying "86" after the press that cleared all 89.
+ *
+ * THE TWO HALVES ANSWER DIFFERENT QUESTIONS, and reading them off the same list
+ * was the bug after this one:
+ *
+ *   * the observation is about WHAT THE SERVER LAST TOLD US, so it comes off the
+ *     listing row alone (markObservation reads `task.messages` and nothing
+ *     else) — stamping the fuller thread Show more fetched would retire a mark
+ *     that is still perfectly true;
+ *   * the concrete ids are about WHAT IS ON SCREEN AND MUST STOP SHOWING A DOT,
+ *     so they must cover everything currently HELD — which after Show more is
+ *     the whole thread (heldMessages), not the three the listing carried. Ids
+ *     off the window only, with a sentinel that zeroes the count, is a row
+ *     saying 0 above 86 lit dots.
  */
 export function markAllRead(
   read: Set<string>,
   task: Task,
-  loaded?: TaskMessage[],
+  held?: TaskMessage[],
 ): Set<string> {
   const next = new Set(read);
-  for (const m of loaded ?? task.messages ?? []) {
+  for (const m of held ?? task.messages ?? []) {
     if (m.unread) next.add(readKey(task.key, m.message_id));
   }
   next.add(allReadKey(task.key, markObservation(task)));
   return next;
+}
+
+/**
+ * The same mark, carried onto messages that have only just come into our hands.
+ *
+ * Show more fetches the whole thread AFTER the press that cleared it, and that
+ * reply is a read of a value the mark overrode: the server had not applied the
+ * write yet (or the fetch crossed it), so 86 messages arrive flagged `unread`
+ * and nothing in the poll ever refreshes them — `more` is false by then, so
+ * there is no second fetch until the List remounts. Left alone, they light 86
+ * dots under a row that says 0, on messages the reader marked read a second ago.
+ *
+ * The GATE is the sentinel's own observation, which is exactly the question
+ * being asked: while it holds, the server is still quoting the value the press
+ * overrode, so a thread it hands us is a thread the press covered, and the ids
+ * are written the same way the press wrote its own. The moment a poll (or the
+ * mark's own answer, or a rollback) retires that sentinel, this adopts nothing
+ * and a message that is genuinely unread keeps its dot.
+ *
+ * That is NOT the sentinel leaking back into isUnread. It is consulted once, at
+ * the moment a fetch lands, to decide whether the mark covers what the fetch
+ * brought; the dots themselves still go out through concrete ids, each one gated
+ * on the server still calling that message unread. A message arriving later is
+ * named by nothing here and dots on its own.
+ *
+ * Idempotent: the sentinel markAllRead re-adds is the one the gate just matched,
+ * so the observation is never widened — only the id half grows.
+ */
+export function carryMarkToHeld(
+  read: Set<string>,
+  task: Task,
+  held: TaskMessage[],
+): Set<string> {
+  if (!isAllRead(read, task)) return read;
+  return markAllRead(read, task, held);
 }
 
 /**
@@ -399,6 +447,12 @@ export function markAllRead(
  * The concrete ids the press wrote go too — `held` is the list it wrote them
  * from — because restoring the count without restoring the dots would leave a
  * row saying "3 unread" above three rows that all look read.
+ *
+ * `held` is therefore EVERYTHING THE MARK WROTE, not just what was held when the
+ * press went out: a Show more that lands while the write is in flight adopts the
+ * mark onto the rest of the thread (carryMarkToHeld), and a rollback that cannot
+ * see those ids is the same half-restored row wearing the other hat. Callers
+ * pass both lists; a duplicate id deletes once and costs nothing.
  */
 export function unmarkAllRead(
   read: Set<string>,
@@ -452,6 +506,13 @@ export function isAllRead(read: Set<string>, task: Task): boolean {
  * this reads — and `m.unread` gating them is what retires each one on its own:
  * once the server agrees the message is read, the local entry stops mattering
  * rather than having to be pruned against a list that moves under us.
+ *
+ * Which puts the whole burden on "everything it can see" being the truth: every
+ * gesture that marks a whole task has to write ids for everything HELD at the
+ * time (heldMessages), and a fetch that hands us more of the thread while the
+ * mark still stands has to be adopted into it (carryMarkToHeld). A narrower
+ * write is a lit dot this function will never take back, because the only key
+ * that could is one nobody wrote.
  */
 export function isUnread(taskKey: string, m: TaskMessage, read: Set<string>): boolean {
   return m.unread && !read.has(readKey(taskKey, m.message_id));
@@ -503,11 +564,15 @@ export function unreadMarker(
  * since. Only messages we actually HOLD can be discounted — the badge counts
  * the whole thread, and a message outside the loaded window is one we know
  * nothing about beyond the server's total.
+ *
+ * `held` is heldMessages: the window before Show more, the whole thread after it,
+ * and the same list the mark writes its ids from, so the count and the dots are
+ * arithmetic over one set rather than two.
  */
 export function taskUnread(
   task: Task,
   read: Set<string>,
-  loaded?: TaskMessage[],
+  held?: TaskMessage[],
 ): number {
   // The one case that is NOT arithmetic over the messages we hold: a whole-task
   // mark cleared the ones outside the window too, and the server was told so in
@@ -520,7 +585,21 @@ export function taskUnread(
   // never applied, a message that arrived since — falls through to the
   // arithmetic below and the server's number is what the row draws.
   if (isAllRead(read, task)) return 0;
-  const known = loaded ?? task.messages ?? [];
+  const known = held ?? task.messages ?? [];
+  // Once Show more has run we hold the WHOLE thread, and then the count is not
+  // arithmetic at all — it is the dots, counted. Same predicate (isUnread), same
+  // list the rows are drawn from, so the badge and the rail cannot say two
+  // different things about one thread; the row saying 0 over 86 lit dots is
+  // precisely the bug this arm closes.
+  //
+  // It is also the more accurate of the two. `task.unread` is deliberately
+  // arithmetic on the server ("every message is unread unless marked read or not
+  // yet happened", clamped at zero because a marked-then-cancelled message counts
+  // twice) and its own docstring says the Show-more endpoint is the exact one. So
+  // where we have the exact thread, we use it.
+  if (known.length >= task.message_count) {
+    return known.filter((m) => isUnread(task.key, m, read)).length;
+  }
   const cleared = known.filter(
     (m) => m.unread && read.has(readKey(task.key, m.message_id)),
   ).length;
@@ -578,18 +657,53 @@ export interface ThreadView {
 }
 
 /**
+ * EVERY MESSAGE OF THIS THREAD THIS CLIENT HOLDS, freshest copy of each — the
+ * one answer to "what is in our hands", which is what a whole-task mark has to
+ * cover (markAllRead) and what its count is arithmetic over (taskUnread).
+ *
+ * Two lists arrive on two schedules and neither is simply better than the other:
+ *
+ *   * the LISTING row (`task.messages`) is the three newest, replaced by every
+ *     poll — so it is the freshest thing we have, and the only place a message
+ *     that arrived a moment ago can appear at all;
+ *   * the thread Show more FETCHED (`loaded`) is all of it, read once and never
+ *     read again — `more` goes false, so nothing refetches it before a remount.
+ *
+ * So: the fetched thread for depth, the listing's copy of any message that is in
+ * both for its state, and anything the listing has that the fetch does not is a
+ * message that ARRIVED AFTER the fetch — it leads, because the order is newest
+ * first. Without that last part an expanded thread is frozen at the instant it
+ * was fetched: an arrival is invisible until the List remounts, which is the very
+ * defect the whole-task sentinel was rebuilt to stop having.
+ *
+ * Deduped by message id, so nothing is ever drawn twice.
+ */
+export function heldMessages(task: Task, loaded?: TaskMessage[]): TaskMessage[] {
+  const window = task.messages ?? [];
+  if (!loaded) return window;
+  const fresh = new Map(window.map((m) => [m.message_id, m]));
+  const fetched = new Set(loaded.map((m) => m.message_id));
+  return [
+    ...window.filter((m) => !fetched.has(m.message_id)),
+    ...loaded.map((m) => fresh.get(m.message_id) ?? m),
+  ];
+}
+
+/**
  * What an expanded task shows.
  *
  * Before Show more that is `task.messages` — the three newest, already ordered
  * by the server. After it, the full thread REPLACES those three rather than
- * appending to them, so a message can never appear twice.
+ * appending to them, so a message can never appear twice: heldMessages merges
+ * them by id, taking the listing's fresher copy of anything in both and leading
+ * with whatever arrived after the fetch.
  *
  * `message_count` is the server's total, and the honest source for "is there
  * more?": the preview list alone cannot tell a thread of exactly three from a
  * thread of three hundred.
  */
 export function threadView(task: Task, loaded?: TaskMessage[]): ThreadView {
-  if (loaded) return { messages: loaded, more: false, hidden: 0 };
+  if (loaded) return { messages: heldMessages(task, loaded), more: false, hidden: 0 };
   const messages = (task.messages ?? []).slice(0, PREVIEW_MESSAGES);
   const hidden = Math.max(task.message_count - messages.length, 0);
   return { messages, more: hidden > 0, hidden };
@@ -1165,9 +1279,9 @@ export interface MarkReadIntent {
 export function markReadIntent(
   task: Task,
   read: Set<string>,
-  loaded?: TaskMessage[],
+  held?: TaskMessage[],
 ): MarkReadIntent | null {
-  const unread = taskUnread(task, read, loaded);
+  const unread = taskUnread(task, read, held);
   if (unread <= 0) return null;
   return {
     unread,

@@ -20,12 +20,14 @@ import {
   canCancel,
   canRunNow,
   cancelIntent,
+  carryMarkToHeld,
   dayLabel,
   dropAction,
   dropLanes,
   filterTasks,
   firstLine,
   groupByColumn,
+  heldMessages,
   isAllRead,
   isDraggable,
   isFailedTask,
@@ -115,6 +117,17 @@ function task(over: Partial<Task> = {}, n = 1): Task {
   };
 }
 
+/** What Show more fetches: the WHOLE thread, newest first, ids exactly as the
+ * server formats them (`MSG-nnn`) so the listing's copy of a message and the
+ * fetch's copy are the same message. */
+function thread(n: number, over: Partial<TaskMessage> = {}): TaskMessage[] {
+  const messages: TaskMessage[] = [];
+  for (let i = n; i >= 1; i--) {
+    messages.push(msg({ message_id: `MSG-${String(i).padStart(3, "0")}`, ...over }));
+  }
+  return messages;
+}
+
 // ---- the accordion: 1 / 3 / 12 messages --------------------------------------
 
 describe("threadView", () => {
@@ -142,12 +155,60 @@ describe("threadView", () => {
 
   it("REPLACES the preview with the loaded thread rather than appending", () => {
     const t = task({}, 12);
-    const full: TaskMessage[] = [];
-    for (let i = 12; i >= 1; i--) full.push(msg({ message_id: `MSG-${i}` }));
-    const view = threadView(t, full);
+    const view = threadView(t, thread(12));
     expect(view.messages.length).toBe(12);
     expect(new Set(view.messages.map((m) => m.message_id)).size).toBe(12);
     expect(view.more).toBe(false);
+  });
+
+  // The fetched thread is read ONCE and `more` is false afterwards, so nothing
+  // ever refetches it — which used to freeze an expanded thread at the instant it
+  // was fetched. The listing row is still polled, so it is the fresher of the two
+  // about the three it carries, and anything it has that the fetch does not is a
+  // message that arrived since.
+  it("leads with a message that arrived after the fetch", () => {
+    const fetched = thread(12);
+    const t: Task = {
+      ...task({ message_count: 13 }, 13),
+      messages: [
+        msg({ message_id: "MSG-013", unread: true }),
+        msg({ message_id: "MSG-012" }),
+        msg({ message_id: "MSG-011" }),
+      ],
+    };
+    const view = threadView(t, fetched);
+    expect(view.messages.map((m) => m.message_id).slice(0, 2))
+      .toEqual(["MSG-013", "MSG-012"]);
+    expect(view.messages.length).toBe(13);
+    expect(new Set(view.messages.map((m) => m.message_id)).size).toBe(13);
+  });
+
+  it("takes the LISTING's copy of a message the fetch also holds", () => {
+    // The fetch said unread; the poll since has seen it read. Two copies of one
+    // message, and the newer answer is the one the row draws.
+    const fetched = thread(12).map((m) =>
+      m.message_id === "MSG-012" ? { ...m, unread: true } : m,
+    );
+    const t: Task = {
+      ...task({}, 12),
+      messages: [
+        msg({ message_id: "MSG-012", unread: false }),
+        msg({ message_id: "MSG-011" }),
+        msg({ message_id: "MSG-010" }),
+      ],
+    };
+    const view = threadView(t, fetched);
+    expect(view.messages.length).toBe(12);
+    expect(view.messages[0].message_id).toBe("MSG-012");
+    expect(view.messages[0].unread).toBe(false);
+  });
+
+  it("holds nothing but the window before Show more has run", () => {
+    const t = task({}, 12);
+    expect(heldMessages(t).map((m) => m.message_id)).toEqual([
+      "MSG-012", "MSG-011", "MSG-010",
+    ]);
+    expect(heldMessages(t, thread(12)).length).toBe(12);
   });
 
   it("trusts message_count, not the preview length, for 'is there more?'", () => {
@@ -201,9 +262,14 @@ describe("unread", () => {
     let read = markRead(new Set<string>(), t.key, "MSG-003");
     read = markRead(read, t.key, "MSG-003");
     expect(taskUnread(t, read)).toBe(2);
-    // A message the server already called read costs nothing when clicked.
-    const seen = { ...t, messages: t.messages.map((m) => ({ ...m, unread: false })) };
-    expect(taskUnread(seen, markRead(read, t.key, "MSG-002"))).toBe(3);
+    // A message the server already called read costs nothing when clicked — read
+    // off a WINDOW (three of twelve), which is the arm this arithmetic serves.
+    const window = { ...three(), unread: 12, message_count: 12 };
+    const seen = {
+      ...window,
+      messages: window.messages.map((m) => ({ ...m, unread: false })),
+    };
+    expect(taskUnread(seen, markRead(read, t.key, "MSG-002"))).toBe(12);
   });
 
   // The marker LEADS the row now, and the word beside it is gone. Both halves
@@ -238,8 +304,23 @@ describe("unread", () => {
   });
 
   it("does not go negative when the poll has already caught up", () => {
-    const t = { ...three(), unread: 0 };
+    // The window arm, where the count is the server's number less what we
+    // discounted: it can be driven past zero and must clamp there.
+    const t = { ...three(), unread: 0, message_count: 12 };
     expect(taskUnread(t, markRead(new Set<string>(), t.key, "MSG-003"))).toBe(0);
+  });
+
+  // Show more replaces the window with the whole thread, and the server's own
+  // `unread` is deliberately approximate ("the Show-more endpoint is exact" —
+  // _unread_count). So once we hold all of it, the count IS the dots: same
+  // predicate, same list the rows are drawn from, and no way for the badge and
+  // the rail to disagree.
+  it("counts the thread itself once it holds every message of it", () => {
+    const t = { ...three(), unread: 12, message_count: 3 };
+    // Nothing marked: three flags, three dots, three on the badge — the server's
+    // stale 12 does not get to outvote the thread in our hands.
+    expect(taskUnread(t, new Set())).toBe(3);
+    expect(taskUnread(t, markRead(new Set<string>(), t.key, "MSG-002"))).toBe(2);
   });
 
   it("keys reads per task — MSG-001 exists in every thread", () => {
@@ -479,18 +560,166 @@ describe("the whole-task mark", () => {
   });
 });
 
+// ---- the mark, and the thread Show more fetched ---------------------------------
+// The bug the fix above left behind. Its two halves were each right: isUnread
+// stopped consulting the sentinel (a wildcard cannot name a message, which is why
+// an arrival was invisible), and the OBSERVATION is stamped off the listing row
+// only (stamping the fetched thread would retire a mark that is still true). What
+// was missed is that the sentinel and the concrete ids answer different questions:
+// the observation is what the SERVER LAST SAID, the ids are what is ON SCREEN. So
+// pressing Show more and then Mark read zeroed the count through the sentinel and
+// left 86 lit dots that no key could ever take back — and `more` is false by then,
+// so nothing refetched them.
+
+describe("the whole-task mark over a fetched thread", () => {
+  /** The listing row for a long thread: three of 89, all unread. */
+  const listing = (over: Partial<Task> = {}): Task => ({
+    ...task({ unread: 89, message_count: 89 }, 3),
+    messages: [
+      msg({ message_id: "MSG-089", unread: true }),
+      msg({ message_id: "MSG-088", unread: true }),
+      msg({ message_id: "MSG-087", unread: true }),
+    ],
+    ...over,
+  });
+  /** What Show more brings back before the mark: all 89, all unread. */
+  const fetched = () => thread(89, { unread: true });
+
+  it("Show more then Mark read leaves NO dot in the thread, and a zero count", () => {
+    const t = listing();
+    const held = heldMessages(t, fetched());
+    expect(held.length).toBe(89);
+    const read = markAllRead(new Set<string>(), t, held);
+    expect(taskUnread(t, read, held)).toBe(0);
+    for (const m of held) expect(unreadMarker(t.key, m, read).unread).toBe(false);
+    expect(markReadIntent(t, read, held)).toBe(null);
+    // And the witness for why `held` is passed at all: ids off the listing window
+    // clear three of 89 and the sentinel zeroes the count over the other 86.
+    const narrow = markAllRead(new Set<string>(), t);
+    expect(held.filter((m) => isUnread(t.key, m, narrow)).length).toBe(86);
+    expect(taskUnread(t, narrow, held)).toBe(0);
+  });
+
+  it("Mark read then Show more does not resurrect the dots the mark covered", () => {
+    // The reverse order, and the same lie from the other side: the fetch is a READ
+    // of the value the press overrode — the server had not applied the write when
+    // it composed this thread — so 86 messages arrive flagged unread.
+    const t = listing();
+    const marked = markAllRead(new Set<string>(), t);
+    const thread89 = fetched();
+    const carried = carryMarkToHeld(marked, t, thread89);
+    const held = heldMessages(t, thread89);
+    for (const m of held) expect(unreadMarker(t.key, m, carried).unread).toBe(false);
+    expect(taskUnread(t, carried, held)).toBe(0);
+    // Without it, the 86 light up under a row that says 0 — a dot back on a message
+    // the reader marked read a second ago.
+    expect(held.filter((m) => isUnread(t.key, m, marked)).length).toBe(86);
+  });
+
+  it("adopts through the SENTINEL's observation, and widens nothing", () => {
+    // The gate is "is the server still quoting the value the press overrode?",
+    // which is exactly the question. The sentinel it re-stamps is the one that
+    // just answered it, so the observation is never widened to the fetched thread.
+    const t = listing();
+    const marked = markAllRead(new Set<string>(), t);
+    const carried = carryMarkToHeld(marked, t, fetched());
+    expect(isAllRead(carried, t)).toBe(true);
+    expect([...carried].filter((k) => k.includes(ALL_MESSAGES)).length).toBe(1);
+    expect(markObservation(t)).toBe("89\u0000MSG-087,MSG-088,MSG-089");
+  });
+
+  it("adopts NOTHING once the mark has expired, so news stays news", () => {
+    // A poll disagreed (or the answer rolled the mark back): there is no mark to
+    // carry, and a fetch is just a fetch. Same set back, untouched.
+    const t = listing();
+    const marked = markAllRead(new Set<string>(), t);
+    const polled = listing({ unread: 4, messages: [
+      msg({ message_id: "MSG-093", unread: true }),
+      msg({ message_id: "MSG-089", unread: false }),
+      msg({ message_id: "MSG-088", unread: false }),
+    ] });
+    expect(carryMarkToHeld(marked, polled, fetched())).toBe(marked);
+    const rolled = unmarkAllRead(marked, t.key, t.messages);
+    expect(carryMarkToHeld(rolled, t, fetched())).toBe(rolled);
+  });
+
+  it("still dots AND counts a message that arrives after the mark", () => {
+    // The defect the sentinel was rebuilt to stop having, asked of an EXPANDED
+    // thread: the fetch is never refetched, so the arrival can only come through
+    // the listing row — heldMessages leads with it, and the count is the dots.
+    const t = listing();
+    const thread89 = fetched();
+    const read = markAllRead(new Set<string>(), t, heldMessages(t, thread89));
+    const arrived = msg({ message_id: "MSG-090", unread: true });
+    const polled = listing({ unread: 1, message_count: 90, messages: [
+      arrived,
+      msg({ message_id: "MSG-089", unread: false }),
+      msg({ message_id: "MSG-088", unread: false }),
+    ] });
+    const held = heldMessages(polled, thread89);
+    expect(held[0].message_id).toBe("MSG-090");
+    expect(unreadMarker(polled.key, held[0], read).unread).toBe(true);
+    expect(taskUnread(polled, read, held)).toBe(1);
+    expect(markReadIntent(polled, read, held)!.unread).toBe(1);
+  });
+
+  it("gives the WHOLE fetched thread back when the write is refused", () => {
+    const t = listing();
+    const held = heldMessages(t, fetched());
+    const read = markAllRead(new Set<string>(), t, held);
+    const back = unmarkAllRead(read, t.key, held);
+    expect(taskUnread(t, back, held)).toBe(89);
+    for (const m of held) expect(unreadMarker(t.key, m, back).unread).toBe(true);
+    expect(markReadIntent(t, back, held)!.unread).toBe(89);
+    // Same for the server's own answer: something arrived while it was marking, so
+    // the row goes back to reporting the thread rather than swallowing it.
+    expect(taskUnread(t, settleMarkAllRead(read, t.key, held, { unread: 2 }), held))
+      .toBe(89);
+  });
+
+  it("rolls back what a Show more adopted WHILE the write was in flight", () => {
+    // The press wrote ids for the window it held; the fetch that landed a moment
+    // later carried the same mark onto the other 86. Both are the press's, so a
+    // rollback has to be handed both — which is why the caller passes what it
+    // wrote AND what the thread holds now.
+    const t = listing();
+    const wrote = heldMessages(t);
+    let read = markAllRead(new Set<string>(), t, wrote);
+    read = carryMarkToHeld(read, t, fetched());
+    const now = heldMessages(t, fetched());
+    const back = unmarkAllRead(read, t.key, [...wrote, ...now]);
+    for (const m of now) expect(unreadMarker(t.key, m, back).unread).toBe(true);
+    expect(taskUnread(t, back, now)).toBe(89);
+    // The narrow rollback is the same half-restored row wearing the other hat: 86
+    // messages stay silently read, with nothing left that could relight them.
+    const narrow = unmarkAllRead(read, t.key, wrote);
+    expect(now.filter((m) => !isUnread(t.key, m, narrow)).length).toBe(86);
+  });
+
+  it("never mutates the set it was handed", () => {
+    const t = listing();
+    const marked = markAllRead(new Set<string>(), t);
+    const size = marked.size;
+    carryMarkToHeld(marked, t, fetched());
+    expect(marked.size).toBe(size);
+  });
+});
+
 // ---- clearing a task without opening it ----------------------------------------
 // Read state is per message and clearing it was per message too, so "I have seen
 // all of this" cost one click per row (Akshil, 2026-08-17: "so you don't have to
 // open everything individually").
 
 describe("markReadIntent", () => {
+  // Flags consistent with the count, because a row that holds its whole thread
+  // is counted off the flags themselves (taskUnread): a fixture saying "1 unread"
+  // over three lit messages is a server contradicting itself.
   const withUnread = (n: number): Task => ({
     ...task({ unread: n, message_count: Math.max(n, 3) }, 3),
     messages: [
-      msg({ message_id: "MSG-003", unread: true }),
-      msg({ message_id: "MSG-002", unread: true }),
-      msg({ message_id: "MSG-001", unread: true }),
+      msg({ message_id: "MSG-003", unread: n >= 1 }),
+      msg({ message_id: "MSG-002", unread: n >= 2 }),
+      msg({ message_id: "MSG-001", unread: n >= 3 }),
     ],
   });
 
@@ -1298,7 +1527,7 @@ describe("the mark-read action", () => {
     expect(ROW).toContain("aria-label={seen.label}");
     // Whether it exists at all is the intent's decision, asked with the count the
     // row is drawing rather than the raw server number.
-    expect(NODE).toContain("markReadIntent(task, read, loaded)");
+    expect(NODE).toContain("markReadIntent(task, read, held)");
   });
 
   it("is ONE request for the whole thread, not one per message", () => {
@@ -1309,8 +1538,8 @@ describe("the mark-read action", () => {
   });
 
   it("clears the local set too, so the dots go on the click", () => {
-    expect(NODE).toContain("onReadAll(task, loaded)");
-    expect(VIEWS).toContain("markAllRead(cur, task, loaded)");
+    expect(NODE).toContain("onReadAll(task, held)");
+    expect(VIEWS).toContain("markAllRead(cur, task, held)");
   });
 
   it("reconciles the optimism instead of planting it and walking away", () => {
@@ -1321,15 +1550,39 @@ describe("the mark-read action", () => {
     const fn = NODE.slice(at, NODE.indexOf("\n  };", at));
     // The ids the rollback will need, captured BEFORE the await — a poll can
     // replace the thread while the request is in flight.
-    expect(fn.indexOf("const held =")).toBeLessThan(fn.indexOf("await markWholeTaskRead"));
+    expect(fn.indexOf("const wrote = held;")).toBeLessThan(
+      fn.indexOf("await markWholeTaskRead"),
+    );
+    // ...plus whatever the thread holds by the time the answer lands: a Show more
+    // that arrived meanwhile carried this very mark onto the rest of the thread
+    // (useReadSet.carryAll), and those ids are the press's too.
+    expect(fn).toContain("[...wrote, ...heldNow.current]");
     // Refused: the mark comes back off, and the server's sentence is said.
-    expect(fn).toContain("onUnreadAll(task.key, held)");
+    expect(fn).toContain("onUnreadAll(task.key, rollback())");
     expect(fn).toContain("setNote((e as Error).message)");
     // 200 with something still unread: that wins too, rather than being dropped.
     expect(fn).toContain("if (answer.unread > 0)");
-    expect(fn).toContain("onSettleAll(task.key, held, answer)");
+    expect(fn).toContain("onSettleAll(task.key, rollback(), answer)");
     // Still no reload — the row has already said the one thing it knows.
     expect(fn).not.toContain("onReload");
+  });
+
+  it("carries a standing mark onto the thread Show more fetches", () => {
+    // The fetch's reply is a read of a value the press may already have
+    // overridden, and nothing refetches it (`more` is false by then). So the
+    // fetch adopts the standing mark — asked of the FRESHEST task, because "is
+    // the mark still standing?" is a question about the newest poll, not about
+    // the render the button was pressed in.
+    const at = VIEWS.indexOf("const showMore = async (task: Task) => {");
+    expect(at).toBeGreaterThan(-1);
+    const fn = VIEWS.slice(at, VIEWS.indexOf("\n  };", at));
+    expect(fn.indexOf("const thread = r.messages ?? [];")).toBeLessThan(
+      fn.indexOf("carryAll(fresh, thread)"),
+    );
+    expect(fn).toContain("latest.current.find((t) => t.key === task.key) ?? task");
+    expect(VIEWS).toContain("carryMarkToHeld(cur, task, held)");
+    // ...and the ref it reads that from is kept up to date by the poll.
+    expect(VIEWS).toContain("latest.current = tasks;");
   });
 
   it("never wears the unread dot's own hue", () => {
@@ -1352,8 +1605,10 @@ describe("opening a thread, from either view", () => {
     // two copies of "mark local, fire the POST, navigate" is how the two views
     // start disagreeing again. Exactly one definition, and both views spend it.
     expect((VIEWS.match(/function performOpen\(/g) ?? []).length).toBe(1);
-    expect(BOARD).toContain("performOpen(task, intent, { clearAll, restoreAll, settleAll })");
-    expect(NODE).toContain("performOpen(task, intent, {");
+    expect(BOARD).toContain(
+      "performOpen(task, intent, { clearAll, restoreAll, settleAll }, heldMessages(task))",
+    );
+    expect(NODE).toContain("performOpen(\n      task,\n      intent,\n      {");
     // And the whole-task POST exists in exactly two places: the shared performer,
     // and the List row's own Mark read button (which stays on the page and awaits
     // it). No third mark-read path.
@@ -1369,13 +1624,35 @@ describe("opening a thread, from either view", () => {
     expect(fn).toContain("if (intent.markRead) {");
     // Local first (the pill has to go on the press, not 20s later), then ONE
     // whole-task request. Never a loop over messages.
-    expect(fn.indexOf("marks.clearAll(task)")).toBeGreaterThan(
+    expect(fn.indexOf("marks.clearAll(task, held)")).toBeGreaterThan(
       fn.indexOf("if (intent.markRead) {"),
     );
     expect(fn.indexOf("markWholeTaskRead(task.key)")).toBeGreaterThan(
-      fn.indexOf("marks.clearAll(task)"),
+      fn.indexOf("marks.clearAll(task, held)"),
     );
     expect(fn).not.toContain("markTaskMessageRead");
+  });
+
+  it("marks what the CALLER holds, and never reads that off the row itself", () => {
+    // The bug this closes: the performer read `task.messages` — the listing's
+    // three — so Open chat on a thread expanded to all 89 zeroed the count and
+    // left 86 dots with no key that could ever take them back. `held` is now the
+    // caller's, required, and the two views hand over what each of them holds.
+    const at = VIEWS.indexOf("function performOpen(");
+    const sig = VIEWS.slice(at, VIEWS.indexOf("): void {", at));
+    expect(sig).toContain("held: TaskMessage[]");
+    const fn = VIEWS.slice(at, VIEWS.indexOf("\n}", at));
+    expect(fn).not.toContain("task.messages");
+    // Both call sites, and both pass the same list to the mark and its rollback.
+    expect(NODE).toContain("performOpen(\n      task,\n      intent,");
+    expect(NODE.slice(NODE.indexOf("const openChat ="))).toContain("      held,");
+    expect(BOARD).toContain(
+      "performOpen(task, intent, { clearAll, restoreAll, settleAll }, heldMessages(task))",
+    );
+    // The List's Open chat and the List's Mark read clear the SAME amount of the
+    // same thread: a mark that depended on which button you pressed would be a
+    // coin toss, not a rule.
+    expect(NODE).toContain("onReadAll(task, held)");
   });
 
   it("navigates regardless, and never waits on the write", () => {
@@ -1409,7 +1686,7 @@ describe("opening a thread, from either view", () => {
     expect(BOARD).toContain("taskUnread(task, read)");
     // The List asks with the count the row is drawing (local marks included),
     // which is what stops a second press from posting again.
-    expect(NODE).toContain("taskUnread(task, read, loaded)");
+    expect(NODE).toContain("taskUnread(task, read, held)");
     expect(ROW).toContain("<UnreadRail count={unread} />");
   });
 

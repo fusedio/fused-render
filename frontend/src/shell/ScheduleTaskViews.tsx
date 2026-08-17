@@ -43,11 +43,13 @@ import {
   archiveIntent,
   basename,
   cancelIntent,
+  carryMarkToHeld,
   dropAction,
   dropLanes,
   filterTasks,
   firstLine,
   groupByColumn,
+  heldMessages,
   isDraggable,
   markAllRead,
   markRead,
@@ -499,8 +501,19 @@ function useReadSet() {
   // thread. Two halves, both from tasks-lib.markAllRead: a concrete id for every
   // message this component HOLDS, and one observation-stamped sentinel for the
   // ones outside the window, whose ids it has never seen.
-  const clearAll = (task: Task, loaded?: TaskMessage[]) => {
-    setRead((cur) => markAllRead(cur, task, loaded));
+  //
+  // `held` is tasks-lib.heldMessages, never the listing window on its own: after
+  // Show more the thread on screen is all 89, and ids off the three the listing
+  // carried would zero the count over 86 dots that nothing could take back.
+  const clearAll = (task: Task, held?: TaskMessage[]) => {
+    setRead((cur) => markAllRead(cur, task, held));
+  };
+  // The other direction of the same seam: a thread that has only just ARRIVED,
+  // under a mark that is still standing. Show more's reply is a read of the value
+  // the press overrode, so its `unread` flags are pre-mark — and nothing refetches
+  // them. tasks-lib.carryMarkToHeld decides whether the mark still covers them.
+  const carryAll = (task: Task, held: TaskMessage[]) => {
+    setRead((cur) => carryMarkToHeld(cur, task, held));
   };
   // ...and the way back, which is the half that was missing. `held` is the list
   // the press wrote its concrete ids from, captured BEFORE the request went out:
@@ -519,13 +532,13 @@ function useReadSet() {
   ) => {
     setRead((cur) => settleMarkAllRead(cur, taskKey, held, answer));
   };
-  return { read, clear, clearAll, restoreAll, settleAll };
+  return { read, clear, clearAll, carryAll, restoreAll, settleAll };
 }
 
 /** The whole-task half of useReadSet, for the two performers below — they are
  * module functions rather than hooks, so the marks are handed to them. */
 interface ReadMarks {
-  clearAll: (task: Task, loaded?: TaskMessage[]) => void;
+  clearAll: (task: Task, held?: TaskMessage[]) => void;
   restoreAll: (taskKey: string, held: TaskMessage[]) => void;
   settleAll: (
     taskKey: string,
@@ -584,11 +597,25 @@ async function performRun(intent: TaskRunIntent): Promise<string> {
  * it back" was never true of a local override that outranks the poll. Nobody is
  * shown a sentence here — the press left the page — so the correction IS the
  * whole report: the pill is there again when the reader comes back.
+ *
+ * `held` is passed IN rather than read off `task.messages` here, and it is not
+ * optional. This press hops away, so the view it marks is usually unmounted a
+ * frame later and its read set goes with it — but "usually" is not a rule to
+ * write a mark against: the frames before the hop still paint, and this is the
+ * SAME gesture as the row's own Mark read button on a thread the row may have
+ * expanded to all 89. A mark that covered less here than there would be a rule
+ * that depended on which button you pressed. The List hands over what the thread
+ * holds (tasks-lib.heldMessages); the Board hands over its card's window, which
+ * is all a card ever holds — it has no Show more.
  */
-function performOpen(task: Task, intent: OpenThreadIntent, marks: ReadMarks): void {
+function performOpen(
+  task: Task,
+  intent: OpenThreadIntent,
+  marks: ReadMarks,
+  held: TaskMessage[],
+): void {
   if (intent.markRead) {
-    const held = task.messages ?? [];
-    marks.clearAll(task);
+    marks.clearAll(task, held);
     void markWholeTaskRead(task.key)
       .then((answer) => marks.settleAll(task.key, held, answer))
       .catch(() => marks.restoreAll(task.key, held));
@@ -634,7 +661,17 @@ export function TaskList({
   const [loaded, setLoaded] = useState<Record<string, TaskMessage[]>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const { read, clear, clearAll, restoreAll, settleAll } = useReadSet();
+  const { read, clear, clearAll, carryAll, restoreAll, settleAll } = useReadSet();
+
+  // The latest poll's tasks, readable from ACROSS an await. showMore closes over
+  // the render its button was pressed in, and the question it asks when the fetch
+  // lands — is the whole-task mark still standing? — is a question about what the
+  // server is quoting NOW, so a task one poll stale would answer it about numbers
+  // nobody is looking at any more.
+  const latest = useRef(tasks);
+  useEffect(() => {
+    latest.current = tasks;
+  }, [tasks]);
 
   const toggle = (key: string) => setExpanded((cur) => toggleExpanded(cur, key));
 
@@ -647,7 +684,18 @@ export function TaskList({
     });
     try {
       const r = await getTaskMessages(task.key);
-      setLoaded((cur) => ({ ...cur, [task.key]: r.messages ?? [] }));
+      const thread = r.messages ?? [];
+      setLoaded((cur) => ({ ...cur, [task.key]: thread }));
+      // This reply is a READ, and a read can be of a value we have already
+      // overridden: if the reader pressed Mark read (or Open chat) a moment ago,
+      // the server had not applied it when it composed this thread, so 86
+      // messages are about to arrive flagged unread — and `more` is false now, so
+      // nothing ever refetches them. carryAll adopts the standing mark onto them,
+      // and does nothing at all once that mark has expired. Asked against the
+      // freshest task we have, because "is the mark still standing?" is a question
+      // about the newest poll and not about the render this press came from.
+      const fresh = latest.current.find((t) => t.key === task.key) ?? task;
+      carryAll(fresh, thread);
     } catch (e) {
       // Said under the thread it belongs to, not as a page banner: the rest of
       // the list is intact and only this one thread failed to open.
@@ -717,8 +765,10 @@ function TaskNode({
   read: Set<string>;
   onRead: (taskKey: string, m: TaskMessage) => void;
   /** Clear this whole task's unread locally — the optimistic half of Mark read,
-   * paired with the one server call the button makes. */
-  onReadAll: (task: Task, loaded?: TaskMessage[]) => void;
+   * paired with the one server call the button makes. `held` is everything this
+   * thread has in its hands (tasks-lib.heldMessages), which after Show more is
+   * all of it. */
+  onReadAll: (task: Task, held?: TaskMessage[]) => void;
   /** Put it back: the write was refused, so the dots and the button return. */
   onUnreadAll: (taskKey: string, held: TaskMessage[]) => void;
   /** Reconcile the optimism against the server's own answer to the mark. */
@@ -729,7 +779,24 @@ function TaskNode({
   ) => void;
 }) {
   const view = threadView(task, loaded);
-  const unread = taskUnread(task, read, loaded);
+  // Everything this thread holds, one list: the listing window before Show more,
+  // the whole fetched thread after it, and either way the listing's fresher copy
+  // of anything in both. The count, the button's intent, the mark and the mark's
+  // rollback are all asked of THIS — one set, so the number on the row and the
+  // dots under it cannot be answers about two different lists.
+  const held = heldMessages(task, loaded);
+  const unread = taskUnread(task, read, held);
+  // What the thread holds AFTER an await, which is not what `held` above closed
+  // over: markSeen is written against the render its button was pressed in, and a
+  // Show more that lands while the write is in flight adopts the mark onto the
+  // rest of the thread (useReadSet.carryAll). A rollback that could not see those
+  // ids would put the count back over dots it had no key to relight.
+  const heldNow = useRef(held);
+  // Every render, deliberately: `held` is a fresh list each time and this ref is
+  // only ever read from inside an in-flight write.
+  useEffect(() => {
+    heldNow.current = held;
+  });
   // Open chat. Where it goes and whether going there also clears the thread —
   // one answer, from the same function the Board card asks (openThreadIntent),
   // because it is the same gesture to the same href and must come back with the
@@ -754,7 +821,7 @@ function TaskNode({
   // Mark read — the whole task at once, so clearing 89 unread messages is not 89
   // clicks through 89 transcripts. Asked of the count this row is DRAWING, so
   // the button leaves on its own press rather than on the next poll.
-  const seen = markReadIntent(task, read, loaded);
+  const seen = markReadIntent(task, read, held);
 
   // The one cancel in flight, by message id, and whatever the server said about
   // the last one that failed. Per MESSAGE rather than per thread: the sentence
@@ -838,17 +905,20 @@ function TaskNode({
   // Still no onReload: the count is already right locally, and a reload would
   // repaint every row in the list to say the one thing this row has said.
   const markSeen = async () => {
-    // Captured before the await: `loaded` and `task` can both be replaced by a
+    // Captured before the await: `held` and `task` can both be replaced by a
     // poll while the request is in flight, and a rollback has to remove the ids
-    // the press actually wrote.
-    const held = loaded ?? task.messages ?? [];
+    // the press actually wrote. Plus whatever the thread holds by the time the
+    // answer lands (heldNow) — a Show more that arrived meanwhile carried this
+    // very mark onto the rest of the thread, and those ids are the press's too.
+    const wrote = held;
+    const rollback = () => [...wrote, ...heldNow.current];
     setActing(true);
     setNote("");
-    onReadAll(task, loaded);
+    onReadAll(task, held);
     try {
       const answer = await markWholeTaskRead(task.key);
       if (answer.unread > 0) {
-        onSettleAll(task.key, held, answer);
+        onSettleAll(task.key, rollback(), answer);
         // News, not a fault — hence the quiet note the other row actions use.
         setNote(
           answer.unread === 1
@@ -857,7 +927,7 @@ function TaskNode({
         );
       }
     } catch (e) {
-      onUnreadAll(task.key, held);
+      onUnreadAll(task.key, rollback());
       setNote((e as Error).message);
     } finally {
       setActing(false);
@@ -875,13 +945,20 @@ function TaskNode({
   // cannot disagree. Deliberately NOT markSeen above: that one is a press that
   // STAYS on this page, so it awaits the write and has somewhere to say a
   // refusal; this one is leaving, so it fires and forgets and never holds up the
-  // hop. `onReadAll` is the local half, the same one markSeen uses.
+  // hop. `onReadAll` is the local half, the same one markSeen uses — and it is
+  // handed the same `held` list, so the two gestures on this row cannot clear
+  // different amounts of the same thread.
   const openChat = (intent: OpenThreadIntent) => {
-    performOpen(task, intent, {
-      clearAll: onReadAll,
-      restoreAll: onUnreadAll,
-      settleAll: onSettleAll,
-    });
+    performOpen(
+      task,
+      intent,
+      {
+        clearAll: onReadAll,
+        restoreAll: onUnreadAll,
+        settleAll: onSettleAll,
+      },
+      held,
+    );
   };
 
   const cancel = async (m: TaskMessage, entryId: string) => {
@@ -1306,8 +1383,12 @@ export function TaskBoard({
   // opening a thread means (mark local-first, ONE whole-task request, fire and
   // forget, navigate regardless) lives in performOpen, shared with the List row's
   // Open chat button so the same gesture cannot mean two things on two views.
+  // What a card HOLDS is its listing window and nothing else — the Board has no
+  // Show more, so heldMessages(task) is the whole of it. Passed explicitly all the
+  // same: the shared performer used to read this off `task.messages` itself, which
+  // is exactly why the List's expanded thread got marked three messages deep.
   const openCard = (task: Task, intent: OpenThreadIntent) => {
-    performOpen(task, intent, { clearAll, restoreAll, settleAll });
+    performOpen(task, intent, { clearAll, restoreAll, settleAll }, heldMessages(task));
   };
 
   // Shared by expanded lane bodies AND collapsed rails, so Archive — collapsed
