@@ -7553,6 +7553,17 @@ the installation, and the mark that says so.
   hour over a state change that is already over. A clock that has gone backwards past the stamp reads as *not*
   watching: a badge a minute late costs nothing, a permanent 5s poll costs a
   request every 5s for the life of the app.
+- **SF-12a1** **EVERY surface that shows this state listens to the nudge — both
+  of them.** The chip and the Preferences tab are two views of one fact, and for
+  a while only the chip was subscribed: a dismiss from the chip's panel, or a
+  session stamping the install from another tab, left Preferences asserting the
+  opposite of what the sidebar showed until the tab was remounted. That is the
+  disagreeing-surfaces failure SF-12a exists to prevent, arriving through the one
+  door with no listener on it. The tab's own dismiss then stopped re-reading
+  locally as well: `clearSelfFix` already nudges, so a second refresh path would
+  be a second place for the two to fall out of step. The tab needs no in-flight
+  guard of its own (unlike SF-12b) because its whole response is one re-read, and
+  the effect's own teardown drops the previous fetch.
 - **SF-12b** **A nudge ABANDONS the read already in flight**, it does not merely
   cancel the next one. The two cadences above mean a `/api/config` read is
   usually outstanding, and the request that resolves after a dismiss still
