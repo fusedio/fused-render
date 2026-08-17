@@ -79,13 +79,20 @@
   color: var(--fg-muted);
 }
 
-/* -- the Local tab's two sections ------------------------------------------
-   "Models" (by capability) and "Fetched by engines". The bucketing itself is
-   shell/aiModelGroups.ts; what is here is the hierarchy that makes it readable
-   — a section title, a capability title one step quieter, and a subtotal on
-   each. The subtotals are the reason the headings carry a baseline rule at all:
-   a figure floating at the right end of an unruled line reads as belonging to
-   the first card below it. */
+/* -- section headings -------------------------------------------------------
+   The Local tab's two sections ("User downloaded models" by capability, and
+   "Fetched by engines"), and — since the Discover tab was rebuilt in the same
+   vocabulary — one per capability there too. The bucketing itself is
+   shell/aiModelGroups.ts; what is here is the hierarchy that makes it readable:
+   a section title over a rule, and a capability title one step quieter.
+
+   The right-hand slot of a head carries the ONE secondary fact about the group
+   — a byte subtotal on a Local capability row, "via MLX LM" on a Discover one.
+   The section rows above them carry nothing there any more: three levels of
+   arithmetic on one page (caption total, section subtotal, capability subtotal)
+   meant every figure was correct and none of them was the one being looked
+   for. The rule stays regardless — it is what separates a heading from the
+   cards under it. */
 .am-section + .am-section {
   margin-top: 28px;
 }
@@ -130,7 +137,6 @@
   margin-bottom: 8px;
 }
 
-.am-section-size,
 .am-subgroup-size {
   flex: 0 0 auto;
   font-size: 12px;

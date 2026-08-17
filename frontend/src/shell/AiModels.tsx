@@ -721,21 +721,22 @@ function RepoCard({
   );
 }
 
-/** A section heading with its own byte subtotal.
+/** A section heading, and no figure beside it.
  *
- *  The subtotal is not decoration and it is not the same figure as the caption's
- *  total. This page's job is "what is eating my disk", and grouping introduced
- *  something the flat list did not have: a section a reader may reasonably
- *  decide to skip. A section that can be skipped has to state its cost on the
- *  way past, or the grouping hides exactly the number the page exists to show.
+ *  It carried a byte subtotal, on the argument that a section a reader may skip
+ *  has to state its cost on the way past. Three levels of arithmetic said
+ *  otherwise on the rendered page: the caption's "33 GB total", a section
+ *  subtotal, and a per-capability subtotal, each correct and none of them the
+ *  one being looked for. **The subtotals that survive are the ones next to the
+ *  cards they are about** — the ALL-CAPS capability rows, which are the level a
+ *  reader actually decides to skip at — with the page total in the caption
+ *  above. The two figures in between were the sum of one and the parts of the
+ *  other, restated in the middle.
  */
-function SectionHead({ title, size }: { title: string; size: number }) {
+function SectionHead({ title }: { title: string }) {
   return (
     <div className="am-section-head">
       <h3 className="am-section-title">{title}</h3>
-      <span className="am-section-size" title={`${title} take up ${formatSize(size)} on this machine`}>
-        {formatSize(size)}
-      </span>
     </div>
   );
 }
@@ -1135,7 +1136,13 @@ export default function AiModels() {
                   components should not be told it has a Models section. */}
               {grouped.models.groups.length > 0 && (
                 <section className="am-section">
-                  <SectionHead title="Models" size={grouped.models.size} />
+                  {/* "User downloaded models", not "Models". The page is
+                      titled AI Models and every card on it is one, so the bare
+                      word restated the page; what actually distinguishes this
+                      section from the one below it is WHO asked for these —
+                      which is the same distinction "Fetched by engines"
+                      already draws from the other side. */}
+                  <SectionHead title="User downloaded models" />
                   {grouped.models.groups.map((group) => (
                     <div className="am-subgroup" key={group.key}>
                       <div className="am-subgroup-head">
@@ -1155,7 +1162,7 @@ export default function AiModels() {
                   2.4GB machine-fetched repo from a model the user picked. */}
               {grouped.components.repos.length > 0 && (
                 <section className="am-section">
-                  <SectionHead title="Fetched by engines" size={grouped.components.size} />
+                  <SectionHead title="Fetched by engines" />
                   {/* One sentence. The three it replaced said WHY these are
                       listed at all, which the heading and the "part of X" tag
                       on every card already answer — what only prose can carry
