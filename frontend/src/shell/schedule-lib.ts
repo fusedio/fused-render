@@ -505,6 +505,29 @@ export type CalendarRange = "week" | "4day";
 // are wide enough to read a task title, which a seven-column week is not.
 export const RANGE_DAYS: Record<CalendarRange, number> = { week: 7, "4day": 4 };
 
+// WHICH RANGE THE CALENDAR OPENS ON when it has never been told (Akshil,
+// 2026-08-17: "the 4 days view should be default view in calendar"). Four
+// columns are wide enough to read a task title, which is the same argument
+// RANGE_DAYS above makes, and the 4-day range is TODAY-LEFTMOST — so a first
+// visit lands on today instead of on a Monday that may already be three days
+// behind. The week is still one press away and is still remembered once pressed.
+export const DEFAULT_RANGE: CalendarRange = "4day";
+
+/**
+ * The remembered range, or the default when nothing has been remembered.
+ *
+ * A STORED CHOICE ALWAYS WINS: the range is a preference like the List / Board /
+ * Calendar switch beside it, so somebody who picked Week keeps Week and the
+ * default only ever speaks for a reader the app has not met. Anything else in
+ * the slot — absent, empty, or a value written by a build that knew a third
+ * range — reads as "no choice made" and gets the default rather than being
+ * coerced into one of the two, which is why this is a whitelist and not a
+ * `=== "week"` test.
+ */
+export function initialRange(stored: string | null | undefined): CalendarRange {
+  return stored === "week" || stored === "4day" ? stored : DEFAULT_RANGE;
+}
+
 export function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }

@@ -285,10 +285,12 @@ describe("entryRepeatText", () => {
 // DOM, so none of it is tested through one.
 import {
   BOARD_COLUMNS,
+  DEFAULT_RANGE,
   GHOST_PREFIX,
   HELD_TEXT,
   RANGE_DAYS,
   addDays,
+  initialRange,
   cancelOutcome,
   columnLabel,
   dayKey,
@@ -418,6 +420,42 @@ describe("calendar ranges", () => {
   it("startOfWeek is Monday-first, including on a Sunday", () => {
     expect(dayKey(startOfWeek(new Date(2026, 7, 23)))).toBe("2026-08-17"); // Sunday
     expect(dayKey(startOfWeek(new Date(2026, 7, 17)))).toBe("2026-08-17"); // Monday
+  });
+
+  // The default, and — the half that is easy to get wrong — the promise that it
+  // only ever speaks for somebody who has not chosen.
+  it("opens on the 4-day range when nothing has been remembered", () => {
+    expect(DEFAULT_RANGE).toBe("4day");
+    expect(initialRange(null)).toBe("4day");
+    expect(initialRange(undefined)).toBe("4day");
+    expect(initialRange("")).toBe("4day");
+  });
+
+  it("never stamps over a remembered choice", () => {
+    // Week was chosen; Week is what opens, default or no default.
+    expect(initialRange("week")).toBe("week");
+    expect(initialRange("4day")).toBe("4day");
+  });
+
+  it("treats an unrecognised stored value as no choice at all", () => {
+    // A value written by a build that knew a third range, or junk in the slot:
+    // coercing it into one of the two would be a guess, so it takes the default.
+    expect(initialRange("month")).toBe(DEFAULT_RANGE);
+    expect(initialRange("WEEK")).toBe(DEFAULT_RANGE);
+  });
+
+  // The default range is TODAY-LEFTMOST, which is what makes the grid's own
+  // scroll placement (scrollTarget, below) land on today's now-line on a first
+  // visit rather than on the old fixed 7am.
+  it("the default range puts today in view, so the grid can aim at now", () => {
+    const now = new Date(2026, 7, 19, 9, 30);
+    const days = rangeDays(rangeStart(now, DEFAULT_RANGE), DEFAULT_RANGE);
+    expect(days.map(dayKey)).toContain(dayKey(now));
+    expect(dayKey(days[0])).toBe(dayKey(now));
+    const chips = [{ day: dayKey(now), time: new Date(2026, 7, 19, 8, 0) }];
+    // 9:30 less the one-hour lead, at 44px an hour — the now-line, and not
+    // DEFAULT_SCROLL_HOUR, which would have opened at 296.
+    expect(scrollTarget(chips, days, now, 600, 44)).toBe(((9 * 60 + 30 - 60) / 60) * 44);
   });
 
   it("labels the window, spanning when it straddles a month", () => {

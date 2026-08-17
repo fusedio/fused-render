@@ -273,10 +273,19 @@
   overflow: hidden;
 }
 
+/* WRAPS RATHER THAN CLIPS, which is what gives first in a narrow window.
+   `‹ Today ›` and the toggle+month group collide somewhere around 460px of
+   surface, and `.schedule-cal` is `overflow: hidden` — so without this the thing
+   that disappears is the RIGHTMOST one, the month, the one piece of the bar that
+   is orientation rather than a control. Wrapping instead drops the whole
+   right-hand group (`.schedule-cal-bar-end`, below) onto a second line, still
+   right-aligned by its auto margin and still month-last, with `‹ Today ›`
+   unmoved on the first. Nothing is clipped and nothing slides left. */
 .schedule-cal-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 8px 12px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
@@ -286,15 +295,41 @@
   gap: 6px;
 }
 
-/* "August 2026" on the bar's right edge — controls on the left, where-you-are
-   on the right (Akshil, 2026-08-14). Body colour and a step larger than UI
-   text, because it is the page's orientation, not a control.
-   The bar's ONE auto margin: free space splits equally among all of them, so a
-   second would leave the range pair floating in the middle of nowhere. */
-.schedule-cal-range {
+/* THE RIGHT-HAND END OF THE BAR: the range toggle, then the month. It exists to
+   hold THE BAR'S ONE AUTO MARGIN — free space is split EQUALLY among every auto
+   margin in a flex line, so putting one on the toggle and another on the month
+   would not push either to the end, it would strand the toggle in the middle of
+   nowhere. That is the trap this codebase has fallen into twice (see
+   `.schedule-toolbar .schedule-form-seg` above, and the toolbar note further
+   down). One margin, on the box everything at that end lives in, and DOM order
+   then does the rest: `‹ Today ›  ……  [ 4 days | Week ]  August 2026`.
+
+   The second job is the wrapped row. Grouping is what keeps the pair together
+   when the bar runs out of width: the group wraps as one and its auto margin
+   right-aligns it on the new line, where an ungrouped month would have dropped
+   below the toggle and gone back to the LEFT edge.
+
+   Note what is NOT here: any part of the toggle's own appearance. That is
+   `.schedule-form-seg`'s single definition above — shared with the page's
+   List / Board / Calendar switch and the New task form's Once / On a schedule
+   pair — and the two already agree on height, padding and type, so there is
+   nothing to modify. Only where it sits. */
+.schedule-cal-bar-end {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   margin-left: auto;
+}
+
+/* "August 2026" stays the rightmost thing on the bar — controls first,
+   where-you-are last (Akshil, 2026-08-14). Body colour and a step larger than UI
+   text, because it is the page's orientation, not a control. `nowrap` so the
+   label cannot buy room by breaking "Aug 30 – Sep 2, 2026" across two lines: a
+   tight bar is meant to wrap the flex line above, not to shred this label. */
+.schedule-cal-range {
   font-size: 16px;
   color: var(--fg);
+  white-space: nowrap;
 }
 
 /* ‹ Today › read as REAL buttons — the borderless glyph version looked like

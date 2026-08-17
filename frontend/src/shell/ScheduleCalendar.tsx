@@ -39,7 +39,10 @@
 //
 // Two ranges: the week, and Google's "4 days" — today leftmost, arrows stepping
 // four days, Today snapping back. The 4-day range earns its place on width, so
-// its chips get a larger label.
+// its chips get a larger label, and it is what the calendar OPENS on: four
+// readable columns starting at today beat seven cramped ones starting at a
+// Monday that may be behind you. Which range is up is remembered, so that
+// default only ever applies to a reader who has not chosen — see RANGE_KEY.
 //
 // QUEUED work — past due and waiting to be claimed — has no strip across the top
 // of the grid. It is a MESSAGE, its siblings are already listed in the task's
@@ -114,6 +117,8 @@ import {
   folderHref,
   groupScheduled,
   dayKey,
+  DEFAULT_RANGE,
+  initialRange,
   firstLine,
   isProjectedId,
   minutesOfDay,
@@ -183,7 +188,10 @@ const HOUR_H = 44;
 const SNAP_MIN = 30;
 
 // Which range is up, remembered across visits — a person who plans four days at
-// a time plans four days at a time every time.
+// a time plans four days at a time every time. A FIRST visit opens on the 4-day
+// range (schedule-lib.DEFAULT_RANGE); a remembered Week is never stamped over,
+// which is the same contract `fused-render:scheduled-view` has for the List /
+// Board / Calendar switch this toggle now sits beside.
 const RANGE_KEY = "fused-render:scheduled-cal-range";
 
 // Small stroke icons, the GlobalSidebar recipe (16px, stroke=currentColor) at
@@ -740,11 +748,14 @@ export default function ScheduleCalendar({
 }) {
   const [range, setRange] = useState<CalendarRange>(() => {
     // localStorage can THROW (private mode, locked-down webviews) and this runs
-    // during first render — a preference must never cost the page.
+    // during first render — a preference must never cost the page. WHICH range a
+    // given stored value means is schedule-lib.initialRange's answer and is
+    // tested there; a store that cannot be read is the same situation as an
+    // empty one, so both land on the same default.
     try {
-      return localStorage.getItem(RANGE_KEY) === "4day" ? "4day" : "week";
+      return initialRange(localStorage.getItem(RANGE_KEY));
     } catch {
-      return "week";
+      return DEFAULT_RANGE;
     }
   });
   const [start, setStart] = useState(() => rangeStart(new Date(), range));
@@ -897,8 +908,15 @@ export default function ScheduleCalendar({
 
   return (
     <div className={"schedule-cal" + (range === "4day" ? " is-wide" : "")} style={cols}>
-      {/* Controls left — chevrons flanking Today, then the range pair — and
-          where-you-are on the right edge (Akshil, 2026-08-14). */}
+      {/* `‹ Today ›`  ……  `[ 4 days | Week ]  August 2026`.
+          Stepping stays anchored at the left edge, where the view toggle above
+          it also starts; the range pair moved across to sit immediately left of
+          the month, which stays the rightmost thing on the row (Akshil,
+          2026-08-17). DOM order IS reading order here — the right end is one box
+          carrying the bar's ONE auto margin (`.schedule-cal-bar-end`, and the
+          rule there says why a second auto margin cannot exist). The toggle
+          itself is the page's own `.schedule-form-seg`, the same control as
+          List / Board / Calendar, reused and not restyled. */}
       <div className="schedule-cal-bar">
         <div className="schedule-cal-nav">
           <button type="button" className="btn btn-secondary" onClick={() => shift(-1)}
@@ -907,21 +925,29 @@ export default function ScheduleCalendar({
           <button type="button" className="btn btn-secondary" onClick={() => shift(1)}
                   aria-label={range === "week" ? "Next week" : "Next 4 days"}>›</button>
         </div>
-        <div className="schedule-form-seg" role="radiogroup" aria-label="Range">
-          <button type="button"
-                  className={"btn btn-secondary" + (range === "4day" ? " is-active" : "")}
-                  aria-pressed={range === "4day"}
-                  onClick={() => pickRange("4day")}>
-            4 days
-          </button>
-          <button type="button"
-                  className={"btn btn-secondary" + (range === "week" ? " is-active" : "")}
-                  aria-pressed={range === "week"}
-                  onClick={() => pickRange("week")}>
-            Week
-          </button>
+        {/* The toggle and the month are ONE group, and the wrapper is what makes
+            them one: it carries the row's single auto margin (so the pair goes
+            to the right edge in the order written, month last) and it keeps them
+            together when the bar runs out of room — a narrow window drops the
+            pair onto a second line still right-aligned, instead of leaving the
+            toggle up top and stranding "August 2026" alone at the left. */}
+        <div className="schedule-cal-bar-end">
+          <div className="schedule-form-seg" role="radiogroup" aria-label="Range">
+            <button type="button"
+                    className={"btn btn-secondary" + (range === "4day" ? " is-active" : "")}
+                    aria-pressed={range === "4day"}
+                    onClick={() => pickRange("4day")}>
+              4 days
+            </button>
+            <button type="button"
+                    className={"btn btn-secondary" + (range === "week" ? " is-active" : "")}
+                    aria-pressed={range === "week"}
+                    onClick={() => pickRange("week")}>
+              Week
+            </button>
+          </div>
+          <span className="schedule-cal-range">{label}</span>
         </div>
-        <span className="schedule-cal-range">{label}</span>
       </div>
 
       <div className="schedule-cal-head">
