@@ -371,6 +371,17 @@ def test_a_source_checkout_does_not_count_its_own_frontend_rebuild(install):
     assert selffix.tree_digest() != before
 
 
+def test_a_linked_worktree_counts_as_a_source_checkout(install):
+    """In a linked worktree `.git` is a FILE holding a `gitdir:` pointer, not a
+    directory — and this repo's own dev setup uses worktrees, which is exactly
+    where the build output churns under `vite build --watch`. An `isdir` test
+    called those shipped installs and handed them the false badge SF-15a
+    exists to prevent."""
+    (install.parent / ".git").write_text("gitdir: /repo/.git/worktrees/wt\n")
+    assert selffix.is_source_checkout() is True
+    assert selffix.install_method() == "source"
+
+
 def test_a_shipped_install_still_hashes_its_build_output(install):
     """The other half: nothing rewrites shell-dist on a real install, and a
     session that hand-patched the bundle really has modified the app."""
