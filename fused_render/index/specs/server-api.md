@@ -134,6 +134,34 @@ failure to read the config aborts the scheduling rather than the server.
 `_no_startup_index_scan`) — a suite that ran it would spawn a worker over the
 developer's real home. The scheduler's own tests call `run_startup_scan()` directly.
 
+### 4.1 The startup warm
+
+The same hook then calls `startup_warm()`, which spawns one detached daemon thread
+running `run_startup_warm()`: `search_under` + `filter_corpus` over `expanduser("~")`
+— exactly the request the explorer's home page makes on the first keystroke, under
+exactly the same pool key.
+
+Everything that path caches is **per process** and starts empty: the gitignore verdict
+pool has no verdicts until some request sweeps `git check-ignore` over the whole corpus,
+and `duckdb` is not imported until the first query. Measured on a 164k-entry home,
+that made the first search of a fresh process ~2.2 s against ~0.8 s for the next one,
+all of it billed to a keystroke. The warm moves it to idle.
+
+- A **thread**, not `asyncio.to_thread`: a startup hook must complete before the app
+  serves, and this is seconds of work.
+- A **mount-backed** home is skipped on the string check alone (`MountGuard.blocks_root`),
+  never a syscall: the index refuses to scan mounts, so the warm could only answer
+  `covered: false` after aiming kernel I/O at a mount.
+- **One shot, never polled.** If the index has not covered home yet — first-ever boot —
+  the warm answers `covered: false` cheaply and pools nothing, so the first search after
+  that boot's scan still pays the sweep. A loop chasing the scan would be a second
+  scheduler; the persisted verdict pool (`server/index_gitignore.py`) is what covers
+  restarts instead.
+- It **never raises**: nobody joins the thread.
+
+Patched out in tests by the same fixture, and its own tests call `run_startup_warm()`
+directly.
+
 ## Non-goals
 
 - **Watching the filesystem** — there is no daemon. Freshness comes from the startup

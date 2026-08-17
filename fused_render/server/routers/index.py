@@ -32,7 +32,7 @@ from fused_render.index import freshness, runner
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
-from fused_render.index.ignore import default_ignore, norm
+from fused_render.index.ignore import MountGuard, default_ignore, norm
 from fused_render.index.query import MAX_CORPUS
 from fused_render.index.query import lookup as index_lookup
 from fused_render.index.query import search_under as index_search
@@ -124,6 +124,63 @@ def run_startup_scan(start_dir: str | None = None) -> None:
 async def startup_scan(start_dir: str | None = None) -> None:
     """The create_app hook. Off the event loop because it touches the disk."""
     await asyncio.to_thread(run_startup_scan, start_dir)
+
+
+# ------------------------------------------------------------- startup warm
+
+def warm_root() -> str:
+    """The root the explorer's home page will search.
+
+    FilesHome searches `config.home` — `expanduser("~")` from
+    routers/config.py — and NOT the folder the app was opened on, so a warm
+    aimed anywhere else fills a pool the first keystroke never reads. In
+    `canonical_root` spelling because that is the spelling every store key and
+    every scan-root comparison uses (see `scan_roots`)."""
+    return runner.canonical_root("~")
+
+
+def run_startup_warm() -> None:
+    """Pay the first search's cold cost at idle instead of on a keystroke.
+
+    Everything the corpus path caches is PER PROCESS and starts empty: the
+    gitignore verdict pool (server/index_gitignore.py) knows nothing until
+    some request sweeps `git check-ignore` over the whole corpus, and duckdb
+    is not even imported until the first query. Measured on a 164k-entry home:
+    ~2.2 s for the first search of a fresh process against ~0.8 s for the next
+    one — and all of it was billed to the user's first keystroke.
+
+    So it runs exactly the pair of calls `api_index_search` makes, with the
+    same root and the same pool key. An index that has not covered the home
+    root yet answers `covered: false` cheaply and pools nothing; a scan that
+    completes later therefore still leaves the first search paying the sweep.
+    Deliberately NOT polled or retried: a loop chasing the scan would be a
+    second scheduler, and the persisted pool (index_gitignore) is what covers
+    the restart case.
+
+    Never raises: it runs on a thread nobody joins."""
+    try:
+        root = warm_root()
+        # A mount-backed home is refused by the index anyway, so the warm
+        # could only answer `covered: false` — after aiming kernel I/O at a
+        # mount path, which is the one thing this codebase never does
+        # speculatively. Pure string work, exactly as in `runner.start`.
+        if MountGuard(mounts_dir=runner._mounts_dir()).blocks_root(root):
+            return
+        cfg = load_config()
+        out = index_search(cfg, root)
+        filter_corpus(out, index_root=enclosing_root(scan_roots(cfg),
+                                                     out.get("root") or root))
+    except Exception:  # noqa: BLE001 - a warm must never take the server down
+        logger.exception("could not warm the index search path")
+
+
+def startup_warm() -> None:
+    """The create_app hook. A detached daemon thread, not `to_thread`: the
+    startup hook must COMPLETE before the app serves, and this is seconds of
+    duckdb and `git check-ignore` — the very cost the warm exists to move off
+    the request path. Nobody joins it and it cannot raise (above)."""
+    threading.Thread(target=run_startup_warm, name="index-warm",
+                     daemon=True).start()
 
 
 # ------------------------------------------------------ open-folder freshness

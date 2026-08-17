@@ -655,6 +655,88 @@ def test_startup_scan_skips_a_root_that_is_gone(home, tmp_path, monkeypatch):
     assert started == [str(ok)]
 
 
+# -- the startup warm ----------------------------------------------------------
+
+def test_startup_warm_runs_the_home_pages_first_search(home, tmp_path, monkeypatch):
+    """The warm must ask for exactly what the home page asks for.
+
+    FilesHome searches `config.home` (routers/config.py — `expanduser("~")`),
+    not the folder the app was opened on, so a warm aimed anywhere else fills
+    a pool the first keystroke never reads."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    seen = []
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: seen.append(("search", root))
+                        or {"covered": True, "root": root, "entries": []})
+    monkeypatch.setattr(index_router, "filter_corpus",
+                        lambda out, index_root=None:
+                        seen.append(("filter", index_root)) or out)
+    cfg = load_config()
+    cfg.roots = [str(tmp_path)]
+    index_router.save_config(cfg)
+    index_router.run_startup_warm()
+    # Same pair of calls the route makes, and pooled under the same index root:
+    # a warm that filtered under a different key would fill a second pool.
+    assert seen == [("search", index_router.runner.canonical_root("~")),
+                    ("filter", str(tmp_path))]
+
+
+def test_startup_warm_never_raises(home, tmp_path, monkeypatch):
+    """It runs on a background thread nobody joins: a raise here would be an
+    unhandled exception in the log and a permanently cold pool."""
+    def boom(*a, **k):
+        raise RuntimeError("duckdb on fire")
+
+    monkeypatch.setattr(index_router, "index_search", boom)
+    index_router.run_startup_warm()  # no exception
+
+
+def test_startup_warm_refuses_a_mount_backed_home(home, tmp_path, monkeypatch):
+    """The index refuses to scan mounts, so a warm aimed at one could only
+    ever answer `covered: false` — after paying kernel I/O on a mount path,
+    which is the one thing this codebase never does speculatively."""
+    monkeypatch.setattr(index_router.MountGuard, "blocks_root",
+                        lambda self, root: True)
+    called = []
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: called.append(root) or {})
+    index_router.run_startup_warm()
+    assert called == []
+
+
+def test_startup_warm_fills_the_gitignore_verdict_pool(home, tmp_path, monkeypatch):
+    """The point of the warm, end to end: after a real scan the first search
+    pays a full check-ignore sweep of the whole corpus (~1.5 s on a home dir).
+    Once the warm has run, that sweep is already in the pool."""
+    from fused_render.server import index_gitignore
+
+    src = _tree(tmp_path)
+    (src / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (src / "noise.log").write_text("x", encoding="utf-8")
+    client = _client(tmp_path)
+    started = client.post("/api/index/scan", json={"root": str(src)},
+                          headers={"X-Fused": "1"})
+    run_id = started.json()["run_id"]
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        if not client.get("/api/index/status",
+                          params={"run_id": run_id}).json()["running"]:
+            break
+        time.sleep(0.2)
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    index_gitignore._cache.clear()
+    # HOME is what the warm aims at; point it at the scanned tree so the warm
+    # answers `covered` and actually sweeps.
+    monkeypatch.setenv("HOME", str(src))
+    index_router.run_startup_warm()
+    pool = index_gitignore._cache.get(str(src))
+    assert pool is not None
+    assert "noise.log" in pool.ignored
+    assert "alpha.txt" in pool.decider
+
+
 def test_a_root_of_slash_survives_the_config_write(home, tmp_path):
     """Roots are paths, not ignore patterns: clean_patterns rstrips '/' into
     the empty string and silently drops the root."""
