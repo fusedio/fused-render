@@ -2156,6 +2156,28 @@ export interface Task {
   unread: number;
   last_active: number;
   message_count: number;
+  // WHEN THIS NEXT RUNS, and WHICH schedule entry that run is: `min(at)` over
+  // every PENDING entry the task has, epoch seconds, decided by the server
+  // (tasks.py `_next_run`) over the whole set rather than over the three
+  // messages below. 0 / "" when nothing is pending.
+  //
+  // They exist because the three-message window cannot answer the question. The
+  // Board orders Upcoming by soonest-next-run, and `messages` is the three
+  // newest by `at` — so an OVERDUE pending (ordinary here: past scheduling is
+  // allowed and catch-up is unbounded) can be pushed out of it by two runs plus
+  // next month's occurrence, leaving the lane to sort by a LATER time and bury
+  // the work that should go first.
+  //
+  // `next_run_entry` is what makes the BUTTON agree with that order: run-now
+  // sends an entry id, so a card promoted on a run the row could not name would
+  // fire a different message than the one its place in the lane promised. The
+  // two widen together or not at all.
+  //
+  // OPTIONAL because an older server does not send them. tasks-lib.nextRunAt and
+  // tasks-lib.runNowTarget both fall back to reading the window, which is the
+  // same (bounded) answer they gave before these existed.
+  next_run?: number;
+  next_run_entry?: string;
   // The three most recent, newest first. The rest need the endpoint below —
   // this list is built by a tail parse because it runs for every row, and a
   // full transcript parse per task would not survive a few hundred of them.

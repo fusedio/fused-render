@@ -29,10 +29,12 @@ import {
   isAllRead,
   isDraggable,
   isFailedTask,
+  isPastDue,
   isUnread,
   laneTime,
   lastRunAt,
   markAllRead,
+  markObservation,
   markRead,
   markReadIntent,
   messageHref,
@@ -46,6 +48,7 @@ import {
   projectOptions,
   ranNote,
   readKey,
+  settleMarkAllRead,
   resendTarget,
   runNowIntent,
   runNowTarget,
@@ -58,6 +61,8 @@ import {
   tildePath,
   toggleExpanded,
   triageStatus,
+  unmarkAllRead,
+  unmarkRead,
   unreadCount,
   unreadMarker,
 } from "./tasks-lib";
@@ -287,8 +292,8 @@ describe("unread", () => {
   // which is why it is one sentinel rather than an id per message.
   it("clears a whole task at once, including the messages it never held", () => {
     const t = { ...three(), unread: 89, message_count: 89 };
-    const read = markAllRead(new Set<string>(), t.key);
-    expect(isAllRead(read, t.key)).toBe(true);
+    const read = markAllRead(new Set<string>(), t);
+    expect(isAllRead(read, t)).toBe(true);
     // Not 86: discounting only the loaded three would leave the row still
     // claiming most of a count the press just cleared.
     expect(taskUnread(t, read)).toBe(0);
@@ -300,7 +305,7 @@ describe("unread", () => {
 
   it("clears only the task it was asked about", () => {
     const t = three();
-    const elsewhere = markAllRead(new Set<string>(), "some-other-task");
+    const elsewhere = markAllRead(new Set<string>(), { ...three(), key: "other" });
     expect(taskUnread(t, elsewhere)).toBe(3);
     expect(isUnread(t.key, t.messages[0], elsewhere)).toBe(true);
   });
@@ -310,8 +315,167 @@ describe("unread", () => {
     // can produce — and marking one message must never read as marking all.
     expect(ALL_MESSAGES).not.toMatch(/^MSG-/);
     const t = three();
-    expect(isAllRead(markRead(new Set<string>(), t.key, "MSG-003"), t.key)).toBe(false);
+    expect(isAllRead(markRead(new Set<string>(), t.key, "MSG-003"), t)).toBe(false);
     expect(taskUnread(t, markRead(new Set<string>(), t.key, "MSG-003"))).toBe(2);
+  });
+});
+
+// ---- the whole-task mark, and what retires it ---------------------------------
+// The optimism used to be a lasting `*` sentinel that isUnread and taskUnread
+// read as absolute, with nothing that ever removed it: a refused write left the
+// row looking read with its own Mark read button gone, a server still reporting
+// unread was ignored, and a message arriving afterwards was invisible until the
+// List remounted. It is an override of a KNOWN-STALE VALUE, so it is stamped
+// with that value and it can be taken back.
+
+describe("the whole-task mark", () => {
+  const long = (over: Partial<Task> = {}): Task => ({
+    ...task({ unread: 89, message_count: 89 }, 3),
+    messages: [
+      msg({ message_id: "MSG-089", unread: true }),
+      msg({ message_id: "MSG-088", unread: true }),
+      msg({ message_id: "MSG-087", unread: true }),
+    ],
+    ...over,
+  });
+
+  it("clears instantly — the whole point, and the 20s poll is what it hides", () => {
+    const t = long();
+    const read = markAllRead(new Set<string>(), t);
+    // The count goes, including the 86 outside the window...
+    expect(taskUnread(t, read)).toBe(0);
+    // ...the dots of the three it holds go...
+    for (const m of t.messages) expect(unreadMarker(t.key, m, read).unread).toBe(false);
+    // ...and the button removes itself on its own press.
+    expect(markReadIntent(t, read)).toBe(null);
+  });
+
+  it("puts the dots AND the button back when the write is refused", () => {
+    const t = long();
+    const marked = markAllRead(new Set<string>(), t);
+    // What the component does in its catch: roll back what the press wrote.
+    const back = unmarkAllRead(marked, t.key, t.messages);
+    expect(taskUnread(t, back)).toBe(89);
+    for (const m of t.messages) expect(unreadMarker(t.key, m, back).unread).toBe(true);
+    // Without this the row had no retry at all: the count was 0, so the button
+    // that would have tried again was not drawn.
+    expect(markReadIntent(t, back)!.unread).toBe(89);
+  });
+
+  it("rolls back the sentinel whatever observation it was stamped with", () => {
+    // A poll landed while the request was in flight, so the mark is already
+    // inert — but inert is not gone, and the same numbers could come round again.
+    const t = long();
+    const marked = markAllRead(new Set<string>(), t);
+    const back = unmarkAllRead(marked, t.key, t.messages);
+    expect([...back].some((k) => k.includes(ALL_MESSAGES))).toBe(false);
+  });
+
+  it("lets a poll that still reports unread win", () => {
+    const t = long();
+    const read = markAllRead(new Set<string>(), t);
+    // The next poll is a FRESH read of the server: it marked the three we held
+    // and something else is unread. Nothing about the earlier press may hide it.
+    const polled: Task = {
+      ...long(),
+      unread: 4,
+      messages: [
+        msg({ message_id: "MSG-093", unread: true }),
+        msg({ message_id: "MSG-089", unread: false }),
+        msg({ message_id: "MSG-088", unread: false }),
+      ],
+    };
+    expect(isAllRead(read, polled)).toBe(false);
+    expect(taskUnread(polled, read)).toBe(4);
+    expect(markReadIntent(polled, read)).not.toBe(null);
+  });
+
+  it("shows a message that arrives AFTER the mark, without a remount", () => {
+    const t = long();
+    const read = markAllRead(new Set<string>(), t);
+    const arrived = msg({ message_id: "MSG-090", unread: true });
+    // The id is one the press never wrote, so the dot draws on its own — this is
+    // what the wildcard could not do, because it could not name a message.
+    expect(isUnread(t.key, arrived, read)).toBe(true);
+    expect(unreadMarker(t.key, arrived, read).unread).toBe(true);
+    // And the row it lands on counts it: the observation the mark was stamped
+    // with is not the one the server is quoting any more.
+    const polled: Task = { ...long(), unread: 1, messages: [
+      arrived,
+      msg({ message_id: "MSG-089", unread: false }),
+      msg({ message_id: "MSG-088", unread: false }),
+    ] };
+    expect(taskUnread(polled, read)).toBe(1);
+  });
+
+  it("keeps the mark while the server is still quoting the value it overrode", () => {
+    // The poll that predates the write says exactly what the press corrected, and
+    // that one is the whole reason the local set exists.
+    const t = long();
+    const read = markAllRead(new Set<string>(), t);
+    expect(taskUnread(long(), read)).toBe(0);
+    // A different count is a different read, even when it is HIGHER.
+    expect(taskUnread({ ...long(), unread: 90 }, read)).toBeGreaterThan(0);
+  });
+
+  it("stamps the count AND the ids, so a swap does not read as no change", () => {
+    const t = long();
+    const one = markObservation(t);
+    // Same count, different set: one was read, one arrived.
+    const swapped: Task = { ...long(), messages: [
+      msg({ message_id: "MSG-090", unread: true }),
+      msg({ message_id: "MSG-089", unread: true }),
+      msg({ message_id: "MSG-088", unread: true }),
+    ] };
+    expect(markObservation(swapped)).not.toBe(one);
+    expect(isAllRead(markAllRead(new Set<string>(), t), swapped)).toBe(false);
+  });
+
+  it("reads the server's own answer to the mark, instead of dropping it", () => {
+    const t = long();
+    const marked = markAllRead(new Set<string>(), t);
+    // 0 left: the optimism was right, and nothing moves.
+    expect(settleMarkAllRead(marked, t.key, t.messages, { unread: 0 })).toBe(marked);
+    expect(taskUnread(t, settleMarkAllRead(marked, t.key, t.messages, { unread: 0 })))
+      .toBe(0);
+    // Something arrived while the request was in flight. The server says the row
+    // is not clear, so the row says so too — over-reporting for one poll can only
+    // show news that exists; hiding it cannot.
+    const settled = settleMarkAllRead(marked, t.key, t.messages, { unread: 2 });
+    expect(taskUnread(t, settled)).toBe(89);
+    expect(markReadIntent(t, settled)).not.toBe(null);
+  });
+
+  it("leaves the per-message mark alone — it was already sound", () => {
+    // Concrete id, not a wildcard: it cannot hide a message it has never named,
+    // and it retires itself once the server agrees. What it lacked was the way
+    // back, which is unmarkRead.
+    const t = long();
+    const read = markRead(new Set<string>(), t.key, "MSG-089");
+    expect(isUnread(t.key, t.messages[0], read)).toBe(false);
+    expect(isUnread(t.key, msg({ message_id: "MSG-090", unread: true }), read)).toBe(true);
+    // The server has caught up: the local entry stops discounting anything
+    // rather than double-counting the message it was about.
+    const caught: Task = { ...long(), unread: 88, messages: [
+      msg({ message_id: "MSG-089", unread: false }),
+      msg({ message_id: "MSG-088", unread: true }),
+      msg({ message_id: "MSG-087", unread: true }),
+    ] };
+    expect(taskUnread(caught, read)).toBe(88);
+    // And the refused write gives the dot back.
+    const back = unmarkRead(read, t.key, "MSG-089");
+    expect(isUnread(t.key, t.messages[0], back)).toBe(true);
+    expect(taskUnread(t, back)).toBe(89);
+  });
+
+  it("never mutates the set it was handed", () => {
+    const t = long();
+    const before = new Set<string>();
+    const marked = markAllRead(before, t);
+    expect(before.size).toBe(0);
+    unmarkAllRead(marked, t.key, t.messages);
+    expect(marked.size).toBeGreaterThan(0);
+    expect(isAllRead(marked, t)).toBe(true);
   });
 });
 
@@ -351,7 +515,7 @@ describe("markReadIntent", () => {
     // It asks the count the row is DRAWING (taskUnread), so the local mark the
     // click writes is enough to take the button away.
     const t = withUnread(3);
-    expect(markReadIntent(t, markAllRead(new Set<string>(), t.key))).toBe(null);
+    expect(markReadIntent(t, markAllRead(new Set<string>(), t))).toBe(null);
     // ...and clicking through every message it holds does the same.
     let read = new Set<string>();
     for (const m of t.messages) read = markRead(read, t.key, m.message_id);
@@ -554,17 +718,78 @@ describe("runNowTarget", () => {
         msg({ message_id: "MSG-002", state: "sent", entry_id: "e2", at: T9 }),
       ],
     });
-    expect(runNowTarget(t)?.message_id).toBe("MSG-003");
+    expect(runNowTarget(t)?.messageId).toBe("MSG-003");
   });
 
   it("takes the older message when two are due at the same second", () => {
     const t = upcoming([T9, T9]);
-    expect(runNowTarget(t)?.message_id).toBe("MSG-001");
+    expect(runNowTarget(t)?.messageId).toBe("MSG-001");
   });
 
   it("is null for a task with nothing pending", () => {
     expect(runNowTarget(task())).toBe(null);
     expect(canRunNow(task())).toBe(false);
+  });
+
+  it("fires the run the ROW NAMES when the window does not hold it", () => {
+    // The half that used to be missing. The overdue pending is outside the three
+    // newest by `at`, so the only pending message the window shows is next
+    // month's occurrence — and the lane now orders this card by the overdue one
+    // (nextRunAt reads `next_run`), so the button has to send THAT entry or the
+    // order is a lie.
+    const t = task({
+      status: "upcoming",
+      message_count: 40,
+      next_run: SEC("2026-08-14T09:00:00"),
+      next_run_entry: "e-overdue",
+      messages: [
+        due("2026-10-01T09:00:00", { message_id: "MSG-040", entry_id: "e-oct" }),
+        ran("2026-08-15T09:00:00", "2026-08-15T09:00:00", { message_id: "MSG-039" }),
+        ran("2026-08-14T09:00:00", "2026-08-14T09:00:00", { message_id: "MSG-038" }),
+      ],
+    });
+    expect(runNowTarget(t)).toEqual({
+      entryId: "e-overdue",
+      // No id: MSG-n is a position in the whole thread and the row never parsed
+      // this message. Nothing in the run path needs one.
+      messageId: "",
+      at: SEC("2026-08-14T09:00:00"),
+    });
+    // The sort and the button, on the same instant. That IS the fix.
+    expect(runNowTarget(t)!.at).toBe(nextRunAt(t)!);
+    expect(runNowIntent(t)!.entryId).toBe("e-overdue");
+    expect(dropAction(t, "in_progress")).toEqual({
+      kind: "run",
+      entryId: "e-overdue",
+      messageId: "",
+    });
+  });
+
+  it("keeps the HELD message when the row names a run it also holds", () => {
+    // Ordinary case: the named next run is in the window, so it is fired as the
+    // message it is and keeps its printed id.
+    const t = upcoming([T18, T9], { next_run: T9, next_run_entry: "e1" });
+    expect(runNowTarget(t)).toEqual({ entryId: "e1", messageId: "MSG-001", at: T9 });
+  });
+
+  it("ignores a named run the row cannot fire, and one that is not there", () => {
+    // Half a fact is not a fact: a time with no entry is a run the button cannot
+    // send, so it names nothing and the window answers. Same for `next_run: 0`,
+    // which is how the server says "nothing pending".
+    const t = upcoming([T18, T9], { next_run: SEC("2026-08-14T09:00:00") });
+    expect(runNowTarget(t)?.entryId).toBe("e1");
+    expect(runNowTarget(upcoming([T9], { next_run: 0, next_run_entry: "" }))?.entryId)
+      .toBe("e1");
+    // And a named run on a task with nothing pending in the window at all is
+    // still runnable: that is the whole point of the field.
+    const outside = task({
+      status: "upcoming",
+      next_run: T9,
+      next_run_entry: "e-hidden",
+      messages: [ran("2026-08-15T09:00:00")],
+    });
+    expect(canRunNow(outside)).toBe(true);
+    expect(runNowTarget(outside)?.entryId).toBe("e-hidden");
   });
 });
 
@@ -671,7 +896,7 @@ describe("runNowIntent", () => {
       upcoming([T18, T9], { status: FAILED }),
     ]) {
       const intent = runNowIntent(t)!;
-      expect(intent.messageId).toBe(runNowTarget(t)!.message_id);
+      expect(intent.messageId).toBe(runNowTarget(t)!.messageId);
       expect(dropAction(t, "in_progress")).toEqual({
         kind: "run",
         entryId: intent.entryId,
@@ -1084,8 +1309,27 @@ describe("the mark-read action", () => {
   });
 
   it("clears the local set too, so the dots go on the click", () => {
-    expect(NODE).toContain("onReadAll(task.key)");
-    expect(VIEWS).toContain("markAllRead(cur, taskKey)");
+    expect(NODE).toContain("onReadAll(task, loaded)");
+    expect(VIEWS).toContain("markAllRead(cur, task, loaded)");
+  });
+
+  it("reconciles the optimism instead of planting it and walking away", () => {
+    // The press used to write a mark nothing could ever remove: a refusal left
+    // the row looking read with this very button gone, so there was no retry.
+    const at = NODE.indexOf("const markSeen = async () => {");
+    expect(at).toBeGreaterThan(-1);
+    const fn = NODE.slice(at, NODE.indexOf("\n  };", at));
+    // The ids the rollback will need, captured BEFORE the await — a poll can
+    // replace the thread while the request is in flight.
+    expect(fn.indexOf("const held =")).toBeLessThan(fn.indexOf("await markWholeTaskRead"));
+    // Refused: the mark comes back off, and the server's sentence is said.
+    expect(fn).toContain("onUnreadAll(task.key, held)");
+    expect(fn).toContain("setNote((e as Error).message)");
+    // 200 with something still unread: that wins too, rather than being dropped.
+    expect(fn).toContain("if (answer.unread > 0)");
+    expect(fn).toContain("onSettleAll(task.key, held, answer)");
+    // Still no reload — the row has already said the one thing it knows.
+    expect(fn).not.toContain("onReload");
   });
 
   it("never wears the unread dot's own hue", () => {
@@ -1108,8 +1352,8 @@ describe("opening a thread, from either view", () => {
     // two copies of "mark local, fire the POST, navigate" is how the two views
     // start disagreeing again. Exactly one definition, and both views spend it.
     expect((VIEWS.match(/function performOpen\(/g) ?? []).length).toBe(1);
-    expect(BOARD).toContain("performOpen(task.key, intent, clearAll)");
-    expect(NODE).toContain("performOpen(task.key, intent, onReadAll)");
+    expect(BOARD).toContain("performOpen(task, intent, { clearAll, restoreAll, settleAll })");
+    expect(NODE).toContain("performOpen(task, intent, {");
     // And the whole-task POST exists in exactly two places: the shared performer,
     // and the List row's own Mark read button (which stays on the page and awaits
     // it). No third mark-read path.
@@ -1125,11 +1369,11 @@ describe("opening a thread, from either view", () => {
     expect(fn).toContain("if (intent.markRead) {");
     // Local first (the pill has to go on the press, not 20s later), then ONE
     // whole-task request. Never a loop over messages.
-    expect(fn.indexOf("clearAll(taskKey)")).toBeGreaterThan(
+    expect(fn.indexOf("marks.clearAll(task)")).toBeGreaterThan(
       fn.indexOf("if (intent.markRead) {"),
     );
-    expect(fn.indexOf("markWholeTaskRead(taskKey)")).toBeGreaterThan(
-      fn.indexOf("clearAll(taskKey)"),
+    expect(fn.indexOf("markWholeTaskRead(task.key)")).toBeGreaterThan(
+      fn.indexOf("marks.clearAll(task)"),
     );
     expect(fn).not.toContain("markTaskMessageRead");
   });
@@ -1137,15 +1381,19 @@ describe("opening a thread, from either view", () => {
   it("navigates regardless, and never waits on the write", () => {
     const at = VIEWS.indexOf("function performOpen(");
     const fn = VIEWS.slice(at, VIEWS.indexOf("\n}", at));
-    // Fire and forget: the press is leaving the page, so a refusal has nobody
-    // left to be shown to, and the navigation must not be held up or cancelled
-    // by it.
-    expect(fn).toContain("void markWholeTaskRead(taskKey).catch(() => {});");
+    // Fire and forget as far as the HOP goes — the press is leaving the page, so
+    // a refusal has nobody left to be told and the navigation must not be held up
+    // or cancelled by it. But the answer is not thrown away: the mark is settled
+    // against it, and a refusal takes it back, so the pill is honestly there
+    // again when the reader returns.
+    expect(fn).toContain("void markWholeTaskRead(task.key)");
+    expect(fn).toContain(".then((answer) => marks.settleAll(task.key, held, answer))");
+    expect(fn).toContain(".catch(() => marks.restoreAll(task.key, held))");
     expect(fn).not.toContain("await markWholeTaskRead");
     // The mark is INSIDE the guard and the navigation is OUTSIDE it, so a read
     // task still opens.
     expect(fn.indexOf("navigateUrl(intent.href);")).toBeGreaterThan(
-      fn.indexOf("}", fn.indexOf("markWholeTaskRead(taskKey)")),
+      fn.indexOf("}", fn.indexOf("markWholeTaskRead(task.key)")),
     );
   });
 
@@ -1207,6 +1455,17 @@ describe("opening a thread, from either view", () => {
     // asking the intent first.
     expect(ROW).not.toContain("navigateUrl(href)");
     expect(VIEWS).not.toContain("taskHref(");
+  });
+
+  it("gives a per-message dot back when its own write is refused", () => {
+    // The concrete-id set was already sound about WHAT it hides (it cannot hide a
+    // message it has never named) — what it lacked was the way back, and the
+    // comment claiming the next poll restored the dot was wrong for the same
+    // reason the whole-task one was: the local entry outranks the poll.
+    const at = VIEWS.indexOf("const clear = (taskKey: string, m: TaskMessage)");
+    const fn = VIEWS.slice(at, VIEWS.indexOf("\n  };", at));
+    expect(fn).toContain("markTaskMessageRead(taskKey, m.message_id).catch");
+    expect(fn).toContain("unmarkRead(cur, taskKey, m.message_id)");
   });
 
   it("leaves the per-message click alone — one turn, one message", () => {
@@ -1331,6 +1590,76 @@ describe("nextRunAt / lastRunAt", () => {
     expect(nextRunAt(t)).toBe(SEC("2026-08-21T09:00:00"));
   });
 
+  it("takes an OVERDUE pending over a later one — past scheduling is allowed", () => {
+    // This branch schedules into the past on purpose and runs missed work on
+    // open, so a pending whose `at` has gone by is an ordinary state and it is the
+    // work that should run first. Newest-first by `at`, as the server sends it.
+    const t = laned("a", "upcoming", [
+      due("2026-10-01T09:00:00"),
+      ran("2026-08-15T09:00:00"),
+      due("2026-08-14T09:00:00"), // overdue: due Friday, still pending
+    ]);
+    expect(nextRunAt(t)).toBe(SEC("2026-08-14T09:00:00"));
+    expect(isPastDue(nextRunAt(t), NOW)).toBe(true);
+  });
+
+  it("reads the ROW's next run when the window has hidden the overdue pending", () => {
+    // The case the window cannot answer, and the field that answers it. The
+    // window is the three newest by `at` (server: tasks.py `_row` sorts the merged
+    // thread ascending and keeps the tail), so an overdue pending is pushed out of
+    // it by three messages with later `at` — and reading the window alone gave the
+    // LATER pending, a bound rather than the next run.
+    //
+    // `next_run` is `min(at)` over every pending ENTRY, taken on the server before
+    // the tail is cut. It is the whole fix, and it is read in preference to the
+    // window rather than alongside it.
+    const t = task({
+      key: "hidden",
+      status: "upcoming",
+      message_count: 40, // the overdue pending is one of the 37 we do not hold
+      next_run: SEC("2026-08-14T09:00:00"),
+      next_run_entry: "e-overdue",
+      messages: [
+        due("2026-10-01T09:00:00"),
+        ran("2026-08-15T09:00:00"),
+        ran("2026-08-14T09:00:00"),
+      ],
+    });
+    expect(nextRunAt(t)).toBe(SEC("2026-08-14T09:00:00"));
+    expect(isPastDue(nextRunAt(t), NOW)).toBe(true);
+    // Not the window's answer, which is the point.
+    expect(nextRunAt(t)).not.toBe(SEC("2026-10-01T09:00:00"));
+  });
+
+  it("falls back to the window on a row with no `next_run` — an older server", () => {
+    // The fields are optional and a server that predates them sends neither. The
+    // answer is then exactly what it used to be: the later pending, a bound that
+    // can be late and never early, and a real place in the lane rather than none.
+    const t = task({
+      key: "hidden",
+      status: "upcoming",
+      message_count: 40,
+      messages: [
+        due("2026-10-01T09:00:00"),
+        ran("2026-08-15T09:00:00"),
+        ran("2026-08-14T09:00:00"),
+      ],
+    });
+    expect(t.next_run).toBe(undefined);
+    expect(nextRunAt(t)).toBe(SEC("2026-10-01T09:00:00"));
+    expect(nextRunAt(t)!).toBeGreaterThanOrEqual(SEC("2026-08-10T09:00:00"));
+    // And the window still wins over a named run it can see to be EARLIER — the
+    // one case that happens, a pending entry with no id, which the server refuses
+    // to name because the button could not fire it.
+    const idless = task({
+      status: "upcoming",
+      next_run: SEC("2026-10-01T09:00:00"),
+      next_run_entry: "e-oct",
+      messages: [due("2026-08-14T09:00:00", { entry_id: "" })],
+    });
+    expect(nextRunAt(idless)).toBe(SEC("2026-08-14T09:00:00"));
+  });
+
   it("has no next run when the window holds nothing pending", () => {
     expect(nextRunAt(laned("a", "done", [ran("2026-08-16T09:00:00")]))).toBe(null);
     expect(nextRunAt(laned("a", "upcoming", []))).toBe(null);
@@ -1386,6 +1715,139 @@ describe("lane order", () => {
     expect(filterTasks(tasks, EMPTY_FILTERS).map((t) => t.key)).toEqual([
       "oct", "friday", "soon", "tomorrow",
     ]);
+  });
+
+  it("puts PAST DUE work ahead of future work, by rule and not by accident", () => {
+    const tasks = [
+      laned("soon", "upcoming", [due("2026-08-16T12:10:00")]),
+      laned("late", "upcoming", [due("2026-08-14T09:00:00")]),
+      laned("later", "upcoming", [due("2026-08-20T09:00:00")]),
+      laned("latest", "upcoming", [due("2026-10-01T09:00:00")]),
+    ];
+    expect(keys(groupByColumn(tasks, NOW), "upcoming")).toEqual([
+      "late", "soon", "later", "latest",
+    ]);
+    // And it is a RULE, named on the lane, rather than a side effect of the lane
+    // happening to be ascending: ascending puts a past time first anyway, which is
+    // exactly why the promise had to stop resting on it. The first person to
+    // reconsider `dir` would otherwise have broken "overdue at the top" without
+    // touching a line that mentions overdue work.
+    expect(LANE_SORTS.upcoming.overdueFirst).toBe(true);
+    expect(BOARD_COLUMNS.filter((c) => LANE_SORTS[c.key].overdueFirst).map((c) => c.key))
+      .toEqual(["upcoming"]);
+  });
+
+  it("orders the overdue bucket most-overdue first — the next one out", () => {
+    const tasks = [
+      laned("yesterday", "upcoming", [due("2026-08-15T09:00:00")]),
+      laned("lastWeek", "upcoming", [due("2026-08-09T09:00:00")]),
+      laned("thisMorning", "upcoming", [due("2026-08-16T08:00:00")]),
+    ];
+    expect(keys(groupByColumn(tasks, NOW), "upcoming")).toEqual([
+      "lastWeek", "yesterday", "thisMorning",
+    ]);
+  });
+
+  it("does not bury an overdue pending behind its OWN later occurrence", () => {
+    // Bugbot's case, in the half the window can answer: the task's newest message
+    // is next month's occurrence, and two runs sit between it and the overdue
+    // pending. The lane must read the overdue one, not the newest.
+    const tasks = [
+      laned("buried", "upcoming", [
+        due("2026-10-01T09:00:00"),
+        ran("2026-08-15T09:00:00"),
+        due("2026-08-14T09:00:00"),
+      ]),
+      laned("soon", "upcoming", [due("2026-08-16T12:10:00")]),
+    ];
+    expect(keys(groupByColumn(tasks, NOW), "upcoming")).toEqual(["buried", "soon"]);
+  });
+
+  it("puts a task whose overdue pending is OUTSIDE the window at the HEAD", () => {
+    // The gap that used to be pinned here, now the fix. Three messages with later
+    // `at` push the overdue pending out of the listing window, so the only pending
+    // time the window shows is next month's occurrence — which used to sort this
+    // card behind work due in October while the run that should have gone on Friday
+    // sat waiting. The row names it (`next_run`), so it leads the lane.
+    const hidden = task({
+      key: "hidden",
+      status: "upcoming",
+      message_count: 40,
+      next_run: SEC("2026-08-14T09:00:00"),
+      next_run_entry: "e-overdue",
+      messages: [
+        due("2026-10-01T09:00:00"),
+        ran("2026-08-15T09:00:00"),
+        ran("2026-08-14T09:00:00"),
+      ],
+    });
+    const order = keys(groupByColumn([
+      hidden,
+      laned("soon", "upcoming", [due("2026-08-16T12:10:00")]),
+      laned("timeless", "upcoming", [ran("2026-08-15T09:00:00")]),
+    ], NOW), "upcoming");
+    // Ahead of "soon", which is not overdue at all: past due comes first.
+    expect(order).toEqual(["hidden", "soon", "timeless"]);
+    expect(nextRunAt(hidden)).toBe(SEC("2026-08-14T09:00:00"));
+    // And the promise the order makes is one the button keeps — the same entry,
+    // not the October occurrence the card is still carrying.
+    expect(runNowIntent(hidden)!.entryId).toBe("e-overdue");
+    expect(dropAction(hidden, "in_progress")).toEqual({
+      kind: "run", entryId: "e-overdue", messageId: "",
+    });
+  });
+
+  it("still sorts a row with no `next_run` from its window — an older server", () => {
+    // Nothing regressed for a server that does not send the field: the card is
+    // ordered by the later pending it can see, keeps a real place in the lane, and
+    // its button fires the message that place was based on.
+    const hidden = task({
+      key: "hidden",
+      status: "upcoming",
+      message_count: 40,
+      messages: [
+        due("2026-10-01T09:00:00", { message_id: "MSG-040", entry_id: "e-oct" }),
+        ran("2026-08-15T09:00:00"),
+        ran("2026-08-14T09:00:00"),
+      ],
+    });
+    const order = keys(groupByColumn([
+      hidden,
+      laned("soon", "upcoming", [due("2026-08-16T12:10:00")]),
+      laned("timeless", "upcoming", [ran("2026-08-15T09:00:00")]),
+    ], NOW), "upcoming");
+    expect(order).toEqual(["soon", "hidden", "timeless"]);
+    expect(nextRunAt(hidden)).toBe(SEC("2026-10-01T09:00:00"));
+    expect(runNowIntent(hidden)!.entryId).toBe("e-oct");
+  });
+
+  it("reads `now` once for the whole board, not once per comparison", () => {
+    // A comparator that changes its mind halfway through a sort has no defined
+    // output. One instant, handed down from groupByColumn to every lane.
+    const tasks = [
+      laned("a", "upcoming", [due("2026-08-16T11:59:59")]),
+      laned("b", "upcoming", [due("2026-08-16T12:00:01")]),
+    ];
+    expect(keys(groupByColumn(tasks, NOW), "upcoming")).toEqual(["a", "b"]);
+    expect(sortLane(tasks, "upcoming", NOW).map((t) => t.key)).toEqual(["a", "b"]);
+    // ...and the same list at a later instant is the same list: both are overdue
+    // by then, and the order inside the bucket is the same ascending one.
+    expect(sortLane(tasks, "upcoming", NOW + 86400000).map((t) => t.key))
+      .toEqual(["a", "b"]);
+  });
+
+  it("says nothing about being late on a lane that is about the past", () => {
+    // Overdue is Upcoming's question. A settled lane sorts by its last run,
+    // descending, and every time in it is by definition in the past.
+    expect(isPastDue(SEC("2026-08-15T09:00:00"), NOW)).toBe(true);
+    expect(isPastDue(SEC("2026-10-01T09:00:00"), NOW)).toBe(false);
+    // Null is not late: a task with no time has nothing to be late for.
+    expect(isPastDue(null, NOW)).toBe(false);
+    const done = [
+      laned("old", "done", [ran("2026-08-14T09:00:00")]),
+      laned("new", "done", [ran("2026-08-16T10:00:00")]),
+    ];
+    expect(keys(groupByColumn(done, NOW), "done")).toEqual(["new", "old"]);
   });
 
   it("orders Upcoming by the earliest pending message, not the newest one", () => {
@@ -1559,7 +2021,7 @@ describe("openThreadIntent", () => {
     const t = task({ unread: 3 });
     // What taskUnread returns once this task has been cleared locally.
     expect(openThreadIntent(t, 0)!.markRead).toBe(false);
-    expect(openThreadIntent(t, taskUnread(t, markAllRead(new Set(), t.key)))!.markRead)
+    expect(openThreadIntent(t, taskUnread(t, markAllRead(new Set(), t)))!.markRead)
       .toBe(false);
   });
 

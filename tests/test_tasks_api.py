@@ -730,6 +730,126 @@ def test_a_dropped_task_keeps_its_number_allocated_and_unused(client, tmp_path,
     assert back == {"pending:e1": "TASK-001", "pending:e2": "TASK-002"}
 
 
+# ---------------------------------------------------------------- the next run
+# `next_run` / `next_run_entry`: the one fact about the FUTURE that a
+# three-message window cannot be trusted to hold. The Board orders Upcoming by
+# soonest-next-run and its Run now button fires the entry named here, so the two
+# fields are the sort and the button agreeing.
+
+T8 = "2026-08-16T08:00:00Z"
+OCT = "2026-10-01T09:00:00Z"
+
+
+def test_the_next_run_is_the_earliest_pending_even_outside_the_window(
+        client, projects_dir):
+    """`min(at)` over every PENDING entry, taken before the tail is cut.
+
+    The window cannot answer this. Two typed prompts and next month's occurrence
+    are the three newest by `at`, which is exactly the shape that used to bury the
+    run that should go first: ascending by `at`, the 08:00 pending is the first of
+    four and the tail keeps the last three."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("first run", T11, uuid="a1"),
+        _user("second run", T12, uuid="a2"),
+    ])
+    _seed_schedule([
+        _entry("e-overdue", "the run that is late", T8,
+               claude_session_id="sess-a"),
+        _entry("e-oct", "next month", OCT, claude_session_id="sess-a"),
+    ])
+    task = _by_key(client)["sess-a"]
+
+    assert task["message_count"] == 4
+    assert [m["entry_id"] for m in task["messages"]] == ["e-oct", "", ""], \
+        "the overdue pending is not in the window at all"
+    assert task["next_run"] == tasks_store.epoch(T8)
+    assert task["next_run_entry"] == "e-overdue"
+    # Which is the whole point: earlier than anything the row is carrying.
+    assert task["next_run"] < min(m["at"] for m in task["messages"])
+
+
+def test_the_next_run_is_zero_with_nothing_pending(client, projects_dir):
+    """0 / "" rather than a missing key — the same shape every other absent time
+    on the row takes, so the client reads one thing and not two."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "hi", T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["next_run"] == 0
+    assert task["next_run_entry"] == ""
+
+    # And a task with no schedule anywhere near it reads the same way.
+    _write_transcript(projects_dir, "sess-b", "/p", [_user("typed", T10)])
+    tasks_mod.reset_cache()
+    assert _by_key(client)["sess-b"]["next_run"] == 0
+
+
+def test_only_pending_entries_name_the_next_run(client, projects_dir):
+    """A message that already went, one that was cancelled and one that is
+    mid-flight are not runs that are still to come. Only `pending` is."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("gone", "sent", T8, state=schedule.SENT, fired=T8, turn="ok",
+               claude_session_id="sess-a"),
+        _entry("dropped", "cancelled", T9, state=schedule.CANCELLED,
+               claude_session_id="sess-a"),
+        _entry("claimed", "already claimed", T10, state=schedule.SENDING,
+               claude_session_id="sess-a"),
+        _entry("tpl", "every morning", T10, state=schedule.RECURRING,
+               repeats="0 9 * * *", claude_session_id="sess-a"),
+        _entry("waiting", "the next one", T11, claude_session_id="sess-a"),
+        _entry("later", "the one after", T12, claude_session_id="sess-a"),
+    ])
+    task = _by_key(client)["sess-a"]
+    assert task["next_run"] == tasks_store.epoch(T11)
+    assert task["next_run_entry"] == "waiting"
+
+
+def test_a_recurring_occurrence_can_be_the_next_run(client, projects_dir):
+    """The template never fires; its materialised occurrence is a pending entry
+    like any other, and it is the run the lane is about."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("tpl", "every morning", T9, state=schedule.RECURRING,
+               repeats="0 9 * * *", claude_session_id="sess-a"),
+        _entry("occ", "every morning", T12, claude_session_id="sess-a",
+               template_id="tpl"),
+    ])
+    task = _by_key(client)["sess-a"]
+    assert task["next_run"] == tasks_store.epoch(T12)
+    assert task["next_run_entry"] == "occ"
+
+
+def test_a_pending_entry_with_no_id_or_no_due_names_nothing(client,
+                                                            projects_dir):
+    """Both halves have to be real. An entry with no id cannot be FIRED, so
+    naming it would put a card at the top of Upcoming whose button sends some
+    other message — the lie the pair of fields exists to remove. An entry with no
+    readable due time would claim the task runs next at the epoch."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("", "hand-edited: no id", T8, claude_session_id="sess-a"),
+        _entry("no-due", "hand-edited: no due", "", claude_session_id="sess-a"),
+        _entry("real", "the one that can run", T12, claude_session_id="sess-a"),
+    ])
+    task = _by_key(client)["sess-a"]
+    assert task["next_run"] == tasks_store.epoch(T12)
+    assert task["next_run_entry"] == "real"
+
+
+def test_the_next_run_is_named_on_a_task_that_has_never_run(client, tmp_path):
+    """The §5 row — a pending message with no session — is the commonest
+    Upcoming card there is, and it must be sortable and runnable too."""
+    _seed_schedule([
+        _entry("e1", "pull the news", T12, target=str(tmp_path)),
+        _entry("e2", "and this", T9, target=str(tmp_path)),
+    ])
+    rows = _by_key(client)
+    assert rows["pending:e1"]["next_run"] == tasks_store.epoch(T12)
+    assert rows["pending:e1"]["next_run_entry"] == "e1"
+    assert rows["pending:e2"]["next_run_entry"] == "e2"
+
+
 # --------------------------------------------------------------- the calendar
 
 

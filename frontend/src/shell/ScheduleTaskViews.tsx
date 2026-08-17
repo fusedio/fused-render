@@ -59,12 +59,15 @@ import {
   openThreadIntent,
   projectOptions,
   ranNote,
+  settleMarkAllRead,
   taskColumn,
   taskRunIntent,
   taskUnread,
   threadView,
   tildePath,
   toggleExpanded,
+  unmarkAllRead,
+  unmarkRead,
   unreadCount,
   unreadMarker,
 } from "./tasks-lib";
@@ -482,21 +485,53 @@ function useReadSet() {
   const clear = (taskKey: string, m: TaskMessage) => {
     if (!m.unread) return;
     setRead((cur) => markRead(cur, taskKey, m.message_id));
-    // Fire and forget: the click navigates away, so there is no one left to
-    // show an error to, and the dot is already gone locally either way. A
-    // failed write reappears on the next poll, which is the honest outcome.
-    void markTaskMessageRead(taskKey, m.message_id).catch(() => {});
+    // Fire and forget as far as the NAVIGATION goes — the click is leaving the
+    // page, so a refusal has nobody left to be told — but the mark itself is
+    // taken back on one (tasks-lib.unmarkRead). "The next poll brings the dot
+    // back" was not true: the local entry outranks the poll for as long as this
+    // component lives, so a write nobody noticed failing hid the dot until the
+    // List remounted.
+    void markTaskMessageRead(taskKey, m.message_id).catch(() => {
+      setRead((cur) => unmarkRead(cur, taskKey, m.message_id));
+    });
   };
-  // The whole task, on the row's own button. The local half is one sentinel
-  // rather than an id per message (tasks-lib.markAllRead): the row's count and
-  // the dots of a thread that may not even be expanded all have to go at once,
-  // and the ids outside the loaded window are ones this component has never
-  // seen. The SERVER half is awaited by the caller — unlike a message click,
-  // nobody is navigating away, so a refusal has somewhere to be said.
-  const clearAll = (taskKey: string) => {
-    setRead((cur) => markAllRead(cur, taskKey));
+  // The whole task, on the row's own button and on any gesture that opens the
+  // thread. Two halves, both from tasks-lib.markAllRead: a concrete id for every
+  // message this component HOLDS, and one observation-stamped sentinel for the
+  // ones outside the window, whose ids it has never seen.
+  const clearAll = (task: Task, loaded?: TaskMessage[]) => {
+    setRead((cur) => markAllRead(cur, task, loaded));
   };
-  return { read, clear, clearAll };
+  // ...and the way back, which is the half that was missing. `held` is the list
+  // the press wrote its concrete ids from, captured BEFORE the request went out:
+  // a poll can replace the thread while the write is in flight, and a rollback
+  // has to remove what was actually written.
+  const restoreAll = (taskKey: string, held: TaskMessage[]) => {
+    setRead((cur) => unmarkAllRead(cur, taskKey, held));
+  };
+  // The server's own answer to the mark, spent through the one rule that reads
+  // it (tasks-lib.settleMarkAllRead): a non-zero count means the press did not
+  // clear the row after all.
+  const settleAll = (
+    taskKey: string,
+    held: TaskMessage[],
+    answer: { unread: number },
+  ) => {
+    setRead((cur) => settleMarkAllRead(cur, taskKey, held, answer));
+  };
+  return { read, clear, clearAll, restoreAll, settleAll };
+}
+
+/** The whole-task half of useReadSet, for the two performers below — they are
+ * module functions rather than hooks, so the marks are handed to them. */
+interface ReadMarks {
+  clearAll: (task: Task, loaded?: TaskMessage[]) => void;
+  restoreAll: (taskKey: string, held: TaskMessage[]) => void;
+  settleAll: (
+    taskKey: string,
+    held: TaskMessage[],
+    answer: { unread: number },
+  ) => void;
 }
 
 // ---- the run, for both views -------------------------------------------------
@@ -542,19 +577,21 @@ async function performRun(intent: TaskRunIntent): Promise<string> {
  * performs it.
  *
  * The local clear goes FIRST, so the pill cannot outlive its own press (the page
- * polls on a 20s interval). The server call is ONE whole-task request, fired and
- * forgotten: the press is leaving the page, so a refusal has nobody left to be
- * shown to, and a write that failed comes back honestly on the next poll. The
- * navigation is OUTSIDE the guard and never waits on the write.
+ * polls on a 20s interval). The server call is ONE whole-task request, and the
+ * navigation is OUTSIDE the guard and never waits on it — but the answer is no
+ * longer thrown away. A refusal takes the mark back and a non-zero remaining
+ * count settles it (tasks-lib.settleMarkAllRead), because "the next poll brings
+ * it back" was never true of a local override that outranks the poll. Nobody is
+ * shown a sentence here — the press left the page — so the correction IS the
+ * whole report: the pill is there again when the reader comes back.
  */
-function performOpen(
-  taskKey: string,
-  intent: OpenThreadIntent,
-  clearAll: (taskKey: string) => void,
-): void {
+function performOpen(task: Task, intent: OpenThreadIntent, marks: ReadMarks): void {
   if (intent.markRead) {
-    clearAll(taskKey);
-    void markWholeTaskRead(taskKey).catch(() => {});
+    const held = task.messages ?? [];
+    marks.clearAll(task);
+    void markWholeTaskRead(task.key)
+      .then((answer) => marks.settleAll(task.key, held, answer))
+      .catch(() => marks.restoreAll(task.key, held));
   }
   navigateUrl(intent.href);
 }
@@ -597,7 +634,7 @@ export function TaskList({
   const [loaded, setLoaded] = useState<Record<string, TaskMessage[]>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const { read, clear, clearAll } = useReadSet();
+  const { read, clear, clearAll, restoreAll, settleAll } = useReadSet();
 
   const toggle = (key: string) => setExpanded((cur) => toggleExpanded(cur, key));
 
@@ -642,6 +679,8 @@ export function TaskList({
           read={read}
           onRead={clear}
           onReadAll={clearAll}
+          onUnreadAll={restoreAll}
+          onSettleAll={settleAll}
         />
       ))}
     </div>
@@ -662,6 +701,8 @@ function TaskNode({
   read,
   onRead,
   onReadAll,
+  onUnreadAll,
+  onSettleAll,
 }: {
   task: Task;
   home: string;
@@ -677,7 +718,15 @@ function TaskNode({
   onRead: (taskKey: string, m: TaskMessage) => void;
   /** Clear this whole task's unread locally — the optimistic half of Mark read,
    * paired with the one server call the button makes. */
-  onReadAll: (taskKey: string) => void;
+  onReadAll: (task: Task, loaded?: TaskMessage[]) => void;
+  /** Put it back: the write was refused, so the dots and the button return. */
+  onUnreadAll: (taskKey: string, held: TaskMessage[]) => void;
+  /** Reconcile the optimism against the server's own answer to the mark. */
+  onSettleAll: (
+    taskKey: string,
+    held: TaskMessage[],
+    answer: { unread: number },
+  ) => void;
 }) {
   const view = threadView(task, loaded);
   const unread = taskUnread(task, read, loaded);
@@ -771,17 +820,44 @@ function TaskNode({
   // ignored the click. The server call is one request for the whole thread
   // (api.markWholeTaskRead) rather than one per message.
   //
-  // No onReload: the count is already right locally, and a reload would repaint
-  // every row in the list to say the one thing this row has already said. The
-  // next poll agrees on its own — and if the write failed, that same poll is
-  // what honestly brings the dots back, under the sentence the server gave.
+  // THE OPTIMISM IS THEN RECONCILED, which is the part that was missing. It used
+  // to be planted and never revisited, so a refused write left this row looking
+  // read with its own Mark read button gone — no dots, no count, no retry — and
+  // the comment here claimed the next poll would restore the truth. It could
+  // not: the local mark outranked every poll for as long as the List stayed
+  // mounted. So:
+  //
+  //   * a refusal takes the mark back (dots, count and button return) and says
+  //     what the server said;
+  //   * a 200 that still reports unread means something arrived while the
+  //     request was in flight, and that wins too — the row goes back to
+  //     reporting it rather than swallowing it;
+  //   * and everything the mark DID cover stays cleared, instantly, which is
+  //     the 20 seconds this whole mechanism exists to hide.
+  //
+  // Still no onReload: the count is already right locally, and a reload would
+  // repaint every row in the list to say the one thing this row has said.
   const markSeen = async () => {
+    // Captured before the await: `loaded` and `task` can both be replaced by a
+    // poll while the request is in flight, and a rollback has to remove the ids
+    // the press actually wrote.
+    const held = loaded ?? task.messages ?? [];
     setActing(true);
     setNote("");
-    onReadAll(task.key);
+    onReadAll(task, loaded);
     try {
-      await markWholeTaskRead(task.key);
+      const answer = await markWholeTaskRead(task.key);
+      if (answer.unread > 0) {
+        onSettleAll(task.key, held, answer);
+        // News, not a fault — hence the quiet note the other row actions use.
+        setNote(
+          answer.unread === 1
+            ? "1 message arrived while this was marking, and is still unread."
+            : `${answer.unread} messages arrived while this was marking, and are still unread.`,
+        );
+      }
     } catch (e) {
+      onUnreadAll(task.key, held);
       setNote((e as Error).message);
     } finally {
       setActing(false);
@@ -801,7 +877,11 @@ function TaskNode({
   // refusal; this one is leaving, so it fires and forgets and never holds up the
   // hop. `onReadAll` is the local half, the same one markSeen uses.
   const openChat = (intent: OpenThreadIntent) => {
-    performOpen(task.key, intent, onReadAll);
+    performOpen(task, intent, {
+      clearAll: onReadAll,
+      restoreAll: onUnreadAll,
+      settleAll: onSettleAll,
+    });
   };
 
   const cancel = async (m: TaskMessage, entryId: string) => {
@@ -1133,7 +1213,7 @@ export function TaskBoard({
   // the next poll. Only the whole-task half is wanted here — a card links the
   // conversation, never one turn of it, so there is no per-message click to
   // make on this view.
-  const { read, clearAll } = useReadSet();
+  const { read, clearAll, restoreAll, settleAll } = useReadSet();
 
   const allowed = useMemo(
     () => new Set(dragging ? dropLanes(dragging) : []),
@@ -1227,7 +1307,7 @@ export function TaskBoard({
   // forget, navigate regardless) lives in performOpen, shared with the List row's
   // Open chat button so the same gesture cannot mean two things on two views.
   const openCard = (task: Task, intent: OpenThreadIntent) => {
-    performOpen(task.key, intent, clearAll);
+    performOpen(task, intent, { clearAll, restoreAll, settleAll });
   };
 
   // Shared by expanded lane bodies AND collapsed rails, so Archive — collapsed

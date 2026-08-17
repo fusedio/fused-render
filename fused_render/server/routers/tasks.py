@@ -13,7 +13,10 @@ this file is written around:
   recent** messages. This runs for every row on the page and is polled, so
   nothing in it may scale with transcript size. Transcripts are append-only, so
   the scan below reads each file **once** and thereafter only the bytes that
-  were appended since — a multi-MB transcript is never re-read.
+  were appended since — a multi-MB transcript is never re-read. One field on the
+  row is deliberately NOT read from that window: `next_run` (with the entry it
+  names) is `min(at)` over every pending entry, because the Board orders Upcoming
+  by it and three messages cannot answer it. See `_next_run`.
 * ``GET /api/tasks/{key}/messages`` — one task's FULL thread. This is the
   "Show more" click: a whole-transcript parse, which is affordable exactly
   because it happens for one task at a time and never for a listing.
@@ -778,6 +781,59 @@ def _live(path: str | None, now: float) -> tuple[bool, float]:
 # --------------------------------------------------------------- the endpoints
 
 
+def _next_run(entries: list[dict]) -> tuple[float, str]:
+    """When this task NEXT runs, and WHICH entry that run is — `(0.0, "")` for a
+    task with nothing pending.
+
+    This exists because the three messages a row carries cannot answer it. The
+    tail is the three newest by `at`, and on this branch an OVERDUE pending is an
+    ordinary state (past scheduling is allowed, catch-up is unbounded), so two
+    sent runs plus next month's occurrence are enough to push the run that should
+    happen FIRST out of the window entirely. The Board orders Upcoming by
+    soonest-next-run; read from the window alone that order buries exactly the
+    work it exists to surface. `min(at)` over every pending entry is the fact the
+    lane actually wants, and here — where the whole set is already in hand,
+    before the tail is cut — it is free.
+
+    Widening `task.messages` was the other way to close it and is the wrong one:
+    a fourth (or twentieth) message is another row of tail held per session for
+    every session on the machine, paid on every poll, to fix a minority of rows.
+
+    TWO fields rather than one, because the sort and the button have to widen
+    TOGETHER. `runNowTarget` fires an ENTRY ID, and a card promoted to the top of
+    Upcoming on a run whose id the row does not carry would Run now some other
+    message than the one the order just promised. So an entry with no readable id
+    is not eligible to be the named next run at all: naming it would put the lie
+    back, one field further along.
+
+    `_entry_at` is the due time and never `fired` (see there), and an entry with
+    no readable due time is skipped for the same reason — the alternative is
+    claiming the task runs next at the epoch, which would pin it to the top of
+    the lane forever.
+
+    On an exact tie the FIRST in store order wins, which is the older of the two
+    (the store appends). A tie is also the one case where the client may fire a
+    different entry than the one named here: `runNowTarget` prefers a message it
+    is HOLDING over an equally-due one it can only name, because that one has a
+    printed id. Both are due at the same second, so the time the lane orders by
+    is the same either way and the order still promises what the button sends.
+    """
+    best_at = 0.0
+    best_id = ""
+    for entry in entries:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        entry_id = str(entry.get("id") or "")
+        if not entry_id:
+            continue
+        at = _entry_at(entry)
+        if not at:
+            continue
+        if not best_at or at < best_at:
+            best_at, best_id = at, entry_id
+    return best_at, best_id
+
+
 def _row(task: dict, number: str, triage: dict, read: dict, now: float) -> dict:
     """One listing row. The tail parse only: three messages, and a count."""
     rec = _scan(task["path"]) if task["path"] else None
@@ -796,6 +852,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float) -> dict:
     # in the last three of a list it is in the same order as. Their ids follow
     # from the total, whatever else is below them.
     tail = _merge(prompts, task["entries"], live)
+    # BEFORE the cut, from the whole set: the one fact about the future that the
+    # three-message window cannot be trusted to hold. See `_next_run`.
+    next_run, next_run_entry = _next_run(task["entries"])
     tail = tail[-_LISTING_MESSAGES:]
     _turn_of_newest_chat(tail, live)
     for offset, message in enumerate(reversed(tail)):
@@ -834,6 +893,12 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float) -> dict:
         "unread": _unread_count(task, total, unfired, read),
         "last_active": active,
         "message_count": total,
+        # The next run, and the entry it belongs to — `min(at)` over every
+        # pending entry, not over the window below. 0.0 / "" when the task has
+        # nothing pending, which is how every other absent time on this row
+        # reads (`last_active`, a message's `ran_at`). See `_next_run`.
+        "next_run": next_run,
+        "next_run_entry": next_run_entry,
         # Newest first, which is how every list in this feature reads.
         "messages": list(reversed(tail)),
     }
