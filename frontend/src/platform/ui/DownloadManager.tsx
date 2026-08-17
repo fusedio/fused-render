@@ -284,7 +284,9 @@ function FixButton({ job, onError }: { job: Job; onError: (msg: string | null) =
     onError(null);
     try {
       const started = await startSelfFix(failureContextFromJob(job));
-      navigateUrl(fixSessionUrl(started));
+      // A directory, always — the install root. See SelfFixPanel for why the
+      // hint matters on this particular navigation.
+      navigateUrl(fixSessionUrl(started), { isDir: true });
     } catch (e) {
       // Reported ON THE ROW (the caller renders it under the status line)
       // rather than as a toast: the row is what the user clicked, and the most
