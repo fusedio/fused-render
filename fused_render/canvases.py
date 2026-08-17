@@ -393,8 +393,65 @@ def api_canvases_list(x_fused: str | None = Header(default=None)):
     except OSError:
         pass
     for canvas in canvases:
-        canvas["cloned"] = canvas["name"] in cloned
+        is_cloned = canvas["name"] in cloned
+        canvas["cloned"] = is_cloned
+        # Card metadata comes from the local clone (the CLI list is bare
+        # names): UDF count = *.py files (widgets are .json, canvas.toml is
+        # chrome), modified = newest file mtime. Null when not cloned.
+        n_udfs = None
+        mtime = None
+        if is_cloned:
+            n_udfs = 0
+            for dirpath, dirs, files in os.walk(os.path.join(root, canvas["name"])):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                for f in files:
+                    if f.startswith("."):
+                        continue
+                    if f.endswith(".py"):
+                        n_udfs += 1
+                    try:
+                        st = os.stat(os.path.join(dirpath, f))
+                    except OSError:
+                        continue
+                    if mtime is None or st.st_mtime > mtime:
+                        mtime = st.st_mtime
+        canvas["n_udfs"] = n_udfs
+        canvas["mtime"] = mtime
     return {"canvases": canvases}
+
+
+@router.post("/api/canvases/create")
+def api_canvases_create(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    if not _logged_in():
+        return _error("not signed in to Fused — sign in first", 409)
+    proc, err = _run_cli(["workbench", "canvas", "create", name], LIST_TIMEOUT)
+    if err is not None:
+        return err
+    return {"ok": True, "name": name}
+
+
+@router.post("/api/canvases/logout")
+def api_canvases_logout(x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    # Stop every watcher first: a push with cleared credentials would only
+    # spam 401s into sync status.
+    with _SYNC_LOCK:
+        managers = list(_syncs.values())
+        _syncs.clear()
+    for manager in managers:
+        manager.stop()
+    proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT)
+    if err is not None:
+        return err
+    return {"ok": True}
 
 
 @router.post("/api/canvases/clone")

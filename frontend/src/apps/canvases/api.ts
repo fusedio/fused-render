@@ -20,6 +20,10 @@ export interface CanvasEntry {
   name: string;
   id: string | null;
   cloned: boolean;
+  /** *.py files in the local clone; null when not cloned. */
+  n_udfs: number | null;
+  /** Newest file mtime (epoch seconds) in the local clone; null when not cloned. */
+  mtime: number | null;
 }
 
 export interface SyncStatus {
@@ -44,6 +48,11 @@ export const cancelLogin = () =>
 
 export const listCanvases = () =>
   getJson<{ canvases: CanvasEntry[] }>("/api/canvases/list", GUARD);
+
+export const createCanvas = (name: string) =>
+  postJson<{ ok: boolean; name: string }>("/api/canvases/create", { name });
+
+export const logout = () => postJson<{ ok: boolean }>("/api/canvases/logout", {});
 
 export const cloneCanvas = (name: string) =>
   postJson<{ ok: boolean; dir: string }>("/api/canvases/clone", { name });

@@ -32,5 +32,8 @@
 @import "./styles/setup-modal.css";
 @import "./styles/templates.css";
 @import "./styles/home.css";
+/* After home.css: the canvases listing is another page-family surface that
+   layers its card grid over the .btn / .field-control vocabulary above. */
+@import "./styles/canvases.css";
 @import "./styles/reduced-motion.css";
 @import "./styles/apps.css";

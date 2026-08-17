@@ -54,6 +54,11 @@ def main():
         return
     if plain[:2] == ["canvas", "push"]:
         return
+    if plain[:2] == ["canvas", "create"]:
+        return
+    if plain[:1] == ["logout"]:
+        os.remove(os.environ["FUSED_RENDER_FUSED_CREDENTIALS"])
+        return
     sys.stderr.write("Error: unknown stub command\n")
     sys.exit(2)
 
@@ -144,6 +149,53 @@ def test_list_normalizes_names_and_marks_cloned(harness):
     canvases = {c["name"]: c for c in res.json()["canvases"]}
     assert canvases["alpha"]["cloned"] is False
     assert canvases["beta"]["cloned"] is True
+
+
+def test_list_reports_clone_metadata(harness):
+    # Cloned canvases carry n_udfs (*.py files) and mtime from the local
+    # folder; un-cloned entries stay null so the client renders no stat line.
+    harness.log_in()
+    beta = harness.root / "beta"
+    beta.mkdir(parents=True)
+    (beta / "canvas.toml").write_text("", encoding="utf-8")
+    (beta / "one.py").write_text("", encoding="utf-8")
+    (beta / "two.py").write_text("", encoding="utf-8")
+    (beta / "widget.json").write_text("{}", encoding="utf-8")
+    (beta / ".hidden.py").write_text("", encoding="utf-8")
+    res = harness.client.get("/api/canvases/list", headers=GUARD)
+    canvases = {c["name"]: c for c in res.json()["canvases"]}
+    assert canvases["beta"]["n_udfs"] == 2
+    assert isinstance(canvases["beta"]["mtime"], float)
+    assert canvases["alpha"]["n_udfs"] is None
+    assert canvases["alpha"]["mtime"] is None
+
+
+def test_create_canvas_runs_cli(harness):
+    harness.log_in()
+    res = harness.client.post("/api/canvases/create", json={"name": "gamma"}, headers=GUARD)
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "name": "gamma"}
+    assert ["workbench", "canvas", "create", "gamma"] in harness.calls()
+
+
+def test_create_canvas_rejects_bad_names(harness):
+    harness.log_in()
+    for bad in ("a-b", "a b", ""):
+        res = harness.client.post("/api/canvases/create", json={"name": bad}, headers=GUARD)
+        assert res.status_code == 400, bad
+
+
+def test_logout_clears_credentials_and_stops_watchers(harness):
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    manager = canvases_mod._syncs.get("alpha")
+    assert manager is not None
+    res = harness.client.post("/api/canvases/logout", headers=GUARD)
+    assert res.status_code == 200
+    assert not harness.creds.exists()
+    assert manager.stop_event.is_set()
+    assert canvases_mod._syncs == {}
 
 
 def test_stale_credentials_map_to_401(harness):
