@@ -45,18 +45,22 @@
   border-top: 1px solid var(--border);
 }
 
-/* -- The unread rail's geometry ------------------------------------------------
-   ONE column, shared by a task row and every message row beneath it. The dot
-   moved to the head of the message rows last round and the task's own count did
-   not move with it — it stayed at the far right beside the folder chip, so the
-   rail started halfway down the task (Akshil, 2026-08-17: "for the tasks you
-   didn't bring this on the left side, only for the messages you brought. This
-   looks odd").
+/* -- The leading rail's geometry ------------------------------------------------
+   ONE column down the whole node. On a MESSAGE row the thing standing in it is
+   the unread dot; on the TASK row above it is the status ring — the same 16px
+   slot on the same centre line, so the node still reads as one column even
+   though the two rows say different things in it.
+
+   The task row's own unread COUNT is no longer in this column. It led the row
+   for a day and that was a day too long: a number at the very start of a row
+   made the messages outrank the task they belong to (Akshil, 2026-08-17). It
+   trails the title now — see `.tasks-count` — and the rail loses nothing by it,
+   because the ring that took its place is exactly as wide.
 
    The two rows are indented differently on purpose — the thread hangs under its
    task — so the column can only stay straight if ONE number decides where it
    is and the other indents are derived from it. That number is
-   `--tasks-rail-x`: how far the rail sits from the node's left edge. The task
+   `--tasks-rail-x`: how far the column sits from the node's left edge. The task
    row reaches it by its own padding plus the caret gutter; the thread reaches it
    by subtracting a message row's indent from it. Retune any part and both move
    together; hand-tune one and they part company, which is the whole bug. */
@@ -64,7 +68,7 @@
   --tasks-row-pad: 12px; /* the task row's left padding */
   --tasks-caret-w: 16px; /* the disclosure gutter, OUTSIDE the rail */
   --tasks-row-gap: 8px; /* the flex gap every row here uses */
-  --tasks-rail-w: 16px; /* wide enough for a two-digit pill to centre in */
+  --tasks-rail-w: 16px; /* the status ring's width — what the column is sized to */
   --tasks-msg-indent: 13px; /* a message row's 1px rule + its own padding */
   --tasks-rail-x: calc(
     var(--tasks-row-pad) + var(--tasks-caret-w) + var(--tasks-row-gap)
@@ -147,23 +151,25 @@
 }
 
 /* -- Unread ------------------------------------------------------------------
-   A dot, in the one hue the page reserves for "not finished with yet". A
-   message row shows the dot; the task row above shows the SAME dot carrying its
-   count, which is the only way a number reads in a leading slot without either
-   shrinking to nothing or breaking the column it sits in. */
+   The MESSAGE row's dot, in `--activity` — the hue the page reserves for
+   something happening or waiting to be seen, and the same one the live ping
+   wears. This is the alert half of unread: one mark per message, leading the row
+   it is about, so a thread is scanned down its left edge. The task row's COUNT is
+   the other half and is deliberately not this colour any more; see
+   `.tasks-count`. */
 .tasks-dot {
   display: inline-block;
   width: 7px;
   height: 7px;
   flex: 0 0 7px;
   border-radius: 999px;
-  background: var(--status-upcoming);
+  background: var(--activity);
 }
 
-/* The rail slot itself, at the head of a task row and of every message row.
-   Fixed width and centred contents: that is what puts a 7px dot and a 16px
-   count pill on one centre line, so the rail stays straight whatever each row
-   has to say. Drawn even when empty — a slot that appeared only on unread rows
+/* The rail slot itself, at the head of every MESSAGE row. Its width is the status
+   ring's, and its contents are centred: that is what puts a 7px dot on the exact
+   centre line of the ring on the task row above, so the column stays straight
+   down the node. Drawn even when empty — a slot that appeared only on unread rows
    would shift every cell of those rows sideways, and a ragged left edge is
    exactly what a scan cannot follow. */
 .tasks-rail {
@@ -174,37 +180,60 @@
   flex: 0 0 var(--tasks-rail-w);
 }
 
-/* The count. FILLED rather than the tinted pill it used to be at the far right
-   of the row: at the head of the rail it has to read as the same mark the dots
-   below it are, and a 16%-tint chip beside a run of solid dots reads as a
-   different thing entirely. --on-accent is the page's glyph-on-a-fill token and
-   holds in both themes (near-black on the lighter dark-theme blue, white on the
-   darker light-theme one).
+/* The count — the task row's "and there are N of them", sitting immediately
+   AFTER the title text (2026-08-17). Two things changed together and they are one
+   decision:
 
-   min-width is the rail's own width, so one digit is a circle exactly filling
-   the slot; two grow it into a short pill that bleeds ~2px each side into the
-   8px gaps and never reaches its neighbours (measured: even "99+" keeps ~2px
-   clear). Past 99 the text is capped at "99+" (tasks-lib.unreadCount) and the
-   true number stays in the label.
+   POSITION. It used to lead the row, on the rail, and that inverted the reading
+   priority: a reader scanning a list wants the titles, and a bold number in front
+   of every one of them announced the messages before the work they are about.
+   Title first, count after — the indentation break the page needed.
 
-   The fallback in that min-width is not decoration: the Board's card wears this
-   same pill from OUTSIDE `.tasks-node`, where the rail's variables do not
-   resolve. Inside the List it tracks the rail; on a card it keeps the shape. */
+   WEIGHT. Leading, it had to be a solid fill to read as the same mark as the dots
+   under it. Trailing the title it is metadata, not an alert, so the FILL is a
+   quiet neutral wash of --fg-muted instead of a hue. The dots in the thread keep
+   the blue and keep the alerting — one loud mark per unread MESSAGE, one quiet
+   total on the TASK. Deliberately not `--activity`: a blue pill beside a title is
+   a badge demanding a press, which is exactly what it stopped being.
+
+   The INK is --fg rather than --fg-muted, and that is a legibility decision, not
+   a loudness one. Muted ink on an 18% muted wash lands at 3.8:1 in light mode,
+   which is under AA for 10px digits — the chip would be quiet by being unreadable.
+   Full ink on the same wash clears 11:1 in both themes, and the chip still reads
+   as subordinate because it is 10px against a 13px title. Quiet comes from the
+   size and the fill; the number itself still has to be readable.
+
+   min-width keeps one digit a circle; two grow it into a short pill. Past 99 the
+   text is capped at "99+" (tasks-lib.unreadCount) and the true number stays in
+   the label. 16px flat rather than the rail's variable, because the pill is no
+   longer in the rail and the Board's card wears it from outside `.tasks-node`
+   where that variable does not resolve at all. */
 .tasks-count {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  min-width: var(--tasks-rail-w, 16px);
+  min-width: 16px;
   height: 16px;
   padding: 0 4px;
   border-radius: 999px;
-  background: var(--status-upcoming);
-  color: var(--on-accent);
+  background: color-mix(in srgb, var(--fg-muted) 18%, transparent);
+  color: var(--fg);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1;
   font-variant-numeric: tabular-nums;
+}
+
+/* On a Board card the pill trails the title's TEXT rather than a flex sibling of
+   it: the card's title is a two-line `-webkit-box` clamp, so the count has to
+   flow with the words to end up after the last one instead of pinned to a corner.
+   That makes it an inline box in a text line, which is the one place the flex
+   row's `align-items: center` cannot centre it — hence the explicit alignment
+   and the gap that `.tasks-row`'s `gap` provides on the List side. */
+.schedule-tv-card-title .tasks-count {
+  margin-left: 6px;
+  vertical-align: middle;
 }
 
 /* -- Quiet row action (Open chat) ---------------------------------------------
@@ -258,22 +287,22 @@
 
 /* Run now / Re-run. Same group, same size, same silence at rest as Edit and
    Cancel — the hue only arrives under the pointer, and it is the page's
-   "upcoming" blue rather than Cancel's red: this one STARTS something. */
+   `--activity` blue rather than Cancel's red: this one STARTS something. */
 .tasks-act--run:hover:not(:disabled),
 .prefs-section .tasks-act--run:hover:not(:disabled) {
-  color: var(--status-upcoming);
-  background: color-mix(in srgb, var(--status-upcoming) 12%, transparent);
-  border-color: color-mix(in srgb, var(--status-upcoming) 32%, transparent);
+  color: var(--activity);
+  background: color-mix(in srgb, var(--activity) 12%, transparent);
+  border-color: color-mix(in srgb, var(--activity) 32%, transparent);
 }
 
 /* Mark read. Same group, same size, same silence at rest — and NEUTRAL under the
-   pointer, not the unread dot's own `--status-upcoming`. That hue is already
-   spoken for twice over: it is what the dot and the count pill are painted in, so
-   wearing it here would read as "this IS unread" rather than "clear it"; and it is
-   also the hue Run now takes on hover, which sits directly beside this button on
-   every row that offers both. Two adjacent buttons in one colour, one of which
-   starts a Claude turn, is the confusion worth spending a hue to avoid. The glyph
-   carries the meaning; the skin only has to say "this is a control". */
+   pointer, not the unread dot's own `--activity`. That hue is already spoken for
+   twice over: it is what the thread's dots are painted in, so wearing it here
+   would read as "this IS unread" rather than "clear it"; and it is also the hue
+   Run now takes on hover, which sits directly beside this button on every row that
+   offers both. Two adjacent buttons in one colour, one of which starts a Claude
+   turn, is the confusion worth spending a hue to avoid. The glyph carries the
+   meaning; the skin only has to say "this is a control". */
 .tasks-act--seen:hover:not(:disabled),
 .prefs-section .tasks-act--seen:hover:not(:disabled) {
   color: var(--fg);
@@ -604,7 +633,7 @@
 .schedule-tv-lane-body.is-drop-run,
 .schedule-tv-rail.is-drop-run,
 .prefs-section .schedule-tv-rail.is-drop-run {
-  outline: 1px dashed color-mix(in srgb, var(--status-upcoming) 60%, transparent);
+  outline: 1px dashed color-mix(in srgb, var(--activity) 60%, transparent);
   outline-offset: -1px;
 }
 
@@ -612,8 +641,8 @@
   margin: 0 0 2px;
   padding: 3px 8px;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--status-upcoming) 14%, transparent);
-  color: var(--status-upcoming);
+  background: color-mix(in srgb, var(--activity) 14%, transparent);
+  color: var(--activity);
   font-size: 11px;
   font-weight: 600;
   text-align: center;

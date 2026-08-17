@@ -214,33 +214,19 @@ function IdChip({ id, kind }: { id: string; kind: "task" | "message" }) {
   return <span className={`tasks-id tasks-id--${kind}`}>{id}</span>;
 }
 
-/** A task's unread count as the DOT CARRYING THE NUMBER (§7,
- * tasks-lib.unreadCount): the message dot's own hue, filled, grown from a
- * circle into a short pill only as far as the digits need. It reads as the same
- * mark the thread below it uses, one size up, rather than as a second badge
- * with its own vocabulary. The true count is always the accessible name, even
- * when the pill prints "99+". */
+/** A task's unread count, drawn immediately AFTER its title (§7,
+ * tasks-lib.unreadCount) and in a quiet neutral rather than the thread's blue.
+ * It is the task's total, which is metadata about the row — the per-message dots
+ * are the alert — so it trails the words instead of leading them and it does not
+ * compete with them. Nothing is drawn at all when there is nothing unread; a
+ * trailing chip has no column to hold open, unlike the message rail. The true
+ * count is always the accessible name, even when the pill prints "99+". */
 function UnreadPill({ count }: { count: number }) {
   const c = unreadCount(count);
   if (!c) return null;
   return (
     <span className="tasks-count" role="img" aria-label={c.label} title={c.label}>
       {c.text}
-    </span>
-  );
-}
-
-/** The LEADING rail slot on a task row — the same column, the same width and
- * the same centre line as the `.tasks-rail` at the head of every message row
- * under it, so one straight rail runs down the whole node. Drawn on every task,
- * filled or not: a slot that appeared only on unread tasks would shift the rest
- * of those rows sideways, which is the ragged edge this change exists to
- * remove. */
-function UnreadRail({ count }: { count: number }) {
-  if (count <= 0) return <span className="tasks-rail" aria-hidden />;
-  return (
-    <span className="tasks-rail">
-      <UnreadPill count={count} />
     </span>
   );
 }
@@ -1001,15 +987,21 @@ function TaskNode({
         <span className={"tasks-caret" + (open ? " is-open" : "")} aria-hidden>
           {ICON_CHEVRON}
         </span>
-        {/* Unread LEADS this row too, on the very column the thread's own dots
-            sit on (tasks-lib.unreadCount). The caret stays outside that column,
-            in the gutter to its left, because it is the accordion's control and
-            not part of the rail — which leaves one straight line of markers
-            running from the task down through every message it holds. */}
-        <UnreadRail count={unread} />
+        {/* The ring opens the row, and it stands in the very column the thread's
+            own dots sit on (tasks.css `--tasks-rail-x`) — same width, same centre
+            line, so one straight column runs from the task down through every
+            message it holds. The caret stays outside that column, in the gutter to
+            its left, because it is the accordion's control and not part of it.
+
+            The unread COUNT deliberately does NOT lead here. It did for a day and
+            it inverted the row's priority: the title is what a list is scanned
+            for, and a number in front of it announced the messages before the work
+            they are about (Akshil, 2026-08-17). So the title leads and the count
+            trails it — one gap of separation, then the total, then the live ping. */}
         <StatusIcon status={taskColumn(task)} failed={task.failed} />
         <IdChip id={task.task_id} kind="task" />
         <span className="tasks-title">{label}</span>
+        <UnreadPill count={unread} />
         {task.live && <LivePulse />}
 
         {/* Exactly ONE auto margin in this row: flex distributes free space
@@ -1629,21 +1621,25 @@ function TaskCard({
           if (open) onOpen(open);
         }}
       >
-        {/* Unread leads here too — it sat at the far end of the head, which is
-            the same objection the List's task row just answered. What the card
-            does NOT take from the List is the always-drawn empty slot: a card's
-            head is one line above a title and a folder chip that both start at
-            the card's own edge, so reserving a permanent rail would indent the
-            ring away from the two lines under it — a worse misalignment than the
-            one it fixes. On a card the pill is simply first when there is one. */}
+        {/* The head is the card's marks — ring, id, live ping — and nothing else.
+            The unread count is NOT one of them: it belongs to the title, exactly
+            as it does on a List row, and the same objection applies to a card's
+            head as to a row's start (Akshil, 2026-08-17 — the count in front broke
+            the reading priority).
+
+            So it goes INSIDE the title element rather than beside it. That is not
+            decoration: the title is a two-line `-webkit-box` clamp, and only a
+            child that flows with the words can end up after the last one. A flex
+            sibling would sit in a corner of the card instead, which is the very
+            placement being undone. */}
         <span className="schedule-tv-card-head">
-          <UnreadPill count={unread} />
           <StatusIcon status={taskColumn(task)} failed={task.failed} />
           <IdChip id={task.task_id} kind="task" />
           {task.live && <LivePulse />}
         </span>
         <span className="schedule-tv-card-title">
           {firstLine(task.title) || "(untitled)"}
+          <UnreadPill count={unread} />
         </span>
         <span className="schedule-tv-card-foot">
           <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />

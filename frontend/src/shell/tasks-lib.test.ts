@@ -1331,55 +1331,247 @@ describe("archiveIntent", () => {
 });
 
 // ---- where the marks are drawn -------------------------------------------------
-// Two claims the pure half cannot hold on its own: WHICH END of a row the
-// unread mark is at, and whether the task row's rail and its thread's dots are
-// one column. Both were the bug, so both are read out of the source rather than
-// left to a screenshot.
+// Three claims the pure half cannot hold on its own: WHICH END of a row the
+// unread count is at, whether the task row's ring and its thread's dots are one
+// column, and what each mark is painted in. All three were the bug at some point,
+// so all three are read out of the source rather than left to a screenshot.
 
 const SHELL = import.meta.dir;
 const VIEWS = readFileSync(join(SHELL, "ScheduleTaskViews.tsx"), "utf8");
 const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
+const SCHEDULE_CSS = readFileSync(join(SHELL, "../styles/schedule.css"), "utf8");
+const TOKENS_CSS = readFileSync(join(SHELL, "../styles/tokens.css"), "utf8");
+const REDUCED_MOTION_CSS = readFileSync(
+  join(SHELL, "../styles/reduced-motion.css"),
+  "utf8",
+);
 
-describe("the unread rail", () => {
-  it("draws the TASK row's unread leading, not out by the folder chip", () => {
+describe("the unread count's position", () => {
+  it("trails the TASK row's title instead of leading the row", () => {
     const from = VIEWS.indexOf('className={"tasks-row"');
     expect(from).toBeGreaterThan(-1);
     // The row ends where the thread it can open begins.
     const row = VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
-    const rail = row.indexOf("<UnreadRail");
-    expect(rail).toBeGreaterThan(-1);
-    // Before the ring, the id, the title and the folder chip it used to trail.
-    expect(rail).toBeLessThan(row.indexOf("<StatusIcon"));
-    expect(rail).toBeLessThan(row.indexOf("<IdChip"));
-    expect(rail).toBeLessThan(row.indexOf("<IdentityChip"));
+    const pill = row.indexOf("<UnreadPill");
+    expect(pill).toBeGreaterThan(-1);
+    // AFTER the title — that is the whole point of this round: the title is what
+    // the list is scanned for, so it must be the first thing the row says.
+    expect(pill).toBeGreaterThan(row.indexOf('className="tasks-title"'));
+    // ...and therefore after the ring and the id too.
+    expect(pill).toBeGreaterThan(row.indexOf("<StatusIcon"));
+    expect(pill).toBeGreaterThan(row.indexOf("<IdChip"));
+    // The leading rail slot is gone from the task row: the ring stands in that
+    // column now, and there is no second component reserving it.
+    expect(row).not.toContain("<UnreadRail");
+    expect(VIEWS).not.toContain("function UnreadRail");
   });
 
-  it("leads the board card too, where it also used to trail", () => {
+  it("trails the board card's title too, inside the clamped title element", () => {
     const head = VIEWS.slice(
       VIEWS.indexOf('<span className="schedule-tv-card-head">'),
-      VIEWS.indexOf('<span className="schedule-tv-card-title">'),
+      VIEWS.indexOf('<span className="schedule-tv-card-foot">'),
     );
-    expect(head.indexOf("<UnreadPill")).toBeLessThan(head.indexOf("<StatusIcon"));
+    // Not in the head any more — the head is the card's marks only.
+    const headOnly = head.slice(0, head.indexOf('className="schedule-tv-card-title"'));
+    expect(headOnly).toContain("<StatusIcon");
+    expect(headOnly).not.toContain("<UnreadPill");
+    // In the title, after the words: the title is a two-line -webkit-box clamp,
+    // so only a child that flows with the text lands after the last word.
+    expect(head.indexOf("<UnreadPill")).toBeGreaterThan(head.indexOf("firstLine(task.title)"));
+    // And the pill knows how to sit on a text line there.
+    expect(TASKS_CSS).toMatch(
+      /\.schedule-tv-card-title \.tasks-count\s*\{[^}]*vertical-align: middle/,
+    );
   });
 
-  it("puts a task row and its messages in ONE class, so it is one column", () => {
-    // Both slots are `.tasks-rail`; the old per-view class is gone.
-    expect(VIEWS).not.toContain("tasks-msg-flag");
+  it("keeps the row's ONE flex spacer and adds no auto margin", () => {
+    // Free space is split equally between every `auto` margin, so a second one
+    // centres the right-hand group instead of pushing it to the end. Moving the
+    // pill across the row must not smuggle one in: the separation comes from the
+    // row's `gap`, and `.tasks-grow` stays the only spacer.
+    expect((TASKS_CSS.match(/margin-left: auto/g) ?? []).length).toBe(0);
+    expect(TASKS_CSS).toMatch(/\.tasks-grow\s*\{[^}]*flex: 1 1 auto/);
+    expect(TASKS_CSS).toMatch(/\.tasks-row\s*\{[^}]*gap: var\(--tasks-row-gap\)/);
+    // The one margin the pill does get is on the CARD, where it is an inline box
+    // in a text line rather than a flex item with a gap.
+    expect(TASKS_CSS).toMatch(
+      /\.schedule-tv-card-title \.tasks-count\s*\{[^}]*margin-left: 6px/,
+    );
+  });
+
+  it("still leads every MESSAGE row, which is the one that is scanned", () => {
+    // The dot's move to the left edge is not undone by any of this: a thread IS
+    // read down its left edge. Only the task's total moved.
     expect((VIEWS.match(/className="tasks-rail"/g) ?? []).length).toBeGreaterThan(1);
+    expect(VIEWS).not.toContain("tasks-msg-flag");
+    const thread = VIEWS.slice(VIEWS.indexOf('className={"tasks-msg"'));
+    expect(thread.indexOf('className="tasks-rail"')).toBeLessThan(
+      thread.indexOf("<StatusIcon"),
+    );
   });
 
   it("derives the thread's indent from the rail rather than typing it twice", () => {
-    // The rail is placed once (--tasks-rail-x) and the thread reaches it by
+    // The column is placed once (--tasks-rail-x) and the thread reaches it by
     // subtracting a message row's own indent. Hand-tune either side separately
-    // and the column bends — which is the bug this round fixed.
+    // and the column bends — which is the bug that geometry fixed.
     expect(TASKS_CSS).toContain("--tasks-rail-x: calc(");
     expect(TASKS_CSS).toContain(
       "calc(var(--tasks-rail-x) - var(--tasks-msg-indent))",
     );
-    // ...and the rail slot itself is one fixed, centred width, which is what
-    // puts a 7px dot and a count pill on the same centre line.
+    // ...and the rail slot is the RING's width, centred, which is what puts a 7px
+    // dot on the exact centre line of the ring on the task row above it.
     expect(TASKS_CSS).toMatch(/\.tasks-rail\s*\{[^}]*justify-content:\s*center/);
     expect(TASKS_CSS).toMatch(/\.tasks-rail\s*\{[^}]*flex:\s*0 0 var\(--tasks-rail-w\)/);
+    expect(TASKS_CSS).toMatch(/--tasks-rail-w: 16px/);
+    expect(SCHEDULE_CSS).toMatch(/\.schedule-ring\s*\{[^}]*flex: 0 0 16px/);
+  });
+});
+
+// ---- the status vocabulary's five hues ------------------------------------------
+// Upcoming · In Progress · Done · Failed · Archive. Read out of tokens.css because
+// the whole vocabulary only works if the five stay DISTINCT in both themes, and
+// two of them were swapped on 2026-08-17 (Upcoming to grey, Archive off grey to a
+// muted violet). A colour test cannot judge taste; what it can pin is that the
+// five are five, that neither theme was left behind, and that the two that moved
+// did not move onto each other or onto a neighbour.
+
+/** The `--status-*` and `--activity` values of one palette block. */
+function statusHues(selector: string): Record<string, string> {
+  const at = TOKENS_CSS.indexOf(selector + " {");
+  expect(at).toBeGreaterThan(-1);
+  const block = TOKENS_CSS.slice(at, TOKENS_CSS.indexOf("\n}", at));
+  const out: Record<string, string> = {};
+  for (const [, name, value] of block.matchAll(
+    /--(status-[a-z_]+|activity):\s*([^;]+);/g,
+  )) {
+    out[name] = value.trim();
+  }
+  return out;
+}
+
+describe("the status ring's five hues", () => {
+  const LANES = [
+    "status-upcoming",
+    "status-progress",
+    "status-done",
+    "status-failed",
+    "status-archived",
+  ];
+
+  for (const [theme, selector] of [
+    ["dark", ":root"],
+    ["light", ':root[data-theme="light"]'],
+  ] as const) {
+    it(`gives ${theme} all five lanes, and five different values`, () => {
+      const hues = statusHues(selector);
+      for (const lane of LANES) expect(hues[lane]).toBeTruthy();
+      // Five lanes, five hues. A duplicate is a vocabulary with a word missing.
+      expect(new Set(LANES.map((l) => hues[l])).size).toBe(5);
+    });
+
+    it(`paints ${theme}'s Upcoming with an existing neutral, not a hue`, () => {
+      // Blue was the loudest thing on a page about what is happening NOW, so
+      // Upcoming recedes into the row's own metadata colour. It borrows the token
+      // rather than restating a grey, which is what keeps the two in step.
+      expect(statusHues(selector)["status-upcoming"]).toBe("var(--fg-muted)");
+    });
+
+    it(`keeps ${theme}'s Archive off grey and off every live lane`, () => {
+      const hues = statusHues(selector);
+      const archive = hues["status-archived"];
+      // Not the grey Upcoming took, and not the blue either.
+      expect(archive).not.toBe(hues["status-upcoming"]);
+      expect(archive).not.toBe(hues["activity"]);
+      // A literal, and a violet: red and blue channels above green, which is what
+      // separates it from yellow/green/red and from a neutral (r == g == b).
+      expect(archive).toMatch(/^#[0-9a-f]{6}$/);
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(archive.slice(i, i + 2), 16));
+      expect(b).toBeGreaterThan(g);
+      expect(r).toBeGreaterThan(g);
+      // Low-saturation, so a filed lane never out-shouts a live one: the spread
+      // between the strongest and weakest channel stays modest.
+      expect(Math.max(r, g, b) - Math.min(r, g, b)).toBeLessThan(90);
+    });
+  }
+
+  it("wears each lane's token on the ring, and nothing hardcoded", () => {
+    for (const [lane, token] of [
+      ["upcoming", "--status-upcoming"],
+      ["in_progress", "--status-progress"],
+      ["done", "--status-done"],
+      ["archived", "--status-archived"],
+    ] as const) {
+      expect(SCHEDULE_CSS).toContain(
+        `.schedule-ring--${lane} { color: var(${token}); }`,
+      );
+    }
+    expect(SCHEDULE_CSS).toContain("color: var(--status-failed);");
+  });
+
+  it("moves the surviving blue onto a token named for what it does", () => {
+    // The blue was never the Upcoming hue; it was the page's activity hue, worn by
+    // the live ping, the unread dot and the Run now affordance. Naming it that is
+    // what let Upcoming go grey without repainting the three.
+    for (const theme of [":root", ':root[data-theme="light"]']) {
+      expect(statusHues(theme)["activity"]).toMatch(/^#[0-9a-f]{6}$/);
+    }
+    expect(TASKS_CSS).toMatch(/\.tasks-dot\s*\{[^}]*background: var\(--activity\)/);
+    expect(SCHEDULE_CSS).toMatch(
+      /\.schedule-tv-pulse::before,\n\.schedule-tv-pulse::after \{[^}]*background: var\(--activity\)/,
+    );
+    expect(TASKS_CSS).toMatch(
+      /\.tasks-act--run:hover:not\(:disabled\),\n\.prefs-section \.tasks-act--run:hover:not\(:disabled\) \{[^}]*color: var\(--activity\)/,
+    );
+    // Nothing paints with the old name any more except the ring it belongs to.
+    expect(TASKS_CSS).not.toContain("var(--status-upcoming)");
+  });
+
+  it("de-emphasises the unread count to a neutral, not the dot's blue", () => {
+    const at = TASKS_CSS.indexOf(".tasks-count {");
+    expect(at).toBeGreaterThan(-1);
+    const rule = TASKS_CSS.slice(at, TASKS_CSS.indexOf("}", at));
+    // Metadata after a title, not a badge demanding a press: the FILL is a
+    // neutral wash and no hue is involved at all.
+    expect(rule).toContain("background: color-mix(in srgb, var(--fg-muted)");
+    expect(rule).not.toContain("--activity");
+    expect(rule).not.toContain("--status-upcoming");
+    expect(rule).not.toContain("--on-accent");
+    // ...but the digits are full ink. Muted ink on a muted wash is under AA at
+    // 10px in light mode, and a chip that is quiet by being unreadable is a bug.
+    expect(rule).toContain("color: var(--fg);");
+  });
+});
+
+describe("the In Progress ring", () => {
+  it("does not blink", () => {
+    // A lane is a COLUMN of these, so a 2s breathing loop on each made a full
+    // board flicker; the ring is already the only yellow one on the page.
+    expect(SCHEDULE_CSS).not.toMatch(/\.schedule-ring--in_progress\s*\{[^}]*animation/);
+    expect(SCHEDULE_CSS).not.toContain(".schedule-ring--in_progress {\n    animation");
+    // Static yellow is all it is.
+    expect(SCHEDULE_CSS).toContain(
+      ".schedule-ring--in_progress { color: var(--status-progress); }",
+    );
+  });
+
+  it("leaves the live ping — and only the live ping — moving", () => {
+    // The ping is a single mark on the handful of tasks with a turn actually in
+    // flight, which is a fact about right now rather than about a lane. Its
+    // keyframes therefore stay, and stay motion-gated.
+    expect(SCHEDULE_CSS).toContain("@keyframes schedule-tv-pulse");
+    const at = SCHEDULE_CSS.indexOf("@media (prefers-reduced-motion: no-preference) {");
+    expect(at).toBeGreaterThan(-1);
+    const guard = SCHEDULE_CSS.slice(at, SCHEDULE_CSS.indexOf("\n}", at));
+    expect(guard).toContain(".schedule-tv-pulse::before");
+    expect(guard).not.toContain("schedule-ring--in_progress");
+  });
+
+  it("leaves nothing dangling in reduced-motion.css", () => {
+    // That file names the individual animations it has to override by hand; it
+    // never named this one (the blanket duration rule covered it), so removing the
+    // rule leaves no counterpart behind.
+    expect(REDUCED_MOTION_CSS).not.toContain("schedule-ring");
+    expect(REDUCED_MOTION_CSS).not.toContain("schedule-tv-pulse");
   });
 });
 
@@ -1586,12 +1778,12 @@ describe("the mark-read action", () => {
   });
 
   it("never wears the unread dot's own hue", () => {
-    // --status-upcoming is what the dot and the count pill are painted in, and
-    // what Run now takes on hover — the button directly beside this one.
+    // --activity is what the thread's dots are painted in, and what Run now takes
+    // on hover — the button directly beside this one.
     const at = TASKS_CSS.indexOf(".tasks-act--seen:hover");
     expect(at).toBeGreaterThan(-1);
     const rule = TASKS_CSS.slice(at, TASKS_CSS.indexOf("}", at));
-    expect(rule).not.toContain("--status-upcoming");
+    expect(rule).not.toContain("--activity");
     expect(rule).not.toContain("--error");
   });
 });
@@ -1687,7 +1879,7 @@ describe("opening a thread, from either view", () => {
     // The List asks with the count the row is drawing (local marks included),
     // which is what stops a second press from posting again.
     expect(NODE).toContain("taskUnread(task, read, held)");
-    expect(ROW).toContain("<UnreadRail count={unread} />");
+    expect(ROW).toContain("<UnreadPill count={unread} />");
   });
 
   it("keeps the card's actions OUT of the click, by being siblings of it", () => {

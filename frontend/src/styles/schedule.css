@@ -1107,10 +1107,12 @@
    must not read as the default press — which rules out .btn-primary and is why
    nothing here touches the resting box at all.
 
-   The hue arrives only under the pointer, and it is the same "upcoming" blue
+   The hue arrives only under the pointer, and it is the same `--activity` blue
    tasks.css gives `.tasks-act--run`, at the same 12%/32% mixes: one action, one
    colour, across List, Board and Calendar. Blue rather than Cancel's red because
-   this one starts work instead of withdrawing it.
+   this one starts work instead of withdrawing it — and `--activity` rather than
+   `--status-upcoming` since 2026-08-17, when Upcoming went grey and the blue was
+   renamed for the job it was actually doing.
 
    Properties are named individually — never `transition: all`, which would also
    animate the border-colour a hover skin sets and leave the edge lagging behind
@@ -1127,9 +1129,9 @@
 
 .schedule-cal-pop-run:hover:not(:disabled),
 .prefs-section .schedule-cal-pop-run:hover:not(:disabled) {
-  color: var(--status-upcoming);
-  background: color-mix(in srgb, var(--status-upcoming) 12%, transparent);
-  border-color: color-mix(in srgb, var(--status-upcoming) 32%, transparent);
+  color: var(--activity);
+  background: color-mix(in srgb, var(--activity) 12%, transparent);
+  border-color: color-mix(in srgb, var(--activity) 32%, transparent);
 }
 
 /* The recurring rule's own pill (list view) and a projected run's (popover). */
@@ -2299,7 +2301,10 @@ input.schedule-when-field {
 
 /* -- The status ring — the vocabulary both views are read by ------------------
    Bordered circle, hue by column, and an inner dot on the terminal state so
-   "done" is legible without colour (flow StatusIcon). */
+   "done" is legible without colour (flow StatusIcon). The five hues are
+   styles/tokens.css's `--status-*`; two of them moved on 2026-08-17 (Upcoming to
+   grey, Archive to a muted violet) and the reasoning lives with the tokens,
+   because the ring is only one of the places they are worn. */
 .schedule-ring {
   position: relative;
   display: inline-block;
@@ -2337,18 +2342,23 @@ input.schedule-when-field {
   background: currentColor;
 }
 
-/* Work happening NOW is the one state that moves. Motion-safe: the pulse is
-   decoration, and reduced-motion users get the hue alone. */
+/* The In Progress ring is STATIC yellow. It used to breathe on a 2s loop, and
+   that was one blink too many (Akshil, 2026-08-17): the lane is a column of
+   them, so a full board flickered, and the ring already says "in progress" by
+   being the only yellow one on the page. The one thing still allowed to move is
+   the live ping below — that is a single mark on the handful of tasks with a turn
+   actually in flight, which is a fact about right now rather than a lane.
+   Nothing to undo in styles/reduced-motion.css: that file never named this
+   animation (its blanket `animation-duration: 0.01ms` covered it), so removing
+   the rule leaves nothing dangling. */
 @keyframes schedule-tv-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
 
+/* Motion-safe: the ping's halo is decoration, and reduced-motion users get the
+   solid dot alone. */
 @media (prefers-reduced-motion: no-preference) {
-  .schedule-ring--in_progress {
-    animation: schedule-tv-pulse 2s ease-in-out infinite;
-  }
-
   .schedule-tv-pulse::before {
     animation: schedule-tv-pulse 1.6s ease-in-out infinite;
   }
@@ -2368,7 +2378,7 @@ input.schedule-when-field {
   content: "";
   position: absolute;
   border-radius: 999px;
-  background: var(--status-upcoming);
+  background: var(--activity);
 }
 
 .schedule-tv-pulse::before {

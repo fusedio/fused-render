@@ -607,24 +607,31 @@ export function taskUnread(
 }
 
 /**
- * What the LEADING slot of a TASK row draws — the counterpart of unreadMarker,
- * in the same column.
+ * What a TASK row says about its whole thread — the counterpart of unreadMarker,
+ * which speaks for one message.
  *
- * The dot moved to the head of every MESSAGE row last round and the task's own
- * unread did not move with it: it stayed a pill at the far right of the row,
- * beside the folder chip, while the dots of its own thread led theirs. One
- * marker in two places, and a rail that started halfway down the task (Akshil,
- * 2026-08-17: "for the tasks you didn't bring this on the left side, only for
- * the messages you brought. This looks odd").
+ * The two are drawn in deliberately different places and registers, and it took
+ * three passes to land there:
  *
- * So it leads too. A count cannot be a bare dot, so the DOT CARRIES THE NUMBER
- * — same hue, filled, grown from a circle into a short pill as the digits need
- * it, and centred on the very column the message dots sit in, so the rail is
- * straight whatever it says. Past the cap it prints "99+": the pill is a
- * marker, not a readout, and a three-digit number in a 16px slot is neither.
+ *   * The dot moved to the head of every MESSAGE row, because a thread is scanned
+ *     down its left edge and a marker at the right end is missed entirely
+ *     (Akshil, 2026-08-16: "on the right hand I missed it").
+ *   * The task's count followed it to the left, so the rail would not start
+ *     halfway down the node.
+ *   * And that was wrong, because the two rows are not the same question. A list
+ *     is scanned for its TITLES, and a number in front of every one of them
+ *     announced the messages before the work they are about — it "breaks the
+ *     reading priority" (Akshil, 2026-08-17).
  *
- * `label` is the accessible name and the tooltip, and it always carries the
- * TRUE count — the cap is a drawing decision, not a rounding of the fact.
+ * So the count trails the title now, in a quiet neutral rather than the dot's
+ * blue. Title leads, total follows, and the visible break between them is the
+ * point: the row is the task, the number is a note about it. The per-message dots
+ * keep the alerting; nothing else needs to.
+ *
+ * Past the cap it prints "99+": the pill is a marker, not a readout, and a
+ * three-digit number in a 16px chip is neither. `label` is the accessible name
+ * and the tooltip, and it always carries the TRUE count — the cap is a drawing
+ * decision, not a rounding of the fact.
  */
 export const UNREAD_COUNT_CAP = 99;
 
@@ -635,8 +642,11 @@ export interface UnreadCount {
   label: string;
 }
 
-/** The task row's leading count, or null when there is nothing unread — in
- * which case the slot is still drawn, empty, exactly as a read message's is. */
+/** The count that trails a task's title, or null when there is nothing unread —
+ * and then nothing is drawn at all. That is the difference from unreadMarker: a
+ * LEADING slot has a column to hold open and so exists even when empty, while a
+ * chip after the words holds nothing open and an empty one would just be a gap
+ * between the title and whatever follows it. */
 export function unreadCount(count: number): UnreadCount | null {
   if (count <= 0) return null;
   return {

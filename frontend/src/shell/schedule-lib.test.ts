@@ -2260,9 +2260,11 @@ describe("where the popover's run action is drawn", () => {
     expect(rest).not.toContain("color:");
     expect(rest).not.toContain("border-color:");
     expect(block).not.toContain("transition: all");
-    // The same hue the List's own run button uses, at the same mixes.
-    expect(block).toContain("color: var(--status-upcoming);");
-    expect(TASKS_CSS_SRC).toContain("color: var(--status-upcoming);");
+    // The same hue the List's own run button uses, at the same mixes. `--activity`
+    // rather than `--status-upcoming` since 2026-08-17: Upcoming went grey and the
+    // blue was renamed for the job it was actually doing (live / unread / run).
+    expect(block).toContain("color: var(--activity);");
+    expect(TASKS_CSS_SRC).toContain("color: var(--activity);");
     for (const mix of ["12%", "32%"]) expect(block).toContain(mix);
     // Armoured against the page's two hover skins.
     expect(block).toContain(".prefs-section .schedule-cal-pop-run:hover:not(:disabled)");

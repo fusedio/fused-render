@@ -93,18 +93,40 @@
   --tour-dim: #7c7f88;
   --tour-next-hover: #d8f238;
 
-  /* Task status hues — the Schedule page's tree/board rings and the live pulse
+  /* Task status hues — the Schedule page's tree/board/calendar rings
      (shell/ScheduleTaskViews.tsx, ported from the flow app's task board). Own
-     tokens rather than --accent/--success/--warning because these four are a
-     VOCABULARY: a reader learns blue-yellow-green-grey once and then reads any
-     row by its ring, which only holds if the four keep their relative hues in
-     both themes. Dark values first, as everywhere here; light darkens each to
-     the same weight against white. */
-  --status-upcoming: #60a5fa;
+     tokens rather than --accent/--success/--warning because these five are a
+     VOCABULARY: a reader learns the ring hues once and then reads any row by its
+     ring, which only holds if they keep their relative weights in both themes.
+     Dark values first, as everywhere here; light darkens each to the same weight
+     against white.
+     Two of the five moved on 2026-08-17 (Akshil):
+     * Upcoming is GREY. It was blue, which is the loudest thing on a page whose
+       whole point is what is happening now — a lane of "nothing has happened
+       yet" was out-shouting In Progress. It borrows --fg-muted outright rather
+       than a grey of its own: the row's id and folder chips are already that
+       colour, so Upcoming recedes into its own row's metadata, which is exactly
+       what "not started" should look like. Restated in the light block only
+       because test_theme.py requires every dark token to have a light value —
+       the value is deliberately the same expression, not a second grey.
+     * Archive is a MUTED VIOLET, because Upcoming took the grey and two lanes
+       cannot share a hue. Violet is the one direction left: it collides with
+       none of yellow/green/red/grey, and desaturated it reads as "put away"
+       rather than as a live lane. The pair is --icon-data's violet, already
+       tuned in this file for the same weight in both themes, so the palette
+       gains a role rather than a colour. */
+  --status-upcoming: var(--fg-muted);
   --status-progress: #facc15;
   --status-done: #4ade80;
   --status-failed: #f87171;
-  --status-archived: #8b8f96;
+  --status-archived: #a898cb;
+
+  /* The blue Upcoming used to own, which outlived it: it was never really the
+     status hue, it was the page's ACTIVITY hue, and three things still need it —
+     the live ping on a turn in flight, the unread dot on a message row, and the
+     Run now / drag-to-run affordance that puts a task into flight. Naming it for
+     that is what let Upcoming go grey without repainting any of the three. */
+  --activity: #60a5fa;
 
   /* File-type icon hues (FileIcons.tsx). Tuned bright for a dark listing;
      the light palette darkens each one to the same relative weight. */
@@ -201,11 +223,15 @@
   --tour-dim: #6f747c;
   --tour-next-hover: #4e5f00;
 
-  --status-upcoming: #2563eb;
+  /* Upcoming tracks --fg-muted in both themes (see the dark block) — the same
+     expression, restated because the light palette must redefine every token. */
+  --status-upcoming: var(--fg-muted);
   --status-progress: #ca8a04;
   --status-done: #16a34a;
   --status-failed: #dc2626;
-  --status-archived: #737373;
+  --status-archived: #6b57a0;
+
+  --activity: #2563eb;
 
   --icon-folder: #45689e;
   --icon-code: #2f7a6b;
