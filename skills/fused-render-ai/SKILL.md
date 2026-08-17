@@ -141,11 +141,15 @@ Generation itself needs **nothing new** — a repo id in `fused.ai({model})` alr
 | `downloaded` | It is on this disk. Always `true` for a `"cached"` entry; on a curated one this is what a "✓ downloaded" mark means. |
 | `loaded` | A worker is holding the weights **right now**. |
 
-A picker should render the whole of `models[]` — that is the point of the field, and a page that filters to `source === "curated"` is a page where a model the user deliberately downloaded is invisible. Mark the states instead: `loaded` → ready now, `downloaded` → instant load, neither → an `size_gb` download first.
+**A picker should render the whole of `models[]`.** That is the point of the fields: a page that filters to `source === "curated"` is a page where a model the user deliberately downloaded is invisible, which is the bug these fields exist to end. Mark the states instead — `loaded` → ready now, `downloaded` → instant load, neither → an `size_gb` download first.
+
+*The one legitimate exception is a surface that already answers "what is on my disk" some other way, right beside itself.* The app's own AI Models page filters to `source === "curated"` for its "Suggested models" grid, because its Local tab is drawn from the full cache listing — every repo, including the datasets and unloadable formats `catalog()` leaves out — and one repo drawn in both grids would read as two models. **A page you are writing has no such tab and no cache endpoint, so this exception is not yours.** Render every entry.
 
 `note` is `null` on a cached entry (nobody wrote one) and `size_gb` is its real measured footprint on disk rather than a published figure. Render `label || id` as always.
 
-**The `default` and the ordering are over the CURATED entries only.** Cached entries are appended after them, so a 20GB experiment sitting in the cache can never become what a bare `fused.ai.image()` loads.
+**Every entry is one the ENGINE SERVING that capability can actually load.** A cached repo whose format that backend does not read is left out — `openai/whisper-large-v3` on any machine, an MLX conversion on a Mac switched to Transformers — so the list moves when the user changes engines, for the downloaded half as much as the curated one. The repo is still on the AI Models page's Local tab, with the engine reason a dropdown option could not carry.
+
+**The `default` and the ordering are over the CURATED entries only.** Cached entries are appended after them, so a 20GB experiment sitting in the cache can never become what a bare `fused.ai.image()` loads. **Read `default`, never `models[0]`** — the two agree wherever anything is curated, but a capability whose engine has no shortlist yet reports `default: null` with cached entries in the list, and "no recommended model" is an answer to respect rather than to route around.
 
 `load`/`download` hand back a **job, not a result**: a cold load is multi-GB and nothing waits on it. Watch with `fused.watchJob(jobId)`.
 

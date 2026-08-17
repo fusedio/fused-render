@@ -6866,19 +6866,39 @@ an AI Models page that could say what was on disk but not what was *running*.
   `downloaded` and `loaded` beside the `{id, label, size_gb, note}` a picker
   already reads — so three shipped apps gained the models with no change to any of
   them, which is why the union is in the payload rather than in each page.
+  **The cached half is per RUNNER, exactly like the curated half.** A capability is
+  not enough to put a repo in a list — AI-11a's whole point is that one capability's
+  backends read mutually unloadable formats — so a cached repo is injected only when
+  the runner the row resolved is among the ones that would accept its snapshot
+  (`CachedModel.loaders`, straight from `ai/runners/formats.py`). That drops
+  `openai/whisper-large-v3`, a speech model neither shipping speech runner reads, and
+  an MLX conversion on a Mac switched to Transformers; injecting on capability alone
+  put both into pickers whose load then refused them by name. **Dropped, not flagged
+  `available: false`**: `models[]` has no availability field and every consumer reads
+  it as "things I may offer", so a flag would leave existing pages offering the repo
+  until each learned a new key. It is not hidden — the Local tab lists it with the
+  actionable engine reason, which a dropdown option cannot carry.
   **Appended, never merged into the ordering.** `entry.default`,
   `catalog.default_for()` and `catalog.for_capability()` still answer over the
   curated list alone, because `default_for()` is what a bare `fused.ai.image()` or
   `fused.ai.transcribe()` loads and AI-11a's smallest-first rule would otherwise
   let a 3KB folder off the disk decide it. The cached tail is sorted by that same
-  rule so the halves read as one list. The inference is `ai_models`' own — the very
-  reading the Load button is drawn from — because a picker offering a model and a
-  `load()` refusing it must not be able to disagree (D321); repos with no inferable
+  rule so the halves read as one list. Wherever anything is curated, index 0 is
+  curated and agrees with `default`; **the one case a cached entry leads is a runner
+  with no `SUGGESTIONS` key at all**, where `default` is null because there is
+  nothing to recommend — so the contract is read `default`, never `models[0]`, and
+  `source` is on every entry so a consumer inventing a fallback can refuse an
+  uncurated one. The capability inference is `ai_models`' own — the very reading the
+  Load button is drawn from — because a picker offering a model and a `load()`
+  refusing it must not be able to disagree (D321); repos with no inferable
   capability, component repos and datasets are therefore not injected anywhere,
-  since inventing a capability is the bug D321 closed. The scan is memoised on the
-  cache directory's signature **plus** a short TTL, and the signature half is not
-  optional: a memo that outlived a completed download would hide the model the user
-  just fetched, which is precisely the bug being fixed.
+  since inventing a capability is the bug D321 closed. The scan is memoised on
+  MTIMES — the cache directory's entries plus each repo's own four directory mtimes,
+  four stats where the alternative is a recursive walk of every blob — with a
+  minutes-long TTL as a backstop for the only change no directory mtime can see, a
+  listed file still growing. The mtime half is not optional: a memo that outlived a
+  completed download would hide the model the user just fetched, which is precisely
+  the bug being fixed.
 - **AI-11d** **Reasoning is OFF by default, because it is invisible and the CPU
   path cannot afford it.** Qwen3's chat template defaults `enable_thinking` to
   true and three of the four curated models are Qwen3, so an ordinary question

@@ -514,10 +514,14 @@ export default function AiModelsDiscover({
   }, []);
 
   useEffect(() => {
-    // Just the curation. Whether each entry is on this disk is the PAGE's
-    // answer, arriving as `onDisk` — this used to run its own cache walk beside
-    // the page's, which meant two definitions of "downloaded" and two moments
-    // they were true.
+    // Since D323 the payload carries BOTH halves — the curation and the repos
+    // found on this disk, each entry stamped `source`, `downloaded` and `loaded`.
+    // This page still takes "is it downloaded" from its own `onDisk`, and that is
+    // not stubbornness: `onDisk` covers every repo in the cache, including the
+    // datasets, components and unloadable formats the catalog deliberately leaves
+    // out, and the Local tab beside this one is drawn from the same set. Two
+    // definitions of "downloaded" on one page would be two moments they were true.
+    // Pages OUTSIDE the shell have no cache endpoint and should read the flags.
     getAiCatalog().then(
       (cat) => setCatalog(cat.capabilities),
       () => setCatalog([]),
