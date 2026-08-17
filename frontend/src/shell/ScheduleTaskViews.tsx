@@ -43,6 +43,7 @@ import {
   archiveIntent,
   basename,
   cancelIntent,
+  cardOpenIntent,
   dropAction,
   dropLanes,
   filterTasks,
@@ -68,7 +69,12 @@ import {
   unreadCount,
   unreadMarker,
 } from "./tasks-lib";
-import type { ArchiveStatus, TaskFilters, TaskRunIntent } from "./tasks-lib";
+import type {
+  ArchiveStatus,
+  CardOpenIntent,
+  TaskFilters,
+  TaskRunIntent,
+} from "./tasks-lib";
 
 // The page composes these from one import; re-exported here so Scheduled.tsx
 // takes its filter type, its empty value and its filter function from the same
@@ -1046,7 +1052,9 @@ export function TaskBoard({
   home = "",
   onReload,
 }: {
-  /** Already filtered, in the SERVER's order. */
+  /** Already filtered, in the SERVER's order — the LANES re-order it
+   * (tasks-lib.groupByColumn), which is the one thing this view does to the
+   * order it is handed and the one place it is decided. */
   tasks: Task[];
   home?: string;
   /** Re-read the list after a drop lands (or fails). */
@@ -1062,6 +1070,12 @@ export function TaskBoard({
   // card's own Archive button. One line above the lanes, because both are the
   // same kind of news about the same board.
   const [note, setNote] = useState<string | null>(null);
+  // The same read bookkeeping the List uses, for the same reason: a card's
+  // pill has to go on the click that opens the thread, not 20 seconds later on
+  // the next poll. Only the whole-task half is wanted here — a card links the
+  // conversation, never one turn of it, so there is no per-message click to
+  // make on this view.
+  const { read, clearAll } = useReadSet();
 
   const allowed = useMemo(
     () => new Set(dragging ? dropLanes(dragging) : []),
@@ -1145,6 +1159,26 @@ export function TaskBoard({
       setNote((e as Error).message);
     }
     onReload();
+  };
+
+  // Opening a card: the conversation, and the unread cleared on the way out.
+  //
+  // Up here with triage and runNow because the read set lives here, and it is
+  // the same pairing the List's message rows make (openMessage above) — the mark
+  // goes local FIRST so the pill cannot outlive its own click, then to the
+  // server as ONE whole-task request.
+  //
+  // Fire and forget, and the navigation never waits on it: the click is leaving
+  // this page, so there is nobody left to show a refusal to, and a write that
+  // failed comes back honestly on the next poll. Whether there is anything to
+  // mark at all is tasks-lib's answer (cardOpenIntent), not this handler's, so
+  // a card with nothing unread posts nothing.
+  const openCard = (task: Task, intent: CardOpenIntent) => {
+    if (intent.markRead) {
+      clearAll(task.key);
+      void markWholeTaskRead(task.key).catch(() => {});
+    }
+    navigateUrl(intent.href);
   };
 
   // Shared by expanded lane bodies AND collapsed rails, so Archive — collapsed
@@ -1244,6 +1278,10 @@ export function TaskBoard({
                     key={task.key}
                     task={task}
                     home={home}
+                    // The DISPLAYED count, so a card cleared by its own click
+                    // stays cleared until the poll agrees — the same merge the
+                    // List's rows make over the same set.
+                    unread={taskUnread(task, read)}
                     isDragging={dragging?.key === task.key}
                     onDragStart={() => setDragging(task)}
                     onDragEnd={() => {
@@ -1252,6 +1290,7 @@ export function TaskBoard({
                     }}
                     onTriage={(status) => triage(task, status)}
                     onRun={runNow}
+                    onOpen={(intent) => openCard(task, intent)}
                   />
                 ))}
                 {hidden > 0 && (
@@ -1285,14 +1324,19 @@ export function TaskBoard({
 function TaskCard({
   task,
   home,
+  unread,
   isDragging,
   onDragStart,
   onDragEnd,
   onTriage,
   onRun,
+  onOpen,
 }: {
   task: Task;
   home: string;
+  /** What the pill says: the server's count less anything cleared here since,
+   * which the board merges (taskUnread) rather than the card re-deriving. */
+  unread: number;
   isDragging: boolean;
   onDragStart: () => void;
   onDragEnd: () => void;
@@ -1302,6 +1346,10 @@ function TaskCard({
   /** Run the task's next message now, or re-send the one that failed. Same
    * arrangement and same reason as onTriage: the board makes the call. */
   onRun: (intent: TaskRunIntent) => Promise<void>;
+  /** Open the conversation, marking the thread read on the way. The board owns
+   * it because the board owns the read set — and it is only ever called with a
+   * non-null intent, so this card cannot navigate to nowhere. */
+  onOpen: (intent: CardOpenIntent) => void;
 }) {
   // Whether this card lifts at all, and it is not one question: a task with no
   // session (§5 — Claude Code mints the id on the first run) has nothing to
@@ -1309,7 +1357,11 @@ function TaskCard({
   // that can do neither must not lift, rather than lift into a call that can
   // only fail. tasks-lib.dropLanes holds both halves.
   const draggable = isDraggable(task);
-  const href = taskHref(task);
+  // Where the click goes and whether it also clears the thread's unread — one
+  // answer, from tasks-lib. Null means the card has nowhere to go (no session
+  // yet), and then the click does nothing at all: no navigation, and no mark
+  // either, since nothing was shown to the reader.
+  const open = cardOpenIntent(task, unread);
   // Archive without dragging. The drag stays as the accelerator, but it cannot
   // be the ONLY way: the lane it aims at is collapsed by default, so the whole
   // gesture starts with "expand Archive first". Same predicate as the drop, by
@@ -1363,7 +1415,7 @@ function TaskCard({
         }}
         onDragEnd={onDragEnd}
         onClick={() => {
-          if (href) navigateUrl(href);
+          if (open) onOpen(open);
         }}
       >
         {/* Unread leads here too — it sat at the far end of the head, which is
@@ -1374,7 +1426,7 @@ function TaskCard({
             ring away from the two lines under it — a worse misalignment than the
             one it fixes. On a card the pill is simply first when there is one. */}
         <span className="schedule-tv-card-head">
-          <UnreadPill count={task.unread} />
+          <UnreadPill count={unread} />
           <StatusIcon status={taskColumn(task)} failed={task.failed} />
           <IdChip id={task.task_id} kind="task" />
           {task.live && <LivePulse />}
@@ -1396,7 +1448,13 @@ function TaskCard({
           message offers exactly that pair), and two absolutely-positioned
           siblings both anchored to `right` would sit on top of each other. The
           strip is laid out by flex and pinned once, so each button is placed by
-          the row instead of by its own coordinates. */}
+          the row instead of by its own coordinates.
+
+          They are SIBLINGS of the card, not children of it, which is also what
+          keeps them out of the card's own click: pressing Archive or Run now
+          cannot bubble into a button it is not inside, so neither one navigates
+          to the conversation or marks the thread read. That was already true of
+          the markup and it is now load-bearing, so a test reads it. */}
       {(run || file) && (
         <span className="tasks-card-acts">
           {run && (

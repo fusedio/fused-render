@@ -12,9 +12,28 @@
 //
 // The server hands us that shape already merged, already titled, already
 // counted and already sorted (newest task first). Nothing here re-derives a
-// status, re-orders a list or re-titles a row: the one place those are decided
-// is the server, and a client that guesses a second answer is a client that
-// disagrees with itself on the next poll.
+// status or re-titles a row: the one place those are decided is the server, and
+// a client that guesses a second answer is a client that disagrees with itself
+// on the next poll.
+//
+// ORDER HAS EXACTLY ONE EXCEPTION, and it is named: sortLane, applied by
+// groupByColumn, which is the BOARD's alone. The List keeps the server's order
+// untouched (filterTasks below filters and nothing else) because a flat list of
+// every task has one honest question — what happened most recently — and the
+// server already answers it with `last_active` descending.
+//
+// A LANE is a narrower question, and Upcoming's is the opposite one. A column of
+// work that has not happened yet is read to find out what happens NEXT, and
+// "most recently touched" is not that: a task edited an hour ago and due in
+// October outranks the one firing in ten minutes (Akshil, 2026-08-17: "in
+// upcoming the most recent tasks [close to current time] would be on top, in
+// done and failed the recent runs will be on top"). So Upcoming runs SOONEST
+// FIRST — ascending — and the settled lanes run most-recent-run first, which is
+// the same instinct pointed at the past.
+//
+// This is a presentation of the same data, not a second opinion about it: no
+// status is re-derived, no lane membership is re-decided (taskColumn still asks
+// the server), and every key is a time the server itself sent.
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { BOARD_COLUMNS, explorerUrl, isProjected, turnPhase } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
@@ -938,6 +957,52 @@ export function markReadIntent(
   };
 }
 
+// ---- opening a card ----------------------------------------------------------
+// A click on a Board card opens the conversation, and until now it opened it and
+// marked nothing: the card carried an unread pill, the click took the reader
+// into the very thread that pill was pointing at, and the pill was still there
+// when they came back (Akshil, 2026-08-17: "when i click from kanban on unread
+// task it should register it read correct?"). Yes.
+//
+// WHOLE-TASK, not one message, and that follows from the href: a card links
+// taskHref — the thread, with no per-turn anchor — so what the reader is shown is
+// the conversation, not one turn of it. That is precisely the case
+// api.markWholeTaskRead exists for, and it is the same call the List row's Mark
+// read button makes. There is no second way to mark read here.
+//
+// The two things are ORDERED but not coupled: the mark is a side effect of
+// opening, so a card with nothing unread still opens, and a failed write must
+// not cost the navigation (the caller fires and forgets — the click is leaving
+// the page, exactly as the per-message path already argued).
+
+export interface CardOpenIntent {
+  /** Where the click goes. Never empty: a card with nowhere to go has no
+   * intent at all, so the caller cannot navigate to null. */
+  href: string;
+  /** Whether opening this also clears the task's unread. */
+  markRead: boolean;
+}
+
+/**
+ * What a click on the card does, or null when it does NOTHING — which is the
+ * `pending:<entry>` case: a task that has never run has no session id (§5) and
+ * therefore no conversation to open. That click was inert before this change and
+ * stays inert, including the mark: marking a thread read on a click that showed
+ * the reader nothing would clear a badge for messages they never saw.
+ *
+ * `unread` defaults to the server's count and may be passed as the DISPLAYED one
+ * (taskUnread, so local marks count), which is what stops a second click on an
+ * already-cleared card from posting again.
+ */
+export function cardOpenIntent(
+  task: Task,
+  unread: number = task.unread,
+): CardOpenIntent | null {
+  const href = taskHref(task);
+  if (!href) return null;
+  return { href, markRead: unread > 0 };
+}
+
 // ---- filtering ---------------------------------------------------------------
 
 export interface TaskFilters {
@@ -991,13 +1056,170 @@ export function filterTasks(tasks: Task[], filters: TaskFilters): Task[] {
   return tasks.filter((t) => taskMatches(t, filters));
 }
 
-/** The board's lanes, each keeping the server's order. Seeded from
+// ---- per-lane order (the Board's one exception) -------------------------------
+// See the exception named at the top of this file. Two keys and three
+// directions, all built out of times the server sent.
+
+/**
+ * When this task NEXT runs: the earliest pending message's `at`. Null when the
+ * window holds nothing pending.
+ *
+ * `at`, not `ran_at`, and that is not a slip — a pending message has never run,
+ * so its `ran_at` is 0 and `at` is the only time it has. It is also the same
+ * pick runNowTarget makes (the earliest due is the one the scheduler would send
+ * next), so the card at the top of Upcoming is the card whose Run now button
+ * would fire the message the lane's order is promising.
+ *
+ * Every pending message is considered, not just the ones with an `entry_id`:
+ * runNowTarget needs that field because it is what the call SENDS, and this only
+ * needs to know when the thing happens.
+ *
+ * Only what we HOLD is looked at — the listing carries the three newest by `at`,
+ * and pending messages are due in the future, which puts them at the head of
+ * that window. So "the earliest pending we hold" is the true next run for any
+ * task the server has not truncated past.
+ */
+export function nextRunAt(task: Task): number | null {
+  let best: number | null = null;
+  for (const m of task.messages ?? []) {
+    if (m.state !== "pending" || !m.at) continue;
+    if (best === null || m.at < best) best = m.at;
+  }
+  return best;
+}
+
+/** The states that mean the message never went out, so it dates no run. A
+ * `missed` one is deliberately NOT here: it was due and the run did not happen,
+ * which is the event the Failed lane exists to show, and its `at` is the closest
+ * thing to a time it has. */
+const NEVER_RAN = new Set<TaskMessage["state"]>(["pending", "cancelled", "skipped"]);
+
+/**
+ * When this task LAST ran — the newest run in the window, by when it actually
+ * happened. Null when nothing in the window has run.
+ *
+ * `ran_at` first, `at` only as the fallback, because the two part company: a
+ * caught-up run has an `at` from Thursday and a `ran_at` from Saturday (see
+ * api.TaskMessage), and Done ordered by `at` would file Saturday's run two days
+ * back among work that finished before it.
+ *
+ * A MAX over the window rather than the first non-pending element, for the same
+ * reason: the server's list is newest-first by `at`, and the caught-up case is
+ * exactly the case where that is not newest-first by `ran_at`. Taking element
+ * zero would inherit the bug the fallback exists to fix.
+ */
+export function lastRunAt(task: Task): number | null {
+  let best: number | null = null;
+  for (const m of task.messages ?? []) {
+    if (NEVER_RAN.has(m.state)) continue;
+    const when = m.ran_at || m.at;
+    if (!when) continue;
+    if (best === null || when > best) best = when;
+  }
+  return best;
+}
+
+/**
+ * How one lane is ordered. `server` means exactly that: leave the list as the
+ * server sent it (`last_active` descending) and sort nothing.
+ */
+export interface LaneSort {
+  key: "next-run" | "last-run" | "server";
+  dir: "asc" | "desc";
+}
+
+/**
+ * Every lane's order, in one map, keyed off BoardColumn so a lane cannot be
+ * added to the board and forgotten here.
+ *
+ *   upcoming     next run, ASCENDING — soonest first. The user's ask, and the
+ *                only ascending lane on the board.
+ *   in_progress  last run, descending. The freshest work sits at the top like
+ *                every other settled lane, and for a task that is RUNNING the
+ *                last run is the one that started it, so this reads as "most
+ *                recently started first".
+ *   done         last run, descending — "the recent runs will be on top".
+ *   failed       last run, descending, same question.
+ *   archived     the server's. Nothing scans Archive by time-to-run, and it is
+ *                the one lane whose contents are not about when anything runs —
+ *                it holds cancelled and skipped messages, which have no run to
+ *                date. `last_active` (which the server has and a truncated
+ *                message window may not) is the better key there, so the honest
+ *                move is to leave the server's own order alone.
+ */
+export const LANE_SORTS: Record<BoardColumn, LaneSort> = {
+  upcoming: { key: "next-run", dir: "asc" },
+  in_progress: { key: "last-run", dir: "desc" },
+  done: { key: "last-run", dir: "desc" },
+  failed: { key: "last-run", dir: "desc" },
+  archived: { key: "server", dir: "asc" },
+};
+
+/** The instant a lane orders this task by, or null when the task has none of
+ * it. Null is a real answer, not a zero: zero is 1970 and would sort at one end
+ * of the lane by accident rather than by decision. */
+export function laneTime(task: Task, lane: BoardColumn): number | null {
+  switch (LANE_SORTS[lane].key) {
+    case "next-run":
+      return nextRunAt(task);
+    case "last-run":
+      return lastRunAt(task);
+    default:
+      return null;
+  }
+}
+
+/**
+ * One lane, in its own order. A new array; the input is never mutated (it is a
+ * slice of the polled list, which React is still holding).
+ *
+ * TWO rules make this safe to run every 20 seconds:
+ *
+ * 1. TIES KEEP THE SERVER'S ORDER, by comparing the incoming index explicitly
+ *    rather than trusting the sort to be stable. Two tasks that ran in the same
+ *    minute must not trade places between polls — a card that moves on its own
+ *    is worse than any ordering, and the lane re-renders on every poll. (The
+ *    index passed is the position within the lane, which orders the same way as
+ *    the position in the server's full list, since bucketing preserves it.)
+ *
+ * 2. A TASK WITH NO USABLE TIME GOES LAST, in both directions, and lands there
+ *    by decision rather than by whatever `null` would coerce to. It is the
+ *    honest place: the lane is sorted by a fact this card does not have, so it
+ *    cannot claim a place among the cards that do — and the top of a lane is the
+ *    slot that means something. Among themselves those cards keep the server's
+ *    order, by rule 1.
+ */
+export function sortLane(tasks: Task[], lane: BoardColumn): Task[] {
+  if (LANE_SORTS[lane].key === "server") return tasks;
+  const dir = LANE_SORTS[lane].dir;
+  const rows = tasks.map((task, index) => ({ task, index, when: laneTime(task, lane) }));
+  rows.sort((a, b) => {
+    if (a.when === null || b.when === null) {
+      // Exactly one of them has a time: the one that does comes first.
+      if (a.when !== b.when) return a.when === null ? 1 : -1;
+    } else if (a.when !== b.when) {
+      return dir === "asc" ? a.when - b.when : b.when - a.when;
+    }
+    return a.index - b.index;
+  });
+  return rows.map((r) => r.task);
+}
+
+/**
+ * The board's lanes, each in ITS OWN order (LANE_SORTS above). Seeded from
  * BOARD_COLUMNS so a lane cannot exist on the board and be missing from this
- * map — an empty lane must still be an empty lane, not an undefined one. */
+ * map — an empty lane must still be an empty lane, not an undefined one.
+ *
+ * The sort lives here rather than in the Board so that a lane's contents and a
+ * lane's order are decided in the same breath, by one function, and the
+ * component holds no rule about either. It is also why the List is unaffected:
+ * the List never calls this.
+ */
 export function groupByColumn(tasks: Task[]): Map<BoardColumn, Task[]> {
   const map = new Map<BoardColumn, Task[]>(
     BOARD_COLUMNS.map((c) => [c.key, [] as Task[]]),
   );
   for (const task of tasks) map.get(taskColumn(task))?.push(task);
+  for (const col of BOARD_COLUMNS) map.set(col.key, sortLane(map.get(col.key)!, col.key));
   return map;
 }
