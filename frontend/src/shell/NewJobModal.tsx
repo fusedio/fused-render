@@ -151,6 +151,16 @@ const ICON_CHEVRON = (
   </svg>
 );
 
+// lucide "chevron-down", at the size the app's native selects draw their own
+// (fields.css) — the mark that says "this opens a list", on every control that
+// does.
+const ICON_CHEVRON_DOWN = (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="6 9 12 15 18 9" />
+  </svg>
+);
+
 // lucide "trash-2", at the footer buttons' glyph scale. Carries the destructive
 // reading before the label is read, and stays through both press states so the
 // button does not change shape under the cursor.
@@ -526,7 +536,19 @@ function Dropdown({
         onClick={() => (open ? setOpen(false) : show())}
       >
         <span className="schedule-select-label">{value}</span>
-        <span className="schedule-select-caret" aria-hidden="true">▾</span>
+        {/* A DRAWN mark, not a "▾". The text triangle was a 10px glyph in a
+            32px chip: a flex box centres the glyph's LINE BOX, and where the
+            triangle's ink sits inside that box is the font's business — in the
+            UI stack it rides high in the em square, so the caret hung near the
+            top-right corner of the control instead of on the label's centre
+            line (Akshil, 2026-08-18 screenshot). An SVG has no baseline and no
+            font fallback; centred in a fixed square it lands on the middle of
+            the chip in every theme and on every machine. Same mark as the
+            native selects elsewhere in the app draw (fields.css) and as the
+            card's own disclosure. */}
+        <span className="schedule-select-caret" aria-hidden="true">
+          {ICON_CHEVRON_DOWN}
+        </span>
       </button>
       {open && (
         <div
@@ -2866,7 +2888,8 @@ export default function NewJobModal({
               into its own thread by construction — that is the default and
               needs no flag. This is the opt-OUT: tick it and each occurrence
               mints a fresh task, with a session and a TASK-nnn of its own
-              (design §6). */}
+              (design §6).
+ */}
           <CheckField
             label="New task each run"
             checked={newTaskEachRun}

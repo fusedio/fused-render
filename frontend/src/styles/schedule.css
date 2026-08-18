@@ -1550,15 +1550,32 @@ input.schedule-when-field {
   width: 100%;
 }
 
+/* The label takes the slack and gives it back: `min-width: 0` is what lets a
+   long choice ellipsis INSIDE the chip. Without it a flex item refuses to
+   shrink below its text, so the label pushed the caret against — and past — the
+   chip's right edge, where the chip's own `overflow: hidden` clipped it. */
 .schedule-select-label {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* A SQUARE the mark is centred in, not a run of text. The caret used to be a
+   10px "▾" and a flex row can only centre that glyph's LINE BOX — where the
+   triangle's ink sits inside it is up to the font, and in the UI stack it rides
+   high, so the caret hung near the top-right corner of a 32px chip instead of on
+   the label's centre line (Akshil, 2026-08-18). The SVG (ICON_CHEVRON_DOWN) has
+   no baseline to drift on, and a fixed box gives it the same optical centre in
+   every theme. */
 .schedule-select-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
   flex: none;
-  font-size: 10px;
   color: var(--fg-muted);
 }
 
