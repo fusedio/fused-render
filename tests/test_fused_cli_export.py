@@ -1,4 +1,4 @@
-"""The `fused` CLI handed to the Claude sessions we spawn (D329).
+"""The `fused` CLI handed to the Claude sessions we spawn (D334).
 
 Three parties have to agree, and each half is pinned here:
 
@@ -97,11 +97,11 @@ def test_wrapper_defaults_fused_env_but_never_clobbers_an_explicit_one(
     if os.name == "nt":
         pytest.skip("sh wrapper semantics; the .cmd branch mirrors them")
     text = open(os.path.join(bin_dir, "fused"), encoding="utf-8").read()
-    # ${FUSED_ENV:=stg} assigns only when unset/empty — the sh spelling of
-    # "default, not override". An unconditional `FUSED_ENV=stg` would clobber.
-    assert ': "${FUSED_ENV:=stg}"' in text
+    # Assign only when unset/empty — "default, not override". The assignment
+    # sits outside any double quotes so shlex.quote's single quotes actually
+    # quote (inside "${VAR:=...}" they would become literal characters).
+    assert '[ -n "${FUSED_ENV:-}" ] || FUSED_ENV=stg' in text
     assert "export FUSED_ENV" in text
-    assert "\nFUSED_ENV=" not in text
 
 
 def test_wrapper_scrubs_interpreter_vars_only_for_an_external_cli(

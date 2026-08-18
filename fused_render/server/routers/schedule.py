@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render import recur, schedule
+from fused_render import recur, schedule, tasks_store
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -191,6 +191,36 @@ def api_schedule_create(body: dict = Body(...),
             session_learned=body.get("session_learned"))
     except ValueError as exc:
         return _error(str(exc), status=400)
+
+    # THE TASK NUMBER SURVIVES AN EDIT. Editing a scheduled message is cancel +
+    # re-create — there is no PATCH — so the entry the user was looking at stops
+    # existing and this one, with a brand new id, takes its place. A task that
+    # has not run yet is numbered on that entry id (`pending:<entry-id>`, §5 of
+    # the design), so the listing saw a key it had never seen, allocated the next
+    # number in the project, and the user watched TASK-078 become TASK-079 for a
+    # task whose only change was its time — with no duplicate row to explain it.
+    # `allocate once, never renumber` is the rule that broke.
+    #
+    # `rekey` is the same move a first run already makes when a pending key
+    # becomes a session id, with the same guarantees: it MOVES a number rather
+    # than minting one, refuses to overwrite a number the new key somehow already
+    # has, and never releases one (so the project's high-water mark stands and no
+    # number is ever handed out twice).
+    #
+    # A no-op in every case but the one it is for: an entry with no number (it
+    # ran, so its task is keyed on the session id, which an edit does not touch),
+    # a `replaces` naming nothing, or a caller that is not the edit form.
+    #
+    # Failure here is not the caller's problem — the message IS scheduled, and a
+    # read-only state dir must not turn that into a 500. The row keeps the number
+    # it would have got anyway.
+    replaces = str(body.get("replaces") or "").strip()
+    if replaces:
+        try:
+            tasks_store.rekey(tasks_store.pending_key(replaces),
+                              tasks_store.pending_key(str(entry.get("id") or "")))
+        except OSError:
+            pass
     return {"entry": entry}
 
 

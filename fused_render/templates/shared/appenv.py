@@ -171,7 +171,7 @@ def fused_cli_dir() -> str | None:
     """The dir holding the `fused` CLI wrapper the server put on the PATH the
     sessions we spawn inherit, or None when there is no CLI to offer.
 
-    Set by `fusedcli.export_fused_cli_env` (D329) before the server serves.
+    Set by `fusedcli.export_fused_cli_env` (D334) before the server serves.
     Its presence is the templates' whole answer to "can this session run
     `fused`?" — the claude template pre-allows `Bash(fused:*)` and mentions
     the CLI in its prompt exactly when this is set, so a machine without the

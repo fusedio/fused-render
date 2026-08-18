@@ -787,8 +787,9 @@ function TemplatePreview({
   // point: a borrowed `git` that resolves to DENIED takes the split off with it,
   // and a `_side=git` left in the URL there is a param naming a state nothing on
   // this file can honour. (It used to be worse than that — the session sidecar
-  // recorded the query and replayed it on the next bare open — which `_side` is now
-  // stripped at both ends to prevent, lib/session and server/session.py.)
+  // recorded the query and replayed it on the next bare open, which the `_side`
+  // strip was written to prevent. That sidecar is gone outright now, D329; the
+  // strip lives on for the recents store, lib/session-params.)
   const sideKeys = sidebarModes.map((e) => e.mode).join(",");
   useEffect(() => {
     const search = reconcileSideSearch(location.search, {

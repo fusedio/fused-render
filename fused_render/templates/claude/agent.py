@@ -474,7 +474,7 @@ def _plugin_argv() -> list:
 
 def _fused_cli_note() -> str:
     """The prompt paragraph disclosing the `fused` CLI, or "" when the server
-    exported no wrapper (D329) — same rule as every other disclosure here: a
+    exported no wrapper (D334) — same rule as every other disclosure here: a
     tool the model is never told about is a tool it never calls, and a prompt
     promising a command the machine does not have is worse than silence.
 
@@ -1630,7 +1630,7 @@ def _start(file: str, message: str, session_id: str, model: str,
            # directory, and the prompt bridge stays wired for everything else.
            #
            #   Bash(fused:*) — the third pre-allowance, and the only Bash one
-           #     (D329). Present exactly when the server exported a `fused`
+           #     (D334). Present exactly when the server exported a `fused`
            #     wrapper (appenv.fused_cli_dir), never as a bare guess about
            #     PATH: the point is "push directly", and carding every push
            #     would put a prompt on screen for the one command this app

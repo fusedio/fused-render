@@ -48,7 +48,6 @@ fused-render/
 │   │   ├── watch.py            # /api/fs/events (WS) filesystem watch/poll registry
 │   │   ├── proxy.py            # /api/fs/raw upstream proxy + response hardening
 │   │   ├── fs_mutate.py        # fs mutation helpers + trash, router: /api/fs/write|mkdir|delete|rename|copy
-│   │   ├── session.py          # per-file sidecar helpers, router: /api/session GET/PUT
 │   │   ├── ai.py               # fused.ai: Claude CLI binary resolution, _AiSession, router: /api/ai
 │   │   └── routers/            # route-wiring-only modules (no standalone reusable logic)
 │   │       ├── shell.py        # "/", "/apps...", "/explorer...", settings pages + legacy "/view","/embed" (serves the built React shell)
@@ -445,7 +444,8 @@ directories and `_`-sentinels no-op), `PUT /api/recents/collapsed` persists the
 fold with the data (D44 posture). Frontend `lib/recents.ts` mirrors
 `bookmarks.ts` (sync cache, serial queue, `notifyRecentsChanged` signal); its
 `useRecentsTracking(fsPath, isDir, title)` is mounted in `App.tsx`'s StatView
-beside the session hooks — records the open once the stat confirms a file,
+(the seam it used to share with the per-file session hooks, removed in D329) —
+records the open once the stat confirms a file,
 then re-records the current url (and the page's own `<title>`, once known)
 on every `fused:urlchange`/`popstate` (500 ms debounce) or title change, so
 the entry tracks live param and title changes. Display order is

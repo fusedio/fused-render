@@ -83,7 +83,7 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 # clone syncs against. Unstable is the current default while embed-auth ships
 # there first; FUSED_RENDER_WORKBENCH_URL still overrides the iframe URL alone.
 # Resolved in fusedcli.workbench_env because the `fused` wrapper handed to
-# Claude sessions bakes in the same default (D329) — one knob, one reader.
+# Claude sessions bakes in the same default (D334) — one knob, one reader.
 WORKBENCH_ENV = workbench_env()
 
 _ENV_WEB_URLS = {

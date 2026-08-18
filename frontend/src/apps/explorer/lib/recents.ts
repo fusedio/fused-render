@@ -249,13 +249,14 @@ export function setRecentsCollapsed(collapsed: boolean): Promise<void> {
   });
 }
 
-// Track-on-open + live param updates. Mounted by StatView beside
-// useSessionTracking (the same seam, lib/session.ts): records once when the
-// stat confirms a file, then re-records the current url on every param write
-// (fused:urlchange — the iframe runtime's replaceState is wrapped in main.tsx)
-// with a 500 ms debounce against slider-style param churn. Embed panes,
-// directories, and not-yet-stat'd opens (isDir null) opt out, mirroring
-// session tracking; the server rejects non-file urls anyway.
+// Track-on-open + live param updates. Mounted by StatView: records once when
+// the stat confirms a file, then re-records the current url on every param
+// write (fused:urlchange — the iframe runtime's replaceState is wrapped in
+// main.tsx) with a 500 ms debounce against slider-style param churn. Embed
+// panes, directories, and not-yet-stat'd opens (isDir null) opt out; the server
+// rejects non-file urls anyway. This confirmed-file gate is the last survivor
+// of the seam it used to share with the per-file session restore's tracking
+// hook (lib/session.ts, removed in D329).
 // `title` is the previewed page's own <title>, when known — it arrives async
 // (after the iframe loads), so it is also a dependency: once it resolves, the
 // effect re-runs and re-records the current url with the now-known title,
@@ -294,8 +295,8 @@ export function useRecentsTracking(fsPath: string, isDir: boolean | null, title:
       // param state — flush the captured url instead of dropping it.
       flush();
     };
-    // fsPath + isDir identify the open, like useSessionTracking; title is
-    // included so its late arrival triggers a re-record.
+    // fsPath + isDir identify the open; title is included so its late arrival
+    // triggers a re-record.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath, isDir, title]);
 }
