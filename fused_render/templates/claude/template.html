@@ -6601,8 +6601,11 @@ function annWireTarget() {
     annAimCursor(aimPoint);
     // The ring Alt brought back (element override on the Point tool) must go
     // with the key: leaving it until the next mousemove has the crosshair and
-    // the ring disagreeing about what the next click pins.
-    if (aimPoint && annHl) annHl.style.display = "none";
+    // the ring disagreeing about what the next click pins. But an OPEN composer
+    // owns the ring — it is frozen on the element being written about (see the
+    // mousemove guard), and Point+Alt is exactly how that element gets pinned,
+    // so releasing Alt afterwards must not strip the ring off the note.
+    if (aimPoint && annHl && annPop.style.display !== "block") annHl.style.display = "none";
   });
   doc.addEventListener("mousemove", (e) => {
     if (!annOn) { annAimCursor(false); return; }
