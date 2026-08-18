@@ -18,6 +18,7 @@ ran that path for real.
 import importlib.util
 import os
 import sys
+import threading
 import types
 
 import pytest
@@ -193,6 +194,46 @@ def make_mflux(model=None):
     return made, variants, config_mod
 
 
+class FakeMlxCore(types.ModuleType):
+    """`mlx.core` as this runner uses it: two DEVICES and their STREAMS.
+
+    The same double `tests/test_ai_mlx_whisper_worker.py` keeps, with the one
+    difference that broke this runner: from mlx 0.32 the default stream is per
+    (thread, DEVICE), so a worker that pins only `default_device()` — the GPU —
+    still aborts on `Stream(cpu, 0)`. Both devices are therefore distinct
+    objects here, and every `new_thread_unsafe_stream` records which one it was
+    asked for.
+    """
+
+    def __init__(self, **extra):
+        super().__init__("mlx.core")
+        self.float32 = "float32"
+        self.cpu = "CPU"
+        self.gpu = "GPU"
+        #: the device of every `new_thread_unsafe_stream`, in order.
+        self.made = []
+        #: (thread name, stream) for every `set_default_stream`.
+        self.pinned = []
+        self._lock = threading.Lock()
+        for name, value in extra.items():
+            setattr(self, name, value)
+
+    def default_device(self):
+        return self.gpu
+
+    def new_thread_unsafe_stream(self, device):
+        with self._lock:
+            self.made.append(device)
+            return f"SHARED-{device}-STREAM"
+
+    def set_default_stream(self, stream):
+        with self._lock:
+            self.pinned.append((threading.current_thread().name, stream))
+
+    def get_active_memory(self):
+        return 0
+
+
 def load_worker(monkeypatch, base, with_mflux=True, model=None, mlx_core=None):
     """A fresh import of the mflux worker against the fakes.
 
@@ -213,11 +254,17 @@ def load_worker(monkeypatch, base, with_mflux=True, model=None, mlx_core=None):
             ("mflux.models.common.config", config_mod),
         ):
             monkeypatch.setitem(sys.modules, name, module)
-    if mlx_core is not None:
-        mlx = types.ModuleType("mlx")
-        mlx.core = mlx_core
-        monkeypatch.setitem(sys.modules, "mlx", mlx)
-        monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+    # `mlx.core` is no longer only `memory()`'s business: `load` and `generate`
+    # both pin this process's shared streams (`_pin_stream`), so a render test
+    # that left it out would be testing an import that cannot happen in
+    # production. A caller may still hand in its own — an mlx too old to have
+    # thread-local streams, say — and gets exactly that.
+    if mlx_core is None:
+        mlx_core = FakeMlxCore()
+    mlx = types.ModuleType("mlx")
+    mlx.core = mlx_core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
     spec = importlib.util.spec_from_file_location("mflux_worker_under_test", WORKER_PATH)
     assert spec is not None and spec.loader is not None, WORKER_PATH
     module = importlib.util.module_from_spec(spec)
@@ -400,6 +447,69 @@ def test_the_snapshot_DIRECTORY_is_what_mflux_is_given(monkeypatch, base, tmp_pa
     assert model.built["model_path"] == path
     assert model.built["model_config"] == "FLUX2_KLEIN_4B_CONFIG"
     assert base.state == {"device": "mps"}
+
+
+def _pinned_run(monkeypatch, base, tmp_path, mlx_core):
+    """A load and a render, on the threads production uses.
+
+    `load` runs on `worker_base.serve`'s bring-up thread, which then EXITS, and
+    `generate` arrives on a `ThreadingTCPServer` request thread — which is the
+    whole of the bug, so the test has to reproduce the threading and not just
+    the calls.
+    """
+    worker, model = load_worker(monkeypatch, base, mlx_core=mlx_core)
+    loader = threading.Thread(
+        target=worker.load, args=(MODEL, snapshot(tmp_path)), name="bring-up")
+    loader.start()
+    loader.join()
+    render = threading.Thread(
+        target=worker.generate, args=(_request(tmp_path, steps=2),), name="request-1")
+    render.start()
+    render.join()
+    return worker, model
+
+
+def test_the_load_and_the_render_share_ONE_mlx_stream_PER_DEVICE(
+        monkeypatch, base, tmp_path):
+    """From mlx 0.32 the default stream belongs to the THREAD that made it, and
+    an unevaluated array forced anywhere else throws a C++ exception nothing
+    catches. This runner loads on the bring-up thread and renders on a request
+    thread, so every render died on its first denoising step: "the image process
+    did not answer: Remote end closed connection without response", with one
+    `libc++abi: … There is no Stream(cpu, 0) in current thread` line in the
+    worker log.
+
+    **BOTH devices, which is the difference from the whisper runner.** The
+    default stream is per (thread, DEVICE) — measured on mlx 0.32.1, where one
+    thread reports `Stream(cpu, 0)` and `Stream(gpu, 1)` and the next gets 2 and
+    3 — so pinning `default_device()` alone leaves the CPU half of the graph
+    owned by whichever thread first touched it. That is precisely the stream the
+    abort named.
+    """
+    mlx_core = FakeMlxCore()
+
+    _pinned_run(monkeypatch, base, tmp_path, mlx_core)
+
+    threads = {name for name, _stream in mlx_core.pinned}
+    streams = {stream for _name, stream in mlx_core.pinned}
+    assert len(threads) > 1, f"only one thread pinned a stream: {mlx_core.pinned}"
+    assert streams == {"SHARED-CPU-STREAM", "SHARED-GPU-STREAM"}, mlx_core.pinned
+    # One stream per device for the whole process, not one per thread: a second
+    # would be a second owner, which is the thing being prevented.
+    assert sorted(mlx_core.made) == ["CPU", "GPU"], mlx_core.made
+
+
+def test_an_mlx_without_thread_local_streams_is_left_alone(
+        monkeypatch, base, tmp_path):
+    """Streams were process-wide before 0.32 and there was nothing to pin. A
+    runner that insisted on the newer call would turn a version skew into a
+    worker that cannot render at all."""
+    mlx_core = types.SimpleNamespace(float32="float32", cpu="CPU", gpu="GPU",
+                                     get_active_memory=lambda: 0)
+
+    _worker, model = _pinned_run(monkeypatch, base, tmp_path, mlx_core)
+
+    assert model.image.saved, "the render never produced an image"
 
 
 def test_the_whole_repo_is_downloaded_with_nothing_skipped(monkeypatch, base):

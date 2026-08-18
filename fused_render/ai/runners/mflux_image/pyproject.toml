@@ -20,18 +20,48 @@
 #                   itself; both are load-bearing here and neither is named
 #                   again, for the reason the whisper runner names `av` —
 #                   a dependency this file relies on should be visible in it.
+#                   **BOUNDED, and the bound was earned.** `mflux` used to be
+#                   named here with no version at all, and the `uv.lock` beside
+#                   this file is gitignored — so the first environment built
+#                   after mflux 0.19.0 shipped re-resolved 0.18.1 -> 0.19.0,
+#                   which pins `mlx>=0.32,<0.33`, and mlx 0.32 is the release
+#                   that made default streams per-thread. Every local render
+#                   started aborting on its first denoising step with no repo
+#                   change behind it (see `worker.py::_pin_stream`). A minor
+#                   range means the next such move is a deliberate bump with a
+#                   render behind it rather than a silent one on a user's
+#                   machine.
 #   huggingface_hub downloads
 #   psutil          the RSS half of "how much memory is this costing"; the MLX
 #                   half comes from mlx's own allocator (see `memory()`)
 #
 # No `av`, unlike the transcription runner: nothing here decodes media. The
 # no-subprocess rule still holds — `worker.py` never shells out.
+#
+# **Why every runner's inference lines carry a CEILING, stated once here because
+# this is where it was learned.** None of these folders has a committed
+# `uv.lock`: `.gitignore` ignores lockfiles globally and negates only
+# `templates/`, and `_env_install_worker` runs a BARE `uv sync` deliberately (its
+# own comment says why — a lock a user cannot have is worse than a resolve). So
+# an unbounded requirement does not mean "whatever was current when the feature
+# shipped", it means *resolved again from PyPI every time a venv key changes* —
+# a new checkout path, a new runner folder, a reinstall. That is not a wide
+# range, it is no range: the version a user runs is decided by PyPI on the day
+# they press Download, and when it changes there is no commit to point at. The
+# floors are the installed MINOR rather than the installed patch, so patch fixes
+# still flow; the ceiling is the next minor for a 0.x library (where a minor IS
+# the breaking release) and the next major otherwise. Bumping one is a normal
+# change with a render or a transcription behind it.
+# `tests/test_ai_runtime.py::test_every_runner_BOUNDS_its_model_runtimes`
+# enforces it for all seven manifests, against an allow-list of the dependencies
+# that are exempt — so the next unbounded library is a red test rather than a
+# discovery, and the exemptions have written reasons.
 [project]
 name = "fused-render-runner-mflux-image"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "mflux",
+    "mflux>=0.19,<0.20",
     "huggingface_hub",
     "psutil",
 ]
