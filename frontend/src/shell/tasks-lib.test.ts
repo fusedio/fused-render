@@ -3544,26 +3544,29 @@ describe("the archive action", () => {
     expect(button).not.toContain("padding");
     expect(button).not.toContain("width");
 
-    // THE VERTICAL REACH IS DERIVED, NOT TYPED (2026-08-18, second pass — the
-    // first zone was still too small to feel). It is the row's full height to the
-    // pixel: the button overhangs its slot by (22px - rail) / 2, so the room left
-    // before the row's edge is one `--tasks-row-pad-y` less that overhang. A typed
-    // number would not follow the row's padding, and growth PAST the row's edge is
-    // this button covering the NEIGHBOURING row's link.
-    expect(zone).toContain("(22px - var(--tasks-rail-w)) / 2 - var(--tasks-row-pad-y)");
-    const insets = (zone.match(/inset: ([^;]+);/) ?? ["", ""])[1].trim().split(/\s+/);
+    // EVERY INSET IS DERIVED, NOT TYPED, and the reason is a bug a typed number
+    // caused: a `-10px` right reach lapped 3px OVER the id chip, so a press aimed
+    // at the id fired Archive (Bugbot, MEDIUM, 2026-08-18). The button already
+    // hangs `--tasks-archive-overhang` past its 16px slot before it grows at all,
+    // so the free space on a side is that side's spacing token LESS the overhang —
+    // and a typed number is the same mistake waiting for the next retune.
+    expect(zone).toContain("--tasks-archive-overhang: calc((22px - var(--tasks-rail-w)) / 2)");
+    expect(zone).toContain("var(--tasks-archive-overhang) - var(--tasks-row-pad-y)");
+    expect(zone).toContain("var(--tasks-archive-overhang) - var(--tasks-row-gap)");
+    // No literal length survives in the inset itself.
+    const insets = (zone.match(/inset: ([^;]+);/s) ?? ["", ""])[1].trim().split(/\s+/);
     expect(insets).toHaveLength(4);
-    // Top and bottom are the same derived reach...
-    expect(insets[0]).toBe(insets[2]);
+    expect(insets.join(" ")).not.toMatch(/-?\d+px/);
+    // Top and bottom are the one vertical reach — the row's full height, never past
+    // it, or this button covers the NEIGHBOURING row's link.
     expect(insets[0]).toBe("var(--tasks-archive-reach-y)");
-    // ...the right takes the whole gap before the next rail slot, which is empty...
-    expect(insets[1]).toBe("-10px");
-    // ...and the LEFT is the smallest of the four on purpose: the chevron's own
-    // enlarged zone sits at the same `z-index: 2` earlier in the DOM, so growing
-    // over it would win the overlap and quietly shrink the disclosure gutter.
-    expect(insets[3]).toBe("-2px");
-    const px = (v: string) => Math.abs(parseFloat(v));
-    expect(px(insets[3])).toBeLessThan(px(insets[1]));
+    expect(insets[2]).toBe("var(--tasks-archive-reach-y)");
+    // Right stops on the id chip's edge; left stops on the caret's enlarged zone,
+    // which sits at the same `z-index: 2` earlier in the DOM and would lose the
+    // overlap. Left is half a gap shorter than right, which is what keeps them apart.
+    expect(insets[1]).toBe("var(--tasks-archive-reach-r)");
+    expect(insets[3]).toBe("var(--tasks-archive-reach-l)");
+    expect(zone).toContain("var(--tasks-archive-reach-r) + var(--tasks-row-gap) / 2");
   });
 
   it("leaves the board card's archive exactly where it was", () => {

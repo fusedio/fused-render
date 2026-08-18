@@ -694,26 +694,30 @@ button.tasks-caret,
    transform is measured from — and, worse, the box the hover skin paints. The
    fill and border must stay 22px on a 16px ring; only the zone grows.
 
-   THE INSETS ARE WHAT THE ROW ACTUALLY HAS SPARE, not one round number, and each
-   one is at its ceiling (grown again on 2026-08-18 — the first pass at this was
-   still too small to feel):
-   - TOP AND BOTTOM: the row's full height, to the pixel, and derived so it stays
-     that way. The button overhangs its 16px slot by (22px - `--tasks-rail-w`) / 2
-     = 3px, so what is left before the row's own edge is one
-     `--tasks-row-pad-y` less that overhang: 7px at today's 10px padding, for a
-     zone exactly as tall as the 36px row. Written as the calc and not as `-7px`
-     because a row that breathes differently must move this with it — growth PAST
-     the row's edge would put this button over the NEIGHBOURING row's link, which
-     is how one row's Archive ends up pressed from another row.
-   - RIGHT 10px: the whole gap before the next rail slot, which holds nothing.
-   - LEFT 2px only, and this one is small because the space is not ours. The
-     caret's own enlarged zone (same `z-index: 2`, earlier in the DOM, so this
-     would win the overlap and quietly shrink the disclosure gutter) ends half a
-     `--tasks-row-gap` right of its glyph — 2px short of this button's left edge.
-     That 2px is the whole clearance there is.
+   EVERY INSET IS THE FREE SPACE ON THAT SIDE, DERIVED — no typed numbers, and
+   none of the four crosses into anything (grown on 2026-08-18, then corrected the
+   same day: a `-10px` right reach was 3px INTO the id chip, Bugbot, MEDIUM).
 
-   So: a 36 x 34 target for a 22px button, and the pointer arrives from the right
-   (the row it was reading) where the room is.
+   THE OVERHANG IS WHY A TYPED NUMBER GETS THIS WRONG. The button is 22px over a
+   16px slot, so it already hangs `--tasks-archive-overhang` = 3px past the slot on
+   every side, eating that much of the gap before it grows at all. The free space
+   on a side is therefore that side's own spacing token LESS the overhang:
+
+   - TOP / BOTTOM: `--tasks-row-pad-y` - 3px = 7px, which makes the zone exactly as
+     tall as the 36px row and no taller. Growth past the row's edge would put this
+     button over the NEIGHBOURING row's link — one row's Archive pressed from
+     another row.
+   - RIGHT: `--tasks-row-gap` - 3px = 7px, which lands the edge exactly on the id
+     chip's left edge. At 10px it lapped 3px OVER the chip, so a press aimed at the
+     id fired Archive instead: this button sits at `z-index: 2` and the chip does
+     not, so the overlap always resolved this way.
+   - LEFT: the right reach plus half a gap back, = 2px. The caret's own enlarged
+     zone (same `z-index: 2`, earlier in the DOM, so this would win the overlap and
+     quietly shrink the disclosure gutter) ends half a `--tasks-row-gap` right of
+     its glyph, and 2px is the whole clearance between the two.
+
+   So: a 36 x 31 target for a 22px button, tiling exactly against the caret's zone
+   on one side and the id chip on the other, with no overlap in either direction.
 
    `pointer-events` is inherited, so this zone is `none` at rest and `auto` with
    the reveal exactly like the button it belongs to — an invisible control does
@@ -721,10 +725,19 @@ button.tasks-caret,
 .tasks-rowmark .tasks-act--archive::after {
   content: "";
   position: absolute;
+  /* How far the 22px button already hangs past its 16px slot on every side. */
+  --tasks-archive-overhang: calc((22px - var(--tasks-rail-w)) / 2);
   --tasks-archive-reach-y: calc(
-    (22px - var(--tasks-rail-w)) / 2 - var(--tasks-row-pad-y)
+    var(--tasks-archive-overhang) - var(--tasks-row-pad-y)
   );
-  inset: var(--tasks-archive-reach-y) -10px var(--tasks-archive-reach-y) -2px;
+  --tasks-archive-reach-r: calc(
+    var(--tasks-archive-overhang) - var(--tasks-row-gap)
+  );
+  --tasks-archive-reach-l: calc(
+    var(--tasks-archive-reach-r) + var(--tasks-row-gap) / 2
+  );
+  inset: var(--tasks-archive-reach-y) var(--tasks-archive-reach-r)
+    var(--tasks-archive-reach-y) var(--tasks-archive-reach-l);
   border-radius: 8px;
 }
 
