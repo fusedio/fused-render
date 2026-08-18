@@ -26,10 +26,23 @@
 let mutations = 0;
 const listeners = new Set<() => void>();
 
-// Whether a mutation has been made that no completed scan has covered yet.
-// Set by any in-app change, cleared by the next index lifecycle event — which
-// is precisely "a scan finished" (lib/index-status observes it).
-let rescanPending = false;
+// How long a rescan the app asked for may go unaccounted for before the box
+// stops claiming one is running.
+//
+// The claim has to be able to expire, because the server refuses a rescan it
+// must not run — a mount, "/", a tree the ignore list excludes, another
+// filesystem (server/index_touch.py) — and it does not report that back: the
+// client asks for nothing, it is told what happened to a file. Without a
+// deadline, mutating a file on a mounted bucket leaves "indexing…" on screen
+// for the rest of the session, and suppresses the `behind` caveat that is the
+// TRUE one there. Generous, because it is only wrong in one direction: a
+// coalesce, a scan and a status poll all have to fit inside it.
+export const RESCAN_PENDING_MAX_MS = 60_000;
+
+// When the app last changed something that no completed scan has covered yet,
+// or null. Set by any in-app change, cleared by the next index lifecycle event
+// — which is precisely "a scan finished" (lib/index-status observes it).
+let mutatedAt: number | null = null;
 
 /** How many mutations this app has made this session. */
 export function fsMutationCount(): number {
@@ -45,14 +58,15 @@ export function subscribeFsMutations(fn: () => void): () => void {
 /**
  * Whether the index is still catching up with a change this app made.
  *
- * True from the moment of the change until a scan completes. Not folder-scoped
- * and deliberately so: the server decides which folder its rescan covers, and
+ * True from the moment of the change until a scan completes — or until the
+ * deadline above, for the rescans the server refuses and never reports. Not
+ * folder-scoped and deliberately so: the server decides which folder its rescan covers, and
  * a second opinion here — kept in a different vocabulary, on a different
  * clock — is exactly the kind of duplicated policy the ranked search removed.
  * What the client needs from it is one bit: say "indexing…" or don't.
  */
-export function indexRescanPending(): boolean {
-  return rescanPending;
+export function indexRescanPending(now: number = Date.now()): boolean {
+  return mutatedAt !== null && now - mutatedAt < RESCAN_PENDING_MAX_MS;
 }
 
 // The index's own lifecycle: deleted from Preferences, or a scan completing.
@@ -77,15 +91,15 @@ export function subscribeIndexLifecycle(fn: () => void): () => void {
 /** Record that the index was deleted or a scan finished. */
 export function noteIndexLifecycle(): void {
   lifecycle++;
-  rescanPending = false;
+  mutatedAt = null;
   for (const fn of lifecycleListeners) fn();
 }
 
 /** Record that this app changed `path` (created, deleted, renamed, written). */
-export function noteFsMutation(path: string): void {
+export function noteFsMutation(path: string, now: number = Date.now()): void {
   const p = String(path || "").replace(/\/+$/, "");
   if (!p || p === "/") return;
-  rescanPending = true;
+  mutatedAt = now;
   mutations++;
   for (const fn of listeners) fn();
 }
@@ -94,5 +108,5 @@ export function noteFsMutation(path: string): void {
 export function resetFsMutations(): void {
   mutations = 0;
   lifecycle = 0;
-  rescanPending = false;
+  mutatedAt = null;
 }

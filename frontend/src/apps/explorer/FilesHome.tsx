@@ -14,6 +14,7 @@ import { useUrlVersion } from "@platform/lib/hooks";
 import {
   fsMutationCount,
   indexLifecycleCount,
+  indexRescanPending,
   subscribeFsMutations,
   subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
@@ -543,7 +544,19 @@ export function FilesSearch({
   // intentional: with the previous query's rows still on screen and nothing
   // saying why, the box just looks wrong. The rows themselves dim while
   // `behind`, the same treatment the listing gives held results.
-  const caveat = active && !showingAi ? indexCaveat(indexScan, behind) : null;
+  // `behind` is the rows answering a DIFFERENT query, which is two different
+  // situations: one where the next answer is 40ms away, and one where it is
+  // never coming. Only the second is staleness, and only the second gets the
+  // caveat's words for it ("clear the search and run it again") — saying that
+  // on every keystroke also puts a word on screen exactly where the 200ms rule
+  // deliberately withholds a spinner. `rescanPending` is the listing's third
+  // message arriving here for the same reason it exists there: this app just
+  // changed a file, the server is re-indexing that folder, and until a status
+  // poll catches the run nothing else would say so.
+  const caveat =
+    active && !showingAi
+      ? indexCaveat(indexScan, behind && !pending, indexRescanPending())
+      : null;
   const current = activeRow(highlight, hits.length, settled);
 
   const openRow = (row: number) => {

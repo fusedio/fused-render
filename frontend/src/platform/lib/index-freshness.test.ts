@@ -1,5 +1,6 @@
 import { beforeEach, expect, test } from "bun:test";
 import {
+  RESCAN_PENDING_MAX_MS,
   fsMutationCount,
   indexLifecycleCount,
   indexRescanPending,
@@ -62,6 +63,31 @@ test("a mutation after a scan is pending again", () => {
   noteIndexLifecycle();
   noteFsMutation("/home/me/proj/b.txt");
   expect(indexRescanPending()).toBe(true);
+});
+
+test("a rescan nobody ever runs stops being claimed", () => {
+  // The server refuses a rescan it must not run — a mount, "/", an ignored
+  // tree, another filesystem — and it does not report that back: the client
+  // asks for nothing, it only says what it did. So the claim has to expire on
+  // its own, or mutating a file on a mounted bucket shows "indexing…" for the
+  // rest of the session AND suppresses the `behind` caveat that is the true
+  // one there.
+  noteFsMutation("/home/me/proj/a.txt", 0);
+  expect(indexRescanPending(0)).toBe(true);
+  expect(indexRescanPending(RESCAN_PENDING_MAX_MS - 1)).toBe(true);
+  expect(indexRescanPending(RESCAN_PENDING_MAX_MS + 1)).toBe(false);
+});
+
+test("a later mutation renews the claim", () => {
+  noteFsMutation("/home/me/proj/a.txt", 0);
+  noteFsMutation("/home/me/proj/b.txt", RESCAN_PENDING_MAX_MS - 1);
+  expect(indexRescanPending(RESCAN_PENDING_MAX_MS + 1)).toBe(true);
+});
+
+test("a completed scan still clears it outright, whatever the clock says", () => {
+  noteFsMutation("/home/me/proj/a.txt", 0);
+  noteIndexLifecycle();
+  expect(indexRescanPending(0)).toBe(false);
 });
 
 test("the lifecycle count still moves for the fetch keys that ride it", () => {
