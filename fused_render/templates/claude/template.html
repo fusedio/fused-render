@@ -6596,7 +6596,13 @@ function annWireTarget() {
     else if (!on && root.style.cursor === "crosshair") root.style.cursor = "";
   };
   doc.addEventListener("keyup", (e) => {
-    if (e.key === "Alt") annAimCursor(annOn && annTool === "point");
+    if (e.key !== "Alt") return;
+    const aimPoint = annOn && annTool === "point";
+    annAimCursor(aimPoint);
+    // The ring Alt brought back (element override on the Point tool) must go
+    // with the key: leaving it until the next mousemove has the crosshair and
+    // the ring disagreeing about what the next click pins.
+    if (aimPoint && annHl) annHl.style.display = "none";
   });
   doc.addEventListener("mousemove", (e) => {
     if (!annOn) { annAimCursor(false); return; }
