@@ -52,6 +52,7 @@ import {
   relocationToast,
   takeRedoOp,
   takeUndoOp,
+  trashUndoPairs,
   type FsOp,
 } from "@apps/explorer/lib/fs-undo";
 import { basename } from "@platform/lib/format";
@@ -530,6 +531,10 @@ export function useFileOps({
   // trash (non-macOS → "unsupported") those rows fall back to the existing
   // confirm-then-hard-delete flow, which IS irreversible and so keeps its
   // warning. Success shows a low-key, count-aware info toast.
+  //
+  // UNDOABLE, as one op for the whole batch: a trash is a rename into ~/.Trash
+  // whose destination the server names (`to`), so the delete records exactly the
+  // pair a move would and Cmd+Z renames the entries back out (lib/fs-undo).
   const doTrash = (allRows: RowCtx[]) => {
     // As in startDelete: trashing a folder takes everything inside it, so a
     // selection that also holds rows from within that folder must not trash them
@@ -538,13 +543,22 @@ export function useFileOps({
     const rows = pruneDescendantRows(allRows);
     if (!rows.length) return;
     void (async () => {
-      const trashed: RowCtx[] = [];
+      // Where each trashed row WENT, for the undo op. `to` is absent when the
+      // server fell back to Finder for the move, which picks the location
+      // itself — those rows are trashed and recoverable in Finder but contribute
+      // NO pair (trashUndoPairs drops them), because an undo needs a path to
+      // rename back FROM and inventing one would aim it at nothing.
+      const trashed: { path: string; to?: string }[] = [];
       const unsupported: RowCtx[] = [];
       let failed: { row: RowCtx; message: string } | null = null;
       for (const row of rows) {
         const r = await trashEntry(row.path, row.isDir);
         if (r.status === "trashed") {
-          trashed.push(row);
+          trashed.push({ path: row.path, to: r.to });
+          // ACCEPTED LOSS: this drops the entry from Recents, and an undo does
+          // not put it back — the restore is a rename, and nothing re-notes the
+          // path as opened. The entry returns to the filesystem where it was;
+          // only its place in the recents list is gone.
           notePathDeleted(row.path);
         } else if (r.status === "unsupported") {
           unsupported.push(row);
@@ -557,6 +571,13 @@ export function useFileOps({
           msg: trashed.length === 1 ? "Deleted" : `Deleted ${trashed.length} items`,
           tone: "info",
         });
+        // One op for the batch, so a single Cmd+Z brings the whole selection
+        // back. Guarded on emptiness EXPLICITLY even though recordFsOp's push
+        // already no-ops on it: a batch that was entirely Finder-trashed yields
+        // no pairs, and "there is nothing here to undo" is the intent rather
+        // than a coincidence of what push happens to do.
+        const pairs = trashUndoPairs(trashed);
+        if (pairs.length) recordFsOp({ kind: "delete", pairs });
         refetch();
       }
       // A real failure raises its own toast. It used to REPLACE the info one
