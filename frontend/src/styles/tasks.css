@@ -611,26 +611,44 @@ button.tasks-caret,
   border-color: var(--border);
 }
 
-/* Archive. Same group, same size, same silence at rest as Edit, Cancel and Run
-   now — and deliberately NEUTRAL under the pointer, not red.
+/* Archive, and Unarchive. Same group, same size, same silence at rest as Edit,
+   Cancel and Run now — and deliberately NEUTRAL under the pointer, not red.
    Filing a task away destroys nothing (a task IS a Claude session and the
    transcript is kept, D306), so borrowing Cancel's red would tell the reader
    this is the destructive one, which is the exact misunderstanding archiving
    exists to correct. The plain `.tasks-act` hover skin already says "this is a
-   control"; that is all this one needs to say. */
+   control"; that is all either of these needs to say.
+
+   ONE SKIN FOR BOTH DIRECTIONS, and not for brevity: the two never appear
+   together (a task is either put away or it is not, so `filingIntent` answers
+   with one direction and the row draws one button), so a hue that told them apart
+   would be a hue with nothing to contrast against. The GLYPH is what says which
+   way this one goes — lucide `archive` against `archive-restore`, the same box
+   closed and open — and it says it in the one place the pointer is already
+   looking. A colour would also have to mean something, and neither direction is
+   destructive or generative enough to earn one. */
 .tasks-act--archive:hover:not(:disabled),
-.prefs-section .tasks-act--archive:hover:not(:disabled) {
+.tasks-act--unarchive:hover:not(:disabled),
+.prefs-section .tasks-act--archive:hover:not(:disabled),
+.prefs-section .tasks-act--unarchive:hover:not(:disabled) {
   color: var(--fg);
   background: var(--bg-alt);
   border-color: var(--border);
 }
 
-/* -- The mark slot: ring at rest, Archive on hover ------------------------------
+/* -- The mark slot: ring at rest, the filing button on hover --------------------
    ONE BOX, TWO OCCUPANTS (2026-08-18). The row's leading mark is the status ring;
-   put a pointer on the row and the Archive button takes its place, in the same
+   put a pointer on the row and the filing button takes its place, in the same
    place. Archive used to live out by the folder chip, at the row's busiest end,
    which made filing a task a control the reader had to travel to — and left the
    quietest, most-scanned position in the row doing nothing while hovered.
+
+   THE BUTTON IS ARCHIVE OR UNARCHIVE, never both and never neither-when-there-is-
+   one (tasks-lib.filingIntent). Which is why every rule below keys on `.tasks-act`
+   inside the slot rather than on one direction's class: the geometry, the hit zone
+   and the handover are facts about the SLOT and its single occupant, and naming a
+   direction in them is how an archived row ended up with a button the ring never
+   moved out of the way for.
 
    NOTHING MOVES. The slot is sized to the ring (`--tasks-rail-w`, the width every
    rail on this page is measured from) and the button is taken OUT OF FLOW inside
@@ -656,12 +674,44 @@ button.tasks-caret,
   flex: 0 0 var(--tasks-rail-w);
 }
 
-.tasks-rowmark .tasks-act--archive,
-.prefs-section .tasks-rowmark .tasks-act--archive {
+.tasks-rowmark .tasks-act,
+.prefs-section .tasks-rowmark .tasks-act {
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
+}
+
+/* BIGGER TO AIM AT THAN IT LOOKS (Akshil, 2026-08-18). 22px was still a small
+   target for a control the pointer arrives at sideways, travelling in from the
+   row it just hovered — the press missed and opened the conversation instead,
+   which is the one outcome archiving is not.
+
+   Grown by a transparent pseudo-element rather than by padding-and-negative-
+   margin (the caret's trick, `button.tasks-caret`): that pair works because the
+   caret is a FLEX CHILD, where padding grows the box and the margin takes the
+   growth back out of the layout. This button is out of flow and centred by
+   `translate(-50%, -50%)` on its own box, so padding would grow the box the
+   transform is measured from — and, worse, the box the hover skin paints. The
+   fill and border must stay 22px on a 16px ring; only the zone grows.
+
+   THE INSETS ARE WHAT THE ROW ACTUALLY HAS SPARE, not one round number:
+   - left 2px only. The caret's own enlarged zone (same `z-index: 2`, earlier in
+     the DOM, so this would win the overlap and quietly shrink the disclosure
+     gutter) ends half a `--tasks-row-gap` right of its glyph — 2px short of this
+     button's left edge. That 2px is the whole clearance there is.
+   - right 6px, into the gap before the next rail slot, which holds nothing.
+   - 5px top and bottom, well inside the row's own `--tasks-row-pad-y`: growth
+     past the row's edge would cover the NEIGHBOURING row's link.
+
+   `pointer-events` is inherited, so this zone is `none` at rest and `auto` with
+   the reveal exactly like the button it belongs to — an invisible control does
+   not get an invisible hit area either. */
+.tasks-rowmark .tasks-act::after {
+  content: "";
+  position: absolute;
+  inset: -5px -6px -5px -2px;
+  border-radius: 8px;
 }
 
 /* The handover. The ring fades as the button arrives — the same `opacity` swap,
@@ -682,11 +732,15 @@ button.tasks-caret,
   pointer-events: none;
 }
 
-/* Only where there IS a button to hand over to. A row with nothing to file
-   (`archiveIntent` → null, so no button is rendered) must keep its ring under the
-   pointer — the alternative is a blank slot where the row's status was. */
-.tasks-row:hover .tasks-rowmark:not(:has(.tasks-act--archive)) .schedule-ring,
-.tasks-row:focus-within .tasks-rowmark:not(:has(.tasks-act--archive)) .schedule-ring {
+/* Only where there IS a button to hand over to. A row whose filing cannot be
+   changed at all (`filingIntent` → null — a run in flight, and nothing else now,
+   so no button is rendered) must keep its ring under the pointer: the alternative
+   is a blank slot where the row's status was.
+
+   `.tasks-act` and not one direction's class, or the ARCHIVED row would keep its
+   ring painted over the Unarchive button standing in the same 22px. */
+.tasks-row:hover .tasks-rowmark:not(:has(.tasks-act)) .schedule-ring,
+.tasks-row:focus-within .tasks-rowmark:not(:has(.tasks-act)) .schedule-ring {
   opacity: 1;
 }
 

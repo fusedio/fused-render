@@ -17,7 +17,7 @@ import {
   NO_TIME,
   PREVIEW_MESSAGES,
   UNREAD_LABEL,
-  archiveIntent,
+  filingIntent,
   basename,
   canCancel,
   canRunNow,
@@ -46,6 +46,7 @@ import {
   laneRolledUp,
   laneUnread,
   LIST_ORDER,
+  showsRowActions,
   sortByLane,
   laneTime,
   lastRunAt,
@@ -1378,10 +1379,14 @@ describe("the unarchive drag", () => {
     const from = VIEWS.indexOf('const drop = async (lane: BoardColumn)');
     const handler = VIEWS.slice(from, VIEWS.indexOf("onReload();", from));
     expect(handler).toContain('action.kind === "unarchive"');
-    expect(handler).toContain("unarchiveTask(task.key)");
-    expect(handler).not.toContain("unarchiveTask(task.key, lane");
+    // Through the shared helper — one call over the task key, and the `lane` the
+    // drop was made on is not in it.
+    expect(handler).toContain("performUnarchive(task.key)");
+    expect(handler).not.toMatch(/performUnarchive\(task\.key,/);
+    expect(VIEWS).toContain("async function performUnarchive(key: string)");
+    expect(VIEWS).toContain("await unarchiveTask(key)");
     // And it says where the card actually went, because it may not be here.
-    expect(handler).toContain("statusColumn(said.status)");
+    expect(VIEWS).toContain("statusColumn(said.status)");
   });
 });
 
@@ -1571,9 +1576,10 @@ describe("taskRunIntent", () => {
 // kept" (D306), and that answer is only true while archiving is reachable. It
 // used to be one gesture on one view, onto a lane that starts COLLAPSED.
 
-describe("archiveIntent", () => {
+describe("filingIntent", () => {
   it("offers Archive on a task that has run", () => {
-    const a = archiveIntent(task({ status: "done" }))!;
+    const a = filingIntent(task({ status: "done" }))!;
+    expect(a.kind).toBe("archive");
     expect(a.label).toBe("Archive");
     expect(a.lane).toBe("archived");
     // The two halves a person reaching for Delete is actually asking about: the
@@ -1582,37 +1588,62 @@ describe("archiveIntent", () => {
     expect(a.title).toContain("calls off");
   });
 
-  it("offers no way back out of Archive", () => {
-    // Archive is a locked lane on the Board and the row draws no Unarchive, so
-    // there is one answer to "how do I get this back?" instead of two. It costs
-    // nothing: archiving destroys nothing (D306).
-    expect(archiveIntent(task({ status: "archived" }))).toBe(null);
+  it("offers Unarchive on an archived task, naming NO lane", () => {
+    // The way back is a button again (Akshil, 2026-08-19) — and the reason the
+    // old one was wrong is the field that is null here. Archive → In Progress
+    // asserted a verdict on work the reader had not watched; this asserts
+    // nothing, because the server derives where the task lands.
+    const a = filingIntent(task({ status: "archived" }))!;
+    expect(a.kind).toBe("unarchive");
+    expect(a.label).toBe("Unarchive");
+    expect(a.lane).toBe(null);
+    // Says the two things a person cannot see before pressing.
+    expect(a.title).toContain("Archive");
+    expect(a.title).toContain("nothing is re-run");
   });
 
-  it("offers nothing while a run is in flight", () => {
+  it("offers nothing while a run is in flight — the ONLY null now", () => {
     // In Progress is Claude's output. The card cannot leave that lane by any
     // gesture, and the button asks the same question the drop does.
-    expect(archiveIntent(task({ status: "in_progress" }))).toBe(null);
+    expect(filingIntent(task({ status: "in_progress" }))).toBe(null);
+    // Every other lane has a direction, which is the whole change: there is no
+    // longer a row whose filing simply cannot be changed.
+    for (const status of ["upcoming", "done", "archived", FAILED] as const) {
+      expect(filingIntent(task({ status }))).not.toBe(null);
+    }
   });
 
   it("offers Archive on a task with no session at all", () => {
     // `pending:<entry>` — the row the old session-keyed triage write could not
     // touch. Archiving is one verb over a TASK KEY now, and for a task that has
     // never run it means exactly "cancel the work", which the server does.
-    expect(archiveIntent(task({ key: "pending:e1", session_id: "", status: "upcoming" })))
+    expect(filingIntent(task({ key: "pending:e1", session_id: "", status: "upcoming" })))
       .not.toBe(null);
     const fresh = upcoming([T9], { key: "pending:e1", session_id: "" });
     expect(isDraggable(fresh)).toBe(true);
-    expect(archiveIntent(fresh)!.lane).toBe("archived");
+    expect(filingIntent(fresh)!.lane).toBe("archived");
+  });
+
+  it("offers Unarchive even where there is nothing to un-file server-side", () => {
+    // A card reads Archive because its every message was filed away, or because
+    // it has no session to hold a record at all. The button is still right: the
+    // server answers `unfiled: false` and the row lands in its derived lane,
+    // which is the outcome the press was asking for either way.
+    for (const t of [
+      task({ status: "archived", key: "pending:e1", session_id: "" }),
+      task({ status: "archived", messages: [msg({ state: "cancelled" })] }),
+    ]) {
+      expect(filingIntent(t)!.kind).toBe("unarchive");
+    }
   });
 
   it("is offered from every unlocked lane", () => {
     for (const status of ["upcoming", "done"] as const) {
-      expect(archiveIntent(task({ status }))).not.toBe(null);
+      expect(filingIntent(task({ status }))!.kind).toBe("archive");
     }
     // Including the one lane Done is refused from — filing a failed run away is
     // exactly what a person wants to do with it.
-    expect(archiveIntent(task({ status: FAILED }))!.lane).toBe("archived");
+    expect(filingIntent(task({ status: FAILED }))!.lane).toBe("archived");
   });
 
   it("never disagrees with the drop the Board already makes", () => {
@@ -1622,28 +1653,64 @@ describe("archiveIntent", () => {
       task({ status: "archived" }),
       task({ status: FAILED }),
       upcoming([T9]),
+      upcoming([T9], { status: "archived" }),
       upcoming([T18, T9], { status: FAILED }),
       task({ key: "pending:e1", session_id: "", status: "upcoming" }),
       upcoming([T9], { key: "pending:e1", session_id: "" }),
     ];
     for (const t of shapes) {
-      const a = archiveIntent(t);
-      for (const col of BOARD_COLUMNS) {
-        const action = dropAction(t, col.key);
-        if (a && col.key === a.lane) {
-          // The button makes the drop's call, on the drop's own lane.
-          expect(action).toEqual({ kind: "archive" });
-          expect(dropLanes(t)).toContain(a.lane);
-        } else if (!a) {
-          // Offering nothing is only correct while the drag has no ARCHIVE move
-          // either. Run-now and unarchive are different verbs and may still be
-          // legal on some lane — the second is exactly why the button stays
-          // absent from an archived card while its drag works.
-          expect(action === null || action.kind === "run"
-            || action.kind === "unarchive").toBe(true);
+      const a = filingIntent(t);
+      // NO BUTTON ⇒ NO FILING DROP ANYWHERE, in either direction. A run-now drop
+      // is a different verb and may still be legal.
+      if (!a) {
+        for (const col of BOARD_COLUMNS) {
+          const action = dropAction(t, col.key);
+          expect(action === null || action.kind === "run").toBe(true);
         }
+        continue;
+      }
+      // ARCHIVE names the lane the drag aims at, and makes the drag's call on it.
+      if (a.kind === "archive") {
+        expect(a.lane).toBe("archived");
+        expect(dropAction(t, "archived")).toEqual({ kind: "archive" });
+        expect(dropLanes(t)).toContain("archived");
+        continue;
+      }
+      // UNARCHIVE names no lane — so the agreement to check is that EVERY lane
+      // the drag offers answers this same verb. A button that could do something
+      // the drag would not is the divergence both directions have now had.
+      expect(a.lane).toBe(null);
+      expect(dropLanes(t).length).toBeGreaterThan(0);
+      for (const lane of dropLanes(t)) {
+        expect(dropAction(t, lane)).toEqual({ kind: "unarchive" });
       }
     }
+  });
+});
+
+describe("showsRowActions", () => {
+  it("is false on an archived task and true everywhere else", () => {
+    // Akshil, 2026-08-19: only the unarchive button on archived rows. A task
+    // somebody put away has one decision left against it.
+    expect(showsRowActions(task({ status: "archived" }))).toBe(false);
+    for (const status of ["upcoming", "in_progress", "done", FAILED] as const) {
+      expect(showsRowActions(task({ status }))).toBe(true);
+    }
+  });
+
+  it("is about the ROW's chrome, not about whether the work exists", () => {
+    // The underlying intents keep answering honestly — the calendar popover and
+    // anything else that asks needs the truth — so this cannot be folded into
+    // them. An archived task with a pending message still HAS a run to make.
+    const filed = upcoming([T9], { status: "archived" });
+    expect(showsRowActions(filed)).toBe(false);
+    expect(taskRunIntent(filed)).not.toBe(null);
+  });
+
+  it("does not gate opening: Archive is a place to READ things", () => {
+    // D306 — the transcript is kept, so the row link and Open chat keep working.
+    const filed = task({ status: "archived", messages: [msg({ unread: true })] });
+    expect(openThreadIntent(filed, 1)).not.toBe(null);
   });
 });
 
@@ -3431,48 +3498,60 @@ describe("the archive action", () => {
   it("sits in the List row's hover-revealed group, conditional on the intent", () => {
     const from = VIEWS.indexOf('className={"tasks-row"');
     const row = VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
-    // Only when there is something to file — a session-less row grows nothing.
+    // Only when the filing can be changed at all — a mid-run row grows nothing.
     expect(row).toContain("{file && (");
-    // The same class Run now / Edit / Cancel wear, which is what makes it quiet.
-    expect(row).toContain("tasks-act--archive");
-    expect(row).toContain("ICON_ARCHIVE");
+    // The same class group Run now / Edit / Cancel wear, which is what makes it
+    // quiet — and the DIRECTION is a suffix, so one button covers both.
+    expect(row).toContain('"tasks-act tasks-act--" + file.kind');
+    expect(row).toContain("ICON_ARCHIVE : ICON_UNARCHIVE");
     // The words come from tasks-lib rather than from the row.
     expect(row).toContain("aria-label={file.label}");
   });
 
-  it("is a BUTTON one way only — the way back is the drag, and it is not a button", () => {
-    // No Unarchive control anywhere: not a button, not a glyph. It used to be
-    // written-but-hidden on the row and LIVE on the Board, which is two answers
-    // to one question — the divergence this page's vocabulary is written
-    // against. The way back exists (drag the card out of the lane, or say
-    // something in the conversation) and neither of those needs a label, which
-    // is the whole objection to the button: every label claims something about
-    // the work that leaving Archive does not know.
-    expect(VIEWS).not.toContain("SHOW_UNARCHIVE");
-    expect(VIEWS).not.toContain("ICON_UNARCHIVE");
-    expect(archiveIntent(task({ status: "archived" }))).toBe(null);
-    // The drag is the exception, and it is one verb with no destination.
-    expect(dropAction(task({ status: "archived" }), "done"))
-      .toEqual({ kind: "unarchive" });
-    // BOTH views read the same intent, and neither composes a status: the
-    // server verb is one call over the task key.
+  it("goes BOTH ways now, from one intent, on both views", () => {
+    // The way back is a button again (Akshil, 2026-08-19). It used to be
+    // written-but-hidden on the row and LIVE on the Board — two answers to one
+    // question, which is the divergence this page's vocabulary is written
+    // against — so the thing to hold is that ONE function decides it and BOTH
+    // views draw it.
+    // The old flag is gone as CODE — it may be named in prose, because what it
+    // was is why this button is shaped the way it is.
+    expect(VIEWS).not.toMatch(/^\s*(const|let)\s+SHOW_UNARCHIVE/m);
+    expect(VIEWS).not.toMatch(/SHOW_UNARCHIVE\s*&&/);
+    expect((VIEWS.match(/const file = filingIntent\(task\);/g) ?? []).length).toBe(2);
     for (const src of [ROW, CARD]) {
       expect(src).toContain("{file && (");
+      // One button per view, branching on the direction rather than two buttons
+      // that could both render (or both not).
+      expect((src.match(/\{file && \(/g) ?? []).length).toBe(1);
+      // The direction is a class SUFFIX and a glyph choice, so neither view can
+      // draw one direction's skin over the other's action.
+      expect(src).toContain('tasks-act--" + file.kind');
+      expect(src).toContain("ICON_ARCHIVE : ICON_UNARCHIVE");
     }
-    expect((VIEWS.match(/const file = archiveIntent\(task\);/g) ?? []).length).toBe(2);
-    // Lookbehind so `unarchiveTask` is not counted as one of these.
+    // And the old, wrong version of this button stays gone: its move named a
+    // lane (Archive → In Progress), and nothing here names one.
+    expect(filingIntent(task({ status: "archived" }))!.lane).toBe(null);
+    expect(dropAction(task({ status: "archived" }), "done"))
+      .toEqual({ kind: "unarchive" });
+    // Both directions are one server verb over the task key, composed nowhere on
+    // the client. Lookbehind so `unarchiveTask` is not counted as an archive.
     expect((VIEWS.match(/(?<!un)archiveTask\(task\.key\)/g) ?? []).length).toBe(3);
-    // And the way back is ONE call, made from the drop and from nowhere else —
-    // no button on either view reaches it.
-    expect((VIEWS.match(/unarchiveTask\(task\.key\)/g) ?? []).length).toBe(1);
-    for (const src of [ROW, CARD]) {
-      expect(src).not.toContain("unarchiveTask");
-    }
-    // Not hidden in CSS, the same rule the strip obeys: an `opacity: 0` button
-    // is still in the tab order.
-    expect(TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(
-      ".tasks-act--unarchive",
-    );
+    // Unarchive goes through ONE helper (performUnarchive), because all three
+    // gestures owe the reader the same sentence about where the card went — so the
+    // api call appears exactly once, inside it, and never at a call site.
+    expect((VIEWS.match(/unarchiveTask\(/g) ?? []).length).toBe(1);
+    expect((VIEWS.match(/performUnarchive\(task\.key\)/g) ?? []).length).toBe(3);
+    // The glyph exists and is the archive box opened — same lid, same width, so
+    // the two read as one pair in one slot.
+    expect(VIEWS).toContain("const ICON_UNARCHIVE = icon(");
+    const box = '<rect x="2" y="3" width="20" height="5" rx="1" />';
+    expect(VIEWS.split(box).length - 1).toBe(2);
+    // Skinned in CSS, and NOT hidden there: the same rule the strip obeys — an
+    // `opacity: 0` button is still in the tab order.
+    const live = TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(live).toContain(".tasks-act--unarchive:hover:not(:disabled)");
+    expect(live).not.toMatch(/\.tasks-act--unarchive[^{]*\{[^}]*display: none/);
   });
 
   it("is the ONE row action not behind SHOW_ROW_ACTIONS, on both views", () => {
@@ -3531,7 +3610,7 @@ describe("the archive action", () => {
 
   it("gives the board card the same action, so the drag is not the only way", () => {
     const card = VIEWS.slice(VIEWS.indexOf("function TaskCard("));
-    expect(card).toContain("archiveIntent(task)");
+    expect(card).toContain("filingIntent(task)");
     expect(card).toContain("tasks-card-act");
     // A button cannot be nested inside a button, which is what the wrapper is
     // for — and what it is positioned against.
@@ -3575,11 +3654,12 @@ describe("the archive action", () => {
     expect(from).toBeGreaterThan(-1);
     const slot = VIEWS.slice(from, VIEWS.indexOf("</span>", from));
     expect(slot).toContain("<StatusIcon");
-    expect(slot).toContain("tasks-act--archive");
+    expect(slot).toContain('"tasks-act tasks-act--" + file.kind');
     // It is drawn BEFORE the row's id chip — i.e. at the leading edge, where the
-    // ring is — and there is exactly one archive button on a row.
+    // ring is — and there is exactly one filing button on a row, whichever
+    // direction it is.
     expect(from).toBeLessThan(VIEWS.indexOf("<IdChip id={task.task_id}"));
-    expect((ROW.match(/tasks-act--archive/g) ?? []).length).toBe(1);
+    expect((ROW.match(/\{file && \(/g) ?? []).length).toBe(1);
 
     // NOTHING MOVES when they swap, and that is a claim about the CSS: the slot is
     // exactly the rail's width and the button is out of flow inside it, so the
@@ -3592,10 +3672,10 @@ describe("the archive action", () => {
     // No z-index on the SLOT: the row's stretched link has to keep painting over
     // the ring's box, exactly as it did when the ring was the flex child.
     expect(mark).not.toContain("z-index");
-    const button = block(
-      TASKS_CSS,
-      ".tasks-rowmark .tasks-act--archive",
-    );
+    // Keyed on `.tasks-act` and NOT on one direction's class: the geometry is a
+    // fact about the slot and its single occupant, so an archived row's Unarchive
+    // lands in exactly the same 22px the archive button does.
+    const button = block(TASKS_CSS, ".tasks-rowmark .tasks-act");
     expect(button).toContain("position: absolute");
     expect(button).toContain("transform: translate(-50%, -50%)");
 
@@ -3612,9 +3692,12 @@ describe("the archive action", () => {
     // way (the same rule the strip has always obeyed).
     expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-rowmark .schedule-ring");
     expect(TASKS_CSS).toContain(".tasks-act:focus-visible");
-    // A row with nothing to file keeps its ring under the pointer: a blank slot
-    // where the row's status was is worse than no swap at all.
-    expect(TASKS_CSS).toContain(":not(:has(.tasks-act--archive)) .schedule-ring");
+    // A row whose filing cannot be changed keeps its ring under the pointer: a
+    // blank slot where the row's status was is worse than no swap at all. Keyed on
+    // `.tasks-act`, or the archived row would keep its ring painted over the
+    // Unarchive button standing in the same box.
+    expect(TASKS_CSS).toContain(":not(:has(.tasks-act)) .schedule-ring");
+    expect(TASKS_CSS).not.toContain(":not(:has(.tasks-act--archive))");
 
     // AND THE INVISIBLE BUTTON CANNOT TAKE A PRESS (bugbot, 2026-08-18, HIGH).
     // `opacity: 0` alone left a live control at `z-index: 2` sitting over the
@@ -3639,7 +3722,7 @@ describe("the archive action", () => {
     // and its head has an empty right end the strip was measured against
     // (`--tasks-card-head-h`), so moving the button there would be a change with
     // nothing behind it.
-    expect(CARD).toContain("tasks-card-act tasks-act--archive");
+    expect(CARD).toContain('"tasks-act tasks-card-act tasks-act--" + file.kind');
     expect(CARD).not.toContain("tasks-rowmark");
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
   });
@@ -3647,9 +3730,13 @@ describe("the archive action", () => {
   it("never paints it red — archiving destroys nothing", () => {
     // Cancel's hue is the destructive one and the two are one flick apart; using
     // it here would assert the very thing archiving exists to deny.
-    const at = TASKS_CSS.indexOf(".tasks-act--archive:hover");
-    expect(at).toBeGreaterThan(-1);
-    expect(TASKS_CSS.slice(at, TASKS_CSS.indexOf("}", at))).not.toContain("--error");
+    // Both directions, and they share one skin — see the CSS note: the two never
+    // appear together, so a hue telling them apart would contrast with nothing.
+    for (const sel of [".tasks-act--archive:hover", ".tasks-act--unarchive:hover"]) {
+      const at = TASKS_CSS.indexOf(sel);
+      expect(at).toBeGreaterThan(-1);
+      expect(TASKS_CSS.slice(at, TASKS_CSS.indexOf("}", at))).not.toContain("--error");
+    }
   });
 });
 
@@ -3872,16 +3959,16 @@ describe("the hidden row actions", () => {
     for (const kept of [
       "markReadIntent(task, read, held)",
       "taskRunIntent(task)",
-      "archiveIntent(task)",
+      "filingIntent(task)",
       "openThreadIntent(task, unread)",
       "const markSeen = async () => {",
-      "const archive = async () => {",
+      "const refile = async (intent: FilingIntent) => {",
       "const openChat = (intent: OpenThreadIntent)",
     ]) {
       expect(VIEWS).toContain(kept);
     }
     expect(CARD).toContain("void runNow(run)");
-    expect(CARD).toContain("void archive()");
+    expect(CARD).toContain("void refile(file)");
   });
 
   it("keeps the strip's geometry, which is what it comes back to", () => {
@@ -4327,7 +4414,7 @@ describe("opening a thread, from either view", () => {
     const acts = CARD.slice(actsAt);
     expect(acts).not.toContain("onOpen");
     expect(acts).toContain("void runNow(run)");
-    expect(acts).toContain("void archive()");
+    expect(acts).toContain("void refile(file)");
   });
 
   it("is the row ITSELF now, and a real link at that", () => {

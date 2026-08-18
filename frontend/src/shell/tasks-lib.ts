@@ -1324,10 +1324,12 @@ export function messageEditEntry(m: TaskMessage): string | null {
 // dragging anything. The drag is the same drop of the same record, reached
 // deliberately — so the two cannot disagree.
 //
-// THERE IS STILL NO UNARCHIVE BUTTON, on either view. The drag says what it
-// does — a card leaves a lane — where a button would have to be labelled, and
-// every label for it ("Restore", "Back in play") claims something about the
-// work that this move does not know.
+// AND THERE IS A BUTTON FOR IT TOO, on both views (`filingIntent`) — the drag is
+// the accelerator, not the only route, because the Archive lane starts collapsed
+// and "expand the lane first" is how the archive button came to exist as well.
+// The button is safe to label because the move names no lane: "Unarchive" claims
+// exactly what happens, where the old Archive → In Progress button claimed a
+// verdict on work the reader had not watched.
 //
 // Legality follows from what each move NEEDS, never from what triage happens to
 // be keyed by. Run-now needs a pending MESSAGE, so a scheduled task that has
@@ -1762,46 +1764,61 @@ function laneAction(
   return m ? { kind: "run", entryId: m.entryId, messageId: m.messageId } : null;
 }
 
-// ---- filing it away, without the drag ----------------------------------------
+// ---- filing, without the drag ------------------------------------------------
 // "Can a task be deleted?" — no, and it never will be: a task IS a Claude
 // session and this app does not destroy transcripts (D306). What it can be is
 // ARCHIVED, which is the honest answer to that question — but only while
-// archiving is something a person can actually reach. Until now it was one
-// gesture on one view: drag the card onto the Archive lane, which starts
-// COLLAPSED. "Switch to Board, expand a lane, drag" is not an affordance.
+// archiving is something a person can actually reach. It was once one gesture on
+// one view: drag the card onto the Archive lane, which starts COLLAPSED. "Switch
+// to Board, expand a lane, drag" is not an affordance.
 //
-// So the same move gets a button, and the rule behind it lives here rather than
-// in either component. It is deliberately not a second predicate: the whole
-// decision is asked of dropAction, on the lane the Board's drag would have used,
-// so the button and the drop cannot disagree about who may archive what. That
-// is why this sits after dropAction instead of up beside runNowIntent — it is
-// the same shape of function, and it is defined below the one function it is
-// only a re-reading of.
+// So the move gets a button, and now BOTH directions do (Akshil, 2026-08-19).
+// The rule behind them lives here rather than in either component, and it is
+// deliberately not two predicates: the whole decision is asked of dropAction, on
+// the lanes the Board's drag would have used, so the buttons and the drops cannot
+// disagree about who may file what. That is why this sits after dropAction
+// instead of up beside runNowIntent — it is the same shape of function, and it is
+// defined below the one function it is only a re-reading of.
 //
-// THERE IS NO UNARCHIVE BUTTON, on either view — and that is a different
-// statement from "there is no way back", which there now is twice. It used to
-// compute a button — Archive → In Progress — and the row never drew it
-// (SHOW_UNARCHIVE) while the Board did, which is two answers to one question.
-// The button is the part that was wrong, not the direction: it had to be
-// labelled, and every label for it claims something the move does not know
-// ("back in play" says nothing about whether the work is done, and Archive →
-// In Progress asserted a lane a reader has no business asserting).
+// THE WAY BACK IS A BUTTON AGAIN, and this is the third answer that position has
+// had, so it is worth saying what changed. It was `SHOW_UNARCHIVE` — computed,
+// never drawn by the row, drawn by the Board, which is two answers to one
+// question — and its move was Archive → In Progress: a lane a reader was
+// asserting about work they had not watched. Then it was nothing at all, on the
+// reasoning that any label for it over-claims.
 //
-// The two ways back both refuse to name a lane, which is why they are fine:
+// What was wrong was never the button, it was the DESTINATION. Unarchive names
+// no lane now: the filing is dropped, the server derives the lane from the thread
+// (`api.unarchiveTask`), and the row draws that. So there is a label that claims
+// exactly what happens and no more — "Unarchive" — and the trap the old button
+// was is gone with the lane it used to pick.
 //
-//   * ACTIVITY. Say something in that conversation and the task comes back on
-//     its own — the server drops the filing when a message arrives after it.
-//   * THE DRAG. Lift the card out of the Archive lane (`dropAction` answers
-//     `unarchive`, whatever lane it was let go over). One server call, no run
-//     started, and the card lands where its thread puts it.
+// THE OTHER WAY BACK IS STILL ACTIVITY, and it needs no affordance at all: say
+// something in that conversation and the server drops the filing by itself. The
+// button is for the reader who has nothing to say in there and only wants the
+// card back — which was exactly the person the one-way door stranded.
 //
-// Nothing is destroyed either way. The conversation is kept, the transcript is
-// kept (D306), and Archive is a place to read them.
+// ONE BUTTON PER ROW, and on an archived row it is the ONLY button (see
+// showsRowActions). Nothing is destroyed in either direction: the conversation is
+// kept, the transcript is kept (D306), and Archive is a place to read them.
 
-export interface ArchiveIntent {
-  /** The lane this move puts the card in: the same lane the Board's drop would
-   * have targeted, which is what makes the two agree by construction. */
-  lane: BoardColumn;
+export interface FilingIntent {
+  /** WHICH DIRECTION, and therefore which call the caller makes
+   * (`api.archiveTask` / `api.unarchiveTask`). A row draws one or the other and
+   * never both: a task is either put away or it is not. */
+  kind: "archive" | "unarchive";
+  /**
+   * The lane this move puts the card in, when the move HAS one — the same lane
+   * the Board's drop would have targeted, which is what makes button and drag
+   * agree by construction.
+   *
+   * NULL FOR UNARCHIVE, and that is the model rather than a gap. Coming out of
+   * Archive says "not put away any more" and nothing about what the work is
+   * doing, so the lane is derived server-side from the thread and there is no
+   * lane for this to name. A `BoardColumn` here would be a promise nothing
+   * keeps — the value the old, deleted Archive → In Progress button asserted.
+   */
+  lane: BoardColumn | null;
   /** The button's accessible name, and the word it says. */
   label: string;
   /** The tooltip: what happens, and the thing a person deleting would fear. */
@@ -1809,29 +1826,82 @@ export interface ArchiveIntent {
 }
 
 /**
- * Whether this task can be filed away, and what that says. Null exactly when
- * the Board would refuse the same drop — a task already in Archive, and one
- * that is mid-run — because that is the question this asks.
+ * WHETHER THIS TASK'S FILING CAN BE CHANGED, and in which direction. One
+ * function for both halves, because it is one decision with one answer per row —
+ * two predicates would let a row draw both buttons, or neither, on a status
+ * neither of them had thought about.
  *
- * A never-run task DOES get the button now. Archiving is one verb over a task
+ * BOTH HALVES ARE ASKED OF THE DRAG, on the lanes the drag itself would use, so
+ * the button and the drop cannot disagree about who may file what. That is why
+ * this sits below dropAction: it adds no rule of its own, it only puts words on
+ * the one dropAction already answered.
+ *
+ * Null exactly when the Board would refuse every filing drop, which is the
+ * mid-run row and nothing else now: In Progress is Claude's output and its cards
+ * neither file nor un-file until the run ends.
+ *
+ * A never-run task gets the archive button. Archiving is one verb over a task
  * key (`api.archiveTask`), not a triage write keyed by session id, so the
  * `pending:<entry>` row that had no session to file is filed by cancelling its
  * work — which is what archiving a task that has not run has always meant.
  */
-export function archiveIntent(task: Task): ArchiveIntent | null {
-  const lane: BoardColumn = "archived";
-  // The one question, asked of the one function that already answers it.
-  const action = dropAction(task, lane);
-  if (!action || action.kind !== "archive") return null;
+export function filingIntent(task: Task): FilingIntent | null {
+  // AWAY, on the lane the drag aims at.
+  if (dropAction(task, "archived")?.kind === "archive")
+    return {
+      kind: "archive",
+      lane: "archived",
+      label: "Archive",
+      // Three clauses because a person reaching for Delete is asking all three:
+      // where does it go, what happens to work already booked, and can I get it
+      // back.
+      title:
+        "Archive — files this away and calls off any run still booked; the conversation is kept, and you can bring the task back",
+    };
+  // BACK OUT. Every lane an archived card may be dropped on answers the same
+  // verb, so ANY of them proves the move is available and none of them is the
+  // destination — which is why the intent carries no lane. Asked over dropLanes
+  // rather than by naming a lane here, so a matrix that stops offering one lane
+  // cannot silently take the button with it.
+  const back = dropLanes(task)
+    .map((lane) => dropAction(task, lane))
+    .some((action) => action?.kind === "unarchive");
+  if (!back) return null;
   return {
-    lane,
-    label: "Archive",
-    // Three clauses because a person reaching for Delete is asking all three:
-    // where does it go, what happens to work already booked, and can I get it
-    // back. The last one is the honest answer to a lane with no way out of it.
+    kind: "unarchive",
+    lane: null,
+    label: "Unarchive",
+    // Says the one thing a person cannot see before pressing: the card is about
+    // to appear somewhere they are not looking, and nothing is going to run.
     title:
-      "Archive — files this away and calls off any run still booked; the conversation is kept, and a new message in it brings the task back",
+      "Unarchive — takes this back out of Archive and into whatever lane its work is in; nothing is re-run",
   };
+}
+
+/**
+ * Whether a row draws its ORDINARY actions — run, re-run, mark read.
+ *
+ * OPENING IS NOT ONE OF THEM and is never withheld: Archive is a place to READ
+ * things (D306 — the transcript is kept), so the row link, the ring and the Open
+ * chat control all keep working on an archived task. What this gates is the
+ * controls that act on the WORK.
+ *
+ * False on an archived task, which is the whole of it (Akshil, 2026-08-19: only
+ * the unarchive button on archived rows). A card in Archive has exactly one
+ * decision left against it — whether it is still archived — and every other
+ * control on it is a control for work somebody has already said they are done
+ * with. Offering Re-run beside Unarchive also invites the misread this branch
+ * spent its whole design avoiding: that coming back out of Archive runs
+ * something.
+ *
+ * Not folded into `taskRunIntent` or `markReadIntent`: those two answer "is
+ * there a run to make / is there anything unread", which stays true of an
+ * archived task and is the honest answer for the calendar popover and any other
+ * surface that asks. This is a rule about a ROW's chrome, so it is its own
+ * function and the row asks it.
+ */
+export function showsRowActions(task: Task): boolean {
+  return taskColumn(task) !== "archived";
 }
 
 // ---- clearing a task, without opening it -------------------------------------
