@@ -40,6 +40,7 @@ import { BOARD_COLUMNS } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
+  UNREAD_LABEL,
   archiveIntent,
   basename,
   cancelIntent,
@@ -259,6 +260,15 @@ const STATUS_LABELS: Record<BoardColumn, string> = Object.fromEntries(
  * The count never replaces the accessible name, it extends it: a screen reader
  * hears "Done, 3 unread" rather than losing the status it came for.
  *
+ * AND SO DOES THE FILL, WITH OR WITHOUT A COUNT. The name was extended only when
+ * `count` was set, which left every LEAF — the thread rows and the calendar's
+ * popover rows, all of which pass `unread` alone — announcing "Done" whether or
+ * not the reader had seen it. The dot was the only carrier of the fact and it is
+ * not one for anybody who cannot see it (bugbot, PR #596). A leaf now says "Done,
+ * unread": the bare word, because a leaf's mark stands for one message and there
+ * is no number to give. The visual rule is untouched — this is the same one bit
+ * the shape carries, said out loud.
+ *
  * THE COUNT'S TOOLTIP IS NOT A `title` (2026-08-18). The browser holds a native
  * tooltip back for one to two seconds, and for a four-character readout that is
  * the same as not offering it at all. It goes to `data-tip`, which schedule.css
@@ -286,6 +296,12 @@ export function StatusIcon({
 }) {
   const text = label ?? (failed ? "Failed" : (STATUS_LABELS[status] ?? status));
   const many = taskUnreadLabel(count ?? 0);
+  // What the FILL is worth in words. The count when there is one, the bare word
+  // when there is not — and nothing at all on a hollow ring, which is the point:
+  // a read mark has nothing to announce. `many` is null at count 0, so a container
+  // that is drawn unread but merged to zero still says "unread" rather than
+  // dropping the fact the ink is showing.
+  const said = many ?? (unread ? UNREAD_LABEL.toLowerCase() : null);
   return (
     <span
       className={
@@ -293,7 +309,7 @@ export function StatusIcon({
         (failed ? " schedule-ring--failed" : "") +
         (unread ? " schedule-ring--unread" : "")
       }
-      aria-label={many ? `${text}, ${many}` : text}
+      aria-label={said ? `${text}, ${said}` : text}
       data-tip={many ?? ""}
       title={many ? "" : text}
     />
@@ -2135,9 +2151,29 @@ function TaskCard({
             state one fact twice on one line, which is exactly the double-signalling
             the ring was introduced to end. The Board has no ring to spare on a
             quiet card — that is why it needs a different mark at all — so the two
-            views differ HERE precisely so they agree about everything else. */}
+            views differ HERE precisely so they agree about everything else.
+
+            AND WEIGHT IS NOT A FACT A SCREEN READER HAS (bugbot, PR #596). Bold is
+            the whole visual signal here, and `font-weight` reaches the
+            accessibility tree not at all — so an unread card and a read one were
+            the same card to anybody not looking at it. The words are added instead,
+            in a span that is hidden from the eye and not from the tree
+            (`.tasks-said`): the card is a `<button>` whose accessible name is
+            computed from its contents, so ", 3 unread" after the title lands in
+            that name in the right order, with no `aria-label` overriding the id and
+            title a reader actually wants to hear first.
+
+            Deliberately NOT `aria-label` on the button: that REPLACES the computed
+            name, so the card would announce its unread count and lose "TASK-044,
+            Pull today's news" — trading one missing fact for two. And deliberately
+            not an `aria-label` on this span either: a role-less span's label is not
+            reliably announced (the same reason ScheduleCalendar gives its own dot a
+            `role="img"`), where real text always is. */}
         <span className={"schedule-tv-card-title" + (unread > 0 ? " is-unread" : "")}>
           {firstLine(task.title) || "(untitled)"}
+          {unread > 0 && (
+            <span className="tasks-said">{`, ${taskUnreadLabel(unread)}`}</span>
+          )}
         </span>
         {/* The foot is the folder and nothing else, so when the folder says nothing
             (spansProjects — every card in a board filtered to one project repeats

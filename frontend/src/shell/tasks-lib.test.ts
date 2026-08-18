@@ -1586,10 +1586,29 @@ describe("the unread mark", () => {
     expect(TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(
       ".tasks-title.is-unread",
     );
-    // ...and the title is still a title, with nothing flowing after the words.
+    // ...and the title is still a title: the words, then nothing an eye can see.
     expect(CARD).toMatch(
-      /className=\{"schedule-tv-card-title"[^}]*\}>\s*\{firstLine\(task\.title\) \|\| "\(untitled\)"\}\s*<\/span>/,
+      /className=\{"schedule-tv-card-title"[^}]*\}>\s*\{firstLine\(task\.title\) \|\| "\(untitled\)"\}/,
     );
+    // WEIGHT IS NOT A FACT A SCREEN READER HAS (bugbot, PR #596): bold is the whole
+    // visual signal and `font-weight` never reaches the accessibility tree, so the
+    // words are added in a clipped span. Real text, not an aria-label — the card is
+    // a <button> whose name is computed from its contents, so this lands in that
+    // name after the title instead of replacing the id and title with a count.
+    expect(CARD).toContain(
+      '<span className="tasks-said">{`, ${taskUnreadLabel(unread)}`}</span>',
+    );
+    expect(CARD).not.toMatch(/<button[^>]*aria-label=\{[^}]*unread/);
+    // Hidden from the EYE and not from the TREE: `display: none` and
+    // `visibility: hidden` would drop the node from both, which is the very bug.
+    const said = block(TASKS_CSS, ".tasks-said");
+    expect(said).toContain("clip-path: inset(50%)");
+    expect(said).toContain("position: absolute");
+    expect(said).not.toContain("display: none");
+    expect(said).not.toContain("visibility: hidden");
+    // Without this a 1px box wraps one character per line, which some readers
+    // announce as spelling.
+    expect(said).toContain("white-space: nowrap");
     // The wrapper that used to hold the title and a mark as flex siblings is still
     // GONE, along with both of its bugs.
     expect(VIEWS).not.toContain('className="schedule-tv-card-name"');
@@ -1633,7 +1652,7 @@ describe("the unread mark", () => {
       VIEWS.indexOf("function IdentityChip("),
     );
     expect(icon).toContain("const many = taskUnreadLabel(count ?? 0);");
-    expect(icon).toContain("aria-label={many ? `${text}, ${many}` : text}");
+    expect(icon).toContain("aria-label={said ? `${text}, ${said}` : text}");
     // And it says it FAST. A native `title` is held back one to two seconds,
     // which for four characters is the same as not offering it; the count goes
     // to `data-tip`, drawn by CSS after 300ms.
@@ -1643,6 +1662,33 @@ describe("the unread mark", () => {
     // and a row (the task's full title). A leaf, which has no count, keeps the
     // status word as an ordinary slow native tooltip.
     expect(icon).toContain('title={many ? "" : text}');
+  });
+
+  it("SAYS unread even with no count, so a leaf's dot is not sight-only", () => {
+    // bugbot, PR #596. The accessible name was extended only when `count` was set,
+    // and every LEAF — the List's thread rows, the calendar's popover rows — passes
+    // `unread` alone. So the dot was the only carrier of the fact, and it carried
+    // it to nobody who could not see it: an unread Done row and a read one both
+    // announced "Done".
+    const icon = VIEWS.slice(
+      VIEWS.indexOf("export function StatusIcon("),
+      VIEWS.indexOf("function IdentityChip("),
+    );
+    // The count when there is one, the bare word when there is not, and NOTHING on
+    // a hollow ring — a read mark has nothing to announce.
+    expect(icon).toContain(
+      "const said = many ?? (unread ? UNREAD_LABEL.toLowerCase() : null);",
+    );
+    expect(icon).toContain("aria-label={said ? `${text}, ${said}` : text}");
+    // One word, one source: the same constant the message rows' marker speaks.
+    expect(UNREAD_LABEL).toBe("Unread");
+    expect(VIEWS).toMatch(/^import \{\n(?:.*\n)*?  UNREAD_LABEL,$/m);
+    // The leaf call sites are exactly the ones this was invisible on, and they
+    // still pass no count — the fix is in the component, not in what they hand it.
+    expect(THREAD).toContain("unread={isNew}");
+    expect(THREAD).not.toContain("count={");
+    expect(CALENDAR).toContain("unread={m.unread}");
+    expect(CALENDAR).not.toContain("count={");
   });
 
   it("draws that tooltip itself, on a delay, because the app has no component", () => {

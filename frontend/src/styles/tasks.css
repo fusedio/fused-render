@@ -206,6 +206,39 @@
   font-weight: 400;
 }
 
+/* -- Said, not shown ------------------------------------------------------------
+   Text that exists for the accessibility tree and not for the eye. This page has
+   one user of it and it is the reason the class exists: a board card says unread
+   with its TITLE'S WEIGHT, and `font-weight` is not a fact a screen reader has, so
+   an unread card and a read one were the same card to anybody not looking at it
+   (bugbot, PR #596).
+
+   `display: none` and `visibility: hidden` are the two things this must never be —
+   both remove the node from the tree as well as from the page, which is the whole
+   failure being fixed. So it is the standard clip: a 1px box, its content clipped
+   away, taken out of flow so it cannot open a gap in the line it sits in.
+
+   `white-space: nowrap` matters more than it looks: without it a 1px-wide box wraps
+   its text one character per line, and some readers announce that as spelling.
+   `clip-path` alongside the legacy `clip` because the old property is deprecated
+   and the new one is not honoured by every engine this ships against.
+
+   Prefer real visible words wherever they fit. This is for facts a design has
+   deliberately encoded as pixels — weight, colour, position — which are exactly
+   the facts that reach nobody else. */
+.tasks-said {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .tasks-id--message {
   font-size: 10.5px;
   opacity: 0.85;
