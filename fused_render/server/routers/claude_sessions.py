@@ -404,7 +404,17 @@ def api_claude_session_triage(patch: TriagePatch):
         raise HTTPException(status_code=400, detail="missing session id")
     if patch.status not in ("in_progress", "done", "archived"):
         raise HTTPException(status_code=400, detail=f"unknown status {patch.status!r}")
+    write_triage(session_id, patch.status)
+    return {"ok": True, "session_id": session_id, "status": patch.status}
 
+
+def write_triage(session_id: str, status: str) -> None:
+    """The write itself, without the HTTP around it — so a second router can
+    file a session away without going back out through its own server. The
+    Tasks router's archive verb is the caller: archiving a TASK is one gesture
+    that both cancels its scheduled work and files its session, and both halves
+    have to be the same write the Inbox makes or the two views would keep two
+    different truths about the same session."""
     os.makedirs(STATE_DIR, exist_ok=True)
     triage_path = os.path.join(STATE_DIR, "triage.json")
     lock_path = triage_path + ".lock"
@@ -415,9 +425,8 @@ def api_claude_session_triage(patch: TriagePatch):
         rec = triage.get(session_id)
         if not isinstance(rec, dict):
             rec = {}
-        rec["status"] = patch.status
+        rec["status"] = status
         rec["at"] = str(datetime.now(timezone.utc).timestamp())
         triage[session_id] = rec
         with open(triage_path, "w", encoding="utf-8") as f:
             json.dump(triage, f, indent=2, ensure_ascii=False)
-    return {"ok": True, "session_id": session_id, "status": patch.status}
