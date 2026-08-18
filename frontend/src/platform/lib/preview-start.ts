@@ -7,6 +7,7 @@
 // out, or unmounts; after that the document may stay mounted without blocking
 // the next preview from starting.
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 
 type Start = (release: () => void) => void;
 
@@ -63,6 +64,31 @@ export function createPreviewStartQueue(limit: number): PreviewStartQueue {
 
 const previewStarts = createPreviewStartQueue(2);
 const START_TIMEOUT_MS = 10_000;
+
+// Expand well past the actual viewport: previews are ready before a card
+// scrolls on screen, while cards several rows away do not consume a whole
+// iframe document. The same root selector covers the Apps hub and both Home
+// surfaces, each of which owns its vertical scroller.
+const NEAR_VIEWPORT_MARGIN = "800px 0px";
+
+export function useNearViewport<T extends Element>(): [RefObject<T>, boolean] {
+  const ref = useRef<T>(null);
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => setNear(entries[entries.length - 1].isIntersecting),
+      {
+        root: el.closest(".apps-page, .files-home, .home-page"),
+        rootMargin: NEAR_VIEWPORT_MARGIN,
+      },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  return [ref, near];
+}
 
 type IdleWindow = Window & {
   requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;

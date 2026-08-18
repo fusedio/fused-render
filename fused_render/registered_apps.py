@@ -157,20 +157,27 @@ def record_open(path: str) -> bool:
 
 
 def registered_apps(limit: int | None = None, *,
-                    include_updated_at: bool = True) -> list[dict]:
+                    include_updated_at: bool = True,
+                    opened_only: bool = False) -> list[dict]:
     """Registry entries as app listing dicts (tag = ``linked``), shaped by the
     same `app_listing.app_dict` contract as workspace apps, each carrying its
     own `opened_at` (epoch seconds, from the entry's `openedAt`). An entry
     whose folder is missing, unreadable, page-less, or behind a wedged mount is
     skipped, not deleted — read-only, the folder may come back. ``limit``
     stops after that many valid entries, preserving the registry's newest-first
-    order for Home without hydrating the rest. Home may also disable
-    ``include_updated_at`` because every registry entry already has the newer
-    open timestamp; exhaustive callers retain the direct-child mtime sweep."""
+    order for Home without hydrating the rest. With ``opened_only``, a corrupt
+    ``openedAt`` is skipped before any filesystem probes and cannot consume
+    that limit; exhaustive callers still receive the app with ``opened_at``
+    null. Home may also disable ``include_updated_at`` because every row it
+    accepts already has the newer open timestamp; exhaustive callers retain
+    the direct-child mtime sweep."""
     apps: list[dict] = []
     guard = MountGuard()
     for e in read_entries():
         path = e["path"]
+        opened_at = _opened_epoch(e.get("openedAt"))
+        if opened_only and opened_at is None:
+            continue
         if guard.blocks(path):
             continue
         if _resolves_into_workspace(path):
@@ -187,7 +194,7 @@ def registered_apps(limit: int | None = None, *,
             path, os.path.basename(path), REGISTERED_TAG, entry_html,
             include_updated_at=include_updated_at,
         )
-        app["opened_at"] = _opened_epoch(e.get("openedAt"))
+        app["opened_at"] = opened_at
         apps.append(app)
         if limit is not None and len(apps) >= limit:
             break

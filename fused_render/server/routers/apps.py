@@ -178,10 +178,9 @@ def api_home_apps(limit: int = HOME_APPS_LIMIT):
     limit = max(1, min(limit, HOME_APPS_LIMIT))
     recent = _recent_workspace_apps(limit)
     recent.extend(
-        app for app in registered_apps.registered_apps(
-            limit=limit, include_updated_at=False
+        registered_apps.registered_apps(
+            limit=limit, include_updated_at=False, opened_only=True
         )
-        if app.get("opened_at") is not None
     )
     recent.sort(
         key=lambda a: (-_app_recency(a), a["tag"].lower(), a["name"].lower())

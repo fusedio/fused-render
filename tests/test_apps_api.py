@@ -520,6 +520,35 @@ def test_home_hydrates_recents_without_scanning_the_workspace(
     assert [a["path"] for a in r.json()["apps"]] == [str(external), str(local)]
 
 
+def test_home_registry_limit_counts_only_valid_open_timestamps(
+        client, workspace, recents_home, tmp_path, monkeypatch):
+    """A corrupt linked-app timestamp is not one of Home's recent slots.
+
+    The registry is user-writable. A valid app after the corrupt row must still
+    fill the requested row, keeping the workspace discovery fallback cold.
+    """
+    from fused_render import registered_apps
+
+    corrupt = tmp_path / "outside" / "corrupt-open"
+    valid = tmp_path / "outside" / "valid-open"
+    for folder in (corrupt, valid):
+        folder.mkdir(parents=True)
+        (folder / "index.html").write_text(
+            '<html><head><meta name="fused-app" /></head></html>'
+        )
+    registered_apps.write_entries([
+        {"path": str(corrupt), "openedAt": "not-a-date"},
+        {"path": str(valid), "openedAt": "2026-08-18T12:00:00+00:00"},
+    ])
+
+    def unexpected_scan():
+        raise AssertionError("the later valid linked recent fills Home's row")
+
+    monkeypatch.setattr(apps_mod, "_workspace_apps", unexpected_scan)
+    apps = client.get("/api/apps/home", params={"limit": 1}).json()["apps"]
+    assert [app["path"] for app in apps] == [str(valid)]
+
+
 def test_home_falls_back_to_discovery_and_keeps_showcase(
         client, workspace, recents_home, monkeypatch):
     """An incomplete recents row triggers the existing walk. Showcase is an

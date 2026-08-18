@@ -19,9 +19,19 @@ test("embed boot exits before global bookmark and recents hydration", () => {
   expect(guard).toBeLessThan(main.indexOf("hydrateRecents()"));
 });
 
-test("embed documents do not reconcile the host OS clipboard", () => {
+test("preview thumbnails skip OS clipboard sync without disabling interactive embeds", () => {
   const app = readFileSync(join(import.meta.dir, "App.tsx"), "utf8");
-  expect(app.match(/if \(!IS_EMBED\) void reconcileOsClipboard\(\);/g)?.length).toBe(2);
+  expect(app.match(/if \(!IS_PREVIEW\) void reconcileOsClipboard\(\);/g)?.length).toBe(2);
+  expect(app).not.toContain("if (!IS_EMBED) void reconcileOsClipboard()");
+});
+
+test("shared explorer previews enter the scheduler only near the viewport", () => {
+  const cards = readFileSync(
+    join(import.meta.dir, "../apps/explorer/BookmarkCards.tsx"),
+    "utf8",
+  );
+  expect(cards).toContain("useNearViewport<HTMLSpanElement>()");
+  expect(cards).toContain("usePreviewStart(nearViewport)");
 });
 
 test("Home requests the recent-first app row instead of the exhaustive catalog", () => {
