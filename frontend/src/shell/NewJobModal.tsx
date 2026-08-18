@@ -1472,6 +1472,13 @@ export function buildSchedulePayload(form: {
   // instead of the default, which is every run landing in this task's own
   // thread (design §6).
   newTaskEachRun: boolean;
+  // The id of the entry being EDITED, and "" for a new task. An edit is cancel
+  // + re-create, so the entry the user is looking at is about to stop existing
+  // and a new one with a new id take its place — and a task that has not run yet
+  // is NUMBERED on that entry id. Carrying it lets the server move the number
+  // across rather than allocate a second one, which is what renamed TASK-078 to
+  // TASK-079 when only its time had changed.
+  replacesEntryId?: string;
 }): SchedulePayload {
   const repeating = form.rule !== null || form.repeat === "cron";
   const trimmedTitle = form.title.trim();
@@ -1523,6 +1530,10 @@ export function buildSchedulePayload(form: {
     // Only ever sent on a repeating task: on a one-off there is no "each run"
     // for it to mean anything about.
     ...(repeating && form.newTaskEachRun ? { new_task_each_run: true } : {}),
+    // Only on an edit, and only as a non-empty string: a new task replaces
+    // nothing, and the key is left off the wire rather than sent as "" for the
+    // same reason `title` is.
+    ...(form.replacesEntryId ? { replaces: form.replacesEntryId } : {}),
   };
 }
 
@@ -2206,6 +2217,9 @@ export default function NewJobModal({
           sessionId: (!learnedSession && editing?.session_id) || chatSessionId || "",
           learnedSessionId: learnedSession,
           newTaskEachRun,
+          // The task's NUMBER has to survive the re-create an edit is; see
+          // `replacesEntryId`. Empty on a new task, which replaces nothing.
+          replacesEntryId: editing?.id ?? "",
         }),
       );
       rememberRecent(target);

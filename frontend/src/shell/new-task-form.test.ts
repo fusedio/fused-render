@@ -226,6 +226,33 @@ describe("the payload", () => {
     ).toBeUndefined();
   });
 
+  // THE TASK NUMBER SURVIVES AN EDIT. Editing is cancel + re-create — there is
+  // no PATCH — so the entry the user was looking at is replaced by one with a
+  // brand new id, and a task that has not run yet is NUMBERED on that id
+  // (`pending:<entry-id>`). Nothing said the two were the same task, so the
+  // server allocated the next number in the project and TASK-078 became TASK-079
+  // on a change of time, with no duplicate row to explain where it went (QA,
+  // 2026-08-18). `replaces` is what says it, and the server moves the number
+  // across instead of minting a second one.
+  test("an edit says which entry it replaces, so the task keeps its number", () => {
+    expect(
+      buildSchedulePayload(form({ replacesEntryId: "20260818-090000-abc123" })).replaces,
+    ).toBe("20260818-090000-abc123");
+    // It rides with everything else, including a repeat — a rule's template is
+    // an entry like any other and is re-created the same way.
+    expect(
+      buildSchedulePayload(
+        form({ replacesEntryId: "e1", rule: DAILY, repeat: "daily" }),
+      ),
+    ).toMatchObject({ replaces: "e1", rule: DAILY });
+  });
+
+  test("…and a NEW task replaces nothing, so the key stays off the wire", () => {
+    // Same discipline as `title`: absent means "there isn't one", and a builder
+    // that sent "" would be naming an entry id that does not exist.
+    expect("replaces" in buildSchedulePayload(form())).toBe(false);
+    expect("replaces" in buildSchedulePayload(form({ replacesEntryId: "" }))).toBe(false);
+  });
 });
 
 // BOTH prominent fields are required now (Akshil, 2026-08-17): the description

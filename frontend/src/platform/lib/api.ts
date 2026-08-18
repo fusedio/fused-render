@@ -2526,6 +2526,16 @@ export function scheduleMessage(body: {
   // Only meaningful alongside `rule` or `repeats`; a one-off has no runs to
   // split apart.
   new_task_each_run?: boolean;
+  // The id of the entry this one REPLACES — set only by an edit, which is
+  // cancel + re-create and therefore mints a brand new entry id. A task that has
+  // not run yet is NUMBERED on that entry id (`pending:<entry-id>`), so without
+  // this the server allocated a second number and the task was renamed under the
+  // user: TASK-078 became TASK-079 on a time change, with no duplicate left
+  // behind to explain it. Sent so the number MOVES onto the new id instead.
+  //
+  // A no-op where there is nothing to move — a task whose session exists is
+  // numbered on the session id, and that key is untouched by an edit.
+  replaces?: string;
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }
