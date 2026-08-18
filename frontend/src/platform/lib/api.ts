@@ -1861,6 +1861,30 @@ export function markWholeTaskRead(
   });
 }
 
+// Filing a task away. ONE call, because it is one gesture with two halves that
+// must not come apart: the work still booked is cancelled (a run that fires
+// tomorrow un-archives the task by itself, which is the one thing filing
+// something away must never do) and the session is filed in the same
+// triage.json the Inbox reads. The server does both — see
+// routers/tasks.py `api_task_archive` — so no client has to remember the second
+// half, and a task with no session yet is still archivable by the first.
+//
+// Keyed by TASK, not by session: `pending:<entry-id>` is a real key and a real
+// row, and it is exactly the row the old session-keyed triage write could not
+// touch.
+//
+// There is no unarchive. Archive is a locked lane (tasks-lib's drag matrix) and
+// the row draws no way back — which costs nothing, because archiving destroys
+// nothing: the conversation and its transcript are kept (D306).
+export function archiveTask(
+  key: string,
+): Promise<{ ok: boolean; key: string; cancelled: number; filed: boolean }> {
+  return postJson<{ ok: boolean; key: string; cancelled: number; filed: boolean }>(
+    "/api/tasks/archive",
+    { key },
+  );
+}
+
 // Every scheduled message in a time window, which is the one question the
 // listing above cannot answer: `Task.messages` holds only the three most recent,
 // and a calendar draws a week. Without this the grid under-draws — a task whose

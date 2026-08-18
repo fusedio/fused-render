@@ -1,19 +1,29 @@
-// The preview pane's FOCUS CONTRACT: a preview rendered in the pane does not
-// take the keyboard.
+// The EMBEDDED-FRAME FOCUS CONTRACT: a page the shell renders for its own
+// purposes — a preview in the explorer's pane, a live card thumbnail on /apps
+// or Home — does not take the keyboard.
 //
-// The pane is a same-origin iframe, so a page that focuses an input on boot —
+// An embedded frame is same-origin, so a page that focuses an input on boot —
 // `autofocus`, or any `el.focus()` in its startup path — pulls document focus
-// out of the shell. The listing's arrow keys are document-level handlers that
-// stand down when focus is on a chrome control (useListingSelection), so the
-// symptom is that opening a preview stops you browsing file to file with the
-// keyboard: Down/Up do nothing, because the keystrokes are going to the frame.
+// out of the shell. Two symptoms, one cause:
+//
+//   * THE PANE. The listing's arrow keys are document-level handlers that
+//     stand down when focus is on a chrome control (useListingSelection), so
+//     opening a preview stopped you browsing file to file with the keyboard:
+//     Down/Up did nothing, because the keystrokes were going to the frame.
+//   * THE CARD GRIDS (D348). Focusing an element inside a frame also SCROLLS
+//     that frame into view, and the scroll propagates out to the embedder's
+//     own scroll container. A card thumbnail that mounted mid-scroll and took
+//     focus therefore yanked /apps to whatever row that card sits in — the
+//     grid jumping to its end while the reader was still scrolling through it.
+//     Thumbnails are display-only (a pointer-events shield keeps every click
+//     on the card), so there is never a reason for one to hold focus at all.
 //
 // It is stated as a contract rather than patched per template, because the next
 // template with an input would break it again:
 //
-//   1. The shell marks the preview's own URL with `_nofocus=1`, alongside the
-//      `_file` / `_panelMode` conventions. Reserved (`_`-prefixed), so it can
-//      never collide with a template's own params.
+//   1. The shell marks the embedded page's own URL with `_nofocus=1`, alongside
+//      the `_file` / `_panelMode` / `_preview` conventions. Reserved
+//      (`_`-prefixed), so it can never collide with a template's own params.
 //   2. runtime.js — injected into EVERY rendered page — honours it: it strips
 //      `autofocus`, and drops focus() calls until the reader has actually
 //      interacted with the page. That is the half that covers templates nobody
@@ -21,21 +31,26 @@
 //   3. The pane guards the door anyway (shouldReclaimFocus below). Same-origin
 //      means the shell can see the frame take focus and simply take it back —
 //      belt and braces for a page loaded from somewhere runtime.js does not
-//      reach, and for the frames the browser focuses itself.
+//      reach, and for the frames the browser focuses itself. Cards need no
+//      such guard: step 2 covers them, and there is no keyboard mode on a grid
+//      of links for a leaked focus to break.
 //
 // Deliberate acts are untouched: clicking into the pane, tabbing into it, or
 // expanding the preview full-screen all move focus for real. The contract is
-// only about what a page may do on its OWN initiative, unprompted.
+// only about what a page may do on its OWN initiative, unprompted. A card
+// thumbnail has no deliberate acts — its shield means a click is the card's.
 //
-// Router-free and DOM-free, like the pane's other decision modules, so the two
-// rules can be pinned by a test that has neither.
+// In `platform` rather than beside the pane it started with, because two apps
+// now depend on it (`@apps/explorer`'s pane, `@apps/builder`'s cards) and an
+// app may not import another app. Router-free and DOM-free either way, so the
+// rules stay pinnable by a test that has neither.
 
 // The param. Mirrored by name in static/runtime.js — keep the two in step.
 export const NO_FOCUS_PARAM = "_nofocus";
 
-// Mark a preview URL as pane-embedded. Idempotent: the pane rebuilds its src on
-// every render, and a param that accumulated would change the URL and reload
-// the frame for nothing.
+// Mark an embedded page's URL as shell-mounted — a pane preview or a card
+// thumbnail. Idempotent: both surfaces rebuild their src on every render, and a
+// param that accumulated would change the URL and reload the frame for nothing.
 export function withNoFocus(src: string): string {
   if (new URLSearchParams(src.split("?")[1] ?? "").get(NO_FOCUS_PARAM) === "1") return src;
   return src + (src.includes("?") ? "&" : "?") + NO_FOCUS_PARAM + "=1";

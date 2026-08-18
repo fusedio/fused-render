@@ -576,7 +576,7 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
     """
     if formats.is_ct2_whisper(names, config):
         return "speech recognition", "its CTranslate2 Whisper layout"
-    if formats.has_mlx_whisper_weights(names):
+    if formats.is_mlx_whisper_snapshot(names, config):
         return "speech recognition", "its MLX Whisper weights"
     if repo_id in formats.MFLUX_VARIANTS and formats.has_mflux_components(dirnames):
         return "image generation", "its MLX diffusion components"

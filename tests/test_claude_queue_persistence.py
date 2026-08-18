@@ -287,7 +287,9 @@ def test_the_queue_is_restored_before_the_run_is_re_attached():
     entries restored after it would sit there until some later turn ended."""
     boot = _html()[_html().index("// ── boot:"):]
     assert "restoreQueue(" in boot, "the boot never restores the queue"
-    assert boot.index("restoreQueue(") < boot.index("resumeRun(run_id)")
+    # Matched without the closing paren: the call takes an options object now
+    # (#610) and this assertion is about ORDER, not about its arguments.
+    assert boot.index("restoreQueue(") < boot.index("resumeRun(run_id")
     assert boot.index("restoreQueue(") < boot.index("loadHistory(session_id)")
 
 
