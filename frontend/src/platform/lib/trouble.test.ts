@@ -240,3 +240,26 @@ test("the brief separates the installation from the user's own data", () => {
   // The app's own log, which is per-pid in the temp dir and therefore a glob.
   expect(text).toContain("fused-render-*.log");
 });
+
+test("the unknown-path line states no cause, because there are several", () => {
+  // It first read "the failure above is what would have told me", which is true
+  // of the boot failure and of nothing else: the preview fallback and the
+  // builder's hero have no path for a duller reason (the snapshot that carries
+  // one costs a brew shell-out), and the chat template never knows. An agent
+  // that catches the app deducing wrong about its own state has reason to
+  // discount the rest of the brief, so the line says only what holds
+  // everywhere — and the same words in every surface that lacks a path.
+  const boot = troubleInstructions({
+    what: "loading the app's configuration at startup (GET /api/config)",
+    error: "Failed to fetch",
+  });
+  const missing = troubleInstructions({
+    what: "starting a fix session",
+    error: "claude CLI not found",
+  });
+  for (const text of [boot, missing]) {
+    expect(text).toContain("I do not know where the app is installed");
+    expect(text).not.toContain("the failure above");
+    expect(text).not.toContain("would have told me");
+  }
+});

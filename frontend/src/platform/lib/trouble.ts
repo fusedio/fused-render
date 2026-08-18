@@ -136,12 +136,25 @@ export function troubleReport(ctx: TroubleContext): string {
 
 /** How to find the installation when we cannot state it.
  *
- * THE BOOT FAILURE IS THE CASE THAT CANNOT DESCRIBE ITSELF: `/api/config` is
- * what failed, so there is no version, no platform and — the one that matters
- * here — no install path. A brief that says "something around Fused Render is
- * broken, please fix it" and names no directory sends an agent to look for an
- * app it has no way to locate; it will guess, or ask, and both cost the user
- * the minutes this button exists to save.
+ * SEVERAL SURFACES HAVE NO PATH TO STATE, for two different reasons. The boot
+ * failure cannot describe itself at all — `/api/config` is what failed, so
+ * there is no version, no platform and no install root. The others simply do
+ * not pay for one: the preview fallback and the builder's hero render from
+ * config alone, and the snapshot that carries the install root costs a `brew`
+ * shell-out, which is not a thing to spend on a card that may render on any
+ * failed preview. The chat template never knows, being a page rendered inside
+ * the app.
+ *
+ * The brief is the same in all of them, so the line says only what is true
+ * everywhere — I do not know — and never why. Naming a cause ("the failure
+ * above is what would have told me") reads as a deduction, and an agent that
+ * catches the app deducing wrong about its own state has reason to discount
+ * everything else in the brief.
+ *
+ * What matters is that SOME answer is here: a brief that says "something around
+ * Fused Render is broken, please fix it" and names no directory sends an agent
+ * to look for an app it has no way to locate; it will guess, or ask, and both
+ * cost the user the minutes this button exists to save.
  *
  * So the path is a FACT when we have it and a TASK when we do not. These are
  * ordered by how likely they are to answer: the import is definitive if the
@@ -172,8 +185,8 @@ function whereToLook(ctx: TroubleContext): string[] {
     lines.push(`- The installed app: ${ctx.install_root}`);
   } else {
     lines.push(
-      "- I do not know where the app is installed — the failure above is what",
-      "  would have told me. Find it first, and say which command answered:"
+      "- I do not know where the app is installed, and little else here is",
+      "  actionable without it. Find it first, and say which command answered:"
     );
     FIND_INSTALL_COMMANDS.forEach((cmd) => lines.push(`    ${cmd}`));
   }
