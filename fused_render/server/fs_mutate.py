@@ -805,8 +805,14 @@ class _SHFILEOPSTRUCTW(ctypes.Structure):
     _fields_ = [
         ("hwnd", ctypes.c_void_p),
         ("wFunc", ctypes.c_uint),
-        ("pFrom", ctypes.c_wchar_p),
-        ("pTo", ctypes.c_wchar_p),
+        # VOID pointers, not c_wchar_p, and that is about the double NUL rather
+        # than about types: reading a c_wchar_p field back gives a Python str
+        # truncated at the first NUL, so the list terminator becomes invisible —
+        # to a reader and to a test. A void pointer to a buffer we own keeps the
+        # terminator inspectable (ctypes.wstring_at) and keeps the buffer's
+        # lifetime explicit instead of resting on a str's internal storage.
+        ("pFrom", ctypes.c_void_p),
+        ("pTo", ctypes.c_void_p),
         ("fFlags", ctypes.c_uint16),
         ("fAnyOperationsAborted", ctypes.c_int),
         ("hNameMappings", ctypes.c_void_p),
@@ -855,8 +861,11 @@ def _move_to_recycle_bin(path: str) -> None:
     # the shell did do the recoverable delete it was asked for and we cannot
     # promise what the volume does with it.
     p_from, flags = _recycle_bin_request(path)
+    # Our own buffer, held in a local for the whole call: the struct carries a
+    # bare pointer, so whatever it points at must outlive SHFileOperationW.
+    buf = ctypes.create_unicode_buffer(p_from)
     op = _SHFILEOPSTRUCTW(
-        None, _FO_DELETE, p_from, None, flags, 0, None, None
+        None, _FO_DELETE, ctypes.cast(buf, ctypes.c_void_p), None, flags, 0, None, None
     )
     # A pointer rather than byref: `.contents` is public API, so a test's fake
     # shell32 can read the struct it was handed and set the aborted flag on it.
