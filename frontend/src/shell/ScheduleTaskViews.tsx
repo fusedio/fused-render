@@ -886,6 +886,9 @@ export function TaskList({
   const [loaded, setLoaded] = useState<Record<string, TaskMessage[]>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // An unarchive's destination sentence, held by the PAGE: a status filter can
+  // unmount the very row the sentence sits on (see the render below).
+  const [pageNote, setPageNote] = useState("");
   const { read, clear, clearAll, carryAll, restoreAll, settleAll } = useReadSet();
 
   // The latest poll's tasks, readable from ACROSS an await. showMore closes over
@@ -1160,7 +1163,14 @@ export function TaskList({
   }
 
   return (
-    <div className="tasks-list" ref={listRef} onScroll={onScroll}>
+    <>
+      {/* WHERE AN UNARCHIVE WENT, at page level — the row's own note dies with
+          the row when a status filter unmounts it (an Archive-only filter always
+          does), and then the move reads as a disappearance (Bugbot, 2026-08-18).
+          The Board keeps this same sentence above its lanes for the same
+          reason. */}
+      {pageNote && <p className="schedule-tv-note tasks-list-note">{pageNote}</p>}
+      <div className="tasks-list" ref={listRef} onScroll={onScroll}>
       {/* ORDERED BY STATUS, NOT GROUPED BY IT (tasks-lib.sortByLane): Upcoming,
           In Progress, Failed, Done, Archive — rank order, server order inside
           each rank, and no headers, dividers or counts between them.
@@ -1187,6 +1197,7 @@ export function TaskList({
           error={errors[task.key]}
           onEditEntry={onEditEntry}
           onReload={onReload}
+          onPageNote={setPageNote}
           read={read}
           onRead={clear}
           onReadAll={clearAll}
@@ -1194,7 +1205,8 @@ export function TaskList({
           onSettleAll={settleAll}
         />
       ))}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -1212,6 +1224,7 @@ function TaskNode({
   error,
   onEditEntry,
   onReload,
+  onPageNote,
   read,
   onRead,
   onReadAll,
@@ -1244,6 +1257,9 @@ function TaskNode({
   error?: string;
   onEditEntry?: (entryId: string) => void;
   onReload?: () => void;
+  /** The List's page-level note — the only holder that survives this row being
+   * filtered out by the very move it announces (see TaskList's render). */
+  onPageNote: (s: string) => void;
   read: Set<string>;
   onRead: (taskKey: string, m: TaskMessage) => void;
   /** Clear this whole task's unread locally — the optimistic half of Mark read,
@@ -1392,9 +1408,11 @@ function TaskNode({
         await archiveTask(task.key);
       } else {
         // WHERE IT WENT, said out loud — see performUnarchive. On a list sorted
-        // by lane the row is about to move somewhere the reader did not point at,
-        // and a sentence is the only pointer this view has.
-        setNote(await performUnarchive(task.key));
+        // by lane the row is about to move somewhere the reader did not point
+        // at, and may even leave the current FILTER: the sentence goes to the
+        // page, because a note on the row dies with the row (Bugbot,
+        // 2026-08-18).
+        onPageNote(await performUnarchive(task.key));
       }
     } catch (e) {
       // The server's own sentence, in the same quiet line run-now uses. A
