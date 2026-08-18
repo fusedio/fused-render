@@ -2160,3 +2160,56 @@ export function groupByColumn(
   }
   return map;
 }
+
+// ---- which lanes are rolled up -----------------------------------------------
+// A lane is either an open column or a 52px rail. Two things decide which, in
+// this order:
+//
+//   1. What the reader last chose for THAT lane. Explicit choices are the only
+//      thing stored, so a lane nobody has ever touched keeps following the rule
+//      below forever rather than being frozen at whatever it looked like the
+//      first time the page was opened.
+//   2. Otherwise: EMPTY lanes start rolled up, everything else starts open.
+//
+// Archive used to be hard-coded closed. It is not special any more (Akshil,
+// 2026-08-18) — an Archive with cards in it is a column like the others, and an
+// Archive with none rolls up under rule 2 like the others.
+
+/** The key the board's lane choices live under. Distinct from the array-shaped
+ * key an earlier build wrote: that one recorded "collapsed now", defaults
+ * included, which cannot be told apart from "the reader chose this". */
+export const LANE_CHOICE_KEY = "fused-render:scheduled-board-lanes";
+
+/** Lane → the reader's own answer to "collapsed?". Absent ⇒ never chosen. */
+export type LaneChoices = Partial<Record<BoardColumn, boolean>>;
+
+/** Same contract as parseListMemory: a stored string is untrusted input, and an
+ * unreadable one means "no choices yet", never a thrown render. */
+export function parseLaneChoices(raw: string | null): LaneChoices {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const row = parsed as Record<string, unknown>;
+  const out: LaneChoices = {};
+  for (const col of BOARD_COLUMNS) {
+    const v = row[col.key];
+    if (typeof v === "boolean") out[col.key] = v;
+  }
+  return out;
+}
+
+/** Rule 1 then rule 2, for one lane. `count` is how many cards it holds. */
+export function laneCollapsed(
+  lane: BoardColumn,
+  count: number,
+  choices: LaneChoices,
+): boolean {
+  const chosen = choices[lane];
+  if (chosen !== undefined) return chosen;
+  return count === 0;
+}

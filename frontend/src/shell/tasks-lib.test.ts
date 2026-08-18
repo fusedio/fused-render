@@ -37,6 +37,7 @@ import {
   isPastDue,
   isUnread,
   isUpcomingTask,
+  laneCollapsed,
   laneUnread,
   laneTime,
   lastRunAt,
@@ -54,6 +55,7 @@ import {
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
+  parseLaneChoices,
   projectOptions,
   relativeWhen,
   ranOffSchedule,
@@ -4924,5 +4926,56 @@ describe("a board lane's page size", () => {
     // The button's label is arithmetic over the same constant, so it cannot say
     // ten while twenty arrive.
     expect(LANES).toContain("Show {Math.min(LANE_REVEAL, hidden)} more");
+  });
+});
+
+describe("which board lanes are rolled up", () => {
+  it("rolls up an empty lane and opens every other one, Archive included", () => {
+    // Archive was hard-coded closed. It is a lane like the others now: cards ⇒
+    // open, none ⇒ rolled up.
+    expect(laneCollapsed("archived", 3, {})).toBe(false);
+    expect(laneCollapsed("archived", 0, {})).toBe(true);
+    expect(laneCollapsed("upcoming", 0, {})).toBe(true);
+    expect(laneCollapsed("in_progress", 1, {})).toBe(false);
+  });
+
+  it("lets the reader's own choice outrank the rule, in both directions", () => {
+    expect(laneCollapsed("upcoming", 12, { upcoming: true })).toBe(true);
+    expect(laneCollapsed("archived", 0, { archived: false })).toBe(false);
+    // And a choice about ONE lane says nothing about its neighbours.
+    expect(laneCollapsed("done", 0, { upcoming: true })).toBe(true);
+  });
+
+  it("reads back only booleans it recognises, and never throws on junk", () => {
+    // What is in the store is a string written by someone else — an older build
+    // that wrote an ARRAY there, or a hand-edited devtools row.
+    expect(parseLaneChoices(null)).toEqual({});
+    expect(parseLaneChoices("not json")).toEqual({});
+    expect(parseLaneChoices('["archived"]')).toEqual({});
+    expect(parseLaneChoices('{"archived":true,"nonsense":true,"done":"yes"}')).toEqual({
+      archived: true,
+    });
+    expect(parseLaneChoices('{"upcoming":false}')).toEqual({ upcoming: false });
+  });
+
+  it("stores choices, not the board — an untouched lane keeps following the rule", () => {
+    // The distinction the old array-shaped key could not make: it recorded what
+    // was collapsed RIGHT NOW, defaults included, so the first visit froze every
+    // lane's state forever. Round-tripping a choice map keeps the absence of a
+    // choice absent.
+    const choices = parseLaneChoices(JSON.stringify({ archived: false }));
+    expect("upcoming" in choices).toBe(false);
+    expect(laneCollapsed("upcoming", 0, choices)).toBe(true);
+    expect(laneCollapsed("upcoming", 4, choices)).toBe(false);
+  });
+
+  it("is decided by laneCollapsed on the board, which stores only the toggle", () => {
+    expect(LANES).toContain("laneCollapsed(col.key, lane.length, choices)");
+    // The old snapshot key and its hard-coded Archive are gone.
+    expect(VIEWS).not.toContain("scheduled-board-collapsed");
+    expect(VIEWS).not.toContain('new Set<BoardColumn>(["archived"])');
+    // What is written is the RESULT of the press, for that one lane.
+    expect(LANES).toContain("const next = { ...cur, [key]: !nowCollapsed };");
+    expect(LANES).toContain("localStorage.setItem(LANE_CHOICE_KEY");
   });
 });

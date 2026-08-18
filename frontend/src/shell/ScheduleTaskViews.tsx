@@ -40,6 +40,7 @@ import { BOARD_COLUMNS } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
+  LANE_CHOICE_KEY,
   UNREAD_LABEL,
   archiveIntent,
   basename,
@@ -55,6 +56,7 @@ import {
   isExpandable,
   isFailedTask,
   isUpcomingTask,
+  laneCollapsed,
   laneUnread,
   markAllRead,
   markRead,
@@ -66,6 +68,7 @@ import {
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
+  parseLaneChoices,
   projectOptions,
   relativeWhen,
   settleMarkAllRead,
@@ -85,6 +88,7 @@ import {
 } from "./tasks-lib";
 import type {
   ArchiveStatus,
+  LaneChoices,
   OpenThreadIntent,
   TaskFilters,
   TaskRunIntent,
@@ -1837,22 +1841,17 @@ function TaskNode({
 const LANE_INITIAL_VISIBLE = 20;
 const LANE_REVEAL = 20;
 
-// Which lanes are rolled up into the 52px rail, remembered across visits —
-// Archive is closed by default because it is the one lane nobody opens the page
-// to read.
-const COLLAPSED_KEY = "fused-render:scheduled-board-collapsed";
-
-function readCollapsed(): Set<BoardColumn> {
+// Which lanes are rolled up into the 52px rail. The RULE lives in
+// tasks-lib.laneCollapsed (empty ⇒ rolled up, otherwise open) and only the
+// reader's own toggles are stored, so a lane nobody has touched keeps following
+// the rule as it fills and empties.
+function readLaneChoices(): LaneChoices {
   try {
-    const raw = localStorage.getItem(COLLAPSED_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return new Set(parsed as BoardColumn[]);
-    }
+    return parseLaneChoices(localStorage.getItem(LANE_CHOICE_KEY));
   } catch {
     // A blocked/private store costs the memory, never the board.
+    return {};
   }
-  return new Set<BoardColumn>(["archived"]);
 }
 
 export function TaskBoard({
@@ -1868,7 +1867,7 @@ export function TaskBoard({
   /** Re-read the list after a drop lands (or fails). */
   onReload: () => void;
 }) {
-  const [collapsed, setCollapsed] = useState<Set<BoardColumn>>(readCollapsed);
+  const [choices, setChoices] = useState<LaneChoices>(readLaneChoices);
   const [visible, setVisible] = useState<Record<string, number>>({});
   // The card in flight and the lane under it. Native HTML5 drag — a column
   // move needs nothing fancier than the platform's own.
@@ -1991,8 +1990,9 @@ export function TaskBoard({
     performOpen(task, intent, { clearAll, restoreAll, settleAll }, heldMessages(task));
   };
 
-  // Shared by expanded lane bodies AND collapsed rails, so Archive — collapsed
-  // by default — still catches the drop most cards are allowed.
+  // Shared by expanded lane bodies AND collapsed rails, so a rolled-up lane —
+  // an empty one, or one the reader closed — still catches the drop most cards
+  // are allowed.
   const dropProps = (lane: BoardColumn) => ({
     onDragOver: (ev: ReactDragEvent) => {
       if (!dragging || !allowed.has(lane)) return;
@@ -2009,13 +2009,15 @@ export function TaskBoard({
     },
   });
 
-  const toggleLane = (key: BoardColumn) => {
-    setCollapsed((cur) => {
-      const next = new Set(cur);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+  // `nowCollapsed` is what the reader is looking at — the rule's answer or their
+  // own earlier one — so the press always means "the other one of these two".
+  // Recording the RESULT rather than a flip is what makes the store a record of
+  // choices instead of a snapshot of the board.
+  const toggleLane = (key: BoardColumn, nowCollapsed: boolean) => {
+    setChoices((cur) => {
+      const next = { ...cur, [key]: !nowCollapsed };
       try {
-        localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+        localStorage.setItem(LANE_CHOICE_KEY, JSON.stringify(next));
       } catch {
         // best-effort; a full or blocked store never breaks the board
       }
@@ -2039,7 +2041,8 @@ export function TaskBoard({
           // rather than messages (tasks-lib.laneUnread) because the header stands
           // over cards.
           const news = laneUnread(lane, read);
-          if (collapsed.has(col.key)) {
+          const rolled = laneCollapsed(col.key, lane.length, choices);
+          if (rolled) {
             return (
               <button
                 type="button"
@@ -2055,7 +2058,7 @@ export function TaskBoard({
                     ? "Run the next scheduled message now"
                     : `${col.label}: ${lane.length}`
                 }
-                onClick={() => toggleLane(col.key)}
+                onClick={() => toggleLane(col.key, true)}
                 {...dropProps(col.key)}
               >
                 <StatusIcon status={col.key} unread={news > 0} count={news} />
@@ -2073,7 +2076,7 @@ export function TaskBoard({
                 type="button"
                 className="schedule-tv-lane-head"
                 title={`Collapse ${col.label}`}
-                onClick={() => toggleLane(col.key)}
+                onClick={() => toggleLane(col.key, false)}
               >
                 {/* The group header's own unread mark, the same ring the cards
                     under it wear — filled while any of them holds something
