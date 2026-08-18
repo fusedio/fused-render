@@ -84,6 +84,21 @@ def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
+def _is_file_mount_safe(path: str) -> bool:
+    """os.path.isfile, but NEVER a kernel stat on a mount-backed path — a cold
+    os.path.isfile there is the GETATTR that lists the whole parent prefix and
+    wedges the mount (the /api/recents open-flow wedge). Mount paths answered
+    via rc_kind_for; only a confirmed "file" passes (a "dir" is not a file,
+    matching os.path.isfile), while an "indeterminate" rc probe fails OPEN so a
+    transient rcd hiccup never 404s a file the user just opened.
+
+    Lived in server/session.py until the per-file session restore was removed
+    (D329); it is mount-safety, not session logic, and /render is now its only
+    caller."""
+    from fused_render.shell import pathops
+    return pathops.is_file(path)
+
+
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
     # Guard for the mutating/executing POSTs. Read endpoints are already safe
     # cross-origin because the browser blocks a foreign page from reading our

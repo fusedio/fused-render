@@ -1850,6 +1850,10 @@ describe("groupScheduled", () => {
 
 describe("calendarThreads", () => {
   const days = rangeDays(rangeStart(new Date(2026, 7, 17), "week"), "week");
+  // Pinned, never `new Date()`: projections are decided against the clock now
+  // (a stale/past `upcoming` slot is dropped), so a test that read the real one
+  // would start failing on a date nobody chose. It did — 2026-08-18.
+  const NOW = new Date(2026, 7, 17, 12, 0);
 
   it("draws chips on days the listing's three messages could never reach", () => {
     // What the listing gives: the three most recent, all late in the week.
@@ -1923,7 +1927,7 @@ describe("calendarThreads", () => {
     const threads = calendarThreads([t], [
       entry({ id: "t1", state: "recurring", rule: { freq: "day" },
               upcoming: [new Date(2026, 7, 18, 9).toISOString()] }),
-    ], windowed);
+    ], windowed, NOW);
     // The real run survives, and the projection is added — not swapped in.
     expect(threads.k.map((m) => m.message_id)).toEqual(["ran", "GHOST-" +
       new Date(2026, 7, 18, 9).toISOString()]);
@@ -1944,7 +1948,7 @@ describe("calendarThreads", () => {
     const threads = calendarThreads([t], [
       entry({ id: "t1", state: "recurring", rule: { freq: "day" },
               upcoming: [new Date(2026, 7, 20, 9).toISOString()] }),
-    ], { k: [soon] });
+    ], { k: [soon] }, NOW);
     const chips = taskChips([t], days, threads).get("2026-08-20")!;
     expect(chips.length).toBe(1);
     expect(chips[0].messages.length).toBe(1);
@@ -1956,7 +1960,7 @@ describe("calendarThreads", () => {
     const threads = calendarThreads([t], [
       entry({ id: "t1", state: "recurring", rule: { freq: "day" },
               upcoming: [new Date(2026, 7, 22, 9).toISOString()] }),
-    ], { k: [msg({ message_id: "w", at: at(2026, 7, 21, 9), template_id: "t1" })] });
+    ], { k: [msg({ message_id: "w", at: at(2026, 7, 21, 9), template_id: "t1" })] }, NOW);
     expect(threads.k.length).toBe(2);
     const chips = taskChips([t], rangeDays(rangeStart(new Date(2026, 7, 17), "week"), "week"), threads);
     expect(chips.get("2026-08-21")!.length).toBe(1);
@@ -1980,6 +1984,8 @@ describe("calendarThreads", () => {
 // match" makes the grid depend on the listing's sort order. Found against live
 // data, 2026-08-17: an hourly rule with seven historical tasks.
 describe("projection ownership", () => {
+  // Pinned, never `new Date()` — see the projectedMessages describe above.
+  const NOW = new Date(2026, 7, 17, 12, 0);
   const upcoming = [
     new Date(2026, 7, 18, 9).toISOString(),
     new Date(2026, 7, 19, 9).toISOString(),
@@ -2003,7 +2009,7 @@ describe("projection ownership", () => {
       [shell, ran("s1", "sess-1", 16), ran("s2", "sess-2", 17)],
       [ran("s1", "sess-1", 16), ran("s2", "sess-2", 17), shell],
     ]) {
-      const out = projectedMessages(tasks, [rule()]);
+      const out = projectedMessages(tasks, [rule()], {}, NOW);
       expect(Object.keys(out)).toEqual(["pending:occ-9"]);
       expect(out["pending:occ-9"].filter(isProjected).length).toBe(2);
     }
@@ -2016,14 +2022,14 @@ describe("projection ownership", () => {
       key: "sess-1", session_id: "sess-1",
       messages: [msg({ at: at(2026, 7, 17, 9), template_id: "t1" })],
     });
-    const out = projectedMessages([chained], [rule()]);
+    const out = projectedMessages([chained], [rule()], {}, NOW);
     expect(Object.keys(out)).toEqual(["sess-1"]);
     expect(out["sess-1"].filter(isProjected).length).toBe(2);
   });
 
   it("a rule that has never run at all still finds its pending shell", () => {
     const never = task({ key: "pending:t1", session_id: "", messages: [] });
-    const out = projectedMessages([never], [rule()]);
+    const out = projectedMessages([never], [rule()], {}, NOW);
     expect(out["pending:t1"].length).toBe(2);
   });
 
@@ -2040,7 +2046,7 @@ describe("projection ownership", () => {
                        template_id: "t1" })],
     });
     const chips = taskChips([pending, done], days,
-      calendarThreads([pending, done], [rule()], null)).get("2026-08-17")!;
+      calendarThreads([pending, done], [rule()], null, NOW)).get("2026-08-17")!;
     expect(chips.length).toBe(2);
     expect(chips.map((c) => c.task.key)).toEqual(["sess-1", "pending:occ-9"]);
     expect(chips[0].colour).toBe(chips[1].colour);

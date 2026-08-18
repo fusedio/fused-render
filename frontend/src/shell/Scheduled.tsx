@@ -121,6 +121,33 @@ export default function Scheduled() {
   // OCCURRENCE means editing its rule: the template is what gets edited, and
   // the resolver below is what makes a click on any run land there.
   const [editing, setEditing] = useState<ScheduledMessage | null>(null);
+  // WHICH OPENING THIS IS. Bumped every time the form is opened, and part of the
+  // modal's `key` below, so no two openings can ever share a React identity.
+  //
+  // The form reads `editing` in `useState` initialisers — they run ONCE, on
+  // mount — so an opening that reuses the previous one's mount inherits every
+  // value the user left behind. The key was `editing ? "edit:<id>" : "new"`,
+  // which is not an identity but a MODE: two different new-task openings, and
+  // two clicks on two different calendar slots, are the same string. That is how
+  // a fresh card came up with Repeat ticked on "Weekly on Monday, 5 times" and a
+  // date in three weeks — settings from a form the user had opened earlier and
+  // never chosen here (QA, 2026-08-18). A stale recurrence is not a cosmetic
+  // slip: pressing Save on it schedules a repeating task nobody asked for.
+  //
+  // A counter rather than more fields in the key, because the bug is not about
+  // WHAT the openings differ in — it is that "this is a new opening" was never
+  // stated at all, and any key built out of the form's inputs collides again the
+  // moment two openings happen to share them.
+  const [openSeq, setOpenSeq] = useState(0);
+  // The single door into the form, so "clean slate" is one rule in one place: a
+  // new opening is a new mount, and opening a NEW task drops whatever was being
+  // edited (leaving it set kept the card in Edit mode under a "+ New task"
+  // press).
+  const openForm = (at: Date | "blank" | null, entry: ScheduledMessage | null) => {
+    setOpenSeq((n) => n + 1);
+    setEditing(entry);
+    setCreating(at);
+  };
   // What a deep link named (see the effect below); all null for every other
   // way of opening the form.
   const [newTarget, setNewTarget] = useState<string | null>(null);
@@ -165,7 +192,7 @@ export default function Scheduled() {
     setNewMessage(q.get("message"));
     setNewSession(q.get("session_id"));
     setNewBack(q.get("back"));
-    setCreating(new Date(Date.now() + NEW_LINK_LEAD_MS));
+    openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null);
     q.delete("new");
     q.delete("target");
     q.delete("message");
@@ -249,8 +276,7 @@ export default function Scheduled() {
     const template = entry.template_id
       ? entries.find((e) => e.id === entry.template_id)
       : null;
-    setEditing(template ?? entry);
-    setCreating(null);
+    openForm(null, template ?? entry);
   };
 
   // Resolve `?edit=<entry id>` once the schedule has actually arrived. The chat
@@ -272,8 +298,7 @@ export default function Scheduled() {
       ? all.find((e) => e.id === entry.template_id)
       : null;
     if (entry) {
-      setEditing(template ?? entry);
-      setCreating(null);
+      openForm(null, template ?? entry);
     }
     setEditId(null);
   }, [editId, state]);
@@ -336,7 +361,7 @@ export default function Scheduled() {
               />
             )}
             <button type="button" className="btn btn-primary schedule-new"
-                    onClick={() => setCreating("blank")}>
+                    onClick={() => openForm("blank", null)}>
               + New task
             </button>
           </div>
@@ -360,7 +385,7 @@ export default function Scheduled() {
               queued={queued}
               running={running}
               onReload={reload}
-              onCreateAt={(t) => setCreating(t)}
+              onCreateAt={(t) => openForm(t, null)}
               onEditEntry={editEntry}
             />
           ) : view === "board" ? (
@@ -386,14 +411,23 @@ export default function Scheduled() {
 
       {(creating !== null || editing) && state && (
         <NewJobModal
-          // Keyed on WHAT is being edited, because the form reads `editing` in
-          // `useState` initialisers — they run once, on mount. The `?edit=<id>`
-          // deep link cannot avoid arriving in two steps: it opens the modal
-          // immediately and can only resolve the entry once the schedule fetch
-          // answers, so without a key the card mounted on `editing = null` and
-          // then sat there with both fields blank under an "Edit task" heading.
-          // Changing the key remounts it on the entry it is actually for.
-          key={editing ? `edit:${editing.id}` : "new"}
+          // Keyed on WHICH OPENING this is, and on what is being edited, because
+          // the form reads `editing` in `useState` initialisers — they run once,
+          // on mount.
+          //
+          // The entry half is what the `?edit=<id>` deep link needs: it cannot
+          // avoid arriving in two steps — it opens the modal immediately and can
+          // only resolve the entry once the schedule fetch answers — so without
+          // it the card mounted on `editing = null` and then sat there with both
+          // fields blank under an "Edit task" heading.
+          //
+          // `openSeq` is the other half and the one that makes this an IDENTITY
+          // rather than a mode: `"new"` was the same string for every new-task
+          // opening and for every calendar slot, so React reused the mount and
+          // the card came up wearing the last form's answers — a Repeat rule the
+          // user never chose, one Save away from a real repeating task. See
+          // `openSeq` above.
+          key={`${editing ? `edit:${editing.id}` : "new"}#${openSeq}`}
           initialTime={creating instanceof Date ? creating : null}
           initialTarget={newTarget}
           initialMessage={newMessage}
