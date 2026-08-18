@@ -261,6 +261,32 @@
   color: var(--fg);
 }
 
+/* The view switcher's halves carry a mark as well as a word (Scheduled.tsx).
+   Only that switcher: the New task form's Once / On a schedule pair shares this
+   component and stays text-only, because those two are a CHOICE being made
+   inside a form, not a place you navigate to.
+
+   The glyph is muted at rest and takes the label's colour on the active half, so
+   the icon reinforces the selection the fill already states rather than adding a
+   second, competing signal. `flex: 0 0 auto` keeps it from being squeezed when
+   the toolbar runs out of room — a half-drawn icon is worse than none. */
+.schedule-view-btn,
+.prefs-section .schedule-view-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.schedule-view-btn > svg {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.schedule-view-btn.is-active > svg,
+.prefs-section .schedule-view-btn.is-active > svg {
+  color: inherit;
+}
+
 /* overflow:hidden clips the default outside focus ring; draw it inside. */
 .schedule-form-seg .btn:focus-visible,
 .prefs-section .schedule-form-seg .btn:focus-visible {

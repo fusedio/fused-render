@@ -5235,13 +5235,45 @@ describe("what the List remembers between visits", () => {
   });
 });
 
-// ---- the page's own measure ----------------------------------------------------
-// Edge-to-edge was the absence of a decision, not the use of the space: on a wide
-// display the List ran to 2000px of three-line rows and the title sat marooned at
-// the far left of it. The cap and the centring are read out of the stylesheet
-// because neither is visible in a diff of the page's markup, which did not change.
+// ---- the toolbar: one bar, three lenses ----------------------------------------
+// The List / Board / Calendar switcher and the three filters beside it are the only
+// furniture all three views share, so they are also the only place the page can
+// contradict itself about being one dataset seen three ways. Two things changed on
+// 2026-08-18 and both are read out of the page source, because both are the kind of
+// regression that looks entirely correct in a diff: the switcher's halves gained
+// marks, and the filters stopped disappearing when the calendar came up.
+const PAGE = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
 
-describe("the tasks page measure", () => {
+describe("the tasks toolbar", () => {
+  it("gives every half of the view switcher a mark as well as a word", () => {
+    // Icon AND label. An icon-only switcher for the page's most central control
+    // trades recognition for guessing (design-principles §4), and three short words
+    // of near-identical weight were a block of text you had to read.
+    for (const [icon, label] of [
+      ["ICON_VIEW_LIST", "List"],
+      ["ICON_VIEW_BOARD", "Board"],
+      ["ICON_VIEW_CALENDAR", "Calendar"],
+    ]) {
+      expect(PAGE).toMatch(new RegExp(`\\{${icon}\\}\\s*\\n\\s*${label}\\n`));
+    }
+    // Drawn by the same helper as every other glyph on the page, so the switcher
+    // cannot drift to a second icon size — they are exported from the file that
+    // owns `icon()` rather than redeclared here.
+    for (const name of ["ICON_VIEW_LIST", "ICON_VIEW_BOARD", "ICON_VIEW_CALENDAR"]) {
+      expect(CALENDAR).toContain(`export const ${name} = icon(`);
+    }
+    // The marks are muted at rest and take the label's colour on the active half,
+    // so the icon reinforces the fill's statement rather than competing with it.
+    expect(block(SCHEDULE_CSS, ".schedule-view-btn > svg")).toContain("color: var(--fg-muted)");
+    expect(
+      block(SCHEDULE_CSS, ".schedule-view-btn.is-active > svg"),
+    ).toContain("color: inherit");
+    // Only the VIEW switcher. `.schedule-form-seg` is shared with the New task
+    // form's Once / On a schedule pair, which is a choice inside a form and stays
+    // text-only — so the icon rules hang off a class of their own.
+    expect(block(SCHEDULE_CSS, ".schedule-view-btn").length).toBeGreaterThan(0);
+  });
+
   it("centres the page on one measure wide enough for the widest view", () => {
     // Edge-to-edge was the absence of a decision: on a 27" display the List ran to
     // 2000px and the title sat marooned at the far left of it (design-principles

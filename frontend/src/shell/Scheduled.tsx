@@ -64,7 +64,11 @@ import type {
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
-import ScheduleCalendar from "./ScheduleCalendar";
+import ScheduleCalendar, {
+  ICON_VIEW_BOARD,
+  ICON_VIEW_CALENDAR,
+  ICON_VIEW_LIST,
+} from "./ScheduleCalendar";
 import NewJobModal from "./NewJobModal";
 import {
   EMPTY_FILTERS,
@@ -352,23 +356,34 @@ export default function Scheduled() {
                 sits beside it. List first and default: the page's question is
                 "what is running", and the calendar is the drill-down for the
                 scheduled subset of it. */}
+            {/* Icon + label on each half, added 2026-08-18. The three words are
+                short and near-identical in weight, so the row read as a block of
+                text you had to actually read; a list, a set of columns and a
+                calendar are shapes you recognise before you read anything. The
+                labels stay — an icon-only switcher for a control this central
+                would be recognition traded for guessing (design-principles §4)
+                — and the marks are lucide's, at the same 14px every other glyph
+                on this page uses (ScheduleCalendar's `icon`). */}
             <div className="schedule-form-seg" role="radiogroup" aria-label="View">
               <button type="button"
-                      className={"btn btn-secondary" + (view === "list" ? " is-active" : "")}
+                      className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
                       aria-pressed={view === "list"}
                       onClick={() => pickView("list")}>
+                {ICON_VIEW_LIST}
                 List
               </button>
               <button type="button"
-                      className={"btn btn-secondary" + (view === "board" ? " is-active" : "")}
+                      className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
                       aria-pressed={view === "board"}
                       onClick={() => pickView("board")}>
+                {ICON_VIEW_BOARD}
                 Board
               </button>
               <button type="button"
-                      className={"btn btn-secondary" + (view === "calendar" ? " is-active" : "")}
+                      className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
                       aria-pressed={view === "calendar"}
                       onClick={() => pickView("calendar")}>
+                {ICON_VIEW_CALENDAR}
                 Calendar
               </button>
             </div>
