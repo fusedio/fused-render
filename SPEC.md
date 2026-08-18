@@ -1310,87 +1310,64 @@ in-app affordance to gate.
 
 ---
 
-## 21. Session Restore — Per-File Last Params (D84)
+## 21. Session Restore — Per-File Last Params (D84) — **REMOVED (D329)**
 
-Goal: opening a file the way most opens happen — a listing click, a Finder/DMG
-double-click, the root redirect — should not lose whatever params you last had
-on it. A **file** (never a directory, never an embed-mode pane) remembers its
-last shell query in the same `.html.json` sidecar the `claude` chat template
-(§7) and bookmark history (SB-7) already use.
+**The per-file session sidecar is gone and the section is kept only as a
+tombstone, so the LSN-* ids other sections still cite resolve to an explanation
+rather than to nothing.** A viewed **file** used to remember its last shell query
+as a `lastSession: {search, updated_at}` key in the same sidecar the `claude`
+chat template (§7) and bookmark history (SB-7) use, so that opening it the way
+most opens happen — a listing click, a Finder/DMG double-click, the root redirect
+— replayed the params you last had on it. `GET`/`PUT /api/session`
+(`server/session.py`) read and wrote it; the frontend (`platform/lib/session.ts`,
+wired into `App.tsx`'s `StatView`) restored via `history.replaceState` before the
+preview mounted and held the preview until that decision was made, then tracked
+qualifying param changes back with a 400 ms debounced fire-and-forget `PUT`.
+Directories and embed panes never took part (**LSN-6** — the posture RC-9 still
+cites for its own confirmed-file gate), a bare open replayed while a non-empty
+query won outright (**LSN-4**/**LSN-5**), a `_mode`-only query never *started* a
+session but updated one (**LSN-3**), and dropping params back to empty left the
+stored query in place for a later bare open to re-apply (**LSN-11**, an accepted
+quirk).
 
-- **LSN-1** A viewed file's last URL params are stored as `lastSession` in its
-  `<file>.json` sidecar, sibling to the claude template's `claudeSessions` key
-  and SB-7's `bookmarkHistory`.
-- **LSN-2** `lastSession = {search, updated_at}` — `search` is the shell query
-  string verbatim, no leading `?` (same literal-URL posture as bookmarks, SB-2).
-- **LSN-3** Tracking upserts when the shell query has a param **other than
-  `_mode` and other than the never-persisted params of LSN-12**, or when a
-  `lastSession` already exists for the file (so once a session is going, a later
-  `_mode`-only change is remembered too); a query that is empty, or `_mode`-only
-  with no prior session, never starts one. *`_side` used to qualify, which is the
-  bug D326 records: opening the file preview's companion sidebar STARTED that
-  file's session and the sidecar replayed `_side` on every later bare open.*
-- **LSN-4** Opening a file with an **empty** shell query restores `lastSession`
-  (if present) via `history.replaceState` before the preview mounts.
-- **LSN-5** Opening a file with a **non-empty** query (bookmark, hand-typed,
-  refresh) — those params win, no restore — and, if qualifying (LSN-3), become
-  the new `lastSession`.
-- **LSN-6** Directories and embed-mode panes (panel/tab, D72) neither track
-  nor restore — layout mode already owns pane params.
-- **LSN-7** Persistence is `GET`/`PUT /api/session` (`fused_render/server.py`);
-  `PUT` carries the `X-Fused` guard (D36), `GET` is unguarded (read-only).
-- **LSN-8** Sidecar writes read-merge-write the whole dict, so `claudeSessions`,
-  `bookmarkHistory`, and `lastSession` never clobber one another (last-write-wins
-  on a true simultaneous write — D3).
-- **LSN-9** The preview is held (a brief loading state) until the restore
-  decision resolves — no flash of default params before the restored ones apply.
-- **LSN-10** Tracking writes are debounced (400 ms) and fire-and-forget; a
-  sidecar read/write failure never blocks the view — it just renders bare.
-- **LSN-11** Dropping params back to empty/`_mode`-only leaves the stored
-  `lastSession` untouched — a later bare open re-applies it. Accepted quirk,
-  not a bug.
-- **LSN-12** **SOME PARAMS MAY NEVER REACH A SIDECAR, and `_side` is the first**
-  (D326). The file preview's companion sidebar — whether it is up and which
-  companion it shows — is **session-only by policy**: it opens at its default on
-  every page load and a refresh is the way back from any change to it (FS-13's
-  posture, now stated for the file surface too). A sidecar that records `_side`
-  breaks exactly that, because **a refresh is WHEN the sidecar is replayed**: one
-  file then opens with a sidebar forever while its neighbour never does, with no
-  way back a user can find. So it is **stripped on WRITE and ignored on READ** —
-  the frontend drops it before the `PUT` (`platform/lib/session-params.ts`, which
-  is also what makes a `_side`-only URL read as a *bare* one and fire no round trip
-  at all) and the server is the authority (`_strip_side`, run *before* the LSN-3
-  gate). Both halves, because stripping alone would leave the sidecars already on
-  disk replaying a stale `_side` until each file's next qualifying change, while
-  ignoring alone would keep writing a key we then have to keep ignoring; together
-  an old sidecar is inert on the next read and clean on the next write, so it
-  **self-heals with no migration pass**. *Refusing the write (a 400, or a skip) was
-  the alternative and is worse: `_side` arrives alongside perfectly good params, so
-  refusing would discard a real session update to punish one key the caller never
-  chose to send.* The strip is **textual**, never `parse_qsl` + `urlencode`, because
-  LSN-2 says the stored query is the shell's verbatim and a round trip would rewrite
-  what it keeps (`q=a+b%2Cc`, `stretch=2,1471`). A stored query that was **nothing
-  but** never-persisted params reads as **no session at all**, not as
-  `{"search": ""}` — an empty session is still a `lastSession` dict, which is what
-  LSN-3 keys "a session already exists" off, and **one reader** (`_stored_session`)
-  serves both the `GET` and that gate so the two cannot disagree about whether a
-  file has a session.
-  - **The RESTORE GATE reads the stripped query too** (LSN-4/5): "opened with an
-    empty query" means empty *of session params*, so a url carrying nothing but
-    `?_side=off` — which a close click writes, where it used to delete the param —
-    is still a bare open and still gets its replay. And because the restore replaces
-    the WHOLE query, the LIVE url's omitted params are carried through the write
-    (`restoredSearch`): otherwise a replay would silently reopen a sidebar the user
-    had just shut. Nothing to replay writes nothing at all, so a `_side`-only
-    sidecar cannot reopen it by replacing the query with an empty one either.
-  - **RECENTS strips the same params** (§29): it captures `currentUrl()` verbatim on
-    every url change and lands on disk, so without this every close of the sidebar
-    was persisted and every later open from the Recents list came up shut — the
-    preference simply moved house. **BOOKMARKS deliberately do NOT strip**: SB-2 says
-    a bookmark captures the URL verbatim and it is an explicit "save this view"
-    gesture, which is how `_mode`, sort and a chosen `_side` companion all end up in
-    one. Same param, opposite answer, because one capture is chosen and the other is
-    a side effect.
+**What was removed with it:** `server/session.py` entirely (its
+`_is_file_mount_safe` mount-safety helper moved to `server/common.py`, where
+`/render` — now its only caller — reads it), both routes, `platform/lib/session.ts`,
+`getSession`/`putSession`/`LastSession` in `platform/lib/api.ts`, the `writable`
+gate and the `ready` preview hold in `StatView`, and `restoredSearch` in
+`platform/lib/session-params.ts`. **No migration:** a `lastSession` key already on
+disk is simply never read or written again, and sits inert beside the sidecar's
+live keys (`claudeSessions`, `bookmarkHistory`, `comments`, `revertStash`,
+`slides`, `docs`, `excel`, `latex`, `usd`), which are untouched by this — the
+sidecar file itself is not going anywhere.
+
+**ONE RULE SURVIVES AND IS STILL BINDING — LSN-12's never-persisted params, now
+owned by RECENTS.**
+
+- **LSN-12** **SOME PARAMS MAY NEVER BE PERSISTED, and `_side` is the first**
+  (D326). The companion sidebar — whether it is up and which companion it shows —
+  is **session-only by policy**: it opens at its default on every page load and a
+  refresh is the way back from any change to it (FS-13's posture, stated for the
+  file surface too). The rule was written because a sidecar that recorded `_side`
+  broke exactly that — **a refresh is WHEN a sidecar is replayed**, so one file
+  opened with a sidebar forever while its neighbour never did, with no way back a
+  user could find. With the sidecar gone, the surviving consumer is the **RECENTS
+  store** (§29): it captures `currentUrl()` verbatim on every url change and lands
+  on disk, so without the strip every close of the sidebar was persisted and every
+  later open from the Recents list came up shut — the preference simply moved
+  house. A recents row must hold what the FILE was, not what the chrome around it
+  was doing. **BOOKMARKS deliberately do NOT strip**: SB-2 says a bookmark captures
+  the URL verbatim and it is an explicit "save this view" gesture, which is how
+  `_mode`, sort and a chosen `_side` companion all end up in one. Same param,
+  opposite answer, because one capture is chosen and the other is a side effect.
+  The strip is **textual**, never `parse_qsl` + `urlencode`, because a recorded
+  query is the shell's verbatim and a round trip would rewrite what it keeps
+  (`q=a+b%2Cc`, `stretch=2,1471`). It now has **one implementation**
+  (`platform/lib/session-params.ts`'s `stripSessionParams`) rather than two halves
+  that had to agree: the server's `_strip_side` went with `server/session.py`, and
+  `recents.py` stores what it is given. *The stripped-on-write-AND-ignored-on-read
+  pairing this clause used to specify, and the self-healing it bought for sidecars
+  already on disk, went with the sidecar — there is no longer a read side.*
 
 ## 22. Explorer Search — Streamed Recursive Walk (M14)
 
@@ -2133,8 +2110,9 @@ lists the last files opened in the app, each carrying the params it last had.
   otherwise (`recorded: false`) — the client stays dumb about the target's
   kind.
 - **RC-9** Recording is fire-and-forget (a recents failure never affects the
-  view being opened); the recording hook rides the StatView seam beside
-  session tracking (same confirmed-file gate, LSN-6 posture).
+  view being opened); the recording hook rides the StatView seam it used to
+  share with session tracking, and keeps that hook's confirmed-file gate (LSN-6
+  posture, the surviving half of a §21 that is now a tombstone).
 - **RC-10** The section is hidden entirely while there are no entries.
 - **RC-11** **Data is MRU, display is stable slots.** The store stays strict
   MRU (RC-6), but the visible top-3 must never move under the user's own
@@ -2396,7 +2374,7 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   "last file by name" as "newest records" — not the store walk (CL-12), and not
   any bounded newest-first probe a future gate does (CL-11), which must order by
   **mtime**: on reverse name order its whole window can be stale same-day files. Not the `<file>.json`
-  sidecar (§21, D82–D84): every writer there does a whole-file
+  sidecar (SB-7, §7, D82–D84): every writer there does a whole-file
   read-merge-write, which at call volume is O(n²) plus a lost-update race —
   the sidecar is right for low-frequency history, wrong for a firehose. Not
   the app log (`logs.py`): that file is disposable by design (D68) and

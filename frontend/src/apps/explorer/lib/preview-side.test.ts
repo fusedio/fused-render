@@ -675,10 +675,10 @@ describe("reconcileSideSearch", () => {
     ).toBe("zoom=2&_side=git");
   });
 
-  // VERBATIM, byte for byte — the same rule the session strip goes textual for
-  // (lib/session-params, server/session.py's `_strip_side`), and the same reason:
-  // whatever this returns is what `replaceSearch` puts in the address bar and what
-  // the session sidecar then records (LSN-2). A URLSearchParams round trip rewrote
+  // VERBATIM, byte for byte — the same rule the `_side` strip goes textual for
+  // (lib/session-params), and the same reason: whatever this returns is what
+  // `replaceSearch` puts in the address bar and what the recents store then
+  // records. A URLSearchParams round trip rewrote
   // `stretch=2,1471` to `stretch=2%2C1471`, and the default-normalisation above
   // made that fire on ordinary links it never used to touch — every `?_side=claude`
   // handoff from the inbox (shell/schedule-lib) and every old bookmark.

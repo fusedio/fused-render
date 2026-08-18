@@ -8,8 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 from fastapi import APIRouter, Header
 from fastapi.responses import HTMLResponse
 
-from fused_render.server.common import _error
-from fused_render.server.session import _is_file_mount_safe
+from fused_render.server.common import _error, _is_file_mount_safe
 from fused_render.shell import mounts as shell_mounts
 
 router = APIRouter()
