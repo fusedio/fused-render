@@ -16,15 +16,48 @@ the browser itself and blocks on a localhost callback — so the login endpoint
 here spawns the child and the client simply polls status until the
 credentials file appears.
 
-Sync model (local-wins, deliberately): one watcher thread per synced canvas
-fingerprints the clone folder (path/mtime/size walk) once a second; any change
-arms a debounce, and after DEBOUNCE_S of quiet the whole folder is pushed with
-`fused canvas push --canvas <name>` — which REPLACES the remote UDF set, so an
-edit made concurrently in the hosted workbench is overwritten. Pushes are
-serialized per canvas by construction (one thread) and the fingerprint is
-re-taken right after clone so the pull's own writes never echo into a push.
-`push_seq` increments on every successful push, surfaced in status for
-observability/tests — the workspace page doesn't act on it.
+Sync model (per-file three-way, local wins ties): one watcher thread per
+synced canvas fingerprints the clone folder (path/mtime/size walk) once a
+second; any change arms a debounce, and after DEBOUNCE_S of quiet the whole
+folder is pushed with `fused canvas push --canvas <name>` — which REPLACES
+the remote UDF set. To keep that replace from clobbering concurrent
+workbench edits, the watcher also keeps a BASE snapshot from the last sync
+point (per-file md5s in <canvases_root>/.sync/<name>.json — outside the
+clone so `pull --force` can't delete it) plus the last-seen REMOTE manifest
+(collection.last_updated + per-UDF server body hashes, fetched by the
+_fused_canvas_manifest.py shim; hashes are only ever compared
+server-vs-server, never against local files). Every PULL_POLL_S — clean OR
+dirty — the manifest is probed; if the remote moved: clean clone → CLI
+`pull --force` (as before); dirty clone → MERGE: download the zip
+(_fused_canvas_zip.py shim) and apply per file against the base — local
+untouched → remote wins (including remote deletes), local changed → local
+wins, local deleted → stays deleted (the push propagates it). The same
+probe+merge runs right before every push, so a push never blindly replaces
+a remote that moved since the last sync. Known blind window: an edit
+landing on the remote between push-complete and the post-push re-probe is
+absorbed into the new baseline (server hashes aren't computable locally) —
+deliberate, converges on the next workbench save. With an external
+FUSED_RENDER_FUSED_BIN there is no interpreter for the shims; sync degrades
+to the previous behavior (zip `pull --dry-run` poll only while clean,
+local-wins wholesale push). Pushes are serialized per canvas by
+construction (one thread) and the fingerprint is re-taken right after clone
+so the pull's own writes never echo into a push. `push_seq`/`pull_seq`/
+`merge_seq` increment on each successful push/clean-pull/merge, surfaced in
+status for observability/tests — the workspace page doesn't act on them.
+
+Three stability guards on top of the merge (D339): (1) ECHO GUARD — a probed
+remote whose per-UDF hashes exactly match a sync point this watcher already
+superseded (kept in a small history ring, ECHO_WINDOW_S) is a stale writer
+(e.g. a browser tab autosaving pre-push state over a fresh push); it is never
+pulled down — a push is queued to re-assert local. (2) TRASH — every file a
+merge or clean force-pull overwrites or deletes is first copied to
+.sync/trash/<name>/<timestamp>/, pruned to the newest _TRASH_MAX snapshots,
+so no sync decision is ever unrecoverable. (3) VALIDATION GATE — after a
+merge applies remote files, `fused canvas validate` runs on the clone; a
+per-file merge can mix canvas.toml from one side with source files from the
+other and break cross-file invariants, and a failing result rolls the merge
+back file-by-file (clone stays dirty, push re-asserts local) instead of
+wedging the push in a permanent validation error.
 
 No import of anything under fused_render.server (server includes this router —
 keep it acyclic); the X-Fused guard is duplicated locally, same as other
@@ -33,13 +66,17 @@ shell/* routers.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
+import zipfile
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
@@ -67,6 +104,19 @@ SCAN_INTERVAL_S = 1.0
 # Remote-change poll cadence (a `pull --dry-run` CLI call, so much slower
 # than the local fingerprint walk). Only runs while the local clone is clean.
 PULL_POLL_S = 10.0
+# A remote state that exactly matches a sync point we already superseded is a
+# STALE WRITER (e.g. a browser tab autosaving pre-push state over a fresh
+# push), not a new edit — for this long after the sync point was superseded,
+# such an echo is re-pushed over instead of pulled down. Past the window a
+# matching state is treated as a deliberate revert and wins normally.
+ECHO_WINDOW_S = 300.0
+# Superseded sync points kept for echo detection.
+_HISTORY_MAX = 5
+# Snapshots kept per canvas in .sync/trash before pulls/merges overwrite or
+# delete local files. Oldest pruned beyond this.
+_TRASH_MAX = 20
+# `fused canvas validate` on the merged clone — local CLI run, no network.
+VALIDATE_TIMEOUT = 60.0
 # A newly constructed _SyncManager treats the clone as clean only if every
 # file's mtime is younger than this — i.e. it just came out of a
 # `clone --force`. Anything older is unknown provenance (server restart,
@@ -418,6 +468,167 @@ def _shim_list_command(cli) -> list[str] | None:
 LIST_SHIM_TIMEOUT = 60.0
 
 
+def _shim_manifest_command(cli) -> list[str] | None:
+    """argv for the remote-manifest probe shim, or None when the CLI is an
+    external binary we can't drive as Python (sync degrades to the legacy
+    dry-run poll)."""
+    if cli.external:
+        return None
+    shim = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "_fused_canvas_manifest.py"
+    )
+    return [sys.executable, shim]
+
+
+def _shim_zip_command(cli) -> list[str] | None:
+    """argv for the zip-download shim (merge path), or None for an external
+    CLI — same degradation as _shim_manifest_command."""
+    if cli.external:
+        return None
+    shim = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "_fused_canvas_zip.py"
+    )
+    return [sys.executable, shim]
+
+
+def _safe_zip_member_relpath(member: str) -> str | None:
+    """Same guard as the CLI's pull extractor: the merge path extracts server
+    zips with our own code, so the CLI's sanitizer no longer protects us.
+    Rejects directories, absolute paths, `..`, and drive-letter members."""
+    norm = member.replace("\\", "/").strip()
+    if not norm or norm.endswith("/") or norm.startswith("/"):
+        return None
+    parts = norm.split("/")
+    if ".." in parts or parts[0].endswith(":"):
+        return None
+    return norm
+
+
+def _rmtree_quiet(path: str) -> None:
+    try:
+        shutil.rmtree(path)
+    except OSError:
+        pass
+
+
+# Files seeded into every clone for the Claude session working there —
+# invisible to the sync in BOTH directions: excluded from the watcher's
+# fingerprint/hash walks (below) so they never dirty the clone or enter the
+# merge base, and listed in .fusedignore so `canvas push` never uploads them.
+# The CLI's `pull --force` deletes them (they're not in the bundle), so every
+# pull path re-seeds afterwards.
+_SYNC_IGNORED_BASENAMES = frozenset({"CLAUDE.md", ".fusedignore"})
+
+_CLONE_FUSEDIGNORE = "CLAUDE.md\n.fusedignore\n"
+
+_CLONE_CLAUDE_MD = """\
+# Fused canvas clone: {name}
+
+This folder is a live clone of the Fused canvas **{name}**, two-way synced by
+fused-render: a watcher pushes every quiet change set upstream and pulls
+remote edits (made in the hosted workbench) back down, merging per file.
+
+## How the sync works (know this before running sync commands yourself)
+
+A watcher in the fused-render app syncs this folder continuously:
+
+- **Auto-push**: after ~1.5s of file quiet it runs `fused canvas push`,
+  which REPLACES the remote UDF set with this folder (deletes propagate).
+  Before pushing it probes the remote and merges concurrent workbench
+  edits in, per file.
+- **Auto-pull**: every ~10s it checks the remote; workbench edits are
+  pulled down (clean clone) or merged per file (dirty clone — a file only
+  you changed keeps your version; only they changed gets theirs; both →
+  yours wins).
+
+You MAY run `fused canvas push` / `fused canvas pull` yourself, e.g. to
+reconcile a conflict — just account for the side-effects:
+
+- Your saved edits push themselves within seconds; a manual push is
+  usually redundant. Pushing mid-edit ships a half-done state.
+- `fused canvas pull --force` overwrites the WHOLE folder with remote:
+  any unpushed local edits are lost, and it deletes this CLAUDE.md /
+  .fusedignore (the watcher re-seeds them on its own pulls).
+- After a manual pull, the watcher may see the changed files as fresh
+  local edits and push them back — expected, mention it if surprising.
+
+Other rules:
+
+- After structural edits (renaming a node, adding/removing nodes or edges),
+  check the clone with `fused workbench canvas validate .` — the auto-push
+  rejects an invalid canvas and the error surfaces to the user.
+- `canvas.toml` defines the canvas (nodes, edges, viewport); every node
+  needs its source file next to it (`<udfName>.py`; widgets are `.json`).
+
+## Files change under you — trust the filesystem, not your memory
+
+The user may be editing this same canvas in the hosted workbench while you
+work; the sync merges their changes into this folder every few seconds.
+Consequences:
+
+- Re-read a file (Read tool) immediately before editing it, especially
+  after any pause, a long tool call, or when you last looked more than a
+  minute ago. Your memory of a file's contents may be stale — an Edit
+  whose old text no longer matches means the file moved under you: re-read
+  and re-apply, don't force it.
+- Never reconstruct or rewrite a whole file from memory (Write over it) —
+  that silently discards remote edits the sync just merged in. Prefer
+  targeted Edits against freshly read content.
+- The sync's rules on concurrent changes: a file only you touched keeps
+  your version; a file only the workbench touched gets theirs; both →
+  yours wins. `canvas.toml` is one file, so your structural edit can
+  override their concurrent layout tweak — mention it if you notice.
+- A file that unexpectedly disappeared or reverted was likely changed
+  remotely. Before recreating it, check the state on disk and say what you
+  found; overwritten/deleted versions are recoverable from
+  `../.sync/trash/<canvas>/<timestamp>/` (newest last).
+- Group related multi-file changes (e.g. a rename: the `.py` file AND its
+  `canvas.toml` entry) into one quick burst — the push waits for a quiet
+  period, and a half-done rename that gets pushed or merged mid-way is
+  exactly how invalid states happen.
+
+## Required skills
+
+Before editing, load the Fused plugin skills — they carry the format
+references and workflows for this folder:
+
+- `fused:canvas-toml` — canvas.toml format and folder layout
+- `fused:fused-udfs` — writing Fused UDFs
+- `fused:json-ui-schemas` — widget JSON component props
+- `fused:fused-cli` — the fused CLI reference
+
+If no `fused:*` skills appear in your available-skills list, the Fused
+Claude plugin is not installed — STOP and ask the user to run:
+
+    fused claude plugin add
+
+(registers the `fusedio/claude-plugins` marketplace and installs
+`fused@fused-marketplace`; a new session picks the skills up.)
+"""
+
+
+def _seed_clone_claude_files(target: str, name: str) -> None:
+    """Best-effort: (re)write CLAUDE.md + .fusedignore into a clone. Runs
+    after clone and after every CLI force pull (which deletes them).
+
+    Skipped for an external FUSED_RENDER_FUSED_BIN: that path syncs via
+    `pull --dry-run`, which reports the seeded local-only files as a diff
+    on every poll — a permanent pull/reseed churn (until the CLI's
+    _PULL_DELETE_IGNORE_BASENAMES learns these names)."""
+    cli = fused_cli()
+    if cli is None or _shim_manifest_command(cli) is None:
+        return
+    for basename, content in (
+        ("CLAUDE.md", _CLONE_CLAUDE_MD.format(name=name)),
+        (".fusedignore", _CLONE_FUSEDIGNORE),
+    ):
+        try:
+            with open(os.path.join(target, basename), "w", encoding="utf-8") as f:
+                f.write(content)
+        except OSError:
+            pass
+
+
 def _iso_epoch(value) -> float | None:
     """ISO-8601 timestamp (control-plane last_updated) → epoch seconds."""
     if not isinstance(value, str) or not value:
@@ -639,6 +850,11 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
     proc, err = _run_cli(
         ["workbench", "canvas", "pull", name, "-o", target, "--force"], PULL_TIMEOUT
     )
+    if err is None:
+        # Seed BEFORE resume's rebaseline (harmless either way — both files
+        # are excluded from the fingerprint) and after the CLI pull, which
+        # deletes any previous seed (not in the bundle).
+        _seed_clone_claude_files(target, name)
     if manager is not None:
         # Only adopt the pulled content as the clean baseline on success — a
         # failed pull leaves the folder as it was, so any local edits pending
@@ -697,6 +913,22 @@ class _SyncManager:
         self.fix_lock = threading.Lock()
         self.pull_seq = 0
         self.last_pull_at: float | None = None
+        self.merge_seq = 0
+        # Sync-point state for the three-way merge: per-file md5s of the
+        # clone at the last sync point, and the last-seen remote manifest.
+        # Persisted OUTSIDE the clone dir (a CLI `pull --force` removes any
+        # in-dir file that isn't in the bundle). None = unknown provenance:
+        # merge classification degrades to local-wins until the next sync
+        # point rebuilds it.
+        self._base_path = os.path.join(canvases_root(), ".sync", f"{name}.json")
+        self._base_files: dict[str, str] | None = None
+        self._remote: dict | None = None
+        # Superseded remote manifests ({"udfs": ..., "at": rotation time}),
+        # newest last — the echo-guard's memory (see ECHO_WINDOW_S).
+        self._history: list[dict] = []
+        self.echo_seq = 0
+        self.merge_rollback_seq = 0
+        self._load_base()
         self._fingerprint = self._take_fingerprint()
         # A fresh manager (server restart, self-heal after a dropped
         # watcher, or just opening an already-cloned canvas again) has no
@@ -737,6 +969,13 @@ class _SyncManager:
                 # silently adopted as clean and never pushed.
                 self._fingerprint = self._take_fingerprint()
                 self._dirty_since = None
+                # The pulled content IS the remote content, so it's the new
+                # merge base too. The remote manifest is dropped (not
+                # probed here — request thread, no CLI call): the watcher
+                # re-adopts a fresh probe as baseline on its next poll.
+                self._base_files = self._take_file_hashes()
+                self._rotate_remote(None)
+                self._save_base()
                 # A stale "pending"/"error" from before the pause would
                 # otherwise stick forever: the UI keeps showing a queued
                 # push, and the remote-pull leg of the watcher loop only
@@ -760,7 +999,7 @@ class _SyncManager:
         for root, dirs, files in os.walk(self.dir):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for f in files:
-                if f.startswith("."):
+                if f.startswith(".") or f in _SYNC_IGNORED_BASENAMES:
                     continue
                 path = os.path.join(root, f)
                 try:
@@ -770,6 +1009,454 @@ class _SyncManager:
                 fp[os.path.relpath(path, self.dir)] = (st.st_mtime, st.st_size)
         return fp
 
+    # -- sync-point state (merge base + remote manifest) -------------------
+
+    def _take_file_hashes(self) -> dict[str, str]:
+        """Per-file md5 of the clone, same walk/skip rules as the
+        fingerprint (relpaths are os-native, matching zip relpaths after
+        os.path.join normalization on this platform)."""
+        hashes: dict[str, str] = {}
+        for root, dirs, files in os.walk(self.dir):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for f in files:
+                if f.startswith(".") or f in _SYNC_IGNORED_BASENAMES:
+                    continue
+                path = os.path.join(root, f)
+                try:
+                    with open(path, "rb") as fh:
+                        digest = hashlib.md5(fh.read()).hexdigest()
+                except OSError:
+                    continue
+                hashes[os.path.relpath(path, self.dir)] = digest
+        return hashes
+
+    def _load_base(self) -> None:
+        try:
+            with open(self._base_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        files = data.get("files")
+        remote = data.get("remote")
+        if isinstance(files, dict) and all(
+            isinstance(k, str) and isinstance(v, str) for k, v in files.items()
+        ):
+            self._base_files = files
+        if isinstance(remote, dict) and isinstance(remote.get("udfs"), dict):
+            self._remote = remote
+        history = data.get("history")
+        if isinstance(history, list):
+            self._history = [
+                h for h in history
+                if isinstance(h, dict) and isinstance(h.get("udfs"), dict)
+            ][-_HISTORY_MAX:]
+
+    def _save_base(self) -> None:
+        payload = json.dumps(
+            {
+                "files": self._base_files,
+                "remote": self._remote,
+                "history": self._history,
+            }
+        )
+        tmp = self._base_path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self._base_path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp, self._base_path)
+        except OSError:
+            pass  # state stays in memory; rebuilt at the next sync point
+
+    @staticmethod
+    def _udf_hashes(udfs) -> dict:
+        """slug → body hash, from a manifest's `udfs` mapping or a history
+        entry's. Timestamps are deliberately dropped: a stale writer
+        re-saving old bodies stamps FRESH per-UDF last_updated values, so
+        any comparison that includes them can never match — the hashes are
+        the identity."""
+        if not isinstance(udfs, dict):
+            return {}
+        return {
+            slug: (info.get("hash") if isinstance(info, dict) else info)
+            for slug, info in udfs.items()
+        }
+
+    def _rotate_remote(self, new_remote: dict | None) -> None:
+        """Replace the manifest baseline, remembering the superseded one for
+        echo detection. Every _remote assignment after construction goes
+        through here so the history can't silently miss a sync point."""
+        old = self._remote
+        if old is not None and isinstance(old.get("udfs"), dict):
+            old_hashes = self._udf_hashes(old.get("udfs"))
+            new_hashes = (
+                None if new_remote is None else self._udf_hashes(new_remote.get("udfs"))
+            )
+            if old_hashes != new_hashes:
+                self._history.append({"udfs": old_hashes, "at": time.time()})
+                del self._history[:-_HISTORY_MAX]
+        self._remote = new_remote
+
+    def _is_stale_echo(self, probe: dict) -> bool:
+        """True when the probed remote state is byte-identical (per-UDF
+        BODY HASHES — never timestamps, see _udf_hashes) to a sync point
+        this watcher already superseded within ECHO_WINDOW_S — the
+        signature of a stale writer (a browser tab autosaving pre-push
+        state over a fresh push). Layout-only echoes can't be told apart
+        from real layout edits (collection.last_updated is a fresh stamp
+        either way) — only the destructive UDF-level revert is caught,
+        which is the data-loss case."""
+        cur = self._remote
+        if cur is None:
+            return False
+        probe_hashes = self._udf_hashes(probe.get("udfs"))
+        if probe_hashes == self._udf_hashes(cur.get("udfs")):
+            return False
+        now = time.time()
+        return any(
+            now - entry.get("at", 0.0) <= ECHO_WINDOW_S
+            and self._udf_hashes(entry.get("udfs")) == probe_hashes
+            for entry in self._history
+        )
+
+    def _new_trash_dir(self) -> str | None:
+        """A fresh timestamped folder under .sync/trash/<name>/ for the files
+        the current pull/merge is about to overwrite or delete; prunes the
+        oldest snapshots beyond _TRASH_MAX. None if it can't be created."""
+        root = os.path.join(canvases_root(), ".sync", "trash", self.name)
+        path = os.path.join(root, time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}")
+        try:
+            os.makedirs(path, exist_ok=True)
+            snapshots = sorted(
+                d for d in os.listdir(root)
+                if os.path.isdir(os.path.join(root, d))
+            )
+            for stale in snapshots[:-_TRASH_MAX]:
+                _rmtree_quiet(os.path.join(root, stale))
+        except OSError:
+            return None
+        return path
+
+    def _backup_to(self, trash: str | None, rel: str, data: bytes) -> None:
+        if trash is None:
+            return
+        dest = os.path.join(trash, rel)
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as fh:
+                fh.write(data)
+        except OSError:
+            pass  # best-effort safety net, never blocks the sync
+
+    def _snapshot_clone(self) -> None:
+        """Copy the whole clone into a trash snapshot — run before the CLI's
+        wholesale `pull --force`, whose overwrites/deletes we can't
+        intercept per file."""
+        trash = self._new_trash_dir()
+        if trash is None:
+            return
+        for root, dirs, files in os.walk(self.dir):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for f in files:
+                if f.startswith("."):
+                    continue
+                path = os.path.join(root, f)
+                try:
+                    with open(path, "rb") as fh:
+                        data = fh.read()
+                except OSError:
+                    continue
+                self._backup_to(trash, os.path.relpath(path, self.dir), data)
+
+    def _validate_clone(self) -> bool | None:
+        """`fused canvas validate` on the clone: True = valid, False =
+        invalid, None = couldn't run (no CLI/timeout) — treated as valid so
+        a broken CLI can't wedge every merge into a rollback."""
+        cli = fused_cli()
+        if cli is None:
+            return None
+        try:
+            proc = subprocess.run(
+                [*cli.command, "workbench", "canvas", "validate", self.dir],
+                capture_output=True, text=True, timeout=VALIDATE_TIMEOUT,
+                encoding="utf-8", errors="replace",
+                env=_cli_env(cli),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        return proc.returncode == 0
+
+    def _probe_remote(self) -> dict | None:
+        """The remote manifest via the shim, or None (external CLI, not
+        signed in, transient failure, junk output — all mean 'can't tell',
+        never 'changed')."""
+        cli = fused_cli()
+        if cli is None:
+            return None
+        cmd = _shim_manifest_command(cli)
+        if cmd is None:
+            return None
+        try:
+            proc = subprocess.run(
+                [*cmd, self.name],
+                capture_output=True, text=True, timeout=LIST_SHIM_TIMEOUT,
+                encoding="utf-8", errors="replace",
+                env=_cli_env(cli),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if proc.returncode != 0:
+            return None
+        try:
+            data = json.loads(proc.stdout)
+        except ValueError:
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("udfs"), dict):
+            return None
+        if not isinstance(data.get("id"), str) or not data["id"]:
+            return None
+        return data
+
+    @staticmethod
+    def _remote_moved(prev: dict, cur: dict) -> bool:
+        return prev.get("last_updated") != cur.get("last_updated") or prev.get(
+            "udfs"
+        ) != cur.get("udfs")
+
+    def _download_zip(self, collection_id: str) -> zipfile.ZipFile | None:
+        cli = fused_cli()
+        if cli is None:
+            return None
+        cmd = _shim_zip_command(cli)
+        if cmd is None:
+            return None
+        try:
+            proc = subprocess.run(
+                [*cmd, collection_id],
+                capture_output=True, timeout=PULL_TIMEOUT,
+                env=_cli_env(cli),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if proc.returncode != 0 or not proc.stdout:
+            return None
+        try:
+            return zipfile.ZipFile(io.BytesIO(proc.stdout), "r")
+        except zipfile.BadZipFile:
+            return None
+
+    def _merge_remote(self, probe: dict) -> bool:
+        """Apply remote changes into a DIRTY clone, per file, three-way.
+
+        base = last sync point. For each bundle file: local untouched since
+        base → remote wins; local changed → local wins (the debounced push
+        publishes it); local deleted a file that's still in the bundle → it
+        stays deleted (the push propagates the delete). Files in base but
+        gone from the bundle are remote deletes: removed locally only if
+        untouched. Without a base (unknown provenance) nothing is applied —
+        local wins wholesale, exactly the pre-merge behavior.
+
+        Every file the merge overwrites or deletes is first copied into a
+        .sync/trash snapshot. After applying, the clone is validated
+        (`fused canvas validate`): a per-FILE merge can mix canvas.toml
+        from one side with source files from the other and break the
+        cross-file invariants (a node whose source file is gone) — a state
+        the push then rejects forever. If the merge broke the clone, it is
+        rolled back file-by-file and the clone stays dirty: local wins
+        wholesale, the push re-asserts it.
+
+        Returns True when the remote state was reconciled (merged, rolled
+        back, or nothing to do) and False on a transient failure (the zip
+        download) — the caller must NOT push over an unreconciled remote."""
+        base = self._base_files
+        if base is None:
+            self._rotate_remote(probe)
+            self._save_base()
+            return True
+        zf = self._download_zip(probe["id"])
+        if zf is None:
+            return False  # transient — retried with the same probe
+        with zf:
+            bundle: dict[str, bytes] = {}
+            for info in zf.infolist():
+                rel = _safe_zip_member_relpath(info.filename)
+                if rel is None:
+                    continue
+                # A seeded helper file that somehow reached the remote (a
+                # push from elsewhere with --no-ignore) must not overwrite
+                # the local seed.
+                if rel.rsplit("/", 1)[-1] in _SYNC_IGNORED_BASENAMES:
+                    continue
+                bundle[os.path.join(*rel.split("/"))] = zf.read(info.filename)
+        new_base = dict(base)
+        trash: str | None = None
+        _MISSING = object()
+        # (rel, previous file bytes or None if the merge created it,
+        #  previous base entry or _MISSING) — enough to undo every write.
+        rollback: list[tuple[str, bytes | None, object]] = []
+        for rel, data in bundle.items():
+            dest = os.path.join(self.dir, rel)
+            remote_hash = hashlib.md5(data).hexdigest()
+            try:
+                with open(dest, "rb") as fh:
+                    local_bytes: bytes | None = fh.read()
+            except OSError:
+                local_bytes = None
+            local_hash = (
+                hashlib.md5(local_bytes).hexdigest()
+                if local_bytes is not None
+                else None
+            )
+            if local_hash == remote_hash:
+                new_base[rel] = remote_hash  # converged — refresh the base
+                continue
+            if local_hash is None:
+                if rel in base:
+                    continue  # local delete wins; push propagates it
+                # new remote file, absent locally → create
+            elif local_hash != base.get(rel):
+                continue  # local edit wins; push publishes it
+            if local_bytes is not None:
+                if trash is None:
+                    trash = self._new_trash_dir()
+                self._backup_to(trash, rel, local_bytes)
+            try:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as fh:
+                    fh.write(data)
+            except OSError:
+                continue
+            rollback.append((rel, local_bytes, base.get(rel, _MISSING)))
+            new_base[rel] = remote_hash
+        for rel in list(new_base):
+            if rel in bundle:
+                continue
+            # In base, gone from the bundle: remote deleted it. Remove
+            # locally only if untouched since the sync point.
+            dest = os.path.join(self.dir, rel)
+            try:
+                with open(dest, "rb") as fh:
+                    local_bytes = fh.read()
+            except OSError:
+                local_bytes = None
+            local_hash = (
+                hashlib.md5(local_bytes).hexdigest()
+                if local_bytes is not None
+                else None
+            )
+            if local_hash is not None and local_hash == new_base[rel]:
+                if trash is None:
+                    trash = self._new_trash_dir()
+                self._backup_to(trash, rel, local_bytes)
+                try:
+                    os.remove(dest)
+                except OSError:
+                    continue
+                rollback.append((rel, local_bytes, base.get(rel, _MISSING)))
+            del new_base[rel]
+        if rollback and self._validate_clone() is False:
+            # The merged mix is unpushable. Restore what the merge touched;
+            # the clone stays (or becomes) dirty and the debounced push
+            # re-asserts local wholesale. _remote still advances to the
+            # probe so the same broken mix isn't re-attempted every poll.
+            for rel, prev_bytes, prev_base in reversed(rollback):
+                dest = os.path.join(self.dir, rel)
+                try:
+                    if prev_bytes is None:
+                        os.remove(dest)
+                    else:
+                        os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        with open(dest, "wb") as fh:
+                            fh.write(prev_bytes)
+                except OSError:
+                    continue
+                if prev_base is _MISSING:
+                    new_base.pop(rel, None)
+                else:
+                    new_base[rel] = prev_base  # type: ignore[assignment]
+            self.merge_rollback_seq += 1
+            rollback = []
+        self._base_files = new_base
+        self._rotate_remote(probe)
+        self._save_base()
+        if rollback:
+            self.merge_seq += 1
+            self.last_pull_at = time.time()
+        return True
+
+    def _poll_remote(self, probe: dict) -> None:
+        """Shim-backed poll leg: runs clean or dirty (unlike the legacy
+        dry-run poll). Clean → CLI force pull; dirty → merge."""
+        if self._remote is None:
+            # First look (fresh manager, or right after clone/push dropped
+            # it): adopt as baseline. A remote edit made before this first
+            # look is indistinguishable from the sync point — same blind
+            # spot the pre-merge sync had; converges on the next remote save.
+            self._remote = probe
+            # No merge base yet (first open after upgrade — no .sync file)
+            # and the watcher believes the clone is clean: local == remote
+            # is the steady state, so the disk IS the sync point. Without
+            # this the base stays None and every later merge degrades to
+            # local-wins wholesale. A dirty clone is left alone — hashing
+            # it would bless unpushed edits as "already synced".
+            if self._base_files is None and self._dirty_since is None and self.push_state == "idle":
+                self._base_files = self._take_file_hashes()
+            self._save_base()
+            return
+        if not self._remote_moved(self._remote, probe):
+            return
+        if self._is_stale_echo(probe):
+            # A stale writer resurrected a superseded revision — never pull
+            # it down (that's how a fresh local file gets deleted); re-assert
+            # local by queueing a push instead. _remote is NOT advanced: the
+            # push's own success re-probe re-baselines past the echo.
+            self.echo_seq += 1
+            if self._dirty_since is None:
+                self._dirty_since = time.time()
+            if self.push_state == "idle":
+                self.push_state = "pending"
+            return
+        if self._dirty_since is not None:
+            self._merge_remote(probe)
+            return
+        if self.push_state != "idle":
+            return
+        # Clean clone: re-check that a local edit didn't land while the
+        # probe ran (local wins — it'll merge on the next poll), then let
+        # the CLI replace the folder wholesale.
+        if self._take_fingerprint() != self._fingerprint:
+            return
+        cli = fused_cli()
+        if cli is None:
+            return
+        # The CLI's --force overwrites/deletes without us seeing each file —
+        # snapshot the clone first so nothing is ever unrecoverable.
+        self._snapshot_clone()
+        try:
+            applied = subprocess.run(
+                [*cli.command, "workbench", "canvas", "pull", self.name,
+                 "-o", self.dir, "--force"],
+                capture_output=True, text=True, timeout=PULL_TIMEOUT,
+                encoding="utf-8", errors="replace",
+                env=_cli_env(cli),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return
+        if applied.returncode != 0:
+            return
+        self.pull_seq += 1
+        self.last_pull_at = time.time()
+        # The CLI's --force removed the seeded Claude helper files (they're
+        # not in the bundle) — put them back before rebaselining.
+        _seed_clone_claude_files(self.dir, self.name)
+        self._fingerprint = self._take_fingerprint()
+        self._dirty_since = None
+        self._base_files = self._take_file_hashes()
+        self._rotate_remote(probe)
+        self._save_base()
+
     def _push(self) -> None:
         self.push_state = "pushing"
         cli = fused_cli()
@@ -778,10 +1465,33 @@ class _SyncManager:
             self.last_error = "the fused CLI is not available"
             self.error_detail = []
             return
+        # Guard the wholesale replace: if the remote moved since the last
+        # sync point, fold its changes in first (per-file, local wins ties)
+        # so the push can't clobber a concurrent workbench edit.
+        if self._remote is not None:
+            probe = self._probe_remote()
+            if (
+                probe is not None
+                and self._remote_moved(self._remote, probe)
+                # A stale-writer echo must NOT be merged in — the push about
+                # to run replaces it with local, which is the cure.
+                and not self._is_stale_echo(probe)
+            ):
+                if not self._merge_remote(probe):
+                    # The remote moved and could not be reconciled (zip
+                    # download failed) — pushing now would wholesale-replace
+                    # edits we haven't seen, the exact clobber the merge
+                    # exists to prevent. Re-arm and retry after the debounce.
+                    self.push_state = "pending"
+                    self._dirty_since = time.time()
+                    return
         # Baseline BEFORE the push: a save landing while the push runs must
-        # re-arm the debounce, not vanish into the pushed snapshot.
+        # re-arm the debounce, not vanish into the pushed snapshot. The file
+        # hashes are taken at the same instant — they describe the snapshot
+        # this push publishes, which becomes the merge base on success.
         self._fingerprint = self._take_fingerprint()
         self._dirty_since = None
+        base_snapshot = self._take_file_hashes()
         try:
             proc = subprocess.run(
                 [*cli.command, "workbench", "canvas", "push", self.dir, "--canvas", self.name],
@@ -820,9 +1530,18 @@ class _SyncManager:
         self.last_error = None
         self.error_detail = []
         self.push_state = "idle"
+        # New sync point: the pushed snapshot is the merge base, and the
+        # remote is re-probed so its post-push hashes become the manifest
+        # baseline (a workbench edit landing inside this probe window gets
+        # absorbed — the documented blind window). Probe failure → None →
+        # the next poll adopts a fresh baseline.
+        self._base_files = base_snapshot
+        self._rotate_remote(self._probe_remote())
+        self._save_base()
 
     def _pull_if_remote_changed(self) -> None:
-        """Downstream leg of the two-way sync.
+        """Legacy downstream leg — external-CLI fallback only (no manifest
+        shim). The shim-backed path is _poll_remote/_merge_remote.
 
         Only ever called with a CLEAN local clone (no unpushed edits), where
         local == remote is the steady state — so any diff a `pull --dry-run`
@@ -876,6 +1595,7 @@ class _SyncManager:
             return
         self.pull_seq += 1
         self.last_pull_at = time.time()
+        _seed_clone_claude_files(self.dir, self.name)
         # Did local diverge from remote again during the force pull? If so,
         # local wins — queue a push instead of baselining as clean.
         try:
@@ -912,14 +1632,21 @@ class _SyncManager:
                 with self._op_lock:
                     self._push()
                 continue
-            if (
-                self._dirty_since is None
-                and self.push_state == "idle"
-                and time.time() - self._last_pull_poll >= PULL_POLL_S
-            ):
+            if time.time() - self._last_pull_poll >= PULL_POLL_S:
                 self._last_pull_poll = time.time()
-                with self._op_lock:
-                    self._pull_if_remote_changed()
+                cli = fused_cli()
+                if cli is not None and _shim_manifest_command(cli) is not None:
+                    # Manifest probe: runs clean OR dirty (the merge makes a
+                    # dirty-time remote change safe to fold in). Probing is
+                    # read-only, so it stays outside _op_lock.
+                    probe = self._probe_remote()
+                    if probe is not None:
+                        with self._op_lock:
+                            self._poll_remote(probe)
+                elif self._dirty_since is None and self.push_state == "idle":
+                    # External CLI (no shims): legacy dry-run poll, clean only.
+                    with self._op_lock:
+                        self._pull_if_remote_changed()
 
     def status(self) -> dict:
         return {
@@ -931,6 +1658,9 @@ class _SyncManager:
             "last_push_at": self.last_push_at,
             "pull_seq": self.pull_seq,
             "last_pull_at": self.last_pull_at,
+            "merge_seq": self.merge_seq,
+            "merge_rollback_seq": self.merge_rollback_seq,
+            "echo_seq": self.echo_seq,
             "error": self.last_error,
             "error_detail": list(self.error_detail),
             "fix_active": self.active_fix_run_id is not None,
