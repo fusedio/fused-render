@@ -5,8 +5,10 @@
 //     `initialFocus` (or the first focusable), on unmount restore the element
 //     that was focused when the modal opened.
 //   • Esc / backdrop / ✕ close, gated by `busy`; ✕ disabled while busy.
-//   • optional `dirty` guard: the first close attempt shows an inline
-//     "close again to discard" hint and only the second (within ~2s) closes.
+//   • optional `dirty` guard: the first close attempt arms the ✕ and shows an
+//     inline "close again to discard" hint; only the second (within ~2s) closes.
+//     BOTH halves matter — the hint says it in words, the button says it where
+//     the press happened. See the ✕ below.
 // Chrome reuses the existing .deploy-* CSS (the body carries both `modal-body`
 // and `deploy-body` so descendant skins that key off .deploy-body keep working,
 // e.g. RowEditorModal).
@@ -215,11 +217,27 @@ export function Modal({
       >
         <div className="modal-head deploy-head">
           <h2 id={titleId}>{title}</h2>
+          {/* ARMED, ON THE BUTTON ITSELF. The footer hint below says the same
+              thing, and on its own it was not enough: the press happens at the
+              top-right corner of the card and the hint appears at the bottom-left
+              of the footer — 12px, muted, up to 500px away, and gone again in two
+              seconds. A user watching their own cursor saw a click that did
+              nothing (QA, 2026-08-18).
+
+              So the control that was pressed changes too. Same two-step guard,
+              same 2s window, same second press to discard — this only makes the
+              first press visible where the user is already looking. `is-armed`
+              is the vocabulary the New task card's Delete button already uses for
+              exactly this "the next press does it" state. */}
           <button
             type="button"
-            className="modal-close deploy-close"
-            aria-label="Close"
-            title={closeTitle ?? "Close"}
+            className={"modal-close deploy-close" + (confirmClose ? " is-armed" : "")}
+            // The label carries the state for a screen reader, which has no
+            // corner to look at. The footer hint is `role="status"` and is
+            // announced too; this is what the button itself answers to when the
+            // user tabs back to it.
+            aria-label={confirmClose ? "Close and discard changes" : "Close"}
+            title={confirmClose ? "Press again to discard" : (closeTitle ?? "Close")}
             disabled={busy}
             onClick={attemptClose}
           >
