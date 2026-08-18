@@ -127,6 +127,13 @@ def export_app_env() -> None:
     # ran `claude --help`, and blocking here blocks the socket bind, which the
     # desktop supervisor reads as a server that failed to start.
     skill_plugin.export_skill_plugin_env()
+    # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
+    # script under home_dir()/fused-bin goes on PATH and its dir is published
+    # as one more FUSED_RENDER_* var, so a Claude session can `fused workbench
+    # canvas push` against the same environment the canvases iframe shows.
+    # Filesystem-only, like the skill plugin export above.
+    from fused_render import fusedcli
+    fusedcli.export_fused_cli_env()
     _export_bundled_uv_path()
 
 
@@ -403,7 +410,7 @@ def create_app(start_dir: str) -> FastAPI:
     # probe. Its POSTs mutate, so they carry the D3 X-Fused guard.
     app.include_router(claude_config_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
-    # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
+    # POST /api/clone sparse-clone into ~/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
     from fused_render.deeplink import router as deeplink_router
 

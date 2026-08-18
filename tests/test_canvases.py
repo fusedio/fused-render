@@ -9,6 +9,7 @@ tmp file via FUSED_RENDER_FUSED_CREDENTIALS.
 import json
 import os
 import sys
+import threading
 import time
 
 import pytest
@@ -65,6 +66,11 @@ def main():
                 f.write(content)
         return
     if plain[:2] == ["canvas", "push"]:
+        lines = scenario.get("push_fail_lines")
+        if lines:
+            for ln in lines:
+                sys.stderr.write(ln + "\n")
+            sys.exit(1)
         return
     if plain[:2] == ["canvas", "create"]:
         return
@@ -180,6 +186,65 @@ def test_list_reports_clone_metadata(harness):
     assert isinstance(canvases["beta"]["mtime"], float)
     assert canvases["alpha"]["n_udfs"] is None
     assert canvases["alpha"]["mtime"] is None
+
+
+# In-interpreter list shim (the preferred path when the CLI isn't an external
+# binary): stub scripts standing in for _fused_canvases_list.py.
+def _wire_list_shim(tmp_path, monkeypatch, body: str) -> None:
+    shim = tmp_path / "list_shim.py"
+    shim.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(
+        canvases_mod, "_shim_list_command", lambda cli: [sys.executable, str(shim)]
+    )
+
+
+def test_list_shim_reports_previews_and_updated_at(harness, tmp_path, monkeypatch):
+    harness.log_in()
+    beta = harness.root / "beta"
+    beta.mkdir(parents=True)
+    (beta / "canvas.toml").write_text("", encoding="utf-8")
+    _wire_list_shim(
+        tmp_path,
+        monkeypatch,
+        "import json, sys\n"
+        "json.dump([\n"
+        "  {'name': 'alpha', 'id': 'id-a', 'preview_url': 'https://s3/signed.png',\n"
+        "   'last_updated': '2026-08-18T06:10:17.419215Z'},\n"
+        "  {'name': 'beta', 'id': 'id-b', 'preview_url': None, 'last_updated': None},\n"
+        "], sys.stdout)\n",
+    )
+    res = harness.client.get("/api/canvases/list", headers=GUARD)
+    assert res.status_code == 200
+    canvases = {c["name"]: c for c in res.json()["canvases"]}
+    assert canvases["alpha"]["preview_url"] == "https://s3/signed.png"
+    assert canvases["alpha"]["id"] == "id-a"
+    assert isinstance(canvases["alpha"]["updated_at"], float)
+    assert canvases["alpha"]["cloned"] is False
+    assert canvases["beta"]["preview_url"] is None
+    assert canvases["beta"]["cloned"] is True
+
+
+def test_list_shim_expired_credentials_map_to_401(harness, tmp_path, monkeypatch):
+    harness.log_in()
+    _wire_list_shim(
+        tmp_path,
+        monkeypatch,
+        "import sys\n"
+        "sys.stderr.write('Error: please re-authenticate with fused login\\n')\n"
+        "sys.exit(1)\n",
+    )
+    res = harness.client.get("/api/canvases/list", headers=GUARD)
+    assert res.status_code == 401
+
+
+def test_list_external_cli_entries_have_null_preview_fields(harness):
+    # The stub CLI is an external FUSED_RENDER_FUSED_BIN, so the fallback
+    # `canvas list` path runs: bare names, no previews or updated_at.
+    harness.log_in()
+    res = harness.client.get("/api/canvases/list", headers=GUARD)
+    canvases = {c["name"]: c for c in res.json()["canvases"]}
+    assert canvases["alpha"]["preview_url"] is None
+    assert canvases["alpha"]["updated_at"] is None
 
 
 def test_create_canvas_runs_cli(harness):
@@ -480,6 +545,244 @@ def test_sync_push_failure_reports_error(harness, monkeypatch):
         time.sleep(0.05)
     assert status and status["push_state"] == "error"
     assert "push exploded" in status["error"]
+
+
+_VALIDATION_LINES = [
+    "error: node 'buffer' has no source file (buffer.py missing)",
+    "error: edge references unknown node 'join'",
+    "error: widget_map.json: {{udf.buffer}} does not resolve",
+    "error: widget_map.json: param 'radius' not in UDF signature",
+    "Error: Canvas validation failed with 4 error(s). "
+    "Fix the errors or use --no-validate to push anyway.",
+]
+
+
+def _fail_push_with_validation(harness, monkeypatch) -> dict:
+    """Drive the watcher into a failed push whose stderr is a full
+    validation report; return the error status."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    harness.set_scenario({"push_fail_lines": _VALIDATION_LINES})
+    (harness.root / "alpha" / "udf.py").write_text("x = 1\n", encoding="utf-8")
+    deadline = time.time() + 5
+    status = None
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["push_state"] == "error":
+            break
+        time.sleep(0.05)
+    assert status and status["push_state"] == "error", status
+    return status
+
+
+def test_push_validation_failure_keeps_the_full_transcript(harness, monkeypatch):
+    # cli_error keeps ONE line — right for the pill, wrong for validation,
+    # where the lines that name the broken files are all above the summary.
+    # error_detail carries the verbatim transcript; a later good push clears it.
+    status = _fail_push_with_validation(harness, monkeypatch)
+    assert status["error_detail"] == _VALIDATION_LINES
+    assert "Canvas validation failed with 4 error(s)" in status["error"]
+
+    harness.set_scenario({})
+    (harness.root / "alpha" / "udf.py").write_text("x = 2\n", encoding="utf-8")
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["push_state"] == "idle" and status["push_seq"] >= 1:
+            break
+        time.sleep(0.05)
+    assert status["push_state"] == "idle", status
+    assert status["error_detail"] == []
+    assert status["error"] is None
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_fix_endpoint_requires_a_failing_push(harness, monkeypatch):
+    harness.log_in()
+    # No watcher at all → nothing to fix.
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 409
+    # A healthy watcher → still nothing to fix.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 409
+    # And the endpoint is write-guarded like every other canvases POST.
+    assert harness.client.post("/api/canvases/fix", json={"name": "alpha"}).status_code == 403
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_fix_endpoint_spawns_a_primed_claude_session(harness, monkeypatch):
+    from fused_render import claude_spawn
+
+    _fail_push_with_validation(harness, monkeypatch)
+    seen = {}
+    monkeypatch.setattr(
+        claude_spawn, "spawn_helper",
+        lambda target, prompt, mode, session_id="": (
+            seen.update(target=target, prompt=prompt, mode=mode),
+            {"run_id": "run-77"})[1])
+    monkeypatch.setattr(claude_spawn, "record_session_when_ready",
+                        lambda agent, run_id, on_tick=None: None)
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: object())
+
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "run_id": "run-77"}
+    # Session lands on the clone dir, unattended-capable, primed with the
+    # verbatim transcript plus the guard rails (validate loop, never push).
+    assert seen["target"] == str(harness.root / "alpha")
+    assert seen["mode"] == "auto"
+    for line in _VALIDATION_LINES:
+        assert line in seen["prompt"]
+    assert "fused workbench canvas validate" in seen["prompt"]
+    assert "Do NOT run `fused workbench canvas push`" in seen["prompt"]
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_fix_active_blocks_a_concurrent_fixer_until_the_recorder_exits(harness, monkeypatch):
+    # fix_active is set the instant a fix spawns and is what a second click
+    # gets 409'd against — never a guess from transcript activity, because
+    # that has a grace window a slow tool call could hide inside (the bug
+    # this replaced). It clears when the recorder thread exits, whatever the
+    # reason — here simulated by blocking record_session_when_ready on an
+    # Event so the test controls exactly when that is.
+    from fused_render import claude_spawn
+
+    _fail_push_with_validation(harness, monkeypatch)
+    release = threading.Event()
+    monkeypatch.setattr(
+        claude_spawn, "spawn_helper",
+        lambda target, prompt, mode, session_id="": {"run_id": "run-1"})
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: object())
+    monkeypatch.setattr(
+        claude_spawn, "record_session_when_ready",
+        lambda agent, run_id: release.wait(5))
+
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200
+    status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    assert status["fix_active"] is True
+
+    # A second click while the first fixer is still working is refused, not
+    # raced onto the same clone.
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 409
+
+    # The recorder thread exiting (for ANY reason — here, the fake unblocks)
+    # is what clears the lock, not a "done" observed mid-run.
+    release.set()
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["fix_active"] is False:
+            break
+        time.sleep(0.05)
+    assert status["fix_active"] is False
+
+    # A push still in error and no active fixer → a new fix is allowed again.
+    monkeypatch.setattr(
+        claude_spawn, "spawn_helper",
+        lambda target, prompt, mode, session_id="": {"run_id": "run-2"})
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200
+    assert res.json()["run_id"] == "run-2"
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_fix_active_clears_even_when_the_recorder_never_sees_done(harness, monkeypatch):
+    # record_session_when_ready can return without ever observing "done" (its
+    # own poll cap, an exception, or — here — load_agent() itself blowing up
+    # inside the recorder thread). The lock must still clear: the fallback is
+    # the recorder thread exiting at all, not a specific outcome inside it.
+    from fused_render import claude_spawn
+
+    _fail_push_with_validation(harness, monkeypatch)
+    monkeypatch.setattr(
+        claude_spawn, "spawn_helper",
+        lambda target, prompt, mode, session_id="": {"run_id": "run-1"})
+
+    def _boom():
+        raise RuntimeError("agent.py failed to load")
+
+    monkeypatch.setattr(claude_spawn, "load_agent", _boom)
+
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200
+
+    deadline = time.time() + 5
+    status = None
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["fix_active"] is False:
+            break
+        time.sleep(0.05)
+    assert status["fix_active"] is False, status
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_fix_lock_serializes_concurrent_spawn_attempts(harness, monkeypatch):
+    # The check-then-spawn-then-set sequence used to run outside any lock, so
+    # two nearly-simultaneous clicks (two workspace tabs) could both read "no
+    # active fix" before either had set it, and both spawn a session onto the
+    # same clone. fix_lock makes that sequence atomic; this drives two REAL
+    # concurrent calls at the underlying endpoint function (bypassing the
+    # HTTP layer, same pattern as test_claude_permission_bridge's concurrent
+    # first-run test) to prove the second one blocks on the lock rather than
+    # racing through.
+    from fused_render import claude_spawn
+
+    _fail_push_with_validation(harness, monkeypatch)
+    entered = threading.Event()
+    release = threading.Event()
+    # Held open until after both calls have returned: record_session_when_ready
+    # clears active_fix_run_id with no lock of its own (it doesn't need one —
+    # clearing isn't a compound check-then-act), so a stub that returns
+    # instantly can race the second thread's read of active_fix_run_id and
+    # make THIS TEST flaky, independent of whether fix_lock itself is correct.
+    # A real recorder never returns this fast (it polls every 2s), so holding
+    # it open here just removes a timing accident the stub introduced.
+    recorder_release = threading.Event()
+    calls = []
+
+    def _slow_spawn(target, prompt, mode, session_id=""):
+        calls.append(1)
+        entered.set()
+        release.wait(5)
+        return {"run_id": f"run-{len(calls)}"}
+
+    monkeypatch.setattr(claude_spawn, "spawn_helper", _slow_spawn)
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: object())
+    monkeypatch.setattr(
+        claude_spawn, "record_session_when_ready",
+        lambda agent, run_id: recorder_release.wait(5))
+
+    results = {}
+
+    def _call(key):
+        results[key] = canvases_mod.api_canvases_fix(body={"name": "alpha"}, x_fused="1")
+
+    t1 = threading.Thread(target=_call, args=("a",))
+    t1.start()
+    assert entered.wait(5), "first call never reached spawn_helper"
+    t2 = threading.Thread(target=_call, args=("b",))
+    t2.start()
+    t2.join(2)
+    # Still blocked on fix_lock — spawn_helper only ran once so far.
+    assert "b" not in results
+    assert len(calls) == 1
+    release.set()
+    t1.join(5)
+    t2.join(5)
+    assert len(calls) == 1, "a second spawn ran before the first released the lock"
+    assert isinstance(results["a"], dict) and results["a"]["ok"] is True
+    assert results["b"].status_code == 409
+    recorder_release.set()
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
 def test_token_external_cli_reads_store(harness):

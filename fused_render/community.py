@@ -27,7 +27,7 @@ Actions:
               feeds the "last opened" ordering of community cards
 
 The repo is a FULL clone living inside the user's workspace
-(~/Documents/Fused/showcase). It is the user's tree: apps opened from it are
+(~/Fused/showcase). It is the user's tree: apps opened from it are
 editable in place, and nothing here ever resets or deletes it — a refresh
 that can't fast-forward (local edits conflict, upstream rewrote history)
 keeps the local tree as-is and still serves the catalog. Cloning an app
@@ -48,6 +48,8 @@ import subprocess
 import sys
 import tempfile
 import time
+
+from fused_render.shell.seed import fused_dir
 
 
 # An ABSOLUTE git path is required to reach posix_spawn, not merely tidy: CPython
@@ -81,9 +83,9 @@ INSTALLS_JSON = os.path.join(STATE_DIR, "installs.json")
 OPENED_JSON = os.path.join(STATE_DIR, "opened.json")
 LOCK_PATH = os.path.join(STATE_DIR, ".lock")
 
-# Mirrors shell/seed.fused_dir().
-WORKSPACE = os.path.abspath(
-    os.path.expanduser(os.environ.get("FUSED_RENDER_DIR") or "~/Documents/Fused"))
+# The one definition of the workspace, imported rather than mirrored — this
+# used to be a hand-copied expanduser() that had to be kept in step by hand.
+WORKSPACE = fused_dir()
 COMMUNITY_TAG_DIR = os.path.join(WORKSPACE, "local")
 # The full clone of the community repo, inside the user's workspace so the
 # explorer lists it like any other folder and apps are editable in place.

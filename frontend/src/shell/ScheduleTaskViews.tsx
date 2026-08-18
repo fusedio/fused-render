@@ -40,6 +40,7 @@ import { BOARD_COLUMNS } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
+  UNREAD_LABEL,
   archiveIntent,
   basename,
   cancelIntent,
@@ -53,6 +54,8 @@ import {
   isDraggable,
   isExpandable,
   isFailedTask,
+  isUpcomingTask,
+  laneUnread,
   markAllRead,
   markRead,
   markReadIntent,
@@ -100,9 +103,19 @@ export type { TaskFilters };
  * that's what I said", said of the pencil on a message row. So the flag covers all
  * three groups rather than the task row's alone:
  *
- *   * the List task row: Mark read, Run now / Re-run, Archive, Open chat
+ *   * the List task row: Mark read, Run now / Re-run, Open chat
  *   * the List message row: Edit, Cancel / Skip this run
- *   * the Board card: Run now / Re-run, Archive
+ *   * the Board card: Run now / Re-run
+ *
+ * ARCHIVE IS NO LONGER ONE OF THEM (Akshil, 2026-08-18: bring the archive button
+ * back, visible on hover). It is out from behind the flag on BOTH views at once —
+ * it is one button on one kind of element, and a List that files a task where a
+ * Board cannot is the divergence this page's whole vocabulary is written against.
+ * It is still hover-revealed and still `.tasks-act`, so nothing about the strip's
+ * geometry or its reveal changed; it is only no longer gated. Each remaining
+ * button now carries its OWN guard on this flag rather than the group carrying
+ * one, which is what lets Archive sit in its old place in the order instead of
+ * jumping to the front of a strip that comes back.
  *
  * ONE flag for all of them, deliberately: a flip must restore the whole page's
  * chrome at once, and two switches is how half of it comes back. Everything behind
@@ -112,17 +125,19 @@ export type { TaskFilters };
  *
  * WHAT IS UNREACHABLE WHILE THIS IS OFF, because it is worth writing down rather
  * than discovering: Mark read (the whole-task clear), Run now / Re-run from this
- * page, Archive / Unarchive from the List, Open chat as a button — and CANCEL, which
- * is the one that costs a capability rather than a shortcut, since stopping a
- * message that has not gone out has no other control on this page. It survives
- * elsewhere (the queue dock's card, the Claude pane's own banner, and deleting the
- * schedule from the task form), and the Board keeps Archive as a drag onto the
- * Archive lane. Row clicks are untouched throughout: a leaf row still opens its
- * message, a multi-message row still toggles, a message row still opens its turn.
+ * page, Open chat as a button — and CANCEL, which is the one that costs a
+ * capability rather than a shortcut, since stopping a message that has not gone out
+ * has no other control on this page. It survives elsewhere (the queue dock's card,
+ * the Claude pane's own banner, and deleting the schedule from the task form). Row
+ * clicks are untouched throughout: a leaf row still opens its message, a
+ * multi-message row still toggles, a message row still opens its turn.
  *
  * NOT RENDERED rather than hidden with CSS, which is the one thing worth being
  * careful about: an `opacity: 0` button is still in the tab order, so a keyboard
- * would land on an invisible control and press it blind. The geometry that keeps
+ * would land on an invisible control and press it blind. (Archive, which IS
+ * rendered, is hidden the other way on purpose — see `.tasks-act` in tasks.css:
+ * hover-revealed by opacity precisely so a keyboard can still reach it.) The
+ * geometry that keeps
  * the strip off the title (`.tasks-card-acts` and `--tasks-card-head-h` in
  * tasks.css) stays exactly as it is — it is what the strip comes back to.
  *
@@ -131,6 +146,35 @@ export type { TaskFilters };
  * change rather than a value change.
  */
 const SHOW_ROW_ACTIONS: boolean = false;
+
+/**
+ * Whether the ARCHIVE button's other direction — Unarchive — is drawn.
+ *
+ * OFF at Akshil's request, 2026-08-18: keep the archive button, hide unarchive for
+ * now. Archive itself stays out from behind SHOW_ROW_ACTIONS on both views; this
+ * takes away only the way BACK, which is what an already-archived row or card
+ * offers (tasks-lib.archiveIntent decides the direction, `restore: true`).
+ *
+ * A SECOND FLAG rather than a second value of the first, because they are two
+ * different requests and neither should move when the other is answered: one hid
+ * the whole hover strip, this hides one direction of one surviving button. Same
+ * shape, same `boolean` annotation, so flipping either is a value change and the
+ * guarded branch is never narrowed to dead code.
+ *
+ * NOTHING UNDERNEATH IS TOUCHED, which is the point of gating rather than
+ * deleting. `archiveIntent` still computes both directions and is still tested
+ * both ways; `triage` still takes either status; the Board's DRAG still moves a
+ * card out of the Archive lane, which is the way back that survives this and is
+ * why hiding the button costs a shortcut rather than a capability. ICON_UNARCHIVE
+ * stays too — it is still the glyph the button reaches for the day this flips, and
+ * the pair only reads as a pair while both are written down together.
+ *
+ * NOT RENDERED rather than hidden with CSS, for the same reason as the strip
+ * above: `.tasks-act` rests at `opacity: 0`, so hiding this one in the stylesheet
+ * would leave a button in the tab order that a keyboard could focus and press
+ * blind.
+ */
+const SHOW_UNARCHIVE: boolean = false;
 
 // ---- icons -------------------------------------------------------------------
 // The page's own recipe (ScheduleCalendar's `icon`): a 24-viewBox lucide
@@ -145,7 +189,10 @@ const icon = (paths: React.ReactNode, size = 14) => (
 
 const ICON_SEARCH = icon(<><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></>, 13);
 const ICON_CHEVRON = icon(<polyline points="9 18 15 12 9 6" />, 13);
-const ICON_CHEVRON_DOWN = icon(<polyline points="6 9 12 15 18 9" />, 12);
+// There is no ICON_CHEVRON_DOWN any more (2026-08-18). It was the down-chevron on
+// the thread's dashed "Show N more" button, and that button is gone — expanding a
+// task fetches the whole thread by itself. ICON_CHEVRON, the row's own disclosure,
+// is a different glyph and is untouched.
 const ICON_CHECK = icon(<polyline points="20 6 9 17 4 12" />, 13);
 const ICON_CIRCLE_DOT = icon(
   <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="1.5" /></>, 13);
@@ -153,11 +200,12 @@ const ICON_FOLDER = icon(
   <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />,
   12,
 );
-// A message's SOURCE, the one thing that differs message to message inside a
-// thread (§1): the scheduler put it there, or a person typed it.
-const ICON_CLOCK = icon(<><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15 14" /></>, 12);
-const ICON_CHAT = icon(
-  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />, 12);
+// There is no ICON_CLOCK/ICON_CHAT pair here any more (2026-08-18). A clock on a
+// scheduled message and a speech bubble on a chat one used to sit between the
+// status ring and MSG-003 on every thread row, saying where the message came
+// from. Removed at Akshil's request: it is a third glyph on a 12.5px line whose
+// first two already carry the state and the id, and nothing on the page acts on
+// the distinction. `.tasks-msg-kind` went from tasks.css with it.
 const ICON_OPEN = icon(
   <><path d="M15 3h6v6" /><path d="M10 14 21 3" />
     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></>, 13);
@@ -210,35 +258,114 @@ const STATUS_LABELS: Record<BoardColumn, string> = Object.fromEntries(
   BOARD_COLUMNS.map((c) => [c.key, c.label]),
 ) as Record<BoardColumn, string>;
 
-/** The bordered ring, with the inner dot on the terminal state. `failed`
- * repaints it red without moving the row out of its column — a failed or missed
- * run IS settled, but folding away the only failure signal would let a dead
- * turn read as a clean one. */
+/**
+ * The bordered ring — the ONE mark a unit of work wears, on all three views.
+ *
+ * HUE is the status. `failed` repaints it red without moving the row out of its
+ * column: a failed or missed run IS settled, but folding away the only failure
+ * signal would let a dead turn read as a clean one.
+ *
+ * SHAPE is the read-state (2026-08-18). The centre dot used to mean "settled" and
+ * was drawn on every Done and Failed ring; it now means "not looked at yet", and a
+ * read one is hollow. That is the whole of the unread vocabulary on this page — the
+ * grey dot that used to trail the title is gone, because a row carrying a ring AND
+ * a dot a few characters apart makes a reader decode two marks to answer one
+ * question. Colour did not move, so nothing was traded: the ring still names its
+ * state in the hue it always did.
+ *
+ * The dot is drawn on EVERY column, and the CSS gate is `--unread` alone. It was
+ * scoped to the terminal two for a few hours the same day, on the reasoning that
+ * nothing is unread until it has finished — but a recurring or rescheduled task
+ * sits in Upcoming, its next run ahead of it, while its thread still holds output
+ * from a past run nobody has read. So the combination is real, and the gate drew a
+ * hollow ring under a tooltip that said "1 unread". Which states can occur is the
+ * server's business and taskUnread's; this component's business is to draw what it
+ * is handed, and the stylesheet's is not to have an opinion about the lane.
+ *
+ * `unread` draws the dot. `count`, when given, is what the mark stands for and
+ * turns into the tooltip — "3 unread" — and it is passed by CONTAINERS only: a
+ * task row over its thread, a lane header over its cards. A leaf message's dot
+ * already means "unread" all by itself and a hover repeating that is a caption on
+ * a symbol that needs none (Akshil, 2026-08-18), so a leaf passes `unread` alone
+ * and keeps the status word as its tooltip.
+ *
+ * The count never replaces the accessible name, it extends it: a screen reader
+ * hears "Done, 3 unread" rather than losing the status it came for.
+ *
+ * AND SO DOES THE FILL, WITH OR WITHOUT A COUNT. The name was extended only when
+ * `count` was set, which left every LEAF — the thread rows and the calendar's
+ * popover rows, all of which pass `unread` alone — announcing "Done" whether or
+ * not the reader had seen it. The dot was the only carrier of the fact and it is
+ * not one for anybody who cannot see it (bugbot, PR #596). A leaf now says "Done,
+ * unread": the bare word, because a leaf's mark stands for one message and there
+ * is no number to give. The visual rule is untouched — this is the same one bit
+ * the shape carries, said out loud.
+ *
+ * THE COUNT'S TOOLTIP IS NOT A `title` (2026-08-18). The browser holds a native
+ * tooltip back for one to two seconds, and for a four-character readout that is
+ * the same as not offering it at all. It goes to `data-tip`, which schedule.css
+ * draws on hover after 300ms. `title=""` rather than no title: an element with no
+ * `title` lets the browser walk up for one, and this sits inside a lane header
+ * that has "Collapse Done" and a row that has the task's full title.
+ *
+ * A leaf keeps its `title` — the status word, no count, and a slow native tooltip
+ * is the right speed for a word nobody is waiting on.
+ */
 export function StatusIcon({
   status,
   failed,
   label,
+  unread,
+  count,
 }: {
   status: BoardColumn;
   failed?: boolean;
   label?: string;
+  /** Fill the centre — there is something in here nobody has looked at. */
+  unread?: boolean;
+  /** What that fill stands for, on a container. Omitted on a leaf. */
+  count?: number;
 }) {
   const text = label ?? (failed ? "Failed" : (STATUS_LABELS[status] ?? status));
+  const many = taskUnreadLabel(count ?? 0);
+  // What the FILL is worth in words. The count when there is one, the bare word
+  // when there is not — and nothing at all on a hollow ring, which is the point:
+  // a read mark has nothing to announce. `many` is null at count 0, so a container
+  // that is drawn unread but merged to zero still says "unread" rather than
+  // dropping the fact the ink is showing.
+  const said = many ?? (unread ? UNREAD_LABEL.toLowerCase() : null);
   return (
     <span
       className={
-        `schedule-ring schedule-ring--${status}` + (failed ? " schedule-ring--failed" : "")
+        `schedule-ring schedule-ring--${status}` +
+        (failed ? " schedule-ring--failed" : "") +
+        (unread ? " schedule-ring--unread" : "")
       }
-      aria-label={text}
-      title={text}
+      aria-label={said ? `${text}, ${said}` : text}
+      data-tip={many ?? ""}
+      title={many ? "" : text}
     />
   );
 }
 
-/** The blue ping on a task whose turn is in flight. */
-export function LivePulse() {
-  return <span className="schedule-tv-pulse" aria-label="Running" title="Running" />;
-}
+/* There is no `LivePulse` any more (2026-08-18). It was a blue `--activity` disc
+   that followed a live task's title on the List row and sat in the Board card's
+   head, and it meant "a turn is in flight right now" — a finer fact than the
+   In Progress lane, which also holds a queued turn that has not started.
+
+   It went because of what it LOOKED like rather than what it said. With the whole
+   unread vocabulary reduced to the status ring, the ping was the last free-
+   standing dot on the page, and a small filled circle after a title is what unread
+   means everywhere else in this app and every other. Akshil, 2026-08-18, on a
+   screenshot of a row reading "…sk workflow analysis ●": that blue dot should not
+   be there. A mark that says "running" in the exact shape the page uses for "you
+   have not read this" is a mark that will be misread every time.
+
+   What still carries "in flight": the In Progress ring's yellow, the queue dock,
+   and the row's own relative time. The `task.live` flag is untouched on the model
+   and in tasks-lib (openThreadIntent and the run intents still read it), so
+   restoring a mark for it later is a rendering decision, not a data one — it just
+   cannot be a filled dot after a title. */
 
 /** The folder a task's work happens in — a plain folder glyph and the folder's
  * own name, with the whole path (with ~ for home) as the tooltip. Deliberately
@@ -260,33 +387,13 @@ function IdChip({ id, kind }: { id: string; kind: "task" | "message" }) {
   return <span className={`tasks-id tasks-id--${kind}`}>{id}</span>;
 }
 
-/**
- * A task has something unread — drawn immediately AFTER its title (§7), on the
- * List row and on the Board card alike.
- *
- * ONE DOT, NO NUMBER (Akshil, 2026-08-17: "only show a single dot like the
- * notification that we show"). It was a numeric pill for a day — `8`, `13`, `211`
- * — and the number was never acted on: the only question it answered is "is there
- * anything new in here?", which is one bit, and 211 spent three characters saying
- * it. So this is now the SAME `.tasks-dot` an unread message row wears
- * (tasks-lib.unreadMarker), which also means the task and its messages stop being
- * two vocabularies for one fact. Grey rather than blue, since later the same day:
- * the reasoning is with the rule, in tasks.css.
- *
- * The COUNT survives where it costs nothing and helps: `role="img"` +
- * `aria-label`, so a screen reader still hears "3 unread messages" and the
- * tooltip still says it on hover (tasks-lib.taskUnreadLabel). Dropping it
- * visually must not drop it from the accessible name — that would be losing
- * information rather than not printing it.
- *
- * Nothing is drawn at all when there is nothing unread: trailing a title there is
- * no column to hold open, unlike the message rail this mark's twin came off.
- */
-function UnreadDot({ count }: { count: number }) {
-  const label = taskUnreadLabel(count);
-  if (!label) return null;
-  return <span className="tasks-dot" role="img" aria-label={label} title={label} />;
-}
+/* There is no `UnreadDot` any more (2026-08-18). It was a 7px grey dot trailing a
+   task's title on the List row and the Board card, and before that a numeric pill
+   in the same slot; both are gone the same way, and for the reason written out in
+   full at tasks-lib.taskUnreadLabel — a row already carries a status ring, and a
+   second mark a few characters away, saying a different thing about the same unit
+   of work, is one glyph too many to scan. Read-state is the ring's SHAPE now
+   (StatusIcon above); the count survives as that ring's tooltip. */
 
 // ---- toolbar: search + status + project --------------------------------------
 
@@ -722,7 +829,36 @@ export function TaskList({
   // on every keystroke of the search box.
   const showProject = useMemo(() => spansProjects(tasks), [tasks]);
 
-  const toggle = (key: string) => setExpanded((cur) => toggleExpanded(cur, key));
+  /**
+   * Open or close a task — and, on the way OPEN, fetch the rest of its thread.
+   *
+   * There is no "Show 23 more" button any more (Akshil, 2026-08-18). The chevron
+   * showed three messages and then a dashed button under them, so reading a thread
+   * of twenty-six was two gestures for one intention: a person who expanded a task
+   * asked for the task, not for a sample of it.
+   *
+   * THE CAP WAS NEVER A RENDERING CHOICE, which is why removing it is a fetch and
+   * not a slice. The listing endpoint sends three messages per row on purpose — it
+   * runs for every task on the page, and a full transcript parse per task would not
+   * survive a few hundred of them (server routers/tasks.py `_row`) — so the other
+   * twenty-three genuinely are not in the client's hands when the row is drawn.
+   * The button was the press that went and got them. The press is gone; the trip
+   * still happens, now triggered by the disclosure itself.
+   *
+   * Guarded three ways so it is exactly one trip: only when OPENING, only when the
+   * server's own count says the window is short (threadView `more`, asked without
+   * `loaded` so it means "is the listing truncated?"), and never while a fetch for
+   * this task is already in flight or already landed. A closed-and-reopened task
+   * re-reads nothing — `loaded` outlives the expansion, deliberately, because the
+   * thread it holds is still the thread.
+   */
+  const toggle = (task: Task) => {
+    const opening = !expanded.has(task.key);
+    setExpanded((cur) => toggleExpanded(cur, task.key));
+    if (opening && threadView(task).more && !loaded[task.key] && !loading[task.key]) {
+      void showMore(task);
+    }
+  };
 
   const showMore = async (task: Task) => {
     setLoading((cur) => ({ ...cur, [task.key]: true }));
@@ -748,6 +884,13 @@ export function TaskList({
     } catch (e) {
       // Said under the thread it belongs to, not as a page banner: the rest of
       // the list is intact and only this one thread failed to open.
+      //
+      // `loaded` is deliberately left UNSET here, and that is what makes the
+      // failure recoverable rather than terminal: every guard that asks "do we
+      // already have this thread?" still answers no, so the very same call can be
+      // made again. The error line's Retry button is that call (TaskNode
+      // `onRetry`), and this function clears the error on its way back in, so a
+      // retry that succeeds leaves nothing stale behind it.
       setErrors((cur) => ({ ...cur, [task.key]: (e as Error).message }));
     } finally {
       setLoading((cur) => ({ ...cur, [task.key]: false }));
@@ -767,11 +910,11 @@ export function TaskList({
           home={home}
           showProject={showProject}
           open={expanded.has(task.key)}
-          onToggle={() => toggle(task.key)}
+          onToggle={() => toggle(task)}
+          onRetry={() => void showMore(task)}
           loaded={loaded[task.key]}
           loading={!!loading[task.key]}
           error={errors[task.key]}
-          onShowMore={() => void showMore(task)}
           onEditEntry={onEditEntry}
           onReload={onReload}
           read={read}
@@ -793,8 +936,8 @@ function TaskNode({
   onToggle,
   loaded,
   loading,
+  onRetry,
   error,
-  onShowMore,
   onEditEntry,
   onReload,
   read,
@@ -814,8 +957,11 @@ function TaskNode({
   onToggle: () => void;
   loaded?: TaskMessage[];
   loading: boolean;
+  /** Fetch this task's thread again after a failure. The SAME call the disclosure
+   * makes — not a second path to the same endpoint, because two ways in are two
+   * ways to disagree about the guards. */
+  onRetry: () => void;
   error?: string;
-  onShowMore: () => void;
   onEditEntry?: (entryId: string) => void;
   onReload?: () => void;
   read: Set<string>;
@@ -872,6 +1018,10 @@ function TaskNode({
   // a second press on an already-cleared task posts nothing.
   const chat = openThreadIntent(task, unread);
   const label = firstLine(task.title) || "(untitled)";
+  // Whether this row's work is still ahead of it, which is the one thing that
+  // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
+  // (the lane, and whether its next run has already gone by).
+  const ahead = isUpcomingTask(task);
   // The one message a LEAF row is about, and therefore what its click opens —
   // see `activate` below. Null on a task that has never run, which is the case
   // that must stay inert. tasks-lib.soleMessage holds both halves of that.
@@ -901,7 +1051,14 @@ function TaskNode({
   // what "archive it" used to cost, and the reason the honest answer to "can a
   // task be deleted?" (no: it is archived, D306) was barely true. tasks-lib
   // decides everything, by asking dropAction the same question the drag does.
-  const file = archiveIntent(task);
+  //
+  // The intent is computed BOTH ways and only the rendering is gated: `restore`
+  // is the way back, hidden for now behind SHOW_UNARCHIVE. Filtering here rather
+  // than in the JSX keeps `file` meaning exactly "the filing button this row
+  // draws", so the button's own markup needs no second condition and the strip
+  // below cannot be drawn for a button that is not there.
+  const filing = archiveIntent(task);
+  const file = filing && (SHOW_UNARCHIVE || !filing.restore) ? filing : null;
   // Mark read — the whole task at once, so clearing 89 unread messages is not 89
   // clicks through 89 transcripts. Asked of the count this row is DRAWING, so
   // the button leaves on its own press rather than on the next poll.
@@ -1236,123 +1393,149 @@ function TaskNode({
             outside the column, in the gutter to its left, because it is the
             accordion's control and not part of it.
 
-            The unread MARK deliberately does NOT lead here. It did for a day and
-            it inverted the row's priority: the title is what a list is scanned
-            for, and a number in front of it announced the messages before the work
-            they are about (Akshil, 2026-08-17). So the title leads and the mark
-            trails it — one gap of separation, then the dot, then the live ping.
-            (It was a numeric pill in that same slot until the number itself went:
-            see UnreadDot.) */}
-        <StatusIcon status={taskColumn(task)} failed={task.failed} />
+            IT IS ALSO THE ROW'S UNREAD MARK (2026-08-18). There was a separate
+            grey dot after the title for a day, and before that a numeric pill in
+            the same slot; the ring's centre now carries the fact instead, filled
+            while anything in this task's thread is unread and hollow once it is
+            all read. One mark, two facts — hue for the state, shape for whether
+            anybody has looked — rather than two marks at opposite ends of a title
+            that a reader has to pair up. `unread` is the merged count this row is
+            DRAWING, so the ring hollows on the row's own press rather than on the
+            next poll, and it is the count the tooltip names. */}
+        <StatusIcon
+          status={taskColumn(task)}
+          failed={task.failed}
+          unread={unread > 0}
+          count={unread}
+        />
         <IdChip id={task.task_id} kind="task" />
-        <span className="tasks-title">{label}</span>
-        <UnreadDot count={unread} />
-        {task.live && <LivePulse />}
+        {/* Greyed while the work is still ahead of it (tasks-lib.isUpcomingTask):
+            a list is mostly history, and the rows that have not happened yet are
+            the ones a reader is not being asked to read. The TITLE only — the id,
+            the ring, the folder and the time all stay at full strength, because
+            fading the whole row would say "archived", which is a different fact
+            with a lane of its own. */}
+        <span className={"tasks-title" + (ahead ? " is-upcoming" : "")}>{label}</span>
+        {/* Nothing follows the title. The live ping used to (see LivePulse's
+            headstone above): a blue disc in the one position, and the one shape,
+            that means unread everywhere else. */}
 
         {/* Exactly ONE auto margin in this row: flex distributes free space
             equally across every auto margin, so a second one would park the
             right-hand group in the middle of the row instead of at its end. */}
         <span className="tasks-grow" />
 
-        {/* THE WHOLE STRIP IS BEHIND SHOW_ROW_ACTIONS, which is off — see the
-            constant at the top of this file for who asked and when. Everything
-            inside is intact: the intents, the handlers and the CSS all stay, and
-            the flag is the one word that brings the strip back. */}
-        {SHOW_ROW_ACTIONS && (
-          <>
-            {/* The drag from Upcoming into In Progress, without the drag — and on
-                a task that broke, the word for doing it again over whichever call
-                can actually do it: run-now while a message is still pending,
-                re-send once the run that failed has spent it. ONE button and one
-                label either way; tasks-lib.taskRunIntent is the only thing that
-                knows which. In the SAME hover-revealed group as Edit and Cancel on
-                a message row, so a list at rest grows no chrome: this applies to a
-                minority of tasks and every other row would carry a button that
-                does nothing. */}
-            {/* "so you don't have to open everything individually" — the whole
-                task's unread, cleared from the row that carries the mark, in the
-                SAME hover-revealed group as Run now and Archive. Only on a task that
-                has unread (tasks-lib.markReadIntent): every other row would carry a
-                button whose press does nothing, which is what makes the rows where
-                it matters hard to pick out. */}
-            {seen && (
-              <button
-                type="button"
-                className="tasks-act tasks-act--seen"
-                title={seen.title}
-                aria-label={seen.label}
-                disabled={acting}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void markSeen();
-                }}
-              >
-                {ICON_MARK_READ}
-              </button>
-            )}
-            {run && (
-              <button
-                type="button"
-                className="tasks-act tasks-act--run"
-                title={run.title}
-                aria-label={run.label}
-                disabled={acting}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void runNow(run);
-                }}
-              >
-                {run.rerun ? ICON_RERUN : ICON_PLAY}
-              </button>
-            )}
-            {/* The Board's drag onto Archive, as a press — and on an already
-                archived row, the way back, because an action with only one
-                direction is a trap. Same hover-revealed group, same size and same
-                silence at rest as Run now and Open chat: a task that has never run
-                has no session to triage and is offered nothing at all here, so this
-                must not be a permanent column of buttons half of which do nothing.
-                tasks-lib.archiveIntent decides both halves. */}
-            {file && (
-              <button
-                type="button"
-                className={
-                  "tasks-act " + (file.restore ? "tasks-act--unarchive" : "tasks-act--archive")
-                }
-                title={file.title}
-                aria-label={file.label}
-                disabled={acting}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void triage(file.status);
-                }}
-              >
-                {file.restore ? ICON_UNARCHIVE : ICON_ARCHIVE}
-              </button>
-            )}
-            {/* The one gesture in this row that OPENS a MULTI-message conversation
-                — so it is the one that also clears the thread, exactly as the Board
-                card's click does: it lands the reader in the very thread this row's
-                dot is pointing at, and a mark still sitting there afterwards would
-                be pointing at what the press just showed them. Both sides ask
-                tasks-lib.openThreadIntent and both spend it through performOpen. The
-                row's OWN click is still not this (see `activate`): on an accordion it
-                toggles and opens nothing, and on a leaf it opens that leaf's single
-                message through the message path, marking that one message. */}
-            {chat && (
-              <button
-                type="button"
-                className="tasks-act"
-                title="Open chat"
-                aria-label="Open chat"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openChat(chat);
-                }}
-              >
-                {ICON_OPEN}
-              </button>
-            )}
-          </>
+        {/* THE STRIP IS BEHIND SHOW_ROW_ACTIONS — with ONE exception, Archive,
+            which came back on 2026-08-18 (Akshil). Each button carries its own
+            guard rather than the group carrying one, so the four keep their
+            hard-won ORDER whichever of them are rendered: pulling Archive out into
+            a block of its own beside the flagged fragment would file it before Mark
+            read and Run now the day the flag flips, and the strip's order is read
+            left-to-right as "clear it, run it, file it, open it". */}
+        {/* The drag from Upcoming into In Progress, without the drag — and on
+            a task that broke, the word for doing it again over whichever call
+            can actually do it: run-now while a message is still pending,
+            re-send once the run that failed has spent it. ONE button and one
+            label either way; tasks-lib.taskRunIntent is the only thing that
+            knows which. In the SAME hover-revealed group as Edit and Cancel on
+            a message row, so a list at rest grows no chrome: this applies to a
+            minority of tasks and every other row would carry a button that
+            does nothing. */}
+        {/* "so you don't have to open everything individually" — the whole
+            task's unread, cleared from the row that carries the mark, in the
+            SAME hover-revealed group as Run now and Archive. Only on a task that
+            has unread (tasks-lib.markReadIntent): every other row would carry a
+            button whose press does nothing, which is what makes the rows where
+            it matters hard to pick out. */}
+        {SHOW_ROW_ACTIONS && seen && (
+          <button
+            type="button"
+            className="tasks-act tasks-act--seen"
+            title={seen.title}
+            aria-label={seen.label}
+            disabled={acting}
+            onClick={(e) => {
+              e.stopPropagation();
+              void markSeen();
+            }}
+          >
+            {ICON_MARK_READ}
+          </button>
+        )}
+        {SHOW_ROW_ACTIONS && run && (
+          <button
+            type="button"
+            className="tasks-act tasks-act--run"
+            title={run.title}
+            aria-label={run.label}
+            disabled={acting}
+            onClick={(e) => {
+              e.stopPropagation();
+              void runNow(run);
+            }}
+          >
+            {run.rerun ? ICON_RERUN : ICON_PLAY}
+          </button>
+        )}
+        {/* The Board's drag onto Archive, as a press — and on an already
+            archived row, the way back, because an action with only one
+            direction is a trap. tasks-lib.archiveIntent decides both halves.
+
+            THE ONE ROW ACTION NOT BEHIND THE FLAG (Akshil, 2026-08-18: bring the
+            archive button back, visible on hover). Filing a task away had no press
+            anywhere in the List while the strip was off — the only route was
+            switching to the Board, expanding the Archive lane and dragging — which
+            made the honest answer to "can a task be deleted?" (no: it is archived)
+            barely true on this view.
+
+            HOVER-REVEALED, not permanent: a list at rest must grow no chrome
+            (§2 — only critical actions get visible buttons), and this is one
+            button on every row that has ever run. `.tasks-act` in tasks.css owns
+            that, and it does it with `opacity` plus a `:focus-visible` arm rather
+            than `visibility`/`display`, so the button stays in the tab order and
+            lights up for a keyboard that lands on it. It is still not rendered at
+            all on a task with nothing to file, which is the difference that
+            matters: hidden-until-hover is for a live control, not for a dead
+            one. */}
+        {file && (
+          <button
+            type="button"
+            className={
+              "tasks-act " + (file.restore ? "tasks-act--unarchive" : "tasks-act--archive")
+            }
+            title={file.title}
+            aria-label={file.label}
+            disabled={acting}
+            onClick={(e) => {
+              e.stopPropagation();
+              void triage(file.status);
+            }}
+          >
+            {file.restore ? ICON_UNARCHIVE : ICON_ARCHIVE}
+          </button>
+        )}
+        {/* The one gesture in this row that OPENS a MULTI-message conversation
+            — so it is the one that also clears the thread, exactly as the Board
+            card's click does: it lands the reader in the very thread this row's
+            ring is filled for, and a mark still sitting there afterwards would
+            be pointing at what the press just showed them. Both sides ask
+            tasks-lib.openThreadIntent and both spend it through performOpen. The
+            row's OWN click is still not this (see `activate`): on an accordion it
+            toggles and opens nothing, and on a leaf it opens that leaf's single
+            message through the message path, marking that one message. */}
+        {SHOW_ROW_ACTIONS && chat && (
+          <button
+            type="button"
+            className="tasks-act"
+            title="Open chat"
+            aria-label="Open chat"
+            onClick={(e) => {
+              e.stopPropagation();
+              openChat(chat);
+            }}
+          >
+            {ICON_OPEN}
+          </button>
         )}
         {/* When this task runs next, or when it last ran — on EVERY row, because
             until now a time only appeared inside an expanded thread and a
@@ -1381,11 +1564,22 @@ function TaskNode({
         {showProject && (
           <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
         )}
-        {when && (
-          <span className="tasks-row-time" title={when.title}>
-            {when.text}
-          </span>
-        )}
+        {/* ALWAYS drawn (2026-08-18). It used to be `{when && …}` and taskWhen
+            returned null on a task whose three-message window is empty — a session
+            holding only a `/clear` — which left the last cell of that row blank
+            while every row around it read "4d ago". A hole in a column reads as a
+            broken row, not as an absent fact. taskWhen now falls back to the
+            session's own `last_active` and, failing even that, hands back an em
+            dash with `kind: "none"`, so this element is unconditional and the
+            column always holds.
+
+            No class of its own for the dash, and no CSS change at all here: the em
+            dash belongs in exactly the register the times beside it are in — it IS
+            one of the column's values, not a different kind of thing — and
+            `.tasks-row-time` already sizes, colours and aligns it. */}
+        <span className="tasks-row-time" title={when.title}>
+          {when.text}
+        </span>
       </div>
 
       {/* Why the refusal is quiet: see runNow. The class is the board's own
@@ -1424,48 +1618,37 @@ function TaskNode({
                     }
                   }}
                 >
-                  <StatusIcon status={tone.column} failed={tone.failed} label={tone.label} />
-                  <span
-                    className="tasks-msg-kind"
-                    aria-hidden
-                    title={m.kind === "scheduled" ? "Scheduled" : "Chat"}
-                  >
-                    {m.kind === "scheduled" ? ICON_CLOCK : ICON_CHAT}
-                  </span>
+                  {/* The leaf's ring, and its unread mark: filled centre while
+                      this one message is unread, hollow once it has been opened
+                      — the same glyph the task row above it wears over the whole
+                      thread. NO `count` is passed, so the tooltip stays the status
+                      word: one unread message's dot means "unread" outright, and
+                      "1 unread" on hover would be a caption for a symbol that
+                      needs none (Akshil, 2026-08-18). */}
+                  <StatusIcon
+                    status={tone.column}
+                    failed={tone.failed}
+                    label={tone.label}
+                    unread={isNew}
+                  />
+                  {/* No kind glyph before the id (2026-08-18). A clock on a
+                      scheduled message and a speech bubble on a chat one stood
+                      between the ring and MSG-003 on every row of every thread —
+                      two more marks in a lane that already opens with one, for a
+                      distinction the row's own words and time make anyway. The
+                      id and the body lead now. */}
                   <IdChip id={m.message_id} kind="message" />
                   <span className="tasks-msg-body">{firstLine(m.body) || "(empty)"}</span>
-                  {/* Unread TRAILS the title (tasks-lib.unreadMarker), exactly as
-                      the task row's count trails its own. It led the row in a
-                      reserved slot for a day, and that was the same inverted
-                      reading priority the count had: a mark in front of every
-                      unread line announced the marks before the words they are
-                      about, and the task row above having already been fixed made
-                      the thread under it read as a different dialect of the same
-                      page (Akshil, 2026-08-17).
-
-                      Only the POSITION moved here. What it MEANS is unchanged; the
-                      hue is no longer part of it either way, since the task row's
-                      mark became this very dot and then both went grey (tasks.css).
-                      Drawn only when the message IS unread: trailing the title
-                      there is no column to hold open, so the empty slot the old
-                      head needed is gone with it.
-
-                      A sibling of the title, never inside it: `.tasks-msg-body`
-                      ellipsises its overflow, so a dot inside a long line would be
-                      truncated away on exactly the rows that have most to say —
-                      the same trap the Board card's clamp set for the count.
-
-                      No margin of its own: the row's `gap` is the separation, and
-                      free space here is split equally between every `auto` margin,
-                      so one more would re-centre the trailing group. */}
-                  {mark.unread && (
-                    <span
-                      className="tasks-dot"
-                      role="img"
-                      aria-label={mark.label}
-                      title={mark.label}
-                    />
-                  )}
+                  {/* No dot after the body any more (2026-08-18). It trailed the
+                      title here, and led the row in a reserved rail slot before
+                      that, and both arrangements were arguing about WHERE to put a
+                      second mark on a row that already opens with a status ring.
+                      The ring absorbed it: see the StatusIcon above, and
+                      tasks-lib.taskUnreadLabel for the whole of the reasoning. The
+                      row's bold body (`.tasks-msg.is-unread`) is untouched and is
+                      still the fact stated twice — once in the mark, once in the
+                      weight — which is what makes an unread line findable in a
+                      thread of twenty. */}
                   <span className="tasks-grow" />
                   {/* A MESSAGE row's actions are behind the same flag as the task
                       row's strip (SHOW_ROW_ACTIONS, off). Akshil, 2026-08-17:
@@ -1529,18 +1712,56 @@ function TaskNode({
             );
           })}
 
-          {error && <p className="tasks-thread-error">{error}</p>}
+          {/* A FAILED FETCH HAS TO BE RECOVERABLE WHERE IT HAPPENED (bugbot, PR
+              #596). While the thread was capped, the "Show N more" button was
+              also the retry: a failed press left the button sitting there to be
+              pressed again. Removing the cap removed that by accident — the fetch
+              moved onto the disclosure, so the only way to ask again was to
+              collapse the row and re-expand it, which is a gesture nobody would
+              guess from an error line that does not mention it.
 
-          {view.more && (
-            <button
-              type="button"
-              className="tasks-more"
-              disabled={loading}
-              onClick={onShowMore}
-            >
-              <span className="tasks-more-icon" aria-hidden>{ICON_CHEVRON_DOWN}</span>
-              {loading ? "Loading…" : `Show ${view.hidden} more`}
-            </button>
+              So the recovery sits next to the failure it is about (§4: help users
+              with errors, with the recovery action beside them). Same call the
+              disclosure makes, and `showMore` clears this error on its way back
+              in, so a retry that succeeds leaves nothing stale behind.
+
+              `role="alert"` on the line, because it appears without a press and a
+              reader who expanded the row is owed the news. The button is a real,
+              always-visible control rather than one of the page's hover-revealed
+              actions: those are conveniences on a working row, and this is the
+              only way out of a broken one. */}
+          {error && (
+            <p className="tasks-thread-error" role="alert">
+              {error}{" "}
+              <button
+                type="button"
+                className="tasks-retry"
+                disabled={loading}
+                onClick={onRetry}
+              >
+                Retry
+              </button>
+            </p>
+          )}
+
+          {/* No "Show N more" button here any more (2026-08-18). Expanding a task
+              now fetches the whole thread by itself (TasksList.toggle), so what
+              stands in the button's place is a line saying the trip is happening —
+              not a control, because there is nothing left to decide.
+
+              It names the NUMBER still coming (`view.hidden`, the server's count
+              less what we hold) rather than saying a bare "Loading…": the three
+              rows above it are already drawn, so without the count a long thread
+              looks like a short thread that has finished. It disappears when the
+              rest arrives, which is the only signal a person needed from it.
+
+              `aria-live="polite"` because this is the one thing on the row that
+              changes without a press — a reader who expanded the task should hear
+              that more is coming, and then be left alone. */}
+          {loading && (
+            <p className="tasks-thread-loading" aria-live="polite">
+              {view.hidden > 0 ? `Loading ${view.hidden} more…` : "Loading…"}
+            </p>
           )}
         </div>
       )}
@@ -1747,6 +1968,14 @@ export function TaskBoard({
       <div className="schedule-tv-board">
         {BOARD_COLUMNS.map((col) => {
           const lane = byLane.get(col.key) ?? [];
+          // How many CARDS in this column still hold something nobody has read —
+          // the same fact the List's task rows carry, one level up. It matters
+          // most on a COLLAPSED lane, which is a rail 52px wide showing nothing
+          // but a ring, a word and a total: without this, a lane folded away
+          // could fill with news and say nothing about it. Counted in tasks
+          // rather than messages (tasks-lib.laneUnread) because the header stands
+          // over cards.
+          const news = laneUnread(lane, read);
           if (collapsed.has(col.key)) {
             return (
               <button
@@ -1766,7 +1995,7 @@ export function TaskBoard({
                 onClick={() => toggleLane(col.key)}
                 {...dropProps(col.key)}
               >
-                <StatusIcon status={col.key} />
+                <StatusIcon status={col.key} unread={news > 0} count={news} />
                 <span className="schedule-tv-rail-label">{col.label}</span>
                 <span className="schedule-tv-rail-count">{lane.length}</span>
               </button>
@@ -1783,7 +2012,10 @@ export function TaskBoard({
                 title={`Collapse ${col.label}`}
                 onClick={() => toggleLane(col.key)}
               >
-                <StatusIcon status={col.key} />
+                {/* The group header's own unread mark, the same ring the cards
+                    under it wear — filled while any of them holds something
+                    unread, and naming the number on hover. */}
+                <StatusIcon status={col.key} unread={news > 0} count={news} />
                 <span className="schedule-tv-lane-label">{col.label}</span>
                 <span className="schedule-tv-lane-count">{lane.length}</span>
               </button>
@@ -1898,7 +2130,14 @@ function TaskCard({
   // be the ONLY way: the lane it aims at is collapsed by default, so the whole
   // gesture starts with "expand Archive first". Same predicate as the drop, by
   // construction — archiveIntent asks dropAction.
-  const file = archiveIntent(task);
+  //
+  // Gated exactly as the List row's is, and from the same flag: Unarchive is
+  // hidden for now (SHOW_UNARCHIVE), Archive is not. One flag for both views,
+  // because a Board that offers the way back where the List does not is the
+  // divergence this page's whole vocabulary is written against. The card's DRAG
+  // out of the Archive lane is untouched and is the way back that survives.
+  const filing = archiveIntent(task);
+  const file = filing && (SHOW_UNARCHIVE || !filing.restore) ? filing : null;
   // Run now / Re-run, which the List row and the calendar popover both already
   // offer and this card did not. The SAME function decides it here as there
   // (tasks-lib.taskRunIntent, which asks runNowIntent — the very function
@@ -1993,44 +2232,71 @@ function TaskCard({
             and a chip in a day cell have no lane above them, so there the ring is
             the only thing that files them at all.
 
-            The unread mark is NOT one of the head's marks either: it belongs to
-            the title, exactly as it does on a List row, and the same objection
-            applies to a card's head as to a row's start (Akshil, 2026-08-17 — the
-            count in front broke the reading priority). See the title below for
-            where it went and why it took three tries. */}
+            AND UNREAD IS NOT IN THIS HEAD AT ALL. It took three tries to get there
+            (all 2026-08-18): the ring's filled centre, which meant widening the
+            condition above and putting the repetition straight back; then a small
+            filled dot in the status hue leading the head, which stopped repeating
+            the lane but spent a whole glyph — and a card is three short lines, so a
+            fourth mark on it is the crowding again in a new place. It is the
+            TITLE'S WEIGHT now: unread cards read bold, read cards read normal. See
+            the title below.
+
+            So the head is the id, and a ring on the one card whose status its lane
+            does not mention. */}
         <span className="schedule-tv-card-head">
           {failedOffLane && <StatusIcon status={lane} failed />}
           <IdChip id={task.task_id} kind="task" />
-          {task.live && <LivePulse />}
         </span>
-        {/* The unread mark sits INSIDE the title, in its text flow, so it follows
-            the last word wherever the last word ends up — including onto the second
-            line of a two-line title, where it stays on that last line rather than
-            dropping under it.
+        {/* Nothing trails the title any more (2026-08-18). Three arrangements of
+            an unread mark lived in this slot and each one was a fix for the last:
+            a numeric pill inside the title's two-line `-webkit-box` clamp, which
+            clipped it away on exactly the busiest cards; the same pill lifted into
+            a `flex-wrap` wrapper beside the title, where any two-line title
+            orphaned it onto a line of its own (the screenshot Akshil sent on
+            2026-08-17); and then a dot back inside the flow once schedule.css
+            dropped the clamp for good.
 
-            Two arrangements before this one were wrong, and both were wrong
-            because the title was a two-line `-webkit-box` clamp that hid its
-            overflow. Inside that clamp, a title long enough to fill both lines
-            clipped the mark away — gone on exactly the busiest cards. Lifted out
-            of it into a `flex-wrap` wrapper (`.schedule-tv-card-name`, now
-            deleted), it survived but any two-line title pushed it onto a
-            line of its own beneath the words, orphaned — which is the screenshot
-            Akshil sent on 2026-08-17, and it looks broken.
+            The clamp's removal STAYS — the title wraps freely, `overflow-wrap:
+            anywhere` is the only guard it needs, and long titles make taller cards,
+            which is accepted. What went is the ATOM: no pill, no dot, nothing in
+            the flow after the last word.
 
-            The clamp was the cause of both: nothing can flow after the last word
-            of a clipped box and also stay outside the clip. So schedule.css
-            dropped it, the title wraps freely, and the mark needs no wrapper and
-            no alignment beyond one `vertical-align` — it is an inline atom in the
-            same flow. Long titles make taller cards, which is accepted; a card's
-            title is the session's own short name rather than the message it sends,
-            so most are one line.
+            UNREAD IS THE TITLE'S WEIGHT (Akshil, 2026-08-18, after three marks in
+            this slot and one in the head). Bold when there is something unread,
+            normal when there is not — no glyph, so the card gains no fourth thing
+            to read, and the signal is on the very words a lane is scanned for. It
+            is also the mark this page already uses one level down: an unread MESSAGE
+            row bolds its body (`.tasks-msg.is-unread`), and a card is the same claim
+            about a whole thread.
 
-            All of that is why the DOT inherits the slot rather than being re-placed
-            when the count became a dot (UnreadDot): the arrangement was the
-            expensive part and it is unchanged — only the atom in it is smaller. */}
-        <span className="schedule-tv-card-title">
+            IT STAYS OFF THE LIST ROW, deliberately. A row already carries the
+            ring-dot and that is its primary signal; bolding the title as well would
+            state one fact twice on one line, which is exactly the double-signalling
+            the ring was introduced to end. The Board has no ring to spare on a
+            quiet card — that is why it needs a different mark at all — so the two
+            views differ HERE precisely so they agree about everything else.
+
+            AND WEIGHT IS NOT A FACT A SCREEN READER HAS (bugbot, PR #596). Bold is
+            the whole visual signal here, and `font-weight` reaches the
+            accessibility tree not at all — so an unread card and a read one were
+            the same card to anybody not looking at it. The words are added instead,
+            in a span that is hidden from the eye and not from the tree
+            (`.tasks-said`): the card is a `<button>` whose accessible name is
+            computed from its contents, so ", 3 unread" after the title lands in
+            that name in the right order, with no `aria-label` overriding the id and
+            title a reader actually wants to hear first.
+
+            Deliberately NOT `aria-label` on the button: that REPLACES the computed
+            name, so the card would announce its unread count and lose "TASK-044,
+            Pull today's news" — trading one missing fact for two. And deliberately
+            not an `aria-label` on this span either: a role-less span's label is not
+            reliably announced (the same reason ScheduleCalendar gives its own dot a
+            `role="img"`), where real text always is. */}
+        <span className={"schedule-tv-card-title" + (unread > 0 ? " is-unread" : "")}>
           {firstLine(task.title) || "(untitled)"}
-          <UnreadDot count={unread} />
+          {unread > 0 && (
+            <span className="tasks-said">{`, ${taskUnreadLabel(unread)}`}</span>
+          )}
         </span>
         {/* The foot is the folder and nothing else, so when the folder says nothing
             (spansProjects — every card in a board filtered to one project repeats
@@ -2059,14 +2325,15 @@ function TaskCard({
           to the conversation or marks the thread read. That was already true of
           the markup and it is now load-bearing, so a test reads it.
 
-          AND IT IS BEHIND SHOW_ROW_ACTIONS, off since 2026-08-17 — the same flag
-          the List row's strip is behind, because it is the same strip on the other
-          view and the two must not diverge on a flip. The intents, the calls and
-          the geometry (`.tasks-card-acts` in tasks.css, centred on the head off
-          `--tasks-card-head-h`) are all untouched and waiting. */}
-      {SHOW_ROW_ACTIONS && (run || file) && (
+          RUN NOW IS BEHIND SHOW_ROW_ACTIONS, off since 2026-08-17. ARCHIVE IS
+          NOT, since 2026-08-18: Akshil asked for the archive button back on hover,
+          and it is the same button on the other view, so keeping it flagged here
+          while the List shows it is exactly the divergence the shared flag exists
+          to prevent (§1 — same element, same behaviour in every view). The strip
+          itself is drawn whenever either survives its guard. */}
+      {(file || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
-          {run && (
+          {SHOW_ROW_ACTIONS && run && (
             <button
               type="button"
               className="tasks-act tasks-card-act tasks-act--run"

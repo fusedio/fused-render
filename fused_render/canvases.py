@@ -44,7 +44,7 @@ import time
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render.fusedcli import child_env, cli_error, fused_cli
+from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
 
 router = APIRouter()
 
@@ -82,7 +82,15 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 # variable it reads) so the canvas the iframe shows is the same one the local
 # clone syncs against. Unstable is the current default while embed-auth ships
 # there first; FUSED_RENDER_WORKBENCH_URL still overrides the iframe URL alone.
-WORKBENCH_ENV = os.environ.get("FUSED_RENDER_WORKBENCH_ENV", "unstable")
+# Resolved in fusedcli.workbench_env because the `fused` wrapper handed to
+# Claude sessions bakes in the same default (D334) — one knob, one reader.
+WORKBENCH_ENV = workbench_env()
+
+# Cap on the per-line push-error transcript kept for the UI and the fix
+# session — enough for any real validation report (one line per problem plus
+# a summary), small enough that a CLI stack trace can't bloat every 2s
+# status poll.
+_ERROR_DETAIL_MAX = 50
 
 _ENV_WEB_URLS = {
     "prod": "https://www.fused.io",
@@ -394,6 +402,124 @@ def api_canvases_token(x_fused: str | None = Header(default=None)):
 # -- listing and cloning -----------------------------------------------------------
 
 
+def _shim_list_command(cli) -> list[str] | None:
+    """argv for the in-interpreter list shim, or None when the CLI is an
+    external binary we can't drive as Python (fall back to `canvas list`)."""
+    if cli.external:
+        return None
+    shim = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "_fused_canvases_list.py"
+    )
+    return [sys.executable, shim]
+
+
+# The shim pays the fused import cost, one list call, and one sign-image call
+# per canvas that has an uploaded preview.
+LIST_SHIM_TIMEOUT = 60.0
+
+
+def _iso_epoch(value) -> float | None:
+    """ISO-8601 timestamp (control-plane last_updated) → epoch seconds."""
+    if not isinstance(value, str) or not value:
+        return None
+    import datetime
+
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _list_entries():
+    """(entries, error): each entry is {name, id, preview_url, updated_at}.
+
+    Preferred path is the in-interpreter shim (ids, last_updated, and resolved
+    preview image URLs — the CLI's `canvas list` prints bare names only); an
+    external FUSED_RENDER_FUSED_BIN keeps the CLI path, degrading gracefully
+    to nameplate cards without previews.
+    """
+    cli = fused_cli()
+    if cli is None:
+        return None, _no_cli_error()
+    shim_cmd = _shim_list_command(cli)
+    if shim_cmd is not None:
+        try:
+            proc = subprocess.run(
+                shim_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=LIST_SHIM_TIMEOUT,
+                env=_cli_env(cli),
+            )
+        except subprocess.TimeoutExpired:
+            return None, _error(
+                f"listing canvases timed out after {int(LIST_SHIM_TIMEOUT)}s", 502
+            )
+        except OSError as e:
+            return None, _error(f"could not run the canvases list helper: {e}")
+        if proc.returncode != 0:
+            message = cli_error(proc.stderr or proc.stdout, "listing canvases failed")
+            # Same expired-credentials sniff as _run_cli: fall back to the
+            # sign-in flow instead of a dead error page.
+            if (
+                "re-authenticate" in message.lower()
+                or "refresh your fused credentials" in message.lower()
+            ):
+                return None, _error(message, 401)
+            return None, _error(message, 502)
+        try:
+            data = json.loads(proc.stdout)
+        except ValueError:
+            return None, _error(
+                f"the canvases list helper printed something that wasn't JSON: "
+                f"{proc.stdout.strip()[-200:]!r}",
+                502,
+            )
+        entries = []
+        if isinstance(data, list):
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if isinstance(name, str) and name:
+                    entries.append(
+                        {
+                            "name": name,
+                            "id": entry.get("id"),
+                            "preview_url": entry.get("preview_url"),
+                            "updated_at": _iso_epoch(entry.get("last_updated")),
+                        }
+                    )
+        return entries, None
+    proc, err = _run_cli(["workbench", "--format", "json", "canvas", "list"], LIST_TIMEOUT)
+    if err is not None:
+        return None, err
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError:
+        return None, _error(
+            f"the fused CLI printed something that wasn't JSON: {proc.stdout.strip()[-200:]!r}",
+            502,
+        )
+    # Normalize defensively: the CLI has printed both bare name lists and
+    # object lists across versions.
+    entries = []
+    raw = data if isinstance(data, list) else data.get("canvases") if isinstance(data, dict) else None
+    if isinstance(raw, list):
+        for entry in raw:
+            if isinstance(entry, str):
+                entries.append({"name": entry, "id": None, "preview_url": None, "updated_at": None})
+            elif isinstance(entry, dict):
+                name = entry.get("name") or entry.get("slug")
+                if isinstance(name, str) and name:
+                    entries.append(
+                        {"name": name, "id": entry.get("id"), "preview_url": None, "updated_at": None}
+                    )
+    return entries, None
+
+
 @router.get("/api/canvases/list")
 def api_canvases_list(x_fused: str | None = Header(default=None)):
     # EXECUTES a control-plane call — guarded like whoami.
@@ -402,28 +528,9 @@ def api_canvases_list(x_fused: str | None = Header(default=None)):
         return guard
     if not _logged_in():
         return _error("not signed in to Fused — sign in first", 409)
-    proc, err = _run_cli(["workbench", "--format", "json", "canvas", "list"], LIST_TIMEOUT)
+    canvases, err = _list_entries()
     if err is not None:
         return err
-    try:
-        data = json.loads(proc.stdout)
-    except ValueError:
-        return _error(
-            f"the fused CLI printed something that wasn't JSON: {proc.stdout.strip()[-200:]!r}",
-            502,
-        )
-    # Normalize defensively: the CLI has printed both bare name lists and
-    # object lists across versions.
-    canvases = []
-    entries = data if isinstance(data, list) else data.get("canvases") if isinstance(data, dict) else None
-    if isinstance(entries, list):
-        for entry in entries:
-            if isinstance(entry, str):
-                canvases.append({"name": entry, "id": None})
-            elif isinstance(entry, dict):
-                name = entry.get("name") or entry.get("slug")
-                if isinstance(name, str) and name:
-                    canvases.append({"name": name, "id": entry.get("id")})
     cloned = set()
     root = canvases_root()
     try:
@@ -569,6 +676,25 @@ class _SyncManager:
         self.push_seq = 0
         self.last_push_at: float | None = None
         self.last_error: str | None = None
+        # The push's FULL stderr lines when it failed, newest failure only.
+        # cli_error() keeps one line — the right shape for a status pill, and
+        # exactly wrong for validation failures, where the CLI prints one line
+        # per problem ("node X has no source file", ...) and then a summary
+        # counting them: the pill showed "failed with 4 error(s)" and threw
+        # away the 4 lines that name the files. Kept verbatim so the fix
+        # endpoint can hand them to a Claude session and the UI can list them.
+        self.error_detail: list[str] = []
+        # Set the instant a "Fix with Claude" session is spawned, cleared when
+        # the recorder thread that follows it exits for ANY reason (D336
+        # follow-up) — done, an exception, or the poll cap — never guessed
+        # from transcript activity: a "no recent activity" read has a grace
+        # window that's fine for a status badge and wrong for a lock, since a
+        # slow tool call mid-fix would read as "finished". fix_lock makes the
+        # check-then-spawn-then-set atomic across concurrent requests (two
+        # workspace tabs); spawn_helper alone can run for seconds, wide open
+        # for both to pass the guard before either had set the id.
+        self.active_fix_run_id: str | None = None
+        self.fix_lock = threading.Lock()
         self.pull_seq = 0
         self.last_pull_at: float | None = None
         self._fingerprint = self._take_fingerprint()
@@ -616,6 +742,7 @@ class _SyncManager:
                 # push, and the remote-pull leg of the watcher loop only
                 # runs while push_state == "idle".
                 self.push_state = "idle"
+                self.error_detail = []
 
     def stop(self) -> None:
         # Join, not just signal: every subprocess call in the loop carries its
@@ -649,6 +776,7 @@ class _SyncManager:
         if cli is None:
             self.push_state = "error"
             self.last_error = "the fused CLI is not available"
+            self.error_detail = []
             return
         # Baseline BEFORE the push: a save landing while the push runs must
         # re-arm the debounce, not vanish into the pushed snapshot.
@@ -667,18 +795,30 @@ class _SyncManager:
         except subprocess.TimeoutExpired:
             self.push_state = "error"
             self.last_error = f"`fused canvas push` timed out after {int(PUSH_TIMEOUT)}s"
+            self.error_detail = []
             return
         except OSError as e:
             self.push_state = "error"
             self.last_error = f"could not run the fused CLI: {e}"
+            self.error_detail = []
             return
         if proc.returncode != 0:
             self.push_state = "error"
             self.last_error = cli_error(proc.stderr or proc.stdout, "fused canvas push failed")
+            # Everything the CLI printed, one entry per line, capped so a
+            # pathological run can't grow the status payload without bound.
+            # Includes the summary line last_error already shows — the reader
+            # (UI list, fix prompt) wants the verbatim transcript, not a
+            # de-duplicated one.
+            lines = [ln.strip() for ln in
+                     ((proc.stderr or "") + "\n" + (proc.stdout or "")).splitlines()
+                     if ln.strip()]
+            self.error_detail = lines[:_ERROR_DETAIL_MAX]
             return
         self.push_seq += 1
         self.last_push_at = time.time()
         self.last_error = None
+        self.error_detail = []
         self.push_state = "idle"
 
     def _pull_if_remote_changed(self) -> None:
@@ -792,6 +932,8 @@ class _SyncManager:
             "pull_seq": self.pull_seq,
             "last_pull_at": self.last_pull_at,
             "error": self.last_error,
+            "error_detail": list(self.error_detail),
+            "fix_active": self.active_fix_run_id is not None,
         }
 
 
@@ -839,6 +981,92 @@ def api_canvases_sync_stop(body: dict = Body(...), x_fused: str | None = Header(
     return {"ok": True, "stopped": manager is not None}
 
 
+def _fix_prompt(name: str, detail: list[str], error: str | None) -> str:
+    """The first message of a fix session: the verbatim CLI output (never
+    reworded — rewording makes an error unsearchable, D328) plus what the
+    session must and must not do. The no-push rule matters most: the watcher
+    auto-pushes this folder on every quiet period, so a session that pushes
+    by hand races it, and a session that pushes --no-validate defeats the
+    reason it was spawned."""
+    report = "\n".join(detail) or (error or "the push failed")
+    return (
+        f"The automatic `fused workbench canvas push` for the canvas "
+        f"{name!r} (this folder) is failing. The CLI reported:\n\n"
+        f"{report}\n\n"
+        "Fix these problems in this folder's files. Check your work with "
+        "`fused workbench canvas validate .` until it passes. Do NOT run "
+        "`fused workbench canvas push` (with or without --no-validate) and "
+        "do not change the canvas name: fused-render watches this folder "
+        "and pushes automatically as soon as the files change."
+    )
+
+
+@router.post("/api/canvases/fix")
+def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Spawn a detached Claude session on the canvas clone, primed with the
+    failing push's own output (D336). Mirrors the apps API's session spawn
+    (routers/apps.py): the fork-safe helper, permission mode "auto" for the
+    same reason given there (nobody is polling `decide` until the page
+    attaches, so "prompt" would park the first tool call for an hour), and a
+    recorder thread so the run lands in the folder's session sidecar. The
+    caller attaches its chat iframe with the returned run_id.
+
+    `active_fix_run_id` guards against a concurrent second fixer on the same
+    clone — set the instant this spawn succeeds, cleared when the recorder
+    thread that follows it exits for any reason, never by a guess from
+    transcript activity. `fix_lock` covers the check-then-spawn-then-set
+    itself: spawn_helper's subprocess can run for seconds, wide open for two
+    concurrent requests (two workspace tabs) to both read "no active fix"
+    before either had set it."""
+    from fused_render import claude_spawn
+
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    manager = _sync_manager(name, create=False)
+    if manager is None or manager.push_state != "error":
+        # Nothing to fix: the button only renders on an error, so reaching
+        # this means the push recovered between the click and the POST.
+        return _error("this canvas has no failing push to fix", 409)
+    with manager.fix_lock:
+        if manager.active_fix_run_id is not None:
+            return _error("a fix is already running for this canvas", 409)
+        prompt = _fix_prompt(name, manager.error_detail, manager.last_error)
+        try:
+            res = claude_spawn.spawn_helper(manager.dir, prompt, "auto")
+        except Exception as exc:  # noqa: BLE001 — spawn failure is the answer
+            return _error(f"failed to start Claude session: {exc}", 500)
+        if res.get("error") or not res.get("run_id"):
+            return _error(str(res.get("error") or "failed to start Claude session"), 500)
+        run_id = str(res["run_id"])
+        manager.active_fix_run_id = run_id
+
+    def _run_recorder() -> None:
+        # load_agent() runs HERE, inside the background thread, rather than
+        # eagerly as a Thread(args=...) value in the request thread — if it
+        # raised there, active_fix_run_id would already be set with nothing
+        # left to clear it. The try/finally is what actually closes that
+        # hole: it clears the lock on the ordinary "done" exit AND on every
+        # abnormal one (an exception here, or record_session_when_ready
+        # hitting its poll cap without ever seeing done) — one path for all
+        # of them, rather than only the callback firing on success.
+        try:
+            claude_spawn.record_session_when_ready(claude_spawn.load_agent(), run_id)
+        except Exception:  # noqa: BLE001 — bookkeeping only, never re-raise
+            pass
+        finally:
+            if manager.active_fix_run_id == run_id:
+                manager.active_fix_run_id = None
+
+    threading.Thread(
+        target=_run_recorder, daemon=True, name="fused-canvas-fix-record",
+    ).start()
+    return {"ok": True, "run_id": run_id}
+
+
 @router.get("/api/canvases/sync/status")
 def api_canvases_sync_status(name: str = ""):
     if not _NAME_RE.fullmatch(name or ""):
@@ -847,5 +1075,6 @@ def api_canvases_sync_status(name: str = ""):
     if manager is None:
         return {"name": name, "watching": False, "push_state": "idle", "push_seq": 0,
                 "last_push_at": None, "pull_seq": 0, "last_pull_at": None,
-                "error": None, "dir": _canvas_dir(name)}
+                "error": None, "error_detail": [], "dir": _canvas_dir(name),
+                "fix_active": False}
     return manager.status()

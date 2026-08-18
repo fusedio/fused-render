@@ -186,7 +186,9 @@ export default function Scheduled() {
     if (q.get("new") !== "1") return;
     setEditId(q.get("edit"));
     setNewTarget(q.get("target"));
-    // The chat's whole handoff: the typed draft becomes the description, the
+    // The chat's whole handoff: the typed draft fills the card's two prose
+    // fields — its first line names the task and the rest is the description
+    // (NewJobModal splitDraft) — the
     // open conversation the session a ONE-OFF will continue, and the chat's URL
     // the way back — the form's round trip.
     setNewMessage(q.get("message"));
