@@ -168,6 +168,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     try {
       const { run_id } = await fixWithClaude(name);
       setFixRunId(run_id);
+      // Don't wait for the next poll (up to SYNC_POLL_MS away) to reflect
+      // that a fix is now running — the gap let a double-click through to a
+      // second POST (a 409, now that the server itself locks, but still a
+      // confusing one to show right after a successful click).
+      setSync((s) => (s ? { ...s, fix_active: true } : s));
     } catch (e) {
       setFixError((e as Error).message);
     } finally {

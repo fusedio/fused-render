@@ -9,6 +9,7 @@ tmp file via FUSED_RENDER_FUSED_CREDENTIALS.
 import json
 import os
 import sys
+import threading
 import time
 
 import pytest
@@ -643,24 +644,24 @@ def test_fix_endpoint_spawns_a_primed_claude_session(harness, monkeypatch):
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
-def test_fix_active_blocks_a_concurrent_fixer_until_the_run_completes(harness, monkeypatch):
+def test_fix_active_blocks_a_concurrent_fixer_until_the_recorder_exits(harness, monkeypatch):
     # fix_active is set the instant a fix spawns and is what a second click
     # gets 409'd against — never a guess from transcript activity, because
     # that has a grace window a slow tool call could hide inside (the bug
-    # this replaced). It only clears via the run's own completion callback.
+    # this replaced). It clears when the recorder thread exits, whatever the
+    # reason — here simulated by blocking record_session_when_ready on an
+    # Event so the test controls exactly when that is.
     from fused_render import claude_spawn
 
     _fail_push_with_validation(harness, monkeypatch)
-    on_tick_holder = {}
+    release = threading.Event()
     monkeypatch.setattr(
         claude_spawn, "spawn_helper",
         lambda target, prompt, mode, session_id="": {"run_id": "run-1"})
-
-    def _fake_record(agent, run_id, on_tick=None):
-        on_tick_holder["on_tick"] = on_tick
-
-    monkeypatch.setattr(claude_spawn, "record_session_when_ready", _fake_record)
     monkeypatch.setattr(claude_spawn, "load_agent", lambda: object())
+    monkeypatch.setattr(
+        claude_spawn, "record_session_when_ready",
+        lambda agent, run_id: release.wait(5))
 
     res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
     assert res.status_code == 200
@@ -672,10 +673,15 @@ def test_fix_active_blocks_a_concurrent_fixer_until_the_run_completes(harness, m
     res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
     assert res.status_code == 409
 
-    # Only the run's own completion (agent._poll's "done", fed through
-    # on_tick) clears it — simulate the background thread's final tick.
-    on_tick_holder["on_tick"]({"done": True})
-    status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    # The recorder thread exiting (for ANY reason — here, the fake unblocks)
+    # is what clears the lock, not a "done" observed mid-run.
+    release.set()
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["fix_active"] is False:
+            break
+        time.sleep(0.05)
     assert status["fix_active"] is False
 
     # A push still in error and no active fixer → a new fix is allowed again.
@@ -685,6 +691,86 @@ def test_fix_active_blocks_a_concurrent_fixer_until_the_run_completes(harness, m
     res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
     assert res.status_code == 200
     assert res.json()["run_id"] == "run-2"
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_fix_active_clears_even_when_the_recorder_never_sees_done(harness, monkeypatch):
+    # record_session_when_ready can return without ever observing "done" (its
+    # own poll cap, an exception, or — here — load_agent() itself blowing up
+    # inside the recorder thread). The lock must still clear: the fallback is
+    # the recorder thread exiting at all, not a specific outcome inside it.
+    from fused_render import claude_spawn
+
+    _fail_push_with_validation(harness, monkeypatch)
+    monkeypatch.setattr(
+        claude_spawn, "spawn_helper",
+        lambda target, prompt, mode, session_id="": {"run_id": "run-1"})
+
+    def _boom():
+        raise RuntimeError("agent.py failed to load")
+
+    monkeypatch.setattr(claude_spawn, "load_agent", _boom)
+
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200
+
+    deadline = time.time() + 5
+    status = None
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["fix_active"] is False:
+            break
+        time.sleep(0.05)
+    assert status["fix_active"] is False, status
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_fix_lock_serializes_concurrent_spawn_attempts(harness, monkeypatch):
+    # The check-then-spawn-then-set sequence used to run outside any lock, so
+    # two nearly-simultaneous clicks (two workspace tabs) could both read "no
+    # active fix" before either had set it, and both spawn a session onto the
+    # same clone. fix_lock makes that sequence atomic; this drives two REAL
+    # concurrent calls at the underlying endpoint function (bypassing the
+    # HTTP layer, same pattern as test_claude_permission_bridge's concurrent
+    # first-run test) to prove the second one blocks on the lock rather than
+    # racing through.
+    from fused_render import claude_spawn
+
+    _fail_push_with_validation(harness, monkeypatch)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def _slow_spawn(target, prompt, mode, session_id=""):
+        calls.append(1)
+        entered.set()
+        release.wait(5)
+        return {"run_id": f"run-{len(calls)}"}
+
+    monkeypatch.setattr(claude_spawn, "spawn_helper", _slow_spawn)
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: object())
+    monkeypatch.setattr(claude_spawn, "record_session_when_ready", lambda agent, run_id: None)
+
+    results = {}
+
+    def _call(key):
+        results[key] = canvases_mod.api_canvases_fix(body={"name": "alpha"}, x_fused="1")
+
+    t1 = threading.Thread(target=_call, args=("a",))
+    t1.start()
+    assert entered.wait(5), "first call never reached spawn_helper"
+    t2 = threading.Thread(target=_call, args=("b",))
+    t2.start()
+    t2.join(2)
+    # Still blocked on fix_lock — spawn_helper only ran once so far.
+    assert "b" not in results
+    assert len(calls) == 1
+    release.set()
+    t1.join(5)
+    t2.join(5)
+    assert len(calls) == 1, "a second spawn ran before the first released the lock"
+    assert isinstance(results["a"], dict) and results["a"]["ok"] is True
+    assert results["b"].status_code == 409
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 

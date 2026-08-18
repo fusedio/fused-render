@@ -684,14 +684,17 @@ class _SyncManager:
         # away the 4 lines that name the files. Kept verbatim so the fix
         # endpoint can hand them to a Claude session and the UI can list them.
         self.error_detail: list[str] = []
-        # Set the instant a "Fix with Claude" session is spawned, cleared by
-        # that session's own completion callback (agent._poll's `done`, D330
-        # follow-up) — never by a heuristic transcript-liveness read. A guess
-        # ("no recent transcript activity") has an inherent grace window that
-        # is fine for a status badge and wrong for a lock: a slow tool call
-        # mid-fix would read as "finished" and let a second click spawn a
-        # concurrent session on the same clone.
+        # Set the instant a "Fix with Claude" session is spawned, cleared when
+        # the recorder thread that follows it exits for ANY reason (D330
+        # follow-up) — done, an exception, or the poll cap — never guessed
+        # from transcript activity: a "no recent activity" read has a grace
+        # window that's fine for a status badge and wrong for a lock, since a
+        # slow tool call mid-fix would read as "finished". fix_lock makes the
+        # check-then-spawn-then-set atomic across concurrent requests (two
+        # workspace tabs); spawn_helper alone can run for seconds, wide open
+        # for both to pass the guard before either had set the id.
         self.active_fix_run_id: str | None = None
+        self.fix_lock = threading.Lock()
         self.pull_seq = 0
         self.last_pull_at: float | None = None
         self._fingerprint = self._take_fingerprint()
@@ -1009,12 +1012,12 @@ def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(defaul
     caller attaches its chat iframe with the returned run_id.
 
     `active_fix_run_id` guards against a concurrent second fixer on the same
-    clone — set the instant this spawn succeeds, cleared only by that run's
-    own completion callback (`agent._poll`'s `done`), never by a guess from
-    transcript activity. A heuristic "no recent activity" read has a grace
-    window that's fine for a status badge and wrong for a lock: a slow
-    `fused workbench canvas validate .` mid-fix would read as "finished" and
-    let a second click through onto the same files."""
+    clone — set the instant this spawn succeeds, cleared when the recorder
+    thread that follows it exits for any reason, never by a guess from
+    transcript activity. `fix_lock` covers the check-then-spawn-then-set
+    itself: spawn_helper's subprocess can run for seconds, wide open for two
+    concurrent requests (two workspace tabs) to both read "no active fix"
+    before either had set it."""
     from fused_render import claude_spawn
 
     guard = _require_fused(x_fused)
@@ -1028,27 +1031,38 @@ def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(defaul
         # Nothing to fix: the button only renders on an error, so reaching
         # this means the push recovered between the click and the POST.
         return _error("this canvas has no failing push to fix", 409)
-    if manager.active_fix_run_id is not None:
-        return _error("a fix is already running for this canvas", 409)
-    prompt = _fix_prompt(name, manager.error_detail, manager.last_error)
-    try:
-        res = claude_spawn.spawn_helper(manager.dir, prompt, "auto")
-    except Exception as exc:  # noqa: BLE001 — spawn failure is the answer
-        return _error(f"failed to start Claude session: {exc}", 500)
-    if res.get("error") or not res.get("run_id"):
-        return _error(str(res.get("error") or "failed to start Claude session"), 500)
-    run_id = str(res["run_id"])
-    manager.active_fix_run_id = run_id
+    with manager.fix_lock:
+        if manager.active_fix_run_id is not None:
+            return _error("a fix is already running for this canvas", 409)
+        prompt = _fix_prompt(name, manager.error_detail, manager.last_error)
+        try:
+            res = claude_spawn.spawn_helper(manager.dir, prompt, "auto")
+        except Exception as exc:  # noqa: BLE001 — spawn failure is the answer
+            return _error(f"failed to start Claude session: {exc}", 500)
+        if res.get("error") or not res.get("run_id"):
+            return _error(str(res.get("error") or "failed to start Claude session"), 500)
+        run_id = str(res["run_id"])
+        manager.active_fix_run_id = run_id
 
-    def _on_tick(data: dict) -> None:
-        if data.get("done") and manager.active_fix_run_id == run_id:
-            manager.active_fix_run_id = None
+    def _run_recorder() -> None:
+        # load_agent() runs HERE, inside the background thread, rather than
+        # eagerly as a Thread(args=...) value in the request thread — if it
+        # raised there, active_fix_run_id would already be set with nothing
+        # left to clear it. The try/finally is what actually closes that
+        # hole: it clears the lock on the ordinary "done" exit AND on every
+        # abnormal one (an exception here, or record_session_when_ready
+        # hitting its poll cap without ever seeing done) — one path for all
+        # of them, rather than only the callback firing on success.
+        try:
+            claude_spawn.record_session_when_ready(claude_spawn.load_agent(), run_id)
+        except Exception:  # noqa: BLE001 — bookkeeping only, never re-raise
+            pass
+        finally:
+            if manager.active_fix_run_id == run_id:
+                manager.active_fix_run_id = None
 
     threading.Thread(
-        target=claude_spawn.record_session_when_ready,
-        args=(claude_spawn.load_agent(), run_id),
-        kwargs={"on_tick": _on_tick},
-        daemon=True, name="fused-canvas-fix-record",
+        target=_run_recorder, daemon=True, name="fused-canvas-fix-record",
     ).start()
     return {"ok": True, "run_id": run_id}
 
