@@ -1679,12 +1679,64 @@ function TaskNode({
             that a reader has to pair up. `unread` is the merged count this row is
             DRAWING, so the ring hollows on the row's own press rather than on the
             next poll, and it is the count the tooltip names. */}
-        <StatusIcon
-          status={taskColumn(task)}
-          failed={task.failed}
-          unread={unread > 0}
-          count={unread}
-        />
+        {/* THE MARK SLOT: the ring at rest, the Archive button under the pointer,
+            in the same box (`.tasks-rowmark`, tasks.css).
+
+            The two used to be at opposite ends of the row — the ring in the rail
+            and Archive out by the folder chip — which made "file this away" a
+            control the reader had to travel to, and put a hover-revealed button
+            in the one part of the row that is already the busiest (id, folder,
+            two times). The swap costs nothing to read: a row being pointed at is
+            a row whose status the reader has just read, and it is the same
+            gesture every list of this shape uses.
+
+            The button is ABSOLUTELY positioned inside a slot sized to the ring,
+            so it is out of flow and no pixel of the row can move when it appears
+            — the rail (`--tasks-rail-x`), the thread's indent under it and the
+            caret's hit zone to its left are all untouched. */}
+        <span className="tasks-rowmark">
+          <StatusIcon
+            status={taskColumn(task)}
+            failed={task.failed}
+            unread={unread > 0}
+            count={unread}
+          />
+          {/* The Board's drag onto Archive, as a press — and there is no way
+              back, because Archive is a locked lane (tasks-lib.archiveIntent
+              decides both halves and refuses the reverse).
+
+              THE ONE ROW ACTION NOT BEHIND SHOW_ROW_ACTIONS (Akshil, 2026-08-18:
+              bring the archive button back, visible on hover). Filing a task away
+              had no press anywhere in the List while the strip was off — the only
+              route was switching to the Board, expanding the Archive lane and
+              dragging — which made the honest answer to "can a task be deleted?"
+              (no: it is archived) barely true on this view.
+
+              HOVER-REVEALED, not permanent: a list at rest must grow no chrome
+              (§2 — only critical actions get visible buttons), and this is one
+              button on every row that has ever run. `.tasks-act` in tasks.css
+              owns that, and it does it with `opacity` plus a `:focus-visible` arm
+              rather than `visibility`/`display`, so the button stays in the tab
+              order and lights up for a keyboard that lands on it. It is still not
+              rendered at all on a task with nothing to file, which is the
+              difference that matters: hidden-until-hover is for a live control,
+              not for a dead one. */}
+          {file && (
+            <button
+              type="button"
+              className="tasks-act tasks-act--archive"
+              title={file.title}
+              aria-label={file.label}
+              disabled={acting}
+              onClick={(e) => {
+                e.stopPropagation();
+                void archive();
+              }}
+            >
+              {ICON_ARCHIVE}
+            </button>
+          )}
+        </span>
         <IdChip id={task.task_id} kind="task" />
         {/* Greyed while the work is still ahead of it (tasks-lib.isUpcomingTask):
             a list is mostly history, and the rows that have not happened yet are
@@ -1702,13 +1754,12 @@ function TaskNode({
             right-hand group in the middle of the row instead of at its end. */}
         <span className="tasks-grow" />
 
-        {/* THE STRIP IS BEHIND SHOW_ROW_ACTIONS — with ONE exception, Archive,
-            which came back on 2026-08-18 (Akshil). Each button carries its own
-            guard rather than the group carrying one, so the four keep their
-            hard-won ORDER whichever of them are rendered: pulling Archive out into
-            a block of its own beside the flagged fragment would file it before Mark
-            read and Run now the day the flag flips, and the strip's order is read
-            left-to-right as "clear it, run it, file it, open it". */}
+        {/* THE STRIP IS BEHIND SHOW_ROW_ACTIONS, all of it. Archive is the one
+            row action that is live, and it is no longer part of this strip at all
+            — it moved into the mark slot at the row's leading edge on 2026-08-18
+            (see `.tasks-rowmark` above). Each button still carries its own guard
+            rather than the group carrying one, so the three keep their hard-won
+            ORDER whichever of them are rendered: "clear it, run it, open it". */}
         {/* The drag from Upcoming into In Progress, without the drag — and on
             a task that broke, the word for doing it again over whichever call
             can actually do it: run-now while a message is still pending,
@@ -1754,41 +1805,12 @@ function TaskNode({
             {run.rerun ? ICON_RERUN : ICON_PLAY}
           </button>
         )}
-        {/* The Board's drag onto Archive, as a press — and on an already
-            archived row, the way back, because an action with only one
-            direction is a trap. tasks-lib.archiveIntent decides both halves.
-
-            THE ONE ROW ACTION NOT BEHIND THE FLAG (Akshil, 2026-08-18: bring the
-            archive button back, visible on hover). Filing a task away had no press
-            anywhere in the List while the strip was off — the only route was
-            switching to the Board, expanding the Archive lane and dragging — which
-            made the honest answer to "can a task be deleted?" (no: it is archived)
-            barely true on this view.
-
-            HOVER-REVEALED, not permanent: a list at rest must grow no chrome
-            (§2 — only critical actions get visible buttons), and this is one
-            button on every row that has ever run. `.tasks-act` in tasks.css owns
-            that, and it does it with `opacity` plus a `:focus-visible` arm rather
-            than `visibility`/`display`, so the button stays in the tab order and
-            lights up for a keyboard that lands on it. It is still not rendered at
-            all on a task with nothing to file, which is the difference that
-            matters: hidden-until-hover is for a live control, not for a dead
-            one. */}
-        {file && (
-          <button
-            type="button"
-            className="tasks-act tasks-act--archive"
-            title={file.title}
-            aria-label={file.label}
-            disabled={acting}
-            onClick={(e) => {
-              e.stopPropagation();
-              void archive();
-            }}
-          >
-            {ICON_ARCHIVE}
-          </button>
-        )}
+        {/* ARCHIVE IS NOT HERE ANY MORE (2026-08-18). It sat between Run now and
+            Open chat, out by the folder chip; it is in the row's MARK SLOT now,
+            swapping with the status ring on hover (see `.tasks-rowmark` above).
+            The strip's remaining order still reads left-to-right as "clear it,
+            run it, open it", and the day SHOW_ROW_ACTIONS flips there is no
+            fourth button to find a place for. */}
         {/* The one gesture in this row that OPENS a MULTI-message conversation
             — so it is the one that also clears the thread, exactly as the Board
             card's click does: it lands the reader in the very thread this row's

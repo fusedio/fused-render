@@ -2546,11 +2546,41 @@ export function isMessageRunning(m: TaskMessage): boolean {
 }
 
 /**
+ * Has this message's run STARTED — is there a turn behind it at all?
+ *
+ * The three states that mean the scheduler has spent it: `sending` (spawned, no
+ * answer yet), `sent` (gone) and `error` (tried and broke). Everything else has
+ * never run and may never run — `pending` is a promise about the future,
+ * `missed`/`cancelled`/`skipped` are promises that expired. A PROJECTED
+ * occurrence (schedule-lib's ghosts: cron arithmetic, not rows) is only ever
+ * minted `pending` or `missed`, so it cannot pass this either.
+ */
+export function hasStarted(m: TaskMessage): boolean {
+  return m.state === "sending" || m.state === "sent" || m.state === "error";
+}
+
+/**
+ * The message a task's CURRENT work belongs to: the newest one that has actually
+ * started, or null on a task that has never run.
+ */
+export function activeMessage(task: Task): TaskMessage | null {
+  let best: TaskMessage | null = null;
+  for (const m of task.messages ?? []) {
+    if (!hasStarted(m)) continue;
+    // Read off `at` rather than off the array order: the answer wanted here is
+    // "the latest run", and `messages` being newest-first is a convention of the
+    // endpoint rather than something this rule should depend on.
+    if (!best || m.at > best.at) best = m;
+  }
+  return best;
+}
+
+/**
  * Is THIS message the work this task is doing right now?
  *
  * Two ways, and the second is what a live chat turn needs — including the one
  * a live TRANSCRIPT cannot see. A message can say so itself (above), and
- * otherwise the newest message borrows the task's own verdict: `taskColumn`
+ * otherwise the ACTIVE message borrows the task's own verdict: `taskColumn`
  * reads `task.status`, which the server derives in `_status` from THREE
  * independent signals (`_message_running`, `live`, and `schedule.busy_sessions`)
  * — not just the two (`state`/`turn`, `task.live`) this function could see on
@@ -2558,13 +2588,203 @@ export function isMessageRunning(m: TaskMessage): boolean {
  * `idle` still files the task `in_progress` while a scheduled send is in
  * flight (`busy_sessions`); asking `taskColumn` instead of re-deriving that
  * third signal here is what keeps the calendar chip agreeing with the List
- * and Board, which read the same `task.status`. Older messages in an
- * in-progress task are not running: their turns ended when the next prompt
- * arrived.
+ * and Board, which read the same `task.status`.
+ *
+ * THE ACTIVE MESSAGE IS NOT THE NEWEST ROW (bugbot, 2026-08-18). `at` is when a
+ * message is DUE, so on a recurring task the newest row is routinely tomorrow's
+ * `pending` occurrence — never run, and impossible as "what this task is doing
+ * now". It is the newest STARTED message (activeMessage). Older started messages
+ * are not running either: their turns ended when the next prompt arrived.
  */
 export function isRunningNow(task: Task, m: TaskMessage): boolean {
   if (isMessageRunning(m)) return true;
   if (taskColumn(task) !== "in_progress") return false;
-  const newest = task.messages?.[0];
-  return !!newest && !!m.message_id && m.message_id === newest.message_id;
+  // A message with no run behind it cannot be borrowing the task's verdict,
+  // whatever else is true — the belt to activeMessage's braces, and what makes
+  // the rule safe to ask of a projected occurrence.
+  if (!hasStarted(m)) return false;
+  const active = activeMessage(task);
+  return !!active && !!m.message_id && m.message_id === active.message_id;
+}
+
+/**
+ * Is any of these messages the work happening right now?
+ *
+ * What a CALENDAR CHIP has to ask, because a chip is not a message: it is one
+ * task on one DAY, anchored at that day's EARLIEST message with the rest of the
+ * day nested inside it (schedule-lib.taskChips). Asking only about the anchor
+ * asks about the wrong occurrence in both directions — a day whose 05:00 run has
+ * finished and whose 14:00 run is in flight is anchored on the finished one, and
+ * before this rule a task whose newest row was tomorrow's promise put the
+ * shimmer on TOMORROW's chip. A chip is running when anything under it is.
+ */
+export function isRunningIn(task: Task, messages: TaskMessage[]): boolean {
+  return messages.some((m) => isRunningNow(task, m));
+}
+
+// ---- the sidebar's two-number summary of this page ----------------------------
+// The Tasks entry in the global sidebar has to say two things without being the
+// page: something is RUNNING, and something FINISHED that nobody has looked at.
+// Both are read off the very rows the page draws (`taskColumn` — the server's
+// status, narrowed, so the sidebar cannot invent a sixth state), never off a
+// second endpoint of their own.
+//
+// WHY "done and unread" IS NOT JUST "unread". Unread exists on rows that are
+// still going and on rows nobody ever expected to read; the signal being asked
+// for here is the completion of work the reader was waiting on, which is exactly
+// `done` + `unread > 0`. `failed` is deliberately NOT counted: it is a status of
+// its own on this page (see taskColumn), and a green "go and look" mark over a
+// run that broke would be the one place in the app where a hue disagreed with
+// the ring the row wears (design-principles §1).
+
+/** Where the sidebar's dismissal lives. Per COMPLETION, not per task — see
+ *  TasksSeen. */
+export const TASKS_SEEN_KEY = "fused-render:tasks-seen";
+
+/**
+ * Which completions the reader has already been shown, as `task key ->
+ * last_active`.
+ *
+ * The value is what makes "the same completions" a checkable claim. A bare set
+ * of keys would dismiss a task FOREVER — the second time it ran and finished,
+ * the mark it earned would be swallowed by the first visit's dismissal. The
+ * task's `last_active` moves with every new message, so a stored stamp that no
+ * longer matches means "this is a different completion" and the mark comes back.
+ *
+ * A stamp rather than a global watermark for the same reason from the other
+ * side: catch-up runs can finish out of order (Scheduled.tsx's docstring — work
+ * that came due while the app was closed runs when it opens), and one
+ * high-water mark would silently swallow every completion stamped before it.
+ */
+export type TasksSeen = Record<string, number>;
+
+/** What came out of localStorage is a string written by SOMEONE ELSE (an older
+ *  build, a hand-edited devtools row): anything unreadable degrades to "nothing
+ *  dismissed" — one extra dot — rather than throwing inside a render. */
+export function parseTasksSeen(raw: string | null): TasksSeen {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: TasksSeen = {};
+  for (const [key, at] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof at === "number" && Number.isFinite(at)) out[key] = at;
+  }
+  return out;
+}
+
+/**
+ * Has this task finished work nobody has READ?
+ *
+ * The state, with no dismissal in it. This is what the expanded sidebar's count
+ * prints, and it falls only when the work is actually read — visiting the page
+ * does not make a number about unread work untrue.
+ */
+export function isDoneUnread(task: Task): boolean {
+  return taskColumn(task) === "done" && task.unread > 0;
+}
+
+/**
+ * The same completion, NOT YET SHOWN to the reader: the state above, minus what
+ * a visit to the page has already stamped (TasksSeen).
+ *
+ * The two exist apart because a count and a dot are different kinds of
+ * statement. A COUNT is a standing fact — "three finished things are waiting" —
+ * and it is still true after you have glanced at the list; it goes away by being
+ * dealt with. A DOT is an interruption, and an interruption that survives the
+ * reader going where it points is just a decoration. So the collapsed rail's dot
+ * clears on the visit and the expanded row's chip does not, and neither is a bug
+ * in the other (Akshil, 2026-08-18).
+ */
+export function isUnseenCompletion(task: Task, seen: TasksSeen): boolean {
+  return isDoneUnread(task) && seen[task.key] !== task.last_active;
+}
+
+export interface TasksPulse {
+  /** Tasks whose work is in flight — the yellow half, in both modes. */
+  running: number;
+  /** Tasks that finished with something unread, dismissal or no dismissal —
+   *  the expanded row's count chip. */
+  doneUnread: number;
+  /** Of those, the ones the reader has not been shown yet — the collapsed
+   *  rail's green dot, which a visit to /tasks clears. */
+  unseen: number;
+}
+
+export const EMPTY_TASKS_PULSE: TasksPulse = { running: 0, doneUnread: 0, unseen: 0 };
+
+/** The whole sidebar signal, from the rows the page already has. */
+export function tasksPulse(tasks: Task[], seen: TasksSeen): TasksPulse {
+  let running = 0;
+  let doneUnread = 0;
+  let unseen = 0;
+  for (const t of tasks) {
+    if (taskColumn(t) === "in_progress") {
+      running++;
+      continue;
+    }
+    if (!isDoneUnread(t)) continue;
+    doneUnread++;
+    if (isUnseenCompletion(t, seen)) unseen++;
+  }
+  return { running, doneUnread, unseen };
+}
+
+export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
+  return a.running === b.running && a.doneUnread === b.doneUnread && a.unseen === b.unseen;
+}
+
+/**
+ * The dismissal a visit to /tasks earns: every DONE task on screen, stamped with
+ * the completion that was on screen — MERGED over what was already known.
+ *
+ * Done tasks only. A running task is deliberately not stamped: its completion
+ * has not happened yet, and pre-dismissing it is how the one mark this feature
+ * exists for would never be drawn.
+ *
+ * A MERGE, NOT A REPLACEMENT (bugbot, 2026-08-18). Rebuilding the map out of the
+ * done rows alone silently dropped the stamp of any task that was momentarily
+ * something else — a finished task that has just been re-run reads `in_progress`
+ * for the length of that run, and the old rule threw its stamp away mid-run, so
+ * the PREVIOUS completion popped back as unseen the moment the new one landed.
+ * Anything this answer still lists keeps what was known about it.
+ *
+ * The PRUNE is the answer's own membership: a key absent from `tasks` is
+ * dropped, so the row cannot grow without bound as tasks come and go. That is
+ * only sound against a REAL answer — tasksPulse.markTasksSeen refuses to run
+ * this before the first fetch has landed, because an empty store and an empty
+ * machine are not the same fact.
+ */
+export function seenAfterVisit(tasks: Task[], prev: TasksSeen = {}): TasksSeen {
+  const next: TasksSeen = {};
+  for (const t of tasks) {
+    if (taskColumn(t) === "done") next[t.key] = t.last_active;
+    else if (prev[t.key] !== undefined) next[t.key] = prev[t.key];
+  }
+  return next;
+}
+
+export function sameSeen(a: TasksSeen, b: TasksSeen): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((k) => a[k] === b[k]);
+}
+
+/** "2 running" — the expanded row's yellow readout. Plural because one is the
+ *  common case and "1 running" is what a person would say out loud. */
+export function runningLabel(n: number): string {
+  return `${n} running`;
+}
+
+/** The collapsed dot's tooltip, and the expanded chip's — the sidebar's ONE
+ *  sentence about the page, so the two modes cannot describe it differently. */
+export function pulseTitle(pulse: TasksPulse): string {
+  const parts: string[] = [];
+  if (pulse.running > 0) parts.push(runningLabel(pulse.running));
+  if (pulse.doneUnread > 0) parts.push(`${pulse.doneUnread} finished, not read`);
+  return parts.join(" · ");
 }
