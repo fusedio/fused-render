@@ -96,7 +96,6 @@ import { navigateUrl } from "@platform/lib/router";
 import { useSelfFixReadiness } from "@platform/lib/hooks";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import {
-  CLAUDE_MISSING_ERROR,
   failureContextFromJob,
   fixSessionUrl,
   startSelfFix,
@@ -294,17 +293,17 @@ function FixButton({ job, onError }: { job: Job; onError: (msg: string | null) =
   //
   // Claude-missing wins, because without the CLI neither mode runs. Preferences
   // says both in sentences; a row has space for a verb, so the verb changes.
-  const { readOnly, claudeMissing } = useSelfFixReadiness();
+  const { readOnly, claudeMissing, recheck } = useSelfFixReadiness();
 
+  // THE CLICK ALWAYS ASKS THE SERVER, even when we believe Claude is missing.
+  // Short-circuiting on the cached answer looked like an obvious saving — we
+  // know the outcome, why spend the spawn — and it was the one thing this
+  // button must not do: it tells the user to go and install Claude Code, so the
+  // state it cached is the state it is asking them to change, and the retry
+  // that followed was answered from a belief formed before they acted. The
+  // wasted spawn on a machine that really has no CLI is a fast failure and the
+  // right price for a retry that works.
   const start = async () => {
-    if (claudeMissing) {
-      // ANSWERED, NOT ATTEMPTED. We already know the spawn's outcome, so
-      // spending it would cost the user a wait to be told something we could
-      // have said at once — and the row renders the identical card either way,
-      // because this is the identical sentence (CLAUDE_MISSING_ERROR).
-      onError(CLAUDE_MISSING_ERROR);
-      return;
-    }
     setBusy(true);
     onError(null);
     try {
@@ -322,6 +321,8 @@ function FixButton({ job, onError }: { job: Job; onError: (msg: string | null) =
       onError(String((e as Error)?.message || e));
     } finally {
       setBusy(false);
+      // The attempt is the moment the answer may have just changed.
+      recheck();
     }
   };
 

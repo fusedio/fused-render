@@ -121,14 +121,16 @@ print(json.dumps(mod._start(req["file"], req["message"], req["session_id"], "", 
 """
 
 
-# What the user is told when the CLI is not on this machine. A NAMED constant
-# because a second surface says it too: a caller that can check the precondition
-# BEFORE spawning (SPEC §43, SF-13f) answers with this instead of spending a
-# doomed subprocess, and `tests/test_trouble_parity.py` pins the shell's copy to
-# it. One fact, one sentence, wherever the user meets it — and the wording is
-# load-bearing beyond politeness, since "Claude Code isn't installed" is what
-# lib/trouble.ts classifies as `notfound` to put the install command and the
-# troubleshooting link on the card.
+# What the user is told when the CLI is not on this machine. Named rather than
+# inlined because the WORDING IS LOAD-BEARING and nothing else says so: "Claude
+# Code isn't installed" is the NAMED pattern lib/trouble.ts classifies as
+# `notfound`, which is what puts the install command and the troubleshooting link
+# on the card the user sees. Reword this and the card silently degrades to a bare
+# error string.
+#
+# This is the ONLY place the sentence lives. A pre-check that knew the CLI was
+# missing (SPEC §43, SF-13f) still routes its click through here rather than
+# answering from a copy, so there is no second copy to keep in step.
 CLAUDE_MISSING_ERROR = (
     "Claude Code isn't installed (or couldn't be found). "
     "Install it, check that `claude` runs in a terminal, then "

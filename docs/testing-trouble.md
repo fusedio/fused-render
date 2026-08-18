@@ -217,15 +217,19 @@ FUSED_RENDER_CLAUDE_BIN=/nonexistent PATH=/usr/bin:/bin scripts/dev.sh
 ```
 
 - **A failed download row** reads **Set up Claude Code**, not *Fix this*.
-  Clicking it shows the `notfound` card **immediately** — no spinner, because
-  nothing is spawned.
+  Clicking it still asks the server and shows the `notfound` card from the
+  server's own answer.
 - **Preferences → Fix this app** says a session runs on Claude Code and it isn't
   installed; its button reads *Set up Claude Code* and needs no description
   typed first (there is nothing to describe yet).
-- The card is the **same** one you get from case 1 by letting a spawn fail —
-  same sentence, same install command, same `#troubleshooting-notfound` link.
-  That is pinned by `tests/test_trouble_parity.py`; if the two ever differ, the
-  test is what tells you.
+- The card is the **same** one you get from case 1, necessarily: there is one
+  copy of that sentence (`claude_spawn.CLAUDE_MISSING_ERROR`) and the click goes
+  through it either way.
+- **THE RETRY IS THE CASE THAT MATTERS.** With the app still running, put the CLI
+  back on the PATH (or clear `FUSED_RENDER_CLAUDE_BIN`) and click again **without
+  reloading**. A session must start. This is the trap the label-vs-decision split
+  exists for: the button told the user to install Claude Code, so it must notice
+  when they did. The label catches up on the same click.
 - **Regression to watch:** being signed out must NOT be pre-checked. Sign out
   with the CLI present and the row must still read *Fix this* — the app cannot
   know, and a button that guessed would be wrong the moment you signed back in.

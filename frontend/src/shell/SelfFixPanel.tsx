@@ -31,7 +31,6 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { Field, TextArea } from "@platform/ui/field/fields";
 import { useSelfFixReadiness } from "@platform/lib/hooks";
 import {
-  CLAUDE_MISSING_ERROR,
   clearSelfFix,
   describedProblemIsSendable,
   failureContextFromNote,
@@ -76,15 +75,12 @@ function DescribeSection({
   // whether Claude Code exists on the machine is a fact about the MACHINE, and
   // it lives on /api/config beside the other things every surface checks
   // (SF-13f).
-  const { claudeMissing } = useSelfFixReadiness();
+  const { claudeMissing, recheck } = useSelfFixReadiness();
 
+  // Asks the server on every click, cached belief or not — see FixButton in
+  // platform/ui/DownloadManager for why a short-circuit here trapped exactly the
+  // user who did what the button told them to.
   const start = async () => {
-    if (claudeMissing) {
-      // Answered rather than attempted — same sentence the spawn would have
-      // returned, so this card and that one are the same card.
-      setError(CLAUDE_MISSING_ERROR);
-      return;
-    }
     setBusy(true);
     setError(null);
     try {
@@ -102,6 +98,7 @@ function DescribeSection({
       setError(String((e as Error)?.message || e));
     } finally {
       setBusy(false);
+      recheck();  // the user may have just installed what this told them to
     }
   };
 

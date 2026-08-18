@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 import { createElement, type ReactElement } from "react";
 import type { Config } from "@platform/lib/api";
-import type { SelfFixReadiness } from "@platform/lib/hooks";
+import type { SelfFixReadinessState } from "@platform/lib/hooks";
 
 // --- the module boundary ------------------------------------------------------
 let reply: () => Promise<Config>;
@@ -56,8 +56,12 @@ const { useSelfFixReadiness, resetSelfFixReadiness } = await import("@platform/l
 const config = (over: Partial<Config> = {}) => ({ version: "1.2.3", ...over }) as Config;
 
 /** Mount the hook and expose its latest return value. */
-function mount(): { current: () => SelfFixReadiness; unmount: () => void } {
-  let latest: SelfFixReadiness = { readOnly: false, claudeMissing: false };
+function mount(): { current: () => SelfFixReadinessState; unmount: () => void } {
+  let latest: SelfFixReadinessState = {
+    readOnly: false,
+    claudeMissing: false,
+    recheck: () => {},
+  };
   const Probe = (): ReactElement | null => {
     latest = useSelfFixReadiness();
     return null;
@@ -138,7 +142,8 @@ describe("useSelfFixReadiness", () => {
     reply = () => Promise.resolve(config({ read_only: true, claude_missing: true }));
     const probe = mount();
     await settle();
-    expect(probe.current()).toEqual({ readOnly: true, claudeMissing: true });
+    expect(probe.current().readOnly).toBe(true);
+    expect(probe.current().claudeMissing).toBe(true);
     expect(calls).toBe(1);
     probe.unmount();
   });
@@ -148,8 +153,50 @@ describe("useSelfFixReadiness", () => {
     // would report every healthy machine as broken.
     const probe = mount();
     await settle();
-    expect(probe.current()).toEqual({ readOnly: false, claudeMissing: false });
+    expect(probe.current().readOnly).toBe(false);
+    expect(probe.current().claudeMissing).toBe(false);
     probe.unmount();
+  });
+
+  test("recheck notices that the user installed what the button asked for", async () => {
+    // THE BUG THIS EXISTS FOR. The button says "Set up Claude Code", so the one
+    // state it caches is the one state it is asking the user to change — and
+    // before `recheck`, a user who did exactly that and clicked again in the
+    // same tab was still told the binary was missing until they reloaded.
+    reply = () => Promise.resolve(config({ claude_missing: true }));
+    const probe = mount();
+    await settle();
+    expect(probe.current().claudeMissing).toBe(true);
+
+    reply = () => Promise.resolve(config());          // they installed it
+    await act(async () => {
+      probe.current().recheck();
+    });
+    await settle();
+    expect(probe.current().claudeMissing).toBe(false);
+    expect(calls).toBe(2);                            // asked again, not guessed
+    probe.unmount();
+  });
+
+  test("recheck drops the SHARED cache, so every row agrees about one machine", async () => {
+    reply = () => Promise.resolve(config({ claude_missing: true }));
+    const first = mount();
+    const second = mount();
+    await settle();
+    expect(calls).toBe(1);
+
+    reply = () => Promise.resolve(config());
+    await act(async () => {
+      first.current().recheck();
+    });
+    await settle();
+    // One re-read, and the row that did not ask for it sees the new answer too:
+    // three failed rows must not disagree about whether Claude is installed.
+    expect(calls).toBe(2);
+    expect(first.current().claudeMissing).toBe(false);
+    expect(second.current().claudeMissing).toBe(false);
+    first.unmount();
+    second.unmount();
   });
 
   test("three failed rows ask ONCE, not three times", async () => {
