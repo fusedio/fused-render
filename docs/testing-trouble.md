@@ -49,7 +49,13 @@ For every case:
    who was not sitting here.
 4. The help link opens the download page **on the matching tab**, not at the
    top of the page.
-5. Nothing red. These are warnings — the app is running.
+5. **Copy Claude Code instructions** puts a *different* block on the clipboard —
+   a brief for an agent, not a description for a person. Read it: it must say
+   where to look. When the app knows its install path it states it; when it does
+   not (the boot failure, case 4) it gives the commands that find it, plus
+   `~/.fused-render` and the log glob. A brief with no directory in it is the
+   regression to watch — an agent handed one guesses or asks (TR-11).
+6. Nothing red. These are warnings — the app is running.
 
 ## Automated
 

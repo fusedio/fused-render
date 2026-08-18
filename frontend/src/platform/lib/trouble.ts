@@ -134,6 +134,58 @@ export function troubleReport(ctx: TroubleContext): string {
 }
 
 
+/** How to find the installation when we cannot state it.
+ *
+ * THE BOOT FAILURE IS THE CASE THAT CANNOT DESCRIBE ITSELF: `/api/config` is
+ * what failed, so there is no version, no platform and — the one that matters
+ * here — no install path. A brief that says "something around Fused Render is
+ * broken, please fix it" and names no directory sends an agent to look for an
+ * app it has no way to locate; it will guess, or ask, and both cost the user
+ * the minutes this button exists to save.
+ *
+ * So the path is a FACT when we have it and a TASK when we do not. These are
+ * ordered by how likely they are to answer: the import is definitive if the
+ * interpreter is the one the app runs on, the package metadata covers the pip
+ * and uv installs, and the bundle glob covers the DMG, which is the one install
+ * where nothing on PATH points at the app at all.
+ */
+export const FIND_INSTALL_COMMANDS: string[] = [
+  'python3 -c "import fused_render, os; print(os.path.dirname(fused_render.__file__))"',
+  "pip show fused-render        # also try: pip3, uv pip show, pipx list",
+  "ls -d /Applications/FusedRender.app/Contents/Resources/lib/python3.*/fused_render",
+];
+
+/** User data — NOT the installation, and the distinction is load-bearing: a
+    reinstall replaces one and never touches the other. It holds the template
+    registry, which is itself one of the four failures here (§43). */
+export const USER_DATA_DIR = "~/.fused-render";
+
+/** This session's log. Per-pid in the system temp dir (fused_render/logs.py),
+    so it is a glob rather than a path, and `-t` puts the live one first. */
+export const LOG_LIST_COMMAND =
+  'ls -t "${TMPDIR:-/tmp}"/fused-render-*.log | head -3';
+
+/** The "where to look" section of the agent brief. */
+function whereToLook(ctx: TroubleContext): string[] {
+  const lines = ["Where to look on this machine:"];
+  if (ctx.install_root) {
+    lines.push(`- The installed app: ${ctx.install_root}`);
+  } else {
+    lines.push(
+      "- I do not know where the app is installed — the failure above is what",
+      "  would have told me. Find it first, and say which command answered:"
+    );
+    FIND_INSTALL_COMMANDS.forEach((cmd) => lines.push(`    ${cmd}`));
+  }
+  lines.push(
+    `- Settings, the template registry and the staged core templates: ${USER_DATA_DIR}`,
+    "  (a different place from the installation — a reinstall does not touch it)",
+    `- This session's log: ${LOG_LIST_COMMAND}`,
+    ""
+  );
+  return lines;
+}
+
 /** The block behind "Copy Claude Code instructions".
  *
  * A DIFFERENT DOCUMENT from `troubleReport`, and the difference is the reader.
@@ -167,6 +219,7 @@ export function troubleInstructions(ctx: TroubleContext): string {
     ],
     raw: [
       "Work out what this error is actually about before changing anything.",
+      "If the app's own server is what failed (a fetch error, a 5xx, a refused connection), check whether fused-render is still running and read the log named above before assuming the app itself is broken.",
       "If it names a path, check whether that path exists and is writable.",
       "Tell me the smallest change that would fix it, and what to check afterwards.",
     ],
@@ -187,6 +240,7 @@ export function troubleInstructions(ctx: TroubleContext): string {
   if (ctx.platform) facts.push(`Platform: ${ctx.platform}`);
   if (ctx.python) facts.push(`Python: ${ctx.python}`);
   if (facts.length) lines.push(...facts, "");
+  lines.push(...whereToLook(ctx));
   lines.push("Please:");
   steps[kind].forEach((step, i) => lines.push(`${i + 1}. ${step}`));
   lines.push(

@@ -8846,10 +8846,35 @@ const TROUBLE_STEPS = {
   ],
   raw: [
     "Work out what this error is actually about before changing anything.",
+    "If the app's own server is what failed (a fetch error, a 5xx, a refused connection), check whether fused-render is still running and read the log named above before assuming the app itself is broken.",
     "If it names a path, check whether that path exists and is writable.",
     "Tell me the smallest change that would fix it, and what to check afterwards.",
   ],
 };
+
+// Twin of FIND_INSTALL_COMMANDS / USER_DATA_DIR / LOG_LIST_COMMAND in
+// lib/trouble.ts. This page never knows where the app is installed — it is a
+// template rendered inside it — so the brief always has to say how to find it.
+const TROUBLE_FIND_INSTALL = [
+  'python3 -c "import fused_render, os; print(os.path.dirname(fused_render.__file__))"',
+  "pip show fused-render        # also try: pip3, uv pip show, pipx list",
+  "ls -d /Applications/FusedRender.app/Contents/Resources/lib/python3.*/fused_render",
+];
+const TROUBLE_USER_DATA_DIR = "~/.fused-render";
+const TROUBLE_LOG_LIST = 'ls -t "${TMPDIR:-/tmp}"/fused-render-*.log | head -3';
+
+function troubleWhereToLook() {
+  const lines = ["Where to look on this machine:",
+    "- I do not know where the app is installed — the failure above is what",
+    "  would have told me. Find it first, and say which command answered:"];
+  TROUBLE_FIND_INSTALL.forEach((cmd) => lines.push("    " + cmd));
+  lines.push(
+    "- Settings, the template registry and the staged core templates: " + TROUBLE_USER_DATA_DIR,
+    "  (a different place from the installation — a reinstall does not touch it)",
+    "- This session's log: " + TROUBLE_LOG_LIST,
+    "");
+  return lines;
+}
 
 function troubleInstructions(what, error) {
   const kind = troubleKind(error);
@@ -8864,6 +8889,7 @@ function troubleInstructions(what, error) {
     "",
   ];
   if (FILE) lines.push("Chat target: " + FILE, "");
+  lines.push.apply(lines, troubleWhereToLook());
   lines.push("Please:");
   TROUBLE_STEPS[kind].forEach((step, i) => lines.push((i + 1) + ". " + step));
   lines.push("",

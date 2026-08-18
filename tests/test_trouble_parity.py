@@ -87,10 +87,33 @@ def test_the_agent_instructions_match_step_for_step():
     tells an agent what to run is exactly the kind of thing that drifts — one
     gets a better first command and the other quietly keeps the worse one."""
     shell, template = _shell(), _template()
-    steps = re.findall(r'"((?:Check whether|Confirm|Sign in|Work out|If it|Do not|Tell me)[^"]+)"', shell)
-    assert len(steps) >= 10, f"expected the four step lists, found {len(steps)}"
+    steps = re.findall(r'"((?:Check whether|Confirm|Sign in|Work out|If it|If the|Do not|Tell me)[^"]+)"', shell)
+    assert len(steps) >= 11, f"expected the four step lists, found {len(steps)}"
     for step in steps:
         assert step in template, f"step missing from the chat template: {step[:60]!r}"
+
+
+def test_both_tell_an_agent_where_to_find_the_installation():
+    """The brief is useless without a directory (TR-11).
+
+    An agent handed "something around Fused Render is broken" and no path has
+    nowhere to start — and the boot failure, which is the case most likely to
+    produce this brief, is precisely the one that cannot state a path, because
+    `/api/config` is what failed. Both copies therefore carry the same way to
+    FIND it, and a find command that exists in one copy only means the chat and
+    the shell send agents looking in different places."""
+    shell, template = _shell(), _template()
+    for command in (
+        'import fused_render, os; print(os.path.dirname(fused_render.__file__))',
+        "pip show fused-render",
+        "/Applications/FusedRender.app/Contents/Resources/lib/python3.*/fused_render",
+    ):
+        assert command in shell, f"missing from the shell: {command[:50]!r}"
+        assert command in template, f"missing from the chat template: {command[:50]!r}"
+    # The user-data dir is a DIFFERENT place from the install, and the brief
+    # says so in both — a reinstall replaces one and never touches the other.
+    for text in ("~/.fused-render", 'fused-render-*.log'):
+        assert text in shell and text in template
 
 
 def test_both_gate_the_shapes_on_the_message_being_about_claude():
