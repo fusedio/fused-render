@@ -903,6 +903,20 @@ export function renameEntry(src: string, dst: string, overwrite = false): Promis
   return noteAfter([src, dst], postJson<StatResult>("/api/fs/rename", { src, dst, overwrite }));
 }
 
+// Move an entry INTO or OUT OF the OS bin. Same guards and same error contract
+// as renameEntry (it delegates to the very same handler server-side), plus one
+// thing a plain rename cannot do: it keeps the bin's own bookkeeping straight —
+// on Linux the freedesktop `.trashinfo` sidecar is written when the entry moves
+// into the trash and removed when it moves back out.
+//
+// This is the primitive undo/redo uses for a `"delete"` op, and the only reason
+// it is separate from renameEntry: the sidecar is server-side knowledge, so the
+// undo stack stays a list of plain path pairs and picks a primitive by kind
+// (explorer/lib/fs-undo's applyFsOp) rather than learning what a trash is.
+export function trashMove(from: string, to: string): Promise<StatResult> {
+  return noteAfter([from, to], postJson<StatResult>("/api/fs/trash-move", { from, to }));
+}
+
 // Copy src -> dst (paste-of-a-copy, and Duplicate). Same 409-on-existing-dst
 // rule as rename; a directory copied into itself/a descendant is a 400.
 export function copyEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {

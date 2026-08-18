@@ -13,10 +13,17 @@
 // false of the recoverable one: `_move_to_trash` (server/fs_mutate.py) trashes by
 // `os.rename(path, ~/.Trash/<deduped name>)` — WE compute the destination — so a
 // trash delete is already a rename whose two ends are both named. The server
-// reports that destination as `trashed_to`, undo renames the entry out of
-// ~/.Trash and back to where it was, redo renames it in again. Nothing new is
-// introduced here for it: no restore API, no special case in applyFsOp or
-// invertFsOp, and the `"delete"` kind exists for the toast's wording alone.
+// reports that destination as `trashed_to`, undo renames the entry out of the
+// trash and back to where it was, redo renames it in again.
+//
+// It renames through `trashMove` rather than `renameEntry`, and that is the ONE
+// thing the `"delete"` kind changes: WHICH primitive applyFsOp calls. Both are
+// the same rename under the same guards; the trash one additionally keeps the
+// bin's own bookkeeping straight (the freedesktop `.trashinfo` sidecar on Linux),
+// which is knowledge the server has and this module deliberately does not. So
+// there is still no restore API, no branch in invertFsOp, no second notion of
+// what a pair means — a pair is two absolute paths in both directions, and the
+// kind picks the verb that moves between them.
 //
 // Everything else the explorer can do is deliberately NOT here:
 //
@@ -43,7 +50,7 @@
 // move would be reading a component that no longer exists — the same reason the
 // clipboard and the in-flight drag are module-level stores (lib/fs-clipboard,
 // listing/drag-drop).
-import { renameEntry } from "@platform/lib/api";
+import { renameEntry, trashMove } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
 import { friendlyFsError } from "@apps/explorer/lib/fs-actions";
 
@@ -53,10 +60,11 @@ export interface FsPair {
 }
 
 export interface FsOp {
-  // Only for the toast's wording ("Undid the move" / "Undid the rename" /
-  // "Undid the delete"). The mechanics are identical — which is exactly why all
-  // three are here, and a `"delete"` that needed a branch anywhere below would
-  // mean the symmetry claim in the header is false.
+  // The toast's wording ("Undid the move" / "Undid the rename" / "Undid the
+  // delete") and, for `"delete"` only, which endpoint applyFsOp renames through
+  // (trashMove instead of renameEntry — see the header). That is the whole of the
+  // difference between the kinds: anything else that needed to branch on this
+  // field would mean the symmetry claim in the header is false.
   kind: "move" | "rename" | "delete";
   // The pairs that ACTUALLY LANDED, in the order they were written. Recording
   // the intended batch instead would try to un-move entries that never moved:
@@ -319,7 +327,9 @@ export function relocationToast(
 // silently restoring "report.csv" as "report copy.csv" would be a second
 // relocation dressed as an undo. So the rename asks for the recorded path with
 // overwrite off, and a name that has since been taken comes back as a 409 for
-// the caller to say out loud.
+// the caller to say out loud. Both endpoints hold that line: /api/fs/trash-move
+// delegates to the rename handler with overwrite off and does not accept the
+// flag at all.
 //
 // IT DOES NOT STOP AT THE FIRST PER-PATH FAILURE, and that is a deliberate
 // departure
@@ -354,10 +364,16 @@ export function relocationToast(
 // be nested in each other, and order is the only thing keeping that sound.
 export async function applyFsOp(op: FsOp): Promise<FsOpReport> {
   const report: FsOpReport = { done: [], failed: [], pending: [] };
+  // THE ONE BRANCH ON `kind`, and it chooses a verb rather than a code path: a
+  // trash delete moves through /api/fs/trash-move, which is the same rename under
+  // the same guards plus the bin's own bookkeeping (see the header). Everything
+  // after this line is identical for every kind — the ordering, the per-path vs
+  // systemic split, the report — because the pairs are the same kind of data.
+  const move = op.kind === "delete" ? trashMove : renameEntry;
   for (let i = 0; i < op.pairs.length; i++) {
     const pair = op.pairs[i];
     try {
-      await renameEntry(pair.from, pair.to);
+      await move(pair.from, pair.to);
       report.done.push(pair);
     } catch (error) {
       report.failed.push({ pair, error });
