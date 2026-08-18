@@ -717,6 +717,54 @@ def test_trash_move_into_the_trash_writes_the_sidecar(tmp_path, monkeypatch):
     assert "DeletionDate=" in info
 
 
+
+def test_trash_move_redo_sidecar_is_as_private_as_the_delete_path(tmp_path, monkeypatch):
+    # A REDO is the delete happening again, so it must not leave the bin more
+    # exposed than the delete did. This branch used to use Path.write_text and a
+    # bare mkdir, both of which take the umask (0644/0755), publishing the entry's
+    # Path= and DeletionDate= to every local account on a shared host — the exact
+    # posture the delete path sets 0700/0600 to avoid. (Cursor Bugbot, PR #592.)
+    trash = _xdg_trash_root(monkeypatch, tmp_path)
+    (trash / "info").rmdir()  # so the mode WE create it with is observable
+    src = tmp_path / "a.txt"
+    src.write_text("x")
+    dst = trash / "files" / "a.txt"
+    _data(TRASH_MOVE({"from": str(src), "to": str(dst)}, x_fused="1"))
+    info = trash / "info" / "a.txt.trashinfo"
+    assert info.exists()
+    assert stat.S_IMODE(info.stat().st_mode) == 0o600
+    assert stat.S_IMODE((trash / "info").stat().st_mode) == 0o700
+
+
+def test_trash_move_redo_leaves_an_existing_info_dir_alone(tmp_path, monkeypatch):
+    # Same rule as the delete path: we set modes on what we CREATE and never
+    # re-permission a directory the user (or their desktop) already made. The
+    # sidecar itself is still created 0600.
+    trash = _xdg_trash_root(monkeypatch, tmp_path)
+    os.chmod(trash / "info", 0o755)
+    src = tmp_path / "a.txt"
+    src.write_text("x")
+    _data(TRASH_MOVE({"from": str(src), "to": str(trash / "files" / "a.txt")}, x_fused="1"))
+    assert stat.S_IMODE((trash / "info").stat().st_mode) == 0o755  # untouched
+    assert stat.S_IMODE((trash / "info" / "a.txt.trashinfo").stat().st_mode) == 0o600
+
+
+def test_trash_move_redo_overwrites_a_stale_sidecar(tmp_path, monkeypatch):
+    # The semantics the mode change must not disturb: this is deliberately NOT an
+    # exclusive create. The name was decided by the recorded pair and the rename
+    # proved it free in files/, so an info file still sitting there is stale and
+    # gets replaced — including being TRUNCATED, not appended to.
+    trash = _xdg_trash_root(monkeypatch, tmp_path)
+    stale = trash / "info" / "a.txt.trashinfo"
+    stale.write_text("[Trash Info]\nPath=/somewhere/else/entirely-and-much-longer\n")
+    src = tmp_path / "a.txt"
+    src.write_text("x")
+    _data(TRASH_MOVE({"from": str(src), "to": str(trash / "files" / "a.txt")}, x_fused="1"))
+    body = stale.read_text()
+    assert f"Path={src}\n" in body
+    assert "entirely-and-much-longer" not in body  # truncated, not left trailing
+
+
 def test_trash_move_out_of_the_trash_removes_the_sidecar(tmp_path, monkeypatch):
     # Undo of a delete: the entry goes home, so its metadata must not linger
     # describing something that is no longer in files/.

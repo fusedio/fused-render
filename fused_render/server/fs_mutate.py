@@ -1180,14 +1180,28 @@ def _fs_trash_move(body: dict, x_fused: str | None):
         _unlink_quietly(info_out)
     if info_in is not None:
         try:
-            info_in.parent.mkdir(parents=True, exist_ok=True)
-            # Plain write, not O_EXCL. The exclusive create in _move_to_xdg_trash
-            # is there to CLAIM a free name; here the name was already decided by
-            # the recorded pair and the rename above proved it free in `files/`
-            # (an occupied one is a 409), so an info file still sitting there is
-            # stale and describes an entry that no longer exists.
-            info_in.write_text(_trashinfo_body(src, datetime.datetime.now()),
-                               encoding="utf-8")
+            # 0700/0600, the SAME modes the delete path creates the trash with
+            # (_move_to_xdg_trash). A redo is the delete happening again, so it must
+            # not leave the bin more exposed than the original did: `write_text` and
+            # a bare mkdir take the umask (0644/0755), which would publish this
+            # entry's `Path=` and `DeletionDate=` to every local account. Only the
+            # directory WE create is given a mode — an existing trash root stays
+            # exactly as the user or their desktop made it, as in the delete path.
+            info_in.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Plain write, not O_EXCL — deliberately. The exclusive create in
+            # _move_to_xdg_trash is there to CLAIM a free name; here the name was
+            # already decided by the recorded pair and the rename above proved it
+            # free in `files/` (an occupied one is a 409), so an info file still
+            # sitting there is stale and describes an entry that no longer exists.
+            # O_CREAT|O_TRUNC rather than write_text so the mode is set AT CREATE
+            # TIME instead of being left to the umask and chmod'd afterwards (a
+            # window where the file is readable), and closed in a finally so a
+            # failed write cannot leak the descriptor.
+            fd = os.open(info_in, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, _trashinfo_body(src, datetime.datetime.now()).encode("utf-8"))
+            finally:
+                os.close(fd)
         except OSError:
             # Same reasoning as above, mirrored: the entry IS in the bin, and
             # saying otherwise would be false. A missing sidecar costs the entry
