@@ -502,7 +502,8 @@ def _force_unmount(mp: str) -> str | None:
     last = ""
     for cmd in attempts:
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=15,
+                               encoding="utf-8", errors="replace")
             last = (r.stderr or r.stdout or "").strip()
         except (OSError, subprocess.TimeoutExpired) as e:
             last = str(e)

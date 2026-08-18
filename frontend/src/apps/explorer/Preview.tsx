@@ -6,7 +6,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  getDeployStatus,
   rawUrl,
   resolveConditions,
   renameEntry,
@@ -17,11 +16,9 @@ import {
   resetRegistryBinding,
   repairTemplateRegistry,
 } from "@platform/lib/api";
-import type { Deployment, StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
+import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { navigate, navigateUrl, urlForFsPath, replaceSearch, IS_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
-import { useRefreshOnReturn } from "@platform/lib/hooks";
-import { useDeployEnabled } from "@platform/lib/prefs";
 import {
   dirname,
   join,
@@ -77,7 +74,6 @@ import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
-import DeployModal from "@platform/cloud/DeployModal";
 import Listing from "@apps/explorer/Listing";
 
 // The window global the injected runtime calls to hand this shell the commit the
@@ -468,14 +464,6 @@ function useConditions(fsPath: string, templates: TemplateEntry[]): Record<strin
   return verdicts;
 }
 
-// --- Deploy button (SPEC §19) -----------------------------------------------
-// Header action for deployable pages: any file whose mode list carries the
-// "_render" sentinel (i.e. a renderable page — the exact set /api/export
-// accepts). Shows a live dot when the local deployment pointer reads active;
-// the pointer is a cheap local read (no CLI shell-out) — the modal is what
-// reconciles against `share list`. A user who rebinds .html away from
-// "_render" loses the button too, consistently with losing the rendered view.
-
 // --- Held-frame mode swap (A1) ----------------------------------------------
 // How long the incoming preview frame takes to fade in over the outgoing one.
 // Must match `--dur-med` in shell.css (the CSS owns the actual transition; this
@@ -485,59 +473,6 @@ const FRAME_FADE_MS = 150;
 // (a /render 500, a wedged template daemon) must not strand the user on the
 // previous mode's content forever — past this the swap completes regardless.
 const FRAME_SWAP_TIMEOUT_MS = 4000;
-
-const DEPLOY_ICON = (
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 19V5" />
-    <path d="M5 12l7-7 7 7" />
-  </svg>
-);
-
-function DeployButton({ fsPath }: { fsPath: string }) {
-  const [open, setOpen] = useState(false);
-  const [deployment, setDeployment] = useState<Deployment | null>(null);
-
-  // Local pointer only (reconcile=false): opening a preview must never spawn
-  // the fused CLI. Errors are ignored — the button then just shows no dot.
-  // The pointer can change without this view remounting — a revoke from the
-  // Preferences page in ANOTHER tab, or any out-of-band /api/deploy/revoke
-  // (same-tab navigation remounts the view via the nav epoch, so it needs no
-  // handling). Re-read on focus/visibility regain (useRefreshOnReturn): a
-  // cheap local JSON read, the bookmarks-poll freshness posture (D77)
-  // without a timer.
-  const aliveDot = useRef(true);
-  useEffect(() => () => {
-    aliveDot.current = false;
-  }, []);
-  const refreshDot = () => {
-    getDeployStatus(fsPath, false)
-      .then((r) => {
-        if (aliveDot.current) setDeployment(r.deployment);
-      })
-      .catch(() => {});
-  };
-  useEffect(refreshDot, [fsPath]); // initial read (and per-file)
-  useRefreshOnReturn(refreshDot);
-
-  const live = deployment?.status === "active";
-  return (
-    <>
-      <button
-        type="button"
-        className={"deploy-btn" + (live ? " live" : "")}
-        title={live ? "Deployed — open the Deploy dialog to manage" : "Deploy this page to a hosted URL"}
-        onClick={() => setOpen(true)}
-      >
-        {DEPLOY_ICON}
-        Deploy
-        {live && <span className="deploy-live-dot" />}
-      </button>
-      {open && (
-        <DeployModal fsPath={fsPath} onClose={() => setOpen(false)} onChange={setDeployment} />
-      )}
-    </>
-  );
-}
 
 // The shell-level revision indicator: what a content pane wears while it is
 // showing a PAST commit instead of the live file.
@@ -867,7 +802,6 @@ function TemplatePreview({
     // `sideKeys` is in the deps because a landing verdict is what makes a
     // previously-fine `_side` stale.
   }, [splitCapable, split.offered, split.defaultSide, sideReq.open, activeSide, sideKeys]);
-  const deployEnabled = useDeployEnabled();
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
   // renders through this same header + body chrome (even a plain folder's
@@ -1213,22 +1147,9 @@ function TemplatePreview({
           toggles it off first (the template treats a click on the selected row as
           "deselect"), so getting the revision back takes a second click. */}
       {rev && <RevisionPill sha={rev} onLive={() => setRevSel(null)} />}
-      {/* Deployable = the mode list carries the "_render" sentinel AND the
-          file is .html/.htm — the exporter's actual contract. The extension
-          check matters because a registry rebind can put "_render" on any
-          type (D73), but /api/export and /api/deploy/preview accept only
-          .html/.htm — the button must not open a modal that can't deploy.
-          Directories never deploy (no _render binding exists for one today;
-          the guard keeps that true even if a registry ever says otherwise).
-          Gated on the opt-in Deploy pref (Preferences → Deployments): hidden
-          entirely unless the user has turned Deploy on. */}
       {/* Showcase app: Clone copies it into Fused/local so catalog refreshes
           never touch your copy. */}
       {communitySlug && !stat.is_dir && <CloneCommunityButton slug={communitySlug} />}
-      {!stat.is_dir &&
-        deployEnabled &&
-        templates.some((t) => t.mode === "_render") &&
-        /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
       {/* One mode control per view, and for an explorer FOLDER it is the
           preview pane's, not this one. The pane header carries a ModeMenu of
           its own beside the previewed row (ListingPreviewPane), so a folder
@@ -1657,7 +1578,7 @@ interface PreviewProps {
   // Chrome-free render (the /learn page): no preview header, no mode switcher —
   // the content fills the body directly.
   hideHeader?: boolean;
-  // Explorer variant: no preview header bar; the mode switcher/deploy actions
+  // Explorer variant: no preview header bar; the mode switcher actions
   // portal into the breadcrumb bar's #topbar-mode-slot instead.
   actionsInTopbar?: boolean;
   // Bumps StatView's reloadKey to re-fetch /api/fs/stat in place (App.tsx).

@@ -242,7 +242,8 @@ def _decode_system(file, frac, max_cells):
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
     r = subprocess.run([py, "-c", _SYS_WORKER],
                        input=json.dumps({"file": file, "frac": frac, "max_cells": max_cells}),
-                       capture_output=True, text=True, timeout=120, env=env)
+                       capture_output=True, text=True, timeout=120, env=env,
+                       encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise T.Unsupported(f"system engine failed: {r.stderr[-400:]}")
     d = json.loads(r.stdout.strip().splitlines()[-1])

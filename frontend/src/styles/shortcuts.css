@@ -83,16 +83,3 @@
     grid-template-columns: 1fr;
   }
 }
-
-/* Quiet disclosure for always-on boilerplate (e.g. the deploy public-link
-   note) so it doesn't compete with the primary action. */
-.deploy-disclosure > summary {
-  cursor: pointer;
-  color: var(--fg-muted);
-  font-size: 12px;
-}
-
-.deploy-disclosure > *:not(summary) {
-  margin-top: 6px;
-}
-

@@ -70,7 +70,7 @@ def _sources_payload() -> list:
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
     # Same D3 guard as server._require_fused (a custom header forces a CORS
     # preflight that fails cross-origin, blocking blind foreign writes).
-    # Duplicated locally like shell/bookmarks.py / deploy.py do.
+    # Duplicated locally like shell/bookmarks.py does.
     if x_fused != "1":
         return JSONResponse({"error": "missing or invalid X-Fused header"}, status_code=403)
     return None
@@ -682,9 +682,9 @@ _COPY_CHUNK = 64 * 1024  # bounded read size during extraction (zip-bomb guard)
 _IMPORT_ID_RE = re.compile(r"^[0-9a-f]{8,}$")  # secrets.token_hex output shape
 
 
-# The unpack guards live in `zip_import` — one implementation shared with app cloning
-# (fused_render/app_clone.py), which accepts an archive from a pasted URL and needs exactly
-# the same protections. Aliased here so this module's call sites (and its tests) keep their
+# The unpack guards live in `zip_import` — one implementation shared with community.py's
+# showcase-repo download, which also unpacks an untrusted archive and needs exactly the
+# same protections. Aliased here so this module's call sites (and its tests) keep their
 # existing names; the behaviour is unchanged.
 _ImportTooLarge = zip_import.ZipTooLarge
 _is_symlink_entry = zip_import.is_symlink_entry

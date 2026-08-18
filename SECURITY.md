@@ -118,17 +118,21 @@ Treat these the same as any other tool that fetches pinned third-party
 binaries on demand: review the source before relying on it in a sensitive
 environment.
 
-## Fused account / hosted deploy
+## Hosted deploy via the `fused` CLI
 
-Signing in (Preferences' Fused account tab, `/view/_prefs?tab=account` —
-D111/D112, D125) shells out to the external `fused`
-CLI (`fused cloud login`) rather than implementing OAuth in-process.
-fused-render never reads or writes a credential itself — the JWT and any
-data-plane keys live entirely in the CLI's own credential file and OS
-keyring. This does not add authentication to fused-render itself; it only
-lets the app drive deploys to Fused's managed backend. Deployed pages are
-served as **public capability links** — anyone with the URL can view them —
-which is a deliberate v1 trade-off (D78), not an oversight.
+Publishing a page to a hosted URL is a manual, terminal-only workflow: export
+a bundle with `POST /api/export`, then run the external `fused` CLI directly
+(`fused share create`) against it. fused-render used to broker this in-app —
+a Preferences "Fused account" sign-in tab (`/view/_prefs?tab=account` —
+D111/D112, D125) that shelled out to `fused cloud login`, and a preview-header
+"Deploy" button that drove `fused share` — but both surfaces (and
+`fused_render/account.py`/`fused_render/deploy.py`) are removed; fused-render
+no longer shells out to the `fused` CLI or reads/writes any of its
+credentials itself. The JWT and any data-plane keys still live entirely in
+the CLI's own credential file and OS keyring, managed only by the user
+running the CLI directly. Deployed pages are still served as **public
+capability links** — anyone with the URL can view them — which remains a
+deliberate v1 trade-off (D78), not an oversight.
 
 ## Secrets at rest
 
