@@ -1558,6 +1558,13 @@ export function firstRuleSlot(rule: RecurrenceRule, anchor: Date): Date | null {
   return first;
 }
 
+// Midnight-safe start of the minute `d` falls in, as epoch ms. Field arithmetic
+// rather than `- (seconds * 1000)`, for the reason schedule-lib's day helpers give:
+// a constructed local date cannot be knocked into the wrong hour by a DST edge.
+const startOfMinute = (d: Date) =>
+  new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes())
+    .getTime();
+
 // The note the when-row prints, or null for silence. Silence is the answer for
 // a future time, and also for the two repeats with no anchor to catch up FROM:
 // a legacy cron template (`create` computes its first run from now by
@@ -1585,10 +1592,6 @@ export function pastNoteFor(
   const first = firstRuleSlot(rule, picked);
   return first !== null && first.getTime() < cutoff ? PAST_NOTE_CATCH_UP : null;
 }
-
-const startOfMinute = (d: Date) =>
-  new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes())
-    .getTime();
 
 // ---- The first message ---------------------------------------------------
 // TITLE AND DESCRIPTION ARE ONE MESSAGE (Akshil, 2026-08-18). The card collects
