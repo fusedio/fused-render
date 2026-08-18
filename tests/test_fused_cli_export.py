@@ -151,6 +151,24 @@ def _spawn(agent, monkeypatch, target, tmp_path):
     return seen["cmd"]
 
 
+def _spawn_kw(agent, monkeypatch, target, tmp_path):
+    """Like `_spawn`, but returns the Popen kwargs instead of the argv —
+    for asserting on the child env rather than the CLI flags."""
+    seen = {}
+
+    class _Proc:
+        pid = 4242
+
+    agent.RUNS = str(tmp_path / "runs")
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent.subprocess, "Popen",
+                        lambda cmd, **kw: (seen.__setitem__("kw", kw),
+                                           _Proc())[1])
+    out = agent._start(str(target), "hi", "", "", "")
+    assert "error" not in out, out
+    return seen["kw"]
+
+
 def test_no_exported_cli_means_no_rule_and_no_promise(agent, tmp_path,
                                                       monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_FUSED_CLI_DIR", raising=False)
@@ -183,6 +201,24 @@ def test_an_exported_cli_pre_allows_bare_fused_and_discloses_it(
     cmd2 = _spawn(agent, monkeypatch, folder, tmp_path)
     assert "`fused` CLI is on PATH" in cmd2[
         cmd2.index("--append-system-prompt") + 1]
+
+
+def test_spawn_strips_ambient_fused_env_so_the_wrapper_default_still_fires(
+        agent, tmp_path, monkeypatch):
+    """The wrapper only defaults FUSED_ENV when unset (test above), so an
+    ambient value inherited from the SERVER's own process would look exactly
+    like a deliberate `FUSED_ENV=x fused ...` and silently skip the workbench
+    default — diverging from canvases.py's own runs, which always force
+    FUSED_ENV=WORKBENCH_ENV regardless of ambient state. The spawn must not
+    hand that ambient value down."""
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", str(tmp_path / "bin"))
+    monkeypatch.setenv("FUSED_ENV", "some-unrelated-env")
+    target = tmp_path / "notes.txt"
+    target.write_text("hi", encoding="utf-8")
+    kw = _spawn_kw(agent, monkeypatch, target, tmp_path)
+    assert "FUSED_ENV" not in kw["env"]
+    # Nothing else about the inherited environment is disturbed.
+    assert kw["env"]["FUSED_RENDER_FUSED_CLI_DIR"] == str(tmp_path / "bin")
 
 
 def test_mcp_config_written(agent, tmp_path, monkeypatch):

@@ -1689,6 +1689,17 @@ def _start(file: str, message: str, session_id: str, model: str,
 
     stdin_path = os.path.join(run_dir, "stdin.jsonl")
     stdin_fh = open(stdin_path, "rb") if message_via_stdin else None
+    # The session must not inherit an ambient FUSED_ENV from the server's own
+    # process: the `fused` wrapper (fusedcli._wrapper_text) only DEFAULTS
+    # FUSED_ENV when unset, so a value already present here — say the server
+    # itself was launched from a shell that exports FUSED_ENV for unrelated
+    # reasons — would look exactly like a deliberate `FUSED_ENV=x fused ...`
+    # from the model and skip the workbench default, silently diverging from
+    # canvases.py's own runs (`_cli_env` always forces FUSED_ENV=WORKBENCH_ENV,
+    # ambient or not). Popping it here is what makes "unset" in the wrapper
+    # mean what the model actually typed on that command line.
+    spawn_env = os.environ.copy()
+    spawn_env.pop("FUSED_ENV", None)
     try:
         with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
              _private_open(os.path.join(run_dir, "err.log")) as err:
@@ -1699,6 +1710,7 @@ def _start(file: str, message: str, session_id: str, model: str,
             proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                     cwd=_workdir(file),
                                     stdin=stdin_fh or subprocess.DEVNULL,
+                                    env=spawn_env,
                                     **_DETACH)
     finally:
         if stdin_fh is not None:
