@@ -116,7 +116,7 @@ console.log(JSON.stringify(calls));
     assert _node(script) == ["focused", "focused"]
 
 
-# -- The card grids (D343) -----------------------------------------------------
+# -- The card grids (D348) -----------------------------------------------------
 #
 # The same contract, one surface further out: a LIVE CARD THUMBNAIL is a picture
 # of an app, and focus inside a frame scrolls that frame into view — a scroll

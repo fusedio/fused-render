@@ -10,7 +10,7 @@
 //     stand down when focus is on a chrome control (useListingSelection), so
 //     opening a preview stopped you browsing file to file with the keyboard:
 //     Down/Up did nothing, because the keystrokes were going to the frame.
-//   * THE CARD GRIDS (D343). Focusing an element inside a frame also SCROLLS
+//   * THE CARD GRIDS (D348). Focusing an element inside a frame also SCROLLS
 //     that frame into view, and the scroll propagates out to the embedder's
 //     own scroll container. A card thumbnail that mounted mid-scroll and took
 //     focus therefore yanked /apps to whatever row that card sits in — the

@@ -81,7 +81,13 @@
 [project]
 name = "fused-render-runner-mlx-whisper"
 version = "0.1.0"
-requires-python = ">=3.10"
+# 3.11, not the >=3.10 every other runner declares: onnxruntime dropped 3.10
+# at 1.28 (the VAD line below pins >=1.28 for Silero parity with the
+# CTranslate2 runner), and `uv sync`'s UNIVERSAL resolution refuses the whole
+# project if any version in the declared range is unsatisfiable — the build
+# failed on a machine running 3.12, over a 3.10 nobody was using. Same edit in
+# parakeet_mlx, the other runner that names onnxruntime.
+requires-python = ">=3.11"
 dependencies = [
     "mlx-whisper>=0.4,<0.5",
     "huggingface_hub",
