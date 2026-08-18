@@ -549,6 +549,10 @@ def test_recycle_bin_request_is_double_null_terminated_with_allowundo():
     assert flags & 0x0040  # FOF_ALLOWUNDO
     assert flags & 0x0010  # FOF_NOCONFIRMATION
     assert flags & 0x0004  # FOF_SILENT
+    # NOERRORUI, without which a locked file raises an unowned error dialog that
+    # SHFileOperationW waits on — parking a worker of the bounded threadpool these
+    # sync routes run on. With it, the failure returns an rc we can report.
+    assert flags & 0x0400  # FOF_NOERRORUI
 
 
 def test_delete_win32_recycles_and_reports_no_destination(tmp_path, monkeypatch):

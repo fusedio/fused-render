@@ -821,6 +821,7 @@ _FO_DELETE = 0x0003
 _FOF_SILENT = 0x0004
 _FOF_NOCONFIRMATION = 0x0010
 _FOF_ALLOWUNDO = 0x0040
+_FOF_NOERRORUI = 0x0400
 
 
 class _SHFILEOPSTRUCTW(ctypes.Structure):
@@ -857,7 +858,19 @@ def _recycle_bin_request(path: str) -> tuple[str, int]:
     # erase; NOCONFIRMATION and SILENT keep the shell from putting its own dialog
     # and progress window in front of a local web app's delete, which the app has
     # already decided (and, for the hard delete, confirmed itself).
-    return path + "\0\0", _FOF_ALLOWUNDO | _FOF_NOCONFIRMATION | _FOF_SILENT
+    #
+    # NOERRORUI IS NOT OPTIONAL HERE, and it is the flag that keeps this a SERVER
+    # call. The other two suppress confirmations and progress only: a locked or
+    # in-use file still raises an ERROR dialog, and with `hwnd = NULL` that dialog
+    # is unowned — SHFileOperationW does not return until somebody dismisses it.
+    # These are synchronous FastAPI routes running on a BOUNDED anyio threadpool,
+    # so one such delete parks a worker indefinitely and takes a slice of the
+    # server's concurrency with it, over a dialog nobody may even be able to see.
+    # With NOERRORUI the failure comes back as a nonzero `rc` and becomes the 500
+    # this backend is written to report.
+    return path + "\0\0", (
+        _FOF_ALLOWUNDO | _FOF_NOCONFIRMATION | _FOF_SILENT | _FOF_NOERRORUI
+    )
 
 
 def _shell32():
