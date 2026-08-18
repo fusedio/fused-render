@@ -179,12 +179,15 @@ export default function Canvases() {
     const shown = q
       ? canvases.filter((c) => c.name.toLowerCase().includes(q))
       : canvases.slice();
-    // Last-modified first; canvases we know nothing about (not cloned) last,
-    // alphabetically.
+    // Last-modified first (local clone mtime, else the server's last_updated);
+    // canvases we know nothing about last, alphabetically.
+    const modified = (c: CanvasEntry) => c.mtime ?? c.updated_at;
     shown.sort((a, b) => {
-      if (a.mtime !== null && b.mtime !== null) return b.mtime - a.mtime;
-      if (a.mtime !== null) return -1;
-      if (b.mtime !== null) return 1;
+      const am = modified(a);
+      const bm = modified(b);
+      if (am !== null && bm !== null) return bm - am;
+      if (am !== null) return -1;
+      if (bm !== null) return 1;
       return a.name.localeCompare(b.name);
     });
     return shown;
@@ -217,7 +220,9 @@ export default function Canvases() {
                     autoFocus
                     placeholder="new_canvas_name"
                     value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
+                    // Spaces aren't legal in canvas names — typing one lands
+                    // an underscore instead of silently disabling Create.
+                    onChange={(e) => setNewName(e.target.value.replace(/\s+/g, "_"))}
                     disabled={createBusy}
                   />
                   <button
@@ -294,7 +299,16 @@ export default function Canvases() {
                 disabled={busy !== null || createBusy}
               >
                 <span className="canvas-card-thumb">
-                  {canvas.name.charAt(0).toUpperCase()}
+                  {canvas.preview_url ? (
+                    <img
+                      className="canvas-card-img"
+                      src={canvas.preview_url}
+                      alt=""
+                      loading="lazy"
+                    />
+                  ) : (
+                    canvas.name.charAt(0).toUpperCase()
+                  )}
                   {canvas.cloned && <span className="canvas-card-pill">cloned</span>}
                 </span>
                 <span className="canvas-card-body">
