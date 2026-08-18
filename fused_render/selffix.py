@@ -413,7 +413,18 @@ def dismissed_digest() -> str:
 
 
 def session_path() -> str:
-    return os.path.join(state_dir(), SESSION_NAME)
+    """Beside the reports, not beside the marker — `records_dir()`, so that it
+    still exists on a read-only installation.
+
+    It reads like state about an installation, which is why it originally sat in
+    the state dir with the marker. But a marker is a CLAIM about the tree and has
+    to die with it; this is a pointer the guard needs in order to work, and on a
+    read-only install the guard is needed just as much — a diagnostic session
+    holds the tree open for reading exactly as long as a fixing one does. Left in
+    the state dir it silently failed to write there (`note_session` is
+    best-effort by design), quietly costing the long-session half of the guard on
+    the one kind of install where the user cannot investigate why."""
+    return os.path.join(records_dir(), SESSION_NAME)
 
 
 def note_session(run_id: str) -> None:

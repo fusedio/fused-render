@@ -99,6 +99,11 @@ export interface SelfFixStart {
   target: string;
   incident: string;
   report: string;
+  /** The installation is read-only, so this session can only DIAGNOSE (SF-13).
+      Present only when true — there is no `diagnostic: false` shape, for the
+      same reason `modified_install` has no false: the ordinary session is the
+      one that can write. */
+  diagnostic?: boolean;
 }
 
 // What the session is told is wrong — from EITHER of the two ways in.
@@ -277,11 +282,28 @@ export function maySchedule(issued: PollGen, now: PollGen): boolean {
   return issued.chain === now.chain;
 }
 
+/** Whether a started session earns the fast poll cadence.
+ *
+ * A predicate rather than an inline `!started.diagnostic`, because it is the
+ * one line of this module that a test can reach without a fetch — and the thing
+ * it decides is invisible when wrong: nothing breaks, the chip just polls twelve
+ * times a minute for half an hour looking for a badge that cannot appear.
+ */
+export function shouldNoteStart(started: SelfFixStart): boolean {
+  return !started.diagnostic;
+}
+
 export async function startSelfFix(context: FailureContext): Promise<SelfFixStart> {
   const started = await postJson<SelfFixStart>("/api/selffix/start", context);
-  // Only after the server said yes: a refused start (a read-only install) is
-  // not a session anyone should be polling for.
-  noteFixStarted();
+  // Only after the server said yes, and NOT for a diagnostic session (SF-13).
+  //
+  // What this stamp buys is the fast cadence: for the next half hour the
+  // version chip polls every 5s instead of every 60, so a badge appears while
+  // the user is still watching the session that earned it. A diagnostic session
+  // cannot earn one — it runs on an installation it cannot write to, and
+  // nothing stamps a marker for it — so the stamp would buy 360 extra polls of
+  // a value that is guaranteed not to change.
+  if (shouldNoteStart(started)) noteFixStarted();
   return started;
 }
 
