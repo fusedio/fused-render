@@ -818,10 +818,14 @@
     flex: 1;
     min-width: 0;
   }
+  /* TASK-023 (see showSession) — tabular figures for the same reason the
+     composer block's `.sb-id` has them: the same identifier must not shift
+     width as its digits change. */
   #session {
     color: var(--faint);
     font-size: 11px;
     letter-spacing: .3px;
+    font-variant-numeric: tabular-nums;
   }
   #back {
     background: transparent;
@@ -8382,9 +8386,58 @@ fetch("/api/prefs").then((r) => r.json()).then((p) => {
 // because `split` changed.
 fused.params.onChange(() => { applySplit(); applyLeftMode(); applyNarrowView(); renderAnn(); });
 
+// ── the name in the header ──────────────────────────────────────────────────
+//
+// A session IS a task, 1:1 (tasks_store), and the name that task answers to
+// everywhere else in this app — the List row, the calendar chip, the composer
+// block a few hundred lines below — is TASK-nnn. This corner used to print the
+// first eight characters of the session uuid, which names the same object in a
+// vocabulary nothing else on screen speaks: a reader could not carry `a3f91c0d`
+// to the Tasks page, and could not quote it to anyone, because no other surface
+// prints it. TASK-023 is a DESIGNED identifier — allocated once, never reused —
+// and it is what the header shows now.
+//
+// The numbers are allocated per project by tasks_store and only /api/tasks
+// hands them out, so this is a fetch. Cached per session id and never
+// refetched for one: a number does not change once allocated, so a poll would
+// buy nothing. The hash paints first and stays up until the number lands,
+// which also makes the answer to a slow listing "the old label", not a gap.
+//
+// FAILS OPEN to the hash, like everything else that reads this listing: an
+// unreadable /api/tasks, or a session so new the listing has not seen it yet,
+// costs the better name and never the cell. Nothing is cached on that path, so
+// the next showSession tries again.
+const taskIds = new Map();
+let taskIdBusy = "";
+
 function showSession() {
   const id = fused.params.get("session_id");
-  sessionEl.textContent = id ? id.slice(0, 8) : "";
+  sessionEl.textContent = (id && taskIds.get(id)) || (id ? id.slice(0, 8) : "");
+  // The full session id stays reachable for the reader who actually wants it
+  // (a log line, a bug report) without spending header width on it.
+  sessionEl.title = id || "";
+  if (id) loadTaskId(id);
+}
+
+async function loadTaskId(id) {
+  if (taskIds.has(id) || taskIdBusy === id) return;
+  taskIdBusy = id;
+  try {
+    const res = await fetch("/api/tasks");
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    const task = ((data && data.tasks) || []).find((t) => t && t.key === id);
+    const num = task && task.task_id ? String(task.task_id) : "";
+    if (!num) return;
+    taskIds.set(id, num);
+    // The session may have changed while this was in flight; showSession reads
+    // the CURRENT one, so a stale answer paints nothing.
+    showSession();
+  } catch (err) {
+    /* the hash stands */
+  } finally {
+    if (taskIdBusy === id) taskIdBusy = "";
+  }
 }
 showSession();
 
