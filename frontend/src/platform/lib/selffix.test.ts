@@ -61,6 +61,7 @@ const {
   overtakeReads,
   restartChain,
   selffixPollInterval,
+  shouldNoteStart,
   unlistedReports,
   POLL_GEN_START,
   POLL_IDLE_MS,
@@ -370,4 +371,15 @@ test("a fix that wrote no report cannot swallow one that did", () => {
   const only = report("real.md");
   const m = marker({ fixes: [fix(null)] });
   expect(unlistedReports([only], m).map((r) => r.name)).toEqual(["real.md"]);
+});
+
+test("a diagnostic start does not arm the fast poll", () => {
+  // The stamp buys a 5s cadence for half an hour so a badge appears while the
+  // user is still watching. A diagnostic session runs on an installation it
+  // cannot write to and nothing stamps a marker for it, so the same cadence
+  // buys 360 extra polls of a value guaranteed not to move (SF-13).
+  expect(shouldNoteStart({ run_id: "r", target: "/x", incident: "/i", report: "/r" })).toBe(true);
+  expect(
+    shouldNoteStart({ run_id: "r", target: "/x", incident: "/i", report: "/r", diagnostic: true })
+  ).toBe(false);
 });

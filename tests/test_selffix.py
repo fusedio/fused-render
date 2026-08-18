@@ -1086,3 +1086,23 @@ def test_the_stale_marker_check_and_the_unlink_are_one_step(install, monkeypatch
     monkeypatch.setattr(selffix, "_discard", probe)
     assert selffix.status() is None
     assert seen["held"], "the version check and the unlink must not be splittable"
+
+
+def test_the_session_pointer_survives_a_read_only_installation(install, monkeypatch):
+    """The long-session half of the one-at-a-time guard, on the install where it
+    is hardest to notice missing.
+
+    `note_session` is best-effort by design — a pointer that could not be
+    written costs that half of the guard, and refusing to start a fix over it
+    would be the wrong trade. Which is exactly why it must not be pointed at a
+    directory that CANNOT be written: it fails silently, on every start, on the
+    one kind of installation where the user has no way to investigate. A
+    diagnostic session holds the tree open for reading exactly as long as a
+    fixing one does, and the bounded runs-directory scan scrolls past it just
+    the same (SF-13c1).
+    """
+    monkeypatch.setattr(selffix, "writable", lambda: False)
+    selffix.note_session("run-ro")
+    assert selffix.active_run() == "run-ro"
+    # ...and not inside the tree it could not write to.
+    assert not selffix.session_path().startswith(str(install))

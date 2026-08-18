@@ -7559,7 +7559,20 @@ the installation, and the mark that says so.
   read-only install there was never anything to mark.
   (c) *No baseline and no watcher.* Both write into the tree, and both exist to
   answer "did this session change it?" — a question whose answer is no by
-  construction.
+  construction. **The SESSION POINTER moves with the reports** (SF-13c1's
+  `session.json`, also `records_dir()`) and does not get this treatment, because
+  the guard it feeds is needed here just as much: a diagnostic session holds the
+  installation open for reading exactly as long as a fixing one, and the bounded
+  runs-directory scan scrolls past it just the same. Left in the state dir it
+  failed silently on every start — `note_session` is best-effort by design —
+  costing the long-session half of the guard on the one kind of install where
+  the user cannot investigate why.
+  (c1) *No fast poll either.* `startSelfFix` stamps `localStorage` so the
+  version chip drops to a 5s cadence for half an hour, which is how a badge
+  appears while the user is still watching the session that earned it. A
+  diagnostic session cannot earn one, so the stamp would buy 360 extra polls of
+  a value guaranteed not to move — hence `diagnostic` on the start response, and
+  `shouldNoteStart`.
   (d) *The UI sets the expectation rather than closing the door*: the button
   reads **Start a diagnostic session**, and the note beside it says a session
   can diagnose but not fix, with the fix needing a copy the user owns. It is not
