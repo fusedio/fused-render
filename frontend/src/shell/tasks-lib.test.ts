@@ -3397,10 +3397,20 @@ describe("the archive action", () => {
     expect(TASKS_CSS.slice(head, TASKS_CSS.indexOf("}", head))).toContain("opacity: 0;");
     // ...and both a pointer and a keyboard bring it back, on the row...
     expect(TASKS_CSS).toContain(".tasks-row:hover .tasks-act");
-    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-act");
+    expect(TASKS_CSS).toContain(".tasks-row:has(.tasks-act:focus-visible) .tasks-act");
     // ...and on a board card, which is not a row and needs its own pair.
     expect(TASKS_CSS).toContain(".tasks-card-wrap:hover .tasks-card-act");
-    expect(TASKS_CSS).toContain(".tasks-card-wrap:focus-within .tasks-card-act");
+    expect(TASKS_CSS).toContain(
+      ".tasks-card-wrap:has(.tasks-card-act:focus-visible) .tasks-card-act",
+    );
+    // AND NEVER `:focus-within` ON THE CONTAINER (Akshil, 2026-08-18 — the stuck
+    // Archive). A row contains the chevron and the stretched rowlink, and a card
+    // wrap contains the card, all of them focusable by a plain click: `:focus-within`
+    // kept the reveal alive on a row the pointer had already left. Mouse-out must
+    // undo mouse-in.
+    expect(TASKS_CSS).not.toContain(":focus-within .tasks-act");
+    expect(TASKS_CSS).not.toContain(":focus-within .tasks-card-act");
+    expect(TASKS_CSS).not.toContain(":focus-within .tasks-rowmark");
     // Reachable with a visible ring either way.
     expect(TASKS_CSS).toContain(".tasks-act:focus-visible");
     // House rule: never the property that animates layout and skin together.
@@ -3486,10 +3496,14 @@ describe("the archive action", () => {
     );
     expect(fade).toContain("opacity: 0");
     expect(fade).toContain("pointer-events: none");
-    // Keyboard reachability is why `:focus-within` is in the trigger list — a tab
-    // onto the button reveals it, and the ring in front of it must get out of the
-    // way (the same rule the strip has always obeyed).
-    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-rowmark .schedule-ring");
+    // Keyboard reachability is why there is a second arm — a tab onto the button
+    // reveals it, and the ring in front of it must get out of the way (the same rule
+    // the strip has always obeyed). It asks for THAT BUTTON's `:focus-visible`, not
+    // the row's `:focus-within`, or a chevron click would fade the ring of a row
+    // nobody is pointing at any more.
+    expect(TASKS_CSS).toContain(
+      ".tasks-row .tasks-rowmark:has(.tasks-act--archive:focus-visible) .schedule-ring",
+    );
     expect(TASKS_CSS).toContain(".tasks-act:focus-visible");
     // A row with nothing to file keeps its ring under the pointer: a blank slot
     // where the row's status was is worse than no swap at all.
@@ -3749,7 +3763,7 @@ describe("the hidden row actions", () => {
     // The reveal rules are untouched — they are what the actions come back to, and
     // the stylesheet says so rather than being tidied away.
     expect(TASKS_CSS).toContain(".tasks-msg:hover .tasks-act");
-    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-act");
+    expect(TASKS_CSS).toContain(".tasks-row:has(.tasks-act:focus-visible) .tasks-act");
     // Edit and Cancel are still WRITTEN, just not rendered: the user's second pass
     // covered them too ("hide the hover actions for now, that's what I said", said
     // of the pencil on a message row), so they are behind the same flag.
