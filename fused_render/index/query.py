@@ -253,10 +253,22 @@ def _root_is_covered(con, cfg: IndexConfig, root: str) -> bool:
     rows for paths INSIDE a package, and answering `/x/Foo.app/Contents` from
     that partial set while `/x/Foo.app` one level up goes to the walk is the
     two-interchangeable-sources-disagree bug in miniature."""
+    return _coverage_reason(con, cfg, root) == ""
+
+
+def _coverage_reason(con, cfg: IndexConfig, root: str) -> str:
+    """Why the index cannot answer for `root`, or "" when it can.
+
+    Two misses, and the caller has to tell them apart because only one of them
+    is fixable: an `uncovered` folder becomes covered the moment something
+    scans it, while a `package` never will — the scan records it as one opaque
+    row by design (see `_root_is_covered`), so a client that asked for a scan
+    and waited would wait for ever."""
     if is_leaf_dir(root) or is_inside_leaf_dir(root):
-        return False
-    return con.execute(f"SELECT count(*) FROM {dirs_src(cfg)} "
-                       f"WHERE dir = '{_q(root)}'").fetchone()[0] > 0
+        return "package"
+    covered = con.execute(f"SELECT count(*) FROM {dirs_src(cfg)} "
+                          f"WHERE dir = '{_q(root)}'").fetchone()[0] > 0
+    return "" if covered else "uncovered"
 
 
 def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORPUS,
@@ -503,9 +515,16 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     """
     root = norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/") or "/"
     m = read_manifest(cfg)
+    # `reason` is the miss's cause, and it is what the in-folder search box
+    # switches on: a package or a mount-backed folder goes to the live walk, an
+    # uncovered one is scanned on demand. Decided here rather than in the
+    # client, so there is one copy of the rule. The mount half is the server
+    # layer's to add (MountGuard); this package/uncovered half is the index's.
     empty = {"covered": False, "fresh": False, "updated": None, "age_s": None,
              "root": root, "hits": [], "truncated": False, "total": 0,
              "escalated": False, "scanned_partitions": 0,
+             "reason": "package" if (is_leaf_dir(root)
+                                     or is_inside_leaf_dir(root)) else "uncovered",
              "of_partitions": len(((m or {}).get("partitions")) or [])}
     if m is None or not root or not os.path.exists(cfg.dirs_parquet):
         return empty
@@ -517,15 +536,16 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     age = (time.time() - updated) if isinstance(updated, (int, float)) else None
     fresh = age is not None and age <= FRESH_MAX_AGE_S
     con = duckdb.connect()
-    if not _root_is_covered(con, cfg, root):
-        return {**empty, "updated": updated, "age_s": age}
+    miss = _coverage_reason(con, cfg, root)
+    if miss:
+        return {**empty, "reason": miss, "updated": updated, "age_s": age}
     prefix = (root + "/") if root != "/" else "/"
     prefix_like = (like_literal(root) + "/") if root != "/" else "/"
     limit = max(0, min(int(limit), MAX_RANK_LIMIT))
     cap = max(1, int(cap))
     hit = prune(m["partitions"], prefix)
     base = {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
-            "root": root, "scanned_partitions": len(hit),
+            "root": root, "reason": "", "scanned_partitions": len(hit),
             "of_partitions": len(m["partitions"])}
     qs = (q or "").strip()
     if not qs:

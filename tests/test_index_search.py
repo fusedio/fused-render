@@ -514,3 +514,105 @@ def test_the_stage_a_cap_keeps_the_name_matches_over_the_fuzzy_ones(tmp_path):
     cfg = _index(tmp_path, "/r", files, dirs=["/r/noise"])
     out = search_ranked(cfg, "/r", "alpha", cap=3)
     assert out["hits"][0]["rel"] == "alpha.txt"
+
+
+# ---------------------------------------------------------------- the reason
+#
+# A non-answer says WHY. The in-folder search box switches on it — the live
+# walk survives for mount-backed (and package) folders only, an uncovered one
+# is scanned on demand, and a running scan is polled — and the rule that
+# decides which is which lives HERE, in the server, because a second copy of
+# the mount policy in TypeScript would drift from MountGuard.
+
+def test_rank_route_reports_covered_with_no_reason(home, tmp_path):
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["covered"] is True and body["reason"] == ""
+
+
+def test_rank_route_says_an_unscanned_root_is_uncovered(home, tmp_path):
+    """"No index yet" and "outside the scanned roots" are one condition to the
+    client: both are answered by scanning the folder on demand."""
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = client.get("/api/index/rank",
+                      params={"root": str(tmp_path), "q": "x"}).json()
+    assert body["covered"] is False and body["reason"] == "uncovered"
+
+
+def test_rank_route_names_a_package_directory(home, tmp_path):
+    """A package is recorded as ONE opaque row and never listed, so no amount
+    of scanning will ever cover it — the client must not ask for one."""
+    root = str(tmp_path / "Foo.app")
+    client = _ranked_client(tmp_path, str(tmp_path), [str(tmp_path) + "/a.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "a"}).json()
+    assert body["covered"] is False and body["reason"] == "package"
+
+
+def test_rank_route_names_a_mount_backed_root(home, tmp_path):
+    """The one case the live walk still answers. The client must not carry a
+    copy of this rule: it is MountGuard's, and it is checked here."""
+    root = str(home / "branches" / "main" / "mounts" / "s3")
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "x"}).json()
+    assert body["covered"] is False and body["reason"] == "mount"
+
+
+def test_rank_route_reports_a_scan_that_covers_the_root(home, tmp_path, monkeypatch):
+    """A scan in flight over this folder is why an answer is thin, and it is
+    the signal that says "ask again in a moment" rather than "nothing here"."""
+    from fused_render.index import runner
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r1", "root": str(tmp_path), "running": True}]})
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    # Covered AND scanning: the rows it has are real and are returned; the
+    # reason says more are coming.
+    assert body["covered"] is True and body["reason"] == "scanning"
+    assert [h["rel"] for h in body["hits"]] == ["alpha.txt"]
+
+
+def test_a_scan_of_a_subfolder_also_counts_as_covering(home, tmp_path, monkeypatch):
+    """Both directions: a scan of an ancestor will rewrite this folder's rows,
+    and a scan of a descendant is adding rows underneath it."""
+    from fused_render.index import runner
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r1", "root": root + "/deep", "running": True}]})
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["reason"] == "scanning"
+
+
+def test_a_finished_scan_elsewhere_is_not_a_reason(home, tmp_path, monkeypatch):
+    from fused_render.index import runner
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r1", "root": root, "running": False},
+                 {"run_id": "r2", "root": "/somewhere/else", "running": True}]})
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["reason"] == ""
+
+
+def test_a_package_is_never_reported_as_scanning(home, tmp_path, monkeypatch):
+    """Ordering matters: a package under a root being scanned still answers
+    "package", because polling for it would never end."""
+    from fused_render.index import runner
+
+    root = str(tmp_path / "Foo.app")
+    client = _ranked_client(tmp_path, str(tmp_path), [str(tmp_path) + "/a.txt"])
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r1", "root": str(tmp_path), "running": True}]})
+    body = client.get("/api/index/rank", params={"root": root, "q": "a"}).json()
+    assert body["reason"] == "package"

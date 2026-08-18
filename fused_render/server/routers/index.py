@@ -255,6 +255,65 @@ def _ranked(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT) -> dic
     return index_rank(cfg, root, q=q, limit=limit, gitignore_filter=drop_ignored)
 
 
+def _covers(a: str, b: str) -> bool:
+    """Whether the trees at `a` and `b` overlap (either contains the other)."""
+    a = norm(os.path.abspath(a)).rstrip("/") or "/"
+    b = norm(os.path.abspath(b)).rstrip("/") or "/"
+    return (a == b or a.startswith((b if b == "/" else b + "/"))
+            or b.startswith((a if a == "/" else a + "/")))
+
+
+def _scan_in_flight(cfg: IndexConfig, root: str) -> bool:
+    """Whether a live run is writing rows that belong to `root`.
+
+    Both directions count. A scan of an ANCESTOR root will rewrite this
+    folder's rows when it compacts; a scan of a DESCENDANT is adding rows
+    underneath it. Either way the answer the search box has is provisional,
+    which is the whole of what the `scanning` reason claims."""
+    try:
+        runs = runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]
+    except Exception:  # noqa: BLE001 - a search must not fail over housekeeping
+        logger.exception("could not list index runs")
+        return False
+    return any(r.get("running") and r.get("root")
+               and _covers(root, str(r["root"])) for r in runs)
+
+
+def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
+    """Why the ranked answer is what it is, in the client's vocabulary.
+
+    The client switches the SOURCE on this — `mount` (and `package`) send it to
+    the live walk, `uncovered` makes it ask for a scan, `scanning` makes it
+    poll — so the ordering below is a set of claims about what is fixable:
+
+      * `mount` first, and unconditionally. Indexing a remote mount is refused
+        structurally (MountGuard, index/specs/scan.md), so no scan will ever
+        cover it and no poll will ever end. This is the check the client must
+        NOT carry a copy of: the rule is MountGuard's, it is the same object
+        `runner.start` refuses with, and a second copy in TypeScript would
+        drift from it silently.
+      * `package` next, for the same reason in weaker form: the scan records a
+        `.app` (or a `.photoslibrary`) as one opaque row and never lists it, so
+        a folder inside one is permanently uncoverable however long you wait.
+      * `scanning` over `uncovered`, because it says "ask again", and it is
+        reported even when the answer IS covered: the rows are real, and more
+        of them are on the way.
+
+    The mount check is paid only on a miss — it realpaths — and a covered root
+    cannot be mount-backed anyway, since nothing ever indexed one."""
+    if not out.get("covered"):
+        # BEFORE any kernel syscall of ours on the caller's path: blocks_root
+        # is string work against the mount records plus one realpath, where a
+        # stat under a wedged rclone mount blocks this thread indefinitely.
+        if MountGuard(mounts_dir=runner._mounts_dir()).blocks_root(root):
+            return "mount"
+        if out.get("reason") == "package":
+            return "package"
+    if _scan_in_flight(cfg, root):
+        return "scanning"
+    return str(out.get("reason") or "")
+
+
 def run_startup_warm() -> None:
     """Pay the first search's cold cost at idle instead of on a keystroke.
 
@@ -610,6 +669,15 @@ def api_index_rank(root: str = Query(default=""), q: str = Query(default=""),
     corpus: "no index yet", "not covered" and "a scan is running" are one
     condition to a search box.
 
+    ...one condition, but not one CAUSE, and `reason` names it — `mount`,
+    `package`, `uncovered`, `scanning`, or `""` when the index answered
+    outright. The in-folder search picks its source from that field (see
+    `_rank_reason`): the live streamed walk survives only for the folders no
+    scan will ever cover, an uncovered one is scanned on demand, and a folder
+    with a scan in flight is polled. Deciding it here is the point — the mount
+    policy is `MountGuard`'s, and a second copy of it in the client would
+    drift.
+
     `positions` are deliberately NOT returned. The client re-runs `fuzzyMatch`
     over the ~200 rows it gets back to build its highlights, so
     platform/lib/fuzzy.ts stays the single source of truth for what highlights
@@ -622,6 +690,7 @@ def api_index_rank(root: str = Query(default=""), q: str = Query(default=""),
     out = _ranked(cfg, root, q, limit)
     out["hits"] = [{k: v for k, v in h.items() if k != "positions"}
                    for h in out["hits"]]
+    out["reason"] = _rank_reason(cfg, root, out)
     return {"ok": True, **out}
 
 
