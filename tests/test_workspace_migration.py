@@ -375,3 +375,43 @@ def test_a_posix_sibling_is_not_matched_through_a_backslash():
     dst = "/Users/x/Fused"
 
     assert wm._remap("/Users/x/Documents/Fused\\evil", src, dst) is None
+
+
+# ------------------------------------------ the workspace's own sidecar (#3)
+
+def test_moves_the_sidecar_of_the_workspace_directory_itself(machine):
+    """A directory is bookmarkable (bookmarks._fs_path_from_url takes "a file
+    OR a directory listing"), so the workspace dir has its own sidecar — and
+    it is a SIBLING file of the subtree, `<...>/Documents/Fused.json`, which
+    the subtree rename walks straight past."""
+    legacy, new, home = machine
+    legacy.mkdir(parents=True)
+    old_file = _sidecar_dir(home, legacy) + ".json"
+    os.makedirs(os.path.dirname(old_file), exist_ok=True)
+    with open(old_file, "w", encoding="utf-8") as f:
+        json.dump({"bookmarkHistory": [{"at": "2026-01-01"}]}, f)
+
+    wm.run()
+
+    new_file = _sidecar_dir(home, new) + ".json"
+    assert not os.path.exists(old_file)
+    with open(new_file, encoding="utf-8") as f:
+        assert json.load(f)["bookmarkHistory"][0]["at"] == "2026-01-01"
+
+
+def test_an_existing_new_workspace_sidecar_file_is_never_clobbered(machine):
+    legacy, new, home = machine
+    legacy.mkdir(parents=True)
+    old_file = _sidecar_dir(home, legacy) + ".json"
+    new_file = _sidecar_dir(home, new) + ".json"
+    for p, payload in ((old_file, {"old": 1}), (new_file, {"new": 1})):
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
+    wm.run()
+
+    with open(old_file, encoding="utf-8") as f:
+        assert json.load(f) == {"old": 1}
+    with open(new_file, encoding="utf-8") as f:
+        assert json.load(f) == {"new": 1}

@@ -212,22 +212,40 @@ def _sidecar_root(path: str) -> str:
 
 
 def _move_sidecars(src: str, dst: str) -> None:
+    """Re-home both halves of the workspace's sidecar state.
+
+    Two moves, not one, because ``storage.sidecar_path`` appends ".json": the
+    sidecar of the workspace DIRECTORY ITSELF is a *sibling* file of the
+    subtree, not a child of it, so the subtree rename walks straight past it.
+    It is real state — a directory listing is bookmarkable
+    (``bookmarks._fs_path_from_url``), and its ``bookmarkHistory`` would be
+    orphaned by the move.
+    """
     old, new = _sidecar_root(src), _sidecar_root(dst)
-    if old == new or not os.path.isdir(old):
+    if old == new:
+        return
+    _rename_sidecar(old, new, "subtree")
+    _rename_sidecar(old + ".json", new + ".json", "file for the workspace itself")
+
+
+def _rename_sidecar(old: str, new: str, what: str) -> None:
+    """Same safety rules as everything else here: only into empty space, never
+    a delete, never a clobber."""
+    if not os.path.exists(old):
         return
     if os.path.exists(new):
-        logger.warning("not moving the sidecar subtree %s -> %s: the destination "
+        logger.warning("not moving the sidecar %s %s -> %s: the destination "
                        "already exists; per-file state for the moved workspace "
-                       "stays where it is", old, new)
+                       "stays where it is", what, old, new)
         return
     try:
         os.makedirs(os.path.dirname(new), exist_ok=True)
         os.rename(old, new)
     except OSError as exc:
-        logger.warning("could not move the sidecar subtree %s -> %s (%s)",
-                       old, new, exc)
+        logger.warning("could not move the sidecar %s %s -> %s (%s)",
+                       what, old, new, exc)
         return
-    logger.info("moved the sidecar subtree %s -> %s", old, new)
+    logger.info("moved the sidecar %s %s -> %s", what, old, new)
 
 
 # ---------------------------------------------------------------- state files
