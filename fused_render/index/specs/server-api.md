@@ -297,6 +297,14 @@ otherwise one of:
 | `uncovered` | not scanned yet, and scannable | ask for a scan (§7.2), then poll |
 | `scanning` | a run covering this root is live — in EITHER direction, an ancestor root or a descendant one | poll, rendering whatever came back |
 
+A run already told to stop does not count as live, for the reason
+`runner.active_run` gives about the same runs: cancelling is asynchronous, so a
+dying run's log still reads `running` for a couple of hundred directories, and
+reporting it starts a poll waiting on a scan that will produce nothing. The
+folded run listing is cached for ~1 s (`RUNS_CACHE_S`), because this question
+is asked on every ranked request — one per keystroke, in two search boxes —
+and nothing it reports can change usefully inside one poll interval.
+
 `scanning` is reported even when `covered` is true: the hits are real, and more are on
 the way. The three permanent cases are ordered before it, so a package under a root
 being scanned still says `package` rather than sending the client into a poll that never
@@ -324,6 +332,23 @@ keystroke-rate retry loop.
   folder that stays uncovered after a scan from being rescanned on the next keystroke.
 - `runner.start` refuses a mount before any kernel syscall on the path, and that refusal
   comes back as `refused` rather than a 500.
+- **A scan root on a different filesystem than the user's home is refused**
+  (`index_touch.foreign_device`). `MountGuard` only knows fused-render's own
+  mounts dir, so a user's SMB/NFS volume at `/Volumes/share` is not
+  mount-backed as far as it is concerned — and `scan.scan_dir_once`'s
+  `root_dev` guard, which normally stops a crawl leaving the home filesystem,
+  is defeated by construction when the root IS the volume. The live walk did
+  crawl such paths, but it was abortable, entry-capped and tied to an open
+  search box; a detached scan is none of those, and a kernel walk has
+  permanently wedged a mount here more than once. A refused folder falls back
+  to the live walk exactly as it did before this phase.
+
+The poll gives up after `MAX_SCANNING_POLLS` ticks — counted in ticks issued,
+not answers received, since a tick aborts the request in flight and a rank that
+outlasts the interval would otherwise starve the ceiling. What giving up means
+depends on the answer: a COVERED folder settles for the rows it has, an
+uncovered one goes to the live walk rather than reporting an empty list for a
+folder the walk searches fine.
 
 The client polls `/api/index/rank` every `SCAN_POLL_MS` (1.5 s) while `reason` is
 `scanning`, and repaints. Rows therefore appear when the scan COMPACTS, not gradually: a
@@ -338,12 +363,32 @@ and never `/`, and deferred while a scan already covering it runs (joining that 
 would report success and fix nothing, since it may have walked past the folder
 already).
 
+Three things bound what that costs, and they are not optional. A scan ends in a
+COMPACTION, which re-sorts and rewrites every partition plus `dirs.parquet` —
+keeping the rows outside the scan root is a query predicate, not an incremental
+write — so the cost of any rescan is a function of the whole index rather than
+of the folder:
+
+- **only a mutation that can change the NAME SET reports.** `/api/fs/write`
+  reports a create, not an overwrite: the index stores names, and the markdown
+  editor autosaves every 2 s, so reporting every write rewrote a 571k-row store
+  for as long as somebody was typing a note.
+- **a 20 s floor per folder** (`MUTATION_SCAN_FLOOR_S`), which DEFERS rather
+  than drops — the scheduler's 15-minute `SCAN_DEBOUNCE_S` would be a refusal,
+  and a refused rescan leaves a renamed file unfindable, which is the failure
+  this mechanism exists to prevent. The 120 s deadline is the escape from both
+  the floor and the wait-for-a-live-run, so nothing is held for ever.
+- **the same three refusals the route makes**: mount-backed, excluded by the
+  ignore rules (a save inside `node_modules` would otherwise index nothing and
+  rewrite the store to say so), and a folder on another filesystem.
+
 This replaces a client-side gate. The in-folder search used to mark a folder the app had
 renamed into and walk it live for the rest of the session, because the index would
 answer instantly with the pre-rename name. With the walk reserved for the folders above,
 the honest fix is to make the index right — and the only client-side remnant is one bit,
 "a rescan is pending", which the search chip renders as "indexing…" until a scan
-completes.
+completes or the claim expires (the server refuses some rescans and does not report
+that back, so the claim has to be able to end on its own).
 
 **Known and logged:** stage A's cap can in principle drop a row stage B would have
 ranked first. Tier ordering makes it unlikely (a name-substring hit outranks a
