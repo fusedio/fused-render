@@ -300,6 +300,48 @@ export function messageTone(m: TaskMessage): MessageTone {
 }
 
 /**
+ * ARCHIVING A TASK ARCHIVES ITS THREAD — the message tone a row actually wears.
+ *
+ * `messageTone` above answers "what happened to this message", which is a fact
+ * about the message and nothing else. It was also, until 2026-08-18, the only
+ * thing the thread rows asked, and that made archiving look like it had half
+ * worked: the task card moved to Archive and the ten rows underneath it stayed
+ * green, amber and red, still reading as live work. A task is a thread, so
+ * filing the task files the thread — one gesture, one outcome, everywhere
+ * (design-principles §1).
+ *
+ * Archived is a PLACE, not an event, so the cascade changes only where a row is
+ * filed and never what it says happened: the label is left exactly as it was, so
+ * an archived thread can still be read back run by run. The `failed` flag does
+ * go — archiving is the "I have dealt with this" gesture, and a filed task that
+ * still flies a red mark is asking to be dealt with again.
+ *
+ * THE ONE EXCEPTION IS A TURN THAT IS STILL RUNNING. Filing something does not
+ * stop it, and a running turn is the one fact on this page that is about the
+ * present rather than the past — it stops being true on its own, in a minute or
+ * two, and until it does, saying otherwise is a lie the reader can watch. So a
+ * running message keeps its own tone, and the task keeps reading as In Progress
+ * over the archive record until the turn ends (the server's `_status` makes that
+ * half of the promise — see fused_render/server/routers/tasks.py). The archive
+ * is not lost either way: it is still recorded, and the moment the turn is over
+ * the task and its whole thread fall back into Archive.
+ */
+export function threadTone(task: Task, m: TaskMessage): MessageTone {
+  const tone = messageTone(m);
+  if (taskColumn(task) !== "archived") return tone;
+  if (tone.column === "in_progress") return tone;
+  return { ...tone, column: "archived", failed: false };
+}
+
+/** Is any message in this thread mid-turn? The client's half of the running
+ * exception above — `Task.live` is the server's, computed from the transcript's
+ * own tail, and the two are asked in different places rather than merged: this
+ * one is about the rows on screen, that one about the row's status. */
+export function threadRunning(messages: TaskMessage[]): boolean {
+  return messages.some((m) => messageTone(m).column === "in_progress");
+}
+
+/**
  * The task's own column, narrowed. The server decides it (Task.status); this
  * only keeps a value a newer server invented off the board's floor. An
  * unreadable status lands in Done, not Archive: a task the client cannot read
@@ -1013,9 +1055,27 @@ export type ListMemory = {
   expanded: string[];
   /** scrollTop of the list's own scroller, in px. */
   scroll: number;
+  /**
+   * The task whose conversation the reader last opened FROM this list, or "".
+   *
+   * The third thing coming back to the page has to answer. Which rows were open
+   * and where the list stood put the reader back in the right part of the list;
+   * this puts them back on the right ROW. A list of ninety near-identical
+   * three-line rows gives no clue which one you just came out of, so "let me
+   * look at the next one" meant re-finding the last one first — the same
+   * complaint the scroll memory was for, one level finer (Akshil, 2026-08-18).
+   *
+   * A key, not an index: rows re-sort on every poll (last_active), and an index
+   * would highlight whichever row happened to land in that slot.
+   *
+   * One task, not a set. This is "where I just was", and a page that lit up
+   * every row visited this sitting would be a highlight that means nothing by
+   * the fourth one.
+   */
+  selected: string;
 };
 
-export const EMPTY_LIST_MEMORY: ListMemory = { expanded: [], scroll: 0 };
+export const EMPTY_LIST_MEMORY: ListMemory = { expanded: [], scroll: 0, selected: "" };
 
 /**
  * What came out of the store is a STRING WRITTEN BY SOMEONE ELSE — an older
@@ -1034,7 +1094,7 @@ export function parseListMemory(raw: string | null): ListMemory {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return EMPTY_LIST_MEMORY;
   }
-  const row = parsed as { expanded?: unknown; scroll?: unknown };
+  const row = parsed as { expanded?: unknown; scroll?: unknown; selected?: unknown };
   const expanded = Array.isArray(row.expanded)
     ? row.expanded.filter((k): k is string => typeof k === "string")
     : [];
@@ -1042,7 +1102,11 @@ export function parseListMemory(raw: string | null): ListMemory {
     typeof row.scroll === "number" && Number.isFinite(row.scroll) && row.scroll > 0
       ? row.scroll
       : 0;
-  return { expanded, scroll };
+  // Absent on anything written before 2026-08-18, and on any hand-edited row:
+  // "" is the same answer as "nothing selected", so an older memory upgrades
+  // silently rather than being thrown away for the two fields it does have.
+  const selected = typeof row.selected === "string" ? row.selected : "";
+  return { expanded, scroll, selected };
 }
 
 // ---- where a click goes ------------------------------------------------------
@@ -2216,15 +2280,39 @@ export function groupByColumn(
 // A lane is either an open column or a 52px rail. Two things decide which, in
 // this order:
 //
+// AN EMPTY LANE IS ALWAYS ROLLED UP, AND NOTHING ABOUT IT IS REMEMBERED. That is
+// the whole of the empty case, and it is deliberately not a choice the reader
+// can make stick: a column with nothing in it has nothing to show, so opening
+// one is a PEEK — "is there really nothing here?" — and a peek is answered and
+// over. Left persistable, it is the one setting a reader would make once and
+// then be given four empty outlined columns by, for weeks, on a board they use
+// to see what is running.
+//
+// So the two states are stored in two different places, on purpose:
+//
+//   * `choices` — the reader's answer for a lane WITH CARDS IN IT. localStorage,
+//     survives reloads, and is what `laneCollapsed` below reads.
+//   * the peek — a lane opened while empty. Component state in TaskBoard,
+//     survives nothing: not a reload, not a remount, and not the lane filling up
+//     and draining again. `laneRolledUp` is where the two meet.
+//
+// The consequence worth stating, because it is the one a reader will notice: a
+// lane they had OPEN drains, and it rolls up. The expanded choice is not
+// honoured on the way down and it is not deleted either — it is simply not what
+// an empty lane is asked. Cards arrive, and the lane opens again on the choice
+// that was always there.
+//
+// For a lane with cards, two things decide, in this order:
+//
 //   1. What the reader last chose for THAT lane. Explicit choices are the only
 //      thing stored, so a lane nobody has ever touched keeps following the rule
 //      below forever rather than being frozen at whatever it looked like the
 //      first time the page was opened.
-//   2. Otherwise: EMPTY lanes start rolled up, everything else starts open.
+//   2. Otherwise: open.
 //
 // Archive used to be hard-coded closed. It is not special any more (Akshil,
 // 2026-08-18) — an Archive with cards in it is a column like the others, and an
-// Archive with none rolls up under rule 2 like the others.
+// Archive with none rolls up like the others.
 
 /** The key the board's lane choices live under. Distinct from the array-shaped
  * key an earlier build wrote: that one recorded "collapsed now", defaults
@@ -2254,13 +2342,43 @@ export function parseLaneChoices(raw: string | null): LaneChoices {
   return out;
 }
 
-/** Rule 1 then rule 2, for one lane. `count` is how many cards it holds. */
+/**
+ * The PERSISTENT answer for one lane: what it looks like on a fresh render, with
+ * nothing but the store to go on. `count` is how many cards it holds.
+ *
+ * Empty short-circuits, and that is the whole point — a stored choice is never
+ * consulted for a lane with nothing in it, so nothing a reader does to an empty
+ * lane can outlive the sitting, and a lane that drains reverts here rather than
+ * honouring what it was set to when it still had work in it.
+ */
 export function laneCollapsed(
   lane: BoardColumn,
   count: number,
   choices: LaneChoices,
 ): boolean {
+  if (count === 0) return true;
   const chosen = choices[lane];
   if (chosen !== undefined) return chosen;
-  return count === 0;
+  return false;
+}
+
+/**
+ * What the board actually draws — `laneCollapsed` plus this sitting's peeks.
+ *
+ * `peeked` is the set of lanes the reader has opened WHILE EMPTY (TaskBoard
+ * holds it in component state and persists none of it). It is consulted only in
+ * the empty case: a peek is an answer to "is there really nothing here?", and it
+ * has nothing to say about a lane that has cards. That is also what keeps a
+ * stale peek from reopening a lane that filled up and drained again — the peek
+ * is ignored for the whole time the lane has cards, and TaskBoard drops it in
+ * that window.
+ */
+export function laneRolledUp(
+  lane: BoardColumn,
+  count: number,
+  choices: LaneChoices,
+  peeked: ReadonlySet<BoardColumn>,
+): boolean {
+  if (count === 0) return !peeked.has(lane);
+  return laneCollapsed(lane, count, choices);
 }

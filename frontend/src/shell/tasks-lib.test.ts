@@ -38,6 +38,7 @@ import {
   isUnread,
   isUpcomingTask,
   laneCollapsed,
+  laneRolledUp,
   laneUnread,
   laneTime,
   lastRunAt,
@@ -50,6 +51,8 @@ import {
   messageStamp,
   messageTime,
   messageTone,
+  threadRunning,
+  threadTone,
   messageWhenTitle,
   nextRunAt,
   openMessageHref,
@@ -829,6 +832,62 @@ describe("markReadIntent", () => {
 });
 
 // ---- per-message state -------------------------------------------------------
+
+describe("threadTone: archiving a task archives its thread", () => {
+  const archived = task({ status: "archived" });
+  const live = task({ status: "in_progress" });
+
+  it("files every settled message under Archive, whatever it was", () => {
+    // The bug it fixes: the card moved to Archive and the ten rows under it
+    // stayed green, amber and red, still reading as live work. A task is a
+    // thread, so filing the task files the thread.
+    for (const m of [
+      msg({ state: "sent", turn: "done" }),
+      msg({ state: "error" }),
+      msg({ state: "missed", template_id: "" }),
+      msg({ state: "pending" }),
+    ]) {
+      expect(threadTone(archived, m).column).toBe("archived");
+    }
+  });
+
+  it("keeps WHAT HAPPENED and drops only the alarm", () => {
+    // Archived is a place, not an event: the label is left exactly as it was so
+    // an archived thread can still be read run by run. `failed` goes, because a
+    // filed task that still flies a red mark is asking to be dealt with again.
+    const broke = threadTone(archived, msg({ state: "error" }));
+    expect(broke.label).toBe("Failed");
+    expect(broke.failed).toBe(false);
+    expect(threadTone(archived, msg({ state: "pending" })).label).toBe("Scheduled");
+  });
+
+  it("leaves a RUNNING turn exactly where it is", () => {
+    // Filing something does not stop it, and a running turn is the one fact on
+    // this page about the present. The server makes the other half of the same
+    // promise — an archived task with a turn in flight reads In Progress until
+    // it ends (fused_render/server/routers/tasks.py `_running_now`).
+    const running = msg({ state: "sent", turn: "" });
+    expect(threadTone(archived, running)).toEqual(messageTone(running));
+    expect(threadTone(archived, msg({ state: "sending" })).column).toBe("in_progress");
+  });
+
+  it("does nothing at all to a task that is not archived", () => {
+    for (const m of [msg({ state: "error" }), msg({ state: "sent", turn: "done" })]) {
+      expect(threadTone(live, m)).toEqual(messageTone(m));
+    }
+  });
+
+  it("answers whether anything in a thread is mid-turn", () => {
+    expect(threadRunning([msg({ state: "sent", turn: "done" })])).toBe(false);
+    expect(threadRunning([msg({ state: "sent", turn: "done" }), msg({ state: "sending" })]))
+      .toBe(true);
+    expect(threadRunning([])).toBe(false);
+  });
+
+  it("is what the List's thread rows actually ask", () => {
+    expect(VIEWS).toContain("const tone = threadTone(task, m);");
+  });
+});
 
 describe("messageTone", () => {
   it("never paints a failed or missed message as a clean run", () => {
@@ -2086,70 +2145,128 @@ function rules(css: string): { selectors: string[]; body: string }[] {
 }
 
 // ---- which thing on the board is a surface -------------------------------------
-// The lane used to paint a fill at rest, so an empty lane was a grey slab and every
-// card competed with the box around it (Akshil, 2026-08-17, against flow side by
-// side). The fill is gone and the CARD is the only surface — but the lane is still
-// BOUNDED, by the same hairline the collapsed rail wears, because unfilled and
-// unbounded a column had no edge of its own at all (Akshil, same day: "at least
-// they should have an outline when they're expanded"). Four things then have to stay
-// true, and each was nearly broken by one of those two changes, so all four are read
-// out of the stylesheets: no fill comes back, the edge is there and is the rail's
-// edge, the card still lifts off the PAGE in both themes, and a drop target still
-// announces itself on a box that paints almost nothing — without its dashed line
-// stacking onto the hairline that is now underneath it.
+// The board has been round this loop twice. The lane painted a fill at rest, so an
+// empty lane was a grey slab and every card competed with the box around it (Akshil,
+// 2026-08-17, against flow side by side); the fill came off and a `--border` hairline
+// went on in its place, because unfilled and unbounded a column had no edge at all.
+// On 2026-08-18 the hairline turned out to be the same mistake in thinner form —
+// five outlined boxes read as five boxes — and both were replaced by the thing that
+// was actually wanted: an ORDERING. The lane is a fill that LOSES to the card, the
+// card is the only surface that steps toward the reader, and the collapsed rail
+// keeps its hairline because it is a control rather than a column.
+//
+// So what is read out of the stylesheets is the ordering itself (page < lane < card
+// in dark, card above lane in light — asserted on the token VALUES, since a
+// relationship written only in prose is one a later tuning can silently invert), the
+// open lane's lack of an edge against the rail's, the card's lift in both themes,
+// and the drop states, which have to keep announcing themselves by ADDING paint on a
+// box that now has a resting fill again.
+
+/** A token's value in one of tokens.css's two palette blocks. */
+function token(name: string, theme: "dark" | "light"): string {
+  const lightAt = TOKENS_CSS.indexOf(':root[data-theme="light"]');
+  const scope = theme === "dark" ? TOKENS_CSS.slice(0, lightAt) : TOKENS_CSS.slice(lightAt);
+  const found = scope.match(new RegExp(`${name}:\\s*([^;]+);`));
+  if (!found) throw new Error(`tokens.css has no ${name} in the ${theme} palette`);
+  return found[1].trim();
+}
+
+/** Rough perceived lightness of a `#rrggbb`, enough to order three greys. */
+function lightness(hex: string): number {
+  const m = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) throw new Error(`not a hex colour: ${hex}`);
+  const [r, g, b] = m.slice(1).map((h) => parseInt(h, 16));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
 
 describe("the board's surfaces", () => {
-  it("gives the lane no resting fill, but does give it an edge", () => {
+  it("orders page, lane and card so the card is the lit one", () => {
+    // The relationship the two tokens exist for. In dark all three are painted, and
+    // they have to climb: the lane is a whisper above the page (a column you can
+    // see) and the card a clear step above the lane (the thing you look at).
+    const dark = ["--bg", "--tasks-lane-bg", "--tasks-card-bg"].map((t) =>
+      lightness(token(t, "dark")),
+    );
+    expect(dark[0]).toBeLessThan(dark[1]);
+    expect(dark[1]).toBeLessThan(dark[2]);
+    // The lane must not become a slab on its way up — half of the page's own gap to
+    // the card is already more contrast than a quiet ground can carry.
+    expect(dark[1] - dark[0]).toBeLessThan((dark[2] - dark[0]) / 2);
+    // In light the page is the lightest thing available, so only the half that can
+    // still be stated is: the card stays above the lane.
+    expect(lightness(token("--tasks-lane-bg", "light"))).toBeLessThan(
+      lightness(token("--tasks-card-bg", "light")),
+    );
+    // The card's own fill must be a NEUTRAL charcoal in dark, not the blue-leaning
+    // grey `--bg-panel` is: a card whose blue channel runs away from its red reads
+    // as grey over a near-black page rather than as black-tinted (Akshil,
+    // 2026-08-18, against flow).
+    const cardHex = token("--tasks-card-bg", "dark").match(/^#(..)(..)(..)$/)!;
+    const [cr, , cb] = cardHex.slice(1).map((h) => parseInt(h, 16));
+    expect(cb - cr).toBeLessThan(6);
+  });
+
+  it("gives the OPEN lane a quiet fill and no edge, and the rail the opposite", () => {
     const lane = block(SCHEDULE_CSS, ".schedule-tv-lane-body");
-    // No FILL: a filled lane is a surface competing with the cards on it, which is
-    // the whole reason the plate came off.
-    expect(lane).not.toContain("background");
-    expect(block(SCHEDULE_CSS, ".schedule-tv-lane")).not.toContain("background");
-    // But BOUNDED — "at least they should have an outline when they're expanded".
-    // Unfilled and unbounded, the column's only edge was the widest card's ragged
-    // right-hand end.
-    expect(lane).toContain("border: 1px solid var(--border)");
+    // The fill is the lane's whole shape now — it is what replaced the hairline.
+    expect(lane).toContain("background: var(--tasks-lane-bg)");
+    // And NO visible edge: an open column is an invisible panel, not a box.
+    expect(lane).not.toContain("border: 1px solid var(--border)");
+    expect(lane).toContain("border: 1px solid transparent");
     expect(lane).toContain("border-radius: 8px");
     // Stated with it, so `min-height: 120px` stays the floor the board actually has.
     expect(lane).toContain("box-sizing: border-box");
-    // One hairline all the way round, not a rule down one side.
+    // One box all the way round, not a rule down one side.
     expect(lane).not.toContain("border-left");
     expect(lane).not.toContain("border-right");
-    // The collapsed lane is a lane too, and since 2026-08-17 the two wear the SAME
-    // edge — same width, same token, same radius, both unfilled — so the open and
-    // closed forms read as one family rather than as two ideas about a lane's edge.
+    // The lane's own wrapper stays unpainted — one fill per column, or the padding
+    // between header and body becomes a second, differently-shaped surface.
+    expect(block(SCHEDULE_CSS, ".schedule-tv-lane")).not.toContain("background");
+    // The COLLAPSED rail is the exception Akshil granted explicitly: 52px wide with
+    // no cards to give it shape, and a button you press, so it keeps the hairline.
     const rail = block(SCHEDULE_CSS, ".schedule-tv-rail");
     expect(rail).toContain("background: transparent");
     expect(rail).toContain("border: 1px solid var(--border)");
     expect(rail).toContain("border-radius: 8px");
   });
 
-  it("makes the card lift off the PAGE, in both themes, from tokens", () => {
+  it("makes the card lift off the LANE, in both themes, from tokens", () => {
     const card = block(SCHEDULE_CSS, ".schedule-tv-board .schedule-tv-card");
-    // `--bg` was the old fill and is also what the page ground is painted in
+    // `--bg` was the oldest fill and is also what the page ground is painted in
     // (base.css `body`), so keeping it would have made the card vanish against the
     // page — most obviously in light mode, where both are plain white.
     expect(card).not.toMatch(/background: var\(--bg\);/);
-    // `--bg-panel` is the app's "surface floating above the page" token: it steps
-    // lighter than the ground in dark and stays white in light, where the hairline
-    // and the shadow do the lifting instead.
-    expect(card).toContain("background: var(--bg-panel)");
+    // `--bg-panel` was the second, and is a POPOVER's colour: it lifted correctly
+    // but read as grey (see the ordering test above).
+    expect(card).not.toMatch(/background: var\(--bg-panel\);/);
+    expect(card).toContain("background: var(--tasks-card-bg)");
     expect(card).toContain("border: 1px solid var(--border)");
     expect(card).toContain("box-shadow: 0 1px 2px var(--shadow-sm)");
-    // Both halves of the lift are theme-tuned tokens with a value in BOTH blocks,
+    // Every part of the lift is a theme-tuned token with a value in BOTH blocks,
     // never a colour defined only under `[data-theme]` — a light-only definition is
     // how one theme ends up with no card surface at all.
-    for (const token of ["--bg-panel", "--shadow-sm"]) {
-      expect(TOKENS_CSS.slice(0, TOKENS_CSS.indexOf(':root[data-theme="light"]'))).toContain(
-        `${token}:`,
-      );
-      expect(TOKENS_CSS.slice(TOKENS_CSS.indexOf(':root[data-theme="light"]'))).toContain(
-        `${token}:`,
-      );
+    for (const name of ["--tasks-card-bg", "--tasks-lane-bg", "--shadow-sm"]) {
+      expect(token(name, "dark")).toBeTruthy();
+      expect(token(name, "light")).toBeTruthy();
     }
-    // The hover-revealed action strip is painted in the card's surface so it reads
-    // as floating over the head; it has to track the card or it is a patch on it.
-    expect(block(TASKS_CSS, ".tasks-card-act")).toContain("background: var(--bg-panel)");
+    // Hover moves the FILL as well as the edge now: against a lane that is itself a
+    // surface, an edge-only hover on the card is easy to miss.
+    const hover = block(
+      SCHEDULE_CSS,
+      ".schedule-tv-board .schedule-tv-card:hover:not(:disabled)",
+    );
+    expect(hover).toMatch(/background: color-mix\(in srgb, var\(--fg\) \d+%, var\(--tasks-card-bg\)\)/);
+    expect(hover).toContain("border-color:");
+    // The hover-revealed action strip paints NOTHING and lets the card show
+    // through. It used to carry a skin in the card's surface colour, which the
+    // hover lift above made untenable: a fill matching the RESTING colour is a
+    // dark rectangle on a lit card, and matching both would mean restating the
+    // hover expression in a second file for the two to drift apart at the next
+    // tuning (Bugbot). The strip is only ever seen over a hovered or focused
+    // card, so there is nothing to match.
+    const strip = block(TASKS_CSS, ".tasks-card-act");
+    expect(strip).toContain("background: transparent");
+    expect(strip).not.toContain("--tasks-card-bg");
   });
 
   it("lets a drop target announce itself by ADDING paint, not by changing it", () => {
@@ -2157,8 +2274,8 @@ describe("the board's surfaces", () => {
     // goes from nothing to something. A legal lane outlines dashed the moment a drag
     // starts, the lane under the pointer takes the accent wash, and the one drop
     // that SENDS rather than files swaps the hue for `--activity` and says so in
-    // words. On a transparent lane all four are more legible than they were on a
-    // tinted one, not less.
+    // words. The lane's resting fill is quiet enough that all four still add rather
+    // than merely change — which is the property, not the absence of a fill.
     expect(SCHEDULE_CSS).toMatch(
       /\.schedule-tv-lane-body\.is-drop-legal\s*\{[^}]*outline: 1px dashed color-mix\(in srgb, var\(--accent\)/,
     );
@@ -2175,7 +2292,7 @@ describe("the board's surfaces", () => {
     // The lane keeps the geometry those states are drawn with — the padding that
     // insets the outline off the top card, and the radius the wash takes.
     const lane = block(SCHEDULE_CSS, ".schedule-tv-lane-body");
-    expect(lane).toContain("padding: 4px");
+    expect(lane).toContain("padding: 6px");
     expect(lane).toContain("border-radius: 8px");
     // And it keeps a floor, so an EMPTY lane — which now shows its header and
     // nothing else, because "nothing scheduled" should look like nothing — is still
@@ -4968,9 +5085,46 @@ describe("which board lanes are rolled up", () => {
     expect(laneCollapsed("in_progress", 1, {})).toBe(false);
   });
 
+  it("never consults the store for an EMPTY lane", () => {
+    // The persistent answer, and it short-circuits: nothing a reader does to an
+    // empty column can be written down, so nothing can outlive the sitting.
+    expect(laneCollapsed("archived", 0, {})).toBe(true);
+    expect(laneCollapsed("archived", 0, { archived: false })).toBe(true);
+    expect(laneCollapsed("in_progress", 0, { in_progress: false })).toBe(true);
+  });
+
+  it("rolls a lane up when it DRAINS, whatever it was set to when it had work", () => {
+    // The consequence a reader will actually notice. The expanded choice is not
+    // honoured on the way down — and not deleted either, so the lane opens again
+    // on it the moment cards come back.
+    const choices = { done: false };
+    expect(laneCollapsed("done", 3, choices)).toBe(false);
+    expect(laneCollapsed("done", 0, choices)).toBe(true);
+    expect(laneCollapsed("done", 1, choices)).toBe(false);
+  });
+
+  it("lets the reader PEEK into an empty lane, for this sitting only", () => {
+    // Opening a column with nothing in it answers "is there really nothing
+    // here?", and that is a question, not a preference. `laneRolledUp` is where
+    // the peek meets the store.
+    const none = new Set<BoardColumn>();
+    const peeked = new Set<BoardColumn>(["archived"]);
+    expect(laneRolledUp("archived", 0, {}, none)).toBe(true);
+    expect(laneRolledUp("archived", 0, {}, peeked)).toBe(false);
+    // A peek says nothing about a lane that has cards — which is what stops a
+    // stale one reopening a column that filled up and drained again.
+    expect(laneRolledUp("archived", 2, { archived: true }, peeked)).toBe(true);
+    expect(laneRolledUp("archived", 2, {}, peeked)).toBe(false);
+    // And with no peek it is exactly the persistent rule.
+    for (const count of [0, 1, 5]) {
+      expect(laneRolledUp("done", count, { done: true }, none))
+        .toBe(laneCollapsed("done", count, { done: true }));
+    }
+  });
+
   it("lets the reader's own choice outrank the rule, in both directions", () => {
     expect(laneCollapsed("upcoming", 12, { upcoming: true })).toBe(true);
-    expect(laneCollapsed("archived", 0, { archived: false })).toBe(false);
+    expect(laneCollapsed("archived", 1, { archived: false })).toBe(false);
     // And a choice about ONE lane says nothing about its neighbours.
     expect(laneCollapsed("done", 0, { upcoming: true })).toBe(true);
   });
@@ -4996,10 +5150,89 @@ describe("which board lanes are rolled up", () => {
     expect("upcoming" in choices).toBe(false);
     expect(laneCollapsed("upcoming", 0, choices)).toBe(true);
     expect(laneCollapsed("upcoming", 4, choices)).toBe(false);
+    // The stored choice survives the round trip even while the empty rule is
+    // the thing being obeyed.
+    expect(choices.archived).toBe(false);
   });
 
-  it("is decided by laneCollapsed on the board, which stores only the toggle", () => {
-    expect(LANES).toContain("laneCollapsed(col.key, lane.length, choices)");
+  it("keeps the lane's scrollbar out of the cards' right edge", () => {
+    // macOS gives a webview OVERLAY scrollbars, so a lane with more cards than
+    // fit drew its thumb straight over every card's right-hand border (Akshil,
+    // screenshot). Styling the bar at all is what opts the element out of
+    // overlay scrollbars, so it takes real layout space and no overlap is
+    // possible; the gutter is what stops the column jumping by its width when
+    // the fifth card arrives.
+    // Its own rule, beside the two sibling scrollers — `block` would hand back
+    // the lane's resting box, which is a different decision about the same
+    // selector.
+    const gutter = rules(SCHEDULE_CSS).find(
+      (r) => r.selectors.includes(".schedule-tv-lane-body")
+        && r.body.includes("scrollbar-gutter"),
+    );
+    expect(gutter?.body).toContain("scrollbar-gutter: stable");
+    expect(SCHEDULE_CSS).toContain(".schedule-tv-lane-body::-webkit-scrollbar,");
+    // The thumb sits INSIDE the track — a transparent border plus
+    // background-clip, so 10px of track carries 4px of ink and the mark itself
+    // is clear of the card edge, not merely the layout.
+    const bar = block(SCHEDULE_CSS, ".schedule-tv-lane-body::-webkit-scrollbar");
+    expect(bar).toContain("width: 10px");
+    const thumb = block(SCHEDULE_CSS, ".schedule-tv-lane-body::-webkit-scrollbar-thumb");
+    expect(thumb).toContain("background-clip: padding-box");
+    expect(thumb).toContain("border: 3px solid transparent");
+    // Mixed from a token, so it lands at the same weight over the lane's fill in
+    // both themes rather than being a colour tuned for one.
+    expect(thumb).toMatch(/background: color-mix\(in srgb, var\(--fg-muted\) \d+%, transparent\)/);
+    // The track paints nothing: a groove would be a second column beside the
+    // cards.
+    expect(block(SCHEDULE_CSS, ".schedule-tv-lane-body::-webkit-scrollbar-track"))
+      .toContain("background: transparent");
+    // ONE rule for the page's three content scrollers, so the List and the Board
+    // cannot end up wearing different bars.
+    const shared = rules(SCHEDULE_CSS).find(
+      (r) => r.selectors.includes(".schedule-tv-lane-body::-webkit-scrollbar-thumb"),
+    );
+    expect(shared?.selectors).toContain(".schedule-cal-thread::-webkit-scrollbar-thumb");
+    expect(shared?.selectors).toContain(".tasks-list::-webkit-scrollbar-thumb");
+    // The week grid is the exception and keeps hiding its bar outright — the
+    // hour lines already say where you are.
+    expect(block(SCHEDULE_CSS, ".schedule-cal-scroll")).toContain("scrollbar-width: none");
+  });
+
+  it("keeps a rolled-up rail pressable, and takes the `0` off an empty one", () => {
+    // The rail toggles whether or not the lane has cards in it: it briefly
+    // carried `aria-disabled` and no handler while empty, which made the one
+    // control on an empty column refuse to work.
+    expect(LANES).toContain("onClick={() => toggleLane(col.key, true)}");
+    // The attribute, not the word — the comment above the rail still explains
+    // why it is gone.
+    expect(LANES).not.toContain("aria-disabled=");
+    // What the complaint was actually about: a lone `0` chip at the foot of an
+    // empty rail. A count answers "how many are hidden in here", which an empty
+    // rail has already answered by being empty.
+    expect(LANES).toContain("const empty = lane.length === 0;");
+    expect(LANES).toContain("{!empty && (");
+    expect(LANES).toContain('<span className="schedule-tv-rail-count">{lane.length}</span>');
+    // Still a drop target either way — dragging a card into a column that has
+    // never held one is the gesture that makes it non-empty.
+    expect(LANES).toContain("{...dropProps(col.key)}");
+  });
+
+  it("is decided by laneRolledUp on the board, which stores only the toggle", () => {
+    expect(LANES).toContain("laneRolledUp(col.key, lane.length, choices, peeked)");
+    // The peek is component state and is persisted NOWHERE — not localStorage,
+    // not the URL — so a remount (every navigation back to this page) starts the
+    // board with none.
+    expect(LANES).toContain("const [peeked, setPeeked] = useState<Set<BoardColumn>>(() => new Set());");
+    // WHICH store a press lands in is decided by the lane's contents. A press on
+    // a lane with cards is a preference and is written down; a press on an empty
+    // one is a peek and stays in memory.
+    const toggle = LANES.slice(LANES.indexOf("const toggleLane = (key: BoardColumn"));
+    const body = toggle.slice(0, toggle.indexOf("\n  };"));
+    expect(body).toContain("if ((byLane.get(key)?.length ?? 0) === 0) {");
+    expect(body.indexOf("setPeeked(")).toBeLessThan(body.indexOf("localStorage.setItem"));
+    // And the peek is dropped while the lane has cards, so a column that fills
+    // and drains comes back rolled up rather than answering an older emptiness.
+    expect(LANES).toContain("const next = new Set([...cur].filter((key) => (byLane.get(key)?.length ?? 0) === 0));");
     // The old snapshot key and its hard-coded Archive are gone.
     expect(VIEWS).not.toContain("scheduled-board-collapsed");
     expect(VIEWS).not.toContain('new Set<BoardColumn>(["archived"])');
@@ -5010,21 +5243,80 @@ describe("which board lanes are rolled up", () => {
 });
 
 describe("what the List remembers between visits", () => {
+  const NOTHING = { expanded: [], scroll: 0, selected: "" };
+
   it("remembers nothing at all when there is nothing stored", () => {
-    expect(parseListMemory(null)).toEqual({ expanded: [], scroll: 0 });
-    expect(parseListMemory("")).toEqual({ expanded: [], scroll: 0 });
-    expect(parseListMemory("{oops")).toEqual({ expanded: [], scroll: 0 });
-    expect(parseListMemory("[1,2]")).toEqual({ expanded: [], scroll: 0 });
+    expect(parseListMemory(null)).toEqual(NOTHING);
+    expect(parseListMemory("")).toEqual(NOTHING);
+    expect(parseListMemory("{oops")).toEqual(NOTHING);
+    expect(parseListMemory("[1,2]")).toEqual(NOTHING);
   });
 
-  it("keeps the task keys and the offset, and drops everything else", () => {
+  it("keeps the task keys, the offset and the row, and drops everything else", () => {
     expect(
-      parseListMemory('{"expanded":["TASK-1",7,"TASK-2"],"scroll":420.5,"x":1}'),
-    ).toEqual({ expanded: ["TASK-1", "TASK-2"], scroll: 420.5 });
+      parseListMemory(
+        '{"expanded":["TASK-1",7,"TASK-2"],"scroll":420.5,"selected":"TASK-2","x":1}',
+      ),
+    ).toEqual({ expanded: ["TASK-1", "TASK-2"], scroll: 420.5, selected: "TASK-2" });
     // A negative, infinite or non-numeric offset is not a place on a scrollbar.
     expect(parseListMemory('{"scroll":-3}').scroll).toBe(0);
     expect(parseListMemory('{"scroll":"120"}').scroll).toBe(0);
     expect(parseListMemory('{"expanded":"TASK-1"}').expanded).toEqual([]);
+    // A key is a string or it is nothing; "nothing selected" is the empty one.
+    expect(parseListMemory('{"selected":7}').selected).toBe("");
+  });
+
+  it("upgrades a memory written before the row was remembered", () => {
+    // The two fields that existed on 2026-08-18 are still honoured in full — a
+    // stored row missing `selected` means "no row", not "throw the sitting away".
+    expect(parseListMemory('{"expanded":["TASK-1"],"scroll":90}')).toEqual({
+      expanded: ["TASK-1"],
+      scroll: 90,
+      selected: "",
+    });
+  });
+
+  it("lights the row the reader last opened a conversation from", () => {
+    // Ninety near-identical three-line rows give no clue which one you came back
+    // out of, so "now the next one" meant re-finding the last one first.
+    expect(LIST).toContain("const [selected, setSelected] = useState(() => memory.current.selected);");
+    expect(LIST).toContain("remember({ ...memory.current, selected: key });");
+    expect(LIST).toContain("selected={selected === task.key}");
+    expect(VIEWS).toContain('+ (selected ? " is-selected" : "")');
+    // ONE row, and only the gestures that LEAVE the page mark it. `openChat` is
+    // where it is marked and NOT `activate`, deliberately: activate's second arm
+    // opens the edit form, a modal over this very page, and lighting a row for a
+    // trip the reader never took would make the highlight mean nothing. Every
+    // way into the conversation — the row's press, the Open chat button — goes
+    // through that one function, so every one of them marks.
+    const chatFn = VIEWS.slice(VIEWS.indexOf("const openChat = (intent: OpenThreadIntent) => {"));
+    const body = chatFn.slice(0, chatFn.indexOf("\n  };"));
+    expect(body).toContain("onSelect();");
+    expect(body.indexOf("onSelect();")).toBeLessThan(body.indexOf("performOpen("));
+    expect(ACTIVATE).not.toContain("onSelect()");
+    // A message row leaves too, and it belongs to this task's row.
+    const open = VIEWS.slice(VIEWS.indexOf("const openMessage = (m: TaskMessage) => {"));
+    expect(open.slice(0, open.indexOf("\n  };"))).toContain("onSelect();");
+    // Stored beside the scroll and the open rows, in the same sessionStorage
+    // row, so all three are restored by the one read on mount.
+    expect(LIST).toContain("const memory = useRef<ListMemory>(readListMemory());");
+    // THE SAME FILL AS HOVER, and nothing else. The first cut used
+    // `--row-bg-active` plus a 2px accent rule, which on a page whose accent is
+    // a bright lime made one row in ninety look like a dialog's default button
+    // — an olive plate with a yellow edge, shouting a fact that only needs to
+    // be findable (Akshil, screenshot). Hover and selected looking identical is
+    // fine and was asked for: only one row can be hovered, and a row that is
+    // both is both.
+    const sel = block(TASKS_CSS, ".tasks-row.is-selected");
+    expect(sel).toContain("background: var(--row-bg-hover)");
+    expect(sel).not.toContain("--accent");
+    expect(sel).not.toContain("box-shadow");
+    expect(sel).not.toContain("--row-bg-active");
+    // Stated after the hover rule so the fill does not blink off when the
+    // pointer leaves a selected row.
+    expect(TASKS_CSS.indexOf(".tasks-row:hover"))
+      .toBeLessThan(TASKS_CSS.indexOf(".tasks-row.is-selected"));
+    expect(TASKS_CSS).toContain(".tasks-row.is-selected:hover");
   });
 
   it("restores the open rows and the scroll from THIS tab only", () => {
@@ -5181,5 +5473,99 @@ describe("what the List remembers between visits", () => {
     // by a ref that it clears itself, so a user scroll is not undone by the next
     // poll landing.
     expect(LIST).not.toMatch(/owed\.current = memory\.current\.scroll[\s\S]{0,400}staleEmptied\.current = true/);
+  });
+});
+
+// ---- the toolbar: one bar, three lenses ----------------------------------------
+// The List / Board / Calendar switcher and the three filters beside it are the only
+// furniture all three views share, so they are also the only place the page can
+// contradict itself about being one dataset seen three ways. Two things changed on
+// 2026-08-18 and both are read out of the page source, because both are the kind of
+// regression that looks entirely correct in a diff: the switcher's halves gained
+// marks, and the filters stopped disappearing when the calendar came up.
+const PAGE = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
+
+describe("the tasks toolbar", () => {
+  it("gives every half of the view switcher a mark as well as a word", () => {
+    // Icon AND label. An icon-only switcher for the page's most central control
+    // trades recognition for guessing (design-principles §4), and three short words
+    // of near-identical weight were a block of text you had to read.
+    for (const [icon, label] of [
+      ["ICON_VIEW_LIST", "List"],
+      ["ICON_VIEW_BOARD", "Board"],
+      ["ICON_VIEW_CALENDAR", "Calendar"],
+    ]) {
+      expect(PAGE).toMatch(new RegExp(`\\{${icon}\\}\\s*\\n\\s*${label}\\n`));
+    }
+    // Drawn by the same helper as every other glyph on the page, so the switcher
+    // cannot drift to a second icon size — they are exported from the file that
+    // owns `icon()` rather than redeclared here.
+    for (const name of ["ICON_VIEW_LIST", "ICON_VIEW_BOARD", "ICON_VIEW_CALENDAR"]) {
+      expect(CALENDAR).toContain(`export const ${name} = icon(`);
+    }
+    // The marks are muted at rest and take the label's colour on the active half,
+    // so the icon reinforces the fill's statement rather than competing with it.
+    expect(block(SCHEDULE_CSS, ".schedule-view-btn > svg")).toContain("color: var(--fg-muted)");
+    expect(
+      block(SCHEDULE_CSS, ".schedule-view-btn.is-active > svg"),
+    ).toContain("color: inherit");
+    // Only the VIEW switcher. `.schedule-form-seg` is shared with the New task
+    // form's Once / On a schedule pair, which is a choice inside a form and stays
+    // text-only — so the icon rules hang off a class of their own.
+    expect(block(SCHEDULE_CSS, ".schedule-view-btn").length).toBeGreaterThan(0);
+  });
+
+  it("shows the same three filters on all three views, and means them", () => {
+    // The filters used to be gated on `view !== "calendar"`. A control that
+    // vanishes when you change lens makes three lenses read as three pages, and a
+    // person who has just narrowed the List to one project meant to keep looking at
+    // that project (design-principles §1).
+    expect(PAGE).not.toContain('view !== "calendar" && (');
+    expect(PAGE).toContain("<TaskFilterControls");
+    // And the calendar is handed the FILTERED set, or the controls would be shown
+    // doing nothing — worse than hidden.
+    const cal = PAGE.slice(PAGE.indexOf("<ScheduleCalendar"));
+    expect(cal.slice(0, cal.indexOf("/>"))).toContain("tasks={shown}");
+    // `shown` is the same derivation the other two views read, not a second one.
+    expect(PAGE).toContain("const shown = useMemo(() => filterTasks(tasks, filters), [tasks, filters]);");
+    expect(PAGE).toContain("<TaskBoard tasks={shown}");
+  });
+
+  it("centres the page on one measure wide enough for the widest view", () => {
+    // Edge-to-edge was the absence of a decision: on a 27" display the List ran to
+    // 2000px and the title sat marooned at the far left of it (design-principles
+    // §3). The measure is the LIST's number, not the board's — it was the board's
+    // for a few hours, and letting the one view that CAN scroll inside itself set
+    // the width for the two that cannot was the wrong way round.
+    const measure = 1240;
+    // Comfortably inside the flow reference's 1200-1400, and tighter than the
+    // board's own five-lane span, which is the point: the board scrolls.
+    expect(measure).toBeGreaterThanOrEqual(1200);
+    expect(measure).toBeLessThanOrEqual(1400);
+    const lane = block(SCHEDULE_CSS, ".schedule-tv-lane");
+    expect(lane).toContain("flex: 0 0 260px");
+    const board = block(SCHEDULE_CSS, ".schedule-tv-board");
+    expect(board).toContain("gap: 12px");
+    const page = block(SCHEDULE_CSS, ".prefs-page.schedule-page > *");
+    expect(page).toContain(`max-width: ${measure}px`);
+    // Centred, and applied to every child so the header travels with the views — a
+    // centred board under a left-flush "Tasks" reads as a layout bug.
+    expect(page).toContain("margin-inline: auto");
+    // Both classes in the selector: the rule it has to beat is `.prefs-page > *`,
+    // which a lone `.schedule-page > *` only ties with — and a tie is settled by
+    // import order, which is not a thing this page should depend on.
+    expect(SCHEDULE_CSS).toContain(".prefs-page.schedule-page > * {");
+    // The sections restate it, since `.prefs-page > *` outranks the rule above for
+    // them; prose keeps the reading measure inside the widened box.
+    expect(block(SCHEDULE_CSS, ".schedule-page > .prefs-section")).toContain(
+      `max-width: ${measure}px`,
+    );
+    expect(block(SCHEDULE_CSS, ".schedule-page .prefs-section > p")).toContain(
+      "max-width: 760px",
+    );
+    // No horizontal PAGE scroll, at the cap or under it: the board is the one
+    // thing that exceeds the measure, and it scrolls inside itself — which it has
+    // always done at any window narrower than five lanes (design-principles §0).
+    expect(board).toContain("overflow-x: auto");
   });
 });

@@ -14,6 +14,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { Modal } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
+  getClaudeSessionFolders,
   getConfig,
   getTasks,
   listDir,
@@ -39,9 +40,12 @@ export const defaultTargetOf = (c: Pick<Config, "home" | "fused_dir">) =>
   normPath(c.fused_dir || c.home);
 
 // ---- Recent paths --------------------------------------------------------
-// The path field's dropdown offers the last folders the user actually used —
-// picked in the browser or saved on a task — newest first, five shown. Stored
-// in localStorage so "the folder I always schedule against" survives reloads.
+// The path field's dropdown offers the last folders the user actually used,
+// newest first, five shown. It draws on two sources — the app-wide one the home
+// page reads (see the section below) and this form's own memory of folders
+// picked in the browser or saved on a task, which is what the rest of THIS
+// section is. That second half lives in localStorage so "the folder I always
+// schedule against" survives reloads.
 // try/catch throughout: storage can be denied (private mode), and a corrupt
 // value must read as "no recents", never crash the modal (Bugbot, PR #538
 // pattern).
@@ -69,6 +73,27 @@ function rememberRecent(path: string) {
     // Storage denied — recents just don't persist.
   }
 }
+
+// ---- The APP's recents, which are the ones a person means ------------------
+// "Recents" was two different lists until 2026-08-18. The home page shows the
+// folders this machine has Claude sessions in, newest session first
+// (`/api/claude-sessions`, its "Claude Sessions" strip); this form showed a
+// localStorage array only it ever wrote. Both were called recents, and only one
+// of them matched what a person means: someone who has spent the morning in a
+// repo opens New task thinking of that repo, and the form had never heard of it
+// (design-principles §1 — one noun per concept, §4 — recognition over recall).
+//
+// So the home page's list leads this one, from the same endpoint and in the
+// same order, and it is the right shape as well as the right source: those
+// entries are FOLDERS — each session's own `cwd`, canonicalised and filtered to
+// directories that still exist — which is exactly what a task targets.
+//
+// It briefly led with `/api/recents` instead, the explorer's recently-OPENED
+// FILES, whose folders had to be derived by taking each path's parent. That was
+// the wrong list twice over: it is about files rather than places to work, and
+// it is short — three entries on a machine that had dozens of sessions, which
+// is the complaint that sent this back (Akshil, 2026-08-18).
+const SESSION_FOLDERS_SHOWN = 5;
 
 // ---- Browse: a slide-in explorer panel ---------------------------------------
 // Browsing happens BESIDE the card, not inside it: the in-modal picker was
@@ -2001,26 +2026,57 @@ export default function NewJobModal({
     }
   };
   const [home, setHome] = useState("");
-  // The path field's recents dropdown: what this form remembers being used
-  // (localStorage, first — the user's own picks outrank inference), padded
-  // with the folders existing tasks point at.
+  // The path field's recents dropdown, in three tiers and in this order:
   //
-  // RE-READ every time the list opens, not once per modal: the store changes
-  // through this very modal (Browse writes the folder you pick), so a
-  // read-once state showed the list as it was BEFORE you went browsing —
-  // "I just went through a bunch of folders but recents didn't update"
-  // (Akshil, 2026-08-16). The read is a single localStorage hit on a user
-  // gesture, so doing it per open costs nothing worth saving.
+  //  1. the APP's recents — the top five folders from the same call the home
+  //     page's Claude Sessions strip makes, newest session first. First because
+  //     it is what a person means by "recent": the folders they have actually
+  //     been working in.
+  //  2. this form's own memory — folders picked through Browse or saved on a
+  //     task (localStorage). Kept, not replaced: a folder deliberately chosen
+  //     here may hold no files anyone has opened, so tier 1 would never learn
+  //     it.
+  //  3. the folders existing tasks point at, as padding on a fresh machine.
+  //
+  // Tier 2 is RE-READ every time the list opens, not once per modal: it changes
+  // while the modal is up (Browse writes the folder you pick), so a read-once
+  // state showed the list as it was BEFORE you went browsing — "I just went
+  // through a bunch of folders but recents didn't update" (Akshil, 2026-08-16).
+  // It is a single localStorage hit on a user gesture, so per-open costs nothing.
   const [recentsOpen, setRecentsOpen] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
+  // Tier 1 is a fetch, so it is asked for once on mount and held. Exactly as
+  // Home.tsx asks for it, and fire-and-forget for the same reason: a suggestion
+  // list that fails to load costs suggestions, never the form. Normalised on the
+  // way in, like every other path this card handles.
+  const [sessionFolders, setSessionFolders] = useState<string[]>([]);
+  useEffect(() => {
+    let alive = true;
+    getClaudeSessionFolders().then(
+      (r) => {
+        if (!alive) return;
+        setSessionFolders(
+          r.folders.slice(0, SESSION_FOLDERS_SHOWN).map((f) => normPath(f.path)),
+        );
+      },
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
   const readRecentList = useCallback(() => {
     const seen = new Set<string>();
-    return [...readRecents(), ...(recentTargets ?? [])].filter((p) => {
+    return [
+      ...sessionFolders,
+      ...readRecents(),
+      ...(recentTargets ?? []),
+    ].filter((p) => {
       if (!p || seen.has(p)) return false;
       seen.add(p);
       return true;
     });
-  }, [recentTargets]);
+  }, [recentTargets, sessionFolders]);
   const openRecents = () => {
     setRecents(readRecentList());
     setRecentsOpen(true);

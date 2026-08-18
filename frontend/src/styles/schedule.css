@@ -26,15 +26,55 @@
 /* -- Width ---------------------------------------------------------------------
    This page is built out of the settings vocabulary, and `.prefs-page > *`
    caps every child at 760px — a good measure for prose, far too narrow for a
-   seven-day calendar grid or a four-column board. So the sections get the
-   ~1120px the app's other wide surfaces live in, and the prose inside them
-   keeps the narrow measure. Two widths in one page, because there are two
-   kinds of content in it: text you read a line at a time, and surfaces you
-   scan. tests/test_schedule_css.py pins the pairing. */
+   seven-day calendar grid or a four-column board. So the page opts out of that
+   column and takes a wider one of its own, and the prose inside it keeps the
+   narrow measure. Two widths in one page, because there are two kinds of
+   content in it: text you read a line at a time, and surfaces you scan.
+   tests/test_schedule_css.py pins the pairing.
+
+   THREE widths, briefly, until 2026-08-18: the sections were `max-width: none`
+   — whatever the window gave them — which on a 27" display left a list of
+   three-line rows stretched across 2000px and a header title marooned at the
+   far left of it. Edge-to-edge is not "using the space", it is the absence of a
+   decision, and it made the page the only surface in the app with no measure at
+   all.
+
+   1240px is that decision, and it is the LIST's number, not the board's. It was
+   1360 for a few hours — five 260px lanes plus four 12px gaps is 1348, so the
+   board fitted exactly — and letting the widest view set the measure was the
+   wrong way round: the board is the one view that can scroll inside itself, and
+   the list, which cannot, was the one paying for it (Akshil, 2026-08-18: tighter
+   still). 1240 is a comfortable measure for a three-line row and for a seven-day
+   calendar, and the board simply scrolls its lanes past it — which the board has
+   always done at any window narrower than five lanes, so this is its ordinary
+   behaviour rather than a new state.
+
+   One measure for all three views, and that is worth more than three tuned ones:
+   the toggle switches the view without the page changing shape underneath it.
+
+   Applied to `> *` rather than to the section alone so the HEADER moves with
+   the views; a centred board under a left-flush "Tasks" reads as a layout bug.
+   Under 1240 the cap is inert and the page is full-width as before. Either way
+   the board keeps its own `overflow-x`, so what scrolls sideways is the lane
+   strip and never the page (design-principles §0).
+
+   Both classes in the selector, not just `.schedule-page`: the rule it has to
+   beat is `.prefs-page > *`, which is exactly as specific as a lone
+   `.schedule-page > *` would be — the winner would then be decided by which
+   stylesheet the barrel imports last, which is not a thing this page should
+   depend on. */
+.prefs-page.schedule-page > * {
+  max-width: 1240px;
+  margin-inline: auto;
+}
+
+/* Restated for the sections, which `.prefs-page > *` would otherwise pin at the
+   760px prose column — that rule and the one above are equally specific, and
+   this page's stylesheet is imported first. The literal repeats the number on
+   purpose: tests/test_schedule_css.py reads this declaration to check the
+   opt-out is still granted, and it reads a value, not a variable. */
 .schedule-page > .prefs-section {
-  /* Full width (Akshil, 2026-08-16) — the calendar, list and board all use
-     whatever the window gives them; only prose keeps the reading measure. */
-  max-width: none;
+  max-width: 1240px;
 }
 
 .schedule-page .prefs-section > p {
@@ -224,6 +264,32 @@
   background: var(--bg-alt);
   border-color: var(--border);
   color: var(--fg);
+}
+
+/* The view switcher's halves carry a mark as well as a word (Scheduled.tsx).
+   Only that switcher: the New task form's Once / On a schedule pair shares this
+   component and stays text-only, because those two are a CHOICE being made
+   inside a form, not a place you navigate to.
+
+   The glyph is muted at rest and takes the label's colour on the active half, so
+   the icon reinforces the selection the fill already states rather than adding a
+   second, competing signal. `flex: 0 0 auto` keeps it from being squeezed when
+   the toolbar runs out of room — a half-drawn icon is worse than none. */
+.schedule-view-btn,
+.prefs-section .schedule-view-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.schedule-view-btn > svg {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.schedule-view-btn.is-active > svg,
+.prefs-section .schedule-view-btn.is-active > svg {
+  color: inherit;
 }
 
 /* overflow:hidden clips the default outside focus ring; draw it inside. */
@@ -2941,36 +3007,36 @@ input.schedule-when-field {
   color: var(--fg-muted);
 }
 
-/* The lane is not a PANEL. It used to paint `rgba(var(--tint), 0.05)` at rest,
-   which made every lane a filled slab: an empty Upcoming read as a large grey
-   plate with nothing in it, and every card competed with the box it was sitting
-   in rather than being the thing you looked at (Akshil, 2026-08-17, comparing
-   this board against flow's side by side — there the lanes are transparent and
-   the cards are the only surface).
+/* An OPEN lane has no edge — it is a quiet ground, not a box (Akshil,
+   2026-08-18, against the flow app again: there an open column is an invisible
+   panel and the cards are the only thing you see). The history is worth keeping
+   because it is a loop the page has already been round once: the lane painted a
+   `rgba(var(--tint), 0.05)` slab, lost it on 2026-08-17 for competing with the
+   cards, and gained a `--border` hairline in its place so the column still had a
+   bottom. The hairline turned out to be the same mistake in thinner form — five
+   outlined boxes read as five boxes, and the cards inside them were the second
+   thing you saw.
 
-   So the FILL is gone and nothing filled in for it — but the lane is still
-   BOUNDED ("at least they should have an outline when they're expanded", Akshil,
-   2026-08-17). Unfilled and unbounded, an open lane's only edge was the ragged
-   right-hand end of whatever card happened to be widest, so the column had no
-   bottom at all and a short lane beside a full one read as loose cards on the
-   page. A hairline answers that without putting the plate back: an outline says
-   where the column is, a fill says the column is a surface, and only the second
-   one was ever competing with the cards.
+   What replaces both is a FILL that loses: `--tasks-lane-bg` sits a whisper
+   above the page and a clear step BELOW the card (tokens.css orders the three).
+   That gives the column the bottom the hairline was there for — the lane is
+   visible as a shape — while making the card unambiguously the lit element,
+   because the only surface on the page brighter than its ground is the card.
 
-   Deliberately the SAME hairline the collapsed rail wears — 1px, `--border`, and
-   the 8px radius this element already had for the drop wash — so the two forms of
-   a lane read as one family and not as two ideas about what a lane's edge is. The
-   rail's is doing extra work (it is a button you press), but it is the same line.
+   The COLLAPSED rail keeps its hairline, deliberately: it is a button you press,
+   and it is 52px wide with no cards in it to give it shape (Akshil explicitly
+   OK'd a border there and only there). So the two forms of a lane no longer look
+   like one family, which is right — one is a column of work and the other is a
+   control.
 
-   What the padding is for, on top of insetting the cards off that new edge, is
+   What the padding is for, on top of insetting the cards off the lane's edge, is
    the DROP states below: it holds the dashed legal-drop outline off the top card
    so it reads as the lane's own edge rather than as a second border on the card.
 
-   An EMPTY lane therefore shows its header and an empty bounded column — the
-   label, the ring, a `0` and the box the cards would go in. That is still
-   "nothing scheduled looks like nothing": an empty outline is not a filled slab.
-   The `min-height` is what keeps it a droppable target, so a card can still be
-   dragged into a column that has never held one. */
+   An EMPTY lane therefore shows its header and an empty, barely-there column.
+   That is still "nothing scheduled looks like nothing". The `min-height` is what
+   keeps it a droppable target, so a card can still be dragged into a column that
+   has never held one. */
 .schedule-tv-lane-body {
   flex: 1 1 auto;
   min-height: 120px;
@@ -2987,25 +3053,99 @@ input.schedule-when-field {
      make the floor 122px and the number here would stop being the number the
      board actually has. */
   box-sizing: border-box;
-  padding: 4px;
-  border: 1px solid var(--border);
+  padding: 6px;
+  /* Transparent, not absent: the drag rules below still speak in `border-color`
+     and the 1px is part of the box the `min-height` above is measured against,
+     so removing the declaration would move the floor as well as the edge. */
+  border: 1px solid transparent;
   border-radius: 8px;
+  background: var(--tasks-lane-bg);
 }
 
-/* The card is the board's ONLY surface now that the lane is an outline rather than
-   a plate, so it has to carry the whole separation from the page ground — and the
-   ground is `--bg` in both themes (base.css `body`), which is exactly what the
-   card used to be painted in. Against a lane fill that was enough; against the
-   page it was the card disappearing, most obviously in light mode where both are
-   plain white.
+/* -- The scrollbar the Tasks page's two column scrollers wear ------------------
+   macOS gives a webview OVERLAY scrollbars by default: the thumb floats on top
+   of the content instead of taking a column of its own, so a lane with more
+   cards than fit drew its thumb straight over the right-hand border of every
+   card under it (Akshil, screenshot, 2026-08-18). `scrollbar-gutter` cannot fix
+   that — the spec gives an overlay scrollbar a zero gutter by definition. What
+   does is styling the thing at all: a `::-webkit-scrollbar` rule opts this
+   element out of overlay scrollbars entirely, so the bar takes real layout
+   space and the cards are simply narrower by its width. No overlap is possible
+   after that, because there is nothing left to overlap.
 
-   `--bg-panel` is the app's existing answer to "a surface floating above the
-   page", and it is tuned per theme for precisely this: in dark it steps LIGHTER
-   than the ground (#202329 over #131417), and in light it stays white and lets
-   the hairline plus a shadow do the lifting (tokens.css says so in as many
-   words). The shadow is the same `0 1px 2px var(--shadow-sm)` the settings
-   page's own cards use — one step of lift, not a drop shadow — and its token is
-   theme-tuned too, so it reads as depth in dark instead of as dirt in light.
+   `scrollbar-gutter: stable` is stated with it and is not redundant: the bar now
+   takes space, so without it the column would jump by 10px the moment the lane
+   crossed from four cards to five, and back again on the next poll.
+
+   The thumb is drawn INSIDE the track by a transparent border plus
+   `background-clip: padding-box` — 10px of track carrying 4px of ink — which is
+   what keeps it clear of the card edges as a mark rather than merely as layout,
+   and what makes it read as the quietest thing on the lane. It is mixed from
+   `--fg-muted` rather than given a colour, so it lands at the same weight over
+   the lane's fill in both themes. The track itself paints nothing: a groove
+   would be a second column drawn beside the cards.
+
+   ONE rule for all three of the page's content scrollers, though `.tasks-list`'s
+   box belongs to tasks.css and the other two to this file. Scrollbar chrome is
+   one decision about one kind of furniture, and two copies of it is how the
+   List and the Board end up wearing different bars.
+
+   The three are the Board's lane, the List, and the CALENDAR's popover thread —
+   the one calendar scroller that has a bar at all, since the week grid hides
+   its own (`.schedule-cal-scroll`, above: the hour lines say where you are).
+   The page's remaining scrollers are dropdown menus and pickers, which are
+   floating surfaces a few rows tall rather than columns of content, and are
+   deliberately left alone. */
+.schedule-tv-lane-body,
+.schedule-cal-thread,
+.tasks-list {
+  scrollbar-gutter: stable;
+}
+
+.schedule-tv-lane-body::-webkit-scrollbar,
+.schedule-cal-thread::-webkit-scrollbar,
+.tasks-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.schedule-tv-lane-body::-webkit-scrollbar-track,
+.schedule-cal-thread::-webkit-scrollbar-track,
+.tasks-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.schedule-tv-lane-body::-webkit-scrollbar-thumb,
+.schedule-cal-thread::-webkit-scrollbar-thumb,
+.tasks-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg-muted) 26%, transparent);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.schedule-tv-lane-body::-webkit-scrollbar-thumb:hover,
+.schedule-cal-thread::-webkit-scrollbar-thumb:hover,
+.tasks-list::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--fg-muted) 48%, transparent);
+  background-clip: padding-box;
+}
+
+/* The card is the LIT element of the board: the lane under it is a fill that
+   deliberately loses to it, so this is the one surface on the page that steps
+   toward the reader. `--tasks-card-bg` is that step, and its pairing with
+   `--tasks-lane-bg` is the whole point — tokens.css owns the ordering (page <
+   lane < card) so neither half can be tuned into inverting it.
+
+   It replaced `--bg-panel` on 2026-08-18. That token is the app's general
+   "surface floating above the page" and it lifted correctly, but it is a
+   POPOVER's colour: #202329 carries nine steps more blue than red, which over a
+   near-black page reads as grey rather than as the black-tinted charcoal the
+   flow app's cards have. Same lift, less blue. In light it resolves to white
+   and lets the hairline plus a shadow do the lifting, exactly as --bg-panel did.
+
+   The shadow is the same `0 1px 2px var(--shadow-sm)` the settings page's own
+   cards use — one step of lift, not a drop shadow — and its token is theme-tuned
+   too, so it reads as depth in dark instead of as dirt in light.
 
    Loosened on 2026-08-17 along with the lane: 8px/10px padding and a 5px gap
    were tighter than flow's cards, which is what made three short lines feel
@@ -3031,17 +3171,23 @@ input.schedule-when-field {
   font: inherit;
   text-align: left;
   color: var(--fg);
-  background: var(--bg-panel);
+  background: var(--tasks-card-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 1px 2px var(--shadow-sm);
   cursor: pointer;
-  transition: border-color 0.08s ease;
+  transition: background-color 0.08s ease, border-color 0.08s ease;
 }
 
+/* Hover now moves the FILL as well as the edge. It did not have to while the
+   lane was an outline — a brightening border was the only change available on a
+   page where nothing else was filled — but against a lane that is itself a
+   surface, an edge-only hover is easy to miss. A 6% lift of --fg into the card's
+   own token stays a whisper in both themes and cannot drift away from the token
+   it is mixed from. */
 .schedule-tv-board .schedule-tv-card:hover:not(:disabled),
 .prefs-section .schedule-tv-board .schedule-tv-card:hover:not(:disabled) {
-  background: var(--bg-panel);
+  background: color-mix(in srgb, var(--fg) 6%, var(--tasks-card-bg));
   border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
 }
 

@@ -117,6 +117,32 @@
   background: var(--row-bg-hover);
 }
 
+/* WHERE THE READER JUST WAS. The row whose conversation was last opened from
+   this list keeps a mark while the page is away and wears it again on the way
+   back (ScheduleTaskViews `selected`, stored in the List's sessionStorage memory
+   beside the scroll offset and the open rows).
+
+   THE SAME FILL AS HOVER, and nothing else. The first cut used
+   `--row-bg-active` plus a 2px accent rule down the left — the app's louder
+   "this is the current row" — and on a page whose accent is a bright lime that
+   made one row in ninety look selected the way a dialog's default button looks
+   selected: an olive-tinted plate with a yellow edge, shouting a fact that only
+   needs to be findable (Akshil, screenshot, 2026-08-18). A returning reader is
+   looking for "which one did I just read", and the quietest possible answer is
+   enough to find it.
+
+   Hover and selected therefore look identical, which is fine and was asked for:
+   only one row can be hovered, the pointer is usually nowhere near the list
+   after a page change, and if the two ever coincide the row is both — there is
+   no fact being hidden.
+
+   Stated after the hover rule anyway, so the fill does not blink off when the
+   pointer leaves a selected row. */
+.tasks-row.is-selected,
+.tasks-row.is-selected:hover {
+  background: var(--row-bg-hover);
+}
+
 /* A row whose press does nothing does not look pressed-able either: a task that
    has never run has no session to open and no thread to expand (ScheduleTaskViews
    `pressable`), and a pointer cursor over a lit background is a promise it cannot
@@ -130,11 +156,18 @@
   background: transparent;
 }
 
-/* An open task keeps a tint under its header so the thread beneath it reads as
-   belonging to that row rather than floating between two. */
-.tasks-row.is-open {
-  background: rgba(var(--tint), 0.04);
-}
+/* NO TINT ON AN OPEN TASK. It used to keep `rgba(var(--tint), 0.04)` under its
+   header, on the argument that the thread beneath needed to read as belonging to
+   that row rather than floating between two. In a long list that argument loses
+   to what it costs: an expanded task became a darker block among its neighbours,
+   which reads as a state the row is IN — selected, active, different — rather
+   than as one that is merely open (Akshil, screenshot, 2026-08-18).
+
+   The belonging was never carried by the tint anyway. The chevron says the row
+   is open, and the thread's rows are indented a whole ring slot to the right of
+   their task's (see the geometry block at the top of this file) — a structural
+   answer that survives at a glance and in a screenshot, where a 4% wash does
+   not. One background for every row in the list, and expansion is a shape. */
 
 /* THE DISCLOSURE, AND ITS HITBOX — which is much bigger than it looks, on
    purpose (2026-08-18).
@@ -662,12 +695,26 @@ button.tasks-caret,
 .tasks-card-act,
 .prefs-section .tasks-card-act {
   pointer-events: auto;
-  /* An opaque skin in the card's OWN surface colour, so the strip reads as
-     floating over the head rather than as part of the head's row of marks. It
-     tracks the card: that surface became `--bg-panel` when the lane's fill was
-     removed and the card had to lift off the page by itself (schedule.css), and a
-     button still painted `--bg` would have been a visible patch on it in dark. */
-  background: var(--bg-panel);
+  /* NO SKIN. The button lets the card show through and paints only on its own
+     hover (`.tasks-act:hover`, above).
+
+     It used to carry an opaque fill in the card's surface colour, so the strip
+     would read as floating over the head rather than as part of the head's row
+     of marks. Chasing that colour was a losing game: the card's fill has moved
+     three times (`--bg` → `--bg-panel` → `--tasks-card-bg`), and each time a
+     button left behind on the old value became a visible patch on it in dark.
+     The last move was the one that made the idea untenable rather than merely
+     fragile — the card now LIFTS on hover (`color-mix(--fg 6%, --tasks-card-bg)`,
+     schedule.css), so a fill matching the resting colour is a dark rectangle on
+     a lit card, and matching both would mean restating the card's hover
+     expression here for the two to drift apart at the next tuning (Bugbot,
+     2026-08-18).
+
+     Transparent is not a compromise, it is the accurate answer: this strip is
+     only ever SEEN over a hovered or focused card (`.tasks-card-acts` rests at
+     `opacity: 0`), and the head's right end it sits over is empty on every card
+     by construction. There is nothing to occlude and nothing to match. */
+  background: transparent;
 }
 
 .tasks-card-wrap:hover .tasks-card-act,

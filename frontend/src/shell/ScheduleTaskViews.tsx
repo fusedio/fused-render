@@ -65,14 +65,14 @@ import {
   isExpandable,
   isFailedTask,
   isUpcomingTask,
-  laneCollapsed,
+  laneRolledUp,
   laneUnread,
   markAllRead,
   markRead,
   markReadIntent,
   messageEditEntry,
   messageHref,
-  messageTone,
+  threadTone,
   messageWhenTitle,
   openMessageHref,
   openThreadIntent,
@@ -864,6 +864,18 @@ export function TaskList({
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set(memory.current.expanded),
   );
+  // WHERE THE READER JUST WAS. Seeded from the same memory as the two above and
+  // restored with them: a list of ninety near-identical rows gives no clue which
+  // one you came back out of, so "now the next one" meant re-finding the last
+  // one first (Akshil, 2026-08-18). Held in state as well as in the memory ref
+  // because it is also LIVE — the row lights the moment it is pressed, so the
+  // highlight is the page acknowledging the press rather than something that
+  // only appears after a round trip.
+  const [selected, setSelected] = useState(() => memory.current.selected);
+  const select = (key: string) => {
+    setSelected(key);
+    remember({ ...memory.current, selected: key });
+  };
   // Full threads fetched by Show more, keyed by task. They REPLACE the three
   // the listing carried rather than appending to them, so no message is ever
   // drawn twice.
@@ -1147,6 +1159,8 @@ export function TaskList({
           home={home}
           showProject={showProject}
           open={expanded.has(task.key)}
+          selected={selected === task.key}
+          onSelect={() => select(task.key)}
           onToggle={() => toggle(task)}
           onRetry={() => void showMore(task)}
           loaded={loaded[task.key]}
@@ -1170,6 +1184,8 @@ function TaskNode({
   home,
   showProject,
   open: requested,
+  selected,
+  onSelect,
   onToggle,
   loaded,
   loading,
@@ -1191,6 +1207,14 @@ function TaskNode({
   /** What the List's expanded set says about this row. Whether it is honoured is
    * this component's decision — see `expandable` below. */
   open: boolean;
+  /** Is this the row the reader last opened a conversation from? The List owns
+   * the answer (one row at a time, remembered across the trip to the chat); the
+   * row only wears it. */
+  selected: boolean;
+  /** Say that this row is now that one. Spent by every gesture that LEAVES the
+   * page — the row's press and a message row's — and by nothing else: expanding
+   * a task is reading it in place, not going anywhere. */
+  onSelect: () => void;
   onToggle: () => void;
   loaded?: TaskMessage[];
   loading: boolean;
@@ -1411,7 +1435,12 @@ function TaskNode({
   const openMessage = (m: TaskMessage) => {
     onRead(task.key, m);
     const to = messageHref(task, m);
-    if (to) navigateUrl(to);
+    if (!to) return;
+    // Leaving the page, so this is the row to come back to — the thread row
+    // belongs to this task, and the task's row is what is still on screen when
+    // the reader returns.
+    onSelect();
+    navigateUrl(to);
   };
 
   /**
@@ -1452,6 +1481,13 @@ function TaskNode({
   // Declared ABOVE `activate` because `activate` now calls it — a hoisted
   // reference into a `const` below would work at runtime and read as a bug.
   const openChat = (intent: OpenThreadIntent) => {
+    // This is the row LEAVING the page, so it is also the row to come back to.
+    // Marked here rather than in `activate` because `activate` has a second arm
+    // — the edit form, a modal over this very page — and lighting a row for a
+    // trip the reader never took would make the highlight mean nothing. Every
+    // way of opening this task's conversation goes through this one function
+    // (the row's press, the Open chat button), so every one of them marks.
+    onSelect();
     performOpen(
       task,
       intent,
@@ -1562,7 +1598,8 @@ function TaskNode({
   return (
     <div className="tasks-node">
       <div
-        className={"tasks-row" + (open ? " is-open" : "") + (pressable ? "" : " is-inert")}
+        className={"tasks-row" + (open ? " is-open" : "")
+          + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")}
         // The row is a CONTAINER now, not a control: when it has somewhere to go
         // the stretched `<a>` below is the button, the tab stop and the
         // accessible name, and hanging a second role and a second tab stop on
@@ -1854,7 +1891,10 @@ function TaskNode({
       {open && (
         <div className="tasks-thread">
           {view.messages.map((m) => {
-            const tone = messageTone(m);
+            // threadTone, not messageTone: a thread under an archived task is
+            // archived with it, except for a turn that is still running
+            // (tasks-lib says why).
+            const tone = threadTone(task, m);
             const mark = unreadMarker(task.key, m, read);
             const isNew = mark.unread;
             const stop = cancelIntent(m);
@@ -2073,10 +2113,12 @@ function TaskNode({
 const LANE_INITIAL_VISIBLE = 20;
 const LANE_REVEAL = 20;
 
-// Which lanes are rolled up into the 52px rail. The RULE lives in
-// tasks-lib.laneCollapsed (empty ⇒ rolled up, otherwise open) and only the
-// reader's own toggles are stored, so a lane nobody has touched keeps following
-// the rule as it fills and empties.
+// Which lanes are rolled up into the 52px rail. The RULE lives in tasks-lib —
+// `laneCollapsed` for what the store says and `laneRolledUp` for what is drawn —
+// and THIS is only half of the state: a lane with cards remembers the reader's
+// toggle here, and a lane with none remembers nothing at all (the peek, in
+// TaskBoard). So a lane nobody has touched keeps following the rule as it fills
+// and empties, and so does one they touched while it was empty.
 function readLaneChoices(): LaneChoices {
   try {
     return parseLaneChoices(localStorage.getItem(LANE_CHOICE_KEY));
@@ -2100,6 +2142,11 @@ export function TaskBoard({
   onReload: () => void;
 }) {
   const [choices, setChoices] = useState<LaneChoices>(readLaneChoices);
+  // Lanes the reader has opened WHILE EMPTY. Deliberately component state and
+  // deliberately not persisted: opening a column with nothing in it is a peek,
+  // and a peek is answered and over (tasks-lib, above `laneCollapsed`). A remount
+  // — every navigation back to this page — starts the board with none.
+  const [peeked, setPeeked] = useState<Set<BoardColumn>>(() => new Set());
   const [visible, setVisible] = useState<Record<string, number>>({});
   // The card in flight and the lane under it. Native HTML5 drag — a column
   // move needs nothing fancier than the platform's own.
@@ -2245,7 +2292,23 @@ export function TaskBoard({
   // own earlier one — so the press always means "the other one of these two".
   // Recording the RESULT rather than a flip is what makes the store a record of
   // choices instead of a snapshot of the board.
+  //
+  // WHICH of the two stores it lands in is decided by the lane's contents, and
+  // by nothing else. A press on a lane with cards is a preference and is written
+  // down; a press on an empty one is a peek and stays in memory, so nothing a
+  // reader does to an empty column can outlive the sitting. The peek is a
+  // straight toggle because it is the only thing the empty case has: closing a
+  // peeked lane is removing the peek, not recording "collapsed".
   const toggleLane = (key: BoardColumn, nowCollapsed: boolean) => {
+    if ((byLane.get(key)?.length ?? 0) === 0) {
+      setPeeked((cur) => {
+        const next = new Set(cur);
+        if (nowCollapsed) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+      return;
+    }
     setChoices((cur) => {
       const next = { ...cur, [key]: !nowCollapsed };
       try {
@@ -2258,6 +2321,19 @@ export function TaskBoard({
   };
 
   const byLane = useMemo(() => groupByColumn(tasks), [tasks]);
+
+  // A peek dies the moment the lane it was about stops being empty, so a column
+  // that fills up and drains again comes back rolled up rather than wearing an
+  // answer to a question the reader asked about a different, older emptiness.
+  // `laneRolledUp` already ignores the peek while there are cards, so this only
+  // has to clear it inside that window — which is exactly where it is safe to.
+  useEffect(() => {
+    setPeeked((cur) => {
+      if (cur.size === 0) return cur;
+      const next = new Set([...cur].filter((key) => (byLane.get(key)?.length ?? 0) === 0));
+      return next.size === cur.size ? cur : next;
+    });
+  }, [byLane]);
 
   return (
     <>
@@ -2273,8 +2349,21 @@ export function TaskBoard({
           // rather than messages (tasks-lib.laneUnread) because the header stands
           // over cards.
           const news = laneUnread(lane, read);
-          const rolled = laneCollapsed(col.key, lane.length, choices);
+          const rolled = laneRolledUp(col.key, lane.length, choices, peeked);
           if (rolled) {
+            // An empty rail is STILL A BUTTON. It briefly was not — empty
+            // outranked the reader's choice, so the press did nothing and the
+            // control said so with `aria-disabled` — and that was the wrong
+            // half of the complaint to fix (Akshil, 2026-08-18). Rolling up by
+            // default is what keeps four empty columns off the board; refusing
+            // to open is a lane telling the reader they may not look inside it.
+            // An expanded empty lane shows an empty panel, which is a fine
+            // answer to "is there anything in here", and it is a drop target
+            // either way.
+            //
+            // `empty` survives for the one thing that WAS the complaint: the
+            // count below.
+            const empty = lane.length === 0;
             return (
               <button
                 type="button"
@@ -2288,14 +2377,22 @@ export function TaskBoard({
                 title={
                   runLane === col.key
                     ? "Run the next scheduled message now"
-                    : `${col.label}: ${lane.length}`
+                    : empty
+                      ? `${col.label}: nothing yet`
+                      : `${col.label}: ${lane.length}`
                 }
                 onClick={() => toggleLane(col.key, true)}
                 {...dropProps(col.key)}
               >
                 <StatusIcon status={col.key} unread={news > 0} count={news} />
                 <span className="schedule-tv-rail-label">{col.label}</span>
-                <span className="schedule-tv-rail-count">{lane.length}</span>
+                {/* No `0`. A count answers "how many are hidden in here", and on
+                    an empty rail the honest answer is already the whole rail —
+                    the chip only added a number to read before you could see it
+                    said nothing (Akshil, screenshot, 2026-08-18). */}
+                {!empty && (
+                  <span className="schedule-tv-rail-count">{lane.length}</span>
+                )}
               </button>
             );
           }

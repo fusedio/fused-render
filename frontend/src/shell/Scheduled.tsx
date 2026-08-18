@@ -64,7 +64,11 @@ import type {
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
-import ScheduleCalendar from "./ScheduleCalendar";
+import ScheduleCalendar, {
+  ICON_VIEW_BOARD,
+  ICON_VIEW_CALENDAR,
+  ICON_VIEW_LIST,
+} from "./ScheduleCalendar";
 import NewJobModal from "./NewJobModal";
 import {
   EMPTY_FILTERS,
@@ -352,38 +356,57 @@ export default function Scheduled() {
                 sits beside it. List first and default: the page's question is
                 "what is running", and the calendar is the drill-down for the
                 scheduled subset of it. */}
+            {/* Icon + label on each half, added 2026-08-18. The three words are
+                short and near-identical in weight, so the row read as a block of
+                text you had to actually read; a list, a set of columns and a
+                calendar are shapes you recognise before you read anything. The
+                labels stay — an icon-only switcher for a control this central
+                would be recognition traded for guessing (design-principles §4)
+                — and the marks are lucide's, at the same 14px every other glyph
+                on this page uses (ScheduleCalendar's `icon`). */}
             <div className="schedule-form-seg" role="radiogroup" aria-label="View">
               <button type="button"
-                      className={"btn btn-secondary" + (view === "list" ? " is-active" : "")}
+                      className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
                       aria-pressed={view === "list"}
                       onClick={() => pickView("list")}>
+                {ICON_VIEW_LIST}
                 List
               </button>
               <button type="button"
-                      className={"btn btn-secondary" + (view === "board" ? " is-active" : "")}
+                      className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
                       aria-pressed={view === "board"}
                       onClick={() => pickView("board")}>
+                {ICON_VIEW_BOARD}
                 Board
               </button>
               <button type="button"
-                      className={"btn btn-secondary" + (view === "calendar" ? " is-active" : "")}
+                      className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
                       aria-pressed={view === "calendar"}
                       onClick={() => pickView("calendar")}>
+                {ICON_VIEW_CALENDAR}
                 Calendar
               </button>
             </div>
-            {/* Search, Status and Project belong to the two task views: the
-                calendar answers "when", and a week with tasks filtered out of
-                it is a week that lies. They sit AFTER the toggle, so hiding
-                them here cannot move it. */}
-            {view !== "calendar" && (
-              <TaskFilterControls
-                filters={filters}
-                projects={projects}
-                home={home}
-                onChange={setFilters}
-              />
-            )}
+            {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
+                used to be hidden on the calendar, on the argument that it
+                answers "when" and a week with tasks filtered out of it is a week
+                that lies. That reading did not survive contact: the filters are
+                not a claim about what exists, they are how you read the page
+                this minute — the same three lenses, and a person who has just
+                narrowed the List to one project and switched to Calendar meant
+                to keep looking at that project, not to be handed everything
+                back. Views are lenses on one dataset (design-principles §1), and
+                a control that vanishes when you change lens makes them read as
+                three different pages.
+
+                They sit AFTER the toggle, which owns the row's only auto margin,
+                so nothing here can move either end of the bar. */}
+            <TaskFilterControls
+              filters={filters}
+              projects={projects}
+              home={home}
+              onChange={setFilters}
+            />
             <button type="button" className="btn btn-primary schedule-new"
                     onClick={() => openForm("blank", null)}>
               + New task
@@ -396,15 +419,20 @@ export default function Scheduled() {
               only ever appeared for one of the two filters, which made the page
               look like it had lost the other. Clearing is where setting is: in
               the menu. */}
-          {view !== "calendar" && tasksFailed && (
-            // One quiet line, not a banner: the form and the calendar still
-            // work, and only the rows are missing.
+          {tasksFailed && (
+            // One quiet line, not a banner: the form still works and only the
+            // tasks are missing. Shown on the calendar too since 2026-08-18 —
+            // its chips come from the same feed, so an empty week and an
+            // unreadable one looked identical there.
             <p className="schedule-tv-note">Tasks could not be loaded.</p>
           )}
 
           {view === "calendar" ? (
             <ScheduleCalendar
-              tasks={tasks}
+              // The FILTERED set, same as the other two views get: the toolbar's
+              // three controls are live here now, and a filter that is shown but
+              // does nothing is worse than one that is hidden.
+              tasks={shown}
               entries={entries}
               queued={queued}
               running={running}
