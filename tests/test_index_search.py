@@ -619,6 +619,71 @@ def test_rank_route_names_a_folder_the_ignore_list_excludes(home, tmp_path):
     assert body["covered"] is False and body["reason"] == "ignored"
 
 
+def test_a_cancelled_run_is_not_a_scan_in_flight(home, tmp_path, monkeypatch):
+    """A run told to stop still reads `running` in its log for a moment — the
+    worker notices the flag a couple of hundred directories later. Reporting it
+    starts a poll cycle for a scan that is about to produce nothing, which is
+    why runner.active_run refuses the same runs."""
+    import os
+
+    from fused_render.index import runner
+    from fused_render.index.config import load_config
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    cfg = load_config()
+    run_dir = os.path.join(cfg.runs_dir, "r1")
+    os.makedirs(run_dir, exist_ok=True)
+    open(os.path.join(run_dir, "cancel"), "w").close()
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r1", "root": root, "running": True}]})
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["reason"] == ""
+
+
+def test_the_run_listing_is_not_re_read_on_every_keystroke(home, tmp_path, monkeypatch):
+    """`list_runs` folds every run directory — stats and a liveness check per
+    run — and this fires on EVERY ranked request, which is one per keystroke in
+    two search boxes. The answer cannot change meaningfully inside a poll
+    interval, so it is cached for a beat."""
+    from fused_render.index import runner
+    from fused_render.server.routers import index as index_routes
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    calls = []
+    real = runner.list_runs
+    monkeypatch.setattr(runner, "list_runs",
+                        lambda cfg, limit=20: (calls.append(1), real(cfg, limit=limit))[1])
+    index_routes._forget_runs()
+    for q in ("a", "al", "alp", "alph", "alpha"):
+        client.get("/api/index/rank", params={"root": root, "q": q})
+    assert len(calls) == 1
+
+
+def test_the_cached_run_listing_expires(home, tmp_path, monkeypatch):
+    """Cached for a beat, not for the process: a scan that STARTS has to become
+    visible, or the box never learns to poll."""
+    import time
+
+    from fused_render.index import runner
+    from fused_render.server.routers import index as index_routes
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    index_routes._forget_runs()
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {"runs": []})
+    assert client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()["reason"] == ""
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r9", "root": root, "running": True}]})
+    monkeypatch.setattr(time, "monotonic",
+                        lambda: index_routes._runs_cache[0] + index_routes.RUNS_CACHE_S + 1)
+    assert client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()["reason"] == "scanning"
+
+
 def test_a_package_is_never_reported_as_scanning(home, tmp_path, monkeypatch):
     """Ordering matters: a package under a root being scanned still answers
     "package", because polling for it would never end."""

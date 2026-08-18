@@ -269,20 +269,63 @@ def _covers(a: str, b: str) -> bool:
             or b.startswith((a if a == "/" else a + "/")))
 
 
+# How long the folded run listing is reused for. `list_runs` stats every run
+# directory and applies a liveness check to each, and this question is asked on
+# EVERY ranked request — one per keystroke, in two search boxes. Nothing it
+# reports can change usefully inside a beat: the poll that consumes it runs at
+# SCAN_POLL_MS (1.5 s), so a scan starting is noticed within one poll either
+# way. (timestamp, runs), rewritten in place; no eviction to do.
+RUNS_CACHE_S = 1.0
+_runs_cache: tuple = (0.0, None)
+
+
+def _forget_runs() -> None:
+    """Drop the cached listing. Tests only."""
+    global _runs_cache
+    _runs_cache = (0.0, None)
+
+
+def _live_runs(cfg: IndexConfig) -> list:
+    """The folded run listing, at most once per RUNS_CACHE_S."""
+    global _runs_cache
+    import time
+
+    now = time.monotonic()
+    stamp, runs = _runs_cache
+    if runs is not None and (now - stamp) < RUNS_CACHE_S:
+        return runs
+    try:
+        runs = runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]
+    except Exception:  # noqa: BLE001 - a search must not fail over housekeeping
+        logger.exception("could not list index runs")
+        runs = []
+    _runs_cache = (now, runs)
+    return runs
+
+
 def _scan_in_flight(cfg: IndexConfig, root: str) -> bool:
     """Whether a live run is writing rows that belong to `root`.
 
     Both directions count. A scan of an ANCESTOR root will rewrite this
     folder's rows when it compacts; a scan of a DESCENDANT is adding rows
     underneath it. Either way the answer the search box has is provisional,
-    which is the whole of what the `scanning` reason claims."""
-    try:
-        runs = runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]
-    except Exception:  # noqa: BLE001 - a search must not fail over housekeeping
-        logger.exception("could not list index runs")
-        return False
-    return any(r.get("running") and r.get("root")
-               and _covers(root, str(r["root"])) for r in runs)
+    which is the whole of what the `scanning` reason claims.
+
+    A run already told to stop does NOT count, for the reason
+    `runner.active_run` gives about the same runs: cancelling is asynchronous,
+    so a dying run's log still reads `running` for a couple of hundred
+    directories, and reporting it would start a poll cycle waiting on a scan
+    that is about to produce nothing."""
+    for r in _live_runs(cfg):
+        if not r.get("running") or not r.get("root"):
+            continue
+        if not _covers(root, str(r["root"])):
+            continue
+        rid = r.get("run_id")
+        if rid and os.path.exists(os.path.join(cfg.runs_dir, str(rid), "cancel")):
+            continue
+        return True
+    return False
 
 
 def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:

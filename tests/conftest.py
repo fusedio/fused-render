@@ -380,6 +380,12 @@ def _no_startup_index_scan(monkeypatch):
     from fused_render.server import fs_mutate
 
     monkeypatch.setattr(fs_mutate, "note_index_mutation", lambda *paths: None)
+    # The ranked route caches the folded run listing for a beat, so that one
+    # question is not re-asked on every keystroke (routers/index._live_runs).
+    # It is module-global and keyed on nothing, so without this a test's runs
+    # leak into the next test's answer for a second — which is longer than a
+    # test takes.
+    index_routes._forget_runs()
 
 
 @pytest.fixture(autouse=True)

@@ -401,9 +401,24 @@ def _subseq_regex(q: str) -> str:
 # root -> (index generation, ignore-root rels). The `.gitignore` rows under a
 # root change only when the index does, and the query behind them is a scan of
 # the path column — a few tens of ms that a keystroke must not pay. Keyed on the
-# manifest's `updated`, so a completed scan re-discovers exactly once. Tiny and
-# bounded by the number of roots ever searched in one process.
+# manifest's `updated`, so a completed scan re-discovers exactly once.
+#
+# CAPPED, and the cap is not decoration. This used to be "bounded by the number
+# of roots ever searched in one process", which was true when the home page was
+# the only caller: one root, one entry. The in-folder search makes every folder
+# anybody browses into a root, so the bound became "every folder visited this
+# session" — a dict that only grows, holding a list of rels per entry.
+ORACLE_CACHE_MAX = 32
 _ORACLE_RELS: dict = {}
+
+
+def _remember_oracle_rels(key, value) -> None:
+    """Insertion-ordered, oldest evicted — the folder least recently searched
+    is the one least likely to be searched next."""
+    _ORACLE_RELS.pop(key, None)
+    _ORACLE_RELS[key] = value
+    while len(_ORACLE_RELS) > ORACLE_CACHE_MAX:
+        _ORACLE_RELS.pop(next(iter(_ORACLE_RELS)))
 
 
 def _ignore_roots(con, cfg: IndexConfig, parts, root: str, prefix: str,
@@ -434,7 +449,7 @@ def _ignore_roots(con, cfg: IndexConfig, parts, root: str, prefix: str,
             f"AND path LIKE '%/.gitignore' ESCAPE '\\'").fetchall()
         for (rel,) in rows:
             rels.append(rel[: -len("/.gitignore")] if "/" in rel else "")
-    _ORACLE_RELS[key] = (updated, rels)
+    _remember_oracle_rels(key, (updated, rels))
     return rels
 
 

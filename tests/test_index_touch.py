@@ -12,8 +12,6 @@ scan rather than the scan itself: which folder gets scanned, that a burst of
 mutations costs one scan and not fifty, that a mount is never scanned, and
 that a scan already in flight over the folder is waited out rather than raced.
 """
-import pytest
-
 from fused_render.server.index_touch import RescanQueue
 
 
@@ -177,18 +175,50 @@ def test_a_start_that_fails_does_not_strand_the_rest():
     assert sorted(f.started) == ["/home/me/bad", "/home/me/good"]
 
 
-@pytest.mark.parametrize("route", ["write", "mkdir", "delete", "rename", "copy",
-                                   "compress", "upload", "trash_move"])
-def test_every_mutating_route_reports_what_it_changed(route):
-    """Source guard. The point of this module is that the index learns about
-    EVERY change the app makes; a route added without the call is a folder the
-    search box silently keeps lying about."""
-    import inspect
+def _mutating_routes():
+    """Every POST handler on the fs-mutation router, by name.
 
+    ENUMERATED, not listed: a hardcoded list cannot fail for a route that does
+    not exist yet, which is the only thing this guard is for. /api/fs/trash-move
+    arrived on main while this module was being written and would have shipped
+    without telling the index anything."""
     from fused_render.server import fs_mutate
 
-    fn = getattr(fs_mutate, "api_fs_" + route)
-    assert "note_index_mutation" in inspect.getsource(fn)
+    out = []
+    for route in fs_mutate.router.routes:
+        if "POST" not in getattr(route, "methods", set()):
+            continue
+        out.append(route.endpoint)
+    assert out, "no POST routes found — has the router moved?"
+    return out
+
+
+# Routes that legitimately change nothing the index stores. Named one by one,
+# with the reason, so adding a route here is a decision somebody made rather
+# than a name that quietly matched a pattern.
+NOT_A_PATH_CHANGE: dict = {}
+
+
+def test_every_mutating_route_reports_what_it_changed():
+    """The point of this module is that the index learns about EVERY change the
+    app makes; a route added without the call is a folder the search box
+    silently keeps lying about."""
+    import inspect
+
+    missing = []
+    for fn in _mutating_routes():
+        if fn.__name__ in NOT_A_PATH_CHANGE:
+            continue
+        if "_note_index_mutation" not in inspect.getsource(fn):
+            missing.append(fn.__name__)
+    assert missing == []
+
+
+def test_the_guard_would_notice_a_new_route():
+    """...and it can only mean that if it actually reads the router."""
+    names = [fn.__name__ for fn in _mutating_routes()]
+    assert "api_fs_rename" in names and "api_fs_trash_move" in names
+    assert len(names) >= 8
 
 
 # ---------------------------------------------------------------- the floor

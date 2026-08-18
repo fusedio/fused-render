@@ -206,3 +206,18 @@ def test_stats_does_not_count_a_lookalike_underscore_sibling(tmp_path):
     _index(tmp_path, "/x/my_dir", ["/x/my_dir/real.txt"])
     cfg = _index(tmp_path, "/x/my-dir", ["/x/my-dir/fake.txt"])
     assert stats(cfg, root="/x/my_dir")["rows"] == 1
+
+
+def test_the_ignore_root_cache_cannot_grow_without_limit(tmp_path):
+    """It used to be "bounded by the roots ever searched in one process", which
+    was true when only the home page used this route. The in-folder search
+    makes EVERY browsed folder a root, so the bound has to be a real one."""
+    from fused_render.index import query as q
+
+    q._ORACLE_RELS.clear()
+    for i in range(q.ORACLE_CACHE_MAX * 3):
+        q._remember_oracle_rels((f"/ix", f"/root{i}"), (1.0, []))
+    assert len(q._ORACLE_RELS) <= q.ORACLE_CACHE_MAX
+    # the most recent survive; the oldest are the ones dropped
+    assert ("/ix", f"/root{q.ORACLE_CACHE_MAX * 3 - 1}") in q._ORACLE_RELS
+    assert ("/ix", "/root0") not in q._ORACLE_RELS
