@@ -199,4 +199,13 @@ def test_a_running_chip_says_so_and_stops_saying_it_on_request():
     assert guarded, "the static fallback must sit inside a reduced-motion block"
     assert "animation: none" in guarded[0]
     # And the rule hangs off a class the view actually sets.
-    assert 'isRunningNow(chip.task, chip.anchor) ? " is-running" : ""' in _read(_CAL)
+    #
+    # Asked of the CHIP's whole day, not of its anchor (bugbot, 2026-08-18). A
+    # chip is one task on one day, anchored at that day's EARLIEST message, so
+    # the anchor is the wrong occurrence twice over: a day whose 05:00 run has
+    # finished and whose 14:00 run is in flight was asking about the finished
+    # one, and the mark landed on whichever day held the task's newest row —
+    # routinely tomorrow's pending occurrence. tasks-lib.isRunningIn asks every
+    # message under the chip; the class, the CSS above and the reduced-motion
+    # fallback are untouched.
+    assert 'isRunningIn(chip.task, chip.messages) ? " is-running" : ""' in _read(_CAL)

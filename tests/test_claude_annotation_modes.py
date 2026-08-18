@@ -145,7 +145,7 @@ def test_the_tool_applies_inside_a_recording_too(html):
 def test_the_tool_picker_follows_the_mode(html):
     """Shown while comment mode (or a recording, which arms it) is on, hidden
     otherwise — a picker for a click that cannot happen is noise. A
-    cross-origin target (annXO, D349) hides it too: no element can ever be
+    cross-origin target (annXO, D350) hides it too: no element can ever be
     resolved over there, so there is no choice to offer — every click is a
     spot."""
     assert 'id="anntool" role="radiogroup"' in html
@@ -271,7 +271,7 @@ def test_the_warm_up_is_opportunistic_never_load_bearing(html):
 # --------------------------------- the cross-origin target's point overlay
 
 def test_a_cross_origin_target_gets_a_point_overlay_in_the_host_document(html):
-    """D349: a marked frame whose document is out of reach (the /canvases
+    """D350: a marked frame whose document is out of reach (the /canvases
     workspace marks its HOSTED workbench iframe) used to be the worst state —
     annCapable() said yes off the mark alone, the layer injection silently
     failed, and the switch armed a mode whose clicks went nowhere. Now that

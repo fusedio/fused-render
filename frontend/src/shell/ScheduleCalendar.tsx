@@ -165,7 +165,7 @@ import type { CalendarChip, CalendarRange, MsgCancelKind, QueueRole } from "./sc
 // The pill used to answer a different question (the day's worst run) and could
 // therefore contradict the button — see the `pill` memo below.
 import {
-  isRunningNow,
+  isRunningIn,
   messageTone as taskMessageTone,
   openMessageHref,
   taskColumn,
@@ -1106,7 +1106,15 @@ export default function ScheduleCalendar({
                         // other two views file a card by — and the CSS is a
                         // shimmer that sweeps the chip, with a static highlight
                         // under prefers-reduced-motion.
-                        (isRunningNow(chip.task, chip.anchor) ? " is-running" : "") +
+                        //
+                        // ASKED OF THE WHOLE CHIP, not of its anchor (bugbot,
+                        // 2026-08-18). A chip is a task on a DAY and the anchor
+                        // is only that day's EARLIEST message, so a day whose
+                        // 05:00 run has finished and whose 14:00 run is in flight
+                        // was asking about the finished one — while the running
+                        // mark landed on whichever day held the task's newest
+                        // row, routinely tomorrow's pending occurrence.
+                        (isRunningIn(chip.task, chip.messages) ? " is-running" : "") +
                         (chip.time < now ? " is-past" : "") +
                         // Three lanes leave a chip ~70px wide, which cannot hold
                         // both the title and the clock — the title collapsed to
