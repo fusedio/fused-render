@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import fused_render.canvases as canvases_mod
+import fused_render.fusedcli as fusedcli_mod
 from fused_render.server import create_app
 
 GUARD = {"X-Fused": "1"}
@@ -1448,6 +1449,163 @@ def test_an_out_of_band_cli_push_is_force_pulled_back_by_the_watcher(
     # writes pull_files), so unpublished agent scratch files are lost; and that
     # each pass takes a trash snapshot, so ~_TRASH_MAX out-of-band pushes evict
     # the entire recoverable history.
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+# -- the server's own push must never re-enter the interception -----------------
+
+
+_REAL_SHIM = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "fused_render", "_fused_cli.py")
+
+
+def _stub_fused_package(tmp_path, log):
+    """A `fused` package whose `_cli.main` records the argv and succeeds — so a
+    push that reaches the REAL CLI is observable, and one that never gets there
+    is too."""
+    pkg = tmp_path / "fusedstub"
+    (pkg / "fused").mkdir(parents=True)
+    (pkg / "fused" / "__init__.py").write_text("")
+    (pkg / "fused" / "_cli.py").write_text(
+        "import json, os, sys\n"
+        "def main():\n"
+        "    with open(os.environ['REAL_CLI_LOG'], 'a') as f:\n"
+        "        f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "    sys.exit(0)\n")
+    _ = log
+    return pkg
+
+
+def test_the_managers_own_push_does_not_route_back_through_the_endpoint(
+        harness, tmp_path, monkeypatch):
+    """Regression for a live outage on this branch.
+
+    `_push` runs `[*cli.command, "workbench", "canvas", "push", …]`, and on the
+    shim path `fused_cli()` resolves cli.command to
+    `[sys.executable, _fused_cli.py]` — the file that performs the interception.
+    So the manager's own push POSTed back to /api/canvases/sync/push, was
+    refused because a push was already running (itself), and recorded that
+    refusal as a CLI failure: push_state "error", push_seq stuck at 0, canvas
+    sync dead with a Fix-with-Claude button offering to fix nothing.
+
+    The rest of this file cannot catch it: the harness substitutes its stub
+    through FUSED_RENDER_FUSED_BIN, so cli.command is never the shim. Here it
+    IS, with a stub `fused` package behind it — and FUSED_RENDER_ORIGIN points
+    at a server that answers, so without the guard the interception really does
+    fire and really does refuse.
+    """
+    import http.server
+    import threading as _threading
+
+    seen_posts = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen_posts.append(self.path)
+            out = json.dumps({"error": "a push is already running for this canvas",
+                              "code": "busy"}).encode()
+            self.send_response(409)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = _threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        real_cli_log = tmp_path / "real-cli.jsonl"
+        pkg = _stub_fused_package(tmp_path, real_cli_log)
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(pkg), repo]))
+        monkeypatch.setenv("REAL_CLI_LOG", str(real_cli_log))
+        monkeypatch.setenv("FUSED_RENDER_ORIGIN",
+                           "http://127.0.0.1:%d" % server.server_port)
+        # The shim path, not the external stub: this is the whole point.
+        monkeypatch.delenv("FUSED_RENDER_FUSED_BIN", raising=False)
+        monkeypatch.setattr(
+            canvases_mod, "fused_cli",
+            lambda: fusedcli_mod.FusedCli(command=[sys.executable, _REAL_SHIM],
+                                          external=False))
+        monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+        monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+        monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)
+
+        harness.log_in()
+        (harness.root / "alpha").mkdir(parents=True)
+        (harness.root / "alpha" / "canvas.toml").write_text('type = "canvas"\n')
+        (harness.root / "alpha" / "a.py").write_text("a1\n")
+        # Shims present, so this is the manifest-backed path; the manifest probe
+        # is irrelevant here (PULL_POLL_S is long) but availability is what
+        # gates seeding and the shim path generally.
+        SyncShims(harness, tmp_path, monkeypatch)
+        harness.client.post("/api/canvases/sync/start", json={"name": "alpha"},
+                            headers=GUARD)
+        (harness.root / "alpha" / "a.py").write_text("a2-edited\n")
+
+        status = _wait_status(harness, lambda s: s["push_seq"] >= 1)
+        assert status and status["push_seq"] >= 1, (
+            "the manager's own push never succeeded", status)
+        assert status["push_state"] == "idle", status
+        assert status["error"] is None, status
+        assert status["error_detail"] == [], status
+        assert status["fix_active"] is False, status
+        # It reached the real CLI...
+        assert real_cli_log.exists(), "the push never reached the fused CLI"
+        pushes = [json.loads(ln) for ln in
+                  real_cli_log.read_text().splitlines()]
+        assert any(a[:3] == ["workbench", "canvas", "push"] for a in pushes), pushes
+        # ...and never asked the server to push on its behalf.
+        assert seen_posts == [], (
+            "the manager's own push re-entered the interception", seen_posts)
+        harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"},
+                            headers=GUARD)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_busy_refusal_is_not_recorded_as_a_push_failure(
+        harness, tmp_path, monkeypatch):
+    """A genuine double-push (two sessions, or a session racing the watcher) is
+    a timing conflict, not a broken canvas. If it landed in push_state "error"
+    it would wedge the canvas — `_run` only re-arms `pending` on a fresh change
+    and the remote-poll leg is gated on idle — and it would light up the
+    Fix-with-Claude button with nothing for Claude to fix."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    monkeypatch.setattr(canvases_mod, "MANUAL_PUSH_LOCK_WAIT_S", 0.2)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    manager = _manager()
+    (harness.root / "alpha" / "a.py").write_text("a-edited\n")
+    _wait_status(harness, lambda s: s["push_state"] == "pending")
+
+    with manager._op_lock:  # someone else owns the folder this instant
+        res = harness.client.post("/api/canvases/sync/push",
+                                  json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 409, res.text
+    assert res.json()["code"] == "busy", res.json()
+
+    after = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    assert after["push_state"] != "error", after
+    assert after["error"] is None, after
+    assert after["error_detail"] == [], after
+    assert after["fix_active"] is False, after
+    # And the Fix endpoint stays unavailable — there is nothing to fix.
+    fix = harness.client.post("/api/canvases/fix", json={"name": "alpha"},
+                              headers=GUARD)
+    assert fix.status_code == 409, fix.text
+
+    # The change is still publishable: a retry works.
+    ok = harness.client.post("/api/canvases/sync/push",
+                             json={"name": "alpha"}, headers=GUARD)
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["ok"] is True, ok.json()
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 

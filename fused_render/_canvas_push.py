@@ -43,6 +43,26 @@ Design rules, all of them load-bearing:
 import json
 import os
 
+# Set by canvases.py on the environment of every fused CLI child IT spawns
+# (`_cli_env`), and the FIRST thing checked here.
+#
+# Without it this module eats its own tail. `_SyncManager._push` runs
+# `[*cli.command, "workbench", "canvas", "push", …]`, and on the shim path
+# `fused_cli()` resolves `cli.command` to `[sys.executable, _fused_cli.py]` —
+# the very file that calls into here. So the server's own push re-entered the
+# interception, POSTed back to /api/canvases/sync/push, was refused because a
+# push was already running (itself), and `_push` recorded that refusal as a CLI
+# failure: push_state "error", push_seq stuck at 0, canvas sync dead with a
+# "Fix with Claude" button offering to fix nothing.
+#
+# An env marker is the right mechanism: it survives exactly one process hop, so
+# it marks "this child was launched BY the sync manager" and nothing else. A
+# Claude session that simply runs `fused` inherits the server's own environment,
+# which never carries it, so a session cannot acquire it by accident or spoof
+# its way past the interception. (Inspecting the parent process or timing the
+# call would both be guesses about the same fact.)
+INTERNAL_ENV = "FUSED_RENDER_CANVAS_PUSH_INTERNAL"
+
 # Mirrors canvases.canvases_root(). Duplicated rather than imported: importing
 # canvases here would pull FastAPI into the startup path of every `fused`
 # command. Keep the two in step.
@@ -194,6 +214,11 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
     `args` is argv without the program name; `out`/`err` are the streams to
     write the CLI-shaped output to.
     """
+    if os.environ.get(INTERNAL_ENV):
+        # This child IS the sync manager's own push. Routing it back to the
+        # endpoint would deadlock against the push that spawned it — see
+        # INTERNAL_ENV. Checked before anything else, including the argv match.
+        return None
     parsed = parse_push(args)
     if parsed is None:
         return None
@@ -224,6 +249,16 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
     if status == 409 and body.get("code") == "no_watcher":
         # Nothing is syncing this folder, so there is no merge base to protect.
         return None
+    if status == 409 and body.get("code") == "busy":
+        # Someone else holds the folder this instant (the watcher's own leg,
+        # another session, a pause). Benign and retryable — say so in those
+        # words, so the reader retries instead of hunting for a broken canvas.
+        # Still a non-zero exit: the push did NOT happen.
+        err.write("fused-render: %s\n"
+                  "Nothing is wrong with the canvas — this is a timing "
+                  "conflict. Wait a moment and push again.\n"
+                  % (body.get("error") or "the canvas is busy"))
+        return 1
     if status != 200:
         err.write("fused-render: %s\n"
                   % (body.get("error") or "the canvas push was refused"))

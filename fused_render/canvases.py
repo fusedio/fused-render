@@ -168,10 +168,34 @@ WORKBENCH_BASE_URL = os.environ.get("FUSED_RENDER_WORKBENCH_URL") or _ENV_WEB_UR
 
 def _cli_env(cli) -> dict[str, str]:
     """child_env plus the env target, so CLI runs hit the same environment
-    the iframe shows."""
+    the iframe shows — and the marker that stops a CLI child of OURS from
+    being re-routed back into this server.
+
+    Every fused CLI run this module makes goes through here, which is why the
+    marker lives here rather than at the push site alone: none of these children
+    (push, pull, validate, the manifest/zip shims) should ever be intercepted,
+    and one chokepoint cannot be forgotten at a new call site.
+
+    Without it the sync manager's own push ate its own tail. `_push` runs
+    `[*cli.command, "workbench", "canvas", "push", …]`, and on the shim path
+    `cli.command` IS `[sys.executable, _fused_cli.py]` — the file that performs
+    the interception. So the push POSTed back to /api/canvases/sync/push, was
+    refused because a push was already running (itself), and recorded that
+    refusal as a CLI failure: push_state "error" with push_seq stuck at 0.
+    """
     env = child_env(cli)
     env["FUSED_ENV"] = WORKBENCH_ENV
+    env[_canvas_push_internal_env()] = "1"
     return env
+
+
+def _canvas_push_internal_env() -> str:
+    """The reentrancy marker's name, from the module that reads it, so the two
+    ends cannot drift. Imported lazily: _canvas_push is stdlib-only by design
+    and this keeps the dependency one-directional at import time."""
+    from fused_render._canvas_push import INTERNAL_ENV
+
+    return INTERNAL_ENV
 
 
 def canvases_root() -> str:
@@ -210,6 +234,18 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 
 def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
+
+
+def _busy(message: str) -> JSONResponse:
+    """A "someone else has this folder right now, try again" refusal.
+
+    Distinct from `_error` by the `code`, because the two mean opposite things
+    to a caller: a push FAILURE is about the canvas (validation, auth) and wants
+    fixing, while a busy refusal is about timing and wants retrying. The
+    interception in _canvas_push.py reports them differently for exactly that
+    reason, and nothing here records a busy refusal as sync state.
+    """
+    return JSONResponse({"error": message, "code": "busy"}, status_code=409)
 
 
 def _no_cli_error() -> JSONResponse:
@@ -1965,19 +2001,24 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
         return JSONResponse(
             {"error": f"canvas {name!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
+    # The three refusals below are all "someone else has this folder right
+    # now", which is BENIGN — nothing is wrong with the canvas or its files.
+    # They carry code "busy" so neither the caller nor this manager mistakes
+    # them for a failed push: none of them touches push_state, last_error or
+    # error_detail, so the clone stays dirty, the watcher's backstop still
+    # publishes it, and the Fix-with-Claude button (gated on
+    # push_state == "error") never lights up for a race there is nothing to fix.
     if manager.push_state == "pushing":
-        return _error("a push is already running for this canvas", 409)
+        return _busy("a push is already running for this canvas")
     if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
-        return _error(
-            "a sync operation is in flight for this canvas; try again in a moment",
-            409)
+        return _busy(
+            "a sync operation is in flight for this canvas; try again in a moment")
     try:
         # Re-checked under the lock: pause() sets the count and then waits on
         # this same lock, so holding it is what makes the answer stable.
         with manager.pause_lock:
             if manager.pause_count > 0:
-                return _error(
-                    f"syncing for {name!r} is paused; try again in a moment", 409)
+                return _busy(f"syncing for {name!r} is paused; try again in a moment")
         before = manager.push_seq
         manager._push()
     finally:

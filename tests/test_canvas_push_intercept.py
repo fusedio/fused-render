@@ -18,7 +18,7 @@ import sys
 
 import pytest
 
-from fused_render import _canvas_push
+from fused_render import _canvas_push, fusedcli
 
 
 @pytest.fixture()
@@ -186,6 +186,52 @@ def test_unsupported_flags_are_refused_rather_than_passed_through(root, monkeypa
 
 
 # -- every fall-through case --------------------------------------------------
+
+
+def test_the_internal_marker_short_circuits_everything(root, monkeypatch):
+    """The reentrancy guard. `_SyncManager._push` runs `[*cli.command, …]`, and
+    on the shim path cli.command IS `[sys.executable, _fused_cli.py]` — this very
+    interception. Without the marker the server's own push POSTs back to the
+    endpoint, is refused because a push is already running (itself), and the
+    refusal is recorded as a CLI failure: canvas sync dead at push_seq 0.
+
+    Checked before the argv match, so it costs nothing on unrelated commands."""
+    server = _Server(200, {"ok": True})
+    monkeypatch.setenv(_canvas_push.INTERNAL_ENV, "1")
+    code, out, err = _intercept(
+        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+    assert code is None, "the manager's own push must fall through to the CLI"
+    assert server.calls == []
+    assert out == "" and err == ""
+
+
+def test_the_marker_name_is_shared_with_canvases(root):
+    """canvases.py sets it, this module reads it; they must not drift."""
+    from fused_render import canvases
+
+    assert canvases._canvas_push_internal_env() == _canvas_push.INTERNAL_ENV
+
+
+def test_the_cli_env_carries_the_marker(root):
+    """Every fused child canvases.py spawns goes through _cli_env — push, pull,
+    validate, the shims — and none of them may be intercepted."""
+    from fused_render import canvases
+
+    env = canvases._cli_env(fusedcli.FusedCli(command=["fused"], external=False))
+    assert env[_canvas_push.INTERNAL_ENV] == "1"
+
+
+def test_a_busy_refusal_reads_as_retryable_not_as_a_broken_canvas(root, monkeypatch):
+    """A genuine double-push is a timing conflict. The message has to say that,
+    or the reader goes hunting for a validation problem that does not exist."""
+    server = _Server(409, {"error": "a push is already running for this canvas",
+                           "code": "busy"})
+    code, _, err = _intercept(
+        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+    assert code == 1, "the push did not happen, so it must not exit 0"
+    assert "already running" in err
+    assert "Nothing is wrong with the canvas" in err
+    assert "again" in err
 
 
 def test_no_server_origin_falls_through(root, monkeypatch):
