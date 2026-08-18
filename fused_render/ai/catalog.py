@@ -307,11 +307,12 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
     ],
     # MLX conversions ONLY, and this is the third mutually unloadable Whisper
-    # list in the app: a `mlx-community` repo carries `weights.npz` (or
-    # `weights.safetensors`), which is neither CTranslate2's `model.bin` nor
-    # transformers' `model.safetensors`. Suggesting across the line is exactly
-    # the trap `faster_whisper/worker.py` had to write an error message about,
-    # now with three ways to fall into it.
+    # list in the app: a `mlx-community` repo carries `weights.npz`,
+    # `weights.safetensors`, or (on the newer quantized re-uploads) transformers'
+    # own filename `model.safetensors` beside whisper's native config — none of
+    # which is CTranslate2's `model.bin` or a transformers checkpoint. Suggesting
+    # across the line is exactly the trap `faster_whisper/worker.py` had to
+    # write an error message about, now with three ways to fall into it.
     #
     # These are the repos an Apple Silicon machine sees, and it sees them
     # BECAUSE it resolves to this runner — which since D302 is a user's choice
@@ -323,6 +324,14 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # (2026-08-15). **One line each**, per the rule the transformers list
     # states: a shortlist is read by sweeping it.
     "mlx-whisper": [
+        {
+            "id": "mlx-community/whisper-tiny.en-8bit",
+            "label": "Whisper tiny English (MLX 8-bit)",
+            "size_gb": 0.05,
+            "note": "The quickest download and decode here, English only — "
+                    "fine for a rough draft of clear speech, below small on "
+                    "everything else.",
+        },
         {
             "id": "mlx-community/whisper-small-mlx",
             "label": "Whisper small (MLX)",
