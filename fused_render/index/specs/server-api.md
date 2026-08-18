@@ -14,12 +14,14 @@ unguarded like every other read endpoint and none of them can write.
 | Route | Guard | Purpose |
 |---|---|---|
 | `POST /api/index/scan` `{root?, full?}` | X-Fused | start a detached scan; `{run_id, root}`. No `root` means the first configured root (§3). A non-directory or mount-backed root is a 400. |
+| `POST /api/index/scan-folder` `{path}` | X-Fused | cover ONE folder because a search box asked; `{started, why, run_id, root}`, never an error (§7.2) |
 | `POST /api/index/cancel` `{run_id}` | X-Fused | touch the run's cancel flag |
 | `GET /api/index/status?run_id=&since=` | — | scan state (§2) |
 | `GET /api/index/runs` | — | the 20 most recent runs with their folded state |
 | `GET /api/index/stats?root=` | — | totals + per-extension breakdown (`query.md §2`) |
 | `GET /api/index/lookup?q=&limit=&offset=&sort=` | — | path lookup (`query.md §3`) |
-| `GET /api/index/search?root=&q=&limit=&fmt=` | — | the explorer's in-folder corpus (`query.md §6`); `fmt=columns` for the compact encoding (§6) |
+| `GET /api/index/search?root=&q=&limit=&fmt=` | — | the whole-folder corpus (`query.md §6`); `fmt=columns` for the compact encoding (§6). No longer used by the app — it is the `fused.fileIndex.search` bridge contract user pages are written against |
+| `GET /api/index/rank?root=&q=&limit=` | — | BOTH search boxes: filtered AND ranked server-side, top `limit` hits, with a `reason` when it cannot answer (§7) |
 | `POST /api/index/query` `{sql, limit?}` | X-Fused | run ONE read-only statement over `files`/`dirs`; `{columns, rows, truncated}` (`query.md §5`) |
 | `POST /api/index/ask` `{prompt, limit?}` | X-Fused | compile a question to SQL through the AI relay, run it under the same guard, echo the `sql` (`query.md §5`) |
 | `GET /api/index/config` · `POST /api/index/config` | X-Fused on write | scan roots + ignore list (§3) |
@@ -69,11 +71,14 @@ the UI needs to be able to say "building index… N files" rather than pretendin
 is happening. With a `run_id` it additionally returns `events[since:]` and a `cursor`,
 so a poller fetches only what it has not seen (`scan.md §3`).
 
-**The first scan is not a blocking state.** Until a compaction has completed, the
-explorer's in-folder search falls back to the live walk. "No index yet", "this root is
-not covered yet" and "the request failed" are the *same* condition to the search seam:
-fall back silently, never surface an error. From the second scan onward the index keeps
-answering while the rescan runs, under the "indexing…" caveat (`query.md §6`).
+**The first scan is not a blocking state.** Until a compaction has completed there is
+nothing to answer with, and the search box says so honestly rather than reporting "no
+matches": the ranked route answers `covered: false` with `reason: uncovered` or
+`scanning` (§7.1), the box asks for the folder to be scanned if nothing is running, and
+it polls and repaints until rows arrive, captioned "indexing…" throughout. From the
+second scan onward the index keeps answering while a rescan runs, under the same caveat
+(`query.md §6`). A live streamed walk is no longer the fallback for this case — it is
+reserved for the folders no scan can ever cover (§7.1).
 
 ## 3. Configuration
 
@@ -111,8 +116,9 @@ the FSEvents positions, the applied-rules fingerprint and the last-scan record �
 - **The last-scan record goes**, so the next startup rescans immediately instead of
   debouncing against a scan whose output no longer exists.
 - **Deleting is not destructive** in any user-visible sense: the index is derived data,
-  and search silently reverts to the live walk. Deleting an already-empty store succeeds,
-  which is what makes the button safe to press twice.
+  and the next scan rebuilds it — searching meanwhile asks for the open folder to be
+  scanned (§7.2) and says "indexing…" while it runs. Deleting an already-empty store
+  succeeds, which is what makes the button safe to press twice.
 
 ## 4. The startup scheduler
 
@@ -137,9 +143,15 @@ developer's real home. The scheduler's own tests call `run_startup_scan()` direc
 ### 4.1 The startup warm
 
 The same hook then calls `startup_warm()`, which spawns one detached daemon thread
-running `run_startup_warm()`: `search_under` + `filter_corpus` over `expanduser("~")`
-— exactly the request the explorer's home page makes on the first keystroke, under
-exactly the same pool key.
+running `run_startup_warm()`: `search_under` + `filter_corpus` over `expanduser("~")`,
+and then `search_ranked` with a query that matches NOTHING over the same root — exactly
+the two requests the explorer makes (the in-folder corpus and the home page's ranked
+search), under exactly the same pool key. Warming only the corpus would leave the
+ranked path's own duckdb plan cold, and that is the one a keystroke waits on. The
+no-match query is not laziness: the ladder above stops at the substring pass as soon as
+it has enough, so a query WITH hits never touches the subsequence-regex plan — the
+expensive half, and the one a mistyped query lands on. The client's idle warm
+(`FilesHome.tsx`) sends the same shape of query for the same reason.
 
 Everything that path caches is **per process** and starts empty: the gitignore verdict
 pool has no verdicts until some request sweeps `git check-ignore` over the whole corpus,
@@ -217,6 +229,193 @@ Rejected: front-coding the rels (they arrive depth-then-path ordered, so neighbo
 share long prefixes). It takes the body to 12.4 MB, but costs 0.45 s of Python per
 corpus — more of the first search's budget than it saves, and gzip finds most of the
 same redundancy for an eighth of the time.
+
+## 7. The ranked search — `GET /api/index/rank`
+
+`GET /api/index/rank?root=&q=&limit=` answers `{ok, covered, fresh, reason, updated,
+age_s, root, hits, total, truncated, escalated, scanned_partitions, of_partitions}`, where each
+hit is `{rel, is_dir, size, mtime, score, longest_run, tier, depth}` and `limit`
+defaults to 200 (hard cap `MAX_RANK_LIMIT`, 2,000). Plain JSON, a few KB — no columnar
+encoding and no gzip special-casing, because that machinery (§6) exists for a 20 MB
+corpus and this is not one. A miss is a 200 with `covered: false` and no hits, exactly
+as for the corpus.
+
+**Why it exists.** §6's corpus is the whole ranking set shipped to the browser: 19.8 MB
+raw / 5.4 MB gzipped for 164,405 rows on a home directory whose index actually held
+571,429 files. `MAX_CORPUS` (200,000, depth-ordered) plus the gitignore filter is what
+cut it down, so ~71% of that home was unfindable from the home search while the
+response reported `truncated: true` and the client ranked what it got. This route
+filters and ranks over the WHOLE index and returns the part anybody reads.
+
+**Two stages** (`query.md`, `search_ranked`), because neither is affordable alone: SQL
+narrows and coarse-orders over every row under the root; Python's ranker
+(`index/rank.py`) scores a bounded slice of at most `RANK_CANDIDATE_CAP` (2,000) rows.
+Scoring every subsequence candidate in Python is the 186 ms case that shape avoids.
+
+Stage A is itself a **ladder**, cheapest pass first:
+
+| pass | filter | `render` over 571k rows | `readme.md` |
+|---|---|---|---|
+| 1 | `lower(rel) LIKE '%q%'` | 30,319 rows / 51 ms | 3,056 / 41 ms |
+| 2 | `regexp_matches(lower(rel), 'a.*b.*c')` | 176,505 / 143 ms | 11,766 / 45 ms |
+
+Pass 2 runs only when pass 1 cannot fill the returned `limit` after ranking and
+gitignore filtering, and `escalated` says which happened. That is **lossless, not an
+approximation**: `fuzzyMatch`'s substring branch sets `longestRun = len(q)`, the maximum
+the subsequence branch can never reach, and `rankCompare` orders on `longestRun` first,
+so every substring hit outranks every subsequence-only hit and a filled cut leaves pass
+2 nothing to contribute above it. The check runs on the FILTERED count, so it needs no
+safety margin.
+
+**The gitignore filter runs before the cut to `limit`**, never after — filtering after
+the cut is precisely what let the corpus report more rows than it held.
+
+**`positions` are not returned.** The client re-runs `fuzzyMatch` over the ~200 rows it
+got back to build its highlights, so `platform/lib/fuzzy.ts` stays the single source of
+truth for what highlights, and the server's port of it stays free to carry positions
+internally without them becoming a wire contract.
+
+**Parity is a test, not an intention.** `index/rank.py` is a port of `fuzzy.ts` +
+`listing/search.ts`, which remain the authority — the in-folder search still ranks a
+live streamed walk in the browser, and only a browser-side ranker can rank a stream. The
+same box is therefore answered by either ranker depending on coverage, so both assert
+against `tests/fixtures/rank-parity.json` (generated from the JS side by `bun
+scripts/gen-rank-fixture.ts`): `tests/test_index_rank.py` and
+`frontend/src/apps/explorer/listing/rank-parity.test.ts`.
+
+### 7.1 `reason` — why an answer is what it is
+
+A miss is never an error, but it is not one condition either, and the in-folder search
+box picks its SOURCE from the difference. `reason` is `""` when the index answered, and
+otherwise one of:
+
+| `reason` | means | what the client does |
+|---|---|---|
+| `mount` | mount-backed; `MountGuard` refuses to index it at all | live streamed walk |
+| `package` | a `.app`/`.photoslibrary` — recorded as one opaque row, never listed | live streamed walk |
+| `ignored` | the scan's ignore list excludes this tree (`node_modules`, …) | live streamed walk |
+| `uncovered` | not scanned yet, and scannable | ask for a scan (§7.2), then poll |
+| `scanning` | a run covering this root is live — in EITHER direction, an ancestor root or a descendant one | poll, rendering whatever came back |
+
+A run already told to stop does not count as live, for the reason
+`runner.active_run` gives about the same runs: cancelling is asynchronous, so a
+dying run's log still reads `running` for a couple of hundred directories, and
+reporting it starts a poll waiting on a scan that will produce nothing. The
+folded run listing is cached for ~1 s (`RUNS_CACHE_S`), because this question
+is asked on every ranked request — one per keystroke, in two search boxes —
+and nothing it reports can change usefully inside one poll interval.
+
+`scanning` is reported even when `covered` is true: the hits are real, and more are on
+the way. The three permanent cases are ordered before it, so a package under a root
+being scanned still says `package` rather than sending the client into a poll that never
+ends.
+
+**Deciding this server-side is the point.** The mount policy is `MountGuard`'s — the
+same object `runner.start` refuses with — the ignore list is the scan config's, and the
+package rule is a shape of the store. A copy of any of them in TypeScript would drift,
+and the drift would surface as two searches disagreeing about one folder. The client's
+whole rule is: walk when the server says it cannot answer AND cannot be made to
+(`frontend/src/apps/explorer/listing/index-source.ts`).
+
+### 7.2 `POST /api/index/scan-folder` — cover a folder because someone searched it
+
+Body `{path}`, X-Fused guarded, answers `{ok, started, why, run_id, root}` with `why` in
+`started | joined | debounced | refused`. **Never an error, and every "no" is durable** —
+the caller is a search box, so a refusal it could read as transient becomes a
+keystroke-rate retry loop.
+
+- The FOLDER is the scan root, not an enclosing configured one: a folder is uncovered
+  precisely because no configured root covers it (or one does and pruned it, in which
+  case rescanning that root would prune it again). Compaction keeps every row outside
+  the root it is given (`index-store.md`), so a folder-sized scan merges into the store.
+- `SCAN_DEBOUNCE_S` — the startup scheduler's own floor, not a second one — stops a
+  folder that stays uncovered after a scan from being rescanned on the next keystroke.
+- **A path SPELLED under a mount is refused before this route stats it.**
+  `MountGuard.blocks` is a string prefix test against the mount records, and it
+  runs ahead of everything that touches the path, because a stat under a wedged
+  rclone mount blocks the request thread indefinitely — answering `refused` a
+  moment later is worth nothing if getting there hangs. Ordered the same way at
+  both doors (here and `index_touch._real_blocked`).
+
+  What that does NOT cover, stated because the ordering above invites the
+  stronger reading: `blocks` does not resolve symlinks, so a link whose TARGET
+  is inside a mount passes it, and the `foreign_device` stat below then follows
+  the link onto the mount. `blocks_root`'s `realpath` is what catches that case,
+  and it is reached later (inside `runner.start`) — but it is not a cheaper
+  answer either, since resolving the link touches the mount too. The exposure
+  is the same one every caller with a user-supplied path has always had; this
+  route does not add to it, and does not remove it.
+- **A scan root on a different filesystem than the user's home is refused**
+  (`index_touch.foreign_device`). `MountGuard` only knows fused-render's own
+  mounts dir, so a user's SMB/NFS volume at `/Volumes/share` is not
+  mount-backed as far as it is concerned — and `scan.scan_dir_once`'s
+  `root_dev` guard, which normally stops a crawl leaving the home filesystem,
+  is defeated by construction when the root IS the volume. The live walk did
+  crawl such paths, but it was abortable, entry-capped and tied to an open
+  search box; a detached scan is none of those, and a kernel walk has
+  permanently wedged a mount here more than once. A refused folder falls back
+  to the live walk exactly as it did before this phase.
+
+The poll gives up after `MAX_SCANNING_POLLS` ticks — counted in ticks ISSUED,
+not answers received. A tick used to abort the request in flight, so a rank
+that outlasted the interval produced no answers at all and a ceiling counted in
+answers was one the loop could starve; a tick now leaves a live request alone
+and simply counts itself, which bounds the loop in wall-clock time whatever the
+server does. What giving up means depends on the answer: a COVERED folder
+settles for the rows it has, an uncovered one goes to the live walk rather than
+reporting an empty list for a folder the walk searches fine. The count is per
+polling EPISODE, so the next scan of the same folder starts with full patience.
+
+The client polls `/api/index/rank` every `SCAN_POLL_MS` (1.5 s) while `reason` is
+`scanning`, and repaints. Rows therefore appear when the scan COMPACTS, not gradually: a
+run writes its partitions in one compaction at the end (`index-store.md §4`), so within
+one root the trickle is one step. The caveat says "indexing…" throughout.
+
+### 7.3 An in-app change rescans the folder it changed
+
+Every `/api/fs` mutation reports the folder it touched (`server/index_touch.py`), and
+that folder is rescanned — coalesced over a burst, outermost folder only, never a mount
+and never `/`, and deferred while a scan already covering it runs (joining that run
+would report success and fix nothing, since it may have walked past the folder
+already).
+
+Three things bound what that costs, and they are not optional. A scan ends in a
+COMPACTION, which re-sorts and rewrites every partition plus `dirs.parquet` —
+keeping the rows outside the scan root is a query predicate, not an incremental
+write — so the cost of any rescan is a function of the whole index rather than
+of the folder:
+
+- **only a mutation that changed the NAME SET reports.** `/api/fs/write`
+  reports a write that ADDED a path, not one that replaced a file's bytes: the
+  index stores names, and the markdown editor autosaves every 2 s, so reporting
+  every write rewrote a 571k-row store for as long as somebody was typing a
+  note. That is decided by whether the path existed, never by the request's
+  `create` flag — which means "409 rather than clobber", so the documented page
+  pattern `fused.writeFile("out.csv", data)` creates a file with it unset. The
+  response carries `created` so the client's "indexing…" caption can follow the
+  same rule instead of guessing.
+- **a 20 s floor per folder** (`MUTATION_SCAN_FLOOR_S`), which DEFERS rather
+  than drops — the scheduler's 15-minute `SCAN_DEBOUNCE_S` would be a refusal,
+  and a refused rescan leaves a renamed file unfindable, which is the failure
+  this mechanism exists to prevent. The 120 s deadline is the escape from both
+  the floor and the wait-for-a-live-run, so nothing is held for ever.
+- **the same three refusals the route makes**: mount-backed, excluded by the
+  ignore rules (a save inside `node_modules` would otherwise index nothing and
+  rewrite the store to say so), and a folder on another filesystem.
+
+This replaces a client-side gate. The in-folder search used to mark a folder the app had
+renamed into and walk it live for the rest of the session, because the index would
+answer instantly with the pre-rename name. With the walk reserved for the folders above,
+the honest fix is to make the index right — and the only client-side remnant is one bit,
+"a rescan is pending", which the search chip renders as "indexing…" until a scan
+completes or the claim expires (the server refuses some rescans and does not report
+that back, so the claim has to be able to end on its own).
+
+**Known and logged:** stage A's cap can in principle drop a row stage B would have
+ranked first. Tier ordering makes it unlikely (a name-substring hit outranks a
+fuzzy-only one in `rank_compare` too), and a cap that bites is a `logger.debug` line plus
+`truncated: true` — silent truncation is what this route removes, not what it
+reintroduces.
 
 ## Non-goals
 

@@ -19,6 +19,7 @@ import {
   EMBED_PREFIX,
   VIEW_PREFIX,
 } from "@platform/lib/router";
+import { withNoFocus } from "@platform/lib/frame-focus";
 import { listDir, rawUrl, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
@@ -30,6 +31,7 @@ import logoMarkLight from "@assets/logo-white-bg-transparent.png";
 import { armBookmark, isBookmarkMissing, splitBookmarkUrl } from "@platform/lib/bookmarks";
 import type { Bookmark } from "@platform/lib/bookmarks";
 import { bookmarkFsPath } from "@apps/explorer/sidebar/BookmarksSection";
+import { usePreviewStart } from "@platform/lib/preview-start";
 
 // The iframe renders at desktop width and is scaled into the preview box —
 // same pure-CSS trick as AppPreviewCard.
@@ -59,9 +61,19 @@ function joinPath(dir: string, name: string): string {
 // records the app open (GET /render records by default, D301) — without it,
 // scrolling a folder card into view reshuffles the /apps hub's recency order.
 export function LivePreview({ src }: { src: string }) {
-  src = withPreviewFlag(src);
+  // `_nofocus=1` beside the thumbnail stamp: a card peek must not take the
+  // keyboard, because focusing an element inside a frame scrolls that frame
+  // into view and the scroll propagates out to the page's own scroller — a
+  // peeked page that focuses an input on boot yanked the card grid down to
+  // itself mid-scroll (D348, platform/lib/frame-focus.ts).
+  src = withNoFocus(withPreviewFlag(src));
+  const { started, settled } = usePreviewStart();
+  if (!started) return <span className="fhb-preview" aria-hidden="true" />;
   return (
     <span className="fhb-preview" aria-hidden="true">
+      {/* The shared scheduler is the lazy/concurrency gate. Browser-native
+          loading="lazy" must not hold one of its two permits on an iframe the
+          browser has decided not to navigate yet. */}
       <iframe
         src={src}
         style={{
@@ -69,10 +81,11 @@ export function LivePreview({ src }: { src: string }) {
           height: `${100 / PREVIEW_SCALE}%`,
           transform: `scale(${PREVIEW_SCALE})`,
         }}
-        loading="lazy"
         tabIndex={-1}
         scrolling="no"
         title=""
+        onLoad={settled}
+        onError={settled}
       />
       <span className="fhb-shield" />
     </span>

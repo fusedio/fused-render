@@ -79,6 +79,7 @@ import {
   projectOptions,
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
+import { publishTasks, useTasksFeeder } from "./tasksPulse";
 import { viewFromSearch, viewUrl } from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
 
@@ -107,6 +108,12 @@ const VIEW_KEY = "fused-render:scheduled-view";
 const NEW_LINK_LEAD_MS = 120_000;
 
 export default function Scheduled() {
+  // THIS PAGE IS THE POLLER while it is open. The sidebar's Tasks entry reads the
+  // same rows (shell/tasksPulse) and would otherwise run a timer of its own
+  // alongside this one — two calls to /api/tasks for one answer, at two
+  // cadences. Holding a feeder for the page's lifetime says "take my answers,
+  // make no calls", so the shared store stands down until this unmounts.
+  useTasksFeeder();
   const [state, setState] = useState<ScheduleResult | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tasksFailed, setTasksFailed] = useState(false);
@@ -243,6 +250,12 @@ export default function Scheduled() {
       (r) => {
         setTasks(r.tasks ?? []);
         setTasksFailed(false);
+        // The sidebar's Tasks entry reads the same rows (shell/tasksPulse): the
+        // dot and the counts beside the label are this answer, not a second poll
+        // of their own — two polls would show a dot the page disagrees with for
+        // twenty seconds at a time. Publishing also restarts that module's own
+        // timer, so while this page is open nothing else calls /api/tasks.
+        publishTasks(r.tasks ?? []);
       },
       () => {
         setTasks([]);

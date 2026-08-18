@@ -948,8 +948,11 @@ def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch)
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     assert catalog.default_for(registry.TEXT_GENERATION) == \
         "mlx-community/Qwen3.5-2B-MLX-4bit"
+    # tiny.en is English-only, and it still leads: the one-rule trade above was
+    # chosen with its cost in view, and an entry is added to the list because
+    # it is worth OFFERING, not because it should be default-proof.
     assert catalog.default_for(registry.SPEECH_TO_TEXT) == \
-        "mlx-community/whisper-small-mlx"
+        "mlx-community/whisper-tiny.en-8bit"
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
@@ -1063,6 +1066,110 @@ def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
         for dependency in declared:
             assert " @ " not in dependency, (
                 f"{runner.code} declares a source build: {dependency}")
+
+
+def test_the_mflux_runner_BOUNDS_mflux():
+    """`mflux` was declared with no version at all, and the `uv.lock` beside it
+    is gitignored — so every environment provisioned after mflux 0.19.0 shipped
+    re-resolved 0.18.1 -> 0.19.0, whose own `mlx>=0.32,<0.33` bound pulled in the
+    mlx release that made default streams per-thread. Local image generation
+    started aborting on its first denoising step with no commit behind it
+    (`mflux_image/worker.py::_pin_stream`).
+
+    The EXACT string, not merely "has a ceiling" like the test below: this is the
+    one bound with a reproduced abort behind it, and the pair of numbers is the
+    fact itself. `test_every_runner_BOUNDS_its_model_runtimes` is the
+    general rule this incident produced; this stays as its worked example.
+    """
+    from fused_render import projectenv
+
+    runner = next(r for r in registry.all_runners() if r.code == "mflux-image")
+    declared = projectenv.dependencies_of(runner.folder)
+    bounds = [d for d in declared if d.replace(" ", "").startswith("mflux")]
+    assert bounds, f"mflux is not declared at all: {declared}"
+    assert bounds[0].replace(" ", "") == "mflux>=0.19,<0.20", bounds
+
+
+#: Runner dependencies allowed to stay open-ended, and what each one buys by it.
+#:
+#: **An ALLOW-LIST, and the direction is the whole design.** A table of packages
+#: that MUST be bounded could only ever protect the libraries somebody already
+#: thought about; the next `mflux` would be added to a manifest, resolve freely on
+#: every new venv key, and the suite would stay green. Inverting it means an
+#: unrecognised dependency is a FAILING one until a person either bounds it or
+#: writes down here why it does not need bounding — which is the review that was
+#: missing when `mflux` went in unbounded.
+#:
+#: What earns a place: a package whose next major cannot change what a model
+#: computes or which runtime it computes on. Downloaders, codecs, tokenizer
+#: formats and instrumentation qualify. Inference engines and model runtimes do
+#: not — those are the ones whose transitive pins moved under us.
+UNBOUNDED_RUNNER_DEPENDENCIES = {
+    "huggingface-hub": "a download client; it fetches weights, it does not run them",
+    "psutil": "reads RSS for the memory column and nothing else",
+    "pillow": "writes the PNG",
+    "sentencepiece": "a tokenizer file format, fixed by the checkpoints that use it",
+    "protobuf": "sentencepiece's on-disk format, same argument",
+    "av": "the ffmpeg libraries, for decoding to a waveform — not inference",
+    "gguf": "a quantized-weight FILE reader; the tensors it returns are diffusers'",
+    "sherpa-onnx-core": (
+        "carries libonnxruntime for sherpa-onnx and is version-locked to it by "
+        "sherpa's own `Requires-Dist: sherpa-onnx-core==<same version>`, so the "
+        "bound on `sherpa-onnx` already governs both"
+    ),
+}
+
+
+@pytest.mark.parametrize("runner", registry.all_runners(), ids=lambda r: r.code)
+def test_every_runner_BOUNDS_its_model_runtimes(runner):
+    """The generalisation of the mflux abort, applied to all seven manifests.
+
+    None of these folders has a committed `uv.lock` (`.gitignore` ignores them
+    globally and negates only `templates/`), and `_env_install_worker` runs a
+    BARE `uv sync` on purpose — so an unbounded requirement is not "latest at
+    install time", it is *re-resolved from scratch every time a venv key changes*,
+    on a user's machine, with no diff anywhere to explain the new behaviour. That
+    is how mflux 0.18.1 -> 0.19.0 -> mlx 0.32 arrived and aborted every render.
+
+    A ceiling is asserted rather than an exact string because the numbers are
+    supposed to move: bumping one is a normal change with a run behind it. What
+    must not move silently is the major/minor, so the failure a new unbounded
+    dependency produces is a prompt to decide, not a chore.
+    """
+    from fused_render import projectenv
+
+    for requirement in projectenv.dependencies_of(runner.folder):
+        name = requirement.split("[")[0].split(";")[0]
+        for operator in ("==", ">=", "<=", "~=", "!=", ">", "<"):
+            name = name.split(operator)[0]
+        name = name.strip().replace("_", "-").lower()
+        if name in UNBOUNDED_RUNNER_DEPENDENCIES:
+            continue
+        assert "<" in requirement or "==" in requirement, (
+            f"{os.path.relpath(runner.pyproject)} declares `{requirement}` with "
+            f"no upper bound. These runners have no committed uv.lock and "
+            f"`uv sync` runs bare, so every new venv key re-resolves this from "
+            f"PyPI — a major bump lands on users with no commit behind it "
+            f"(the mflux abort above). Add a ceiling, or add `{name}` to "
+            f"UNBOUNDED_RUNNER_DEPENDENCIES in {os.path.basename(__file__)} "
+            f"with the reason it cannot change what a model computes.")
+
+
+def test_the_unbounded_allow_list_is_not_quietly_unused():
+    """An entry nothing declares is an exemption that has stopped exempting —
+    the dependency dropped, the reason left behind reading as a decision. Same
+    rule `test_the_split_table_is_not_quietly_unused` enforces next door."""
+    from fused_render import projectenv
+
+    declared = set()
+    for runner in registry.all_runners():
+        for requirement in projectenv.dependencies_of(runner.folder):
+            name = re.split(r"[\[;<>=!~ ]", requirement, 1)[0]
+            declared.add(name.strip().replace("_", "-").lower())
+    for name in UNBOUNDED_RUNNER_DEPENDENCIES:
+        assert name in declared, (
+            f"no runner declares {name} any more — delete its exemption rather "
+            f"than leaving a rule that cannot fire")
 
 
 # -- the supervisor -------------------------------------------------------------

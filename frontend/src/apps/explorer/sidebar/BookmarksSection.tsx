@@ -312,7 +312,9 @@ function FolderRow({ folder, child, parentId, collapsed, activeHint, isRenaming,
       ) : (
         <span className="bookmark-name folder-name">{folder.name}</span>
       )}
-      <span className="folder-count">{folder.children.length}</span>
+      {/* The chip's skin is the sidebar-wide one (`.sidebar-count-chip`); this
+          class carries only the folder row's own placement and hover fade. */}
+      <span className="sidebar-count-chip folder-count">{folder.children.length}</span>
       {/* Hidden mid-rename for the same reason as a bookmark row's cluster. */}
       {!isRenaming && (
         <span className="bookmark-actions">
@@ -905,7 +907,12 @@ export default function BookmarksSection() {
         onClick={toggleSectionCollapsed}
       >
         Bookmarks
-        {sectionCollapsed && <span className="recents-count">{countBookmarks(items)}</span>}
+        {/* `.sidebar-count-chip` is the shared skin every count in this sidebar
+            wears — the folder rows' nested count and the Tasks entry's unread
+            count are the same element (sidebar.css). */}
+        {sectionCollapsed && (
+          <span className="sidebar-count-chip recents-count">{countBookmarks(items)}</span>
+        )}
       </div>
       {!sectionCollapsed &&
         (items.length === 0 ? (

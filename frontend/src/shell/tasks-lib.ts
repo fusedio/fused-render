@@ -336,9 +336,13 @@ export function threadTone(task: Task, m: TaskMessage): MessageTone {
 /** Is any message in this thread mid-turn? The client's half of the running
  * exception above — `Task.live` is the server's, computed from the transcript's
  * own tail, and the two are asked in different places rather than merged: this
- * one is about the rows on screen, that one about the row's status. */
+ * one is about the rows on screen, that one about the row's status.
+ *
+ * The per-message reading is `isMessageRunning` (bottom of this file), the same
+ * function the calendar's chip asks, so "running" is one rule here and not
+ * three views' worth of `=== "in_progress"`. */
 export function threadRunning(messages: TaskMessage[]): boolean {
-  return messages.some((m) => messageTone(m).column === "in_progress");
+  return messages.some(isMessageRunning);
 }
 
 /**
@@ -355,8 +359,20 @@ export function threadRunning(messages: TaskMessage[]): boolean {
  * against is a snapshot of what the server said LAST time.
  */
 export function taskColumn(task: Task): BoardColumn {
-  const s: string = task.status;
-  const known = BOARD_COLUMNS.find((c) => c.key === s);
+  return statusColumn(task.status);
+}
+
+/**
+ * The same narrowing, over a status that is not attached to a row.
+ *
+ * One caller and it needs exactly this: `api.unarchiveTask` answers with the
+ * lane the task LANDED in — a bare word, from a server that may know a lane this
+ * bundle does not — and the Board turns it into a sentence before its next poll
+ * has a Task to ask about. Split out rather than duplicated so a fifth lane
+ * cannot be swallowed into Done in one of the two places and not the other.
+ */
+export function statusColumn(status: string): BoardColumn {
+  const known = BOARD_COLUMNS.find((c) => c.key === status);
   return known ? known.key : "done";
 }
 
@@ -1256,45 +1272,121 @@ export function messageEditEntry(m: TaskMessage): string | null {
 }
 
 // ---- drag --------------------------------------------------------------------
-// A drop on the Board means one of TWO things, and which one is decided by
-// where the card came from.
+// THE WHOLE DRAG MATRIX, and it follows from one sentence: a lane is what
+// Claude's work is DOING, and the only thing a person decides about a task is
+// whether to run it, to put it away, or to take that away back. So there are
+// exactly three moves, and four lanes a card may leave.
 //
-// 1. TRIAGE. Every other move writes triage.json through setSessionTriage,
-//    which is keyed by SESSION. A task that has not run has no session id (§5)
-//    — there is nothing to triage — so it must be non-draggable rather than
-//    draggable into a call that can only fail.
+//   Upcoming    → In Progress  RUN IT NOW. Not a filing decision, an
+//                              instruction (Akshil, 2026-08-16: "if I move a
+//                              task from upcoming to in progress, don't change
+//                              the time of it, but run it and run it at that
+//                              point"). The server sends the pending message
+//                              immediately and leaves its `due` alone, so the
+//                              row keeps reading as the time it was MEANT to
+//                              run and the thread honestly shows a run that
+//                              happened early.
+//               → Archive      CANCEL. Filing a task away calls off the work
+//                              in it; a run still booked for tomorrow on a
+//                              task somebody archived would un-archive itself.
+//   In Progress → nowhere      LOCKED. In Progress is Claude's output, not a
+//                              verdict a reader hands down: a card leaves this
+//                              lane when the run ends and at no other moment.
+//   Done        → Archive      and nothing else. "Not finished after all" is
+//                              not a thing a drag can make true.
+//   Failed      → In Progress  RETRY — the same run-now call, same
+//                              precondition (something pending to fire).
+//               → Archive
+//   Archived    → anywhere     UNARCHIVE, and it is ONE move however far the
+//                 else         card is carried. Lifting a card out of Archive
+//                              means "this is not put away any more" and
+//                              nothing else; it does not name a lane, because
+//                              the lane is not a person's to name (that is the
+//                              same rule that keeps Done and Failed
+//                              undroppable, below). The filing is dropped
+//                              server-side and the task lands wherever it
+//                              DERIVES to — Done, Failed, In Progress — which
+//                              may well not be the lane under the cursor. That
+//                              is the intended outcome, not a near miss: the
+//                              board shows what the work is doing.
 //
-// 2. RUN IT NOW. Upcoming → In Progress is not a filing decision, it is an
-//    instruction (Akshil, 2026-08-16: "if I move a task from upcoming to in
-//    progress, don't change the time of it, but run it and run it at that
-//    point"). The server sends the pending message immediately and leaves its
-//    `due` alone, so the row goes on reading as the time it was MEANT to run
-//    and the thread honestly shows a run that happened early.
+// Nothing may be dropped INTO Upcoming (a task cannot be un-run), into Failed
+// (failure is something that HAPPENED, and a lane you can drag a healthy task
+// into is a lane whose count means nothing), or into Done (a run says that,
+// not a reader) — with the ONE exception above, and it is not really an
+// exception: an archived card dropped on any of them does not become that lane,
+// it becomes unfiled. The lane is the gesture's target, never its argument.
 //
-// The consequence for legality: a run-now drop needs a MESSAGE to fire, not a
-// session to file under, so a scheduled task that has never run — no session
-// id at all — may still be dragged into In Progress. And a pure-chat task,
-// which has nothing pending anywhere in it, may not: that drop is refused by
-// dropLanes before the card ever lifts, rather than by the server after it
-// lands.
+// THE OTHER WAY OUT OF ARCHIVE IS STILL ACTIVITY, and it is the older one
+// (Akshil, 2026-08-18: "if you want to move it to in progress or done, just type
+// in a message inside that chat and it will automatically move"). A message that
+// arrives after the filing drops the filing by itself, server-side, with nobody
+// dragging anything. The drag is the same drop of the same record, reached
+// deliberately — so the two cannot disagree.
 //
-// FAILED, the fifth lane, is asymmetric on purpose:
+// AND THERE IS A BUTTON FOR IT TOO, on both views (`filingIntent`) — the drag is
+// the accelerator, not the only route, because the Archive lane starts collapsed
+// and "expand the lane first" is how the archive button came to exist as well.
+// The button is safe to label because the move names no lane: "Unarchive" claims
+// exactly what happens, where the old Archive → In Progress button claimed a
+// verdict on work the reader had not watched.
 //
-//   * nothing may be dropped INTO it. Failure is something that HAPPENED, not
-//     a verdict a person hands down, and a lane you can drag a healthy task
-//     into is a lane whose count means nothing.
-//   * out of it there are exactly two moves — In Progress re-runs the task
-//     (the same run-now path, with the same precondition: something pending to
-//     fire), and Archive files it away. Done is deliberately not offered: a run
-//     that broke did not finish, and letting it be filed as Done would put the
-//     lie back in the one place this lane exists to take it out of.
+// Legality follows from what each move NEEDS, never from what triage happens to
+// be keyed by. Run-now needs a pending MESSAGE, so a scheduled task that has
+// never run — no session id at all — may still be dragged into In Progress,
+// while a pure-chat task with nothing pending may not. Archive needs only the
+// task's key, because it is one server verb over the whole task
+// (`POST /api/tasks/archive`) rather than a triage write keyed by session — so
+// the never-run row can be filed away too, which is the case the old
+// session-keyed rule could not reach. Unarchive needs nothing at all — the same
+// task key, and the record either was there to drop or was not — so an archived
+// card always lifts, including the never-run one and the pure-chat one.
+//
+// There is no DROP_LANES list any more. It said "the lanes a person may drop a
+// card on", which stopped being one list the moment leaving Archive became a
+// move: In Progress is the target of a run AND of an unarchive, and Done is the
+// target of an unarchive and nothing else. Which lanes accept THIS card is
+// `dropLanes`, and it was already the only caller anything had.
 
-/** The lanes a person may drop a card ON. `failed` is not among them — see
- * above — and `upcoming` never was: a task cannot be un-run. */
-export const TRIAGE_LANES: BoardColumn[] = ["in_progress", "done", "archived"];
-
-/** Where a card may go once it is IN the failed lane. */
-const OUT_OF_FAILED: BoardColumn[] = ["in_progress", "archived"];
+/**
+ * THE MATRIX ITSELF: where a card in each lane may go. The table above in
+ * words, written down once so `dropLanes` reads it instead of reconstructing it.
+ *
+ * A TABLE AND NOT A PREDICATE, which is the correction (bugbot, PR #613). It
+ * was "every unlocked lane may go anywhere droppable, subject to a
+ * precondition", and that quietly offered Done → In Progress to any done task
+ * with something pending — which is not a corner case on this branch, it is the
+ * COMMONEST done card there is: a recurring task whose last run finished and
+ * whose next occurrence is booked now sits in Done by design (see
+ * `_message_verdict`, server side). So the lane a person is most likely to drag
+ * from was the one lane whose rules were wrong, and the drop would have fired a
+ * real run.
+ *
+ * Re-running a task that finished is deliberately not a gesture. "Run this
+ * again" on work that succeeded is an ask better made in the chat, where the
+ * person can say what they want differently this time — the same reasoning
+ * `taskRunIntent` gives for offering Re-send on a failed task and nowhere else.
+ *
+ * Every BoardColumn is a key, so a sixth lane is a type error here rather than a
+ * lane that silently permits nothing (or everything).
+ */
+const LANE_EXITS: Record<BoardColumn, BoardColumn[]> = {
+  // Run it early, or call it off.
+  upcoming: ["in_progress", "archived"],
+  // Locked: a run in flight is Claude's output, and it leaves this lane when it
+  // ends, not when a card is dragged.
+  in_progress: [],
+  // Archive only. "Not finished after all" is not something a drag can make
+  // true, and neither is "do it again".
+  done: ["archived"],
+  // Retry, or file it away.
+  failed: ["in_progress", "archived"],
+  // Locked (Akshil, 2026-08-19): the way out of Archive is the Unarchive
+  // BUTTON, not a gesture. The landing lane is derived server-side, never
+  // picked — a drop target would imply the reader picks it, which is exactly
+  // the lie the button avoids by not asking.
+  archived: [],
+};
 
 /**
  * The next run the ROW ITSELF names, when it names one: the server's `next_run`
@@ -1596,94 +1688,135 @@ export function taskRunIntent(task: Task): TaskRunIntent | null {
   };
 }
 
-/** Which lanes this card may be dropped on. Empty ⇒ do not let it lift. */
+/**
+ * Which lanes this card may be dropped on. Empty ⇒ do not let it lift.
+ *
+ * ASKED OF `laneAction`, one lane at a time, rather than re-deriving the
+ * preconditions here: a lane is offered exactly when the drop on it has
+ * something to do, so "where may this card go" and "what happens when it lands"
+ * cannot answer differently. Before, this held the run's precondition itself and
+ * dropAction re-checked it through this function — fine while there was one
+ * precondition, and wrong the moment In Progress became the target of two
+ * different moves with different requirements (a run needs a pending message; an
+ * unarchive needs nothing).
+ */
 export function dropLanes(task: Task): BoardColumn[] {
   const here = taskColumn(task);
-  const lanes: BoardColumn[] = [];
-  for (const lane of TRIAGE_LANES) {
-    if (lane === here) continue;
-    if (here === "failed" && !OUT_OF_FAILED.includes(lane)) continue;
-    // The run-now lane. Its precondition is a pending message, NOT a session:
-    // see the note above. It is the same move from either side — Upcoming runs
-    // the message early, Failed runs it again — and the same call makes both.
-    if (lane === "in_progress" && (here === "upcoming" || here === "failed")) {
-      if (canRunNow(task)) lanes.push(lane);
-      continue;
-    }
-    if (task.session_id) lanes.push(lane);
-  }
-  return lanes;
+  return LANE_EXITS[here].filter((lane) => laneAction(task, here, lane) !== null);
 }
 
 export function isDraggable(task: Task): boolean {
   return dropLanes(task).length > 0;
 }
 
-/** setSessionTriage's own union — a lane that is not one of the three cannot
- * be sent, and this is what proves it to the type checker at the call site. */
-export function triageStatus(
-  lane: BoardColumn,
-): "in_progress" | "done" | "archived" | null {
-  return lane === "in_progress" || lane === "done" || lane === "archived" ? lane : null;
-}
-
 /**
- * What a drop on `lane` actually DOES — the one place the two meanings are told
- * apart, so the Board's handler holds no rule of its own beyond which call to
- * make. Null when the drop is illegal, which is the same answer dropLanes gave
- * before the card lifted: the two agree because this asks it.
+ * What a drop on `lane` actually DOES — the one place the three meanings are
+ * told apart, so the Board's handler holds no rule of its own beyond which call
+ * to make. Null when the drop is illegal, which is the same answer dropLanes
+ * gave before the card lifted: the two agree because dropLanes asks this.
+ *
+ * `archive` and `unarchive` carry no payload, for the same reason and it is not
+ * an omission. Archiving used to be a triage status composed here and sent to a
+ * session-keyed endpoint; both are now one verb over the whole task
+ * (`api.archiveTask` / `api.unarchiveTask`), and a verb with one meaning has
+ * nothing left to parameterise. `unarchive` in particular does NOT carry the
+ * lane it was dropped on — the server would refuse to honour it, because the
+ * landing lane is derived from the thread and never asserted by a reader.
  */
 export type DropAction =
   | { kind: "run"; entryId: string; messageId: string }
-  | { kind: "triage"; status: "in_progress" | "done" | "archived" };
+  | { kind: "archive" }
+  | { kind: "unarchive" };
 
 export function dropAction(task: Task, lane: BoardColumn): DropAction | null {
-  if (!dropLanes(task).includes(lane)) return null;
-  const here = taskColumn(task);
-  if (lane === "in_progress" && (here === "upcoming" || here === "failed")) {
-    const m = runNowTarget(task);
-    return m ? { kind: "run", entryId: m.entryId, messageId: m.messageId } : null;
-  }
-  const status = triageStatus(lane);
-  if (!status || !task.session_id) return null;
-  return { kind: "triage", status };
+  return laneAction(task, taskColumn(task), lane);
 }
 
-// ---- filing it away, without the drag ----------------------------------------
+/**
+ * The whole decision, given the lane the card is IN as well as the one it was
+ * dropped on — which is what lets `dropLanes` and `dropAction` be the same rule
+ * read twice instead of two rules that agree by inspection.
+ *
+ * SOURCE FIRST, and that ordering is the unarchive rule: a card leaving Archive
+ * is unfiled whatever it was dropped on, so the target lane is only ever a
+ * legality check (`LANE_EXITS`) and never an argument. In Progress is the case
+ * worth being explicit about — it is a legal DROP for an archived card and it
+ * starts NOTHING. The lane stays locked as a source (a run in flight is Claude's
+ * output and leaves when it ends), and it is equally not something a reader can
+ * put a task into: dropping there unarchives, and the task lands in In Progress
+ * only if a turn genuinely is live.
+ */
+function laneAction(
+  task: Task,
+  here: BoardColumn,
+  lane: BoardColumn,
+): DropAction | null {
+  if (!LANE_EXITS[here].includes(lane)) return null;
+  if (here === "archived") return { kind: "unarchive" };
+  if (lane === "archived") return { kind: "archive" };
+  // The one precondition, and it belongs to the run rather than to the lane:
+  // In Progress needs a pending MESSAGE to fire, not a session to file under, so
+  // a scheduled task that has never run may be dragged there and a pure-chat
+  // task with nothing pending may not.
+  const m = runNowTarget(task);
+  return m ? { kind: "run", entryId: m.entryId, messageId: m.messageId } : null;
+}
+
+// ---- filing, without the drag ------------------------------------------------
 // "Can a task be deleted?" — no, and it never will be: a task IS a Claude
 // session and this app does not destroy transcripts (D306). What it can be is
 // ARCHIVED, which is the honest answer to that question — but only while
-// archiving is something a person can actually reach. Until now it was one
-// gesture on one view: drag the card onto the Archive lane, which starts
-// COLLAPSED. "Switch to Board, expand a lane, drag" is not an affordance.
+// archiving is something a person can actually reach. It was once one gesture on
+// one view: drag the card onto the Archive lane, which starts COLLAPSED. "Switch
+// to Board, expand a lane, drag" is not an affordance.
 //
-// So the same move gets a button, and the rule behind it lives here rather than
-// in either component. It is deliberately not a second predicate: the whole
-// decision is asked of dropAction, on the lane the Board's drag would have used,
-// so the button and the drop cannot disagree about who may archive what. That
-// is why this sits after dropAction instead of up beside runNowIntent — it is
-// the same shape of function, and it is defined below the one function it is
-// only a re-reading of.
+// So the move gets a button, and now BOTH directions do (Akshil, 2026-08-19).
+// The rule behind them lives here rather than in either component, and it is
+// deliberately not two predicates: the whole decision is asked of dropAction, on
+// the lanes the Board's drag would have used, so the buttons and the drops cannot
+// disagree about who may file what. That is why this sits after dropAction
+// instead of up beside runNowIntent — it is the same shape of function, and it is
+// defined below the one function it is only a re-reading of.
 //
-// It is a TWO-WAY door on purpose. The Board's drag can already pull a card back
-// out of Archive, and an action whose only direction is away is a trap: the row
-// that offers Archive must be the row that offers the way back once it is taken.
-// Returning to In Progress rather than Done is the same choice dropLanes makes
-// for a drag out of Archive — "back in play" is a claim about attention, and
-// Done would assert something about the work that archiving never recorded.
+// THE WAY BACK IS A BUTTON AGAIN, and this is the third answer that position has
+// had, so it is worth saying what changed. It was `SHOW_UNARCHIVE` — computed,
+// never drawn by the row, drawn by the Board, which is two answers to one
+// question — and its move was Archive → In Progress: a lane a reader was
+// asserting about work they had not watched. Then it was nothing at all, on the
+// reasoning that any label for it over-claims.
+//
+// What was wrong was never the button, it was the DESTINATION. Unarchive names
+// no lane now: the filing is dropped, the server derives the lane from the thread
+// (`api.unarchiveTask`), and the row draws that. So there is a label that claims
+// exactly what happens and no more — "Unarchive" — and the trap the old button
+// was is gone with the lane it used to pick.
+//
+// THE OTHER WAY BACK IS STILL ACTIVITY, and it needs no affordance at all: say
+// something in that conversation and the server drops the filing by itself. The
+// button is for the reader who has nothing to say in there and only wants the
+// card back — which was exactly the person the one-way door stranded.
+//
+// ONE BUTTON PER ROW, and on an archived row it is the ONLY button (see
+// showsRowActions). Nothing is destroyed in either direction: the conversation is
+// kept, the transcript is kept (D306), and Archive is a place to read them.
 
-/** The two statuses this action ever sends — setSessionTriage's union, less
- * `done`, which filing away and un-filing never means. */
-export type ArchiveStatus = "archived" | "in_progress";
-
-export interface ArchiveIntent {
-  /** The lane this move puts the card in: the same lane the Board's drop would
-   * have targeted, which is what makes the two agree by construction. */
-  lane: BoardColumn;
-  /** What setSessionTriage is given. */
-  status: ArchiveStatus;
-  /** Whether this is the way BACK — i.e. the task is archived right now. */
-  restore: boolean;
+export interface FilingIntent {
+  /** WHICH DIRECTION, and therefore which call the caller makes
+   * (`api.archiveTask` / `api.unarchiveTask`). A row draws one or the other and
+   * never both: a task is either put away or it is not. */
+  kind: "archive" | "unarchive";
+  /**
+   * The lane this move puts the card in, when the move HAS one — the same lane
+   * the Board's drop would have targeted, which is what makes button and drag
+   * agree by construction.
+   *
+   * NULL FOR UNARCHIVE, and that is the model rather than a gap. Coming out of
+   * Archive says "not put away any more" and nothing about what the work is
+   * doing, so the lane is derived server-side from the thread and there is no
+   * lane for this to name. A `BoardColumn` here would be a promise nothing
+   * keeps — the value the old, deleted Archive → In Progress button asserted.
+   */
+  lane: BoardColumn | null;
   /** The button's accessible name, and the word it says. */
   label: string;
   /** The tooltip: what happens, and the thing a person deleting would fear. */
@@ -1691,30 +1824,80 @@ export interface ArchiveIntent {
 }
 
 /**
- * Whether this task can be filed away (or brought back), and what that says.
- * Null when there is nothing to triage — which is exactly the `pending:<entry>`
- * case: triage is an overlay on triage.json keyed by SESSION id, and a task
- * that has never run has no session to key. Offering a button there would be
- * offering a call that can only fail, so it is offered nowhere instead.
+ * WHETHER THIS TASK'S FILING CAN BE CHANGED, and in which direction. One
+ * function for both halves, because it is one decision with one answer per row —
+ * two predicates would let a row draw both buttons, or neither, on a status
+ * neither of them had thought about.
+ *
+ * BOTH HALVES ARE ASKED OF THE DRAG, on the lanes the drag itself would use, so
+ * the button and the drop cannot disagree about who may file what. That is why
+ * this sits below dropAction: it adds no rule of its own, it only puts words on
+ * the one dropAction already answered.
+ *
+ * Null exactly when the Board would refuse every filing drop, which is the
+ * mid-run row and nothing else now: In Progress is Claude's output and its cards
+ * neither file nor un-file until the run ends.
+ *
+ * A never-run task gets the archive button. Archiving is one verb over a task
+ * key (`api.archiveTask`), not a triage write keyed by session id, so the
+ * `pending:<entry>` row that had no session to file is filed by cancelling its
+ * work — which is what archiving a task that has not run has always meant.
  */
-export function archiveIntent(task: Task): ArchiveIntent | null {
-  const restore = taskColumn(task) === "archived";
-  const lane: BoardColumn = restore ? "in_progress" : "archived";
-  // The one question, asked of the one function that already answers it.
-  const action = dropAction(task, lane);
-  if (!action || action.kind !== "triage") return null;
-  // Narrowing, not a re-decision: dropAction's status IS the lane it was asked
-  // about, and neither of the two lanes above is `done`.
-  if (action.status === "done") return null;
+export function filingIntent(task: Task): FilingIntent | null {
+  // AWAY, on the lane the drag aims at.
+  if (dropAction(task, "archived")?.kind === "archive")
+    return {
+      kind: "archive",
+      lane: "archived",
+      label: "Archive",
+      // Three clauses because a person reaching for Delete is asking all three:
+      // where does it go, what happens to work already booked, and can I get it
+      // back.
+      title:
+        "Archive — files this away and calls off any run still booked; the conversation is kept, and you can bring the task back",
+    };
+  // BACK OUT. Asked of the row itself, NOT the drag matrix: Archive's exits are
+  // locked (Akshil, 2026-08-19 — the way out is this button, not a gesture), so
+  // deriving the button from dropLanes would delete the only door. The rule the
+  // drag used to encode survives here: an archived row that is not mid-run may
+  // un-file, and the landing lane is derived server-side — no lane named.
+  const back = taskColumn(task) === "archived";
+  if (!back) return null;
   return {
-    lane,
-    status: action.status,
-    restore,
-    label: restore ? "Unarchive" : "Archive",
-    title: restore
-      ? "Unarchive — puts this back in In Progress"
-      : "Archive — files this away; the conversation is kept",
+    kind: "unarchive",
+    lane: null,
+    label: "Unarchive",
+    // Says the one thing a person cannot see before pressing: the card is about
+    // to appear somewhere they are not looking, and nothing is going to run.
+    title:
+      "Unarchive — takes this back out of Archive and into whatever lane its work is in; nothing is re-run",
   };
+}
+
+/**
+ * Whether a row draws its ORDINARY actions — run, re-run, mark read.
+ *
+ * OPENING IS NOT ONE OF THEM and is never withheld: Archive is a place to READ
+ * things (D306 — the transcript is kept), so the row link, the ring and the Open
+ * chat control all keep working on an archived task. What this gates is the
+ * controls that act on the WORK.
+ *
+ * False on an archived task, which is the whole of it (Akshil, 2026-08-19: only
+ * the unarchive button on archived rows). A card in Archive has exactly one
+ * decision left against it — whether it is still archived — and every other
+ * control on it is a control for work somebody has already said they are done
+ * with. Offering Re-run beside Unarchive also invites the misread this branch
+ * spent its whole design avoiding: that coming back out of Archive runs
+ * something.
+ *
+ * Not folded into `taskRunIntent` or `markReadIntent`: those two answer "is
+ * there a run to make / is there anything unread", which stays true of an
+ * archived task and is the honest answer for the calendar popover and any other
+ * surface that asks. This is a rule about a ROW's chrome, so it is its own
+ * function and the row asks it.
+ */
+export function showsRowActions(task: Task): boolean {
+  return taskColumn(task) !== "archived";
 }
 
 // ---- clearing a task, without opening it -------------------------------------
@@ -2381,4 +2564,372 @@ export function laneRolledUp(
 ): boolean {
   if (count === 0) return !peeked.has(lane);
   return laneCollapsed(lane, count, choices);
+}
+
+// ---- the List's order --------------------------------------------------------
+// The List and the Board read the same fact — `taskColumn`, so a row that moves
+// lane on the Board moves position here — but the List spends it as a SORT and
+// nothing else (Akshil, 2026-08-18). No headers, no dividers, no counts: one
+// flat list whose rows happen to arrive in status order.
+//
+// IT WAS HEADERS FIRST, and they were wrong on a list. The Board's lanes are a
+// fixed frame, so a lane header is the frame's label and earns its ink; a list
+// has no frame, so five headers over a few dozen rows are five interruptions in
+// the one column a person is scanning — and the ORDER already says everything
+// the headers were saying. Grouping you can see is a claim that the groups are
+// navigable; grouping you can only feel is a claim about priority, which is what
+// this actually is.
+//
+// THE ORDER IS THE BOARD'S — the same five words in the same sequence (Akshil,
+// 2026-08-18, the final ruling on "swap places for failed and done status in list
+// and kanban board"):
+//
+//   Upcoming → In Progress → Failed → Done → Archive
+//
+// It briefly was not, and the reason it is now is worth keeping. The List ranked
+// "work owed" and the Board ran a pipeline, and each argument was sound on its
+// own — but a reader moving between the two views carries ONE mental picture of
+// where a status sits, so two orders means that picture is wrong in whichever
+// view they are not looking at. One sequence for one set of statuses
+// (design-principles §1). The BOARD is the view that moved; this list kept the
+// rank it always had. Failed before Done in both: a failed run wants a person's
+// hands, a done one wants only their eyes. Archive is last in both — it is not a
+// status, it is where things go to stop being read.
+//
+// The test holds this array and BOARD_COLUMNS to the same sequence, so the two
+// cannot quietly drift apart again.
+//
+// WITHIN a rank nothing is re-sorted: the server's order is the list's order and
+// always has been (TaskList takes `tasks` "in the SERVER's order"). A stable
+// bucketing keeps it, which is why this is a bucket-and-concat rather than a
+// comparator — `Array.prototype.sort` is stable in every engine this ships to,
+// but a comparator would also invite a second sort key later, and there is not
+// one: rank, then whatever the server said.
+
+/** Rank order, top to bottom. Every BoardColumn appears exactly once — the test
+ * holds it to that, so a sixth lane cannot be silently unsortable. */
+export const LIST_ORDER: BoardColumn[] = [
+  "upcoming",
+  "in_progress",
+  "failed",
+  "done",
+  "archived",
+];
+
+/** The list's rows, in rank order, server order preserved inside each rank. A
+ * new array; the input is never mutated (it is the polled list, which React is
+ * still holding). */
+export function sortByLane(tasks: Task[]): Task[] {
+  const buckets = new Map<BoardColumn, Task[]>(
+    LIST_ORDER.map((key) => [key, [] as Task[]]),
+  );
+  for (const task of tasks) buckets.get(taskColumn(task))?.push(task);
+  return LIST_ORDER.flatMap((key) => buckets.get(key) ?? []);
+}
+
+// ---- "and it runs again on Tuesday" ------------------------------------------
+// A recurring task whose last run finished sits in DONE now, not Upcoming: the
+// output nobody has read is the thing that needs eyes, and a promise is not a
+// verdict (server routers/tasks.py `_message_verdict`). That is the right lane
+// and it drops one true fact off the row — that the task is not over.
+//
+// So the row says it. A CHIP, not a second time column: `taskWhen` already owns
+// the row's one time and, on a settled task, that time is the last run. This is
+// the other one, marked as such, in the same vocabulary (relativeWhen) with the
+// absolute instant in the tooltip like every other time on the page.
+
+export interface NextRunChip {
+  /** Epoch seconds, so a caller can order or test by it. */
+  at: number;
+  /** What the chip prints: "next in 2h". */
+  text: string;
+  /** The tooltip: which run, and exactly when. */
+  title: string;
+}
+
+/**
+ * The next run worth mentioning ON TOP of the row's own time, or null.
+ *
+ * Two conditions, and both are about not saying the same thing twice:
+ *
+ *   * the row's time is NOT already the next run (`taskWhen`, which reads
+ *     LANE_SORTS: Upcoming's rows are ordered and stamped by the run ahead, so
+ *     a chip there would repeat the number beside it);
+ *   * there IS a run ahead — `nextRunAt`, strictly in the future. A pending
+ *     message whose time has passed is not news about what happens next, it is
+ *     the overdue work the Upcoming lane already surfaces.
+ */
+export function nextRunChip(task: Task, now: number = Date.now()): NextRunChip | null {
+  if (taskWhen(task, now).kind === "next") return null;
+  const at = nextRunAt(task);
+  if (at === null || at * 1000 <= now) return null;
+  return {
+    at,
+    text: `next ${relativeWhen(at, now)}`,
+    title: `Next run ${messageStamp(at)}`,
+  };
+}
+
+// ---- what is happening RIGHT NOW ---------------------------------------------
+// The List has the In Progress section and the Board has the In Progress lane;
+// the calendar has neither, because a calendar is ordered by time and not by
+// state. Its chips sat in the grid saying nothing about which of them was
+// running at that moment — the one fact a person glancing at today most wants.
+//
+// So the chip gets the fact, and the RULE lives here rather than in the view:
+// it is the same reading of `state` and `turn` the server's `_message_running`
+// makes, and the same one messageTone collapses into `in_progress`. Three views
+// asking three questions about "is this going?" is how they start disagreeing.
+
+/** Is this message's own run in flight? `sending` is a send the scheduler has
+ * spawned and not heard back from; `sent` with a turn that has not reported an
+ * end is a turn still working (turnPhase — `unknown` is NOT running, it is a
+ * watcher that stopped being able to tell). */
+export function isMessageRunning(m: TaskMessage): boolean {
+  if (m.state === "sending") return true;
+  return m.state === "sent" && turnPhase(m.turn) === "running";
+}
+
+/**
+ * Has this message's run STARTED — is there a turn behind it at all?
+ *
+ * The three states that mean the scheduler has spent it: `sending` (spawned, no
+ * answer yet), `sent` (gone) and `error` (tried and broke). Everything else has
+ * never run and may never run — `pending` is a promise about the future,
+ * `missed`/`cancelled`/`skipped` are promises that expired. A PROJECTED
+ * occurrence (schedule-lib's ghosts: cron arithmetic, not rows) is only ever
+ * minted `pending` or `missed`, so it cannot pass this either.
+ */
+export function hasStarted(m: TaskMessage): boolean {
+  return m.state === "sending" || m.state === "sent" || m.state === "error";
+}
+
+/**
+ * The message a task's CURRENT work belongs to: the newest one that has actually
+ * started, or null on a task that has never run.
+ */
+export function activeMessage(task: Task): TaskMessage | null {
+  let best: TaskMessage | null = null;
+  for (const m of task.messages ?? []) {
+    if (!hasStarted(m)) continue;
+    // Read off `at` rather than off the array order: the answer wanted here is
+    // "the latest run", and `messages` being newest-first is a convention of the
+    // endpoint rather than something this rule should depend on.
+    if (!best || m.at > best.at) best = m;
+  }
+  return best;
+}
+
+/**
+ * Is THIS message the work this task is doing right now?
+ *
+ * Two ways, and the second is what a live chat turn needs — including the one
+ * a live TRANSCRIPT cannot see. A message can say so itself (above), and
+ * otherwise the ACTIVE message borrows the task's own verdict: `taskColumn`
+ * reads `task.status`, which the server derives in `_status` from THREE
+ * independent signals (`_message_running`, `live`, and `schedule.busy_sessions`)
+ * — not just the two (`state`/`turn`, `task.live`) this function could see on
+ * its own. A `sent` message whose turn the server has already rewritten to
+ * `idle` still files the task `in_progress` while a scheduled send is in
+ * flight (`busy_sessions`); asking `taskColumn` instead of re-deriving that
+ * third signal here is what keeps the calendar chip agreeing with the List
+ * and Board, which read the same `task.status`.
+ *
+ * THE ACTIVE MESSAGE IS NOT THE NEWEST ROW (bugbot, 2026-08-18). `at` is when a
+ * message is DUE, so on a recurring task the newest row is routinely tomorrow's
+ * `pending` occurrence — never run, and impossible as "what this task is doing
+ * now". It is the newest STARTED message (activeMessage). Older started messages
+ * are not running either: their turns ended when the next prompt arrived.
+ */
+export function isRunningNow(task: Task, m: TaskMessage): boolean {
+  if (isMessageRunning(m)) return true;
+  if (taskColumn(task) !== "in_progress") return false;
+  // A message with no run behind it cannot be borrowing the task's verdict,
+  // whatever else is true — the belt to activeMessage's braces, and what makes
+  // the rule safe to ask of a projected occurrence.
+  if (!hasStarted(m)) return false;
+  const active = activeMessage(task);
+  return !!active && !!m.message_id && m.message_id === active.message_id;
+}
+
+/**
+ * Is any of these messages the work happening right now?
+ *
+ * What a CALENDAR CHIP has to ask, because a chip is not a message: it is one
+ * task on one DAY, anchored at that day's EARLIEST message with the rest of the
+ * day nested inside it (schedule-lib.taskChips). Asking only about the anchor
+ * asks about the wrong occurrence in both directions — a day whose 05:00 run has
+ * finished and whose 14:00 run is in flight is anchored on the finished one, and
+ * before this rule a task whose newest row was tomorrow's promise put the
+ * shimmer on TOMORROW's chip. A chip is running when anything under it is.
+ */
+export function isRunningIn(task: Task, messages: TaskMessage[]): boolean {
+  return messages.some((m) => isRunningNow(task, m));
+}
+
+// ---- the sidebar's two-number summary of this page ----------------------------
+// The Tasks entry in the global sidebar has to say two things without being the
+// page: something is RUNNING, and something FINISHED that nobody has looked at.
+// Both are read off the very rows the page draws (`taskColumn` — the server's
+// status, narrowed, so the sidebar cannot invent a sixth state), never off a
+// second endpoint of their own.
+//
+// WHY "done and unread" IS NOT JUST "unread". Unread exists on rows that are
+// still going and on rows nobody ever expected to read; the signal being asked
+// for here is the completion of work the reader was waiting on, which is exactly
+// `done` + `unread > 0`. `failed` is deliberately NOT counted: it is a status of
+// its own on this page (see taskColumn), and a green "go and look" mark over a
+// run that broke would be the one place in the app where a hue disagreed with
+// the ring the row wears (design-principles §1).
+
+/** Where the sidebar's dismissal lives. Per COMPLETION, not per task — see
+ *  TasksSeen. */
+export const TASKS_SEEN_KEY = "fused-render:tasks-seen";
+
+/**
+ * Which completions the reader has already been shown, as `task key ->
+ * last_active`.
+ *
+ * The value is what makes "the same completions" a checkable claim. A bare set
+ * of keys would dismiss a task FOREVER — the second time it ran and finished,
+ * the mark it earned would be swallowed by the first visit's dismissal. The
+ * task's `last_active` moves with every new message, so a stored stamp that no
+ * longer matches means "this is a different completion" and the mark comes back.
+ *
+ * A stamp rather than a global watermark for the same reason from the other
+ * side: catch-up runs can finish out of order (Scheduled.tsx's docstring — work
+ * that came due while the app was closed runs when it opens), and one
+ * high-water mark would silently swallow every completion stamped before it.
+ */
+export type TasksSeen = Record<string, number>;
+
+/** What came out of localStorage is a string written by SOMEONE ELSE (an older
+ *  build, a hand-edited devtools row): anything unreadable degrades to "nothing
+ *  dismissed" — one extra dot — rather than throwing inside a render. */
+export function parseTasksSeen(raw: string | null): TasksSeen {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: TasksSeen = {};
+  for (const [key, at] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof at === "number" && Number.isFinite(at)) out[key] = at;
+  }
+  return out;
+}
+
+/**
+ * Has this task finished work nobody has READ?
+ *
+ * The state, with no dismissal in it. This is what the expanded sidebar's count
+ * prints, and it falls only when the work is actually read — visiting the page
+ * does not make a number about unread work untrue.
+ */
+export function isDoneUnread(task: Task): boolean {
+  return taskColumn(task) === "done" && task.unread > 0;
+}
+
+/**
+ * The same completion, NOT YET SHOWN to the reader: the state above, minus what
+ * a visit to the page has already stamped (TasksSeen).
+ *
+ * The two exist apart because a count and a dot are different kinds of
+ * statement. A COUNT is a standing fact — "three finished things are waiting" —
+ * and it is still true after you have glanced at the list; it goes away by being
+ * dealt with. A DOT is an interruption, and an interruption that survives the
+ * reader going where it points is just a decoration. So the collapsed rail's dot
+ * clears on the visit and the expanded row's chip does not, and neither is a bug
+ * in the other (Akshil, 2026-08-18).
+ */
+export function isUnseenCompletion(task: Task, seen: TasksSeen): boolean {
+  return isDoneUnread(task) && seen[task.key] !== task.last_active;
+}
+
+export interface TasksPulse {
+  /** Tasks whose work is in flight — the yellow half, in both modes. */
+  running: number;
+  /** Tasks that finished with something unread, dismissal or no dismissal —
+   *  the expanded row's count chip. */
+  doneUnread: number;
+  /** Of those, the ones the reader has not been shown yet — the collapsed
+   *  rail's green dot, which a visit to /tasks clears. */
+  unseen: number;
+}
+
+export const EMPTY_TASKS_PULSE: TasksPulse = { running: 0, doneUnread: 0, unseen: 0 };
+
+/** The whole sidebar signal, from the rows the page already has. */
+export function tasksPulse(tasks: Task[], seen: TasksSeen): TasksPulse {
+  let running = 0;
+  let doneUnread = 0;
+  let unseen = 0;
+  for (const t of tasks) {
+    if (taskColumn(t) === "in_progress") {
+      running++;
+      continue;
+    }
+    if (!isDoneUnread(t)) continue;
+    doneUnread++;
+    if (isUnseenCompletion(t, seen)) unseen++;
+  }
+  return { running, doneUnread, unseen };
+}
+
+export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
+  return a.running === b.running && a.doneUnread === b.doneUnread && a.unseen === b.unseen;
+}
+
+/**
+ * The dismissal a visit to /tasks earns: every DONE task on screen, stamped with
+ * the completion that was on screen — MERGED over what was already known.
+ *
+ * Done tasks only. A running task is deliberately not stamped: its completion
+ * has not happened yet, and pre-dismissing it is how the one mark this feature
+ * exists for would never be drawn.
+ *
+ * A MERGE, NOT A REPLACEMENT (bugbot, 2026-08-18). Rebuilding the map out of the
+ * done rows alone silently dropped the stamp of any task that was momentarily
+ * something else — a finished task that has just been re-run reads `in_progress`
+ * for the length of that run, and the old rule threw its stamp away mid-run, so
+ * the PREVIOUS completion popped back as unseen the moment the new one landed.
+ * Anything this answer still lists keeps what was known about it.
+ *
+ * The PRUNE is the answer's own membership: a key absent from `tasks` is
+ * dropped, so the row cannot grow without bound as tasks come and go. That is
+ * only sound against a REAL answer — tasksPulse.markTasksSeen refuses to run
+ * this before the first fetch has landed, because an empty store and an empty
+ * machine are not the same fact.
+ */
+export function seenAfterVisit(tasks: Task[], prev: TasksSeen = {}): TasksSeen {
+  const next: TasksSeen = {};
+  for (const t of tasks) {
+    if (taskColumn(t) === "done") next[t.key] = t.last_active;
+    else if (prev[t.key] !== undefined) next[t.key] = prev[t.key];
+  }
+  return next;
+}
+
+export function sameSeen(a: TasksSeen, b: TasksSeen): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((k) => a[k] === b[k]);
+}
+
+/** "2 running" — the expanded row's yellow readout. Plural because one is the
+ *  common case and "1 running" is what a person would say out loud. */
+export function runningLabel(n: number): string {
+  return `${n} running`;
+}
+
+/** The collapsed dot's tooltip, and the expanded chip's — the sidebar's ONE
+ *  sentence about the page, so the two modes cannot describe it differently. */
+export function pulseTitle(pulse: TasksPulse): string {
+  const parts: string[] = [];
+  if (pulse.running > 0) parts.push(runningLabel(pulse.running));
+  if (pulse.doneUnread > 0) parts.push(`${pulse.doneUnread} finished, not read`);
+  return parts.join(" · ");
 }

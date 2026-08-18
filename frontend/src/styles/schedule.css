@@ -39,22 +39,24 @@
    decision, and it made the page the only surface in the app with no measure at
    all.
 
-   1240px is that decision, and it is the LIST's number, not the board's. It was
+   1050px is that decision, and it is the LIST's number, not the board's. It was
    1360 for a few hours — five 260px lanes plus four 12px gaps is 1348, so the
    board fitted exactly — and letting the widest view set the measure was the
    wrong way round: the board is the one view that can scroll inside itself, and
    the list, which cannot, was the one paying for it (Akshil, 2026-08-18: tighter
-   still). 1240 is a comfortable measure for a three-line row and for a seven-day
-   calendar, and the board simply scrolls its lanes past it — which the board has
-   always done at any window narrower than five lanes, so this is its ordinary
-   behaviour rather than a new state.
+   still). Then 1240 for a day, and 1050 after it — 15% off, rounded to the
+   nearest 50, at Akshil's request: a task row's ink is an id, a title and two
+   short times, and at 1240 the title's ellipsis was hundreds of pixels from the
+   times it was being clipped for. The board simply scrolls its lanes past the
+   cap — which it has always done at any window narrower than five lanes, so this
+   is its ordinary behaviour rather than a new state.
 
    One measure for all three views, and that is worth more than three tuned ones:
    the toggle switches the view without the page changing shape underneath it.
 
    Applied to `> *` rather than to the section alone so the HEADER moves with
    the views; a centred board under a left-flush "Tasks" reads as a layout bug.
-   Under 1240 the cap is inert and the page is full-width as before. Either way
+   Under 1050 the cap is inert and the page is full-width as before. Either way
    the board keeps its own `overflow-x`, so what scrolls sideways is the lane
    strip and never the page (design-principles §0).
 
@@ -64,7 +66,7 @@
    stylesheet the barrel imports last, which is not a thing this page should
    depend on. */
 .prefs-page.schedule-page > * {
-  max-width: 1240px;
+  max-width: 1050px;
   margin-inline: auto;
 }
 
@@ -74,7 +76,7 @@
    purpose: tests/test_schedule_css.py reads this declaration to check the
    opt-out is still granted, and it reads a value, not a variable. */
 .schedule-page > .prefs-section {
-  max-width: 1240px;
+  max-width: 1050px;
 }
 
 .schedule-page .prefs-section > p {
@@ -1206,29 +1208,15 @@
 
 /* -- The one status vocabulary on a pill ----------------------------------------
    Upcoming / In Progress / Done / Failed / Archive — the app's five words, worn
-   by the calendar popover's header. Only work HAPPENING and work that BROKE take
-   a colour; the rest stay quiet, because a popover that opens with a coloured
-   badge on every task says nothing. */
-.schedule-state--upcoming,
-.schedule-state--done,
-.schedule-state--archived {
-  color: var(--fg-muted);
-}
+   by the calendar popover's header.
 
-.schedule-state--in_progress {
-  color: var(--accent-soft);
-  border-color: var(--accent);
-}
-
-/* Failure is a WORD now, not a red ring inside Done (Akshil, 2026-08-17): "if we
-   can't show failed tasks, then let's have a failed status, and show it
-   everywhere". The red stays as reinforcement — the same token
-   `.schedule-ring--failed` uses — but it is no longer the only thing carrying
-   the fact. */
-.schedule-state--failed {
-  color: var(--error);
-  border-color: currentColor;
-}
+   Their HUES are at the end of this file, with the rule that gives each of the
+   five its own tint. They used to be here, and only two of them existed: In
+   Progress borrowed the accent and Failed the error red, on the argument that a
+   badge on every task says nothing. It said too little instead — Done, Archive
+   and Upcoming were one grey badge between them, while the RING two lines under
+   the pill had already been painting all five for a round. One vocabulary means
+   one palette as well as one word. */
 
 /* A projected run keeps its word too ("Upcoming"), and the dashes are what say
    nothing has been written down yet — the pill of a ghost chip. */
@@ -3499,4 +3487,142 @@ input.schedule-when-field {
 .prefs-section .schedule-tv-pop-item:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* -- The popover's writing block ------------------------------------------------
+   Title over description, one block, the same shape the New task modal asks for
+   them in (new-task.css `.new-task-write`). They are the two things the user
+   WROTE, and playing them back as a heading and an icon-led fact row made one
+   pair look like two kinds of thing.
+
+   The title gains its step of size here rather than in `.schedule-pop-title`'s
+   own rule so that rule keeps meaning "the popover's headline, clamped" — this
+   is the hierarchy, and it is the whole reason the block exists: at 14px over a
+   12px fact list the title was the same size as the metadata under it. */
+.schedule-pop-write {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.schedule-pop-write .schedule-pop-title {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+/* The description: smaller, muted, NO glyph. It is prose to be read, not a
+   value to be recognised, so it does not belong in the icon column — and
+   without an icon it needs no indent either. Clamped like the title, because a
+   long description must not push the thread and the actions out of a panel
+   whose height is capped at 70vh. */
+.schedule-pop-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* -- The status pill's own hue --------------------------------------------------
+   The five words wear the five status colours — the SAME tokens the ring wears
+   (`--status-done`, `--status-failed`, …), so the pill and the ring beside it
+   cannot disagree about what green means. Until now only In Progress and Failed
+   were coloured and the rest were grey, which made "Done" and "Archive" the same
+   badge and left the pill saying less than the ring two lines under it.
+
+   A TINT, never a fill. The pill is text first: `color-mix` puts the hue behind
+   the word at a weight that survives both themes and leaves the label at the
+   hue's own full strength on top, which is what keeps it readable — a
+   fully-saturated pill would need a second text colour per status per theme.
+
+   Upcoming keeps the neutral it already had: `--status-upcoming` IS `--fg-muted`
+   (tokens.css), so its tint is a grey wash and the lane that means "nothing has
+   happened yet" stays the quiet one. */
+.schedule-state--upcoming,
+.schedule-state--in_progress,
+.schedule-state--done,
+.schedule-state--failed,
+.schedule-state--archived {
+  color: var(--pill);
+  background: color-mix(in srgb, var(--pill) 14%, var(--bg));
+  border-color: color-mix(in srgb, var(--pill) 34%, transparent);
+}
+
+.schedule-state--upcoming {
+  --pill: var(--status-upcoming);
+}
+
+.schedule-state--in_progress {
+  --pill: var(--status-progress);
+}
+
+.schedule-state--done {
+  --pill: var(--status-done);
+}
+
+.schedule-state--failed {
+  --pill: var(--status-failed);
+}
+
+.schedule-state--archived {
+  --pill: var(--status-archived);
+}
+
+/* -- A chip that is running RIGHT NOW -------------------------------------------
+   The List has an In Progress section and the Board an In Progress lane. A
+   calendar is ordered by time, so it has neither — and the one chip on today's
+   grid that is actually working looked exactly like the ones that finished
+   hours ago.
+
+   A SHIMMER, not a colour. Every other cue on a chip is already spent: the fill
+   is the PROJECT (eight hues, --task-c0…7), the dashes are "projected", the
+   fade is "past". There is no static property left that would not collide with
+   one of those — and motion is the honest signal anyway, because "running" is
+   the only thing a chip says that is true only for as long as you are looking
+   at it. A sweep is what a thing in progress looks like.
+
+   It rides in a PSEUDO-ELEMENT over the chip's own background rather than
+   animating that background, so the project hue underneath is untouched and the
+   text keeps its contrast: the sweep is a low-alpha highlight passing across,
+   the way a loading skeleton reads, at 2s — slow enough to be ambient and never
+   the fastest thing on a page that may hold several.
+
+   `pointer-events: none` because the chip is a button and the sweep must not
+   eat its clicks; `overflow: hidden` is already on the chip, so the highlight
+   is clipped to the rounded box. */
+.schedule-cal .schedule-cal-chip.is-running::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    color-mix(in srgb, var(--fg) 22%, transparent) 50%,
+    transparent 80%
+  );
+  background-size: 220% 100%;
+  animation: schedule-cal-shimmer 2s linear infinite;
+}
+
+@keyframes schedule-cal-shimmer {
+  from { background-position: 160% 0; }
+  to { background-position: -60% 0; }
+}
+
+/* A person who has asked for less motion still has to be able to see which run
+   is going, so the fallback is not "nothing" — it is the same highlight, held
+   still. A static wash over the project hue, plus the left bar at full strength,
+   which together read as "this one is lit" without moving. */
+@media (prefers-reduced-motion: reduce) {
+  .schedule-cal .schedule-cal-chip.is-running::after {
+    animation: none;
+    background: color-mix(in srgb, var(--fg) 10%, transparent);
+  }
 }

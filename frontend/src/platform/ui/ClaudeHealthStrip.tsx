@@ -17,7 +17,7 @@
 //
 // The TroubleCard stays exactly as it is. Preflight is an addition, not a
 // replacement — a CLI can break between this check and the call.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getClaudeHealth, refreshClaudeHealth, type ClaudeHealth } from "@platform/lib/api";
 import {
@@ -28,11 +28,22 @@ import {
   type ClaudeIssue,
 } from "@platform/lib/claude-health";
 
-// Module-scoped, so walking between Home and /apps — which both render this —
-// does not re-probe, and does not flash a strip that a moment ago was closed.
-// Deliberately NOT persisted: the snapshot is already cached server-side (on
-// disk, keyed on the binary's mtime), so a reload costs one small GET.
+// The last snapshot seen, so walking between Home and /apps — which both render
+// this — starts from what we already know instead of flashing an empty frame.
+//
+// A SEED, NOT A SHORT-CIRCUIT. It used to also skip the fetch, which is what
+// made the strip unable to notice its own problem being fixed: the only thing
+// that ever refreshed it was the button, so a user who signed in and came back
+// still faced a card telling them to sign in. The server holds the real cache
+// (on disk, and age-bounded), so re-asking on every mount is a small GET —
+// there was never anything to save here.
 let cached: ClaudeHealth | null = null;
+
+//: How long after a check a window-focus event is taken as "they may have gone
+//: and fixed it". Focus/blur flap in bursts (a click through the window, a
+//: notification, an OS overlay), and each forced re-check is real subprocess
+//: work, so near-simultaneous ones collapse into the first.
+const FOCUS_RECHECK_MS = 3000;
 
 function CopyCommand({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
@@ -85,50 +96,78 @@ export function ClaudeHealthStrip() {
   // "can't find Claude Code" on every load of a perfectly healthy machine.
   const [loaded, setLoaded] = useState(cached !== null);
   const [busy, setBusy] = useState(false);
-  const [closed, setClosed] = useState(false);
+  // Re-render after a dismissal. The dismissal ITSELF lives in lib/claude-health,
+  // keyed on which problems were dismissed; a local `closed` flag used to shadow
+  // it and was wrong in one direction that matters — dismissing "not signed in"
+  // suppressed a LATER, different problem for the rest of the page's life, when
+  // the signature check exists precisely so a new problem still gets through.
+  const [, redraw] = useState(0);
+  const lastCheck = useRef(0);
 
-  useEffect(() => {
-    if (cached !== null) return;
-    let alive = true;
-    getClaudeHealth().then(
+  const load = useCallback((force: boolean) => {
+    lastCheck.current = Date.now();
+    if (force) setBusy(true);
+    (force ? refreshClaudeHealth() : getClaudeHealth()).then(
       (h) => {
         cached = h;
-        if (!alive) return;
         setHealth(h);
         setLoaded(true);
+        setBusy(false);
       },
       () => {
         // A FAILED PROBE IS NOT A FINDING. If /api/claude/health itself cannot
         // be reached then the server is what is wrong, and the app has louder
         // ways of saying so (main.tsx's boot card, the status banner). Claiming
         // Claude Code is missing on the strength of our own failed request would
-        // be the app blaming the user's machine for its own fault.
-        if (alive) setLoaded(true);
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const check = useCallback(() => {
-    setBusy(true);
-    refreshClaudeHealth().then(
-      (h) => {
-        cached = h;
-        setHealth(h);
+        // be the app blaming the user's machine for its own fault. Keep whatever
+        // we last knew rather than inventing a worse answer.
+        setLoaded(true);
         setBusy(false);
       },
-      () => setBusy(false),
     );
   }, []);
 
+  useEffect(() => {
+    load(false);
+  }, [load]);
+
   const issues = claudeIssues(health);
-  if (!loaded || !issues.length || closed || isDismissed(issues)) return null;
+  const showing = loaded && issues.length > 0 && !isDismissed(issues);
+
+  // COMING BACK TO THE WINDOW IS THE SIGNAL. Every fix this card asks for
+  // happens somewhere else — a terminal, an installer — so the moment the user
+  // returns is exactly when "is it still true?" should be re-asked, and the card
+  // should be able to answer by disappearing. Making them press a button to
+  // dismiss a warning they have already acted on is the app failing to notice
+  // its own advice was taken.
+  //
+  // Only while something IS showing: with nothing on screen there is no claim to
+  // re-check, and a healthy machine must not spawn probes for tabbing around.
+  // Forced rather than a plain read, because the server's cache is age-bounded
+  // and a sign-in usually lands well inside that window — the cheap read is
+  // exactly the one that would still say "signed out".
+  useEffect(() => {
+    if (!showing) return;
+    const onFocus = () => {
+      if (document.visibilityState === "hidden") return;
+      if (Date.now() - lastCheck.current < FOCUS_RECHECK_MS) return;
+      load(true);
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [showing, load]);
+
+  if (!showing) return null;
+
+  const check = () => load(true);
 
   const close = () => {
     rememberDismissal(issues);
-    setClosed(true);
+    redraw((n) => n + 1);
   };
 
   return (

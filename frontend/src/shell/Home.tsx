@@ -18,7 +18,7 @@ import {
 } from "@platform/lib/api";
 import { sortApps } from "@platform/lib/appEntry";
 import { useIndexStatus } from "@platform/lib/index-status";
-import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
+import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { FilesSearch } from "@apps/explorer/FilesHome";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
@@ -135,9 +135,6 @@ export default function Home({ config }: { config: Config }) {
   }, []);
 
   // Recents come from the same client cache the explorer home reads (raw MRU).
-  useEffect(() => {
-    void hydrateRecents();
-  }, []);
   const recents = loadRecents().entries.slice(0, MAX_ROW);
 
   // Search takes over the page body while a query is live — the same posture

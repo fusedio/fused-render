@@ -69,13 +69,13 @@ def fused_cli() -> FusedCli | None:
 
 def workbench_env() -> str:
     """The Fused environment the workbench features target — ONE knob
-    (FUSED_RENDER_WORKBENCH_ENV, default unstable) shared by canvases.py's
+    (FUSED_RENDER_WORKBENCH_ENV, default prod) shared by canvases.py's
     iframe URL + CLI runs AND the `fused` wrapper handed to Claude sessions
     (export_fused_cli_env), so what Claude pushes lands in the same
     environment the canvases iframe shows. Lives here rather than in
     canvases.py because canvases imports this module, not the other way
-    around."""
-    return os.environ.get("FUSED_RENDER_WORKBENCH_ENV", "unstable")
+    around. Set FUSED_RENDER_WORKBENCH_ENV=unstable to switch back."""
+    return os.environ.get("FUSED_RENDER_WORKBENCH_ENV", "prod")
 
 
 # The env var that carries the wrapper dir to the templates (SPEC PY-15):

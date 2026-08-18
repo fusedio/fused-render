@@ -437,10 +437,10 @@ export default function App({ config }: { config: Config }) {
   // first read is the effect below — otherwise a copy made in Finder *before*
   // the window opened would never be seen.
   useRefreshOnReturn(() => {
-    void reconcileOsClipboard();
+    if (!IS_EMBED) void reconcileOsClipboard();
   });
   useEffect(() => {
-    void reconcileOsClipboard();
+    if (!IS_EMBED) void reconcileOsClipboard();
   }, []);
 
   // Mod+K cheat sheet. Owned by App, not Listing: it documents the whole shell

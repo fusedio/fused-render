@@ -732,7 +732,10 @@ def test_claude_template_boots_into_chat_from_a_bare_run_param():
     the FOLDER, so this was already pinning the wrong page's boot."""
     page = _repo_text("fused_render", "templates", "claude", "template.html")
     assert 'fused.params.get("run")' in page
-    assert "await resumeRun(run_id)" in page
+    # The CALL, not its argument list: `resumeRun` grew an options object
+    # (`{ retryUnknown: true }`, #610) and this test is about the boot resuming
+    # the run at all, so it must not break every time an opt is added.
+    assert "await resumeRun(run_id" in page
 
 
 def test_run_param_survives_the_shell_runtime():

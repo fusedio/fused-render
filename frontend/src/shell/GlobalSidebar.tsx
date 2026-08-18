@@ -18,6 +18,8 @@ import { navigateUrl } from "@platform/lib/router";
 import { useUrlVersion, useLearnMountReady } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useAiRuntime } from "@shell/aiRuntime";
+import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
+import { pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
 
@@ -250,6 +252,85 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const homeActive = pathname === "/home";
   const tasksActive = pathname === "/tasks";
 
+  // WHAT THE TASKS ENTRY KNOWS: what is running, and what finished with
+  // something unread (shell/tasksPulse — one poll shared with the page, which
+  // publishes into it). Two facts rather than a badge count, because they are two
+  // different sentences: yellow is "the machine is working for you", green is
+  // "go and look". Yellow WINS whenever both are true — a reader being told work
+  // is still in flight does not also need sending to the page mid-run, and the
+  // trip is still waiting when it settles.
+  const pulse = useTasksPulse();
+  // LANDING ON THE PAGE IS THE DISMISSAL — OF THE DOT, and only the dot. Not a
+  // button and not a per-row read: "an in-progress task completed" is news
+  // exactly until the reader has been where it is shown. Repeated on every pulse
+  // while the entry is active so the mark stays gone while the page is open; it
+  // comes back only for a completion stamped after the visit
+  // (tasks-lib.seenAfterVisit), which is why the dismissal is a stamp per task
+  // and not a flag.
+  //
+  // It fires on the FIRST render here too, before any answer has landed, and the
+  // store is what makes that harmless: markTasksSeen is a no-op until a real
+  // fetch has come back, because stamping "everything on screen" over an empty
+  // store would write an empty map and throw away every dismissal the reader
+  // had (bugbot, 2026-08-18).
+  useEffect(() => {
+    if (tasksActive) markTasksSeen();
+  }, [tasksActive, pulse]);
+  // THE DOT AND THE CHIP COUNT DIFFERENT THINGS, on purpose (Akshil,
+  // 2026-08-18). `unseen` is dismissal-gated and is the dot: an interruption
+  // that has done its job once the reader has been where it points — and it is
+  // suppressed outright while that page IS the one on screen, since the stamp
+  // needs a poll to land and a dot flashing beside the open page is noise. The
+  // CHIP reads `doneUnread`, the raw state, and no visit touches it: "three
+  // finished things are waiting" stays true until they are read, and a number
+  // that cleared itself for being glanced at would be a number nobody could
+  // trust. See tasks-lib.isDoneUnread / isUnseenCompletion.
+  const unseen = tasksActive ? 0 : pulse.unseen;
+  const tasksTip = pulseTitle(pulse);
+
+  // ONE DOT ON THE ICON, IN BOTH MODES (Akshil, 2026-08-18): yellow while
+  // anything runs, green for completions not yet shown, nothing at all
+  // otherwise. It began as the collapsed rail's whole signal — no label there to
+  // hang a word on — and the expanded row deliberately went without it. That was
+  // wrong in use: the icon is where the eye lands whatever the sidebar's width,
+  // so a mark that shows collapsed and vanishes on expand reads as the STATE
+  // going away rather than the sidebar changing shape. The dot is now the
+  // constant, and expanding ADDS words beside it ("N running" + the count chip)
+  // instead of trading the dot for them.
+  //
+  // Still ONE dot: yellow outranks green — a reader told work is in flight does
+  // not also need sending to the page mid-run. The hues are the status ring's
+  // own (--status-progress / --status-done, schedule.css) — one status, one
+  // colour, on every surface that names it (design-principles §1).
+  const tasksDot =
+    pulse.running > 0 ? (
+      <span className="sidebar-rail-dot is-running" title={tasksTip} />
+    ) : unseen > 0 ? (
+      <span className="sidebar-rail-dot is-unread" title={tasksTip} />
+    ) : undefined;
+
+  // Expanded, the same two facts ALSO get words, beside the dot rather than
+  // instead of it: a shimmering "N running" (the ink moves while the work does,
+  // and prefers-reduced-motion pins it), and the count chip the bookmark folders
+  // wear (`.sidebar-count-chip`, sidebar.css) — the same element for the same
+  // kind of fact, not a lookalike. The dot says THAT there is something; the
+  // words say how much, and the chip's number is the ungated one (see above).
+  const tasksTrailing =
+    pulse.running > 0 || pulse.doneUnread > 0 ? (
+      <>
+        {pulse.running > 0 && (
+          <span className="sidebar-running" title={tasksTip}>
+            {runningLabel(pulse.running)}
+          </span>
+        )}
+        {pulse.doneUnread > 0 && (
+          <span className="sidebar-count-chip" title={tasksTip}>
+            {pulse.doneUnread}
+          </span>
+        )}
+      </>
+    ) : undefined;
+
   // Everything that is not primary nav lives in the bottom menu for now:
   // the former sidebar entries (Config / App Basics), then the settings
   // pages. Same gates as before — an entry a machine can't use stays hidden.
@@ -299,7 +380,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   const rail: SidebarRailItem[] = [
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
-    { key: "tasks", label: "Tasks", icon: SCHEDULED_ICON, href: "/tasks", active: tasksActive },
+    {
+      key: "tasks",
+      label: tasksTip ? `Tasks — ${tasksTip}` : "Tasks",
+      icon: SCHEDULED_ICON,
+      href: "/tasks",
+      active: tasksActive,
+      badge: tasksDot,
+    },
     {
       key: "preferences",
       label: "Preferences",
@@ -337,6 +425,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             label="Tasks"
             icon={SCHEDULED_ICON}
             active={tasksActive}
+            extra={tasksDot}
+            trailing={tasksTrailing}
           />
         </div>
         <BookmarksSection />

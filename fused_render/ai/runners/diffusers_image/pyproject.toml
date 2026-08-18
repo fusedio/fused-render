@@ -19,12 +19,26 @@
 # rule stands anyway, because a source build in this environment is minutes of
 # compiling on a user's laptop for something a wheel already answers.
 #
+# **The runtime lines carry CEILINGS**, for the reason
+# `mflux_image/pyproject.toml` states at length: no lockfile is committed beside
+# these manifests and `uv sync` runs bare, so an unbounded requirement is
+# re-resolved from PyPI on every new venv key and a major bump lands on users
+# with no commit behind it. The FLOORS are left where they were — `diffusers`
+# keeps `>=0.39` rather than gaining the installed patch, and `transformers`
+# gains a ceiling with NO floor added, because this runner has never declared one
+# and inventing one here would forbid versions that are currently allowed while
+# also disagreeing with `transformers_text`'s deliberate `>=4.51`. A ceiling only
+# removes the future; a floor removes the present.
+#
 # What each earns:
-#   torch          the tensors and the device (CUDA / MPS / CPU)
+#   torch          the tensors and the device (CUDA / MPS / CPU). `<3` — the
+#                  major is the whole ABI and every wheel behind it.
 #   diffusers      the pipelines. `>=0.39` because that is the first RELEASE
 #                  carrying Flux2KleinPipeline — this used to track
 #                  git+https://github.com/huggingface/diffusers.git for exactly
-#                  that class, back when it existed only on main (D266).
+#                  that class, back when it existed only on main (D266). `<0.40`
+#                  because a pre-1.0 minor is where this library moves pipeline
+#                  signatures, and `worker.py` drives one directly.
 #   transformers   the text encoder every text-to-image pipeline puts in front
 #   accelerate     device placement / offload for models bigger than the GPU
 #   sentencepiece  the tokenizer format those text encoders use
@@ -38,10 +52,10 @@ name = "fused-render-runner-diffusers-image"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "torch",
-    "diffusers>=0.39",
-    "transformers",
-    "accelerate",
+    "torch>=2.13,<3",
+    "diffusers>=0.39,<0.40",
+    "transformers<6",
+    "accelerate>=1.14,<2",
     "sentencepiece",
     "protobuf",
     "gguf",

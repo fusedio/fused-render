@@ -98,6 +98,11 @@ export interface StatResult {
   remote?: boolean;
   // False for a file on a read-only mount (or any path the user can't write).
   writable?: boolean;
+  // /api/fs/write only: whether that write ADDED this path rather than
+  // replacing one. The index stores names, so it is only re-scanned for the
+  // first kind, and the search box's "indexing…" caption follows the same
+  // rule rather than guessing (lib/index-freshness).
+  created?: boolean;
   templates: TemplateEntry[];
   template_error?: string;
 }
@@ -361,64 +366,84 @@ export async function walkDirStream(
   return end;
 }
 
-// GET /api/index/search — the in-folder corpus answered from the persistent
-// file index instead of a live walk. `entries` are WalkEntry-shaped on purpose
-// so the search pipeline is indifferent to which source produced them.
+// GET /api/index/search (`fmt=columns`) has no client here any more.
 //
-// `covered` (the index visited this exact folder) is the whole decision; a
-// miss is a normal 200 with covered:false, because "no index yet", "not
-// covered" and "a scan is running" all mean the same thing here — use the
-// live walk instead. `fresh` (younger than FRESH_MAX_AGE_S) is reported but
-// NOT a gate: see index-corpus.ts for why age alone does not disqualify a
-// corpus, and lib/index-freshness.ts for the case that does — a folder this
-// app itself changed since the last scan.
-export interface IndexSearchResult {
+// It served the in-folder search's whole-folder corpus, which the browser then
+// ranked; the box asks `/api/index/rank` per query now, and the only corpus
+// left in the app is the live walk's, for the folders no scan can cover. The
+// SERVER route stays regardless: it is the `fused.fileIndex.search` bridge
+// contract that user pages are written against.
+
+// GET /api/index/rank — the home search: the server filters AND ranks, and
+// answers with the top ~200 rows.
+//
+// The corpus route above is the other shape of the same index, and the
+// difference is the whole point: `indexSearch` hands the browser every entry
+// under the root (19.8 MB on a 164k-entry home, capped so most of a big home
+// was unfindable) and ranks locally; this is a few KB per query and can see
+// the whole index. The in-folder search keeps the corpus, because it also has
+// a live walk to rank and only a browser-side ranker can rank a stream.
+//
+// `positions` are NOT on the wire: the caller re-runs `fuzzyMatch(q, rel)`
+// over the rows it got back, so platform/lib/fuzzy.ts stays the single source
+// of truth for what highlights (and the server's port of it, index/rank.py,
+// stays free to change its internals). A miss is a normal 200 with
+// covered:false, same as the corpus.
+export interface IndexRankHit {
+  rel: string;
+  is_dir: boolean;
+  size: number | null;
+  mtime: number | null;
+  // The ranking that produced this order. Carried for debugging and for
+  // callers that want to group by tier; the ORDER is the contract.
+  score: number;
+  longest_run: number;
+  tier: number;
+  depth: number;
+}
+
+// Why a ranked answer is what it is. `""` is a real answer; the rest are the
+// four ways the index cannot give one, and they are NOT interchangeable —
+// `uncovered` is fixed by scanning the folder, `scanning` by waiting, and the
+// other two never (see listing/index-source, which is the only place that
+// switches on this).
+export type RankReason =
+  | ""
+  | "mount"
+  | "package"
+  | "ignored"
+  | "uncovered"
+  | "scanning";
+
+export interface IndexRankResult {
   covered: boolean;
   fresh: boolean;
+  // WHY this answer is what it is — "" when the index answered outright, else
+  // "mount" | "package" | "ignored" | "uncovered" | "scanning". The in-folder
+  // search picks its source from this (listing/index-source); the client
+  // deliberately holds no copy of the rules behind it, because the mount
+  // policy is MountGuard's and the ignore list is the scan config's.
+  reason: RankReason;
   root: string;
-  entries: WalkEntry[];
+  hits: IndexRankHit[];
+  // More matched than were returned — either more than `limit` survived
+  // ranking, or the server's candidate cap bit.
   truncated: boolean;
   total: number;
   updated: number | null;
   age_s: number | null;
 }
 
-// The same corpus as parallel arrays — what `fmt=columns` answers with. Every
-// entry carries the same four keys, so the object-per-entry shape spends a
-// third of its bytes spelling those keys out again: 25.7 MB on a 164k-entry
-// home, fetched in one shot on the user's first keystroke.
-//
-// The decode back to WalkEntry[] happens HERE, at the API-client boundary, so
-// the corpus consumers (listing/index-corpus.ts, FilesHome, useWalkSearch)
-// never learn about the wire format. `is_dir` travels as 0/1; `size` and
-// `mtime` stay nullable — a directory legitimately has neither.
-interface IndexSearchColumns extends Omit<IndexSearchResult, "entries"> {
-  fmt: "columns";
-  rels: string[];
-  dirs: number[];
-  sizes: (number | null)[];
-  mtimes: (number | null)[];
-}
-
-export async function indexSearch(
+export function indexRank(
   fsPath: string,
-  opts: { signal?: AbortSignal } = {},
-): Promise<IndexSearchResult> {
-  const body = await getJson<IndexSearchColumns>(
-    "/api/index/search?fmt=columns&root=" + encodeURIComponent(fsPath),
-    { signal: opts.signal },
-  );
-  const { fmt, rels, dirs, sizes, mtimes, ...rest } = body;
-  const entries: WalkEntry[] = new Array(rels.length);
-  for (let i = 0; i < rels.length; i++) {
-    entries[i] = {
-      rel: rels[i],
-      is_dir: dirs[i] === 1,
-      size: sizes[i],
-      mtime: mtimes[i],
-    };
-  }
-  return { ...rest, entries };
+  query: string,
+  opts: { signal?: AbortSignal; limit?: number } = {},
+): Promise<IndexRankResult> {
+  const params = new URLSearchParams({ root: fsPath, q: query });
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  return getJson<IndexRankResult>("/api/index/rank?" + params.toString(), {
+    signal: opts.signal,
+  });
 }
 
 // GET /api/index/status with no run id — the state of the most recent scan,
@@ -479,6 +504,25 @@ export function startIndexScan(opts: { root?: string; full?: boolean } = {}): Pr
   runs: { run_id: string; root: string }[];
 }> {
   return mutateJson("POST", "/api/index/scan", opts);
+}
+
+// POST /api/index/scan-folder — "cover this folder, someone is searching it".
+//
+// The in-folder search's answer to a folder the index has never visited, which
+// used to be answered by a live streamed walk. Never an error and every "no"
+// is durable (`why`: refused / debounced), because the caller is a search box:
+// a refusal it could read as transient would be retried at keystroke rate.
+export interface FolderScanRequest {
+  started: boolean;
+  why: "started" | "joined" | "debounced" | "refused";
+  run_id: string | null;
+  root: string;
+}
+
+// Deliberately not abortable: aborting the FETCH would not stop the scan it
+// asked for, so a caller that dropped the reply would only lose the `why`.
+export function requestFolderScan(fsPath: string): Promise<FolderScanRequest> {
+  return mutateJson("POST", "/api/index/scan-folder", { path: fsPath });
 }
 
 // POST /api/index/query and /api/index/ask — read-only SQL over the index, and
@@ -873,11 +917,20 @@ export function revealPath(fsPath: string): Promise<void> {
 //
 // This is the one choke point for the mutations in this module — going through
 // it is what stops a NEW wrapper from silently skipping either bookkeeping.
-function noteAfter<T>(paths: string | string[], p: Promise<T>): Promise<T> {
+// `rescans` is asked of the RESULT, because whether the index will be
+// rebuilt for a mutation is the server's decision and not always predictable
+// from the request: a write creates a file or replaces one, and only the
+// server knows which (see `created` in the /api/fs/write response).
+function noteAfter<T>(
+  paths: string | string[],
+  p: Promise<T>,
+  rescans: (out: T) => boolean = () => true,
+): Promise<T> {
   return p.then((out) => {
     clearListPrefetch();
+    const indexed = rescans(out);
     for (const path of Array.isArray(paths) ? paths : [paths]) {
-      if (path) noteFsMutation(path);
+      if (path) noteFsMutation(path, { rescans: indexed });
     }
     return out;
   });
@@ -888,7 +941,14 @@ function noteAfter<T>(paths: string | string[], p: Promise<T>): Promise<T> {
 // With create=true the write refuses (409 "conflict") when the path already
 // exists, so "New File" can't silently clobber an existing file.
 export function writeFile(path: string, content = "", create = false): Promise<StatResult> {
-  return noteAfter(path, postJson<StatResult>("/api/fs/write", { path, content, create }));
+  return noteAfter(
+    path,
+    postJson<StatResult>("/api/fs/write", { path, content, create }),
+    // An overwrite is not re-indexed (the index stores names), so the box must
+    // not claim it is. An older server that does not answer `created` is
+    // treated as having created something, which errs toward the caption.
+    (out) => out.created !== false,
+  );
 }
 
 // Create a single directory (no mkdir -p — a missing parent is a 400).
@@ -1842,6 +1902,51 @@ export function markWholeTaskRead(
     key,
     all: true,
   });
+}
+
+// Filing a task away. ONE call, because it is one gesture with two halves that
+// must not come apart: the work still booked is cancelled (a run that fires
+// tomorrow un-archives the task by itself, which is the one thing filing
+// something away must never do) and the session is filed in the same
+// triage.json the Inbox reads. The server does both — see
+// routers/tasks.py `api_task_archive` — so no client has to remember the second
+// half, and a task with no session yet is still archivable by the first.
+//
+// Keyed by TASK, not by session: `pending:<entry-id>` is a real key and a real
+// row, and it is exactly the row the old session-keyed triage write could not
+// touch.
+//
+// The way back is `unarchiveTask` below — a drag, not a button. Nothing is
+// destroyed either way: the conversation and its transcript are kept (D306).
+export function archiveTask(
+  key: string,
+): Promise<{ ok: boolean; key: string; cancelled: number; filed: boolean }> {
+  return postJson<{ ok: boolean; key: string; cancelled: number; filed: boolean }>(
+    "/api/tasks/archive",
+    { key },
+  );
+}
+
+// Taking the filing back — the drag out of the Archive lane, and the exact
+// opposite of only ONE of archiving's two halves.
+//
+// NO LANE IS SENT, and that is the design rather than a missing field: leaving
+// Archive says "not put away any more" and nothing about what the work is doing,
+// so the server drops the filing and the task lands in whatever lane it DERIVES
+// into. `status` in the answer is that lane, which is the one thing the client
+// cannot know before its next poll — and it may not be the lane the card was
+// dropped on. That is intended, not a near miss (see tasks-lib's drag matrix).
+//
+// NOTHING RUNS. The work archiving cancelled stays cancelled, and a card dropped
+// onto In Progress unarchives like any other drop — In Progress is Claude's
+// output, never a lane a reader can put a task into.
+export function unarchiveTask(
+  key: string,
+): Promise<{ ok: boolean; key: string; unfiled: boolean; status: string }> {
+  return postJson<{ ok: boolean; key: string; unfiled: boolean; status: string }>(
+    "/api/tasks/unarchive",
+    { key },
+  );
 }
 
 // Every scheduled message in a time window, which is the one question the

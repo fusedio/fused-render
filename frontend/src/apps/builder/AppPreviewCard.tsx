@@ -35,8 +35,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { rawUrl } from "@platform/lib/api";
+import { withNoFocus } from "@platform/lib/frame-focus";
+import { withPreviewFlag } from "@platform/lib/router";
 import { appRecency, hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
 import { hueFor } from "@apps/builder/AppCard";
+import { usePreviewStart } from "@platform/lib/preview-start";
 
 import { timeAgo } from "@platform/lib/format";
 
@@ -44,6 +47,21 @@ import { timeAgo } from "@platform/lib/format";
 // pure-CSS trick: 400% width/height + scale(0.25) means the visual size is
 // exactly the .app-pcard-thumb box, whatever the grid column resolves to.
 const PREVIEW_SCALE = 0.25;
+
+// The URL a thumbnail's iframe loads. Both stamps say the same thing in two
+// registers — this frame is a PICTURE of the app, not a use of it:
+//
+//   • `_preview=1` — don't record an open (D301), or scrolling the grid would
+//     reshuffle the recency order the grid is sorted by.
+//   • `_nofocus=1` — don't take the keyboard (D348). Focusing an element inside
+//     a frame also scrolls that frame into view, and the scroll propagates out
+//     to the embedder's scroller: an app that focuses an input on boot yanked
+//     .apps-page down to its own card the moment the card mounted, so scrolling
+//     the grid jumped to whatever row that app sits in. The contract, and the
+//     runtime half that enforces it, are in platform/lib/frame-focus.ts.
+function thumbSrc(entryHtml: string): string {
+  return withNoFocus(withPreviewFlag(`/render?path=${encodeURIComponent(entryHtml)}`));
+}
 
 // Expands the observed box well past the actual viewport on all sides: a
 // generous margin means a card mounts its iframe before it's actually
@@ -120,6 +138,17 @@ export function AppPreviewCard({
   // mid-boot. Mouseleave unmounts the iframe and the png is back instantly.
   const [hovered, setHovered] = useState(false);
   const [liveReady, setLiveReady] = useState(false);
+  const wantsLive = Boolean(
+    app.entry_html && nearViewport && ((!app.preview_image || shotFailed) || hovered),
+  );
+  // Priority is only the authored-still hover path. A card whose normal body
+  // is already live must not tear down and restart its iframe merely because
+  // the pointer crossed it.
+  const livePriority = Boolean(app.preview_image && !shotFailed && hovered);
+  const { started: liveStarted, settled: liveSettled } = usePreviewStart(
+    wantsLive,
+    livePriority,
+  );
   // An anchor, not a button — see AppCard. The href is what makes middle-click
   // and "Open in new tab" land on the same place a left click does.
   return (
@@ -158,15 +187,19 @@ export function AppPreviewCard({
           <>
             {/* Hover live preview, mounted BELOW the img in the stacking
                 order so the still stays on top until the app has painted. */}
-            {hovered && app.entry_html && nearViewport && (
+            {hovered && app.entry_html && nearViewport && liveStarted && (
               <iframe
-                src={`/render?path=${encodeURIComponent(app.entry_html)}&_preview=1`}
+                src={thumbSrc(app.entry_html)}
                 style={{
                   width: `${100 / PREVIEW_SCALE}%`,
                   height: `${100 / PREVIEW_SCALE}%`,
                   transform: `scale(${PREVIEW_SCALE})`,
                 }}
-                onLoad={() => setLiveReady(true)}
+                onLoad={() => {
+                  liveSettled();
+                  setLiveReady(true);
+                }}
+                onError={liveSettled}
                 tabIndex={-1}
                 scrolling="no"
                 title=""
@@ -191,10 +224,10 @@ export function AppPreviewCard({
                 that opens it. */}
             <span className="app-pcard-shield" />
           </>
-        ) : app.entry_html && nearViewport ? (
+        ) : app.entry_html && nearViewport && liveStarted ? (
           <>
             <iframe
-              src={`/render?path=${encodeURIComponent(app.entry_html)}&_preview=1`}
+              src={thumbSrc(app.entry_html)}
               style={{
                 width: `${100 / PREVIEW_SCALE}%`,
                 height: `${100 / PREVIEW_SCALE}%`,
@@ -203,6 +236,8 @@ export function AppPreviewCard({
               tabIndex={-1}
               scrolling="no"
               title=""
+              onLoad={liveSettled}
+              onError={liveSettled}
             />
             {/* Shield: the preview is display-only — every pointer event lands
                 on the card's link, never inside the app — which is also what
