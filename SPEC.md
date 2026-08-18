@@ -7614,6 +7614,33 @@ the installation, and the mark that says so.
   *writable*, because nearly every install is, and a verb that briefly
   overpromises beats mis-wording the button for everyone whose config fetch was
   merely slow.
+- **SF-13e** **WRITERS take the first records home that will have them; READERS
+  look in all of them** (`record_homes`). `writable()` is `os.access` on the
+  install root — a PREDICTION, and one that answers only for the real uid's
+  permission bits. It knows nothing about an ACL that denies, a volume remounted
+  read-only under a running app, an immutable flag, or a full disk, so an
+  installation can predict *writable* and refuse the very next write. Two things
+  broke on that, and both are worse than the prediction being wrong:
+  (i) *the start route returned 500* instead of a diagnostic session — a hard
+  failure on exactly the installation SF-13 exists to help. The incident is now
+  written to the first home that accepts it, and the route reads the returned
+  path (`in_state_dir`) to decide the mode: the prediction proposes, the write
+  disposes.
+  (ii) *reports vanished from the panel.* `list_reports` walked only the home
+  today's prediction names, so a report a diagnostic session wrote out of tree
+  stopped being listed the moment the install started looking writable — a
+  `chmod`, a move out of `/Applications`, an admin copy whose ownership changed.
+  The files were never deleted; the panel had stopped looking where it put them,
+  which breaks SF-13b's promise that a report outlives the installation. The
+  listing now merges both homes and sorts by time across them, because which
+  directory a report landed in is an accident of the day's permissions and not
+  something a user has any reason to sort by. The SESSION POINTER follows the
+  same rule for the same reason: written in one home it must still be found from
+  the other, or a second agent starts on a tree the first is still editing.
+  The state dir is not offered as a candidate at all when the tree is known
+  unwritable — it is the one home we already know cannot take a write, and
+  trying it first would spend an exception per record to learn what `os.access`
+  had already answered.
 - **SF-13a** **ONE Claude session at a time in the installation** (409 naming
   the run), because they all edit the same tree: two agents rewriting one
   installation is not a slow path but a conflict, and each report then describes
