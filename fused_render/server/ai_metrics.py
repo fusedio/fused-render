@@ -209,6 +209,9 @@ class _Store:
             # stale on the next write instead of being added to.
             self._slots: list[list] = [[-1, _Counts()] for _ in range(BUCKETS)]
             self._models: dict[str, _Counts] = {}
+            # Model name -> its tier, stamped when the row is created. None for
+            # the overflow row, which is a mixture and names neither.
+            self._model_tiers: dict[str, str | None] = {}
             self._tiers: dict[str, _Counts] = {CLAUDE: _Counts(), LOCAL: _Counts()}
             self._totals = _Counts()
             # Error TYPE -> count, since start. Unbounded on purpose and safe to
@@ -225,6 +228,12 @@ class _Store:
     def _rows(self, model: str):
         """The three rows one event lands in: its bucket, its model, its tier.
         Called under the lock."""
+        # The TIER is read off the id the caller actually sent, before anything
+        # below can rebind it. Past the cap `model` becomes `OTHER_MODEL`, which
+        # has no slash — so a tier read after the fold would put every local
+        # model past the cap in the Claude column, and get it wrong on exactly
+        # the path the cap exists for.
+        tier = self._tiers[LOCAL if "/" in model else CLAUDE]
         key = int((self._monotonic() - self._started_mono) // BUCKET_S)
         slot = self._slots[key % BUCKETS]
         if slot[0] != key:  # a slot from a previous lap: start it over
@@ -236,7 +245,14 @@ class _Store:
                 row = self._models.get(model)
             if row is None:
                 row = self._models[model] = _Counts()
-        tier = self._tiers[LOCAL if "/" in model else CLAUDE]
+                # Remembered per row rather than re-derived from the name at
+                # read time, for the same reason: the overflow row's NAME
+                # cannot answer the question, and it holds whatever mixture
+                # arrived — so it claims no tier at all rather than the one its
+                # placeholder id happens to look like.
+                self._model_tiers[model] = (
+                    None if model == OTHER_MODEL
+                    else (LOCAL if "/" in model else CLAUDE))
         return slot[1], row, tier
 
     def record(self, model: str, usage: dict | None,
@@ -305,7 +321,7 @@ class _Store:
             totals = self._totals.payload()
             tiers = {name: row.payload() for name, row in self._tiers.items()}
             models = [{"model": name,
-                       "tier": LOCAL if "/" in name else CLAUDE,
+                       "tier": self._model_tiers.get(name),
                        **row.payload()}
                       for name, row in self._models.items()]
             failures = [{"type": name, "count": count}

@@ -7107,8 +7107,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   server's own vocabulary, never a caller's string.
 - **AI-12c** **Bounded by construction, unguarded on read, clamped on ask.** The
   ring is a fixed 360 slots and the breakdown a fixed 32 named models plus one
-  overflow row, so the store is the same few kilobytes after a million calls and
-  no prune ever has to run — the same posture CL-9 takes for the call log, minus
+  overflow row — which names no TIER, because it holds whatever mixture arrived
+  past the cap, and because a tier read off its placeholder id (no slash, so:
+  Claude) would misattribute every local model past the cap on exactly the path
+  the cap exists for — so the store is the same few kilobytes after a million
+  calls and no prune ever has to run — the same posture CL-9 takes for the call log, minus
   the disk it does not touch. `record()` cannot raise into the completion it is
   counting. `GET /api/ai/metrics?minutes=N` is an ordinary READ (no `X-Fused`:
   D3's guard is for the routes that spend this machine's time) whose `minutes`

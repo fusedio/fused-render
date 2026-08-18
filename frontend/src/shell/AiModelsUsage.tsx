@@ -215,10 +215,14 @@ function UsageModels({ usage }: { usage: AiUsage }) {
             <td className="am-usage-model" title={row.model}>
               {/* The tier as a chip rather than as a column of its own: it is
                   readable off the id (a slash means a Hub repo, AI-1) and this
-                  spares four characters of table width for saying so. */}
-              <span className={"am-usage-tier am-usage-tier-" + row.tier}>
-                {TIER_LABEL[row.tier]}
-              </span>
+                  spares four characters of table width for saying so. The
+                  overflow row gets no chip: it holds whatever mixture arrived
+                  past the cap, and either label on it would be a guess. */}
+              {row.tier !== null && (
+                <span className={"am-usage-tier am-usage-tier-" + row.tier}>
+                  {TIER_LABEL[row.tier]}
+                </span>
+              )}
               {row.model}
             </td>
             <td>{fmt(row.completions)}</td>

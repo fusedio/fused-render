@@ -2718,7 +2718,9 @@ export interface AiUsageModel extends AiUsageCounts {
   /** The RESOLVED model id — "claude-opus-5", not the "opus" alias a caller may
    *  have sent — or "other models", the overflow row past the server's cap. */
   model: string;
-  tier: AiUsageTier;
+  /** Which half served it — null on the "other models" overflow row, which is a
+   *  mixture by construction and cannot claim either. */
+  tier: AiUsageTier | null;
 }
 
 /** Which half of `/api/ai` served it, on the `/`-in-the-id seam AI-1 dispatches

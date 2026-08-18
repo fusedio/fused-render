@@ -309,6 +309,28 @@ def test_the_two_tiers_are_counted_apart_on_the_slash_seam():
     assert [m["tier"] for m in store.snapshot(5)["models"]] == ["local", "claude"]
 
 
+def test_a_local_model_past_the_cap_still_counts_as_local():
+    """The overflow row's placeholder id has no slash, so a tier read AFTER the
+    fold puts every local model past the cap in the Claude column — wrong on
+    exactly the path the cap exists for."""
+    clock = _Clock()
+    store = _store(clock)
+    for i in range(ai_metrics.MAX_MODELS):
+        store.record(f"claude-model-{i}", {"output_tokens": 1})
+    store.record("mlx-community/over-the-cap", {"output_tokens": 100})
+    store.record_failure("mlx-community/over-the-cap", "ai_error")
+
+    snap = store.snapshot(5)
+    assert snap["tiers"]["local"]["output_tokens"] == 100
+    assert snap["tiers"]["local"]["failures"] == 1
+    assert snap["tiers"]["claude"]["output_tokens"] == ai_metrics.MAX_MODELS
+    # The row itself names NO tier: it is a mixture by construction, and its id
+    # cannot answer the question either way.
+    overflow, = [m for m in snap["models"] if m["model"] == ai_metrics.OTHER_MODEL]
+    assert overflow["tier"] is None
+    assert overflow["output_tokens"] == 100
+
+
 def test_the_snapshot_says_when_the_last_completion_landed():
     """"nothing in the last 15 minutes" and "nothing ever" look identical on an
     empty graph; this is what tells them apart."""
