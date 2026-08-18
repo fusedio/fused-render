@@ -336,9 +336,13 @@ export function threadTone(task: Task, m: TaskMessage): MessageTone {
 /** Is any message in this thread mid-turn? The client's half of the running
  * exception above — `Task.live` is the server's, computed from the transcript's
  * own tail, and the two are asked in different places rather than merged: this
- * one is about the rows on screen, that one about the row's status. */
+ * one is about the rows on screen, that one about the row's status.
+ *
+ * The per-message reading is `isMessageRunning` (bottom of this file), the same
+ * function the calendar's chip asks, so "running" is one rule here and not
+ * three views' worth of `=== "in_progress"`. */
 export function threadRunning(messages: TaskMessage[]): boolean {
-  return messages.some((m) => messageTone(m).column === "in_progress");
+  return messages.some(isMessageRunning);
 }
 
 /**
@@ -1281,10 +1285,15 @@ export function messageEditEntry(m: TaskMessage): string | null {
 //   Failed      → In Progress  RETRY — the same run-now call, same
 //                              precondition (something pending to fire).
 //               → Archive
-//   Archived    → nowhere      LOCKED, which is the same answer the row gives:
-//                              Unarchive is not drawn (SHOW_UNARCHIVE), and an
-//                              affordance the Board offers while the row hides
-//                              it is two answers to one question.
+//   Archived    → nowhere      LOCKED — and the way back is not a gesture at
+//                              all, it is ACTIVITY (Akshil, 2026-08-18: "if you
+//                              want to move it to in progress or done, just
+//                              type in a message inside that chat and it will
+//                              automatically move"). A message that arrives
+//                              after the filing drops the filing outright,
+//                              server-side, and the task rejoins whichever lane
+//                              it derives into. So there is no unarchive
+//                              control anywhere, on either view.
 //
 // Nothing may be dropped INTO Upcoming (a task cannot be un-run), into Failed
 // (failure is something that HAPPENED, and a lane you can drag a healthy task
@@ -1663,16 +1672,21 @@ export function dropAction(task: Task, lane: BoardColumn): DropAction | null {
 // the same shape of function, and it is defined below the one function it is
 // only a re-reading of.
 //
-// IT IS A ONE-WAY DOOR, and that is now true on both views rather than only on
-// the row. It used to compute a way back — Archive → In Progress — because an
-// action whose only direction is away is a trap; the row never drew it
-// (SHOW_UNARCHIVE) and the Board did, which is two answers to one question.
-// Archive is a LOCKED lane now (see the matrix above), so there is one answer:
-// nothing comes back out by dragging, and nothing pretends to.
+// THERE IS NO UNARCHIVE CONTROL, on either view. It used to compute a way back
+// — Archive → In Progress — because an action whose only direction is away is a
+// trap; the row never drew it (SHOW_UNARCHIVE) and the Board did, which is two
+// answers to one question. Archive is a LOCKED lane now (see the matrix above),
+// so there is one answer.
 //
-// What makes that honest rather than a trap is that archiving destroys nothing.
-// The conversation is kept, the transcript is kept (D306), and the Archive lane
-// is a place to read them — the door is one-way, not a shredder.
+// And the way back is not missing, it is somewhere better: ACTIVITY. Say
+// something in that conversation and the task comes back on its own — the
+// server drops the filing when a message arrives after it, so the card rejoins
+// the lane its thread puts it in rather than a lane a button guessed at. A
+// gesture would have had to guess: "back in play" says nothing about whether
+// the work is done.
+//
+// Nothing is destroyed either way. The conversation is kept, the transcript is
+// kept (D306), and Archive is a place to read them.
 
 export interface ArchiveIntent {
   /** The lane this move puts the card in: the same lane the Board's drop would
@@ -1702,7 +1716,11 @@ export function archiveIntent(task: Task): ArchiveIntent | null {
   return {
     lane,
     label: "Archive",
-    title: "Archive — files this away and calls off any run still booked; the conversation is kept",
+    // Three clauses because a person reaching for Delete is asking all three:
+    // where does it go, what happens to work already booked, and can I get it
+    // back. The last one is the honest answer to a lane with no way out of it.
+    title:
+      "Archive — files this away and calls off any run still booked; the conversation is kept, and a new message in it brings the task back",
   };
 }
 

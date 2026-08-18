@@ -430,3 +430,35 @@ def write_triage(session_id: str, status: str) -> None:
         triage[session_id] = rec
         with open(triage_path, "w", encoding="utf-8") as f:
             json.dump(triage, f, indent=2, ensure_ascii=False)
+
+
+def clear_triage(session_id: str) -> bool:
+    """Take the filing back — drop `status` (and its stamp) from one session's
+    record, keeping everything else in it. True when there was one to drop.
+
+    The Tasks router calls this when a task that was archived DOES SOMETHING
+    NEW: the way out of Archive is activity, not a gesture (there is no
+    unarchive control anywhere), so a message typed into an archived
+    conversation has to actually un-file it rather than be shown out of its lane
+    for one poll. See `_revived` there for which activity counts and why a run
+    that was already in flight when the filing happened does not.
+
+    The record itself is NOT deleted — a note, a tag or a read mark on that
+    session is somebody else's data and outlives the status the Board put on it.
+    Same file, same lock, same merge semantics as the write above."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    triage_path = os.path.join(STATE_DIR, "triage.json")
+    lock_path = triage_path + ".lock"
+    with open(lock_path, "w") as lock:
+        if fcntl is not None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        triage = _load_state("triage.json")
+        rec = triage.get(session_id)
+        if not isinstance(rec, dict) or "status" not in rec:
+            return False
+        rec.pop("status", None)
+        rec.pop("at", None)
+        triage[session_id] = rec
+        with open(triage_path, "w", encoding="utf-8") as f:
+            json.dump(triage, f, indent=2, ensure_ascii=False)
+    return True

@@ -1262,6 +1262,98 @@ def test_the_archive_is_kept_and_comes_back_when_the_turn_ends(client,
     assert rec["status"] == "archived", "nothing here rewrites the filing"
 
 
+# -- the way out of Archive is activity ----------------------------------------
+# There is no unarchive control anywhere — the lane is drag-locked and the row
+# draws no button — so a message typed into an archived conversation IS the
+# door, and it has to be a real one. These two tests are the pair that keeps
+# that from swallowing the cascade's own promise.
+
+
+def _filed_now(state_dir, session_id="sess-a", at=None):
+    """An archive record with a STAMP, which is what every filing this app
+    writes carries (`claude_sessions.write_triage`) and what the revival rule
+    measures a message against."""
+    (state_dir / "triage.json").write_text(json.dumps(
+        {session_id: {"status": "archived",
+                      "at": str(time.time() if at is None else at)}}))
+
+
+def test_a_message_that_arrives_after_the_filing_revives_the_task(
+        client, projects_dir, state_dir):
+    """New work in a task somebody had finished with. The filing is stale, so it
+    goes — from disk, not just from this response: leaving it there would put
+    the task back in Archive the moment the conversation went quiet again."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a")])
+    _filed_now(state_dir, at=time.time() - 60)
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+
+    # ...and then someone types into that conversation.
+    later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 1))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("hi", T9, uuid="u1"), _user("actually, one more thing", later,
+                                          uuid="u2")])
+    tasks_mod.reset_cache()
+
+    # In Progress, not Done: the transcript was just written to, so the session
+    # is live and rule 1 answers first. The point is that it is not `archived`
+    # any more and will settle into its derived lane when the turn ends.
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is True
+    assert task["status"] == "in_progress"
+    rec = json.loads((state_dir / "triage.json").read_text()).get("sess-a", {})
+    assert "status" not in rec, "the filing is dropped, not merely outvoted"
+
+
+def test_the_record_survives_everything_but_the_status(client, projects_dir,
+                                                       state_dir):
+    """A note or a read mark on that session is somebody else's data and
+    outlives the status the Board put on it."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    (state_dir / "triage.json").write_text(json.dumps(
+        {"sess-a": {"status": "archived", "at": "1.0", "note": "keep me"}}))
+    _by_key(client)
+
+    rec = json.loads((state_dir / "triage.json").read_text())["sess-a"]
+    assert rec == {"note": "keep me"}
+
+
+def test_a_run_already_in_flight_when_it_was_filed_does_not_revive_it(
+        client, projects_dir, state_dir):
+    """The distinction the whole rule turns on.
+
+    That run started BEFORE the filing, so it is not new work — it is the work
+    the user archived on top of. The cascade's promise stands unchanged: it
+    keeps going, the card reads In Progress while it does, and the task settles
+    back into Archive the moment it ends, off the very record it ignored."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.SENT, fired=T9,
+                           turn="", claude_session_id="sess-a")])
+    _filed_now(state_dir)  # stamped NOW: the run above happened long before it
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+    rec = json.loads((state_dir / "triage.json").read_text())["sess-a"]
+    assert rec["status"] == "archived", "yielding is not un-filing"
+
+    # The turn ends. Same entry, now with a verdict — and the task goes back.
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a")])
+    tasks_mod.reset_cache()
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+
+
+def test_an_unstamped_filing_revives_on_nothing(client, projects_dir,
+                                                state_dir):
+    """A filing that does not say WHEN cannot be shown to have been overtaken.
+    The sessions Inbox's own `set_triage.py` stamps nothing, and reading those
+    as older-than-everything would revive every archive it has ever written on
+    the next poll."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    (state_dir / "triage.json").write_text(
+        json.dumps({"sess-a": {"status": "archived"}}))
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+
+
 def test_a_finished_run_with_the_next_one_booked_sits_in_done(client,
                                                               projects_dir):
     """THE RECURRING CASE, and the reason a pending message says nothing.

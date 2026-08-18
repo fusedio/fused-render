@@ -592,11 +592,68 @@ def _speaker(messages: list[dict], filed: bool) -> dict | None:
     return None
 
 
-def _filed(session_id: str, triage: dict) -> bool:
-    """Has the user put this task away? The only triage word still read here —
-    see `_FILED`."""
+def _archive_record(session_id: str, triage: dict) -> dict | None:
+    """This session's `archived` record, or None. The only triage word still
+    read here — see `_FILED`."""
     record = triage.get(session_id) if session_id else None
-    return isinstance(record, dict) and record.get("status") == _FILED
+    if isinstance(record, dict) and record.get("status") == _FILED:
+        return record
+    return None
+
+
+def _filed_at(record: dict) -> float:
+    """When the filing was made, epoch seconds, or 0.0 for a record that does
+    not say.
+
+    Stored as a string because that is the shape of the record (`set_triage.py`
+    coerces every field it writes, so `at` is "1.0" and not 1.0), and parsed
+    defensively for the same reason: a hand-edited file must cost a filing, not
+    the page.
+
+    0.0 means the record does not say WHEN, and `_revived` reads that as "no
+    revival": a filing whose date is unknown cannot be shown to have been
+    overtaken, and the alternative — treating it as older than everything —
+    would make every archive the sessions Inbox has ever written (its own
+    `set_triage.py` stamps nothing) revive itself on the very next poll. Every
+    archive this app writes carries a stamp (`claude_sessions.write_triage`),
+    so the door below is open for every filing a person can make here."""
+    try:
+        return float(record.get("at") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _revived(messages: list[dict], filed_at: float) -> bool:
+    """Has this task DONE something since it was filed away?
+
+    THE WAY OUT OF ARCHIVE IS ACTIVITY (Akshil, 2026-08-18): "if you want to
+    move it to in progress or done, just type in a message inside that chat and
+    it will automatically move". There is no unarchive control anywhere — the
+    lane is drag-locked and the row draws no button — so this is the only door,
+    and it has to be a real one: the filing is dropped (`clear_triage`), not
+    overlooked for one poll.
+
+    WHICH ACTIVITY, and the distinction is the whole function. `ran_at` is when
+    a message actually happened, so:
+
+    * a run that was ALREADY IN FLIGHT when the task was filed started before
+      the stamp. It does not revive anything — it keeps going, the card reads In
+      Progress while it does (rule 1 in `_status`), and the task settles back
+      into Archive when it ends. That is the promise the archive cascade already
+      makes and it is unchanged.
+    * a message that arrives AFTERWARDS — a prompt typed into the conversation,
+      a run someone started — happened after the stamp, and that is new work in
+      a task somebody had finished with. The filing is stale and goes.
+
+    A message that has not happened yet does not count: `ran_at` is 0.0 until it
+    does, so a run scheduled into an archived task revives it when it RUNS,
+    which is when there is something to come back for.
+
+    An unstamped filing revives on nothing at all — see `_filed_at`.
+    """
+    if filed_at <= 0:
+        return False
+    return any((m["ran_at"] or 0.0) > filed_at for m in messages)
 
 
 def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
@@ -617,7 +674,7 @@ def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
     return live or (bool(session_id) and session_id in busy)
 
 
-def _status(messages: list[dict], session_id: str, triage: dict, live: bool,
+def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
             busy: set[str]) -> str:
     """The status a task sits in — ONE decision, made here, for every view.
 
@@ -654,11 +711,15 @@ def _status(messages: list[dict], session_id: str, triage: dict, live: bool,
     the record is never touched here, but while a turn is genuinely in flight a
     row that says `archived` is a lie the reader can watch. The moment the run
     ends the task drops back into Archive on the next poll.
+
+    `filed` is the ANSWER, not the record: the caller has already asked whether
+    the filing still stands (`_archive_record` and `_revived`), because a filing
+    a new message has overtaken is dropped from disk rather than argued with on
+    every poll. This function reads no triage of its own.
     """
     if messages and (_running_now(session_id, live, busy)
                      or any(_message_running(m) for m in messages)):
         return "in_progress"
-    filed = _filed(session_id, triage)
     if filed:
         return "archived"
     if messages and all(_message_archived(m, filed) for m in messages):
@@ -1012,7 +1073,7 @@ def _next_run(entries: list[dict]) -> tuple[float, str]:
 
 
 def _row(task: dict, number: str, triage: dict, read: dict, now: float,
-         busy: set[str]) -> dict:
+         busy: set[str], revived: list[str]) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
     `busy` is `schedule.busy_sessions` over the WHOLE store, computed once by
@@ -1020,7 +1081,13 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     `_status`). Over the whole store rather than this task's
     own entries because a resume that forked is filed under the session it RAN
     in (`_entry_session` reads the answer first) while it still holds the
-    session it NAMED busy, and that one is another row."""
+    session it NAMED busy, and that one is another row.
+
+    `revived` is an OUT parameter and the only one: a session whose archive
+    record this row has just found stale is appended to it, and the caller does
+    the write. Collected rather than written here because building a row is
+    inside a per-task `try` that swallows IO errors — a failed write would cost
+    the row instead of costing the filing."""
     rec = _scan(task["path"]) if task["path"] else None
     live, active = _live(task["path"], now)
     prompts = list(rec["tail"]) if rec else []
@@ -1050,9 +1117,19 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     _mark_unread(tail, task["key"], read)
 
     newest = tail[-1] if tail else None
+    # DOES THE FILING STILL STAND? Asked once, here, and spent by both the
+    # status and the speaker below so they cannot read the task as archived and
+    # not-archived in the same row. A record the thread has overtaken is not
+    # merely ignored — its session id goes into `revived`, and the caller drops
+    # it from disk. See `_revived`.
+    record = _archive_record(task["session_id"], triage)
+    filed = record is not None
+    if record is not None and _revived(merged, _filed_at(record)):
+        filed = False
+        revived.append(task["session_id"])
     # Which message the status is reading off — asked once here so the row's
     # `failed` flag and its `status` cannot be reading two different runs.
-    speaker = _speaker(merged, _filed(task["session_id"], triage))
+    speaker = _speaker(merged, filed)
     # TWO times, because "recent" is two questions here and one number could
     # only answer them by lying to one of them.
     #
@@ -1096,7 +1173,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # running in this task?" and "is every message filed away?" are both
         # questions about all of it, and a run pushed out of the window by two
         # later occurrences is exactly the run that must not be lost.
-        "status": _status(merged, task["session_id"], triage, live, busy),
+        "status": _status(merged, filed, task["session_id"], live, busy),
         "failed": _failed(speaker),
         "live": live,
         "unread": _unread_count(task, total, unfired, read),
@@ -1187,13 +1264,27 @@ def api_tasks():
         _place(task)
     numbers = _numbers(tasks)
     rows = []
+    # Sessions whose archive record the thread has outlived — see `_revived`.
+    # Collected across the loop and written once, after it, so the listing is
+    # not doing IO in the middle of building rows.
+    revived: list[str] = []
     for task in tasks.values():
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
-                       busy)
+                       busy, revived)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
+    for session_id in revived:
+        # THE WAY OUT OF ARCHIVE IS ACTIVITY, and it has to be a real way out:
+        # the row already reads as its derived lane above, and leaving the
+        # record on disk would put the task back in Archive the moment it went
+        # quiet again. Best-effort — a filing we could not drop costs one poll's
+        # worth of the row coming back, never the listing.
+        try:
+            sessions.clear_triage(session_id)
+        except OSError:
+            pass
     # Day one: everything that already exists is read. Done HERE, from the
     # counts the rows just produced, because this is the only place that knows
     # them — and done after the rows are built rather than before, so it costs
