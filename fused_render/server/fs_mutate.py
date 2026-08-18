@@ -82,17 +82,24 @@ def _snapshot_refusal(*paths: str | None):
     return None
 
 
-def _fs_write(body: dict, x_fused: str | None, out: dict | None = None):
+def _fs_write(body: dict, x_fused: str | None):
     """Write `content` to `path`.
 
-    `out`, when given, is filled with `{"created": bool}` — whether this write
-    ADDED a path rather than replacing one. The file index needs that and
-    cannot work it out for itself afterwards (the file exists either way), and
-    it must not be approximated by the `create` flag: that flag means "409
-    rather than clobber", so `fused.writeFile("out.csv", data)` — the
-    documented page pattern, with create unset — creates a file and would
-    report nothing. Only the two branches below know, each having asked the
-    question in the way that is safe for its kind of path.
+    The success payload carries `created` — whether this write ADDED a path
+    rather than replacing one. The file index needs it (it stores names, so a
+    create is news and an overwrite is not) and cannot work it out afterwards,
+    since the file exists either way; and it must not be approximated by the
+    `create` flag, which means "409 rather than clobber", so the documented
+    page pattern `fused.writeFile("out.csv", data)` creates a file with it
+    unset. Only the two branches below know, each having asked the question in
+    the way that is safe for its kind of path.
+
+    IN THE PAYLOAD, not through an out-parameter, and that is not a style
+    choice: an extra argument at the CALL SITE breaks every existing
+    monkeypatch of this helper (`tests/test_stat_cache.py` replaces it with a
+    two-argument lambda), which a default value hides at definition time and
+    does not fix at all. A caller that stubs this out simply returns no
+    `created` key, and the route reads that as "nothing to report".
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -135,8 +142,7 @@ def _fs_write(body: dict, x_fused: str | None, out: dict | None = None):
             return _error(f"path is a directory: {path}")
         if not pr.parent_is_dir:
             return _error(f"parent directory does not exist: {parent}", status=404)
-        if out is not None:
-            out["created"] = not pr.exists
+        created = not pr.exists
         if create and pr.exists:
             return JSONResponse({"error": "conflict"}, status_code=409)
         if expected_mtime is not None:
@@ -186,7 +192,7 @@ def _fs_write(body: dict, x_fused: str | None, out: dict | None = None):
             after = None
         size = after.size if after and after.exists else len(content.encode("utf-8"))
         mtime = after.mtime if after and after.exists else None
-        return _mount_stat_payload(path, False, size, mtime)
+        return {**_mount_stat_payload(path, False, size, mtime), "created": created}
 
     if os.path.isdir(path):
         return _error(f"path is a directory: {path}")
@@ -208,8 +214,7 @@ def _fs_write(body: dict, x_fused: str | None, out: dict | None = None):
     # clobber someone else's write. Compare against the raw st_mtime float
     # that /api/fs/stat returns, with a tolerance for float round-tripping.
     exists = os.path.exists(path)
-    if out is not None:
-        out["created"] = not exists
+    created = not exists
     if create and exists:
         return JSONResponse({"error": "conflict"}, status_code=409)
     if expected_mtime is not None:
@@ -241,7 +246,7 @@ def _fs_write(body: dict, x_fused: str | None, out: dict | None = None):
             pass
         return _error(f"cannot write {path}: {e}", status=400)
 
-    return _stat_payload(path, False)
+    return {**_stat_payload(path, False), "created": created}
 
 
 def _fs_upload(path: str | None, data: bytes, x_fused: str | None):
@@ -1473,8 +1478,7 @@ def _note_index_mutation(result, *paths: str | None) -> None:
 @router.post("/api/fs/write")
 def api_fs_write(request: Request, body: dict = Body(...),
                  x_fused: str | None = Header(default=None)):
-    wrote: dict = {}
-    result = _fs_write(body, x_fused, wrote)
+    result = _fs_write(body, x_fused)
     _invalidate_stat_cache(body.get("path"))
     # Only a write that ADDED a path is news to the index, which stores names:
     # overwriting a file changes its bytes, and the size and mtime stored
@@ -1483,17 +1487,18 @@ def api_fs_write(request: Request, body: dict = Body(...),
     # in a full compaction — reporting every write would rewrite the whole
     # store for as long as somebody is typing a note.
     #
-    # `wrote["created"]`, never the `create` flag: that one means "409 rather
-    # than clobber", and the documented page pattern
+    # The payload's own `created`, never the `create` flag: that one means "409
+    # rather than clobber", and the documented page pattern
     # `fused.writeFile("out.csv", data)` leaves it unset while creating a file.
-    if wrote.get("created"):
+    # The same key reaches the CLIENT, whose "indexing…" caption is a claim
+    # about a rescan the server may or may not have scheduled — without it the
+    # box guessed, and every overwrite claimed a rescan for a minute while
+    # suppressing the "not refreshed" caveat that was the true one.
+    #
+    # A stubbed-out `_fs_write` (tests do that) returns no such key, which
+    # reads as "nothing to report" — the safe direction.
+    if isinstance(result, dict) and result.get("created"):
         _note_index_mutation(result, body.get("path"))
-    # ...and tell the CLIENT the same thing. Its "indexing…" caption is a claim
-    # about a rescan the server may or may not have scheduled, and without this
-    # it has to guess: every overwrite claimed a rescan for a minute, which
-    # also suppressed the "not refreshed" caveat that was the true one.
-    if isinstance(result, dict):
-        result["created"] = bool(wrote.get("created"))
     # What the app wrote and how big — never the content (calls.py).
     # `_fs_write` returns a stat payload on success and a JSONResponse on
     # every refusal, so the status has to come off the response object.
