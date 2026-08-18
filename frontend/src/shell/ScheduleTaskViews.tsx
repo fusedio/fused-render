@@ -884,6 +884,13 @@ export function TaskList({
     } catch (e) {
       // Said under the thread it belongs to, not as a page banner: the rest of
       // the list is intact and only this one thread failed to open.
+      //
+      // `loaded` is deliberately left UNSET here, and that is what makes the
+      // failure recoverable rather than terminal: every guard that asks "do we
+      // already have this thread?" still answers no, so the very same call can be
+      // made again. The error line's Retry button is that call (TaskNode
+      // `onRetry`), and this function clears the error on its way back in, so a
+      // retry that succeeds leaves nothing stale behind it.
       setErrors((cur) => ({ ...cur, [task.key]: (e as Error).message }));
     } finally {
       setLoading((cur) => ({ ...cur, [task.key]: false }));
@@ -904,6 +911,7 @@ export function TaskList({
           showProject={showProject}
           open={expanded.has(task.key)}
           onToggle={() => toggle(task)}
+          onRetry={() => void showMore(task)}
           loaded={loaded[task.key]}
           loading={!!loading[task.key]}
           error={errors[task.key]}
@@ -928,6 +936,7 @@ function TaskNode({
   onToggle,
   loaded,
   loading,
+  onRetry,
   error,
   onEditEntry,
   onReload,
@@ -948,6 +957,10 @@ function TaskNode({
   onToggle: () => void;
   loaded?: TaskMessage[];
   loading: boolean;
+  /** Fetch this task's thread again after a failure. The SAME call the disclosure
+   * makes — not a second path to the same endpoint, because two ways in are two
+   * ways to disagree about the guards. */
+  onRetry: () => void;
   error?: string;
   onEditEntry?: (entryId: string) => void;
   onReload?: () => void;
@@ -1699,7 +1712,37 @@ function TaskNode({
             );
           })}
 
-          {error && <p className="tasks-thread-error">{error}</p>}
+          {/* A FAILED FETCH HAS TO BE RECOVERABLE WHERE IT HAPPENED (bugbot, PR
+              #596). While the thread was capped, the "Show N more" button was
+              also the retry: a failed press left the button sitting there to be
+              pressed again. Removing the cap removed that by accident — the fetch
+              moved onto the disclosure, so the only way to ask again was to
+              collapse the row and re-expand it, which is a gesture nobody would
+              guess from an error line that does not mention it.
+
+              So the recovery sits next to the failure it is about (§4: help users
+              with errors, with the recovery action beside them). Same call the
+              disclosure makes, and `showMore` clears this error on its way back
+              in, so a retry that succeeds leaves nothing stale behind.
+
+              `role="alert"` on the line, because it appears without a press and a
+              reader who expanded the row is owed the news. The button is a real,
+              always-visible control rather than one of the page's hover-revealed
+              actions: those are conveniences on a working row, and this is the
+              only way out of a broken one. */}
+          {error && (
+            <p className="tasks-thread-error" role="alert">
+              {error}{" "}
+              <button
+                type="button"
+                className="tasks-retry"
+                disabled={loading}
+                onClick={onRetry}
+              >
+                Retry
+              </button>
+            </p>
+          )}
 
           {/* No "Show N more" button here any more (2026-08-18). Expanding a task
               now fetches the whole thread by itself (TasksList.toggle), so what

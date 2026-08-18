@@ -2482,13 +2482,16 @@ describe("expanding a task", () => {
     // The tail of the thread — after the last message row and its error line,
     // which is exactly where the button used to stand.
     const tail = VIEWS.slice(
-      VIEWS.indexOf('{error && <p className="tasks-thread-error">'),
+      VIEWS.indexOf("{error && ("),
       VIEWS.indexOf("// ---- Board view"),
     );
     expect(tail).toBeTruthy();
-    // A line, not a button: there is nothing left to decide.
+    // A line, not a button: there is nothing left to decide while it is working.
+    // (The tail DOES hold one button — Retry, on the error line, which is a
+    // decision and is pinned in "a thread whose fetch failed" below.)
     expect(tail).toContain('<p className="tasks-thread-loading" aria-live="polite">');
-    expect(tail).not.toContain("<button");
+    const loadingLine = tail.slice(tail.indexOf('className="tasks-thread-loading"'));
+    expect(loadingLine).not.toContain("<button");
     const thread = tail;
     // It names the NUMBER still missing — the three newest are already drawn, so a
     // bare "Loading…" would let a long thread look like a finished short one.
@@ -2500,6 +2503,68 @@ describe("expanding a task", () => {
     expect(rule).toContain("padding-left: var(--tasks-msg-indent)");
     expect(rule).not.toContain("border");
     expect(rule).not.toContain("cursor");
+  });
+
+  it("leaves a failed fetch RETRYABLE in place, without collapsing the row", () => {
+    // bugbot, PR #596. While the thread was capped, the "Show N more" button was
+    // also the retry — a failed press left the button sitting there to be pressed
+    // again. Moving the fetch onto the disclosure removed that by accident: the
+    // only way to ask again was collapse-and-re-expand, which is a gesture nobody
+    // would guess from an error line that does not mention it.
+    const tail = VIEWS.slice(
+      VIEWS.indexOf('{error && ('),
+      VIEWS.indexOf("// ---- Board view"),
+    );
+    // The recovery sits beside the failure it is about, in the same line.
+    expect(tail).toContain('<p className="tasks-thread-error" role="alert">');
+    expect(tail).toContain('className="tasks-retry"');
+    expect(tail).toContain("onClick={onRetry}");
+    // It cannot be pressed twice into the same in-flight request.
+    expect(tail).toContain("disabled={loading}");
+    // THE SAME CALL the disclosure makes — not a second path to the same
+    // endpoint, because two ways in are two ways to disagree about the guards.
+    expect(VIEWS).toContain("onRetry={() => void showMore(task)}");
+    expect(VIEWS).toContain("onRetry: () => void;");
+    // And it is a REAL, always-visible control: the page's other row actions are
+    // hover-revealed conveniences on a working row, where this is the only thing
+    // a person can do with a broken one.
+    expect(TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(
+      /\.tasks-(row|msg):hover \.tasks-retry/,
+    );
+    expect(block(TASKS_CSS, ".tasks-retry")).not.toContain("opacity: 0;");
+    // Reachable by keyboard, with the page's own ring.
+    expect(TASKS_CSS).toContain(".tasks-retry:focus-visible");
+  });
+
+  it("keeps that failure retryable by not marking the thread loaded", () => {
+    // The invariant the retry rests on: the catch sets an error and NOTHING else,
+    // so `loaded` stays unset and every guard that asks "do we already have this
+    // thread?" still answers no. Were the catch to cache anything, the retry would
+    // be a button that quietly does nothing.
+    const fn = VIEWS.slice(
+      VIEWS.indexOf("const showMore = async (task: Task) => {"),
+      VIEWS.indexOf("if (tasks.length === 0)"),
+    );
+    const caught = fn.slice(fn.indexOf("} catch (e) {"), fn.indexOf("} finally {"));
+    expect(caught).toContain("setErrors((cur) => ({ ...cur, [task.key]: (e as Error).message }))");
+    expect(caught).not.toContain("setLoaded");
+    // ...and the retry that follows CLEARS the error on its way back in, so a
+    // second attempt that succeeds leaves no stale sentence under the thread.
+    const opening = fn.slice(0, fn.indexOf("try {"));
+    expect(opening).toContain("delete next[task.key];");
+    expect(opening).toContain("setLoading((cur) => ({ ...cur, [task.key]: true }));");
+    // The success arm is what clears the retryable state, and only it.
+    expect(fn).toContain("setLoaded((cur) => ({ ...cur, [task.key]: thread }));");
+    // The guards on the SUCCESS path are untouched by any of this — the retry is a
+    // direct call, deliberately, because the reader has just asked for it out loud
+    // and `loaded`/`loading` are exactly the two things that would refuse it.
+    const guard = VIEWS.slice(
+      VIEWS.indexOf("const toggle = (task: Task) => {"),
+      VIEWS.indexOf("const showMore = async (task: Task) => {"),
+    );
+    expect(guard).toContain(
+      "if (opening && threadView(task).more && !loaded[task.key] && !loading[task.key])",
+    );
   });
 
   it("still draws every message it holds once the fetch lands", () => {

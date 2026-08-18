@@ -688,6 +688,49 @@
   color: var(--error);
 }
 
+/* The way out of that failure, beside the sentence that reports it (§4). It is
+   the ONE control on this page that is not hover-revealed and not behind a flag:
+   the hover-revealed actions are conveniences on a working row, and this is the
+   only thing a person can do with a broken one — hiding it until the pointer
+   happens to cross the row would be hiding the recovery inside the failure.
+
+   An underlined word rather than a bordered pill. It sits INSIDE a sentence, and
+   a 22px chip in the middle of an 11px line would out-weigh the error it is
+   attached to; the underline is what says "this one is pressable" without
+   changing the line's height or its register. It borrows `currentColor` from that
+   line, so it is red because the sentence is red — one fact, one hue, and no
+   second token to keep in step.
+
+   The `.prefs-section` twin is not optional: that scope repaints any unarmored
+   button here as a bordered 5px/12px pill, which is exactly the chip this rule
+   exists to avoid. */
+.tasks-retry,
+.prefs-section .tasks-retry {
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.tasks-retry:hover:not(:disabled),
+.prefs-section .tasks-retry:hover:not(:disabled) {
+  background: transparent;
+  text-decoration-thickness: 2px;
+}
+
+/* Mid-retry. The press has been taken and the line is about to be replaced by the
+   loading line, so this only has to stop a second press landing on top of the
+   first — the feedback comes from the line that replaces it. */
+.tasks-retry:disabled,
+.prefs-section .tasks-retry:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* -- The rest of the thread, on its way ----------------------------------------
    There was a "Show N more" BUTTON here: dashed, quiet, drawn whenever the
    server's `message_count` said the three the listing carried were not all of
@@ -802,7 +845,9 @@
 .tasks-row:focus-visible,
 .tasks-msg:focus-visible,
 .tasks-act:focus-visible,
-.prefs-section .tasks-act:focus-visible {
+.tasks-retry:focus-visible,
+.prefs-section .tasks-act:focus-visible,
+.prefs-section .tasks-retry:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
