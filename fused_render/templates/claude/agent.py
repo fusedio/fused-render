@@ -78,6 +78,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 # The fused engine execs this script without setting __file__; it puts the
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
@@ -527,6 +530,26 @@ def _workdir(file: str) -> str:
     return file if os.path.isdir(file) else os.path.dirname(file)
 
 
+def _custom_env(origin: str, file: str) -> bool | None:
+    """Does *file*'s own reader need a declared project environment, per
+    `/api/env/custom-env`? None when the app couldn't be asked — a network
+    hiccup on this prompt-building nicety must never fail the spawn, so any
+    error (timeout, connection refused, a malformed response) is swallowed
+    exactly like every other read in this module that decorates a screen
+    rather than gating it (see artifacts.py's own "NOTHING HERE RAISES").
+    `None` and `True` both mean "say nothing" downstream — the only value
+    that unlocks the interpreter fact is a confirmed `False`.
+    """
+    try:
+        url = origin + "/api/env/custom-env?" + urllib.parse.urlencode({"file": file})
+        req = urllib.request.Request(url, headers={"X-Fused": "1"})
+        with urllib.request.urlopen(req, timeout=2) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return bool(data.get("custom_env", True))
+    except Exception:  # noqa: BLE001 — see docstring
+        return None
+
+
 def _system_prompt(file: str) -> str:
     """The FILE target's prompt: what to work on, plus the same app-state
     disclosure the directory prompt makes (D235).
@@ -544,24 +567,23 @@ def _system_prompt(file: str) -> str:
     name = os.path.basename(file)
     tool = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
     origin = _origin()
-    # A fact about how the PREVIEW was produced, not about the file's content —
-    # this is what stops "which python env retrieved this?" being answered by
-    # a `which python3` / fresh `sys.executable` probe, which reports whichever
-    # interpreter this shell's own PATH happens to resolve first (some ambient
-    # conda/homebrew env) and has no relationship to the interpreter
-    # fused-render itself used: its built-in duckdb/xlsx/sqlite/structure
-    # readers run in-process on the app's own interpreter (D72), and everything
-    # else runs there too unless the file sits in a project that declares its
-    # own environment (SPEC PY-16/PY-17). `origin` is None only when there is no
-    # server to ask (e.g. a bare test), in which case saying nothing is honest.
+    # This session's OWN interpreter is a fact worth stating only when it is
+    # KNOWN to be the one that read `file` — never a caveated guess. The claude
+    # template's own folder never declares a project (SPEC PY-17), so this
+    # process always runs on the app's own bundled interpreter; whether that
+    # matches `file`'s actual reader depends on `file` itself, which
+    # /api/env/custom-env resolves properly (a `.py` in a declared project, or
+    # a data file whose template ships its own pyproject.toml — D276's
+    # map/vector/pdf_studio and any future one — answers `custom_env: true`,
+    # and this says nothing rather than assert a fact that might be wrong).
+    # `origin` is None only when there is no server to ask (e.g. a bare test).
+    custom_env = _custom_env(origin, file) if origin else None
     env_note = (
-        f" If asked which Python interpreter produced {name}'s preview: `GET "
-        f"{origin}/api/env/interpreter` (header `X-Fused: 1`) answers with "
-        "the real interpreter and engine fused-render itself used — that is "
-        "the ground truth, not a shell probe of this session's own PATH. For "
-        "package versions, run that interpreter directly (you are on the "
-        "same machine): `<interpreter> -c \"import x; print(x.__version__)\"`."
-    ) if origin else ""
+        f" If asked which Python interpreter produced {name}'s preview: this "
+        f"session's own interpreter IS it — {sys.executable} (Python "
+        f"{sys.version.split()[0]}) — ground truth, not a guess from a shell "
+        "probe of this session's own PATH."
+    ) if custom_env is False else ""
     return (
         f"You are embedded in a local file viewer, opened on {file}. "
         f"The user is looking at {name} right now; treat that file as the "

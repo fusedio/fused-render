@@ -11,7 +11,6 @@ and one source for both is the only way that stays true.
 """
 
 import os
-import sys
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
@@ -124,89 +123,62 @@ def api_env_progress(key: str, x_fused: str | None = Header(default=None)):
     return JSONResponse({"ok": True, "key": key, "progress": prog})
 
 
-@router.get("/api/env/interpreter")
-def api_env_interpreter(py: str | None = None, html: str | None = None,
-                        x_fused: str | None = Header(default=None)):
-    """Which interpreter actually runs *py* — the ground truth PY-16/PY-17
-    otherwise has no way to reach a caller outside this process.
+@router.get("/api/env/custom-env")
+def api_env_custom_env(file: str, x_fused: str | None = Header(default=None)):
+    """Does *file*'s own reader run on a declared project environment, or on
+    this app's own bundled interpreter?
 
-    Without `py` (the common case: a data file with no project of its own —
-    every core template, and most quick-look files) this answers for THE APP'S
-    OWN interpreter, which is what ran it: the built-in duckdb/xlsx/sqlite/
-    structure readers execute in-process (D72), and everything else without a
-    declared project runs as a subprocess of this same interpreter
-    (executor.py's `[sys.executable, CHILD]`) — so this process's own
-    `sys.executable` is exactly what a reader used, not a guess.
+    A Claude Code session embedded beside a file's preview already knows its
+    OWN interpreter (`sys.executable` — the claude template's folder never
+    declares a project, so agent.py's own process always runs on the app's own
+    interpreter, SPEC PY-17). What it cannot know on its own is whether THAT
+    matches what actually reads `file`: a `.py` file may sit inside a project
+    declaring dependencies (SPEC PY-16), and some core templates ship their own
+    `pyproject.toml` too (D276 — `map`/`vector`/`pdf_studio`/…, moved out of
+    the bundled app on purpose), in which case the file's real reader runs on
+    a dedicated venv instead. Guessing which templates those are would drift
+    the moment a new one adds its own deps, so this asks the two real sources
+    instead of hardcoding a list:
 
-    This exists because a shell probe (`which python3`, a fresh `sys.
-    executable`) run from outside this app — e.g. a Claude Code session
-    embedded beside a file's preview — reports whatever happens to be first on
-    THAT SHELL'S PATH, which has no relationship to the interpreter
-    fused-render itself used to render the file. That mismatch is silent: the
-    shell probe always succeeds, it just answers a different question.
+    * a `.py` file IS the script `/api/run` would execute, so its own
+      `project_env_for` is the direct, exact answer.
+    * anything else is served by whichever template's reader the registry
+      resolves for it (`server/templates._templates_for`, the same match
+      `/render` uses) — the FIRST (default, SPEC PT-7) entry's folder is
+      checked for a declared environment. A conditional template that gates
+      out the default at request time is a known, accepted imprecision here;
+      this is advisory, not a guarantee.
 
-    Deliberately does NOT report package versions: that caller runs on the
-    same machine as this interpreter (a local desktop app; a Claude session is
-    a subprocess of this same server), so once it has the real `interpreter`
-    path it can ask that interpreter about ANY package itself
-    (`<interpreter> -c "import x; print(x.__version__)"`) — more flexibly
-    than this endpoint hardcoding a guess at which packages matter. This
-    endpoint's only job is the one fact a caller cannot get any other way:
-    which interpreter is ground truth.
+    `custom_env: true` means "don't trust the session's own interpreter for
+    this file" (a declared project, an unresolvable file, or a file type this
+    app has no template for at all — safest default when unsure). `false`
+    means the session's own interpreter genuinely is what ran it.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    if not os.path.exists(file):
+        return _error(f"no such file or directory: {file}")
 
-    # Same resolution rule (and the same error wording) as /api/env/install's
-    # `_project_for`: a `py` this endpoint cannot resolve is answered as an
-    # error, never silently folded into "no project declares one" — that
-    # would assert a fact (no project) that resolution never actually
-    # established.
-    project = None
-    if py:
-        if os.path.isabs(py):
-            resolved = py
-        elif html:
-            resolved = os.path.normpath(os.path.join(os.path.dirname(html), py))
-        else:
-            return _error(
-                "'py' is a relative path but 'html' was not provided; "
-                "either send an absolute 'py' path or include 'html' so it can be resolved"
-            )
-        if not os.path.isfile(resolved):
-            return _error(f"no such Python file: {resolved}")
-        from fused_render import projectenv
-        project = projectenv.project_env_for(resolved)
+    from fused_render import projectenv
 
-    from fused_render.shell import prefs as shell_prefs
-    engine = shell_prefs.effective_engine()
+    is_dir = os.path.isdir(file)
+    if not is_dir and file.endswith(".py"):
+        custom_env = projectenv.project_env_for(file) is not None
+        return JSONResponse({"ok": True, "custom_env": custom_env})
 
-    python_version = None
-    if project:
-        from fused_render import envinstall
-        interpreter = envinstall.venv_python_for(project)
-        source = (f"{projectenv.display_name(project)}'s own project "
-                  "environment (declared in its pyproject.toml)")
-        # Not this process's own Python version — that venv can pin a
-        # different Python than the app (SPEC PY-16 lets a project declare its
-        # own), and this process's sys.version is not known to match it.
-    else:
-        if engine == "fused":
-            from fused_render import engine as _engine
-            interpreter = _engine.app_interpreter()
-        else:
-            interpreter = sys.executable
-        source = "this app's own interpreter (no project declares one, SPEC PY-17)"
-        python_version = sys.version
+    from fused_render.server import templates as _server_templates
 
-    return JSONResponse({
-        "ok": True,
-        "engine": engine,
-        "interpreter": interpreter,
-        "source": source,
-        "python_version": python_version,
-    })
+    entries, _template_error = _server_templates._templates_for(file, is_dir)
+    default_path = entries[0].get("path") if entries else None
+    if not default_path:
+        # No template resolved (unmapped file type) or the default entry is a
+        # sentinel with no folder (e.g. `_render`) — nothing to check, so the
+        # safe answer is "don't know, don't trust it."
+        return JSONResponse({"ok": True, "custom_env": True})
+    folder = os.path.dirname(default_path)
+    return JSONResponse({"ok": True,
+                         "custom_env": projectenv.has_project_env(folder)})
 
 
 @router.post("/api/env/cancel")

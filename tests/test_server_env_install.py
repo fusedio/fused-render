@@ -327,101 +327,90 @@ def test_an_engine_that_cannot_answer_is_reported_not_500ed(tmp_path, monkeypatc
     assert str(boom) in resp.json()["error"]
 
 
-# --- /api/env/interpreter: the ground truth for "which python ran this?" ------
+# --- /api/env/custom-env: "is MY OWN interpreter the one that read this?" ----
 #
-# Exists because a shell probe (`which python3`, a fresh `sys.executable`) run
-# from OUTSIDE this app — a Claude Code session embedded beside a file's
-# preview, say — reports whatever that shell's own PATH resolves first, which
-# has no relationship to the interpreter fused-render itself used.
+# A Claude Code session embedded beside a file's preview already knows its own
+# `sys.executable` — the claude template's folder never declares a project, so
+# its process always runs on the app's own interpreter (SPEC PY-17). What it
+# cannot know on its own is whether that MATCHES the file's actual reader: a
+# `.py` may sit in a project declaring dependencies (SPEC PY-16), and some
+# core templates ship their own pyproject.toml too (D276). This endpoint is
+# the one confirmable fact, so the session states its own interpreter only
+# when this says `false` — never a caveated guess.
 
 
-def test_interpreter_endpoint_requires_the_x_fused_header(tmp_path):
+def test_custom_env_endpoint_requires_the_x_fused_header(tmp_path):
     client = _client(tmp_path)
-    assert client.get("/api/env/interpreter").status_code == 403
+    assert client.get("/api/env/custom-env", params={"file": str(tmp_path)}).status_code == 403
 
 
-def test_a_file_with_no_project_reports_this_process_as_the_interpreter(tmp_path):
-    """The common case (every core template, most quick-look files): no
-    `pyproject.toml` anywhere above it, so it ran on the app's own interpreter
-    (SPEC PY-17) — which, under the test suite's pinned `builtin` engine
-    (conftest.py), is simply `sys.executable` of the process answering.
+def test_nonexistent_file_is_an_error_not_a_guess(tmp_path):
+    client = _client(tmp_path)
+    resp = client.get("/api/env/custom-env", params={"file": str(tmp_path / "nope.parquet")},
+                      headers=HEADERS)
+    assert resp.status_code == 400, resp.text
+    assert "no such file or directory" in resp.json()["error"]
+
+
+def test_a_py_file_with_no_project_is_not_custom(tmp_path):
+    """A `.py` IS the script /api/run would execute, so its own
+    `project_env_for` is the direct, exact answer — no project here means the
+    app's own interpreter (agent.py's own `sys.executable`) really did run it.
     """
-    import sys
-
+    target = _py(tmp_path, "a.py", "def main():\n    return 1\n")
     client = _client(tmp_path)
-    resp = client.get("/api/env/interpreter", headers=HEADERS)
+    resp = client.get("/api/env/custom-env", params={"file": str(target)}, headers=HEADERS)
     assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["ok"] is True
-    assert body["engine"] == "builtin"
-    assert body["interpreter"] == sys.executable
-    assert body["python_version"] == sys.version
+    assert resp.json() == {"ok": True, "custom_env": False}
 
 
-def test_a_declared_project_reports_its_own_venv_not_this_process(tmp_path):
-    """A file under a project that declares dependencies runs in THAT project's
-    venv (SPEC PY-16), never on this process's own interpreter — so the
-    endpoint must resolve through the same `project_env_for` the run itself
-    uses, not report `sys.executable` for a file that never touches it.
-    """
-    from fused_render import envinstall
-
-    client = _client(tmp_path)
+def test_a_py_file_in_a_declared_project_is_custom(tmp_path):
+    """A `.py` inside a project declaring dependencies (SPEC PY-16) runs on
+    THAT project's venv, not the app's own interpreter — the one case the
+    claude session's own `sys.executable` would be a wrong answer for."""
     _declare(tmp_path, '"pyproj"')
     target = _py(tmp_path, "declared.py", "def main():\n    return 1\n")
-
-    resp = client.get("/api/env/interpreter", params={"py": str(target)},
-                      headers=HEADERS)
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["interpreter"] == envinstall.venv_python_for(str(tmp_path))
-    assert body["python_version"] is None, (
-        "the venv can pin a different Python than the app (SPEC PY-16) — "
-        "this process's own sys.version is not known to match it"
-    )
-
-
-def test_a_py_that_cannot_be_resolved_is_an_error_not_a_guess(tmp_path):
-    """A relative `py` with no `html` to resolve it against, or a `py` that
-    resolves to nothing on disk, means resolution FAILED — the endpoint must
-    say so (mirroring /api/env/install's `_project_for`), not fall through to
-    "no project declares one", which asserts a fact resolution never actually
-    established.
-    """
     client = _client(tmp_path)
-
-    resp = client.get("/api/env/interpreter", params={"py": "declared.py"},
-                      headers=HEADERS)
-    assert resp.status_code == 400, resp.text
-    assert "'html'" in resp.json()["error"]
-
-    resp = client.get(
-        "/api/env/interpreter",
-        params={"py": str(tmp_path / "nope.py")},
-        headers=HEADERS,
-    )
-    assert resp.status_code == 400, resp.text
-    assert "no such Python file" in resp.json()["error"]
-
-
-def test_interpreter_resolves_a_relative_py_against_the_page(tmp_path):
-    """Mirrors /api/env/install's own rule (test_install_resolves_a_relative_py_
-    against_the_page above): the loader and this endpoint must derive the same
-    project from the same `py`+`html` pair, or a caller could get two different
-    answers about the one file."""
-    from fused_render import envinstall
-
-    client = _client(tmp_path)
-    _declare(tmp_path, '"pyproj"')
-    _py(tmp_path, "declared.py", "def main():\n    return 1\n")
-
-    resp = client.get(
-        "/api/env/interpreter",
-        params={"py": "declared.py", "html": str(tmp_path / "p.html")},
-        headers=HEADERS,
-    )
+    resp = client.get("/api/env/custom-env", params={"file": str(target)}, headers=HEADERS)
     assert resp.status_code == 200, resp.text
-    assert resp.json()["interpreter"] == envinstall.venv_python_for(str(tmp_path))
+    assert resp.json() == {"ok": True, "custom_env": True}
+
+
+def test_a_data_file_served_by_a_bare_template_is_not_custom(tmp_path):
+    """A `.parquet`'s default template (duckdb, SPEC PT-7 first-wins) declares
+    no project of its own, so the app's own interpreter genuinely read it —
+    the exact scenario that motivated this endpoint."""
+    target = tmp_path / "data.parquet"
+    target.write_bytes(b"")
+    client = _client(tmp_path)
+    resp = client.get("/api/env/custom-env", params={"file": str(target)}, headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "custom_env": False}
+
+
+def test_a_data_file_served_by_a_templated_env_is_custom(tmp_path):
+    """A `.shp`'s default template (vector) ships its own pyproject.toml
+    (D276) — a dedicated venv reads it once built, never the app's own
+    interpreter, so this must say `true` rather than assume "data file ->
+    app's own interpreter" the way the original bug did."""
+    target = tmp_path / "data.shp"
+    target.write_bytes(b"")
+    client = _client(tmp_path)
+    resp = client.get("/api/env/custom-env", params={"file": str(target)}, headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "custom_env": True}
+
+
+def test_an_unmapped_file_type_is_custom_by_default(tmp_path):
+    """No template resolves for this extension at all — nothing to check, so
+    the safe answer when genuinely unsure is `true` (don't trust it), never a
+    confident `false` resolution never actually established."""
+    target = tmp_path / "data.zzz-not-a-real-extension"
+    target.write_bytes(b"\x00binary\x01")
+    client = _client(tmp_path)
+    resp = client.get("/api/env/custom-env", params={"file": str(target)}, headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "custom_env": True}
 
 
 # --- the loader's own JS, executed ---------------------------------------------
