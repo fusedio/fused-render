@@ -9,6 +9,7 @@ path on disk and the wire error contract shared with _fs_write:
 """
 import ctypes
 import datetime
+import errno
 import json
 import os
 import stat
@@ -378,6 +379,72 @@ def test_xdg_trash_cross_device_is_501_and_leaves_no_claim(tmp_path, monkeypatch
     assert f.read_text() == "x"  # untouched — and not copied anywhere
     assert list((trash / "info").iterdir()) == []
     assert list((trash / "files").iterdir()) == []
+
+
+
+def test_xdg_trash_unwritable_info_dir_is_500_not_501(tmp_path, monkeypatch):
+    # THE 501 IS AN INVITATION TO ERASE THE FILE, so only a condition no retry
+    # could fix may produce it. An unwritable Trash/info (read-only volume, out of
+    # space, wrong owner) is a recoverable delete that FAILED: report it as a 500,
+    # leave the file alone, and do NOT route the client into the
+    # confirm-then-hard-delete.
+    trash = _xdg_home(monkeypatch, tmp_path)
+    f = tmp_path / "f.txt"
+    f.write_text("keep")
+
+    real_open = os.open
+
+    def denied(p, *a, **kw):
+        if str(p).endswith(".trashinfo"):
+            raise PermissionError(13, "Permission denied")
+        return real_open(p, *a, **kw)
+
+    monkeypatch.setattr(_server_fs_mutate.os, "open", denied)
+    resp = DELETE({"path": str(f), "trash": True}, x_fused="1")
+    assert _status(resp) == 500
+    assert "cannot move to Trash" in _data(resp)["error"]
+    assert f.read_text() == "keep"  # still there, nothing offered to be erased
+    assert list((trash / "files").iterdir()) == []
+
+
+def test_xdg_trash_root_blocked_by_a_stray_file_is_500_not_501(tmp_path, monkeypatch):
+    # A plain FILE sitting where ~/.local/share/Trash should be: mkdir fails with
+    # EEXIST/ENOTDIR. Same rule — a failure, not an "unsupported".
+    _force_platform(monkeypatch, "linux")
+    data = tmp_path / "xdg"
+    data.mkdir()
+    (data / "Trash").write_text("not a directory")
+    monkeypatch.setenv("XDG_DATA_HOME", str(data))
+    f = tmp_path / "f.txt"
+    f.write_text("keep")
+    resp = DELETE({"path": str(f), "trash": True}, x_fused="1")
+    assert _status(resp) == 500
+    assert "cannot move to Trash" in _data(resp)["error"]
+    assert f.read_text() == "keep"
+
+
+def test_xdg_trash_only_exdev_reports_unsupported(tmp_path, monkeypatch):
+    # The one errno that means "this platform cannot trash this path": nothing
+    # moved, no retry helps, so the 501 and its hard-delete fallback are honest.
+    # A DIFFERENT rename errno on the same code path must not borrow that answer.
+    trash = _xdg_home(monkeypatch, tmp_path)
+    f = tmp_path / "f.txt"
+    f.write_text("keep")
+
+    def fail(code):
+        def rename(src, dst):
+            raise OSError(code, os.strerror(code))
+        return rename
+
+    monkeypatch.setattr(_server_fs_mutate.os, "rename", fail(errno.EXDEV))
+    assert _status(DELETE({"path": str(f), "trash": True}, x_fused="1")) == 501
+    monkeypatch.setattr(_server_fs_mutate.os, "rename", fail(errno.EACCES))
+    assert _status(DELETE({"path": str(f), "trash": True}, x_fused="1")) == 500
+    monkeypatch.setattr(_server_fs_mutate.os, "rename", fail(errno.ENOSPC))
+    assert _status(DELETE({"path": str(f), "trash": True}, x_fused="1")) == 500
+    # Every one of them left the file in place and no orphan claim behind.
+    assert f.read_text() == "keep"
+    assert list((trash / "info").iterdir()) == []
 
 
 def test_xdg_trash_dir_defaults_and_ignores_a_relative_xdg_data_home(tmp_path, monkeypatch):

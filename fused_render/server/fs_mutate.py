@@ -1,5 +1,6 @@
 import ctypes
 import datetime
+import errno
 import json
 import os
 import shutil
@@ -729,22 +730,32 @@ def _move_to_xdg_trash(path: str) -> str | None:
     # deletion) would otherwise be silently overwritten by the rename.
     #
     # RETURNS `files/<name>`, which the client records as the undo pair's
-    # destination. None means NOTHING WAS MOVED — a cross-device path (EXDEV),
-    # which is the common one for a file on another volume, or an unusable trash
-    # root. The caller answers 501 for it and the client falls back to the
-    # confirm-then-hard-delete flow. Deliberately NOT handled: copying the bytes
-    # across the boundary (shutil.move's fallback), and the spec's per-volume
-    # `.Trash-$uid` directories. A trash move that reads and rewrites an entire
-    # file is the same hazard the mount case refuses trash for, and a delete
-    # should not become the most expensive thing the app does.
+    # destination.
+    #
+    # NONE MEANS EXDEV, AND NOTHING ELSE. A cross-device path is the one case
+    # where this platform genuinely cannot trash: the caller turns None into the
+    # 501 that routes the client to the confirm-then-hard-delete, so None is a
+    # request to OFFER A PERMANENT ERASE and only a condition that no retry could
+    # fix may produce it. Every other OSError — a read-only or full trash volume,
+    # a stray file where `Trash/` should be, a root-owned trash dir, a vanished
+    # source — is a recoverable delete that FAILED, propagates as an OSError, and
+    # becomes a 500 with the file still in place. (This was the bug the exception's
+    # own docstring already forbade: an unwritable `Trash/info` offered to erase
+    # the file for good.)
+    #
+    # Deliberately NOT handled for EXDEV: copying the bytes across the boundary
+    # (shutil.move's fallback), and the spec's per-volume `.Trash-$uid`
+    # directories. A trash move that reads and rewrites an entire file is the same
+    # hazard the mount case refuses trash for, and a delete should not become the
+    # most expensive thing the app does.
     trash = _xdg_trash_dir()
     files_dir, info_dir = trash / "files", trash / "info"
     name = os.path.basename(path.rstrip("/"))
-    try:
-        files_dir.mkdir(parents=True, exist_ok=True)
-        info_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return None
+    # UNGUARDED ON PURPOSE: a trash root we cannot create or write is a failure,
+    # not an "unsupported", and the difference is whether the user is then invited
+    # to erase the file permanently. Let the OSError out.
+    files_dir.mkdir(parents=True, exist_ok=True)
+    info_dir.mkdir(parents=True, exist_ok=True)
 
     counter = 1
     while True:
@@ -753,10 +764,10 @@ def _move_to_xdg_trash(path: str) -> str | None:
         try:
             fd = os.open(info_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
+            # The name is claimed; try the next one. Every OTHER OSError here
+            # (EACCES, EROFS, ENOSPC …) propagates for the reason above.
             counter += 1
             continue
-        except OSError:
-            return None
         dest = files_dir / cand
         if dest.exists():
             # We won the info name but the entry name is taken anyway (a stale
@@ -768,15 +779,21 @@ def _move_to_xdg_trash(path: str) -> str | None:
         break
 
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(_trashinfo_body(path, datetime.datetime.now()))
+        try:
+            os.write(fd, _trashinfo_body(path, datetime.datetime.now()).encode("utf-8"))
+        finally:
+            # Closed here rather than by an fdopen wrapper so a failed WRITE
+            # cannot leak the descriptor along with the failed delete.
+            os.close(fd)
         os.rename(path, dest)
-    except OSError:
-        # Includes EXDEV. The claim goes back: an info file describing an entry
-        # that is not in files/ is exactly the orphan every trash client has to
-        # guess about, and we created it, so we remove it.
+    except OSError as e:
+        # The claim goes back either way: an info file describing an entry that is
+        # not in files/ is exactly the orphan every trash client has to guess
+        # about, and we created it, so we remove it.
         _unlink_quietly(info_path)
-        return None
+        if e.errno == errno.EXDEV:
+            return None  # the one case the platform cannot do at all
+        raise  # a failed trash — reported as a 500, never as "unsupported"
     return str(dest)
 
 
@@ -897,7 +914,9 @@ def _move_to_trash(path: str) -> str | None:
     if sys.platform == "linux":
         dest = _move_to_xdg_trash(path)
         if dest is None:
-            # Cross-device, or an unusable trash root. Nothing moved.
+            # EXDEV, and only EXDEV: the entry is on another volume, so nothing
+            # moved and no retry would help. Any other failure came out of the
+            # backend as an OSError and is a 500, not an invitation to erase.
             raise _TrashUnsupported(path)
         return dest
     return _move_to_macos_trash(path)
