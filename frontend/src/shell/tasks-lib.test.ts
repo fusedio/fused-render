@@ -14,6 +14,7 @@ import {
   EMPTY_FILTERS,
   LANE_SORTS,
   MESSAGE_ANCHOR_PARAM,
+  NO_TIME,
   PREVIEW_MESSAGES,
   UNREAD_LABEL,
   archiveIntent,
@@ -3381,14 +3382,83 @@ describe("the time a task row prints", () => {
     expect(taskWhen(doneWithNext, NOW)).toMatchObject({ kind: "next" });
   });
 
-  it("prints NOTHING when the task has neither run — never 1970", () => {
-    // A pending row that has never run and has nothing scheduled we can see. Null
-    // is the honest answer; epoch zero would format as a confident wrong date.
-    const never = task({ status: "upcoming", next_run: 0, message_count: 0, messages: [] });
+  it("falls back to the SESSION's own clock when the message window is empty", () => {
+    // The bug this closes (Akshil, 2026-08-18, TASK-044 — a `/clear`): both run
+    // times are derived from the three-message window, so a task with an EMPTY
+    // window had neither and the row printed nothing at all, a hole in the last
+    // column of an otherwise full list.
+    //
+    // An empty window is an ordinary state, not an exotic one: a task IS a Claude
+    // session, and a session whose transcript surfaces no prompt — one holding only
+    // a slash command — is a real row with a real id and no messages under it. The
+    // server already had the answer on that very row.
+    const cleared = task({
+      status: "in_progress",
+      next_run: 0,
+      message_count: 0,
+      messages: [],
+      last_active: T("2026-08-16T08:00:00"),
+    });
+    expect(nextRunAt(cleared)).toBe(null);
+    expect(lastRunAt(cleared)).toBe(null);
+    const when = taskWhen(cleared, NOW)!;
+    expect(when.kind).toBe("active");
+    expect(when.at).toBe(T("2026-08-16T08:00:00"));
+    // Same formatter as every other time on the page — nothing about this row's
+    // time is a special case except where the number came from.
+    expect(when.text).toBe(relativeWhen(T("2026-08-16T08:00:00"), NOW));
+    expect(when.text).toBe("4h ago");
+    // "Active", not "Last run": nothing ran, and saying it did would be exactly the
+    // confident wrong answer the zero guard below refuses.
+    expect(when.title).toBe(`Active ${messageStamp(T("2026-08-16T08:00:00"))}`);
+    // A RUN still wins when there is one — this is a fallback, not a new policy.
+    const ran = task({
+      status: "done",
+      messages: [msg({ at: T("2026-08-16T09:00:00"), ran_at: T("2026-08-16T09:00:00") })],
+      last_active: T("2026-08-16T08:00:00"),
+    });
+    expect(taskWhen(ran, NOW)!.kind).toBe("last");
+  });
+
+  it("prints an em dash when there is no timestamp at all — never 1970, never blank", () => {
+    // Every source zero. A blank last cell reads as a broken row rather than as an
+    // absent fact, and the column has to hold its width or the folder chips beside
+    // it stop lining up — so the row prints NO_TIME and says why in the tooltip.
+    const never = task({
+      status: "upcoming",
+      next_run: 0,
+      message_count: 0,
+      messages: [],
+      last_active: 0,
+    });
     expect(nextRunAt(never)).toBe(null);
     expect(lastRunAt(never)).toBe(null);
-    expect(taskWhen(never, NOW)).toBe(null);
-    expect(ROW).toContain("{when && (");
+    const when = taskWhen(never, NOW);
+    expect(when.kind).toBe("none");
+    expect(when.text).toBe(NO_TIME);
+    expect(when.text).toBe("—");
+    // `at` stays 0 and is never formatted: 0 through relativeWhen is 1970, which is
+    // the confident wrong answer this whole arm exists to avoid. The words carry it.
+    expect(when.at).toBe(0);
+    expect(when.title).toBe("No recorded activity yet");
+    expect(when.title).not.toContain("1970");
+    // 0.0 is how the server spells "never" on this field, so a literal zero must
+    // fall THROUGH the active arm rather than be taken as a stamp.
+    expect(taskWhen(task({ ...never, last_active: 0.0 }), NOW).kind).toBe("none");
+  });
+
+  it("draws the cell unconditionally, so the column can never have a hole", () => {
+    // The other half of the fix, and the half a pure function cannot hold: the row
+    // used to render `{when && (…)}`, which is what turned a null into a missing
+    // cell. taskWhen no longer returns null and the element is no longer guarded.
+    expect(ROW).not.toContain("{when && (");
+    expect(ROW).toMatch(
+      /<span className="tasks-row-time" title=\{when\.title\}>\s*\{when\.text\}\s*<\/span>/,
+    );
+    // And the dash takes the column's own register rather than a class of its own —
+    // it IS one of the column's values, not a different kind of thing.
+    expect(ROW).not.toContain("is-empty");
+    expect(block(TASKS_CSS, ".tasks-row-time")).toContain("flex: 0 0 auto");
   });
 
   it("prints ONE relative unit, and puts the absolute instant in the tooltip", () => {

@@ -1470,11 +1470,22 @@ function TaskNode({
         {showProject && (
           <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
         )}
-        {when && (
-          <span className="tasks-row-time" title={when.title}>
-            {when.text}
-          </span>
-        )}
+        {/* ALWAYS drawn (2026-08-18). It used to be `{when && …}` and taskWhen
+            returned null on a task whose three-message window is empty — a session
+            holding only a `/clear` — which left the last cell of that row blank
+            while every row around it read "4d ago". A hole in a column reads as a
+            broken row, not as an absent fact. taskWhen now falls back to the
+            session's own `last_active` and, failing even that, hands back an em
+            dash with `kind: "none"`, so this element is unconditional and the
+            column always holds.
+
+            No class of its own for the dash, and no CSS change at all here: the em
+            dash belongs in exactly the register the times beside it are in — it IS
+            one of the column's values, not a different kind of thing — and
+            `.tasks-row-time` already sizes, colours and aligns it. */}
+        <span className="tasks-row-time" title={when.title}>
+          {when.text}
+        </span>
       </div>
 
       {/* Why the refusal is quiet: see runNow. The class is the board's own

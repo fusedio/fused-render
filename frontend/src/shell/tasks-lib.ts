@@ -1869,12 +1869,19 @@ export function laneTime(task: Task, lane: BoardColumn): number | null {
 
 // ---- the time a task ROW prints ----------------------------------------------
 
-export type TaskWhenKind = "next" | "last";
+export type TaskWhenKind = "next" | "last" | "active" | "none";
+
+/** What a row prints when the task has no timestamp of any kind. An em dash and
+ * not a blank: the time is the last cell of every row, so an empty one reads as a
+ * broken row rather than as an absent fact — and the column has to hold its width
+ * or the folder chips beside it stop lining up. */
+export const NO_TIME = "—";
 
 export interface TaskWhen {
-  /** The instant, epoch seconds. */
+  /** The instant, epoch seconds. 0 on `none`, which is the one kind that names no
+   * instant at all — and is why nothing may format this without checking. */
   at: number;
-  /** Which run it is — the row prints the time, the tooltip says which. */
+  /** Which time it is — the row prints it, the tooltip says which. */
   kind: TaskWhenKind;
   /** What the row prints: ONE relative unit ("30m ago", "in 2h"), the same
    * vocabulary a message row's time speaks — relativeWhen. */
@@ -1904,30 +1911,68 @@ export interface TaskWhen {
  * it also gains the word for WHICH run it is — the ink cannot say that in one unit
  * and does not try.
  *
- * The OTHER time is the fallback, not a blank: an Upcoming task whose pending
+ * The OTHER run is the first fallback, not a blank: an Upcoming task whose pending
  * message is outside the window still shows the run it already made, and a Done
- * task that also has a repeat coming still has a time to show. A task with
- * NEITHER — a pending row that has never run and has nothing scheduled we can see
- * — returns null, and the row prints nothing. Not a placeholder and not epoch
- * zero: 0 formats as 1970 and would be a confident wrong answer.
+ * task that also has a repeat coming still has a time to show.
+ *
+ * AND `last_active` IS THE THIRD, which is the bug this now closes. Both run times
+ * are derived from the three-message WINDOW (nextRunAt reads `next_run` or that
+ * window; lastRunAt reads only the window), so a task whose window is EMPTY had
+ * neither and the row printed nothing at all — a hole in the last column of an
+ * otherwise full list (Akshil, 2026-08-18, on TASK-044, a `/clear`).
+ *
+ * An empty window is not an exotic state. A task IS a Claude session, and a session
+ * whose transcript surfaces no prompt — one that holds only a slash command like
+ * `/clear` — is a real row with a real id, a real folder and no messages under it.
+ * The server had the answer the whole time and on the very same row: `last_active`
+ * is the session's own clock (routers/tasks.py — the transcript's activity, or the
+ * newest entry's `created` when nothing has run), which is exactly "when did
+ * anything last happen here". Reading it is one field, and it is the field the
+ * server itself sorts the list by, so the row and its position now agree.
+ *
+ * The word for it is "Active", not "Last run": nothing ran, and saying it did would
+ * be a confident wrong answer of the kind the `at === 0` guard below refuses.
+ *
+ * NOTHING RETURNS NULL any more. A task with no timestamp of any kind — every
+ * source zero — gets `kind: "none"` and prints NO_TIME, because the alternative was
+ * a blank last cell that reads as a broken row. `at` stays 0 there and `title` says
+ * so in words: 0 formats as 1970, so the one thing this must never do is hand a
+ * zero to a formatter, which is why `none` is a KIND rather than a stamp.
  */
-export function taskWhen(task: Task, now: number = Date.now()): TaskWhen | null {
+export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
   const nextFirst = LANE_SORTS[taskColumn(task)].key === "next-run";
   const next = nextRunAt(task);
   const last = lastRunAt(task);
-  const order: [TaskWhenKind, number | null][] = nextFirst
+  const runs: [TaskWhenKind, number | null][] = nextFirst
     ? [["next", next], ["last", last]]
     : [["last", last], ["next", next]];
+  // `|| null` on the third: `last_active` is a float that is 0.0 for "never", and
+  // 0 must fall through to `none` rather than be formatted as 1970.
+  const order: [TaskWhenKind, number | null][] = [
+    ...runs,
+    ["active", task.last_active || null],
+  ];
+  const WORD: Record<TaskWhenKind, string> = {
+    next: "Next run",
+    last: "Last run",
+    active: "Active",
+    none: "",
+  };
   for (const [kind, at] of order) {
     if (at === null) continue;
     return {
       at,
       kind,
       text: relativeWhen(at, now),
-      title: `${kind === "next" ? "Next run" : "Last run"} ${messageStamp(at)}`,
+      title: `${WORD[kind]} ${messageStamp(at)}`,
     };
   }
-  return null;
+  return {
+    at: 0,
+    kind: "none",
+    text: NO_TIME,
+    title: "No recorded activity yet",
+  };
 }
 
 /**
