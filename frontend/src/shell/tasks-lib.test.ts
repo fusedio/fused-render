@@ -3539,16 +3539,29 @@ describe("the archive action", () => {
     // paints.
     const zone = block(TASKS_CSS, ".tasks-rowmark .tasks-act--archive::after");
     expect(zone).toContain("position: absolute");
-    expect(zone).toMatch(/inset: -\d+px/);
     // The painted box is untouched — still the 22px every `.tasks-act` is.
     const button = block(TASKS_CSS, ".tasks-rowmark .tasks-act--archive");
     expect(button).not.toContain("padding");
     expect(button).not.toContain("width");
-    // And the growth stops short of the chevron's own enlarged gutter, which sits at
-    // the same `z-index: 2` earlier in the DOM and would lose the overlap: the left
-    // inset is the smallest of the four on purpose.
+
+    // THE VERTICAL REACH IS DERIVED, NOT TYPED (2026-08-18, second pass — the
+    // first zone was still too small to feel). It is the row's full height to the
+    // pixel: the button overhangs its slot by (22px - rail) / 2, so the room left
+    // before the row's edge is one `--tasks-row-pad-y` less that overhang. A typed
+    // number would not follow the row's padding, and growth PAST the row's edge is
+    // this button covering the NEIGHBOURING row's link.
+    expect(zone).toContain("(22px - var(--tasks-rail-w)) / 2 - var(--tasks-row-pad-y)");
     const insets = (zone.match(/inset: ([^;]+);/) ?? ["", ""])[1].trim().split(/\s+/);
     expect(insets).toHaveLength(4);
+    // Top and bottom are the same derived reach...
+    expect(insets[0]).toBe(insets[2]);
+    expect(insets[0]).toBe("var(--tasks-archive-reach-y)");
+    // ...the right takes the whole gap before the next rail slot, which is empty...
+    expect(insets[1]).toBe("-10px");
+    // ...and the LEFT is the smallest of the four on purpose: the chevron's own
+    // enlarged zone sits at the same `z-index: 2` earlier in the DOM, so growing
+    // over it would win the overlap and quietly shrink the disclosure gutter.
+    expect(insets[3]).toBe("-2px");
     const px = (v: string) => Math.abs(parseFloat(v));
     expect(px(insets[3])).toBeLessThan(px(insets[1]));
   });
