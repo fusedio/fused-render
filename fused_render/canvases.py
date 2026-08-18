@@ -539,6 +539,33 @@ remote edits (made in the hosted workbench) back down, merging per file.
 - `canvas.toml` defines the canvas (nodes, edges, viewport); every node
   needs its source file next to it (`<udfName>.py`; widgets are `.json`).
 
+## Files change under you — trust the filesystem, not your memory
+
+The user may be editing this same canvas in the hosted workbench while you
+work; the sync merges their changes into this folder every few seconds.
+Consequences:
+
+- Re-read a file (Read tool) immediately before editing it, especially
+  after any pause, a long tool call, or when you last looked more than a
+  minute ago. Your memory of a file's contents may be stale — an Edit
+  whose old text no longer matches means the file moved under you: re-read
+  and re-apply, don't force it.
+- Never reconstruct or rewrite a whole file from memory (Write over it) —
+  that silently discards remote edits the sync just merged in. Prefer
+  targeted Edits against freshly read content.
+- The sync's rules on concurrent changes: a file only you touched keeps
+  your version; a file only the workbench touched gets theirs; both →
+  yours wins. `canvas.toml` is one file, so your structural edit can
+  override their concurrent layout tweak — mention it if you notice.
+- A file that unexpectedly disappeared or reverted was likely changed
+  remotely. Before recreating it, check the state on disk and say what you
+  found; overwritten/deleted versions are recoverable from
+  `../.sync/trash/<canvas>/<timestamp>/` (newest last).
+- Group related multi-file changes (e.g. a rename: the `.py` file AND its
+  `canvas.toml` entry) into one quick burst — the push waits for a quiet
+  period, and a half-done rename that gets pushed or merged mid-way is
+  exactly how invalid states happen.
+
 ## Required skills
 
 Before editing, load the Fused plugin skills — they carry the format
