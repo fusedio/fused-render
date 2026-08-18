@@ -174,12 +174,13 @@ def _fake_home(monkeypatch, tmp_path):
     ~/.Trash backend is the one exercised regardless of the host. Forcing the
     PLATFORM rather than _trash_supported() is load-bearing now that
     _move_to_trash dispatches per platform: a case that only forced the
-    predicate would run the XDG backend on a Linux CI box. Returns the fake
+    predicate would run the XDG backend on a Linux CI box. Forced through
+    _force_platform, so nothing outside the trash code sees it. Returns the fake
     home's .Trash directory."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.setattr(_server_fs_mutate.sys, "platform", "darwin")
+    _force_platform(monkeypatch, "darwin")
     return home / ".Trash"
 
 
@@ -277,15 +278,24 @@ def test_delete_trash_failure_is_500_not_501(tmp_path, monkeypatch):
 
 # ------------------------------------------------- delete: trash, per platform
 #
-# Every case here FORCES the platform. The trash backend is chosen by
-# sys.platform inside the module (one place, by design), so a test that let the
-# host decide would assert the macOS path on a Mac and nothing at all on CI.
+# Every case here FORCES the platform, via the module's _platform() seam rather
+# than the real sys.platform (see _force_platform). The trash backend is chosen
+# there in one place by design, so a test that let the host decide would assert
+# the macOS path on a Mac and nothing at all on CI.
 
 
 def _force_platform(monkeypatch, name: str):
-    """Make the module believe it is running on `name`, which decides both
-    _trash_supported() and which backend _move_to_trash dispatches to."""
-    monkeypatch.setattr(_server_fs_mutate.sys, "platform", name)
+    """Make the trash code believe it is running on `name`, which decides both
+    _trash_supported() and which backend _move_to_trash dispatches to.
+
+    Patches the module's own _platform() and NOT sys.platform: a module's `sys`
+    attribute IS the real sys module, so setting `platform` on it is a
+    process-wide change other live code reads — shell/mounts/rcd.py and
+    lifecycle.py branch on sys.platform, and _fs_delete calls into shell.mounts,
+    so forcing "win32" here would have any concurrent thread on a Mac take the
+    Windows path. The real dispatcher still runs; only its answer to "which OS is
+    this?" is substituted."""
+    monkeypatch.setattr(_server_fs_mutate, "_platform", lambda: name)
 
 
 def _xdg_home(monkeypatch, tmp_path):
@@ -626,6 +636,30 @@ def test_delete_win32_aborted_operation_is_a_failure(tmp_path, monkeypatch):
     resp = DELETE({"path": str(f), "trash": True}, x_fused="1")
     assert _status(resp) == 500
     assert "aborted" in _data(resp)["error"]
+
+
+
+def test_forcing_a_platform_does_not_leak_into_the_real_sys(tmp_path, monkeypatch):
+    # The seam's whole point. Patching `_server_fs_mutate.sys.platform` would have
+    # patched the REAL sys module — shell/mounts/rcd.py and lifecycle.py read it
+    # live, and _fs_delete calls into shell.mounts — so a Windows-forcing case on a
+    # Mac changed what every other thread in the process believed about the OS.
+    import sys as real_sys
+
+    before = real_sys.platform
+    shell = _fake_bin(monkeypatch)
+    f = tmp_path / "f.txt"
+    f.write_text("x")
+    out = _data(DELETE({"path": str(f), "trash": True}, x_fused="1"))
+    # The dispatcher really did take the win32 branch: the fake shell was asked to
+    # recycle the path, and the answer has no `trashed_to` (the bin names nothing).
+    # The fake does not itself remove the file, which is why this asserts on the
+    # CALL rather than on the file being gone.
+    assert len(shell.ops) == 1
+    assert out == {"deleted": str(f), "trashed": True}
+    # …while the rest of the process still sees the true platform.
+    assert real_sys.platform == before
+    assert _server_fs_mutate.sys.platform == before
 
 
 def test_trash_supported_on_the_three_desktops_only(monkeypatch):

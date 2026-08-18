@@ -606,18 +606,28 @@ def _fs_compress(body: dict, x_fused: str | None):
     return _stat_payload(dest, False)
 
 
+def _platform() -> str:
+    # THE trash code's reading of which OS this is. A function rather than a bare
+    # `sys.platform` at each site so tests can force a platform by patching THIS,
+    # and only this: `monkeypatch.setattr(module.sys, "platform", …)` patches the
+    # real `sys` module (a module's `sys` attribute IS `sys`), and other code in
+    # the process branches on it live — `shell/mounts/rcd.py` and `lifecycle.py`
+    # do, and _fs_delete calls into shell.mounts — so a Windows-forcing test would
+    # have any concurrent thread on a Mac believing it was on win32.
+    return sys.platform
+
+
 def _trash_supported() -> bool:
     # Every desktop platform we run on has an OS-level bin, and each gets its own
     # backend below: macOS ~/.Trash, the freedesktop.org XDG trash on Linux, the
     # Recycle Bin on Windows. Isolated as one predicate so tests can force each
-    # platform on/off without touching the global sys.platform — which is also
-    # why the dispatch below reads sys.platform in exactly one place.
+    # platform on/off, through _platform().
     #
     # A `True` here promises only that a backend EXISTS, never that this
     # particular path can use it: a Linux cross-device delete and a mount-backed
     # file are both answered 501 later, which is the same signal the client
     # already routes into its confirm-then-hard-delete fallback.
-    return sys.platform in ("darwin", "linux", "win32")
+    return _platform() in ("darwin", "linux", "win32")
 
 
 def _trash_dest_name(name: str, counter: int) -> str:
@@ -943,10 +953,10 @@ def _move_to_trash(path: str) -> str | None:
     # moved), and OSError when the attempt failed. The caller answers 501 and 500
     # respectively, and the difference matters: only the 501 routes the client
     # into the irreversible hard-delete flow.
-    if sys.platform == "win32":
+    if _platform() == "win32":
         _move_to_recycle_bin(path)
         return None
-    if sys.platform == "linux":
+    if _platform() == "linux":
         dest = _move_to_xdg_trash(path)
         if dest is None:
             # EXDEV, and only EXDEV: the entry is on another volume, so nothing
