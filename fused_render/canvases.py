@@ -127,6 +127,14 @@ _FRESH_WINDOW_S = 10.0
 # here also keeps the name safe as a path segment and an argv element.
 _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 
+# How long the manual-push endpoint waits for the watcher's _op_lock before
+# giving up with a 409. Short on purpose: the caller is a Claude session that
+# just asked to publish, and "a sync operation is in flight, try again" is a
+# better answer than a request that hangs for the whole PUSH_TIMEOUT. The
+# watcher's own legs are what hold this lock, and they finish in seconds
+# outside a stuck network call.
+MANUAL_PUSH_LOCK_WAIT_S = 5.0
+
 # Fused environment the canvases feature targets. One knob drives BOTH the
 # workspace iframe URL and the CLI runs (`fused --env`, via the FUSED_ENV
 # variable it reads) so the canvas the iframe shows is the same one the local
@@ -1745,6 +1753,79 @@ def api_canvases_sync_stop(body: dict = Body(...), x_fused: str | None = Header(
     if manager is not None:
         manager.stop()
     return {"ok": True, "stopped": manager is not None}
+
+
+@router.post("/api/canvases/sync/push")
+def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Push this canvas NOW, through the watcher's own _push().
+
+    Exists so a Claude session working in the clone can publish a coherent
+    change set on purpose instead of waiting out the debounce — and, more
+    importantly, so it never has a reason to run `fused workbench canvas push`
+    itself. That raw call is not a faster version of this one, it is a
+    different and unsafe one:
+
+      * it skips the probe+merge+abort guard at the top of `_push`, which is
+        the only thing standing between `canvas push`'s wholesale REPLACE and a
+        concurrent workbench edit. The clobber is unrecoverable: `.sync/trash`
+        only ever protects local files, and the watcher's next probe sees
+        remote == local, so the merge no-ops.
+      * it moves the remote behind the watcher's back. With a clean clone the
+        next poll cannot tell that from a workbench edit and takes the
+        wholesale force-pull branch — pulling the agent's own push back down,
+        deleting every unignored local file the push did not publish, and
+        showing a phantom "pulled from workbench".
+
+    Running the real `_push` under the real `_op_lock` keeps the module's
+    "pushes are serialized per canvas" invariant true and makes the sync point
+    move WITH the push, so the poll that follows has nothing to react to.
+
+    Refuses rather than queues (409) when the watcher is paused, when a push is
+    already running, or when another sync leg holds the lock: the caller is an
+    agent that can read the answer and retry, and a silent no-op would leave it
+    believing it had published.
+
+    Returns the FULL status, `error_detail` included, because the transcript
+    is the point — a validation failure has to land in the session's own
+    context, one line per broken node, so it can fix and retry without a human
+    relaying the output.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        # Deliberately not create=True: a fresh manager has no merge base and
+        # no remote manifest, so its first push would be the unguarded
+        # wholesale replace this endpoint exists to prevent. The workspace
+        # starts the watcher when it opens the canvas.
+        return _error(f"canvas {name!r} is not being synced (no watcher is running)", 409)
+    if manager.push_state == "pushing":
+        return _error("a push is already running for this canvas", 409)
+    if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+        return _error(
+            "a sync operation is in flight for this canvas; try again in a moment",
+            409)
+    try:
+        # Re-checked under the lock: pause() sets the count and then waits on
+        # this same lock, so holding it is what makes the answer stable.
+        with manager.pause_lock:
+            if manager.pause_count > 0:
+                return _error(
+                    f"syncing for {name!r} is paused; try again in a moment", 409)
+        before = manager.push_seq
+        manager._push()
+    finally:
+        manager._op_lock.release()
+    status = manager.status()
+    # "idle AND the counter moved" is the only success: _push also returns in
+    # "pending" when it aborted because the remote moved and could not be
+    # reconciled, which must not read as published.
+    status["ok"] = status["push_state"] == "idle" and manager.push_seq > before
+    return status
 
 
 def _fix_prompt(name: str, detail: list[str], error: str | None) -> str:

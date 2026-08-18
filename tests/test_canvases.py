@@ -927,6 +927,25 @@ def _cloned_shim_harness(harness, tmp_path, monkeypatch) -> SyncShims:
     return shims
 
 
+def _manager(name="alpha"):
+    """The live watcher for a canvas — for waiting on internal sync state that
+    no status field exposes."""
+    return canvases_mod._syncs[name]
+
+
+def _wait_for(predicate, timeout=8):
+    """Spin until `predicate()` or the deadline. Returns whether it held."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if predicate():
+                return True
+        except (KeyError, AttributeError):
+            pass
+        time.sleep(0.02)
+    return False
+
+
 def _wait_status(harness, predicate, timeout=8):
     deadline = time.time() + timeout
     status = None
@@ -1090,7 +1109,12 @@ def test_sync_shim_force_pull_rechecks_before_adopting_clean(harness, tmp_path, 
     shims.set_remote_files(_BASE_FILES)
     harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
 
-    time.sleep(0.4)  # first poll adopts the baseline
+    # Wait for the FIRST poll to adopt the manifest as baseline, rather than
+    # sleeping a guessed interval: if t2 lands before that poll, the baseline
+    # adopted is t2 itself and no force pull ever happens — the test would then
+    # fail for a reason that has nothing to do with the recheck. Under xdist
+    # load a fixed sleep loses that race often enough to matter.
+    _wait_for(lambda: getattr(_manager(), "_remote", None) is not None)
     # The remote moved, the clone is clean → the CLI force-pull branch. The
     # recheck that follows it reports a diff: something moved local away from
     # what was just pulled.
@@ -1103,8 +1127,12 @@ def test_sync_shim_force_pull_rechecks_before_adopting_clean(harness, tmp_path, 
     status = _wait_status(harness, lambda s: s["pull_seq"] >= 1)
     assert status and status["pull_seq"] >= 1, status
     # The recheck ran at all — without it there is nothing to notice the edit.
-    assert [c for c in harness.calls()
-            if c[:3] == ["workbench", "canvas", "pull"] and "--dry-run" in c], \
+    # Waited for, not asserted outright: pull_seq is bumped before the recheck
+    # subprocess is spawned, so the status the loop above saw does not yet
+    # imply the call has been logged.
+    assert _wait_for(lambda: [c for c in harness.calls()
+                              if c[:3] == ["workbench", "canvas", "pull"]
+                              and "--dry-run" in c]), \
         "no post-pull --dry-run recheck was issued"
     # Local wins: the clone is dirty and pushes, instead of being adopted clean.
     pushed = _wait_status(harness, lambda s: s["push_seq"] >= 1)
@@ -1242,4 +1270,181 @@ def test_clean_pull_reseeds_claude_md(harness, tmp_path, monkeypatch):
     status = _wait_status(harness, lambda s: s["pull_seq"] >= 1)
     assert status and status["pull_seq"] >= 1, status
     assert (harness.root / "alpha" / "CLAUDE.md").exists()
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+# -- the sanctioned manual push (B1) -------------------------------------------
+#
+# A Claude session working in the clone needs a way to publish a coherent change
+# set on purpose. The ONLY safe way is the watcher's own _push(), under its
+# _op_lock: that is where the probe+merge+abort guard lives, and it is also what
+# keeps the remote from moving behind the watcher's back. The endpoint exists so
+# the agent never has a reason to run the raw CLI, whose hazard the last test
+# here pins.
+
+
+def test_manual_push_endpoint_pushes_and_the_next_poll_stays_quiet(
+        harness, tmp_path, monkeypatch):
+    """The whole point of routing through _push: the sync point moves WITH the
+    push, so the remote never looks like it moved on its own. A raw CLI push
+    leaves the watcher to discover a changed remote and force-pull the agent's
+    own work back down (phantom pull), or to read it as a stale echo."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    # Long debounce: the push under test must be the ENDPOINT's, not the
+    # watcher's debounced one firing on the same edit.
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    (harness.root / "alpha" / "a.py").write_text("a-edited-by-claude\n")
+    _wait_status(harness, lambda s: s["push_state"] == "pending")
+
+    res = harness.client.post("/api/canvases/sync/push",
+                              json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["ok"] is True, body
+    assert body["push_state"] == "idle", body
+    assert body["push_seq"] == 1, body
+    assert body["error"] is None and body["error_detail"] == [], body
+    assert [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+
+    # The remote did not move on its own, and the push re-baselined — so the
+    # polls that follow must do nothing at all.
+    time.sleep(0.5)
+    after = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    assert after["pull_seq"] == 0, after
+    assert after["echo_seq"] == 0, after
+    assert after["merge_seq"] == 0, after
+    assert after["push_seq"] == 1, ("the watcher pushed again — the endpoint's "
+                                    "push did not become the sync point")
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+    _ = shims
+
+
+def test_manual_push_endpoint_returns_the_validation_transcript_verbatim(
+        harness, tmp_path, monkeypatch):
+    """The reason the agent calls this instead of being told "it failed": the
+    CLI prints one line per broken node, and those lines have to land in the
+    agent's own transcript so it can iterate without a human relaying them."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    harness.set_scenario({"pull_files": _BASE_FILES,
+                          "push_fail_lines": _VALIDATION_LINES})
+    (harness.root / "alpha" / "a.py").write_text("broken\n")
+
+    res = harness.client.post("/api/canvases/sync/push",
+                              json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["ok"] is False, body
+    assert body["push_state"] == "error", body
+    for line in _VALIDATION_LINES:
+        assert line in body["error_detail"], body
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_manual_push_endpoint_is_refused_while_a_sync_op_holds_the_lock(
+        harness, tmp_path, monkeypatch):
+    """Push serialization is the module's stated invariant. The endpoint must
+    not become a second pusher: with _op_lock held it says so and returns,
+    rather than running a concurrent CLI push over the same folder."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    monkeypatch.setattr(canvases_mod, "MANUAL_PUSH_LOCK_WAIT_S", 0.2)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    manager = _manager()
+    with manager._op_lock:
+        res = harness.client.post("/api/canvases/sync/push",
+                                  json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 409, res.text
+    assert "in flight" in res.json()["error"], res.json()
+    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_manual_push_endpoint_is_refused_while_the_watcher_is_paused(
+        harness, tmp_path, monkeypatch):
+    """A pause means someone else owns this folder right now (a re-pull, a
+    logout). Pushing into that is exactly the race pause() exists to stop."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    manager = _manager()
+    manager.pause()
+    try:
+        res = harness.client.post("/api/canvases/sync/push",
+                                  json={"name": "alpha"}, headers=GUARD)
+        assert res.status_code == 409, res.text
+        assert "paused" in res.json()["error"], res.json()
+        assert not [c for c in harness.calls()
+                    if c[:3] == ["workbench", "canvas", "push"]]
+    finally:
+        manager.resume(rebaseline=False)
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_manual_push_endpoint_validates_its_inputs(harness, tmp_path, monkeypatch):
+    """Same guard and same name rule as every sibling route, and a clear 409
+    when there is no watcher to push through (rather than quietly starting one:
+    a canvas nobody is syncing has no merge base, so a push would be the
+    wholesale replace this endpoint exists to avoid)."""
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    assert harness.client.post("/api/canvases/sync/push",
+                               json={"name": "alpha"}).status_code == 403
+    assert harness.client.post("/api/canvases/sync/push",
+                               json={"name": "../etc"}, headers=GUARD).status_code == 400
+    res = harness.client.post("/api/canvases/sync/push",
+                              json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 409, res.text
+    assert "not being synced" in res.json()["error"], res.json()
+    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+
+
+def test_an_out_of_band_cli_push_is_force_pulled_back_by_the_watcher(
+        harness, tmp_path, monkeypatch):
+    """The hazard the endpoint exists to remove — and the case nothing in this
+    suite simulated, which is why none of it was caught.
+
+    A raw `fused workbench canvas push` from inside the clone moves the remote
+    and touches no local file, so the watcher cannot tell it from a workbench
+    edit. With a clean clone it takes the wholesale force-pull branch: a full
+    trash snapshot, every unignored file the push did not publish deleted, and a
+    phantom "pulled from workbench" in the UI. Nothing here asserts that is
+    GOOD — it pins the behaviour so the reason for the endpoint stays visible.
+    """
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    time.sleep(0.3)
+    # A scratch file the agent wrote and never published (a plan, a fixture).
+    (harness.root / "alpha" / "notes.md").write_text("agent scratch\n")
+    _wait_status(harness, lambda s: s["push_state"] in ("pending", "idle"))
+    # Let the watcher settle it, so the clone is CLEAN when the remote moves.
+    _wait_status(harness, lambda s: s["push_seq"] >= 1)
+
+    # Now the out-of-band push: the remote moves with content the watcher never
+    # produced a sync point for, while the clone is clean.
+    pushed = {**_BASE_FILES, "a.py": "a-pushed-out-of-band\n"}
+    shims.set_remote_files(pushed)
+    harness.set_scenario({"pull_files": pushed})
+    shims.set_manifest("t9")
+
+    status = _wait_status(harness, lambda s: s["pull_seq"] >= 1)
+    assert status and status["pull_seq"] >= 1, (
+        "an out-of-band push did NOT provoke a force pull — if this ever "
+        "becomes true, re-read the endpoint's rationale", status)
+    # The force pull ran against the whole clone, so the sync counted a
+    # downstream pull that no workbench edit caused.
+    assert [c for c in harness.calls()
+            if c[:3] == ["workbench", "canvas", "pull"] and "--force" in c]
+    # The scratch file's DELETION is the real CLI's behaviour (`pull --force`
+    # removes every in-dir file not in the bundle); the stub only writes
+    # pull_files, so this harness cannot show it. The phantom pull above is the
+    # part that is observable here.
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
