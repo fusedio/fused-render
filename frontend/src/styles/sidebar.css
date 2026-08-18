@@ -258,11 +258,13 @@ a.sidebar-rail-btn {
      pulse dot). Without a positioned ancestor an absolutely-placed dot resolves
      against the viewport and overflows the page by its own offset, which costs a
      scrollbar in each axis — the bug account.css records for the Settings dot,
-     and the same reason .sidebar-rail-btn is relative. `inline-flex` so the span
-     is the glyph's own box: as an inline box its line-height would sit the
-     bottom edge below the svg and drop the dot off-centre. */
+     and the same reason .sidebar-rail-btn is relative.
+
+     POSITION ONLY — no `display` alongside it. `.sidebar-item` is a flex
+     container, so this span is a flex item and already blockified: its box is the
+     16px glyph exactly (measured — the span and the svg share one rect), which is
+     what the dot's -2px/-3px corner offsets are measured from. */
   position: relative;
-  display: inline-flex;
 }
 
 /* -- The trailing slot on a nav row -------------------------------------------
