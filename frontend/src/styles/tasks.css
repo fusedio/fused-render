@@ -787,8 +787,7 @@ button.tasks-caret,
 
    `.tasks-act` and not one direction's class, or the ARCHIVED row would keep its
    ring painted over the Unarchive button standing in the same 22px. */
-.tasks-row:hover .tasks-rowmark:not(:has(.tasks-act)) .schedule-ring,
-.tasks-row:focus-within .tasks-rowmark:not(:has(.tasks-act)) .schedule-ring {
+.tasks-row:hover .tasks-rowmark:not(:has(.tasks-act)) .schedule-ring {
   opacity: 1;
 }
 

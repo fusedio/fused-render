@@ -3707,7 +3707,7 @@ describe("the archive action", () => {
     // the row's `:focus-within`, or a chevron click would fade the ring of a row
     // nobody is pointing at any more.
     expect(TASKS_CSS).toContain(
-      ".tasks-row .tasks-rowmark:has(.tasks-act--archive:focus-visible) .schedule-ring",
+      ".tasks-row .tasks-rowmark:has(.tasks-act:focus-visible) .schedule-ring",
     );
     expect(TASKS_CSS).toContain(".tasks-act:focus-visible");
     // A row whose filing cannot be changed keeps its ring under the pointer: a
@@ -3741,10 +3741,10 @@ describe("the archive action", () => {
     // not padding: the button is out of flow and centred by a transform on its own
     // box, so padding would move the centre and, worse, grow the box the hover fill
     // paints.
-    const zone = block(TASKS_CSS, ".tasks-rowmark .tasks-act--archive::after");
+    const zone = block(TASKS_CSS, ".tasks-rowmark .tasks-act::after");
     expect(zone).toContain("position: absolute");
     // The painted box is untouched — still the 22px every `.tasks-act` is.
-    const button = block(TASKS_CSS, ".tasks-rowmark .tasks-act--archive");
+    const button = block(TASKS_CSS, ".tasks-rowmark .tasks-act");
     expect(button).not.toContain("padding");
     expect(button).not.toContain("width");
 
