@@ -130,8 +130,9 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 # Fused environment the canvases feature targets. One knob drives BOTH the
 # workspace iframe URL and the CLI runs (`fused --env`, via the FUSED_ENV
 # variable it reads) so the canvas the iframe shows is the same one the local
-# clone syncs against. Unstable is the current default while embed-auth ships
-# there first; FUSED_RENDER_WORKBENCH_URL still overrides the iframe URL alone.
+# clone syncs against. Prod is the default; set FUSED_RENDER_WORKBENCH_ENV=
+# unstable to point canvases back at the unstable environment.
+# FUSED_RENDER_WORKBENCH_URL still overrides the iframe URL alone.
 # Resolved in fusedcli.workbench_env because the `fused` wrapper handed to
 # Claude sessions bakes in the same default (D334) — one knob, one reader.
 WORKBENCH_ENV = workbench_env()
@@ -151,7 +152,7 @@ _ENV_WEB_URLS = {
 }
 
 WORKBENCH_BASE_URL = os.environ.get("FUSED_RENDER_WORKBENCH_URL") or _ENV_WEB_URLS.get(
-    WORKBENCH_ENV, "https://unstable.fused.io"
+    WORKBENCH_ENV, "https://www.fused.io"
 )
 
 
