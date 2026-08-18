@@ -307,13 +307,31 @@ def resolve(allow_shell: bool = True) -> tuple:
     Order: explicit override, PATH, known install dirs, login shell.
     """
     forced = os.environ.get(BIN_ENV)
-    if forced:
-        # Reported even when it does not exist. A stale override is a REAL
-        # finding — it is why the app cannot start a session — and silently
-        # falling through to a working install would leave the user with an app
-        # that works today and breaks whenever the override is consulted by one
-        # of the paths that trusts it blindly.
+    if forced and forced != _ADOPTED:
+        # A value the USER set. Reported even when it does not exist: a stale
+        # override is a REAL finding — it is why the app cannot start a session
+        # — and silently falling through to a working install would leave them
+        # with an app that works today and breaks whenever the override is
+        # consulted by one of the paths that trusts it blindly.
         return forced, "override"
+    if forced:
+        # One WE published (see `adopt`), which is a convenience and must never
+        # become a trap. Two things follow, and both are the opposite of the
+        # branch above:
+        #
+        #   * It is VERIFIED rather than trusted. If the path has since gone —
+        #     the CLI was upgraded, volta switched versions, it was uninstalled
+        #     — the value is dropped and resolution falls through to the full
+        #     chain, including a fresh shell probe. Otherwise the process would
+        #     be stuck reporting a dead override until it restarted, and "Check
+        #     again" could never recover.
+        #   * It reports "shell", not "override". That is where it came from,
+        #     and it keeps `override` meaning "the user set this" — without
+        #     which a vanished adoption renders a card blaming them for an
+        #     environment variable they never set.
+        if executable(forced):
+            return forced, "shell"
+        _forget()
     # THE INHERITED PATH, not the augmented one, and the difference is the whole
     # value of `source`. `augmented_path()` has the candidate dirs appended, so
     # asking it here would resolve a ~/.bun/bin install and call it "path" —
@@ -482,6 +500,25 @@ def _fingerprint(path: Optional[str]) -> str:
                         os.environ.get("PATH", ""), path or "", stamp])
 
 
+#: The path THIS PROCESS published into the override (see `adopt`), so it can be
+#: told apart from one the user set. The distinction decides both whether a dead
+#: value is dropped and who gets blamed for it — see `resolve`.
+_ADOPTED: Optional[str] = None
+
+
+def _forget() -> None:
+    """Drop an adoption that no longer resolves, override and record together.
+
+    Both halves matter: leaving the env var would keep every spawn path pointed
+    at a dead file, and leaving `_ADOPTED` set would make the NEXT adoption of
+    the same path look like it was already published.
+    """
+    global _ADOPTED
+    if _ADOPTED is not None and os.environ.get(BIN_ENV) == _ADOPTED:
+        os.environ.pop(BIN_ENV, None)
+    _ADOPTED = None
+
+
 def adopt(path: str) -> bool:
     """Publish `path` as the override, so every spawn path finds it too.
 
@@ -511,9 +548,11 @@ def adopt(path: str) -> bool:
     profile. The probe re-runs at the next start and re-adopts, so this can
     never leave a stale path behind on a machine where the CLI has moved.
     """
+    global _ADOPTED
     if os.environ.get(BIN_ENV):
         return False
     os.environ[BIN_ENV] = path
+    _ADOPTED = path
     return True
 
 

@@ -42,6 +42,10 @@ def _isolated_home(tmp_path, monkeypatch):
     # default; the tests that care restore the real one by name.
     monkeypatch.setattr(claude_health, "_shell_probe", lambda: None)
     monkeypatch.setattr(claude_health, "_auth_status", lambda path: None)
+    # Adoption is module state that outlives a test (it mirrors an env var the
+    # process publishes once). Without this reset, a test that adopts leaves the
+    # next one resolving through a path it never set up.
+    monkeypatch.setattr(claude_health, "_ADOPTED", None)
 
 
 def _fake_cli(tmp_path, name="claude", executable=True):
@@ -188,6 +192,76 @@ def test_a_shell_only_install_is_adopted_as_the_override(monkeypatch):
     from fused_render.server import ai as _server_ai
 
     assert _server_ai._claude_bin() == "/opt/volta/bin/claude"
+
+
+def test_an_adoption_that_goes_stale_recovers_instead_of_trapping(tmp_path, monkeypatch):
+    """AN ADOPTION IS A CONVENIENCE AND MUST NEVER BECOME A TRAP (Bugbot #621).
+
+    `resolve` trusts a user's override without checking it, on purpose. Applied
+    to a value we published ourselves that rule is a trap: when the path goes
+    (upgrade, volta switching versions, an uninstall) every later measure would
+    report a dead override, never fall through to PATH/candidates/a fresh shell
+    probe, and render a card blaming the user for an environment variable they
+    never set — with no recovery short of restarting the process.
+    """
+    gone = tmp_path / "volta" / "claude"
+    gone.parent.mkdir()
+    gone.write_text("#!/bin/sh\n")
+    gone.chmod(0o755)
+    monkeypatch.delenv(claude_health.BIN_ENV, raising=False)
+    monkeypatch.setattr(claude_health, "_shell_probe", lambda: str(gone))
+    monkeypatch.setattr(claude_health, "probe_version", lambda p: "2.1.220")
+
+    assert claude_health._measure()["source"] == "shell"
+    assert os.environ[claude_health.BIN_ENV] == str(gone)
+
+    # The CLI moves. A later find must win rather than the dead adoption.
+    moved = tmp_path / "volta2" / "claude"
+    moved.parent.mkdir()
+    moved.write_text("#!/bin/sh\n")
+    moved.chmod(0o755)
+    gone.unlink()
+    monkeypatch.setattr(claude_health, "_shell_probe", lambda: str(moved))
+
+    snap = claude_health._measure()
+    assert snap["found"] is True
+    assert snap["path"] == str(moved)
+    # ...and emphatically NOT the user-blaming card
+    assert snap["source"] != "override"
+    assert os.environ[claude_health.BIN_ENV] == str(moved)
+
+
+def test_a_stale_adoption_with_nothing_to_fall_back_to_is_missing_not_override(
+        tmp_path, monkeypatch):
+    """With the CLI genuinely gone the honest answer is "not found", which the
+    strip turns into "install Claude Code" — never "your override is broken"
+    about a variable the user never set."""
+    gone = tmp_path / "volta" / "claude"
+    gone.parent.mkdir()
+    gone.write_text("#!/bin/sh\n")
+    gone.chmod(0o755)
+    monkeypatch.delenv(claude_health.BIN_ENV, raising=False)
+    monkeypatch.setattr(claude_health, "_shell_probe", lambda: str(gone))
+    monkeypatch.setattr(claude_health, "probe_version", lambda p: "2.1.220")
+    claude_health._measure()
+
+    gone.unlink()
+    monkeypatch.setattr(claude_health, "_shell_probe", lambda: None)
+    snap = claude_health._measure()
+    assert snap["found"] is False
+    assert snap["source"] is None
+    assert claude_health.BIN_ENV not in os.environ
+
+
+def test_a_users_own_stale_override_is_still_reported_not_dropped(monkeypatch):
+    """The opposite case, and it must keep its old behaviour: a value the user
+    set is why their sessions fail, so it is named rather than quietly replaced
+    by something that happens to work."""
+    monkeypatch.setenv(claude_health.BIN_ENV, "/opt/gone/claude")
+    monkeypatch.setattr(claude_health, "_shell_probe", lambda: "/opt/volta/bin/claude")
+    path, source = claude_health.resolve()
+    assert (path, source) == ("/opt/gone/claude", "override")
+    assert os.environ[claude_health.BIN_ENV] == "/opt/gone/claude"
 
 
 def test_adopting_never_overwrites_the_user_s_own_override(monkeypatch):
