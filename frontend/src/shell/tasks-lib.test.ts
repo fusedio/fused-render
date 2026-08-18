@@ -5,7 +5,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Task, TaskMessage } from "@platform/lib/api";
-import { BOARD_COLUMNS } from "./schedule-lib";
+import { BOARD_COLUMNS, columnLabel } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
   ALL_MESSAGES,
@@ -40,6 +40,8 @@ import {
   laneCollapsed,
   laneRolledUp,
   laneUnread,
+  LIST_SECTIONS,
+  listSections,
   laneTime,
   lastRunAt,
   markAllRead,
@@ -54,6 +56,7 @@ import {
   threadRunning,
   threadTone,
   messageWhenTitle,
+  nextRunChip,
   nextRunAt,
   openMessageHref,
   openThreadIntent,
@@ -80,7 +83,6 @@ import {
   threadView,
   tildePath,
   toggleExpanded,
-  triageStatus,
   unmarkAllRead,
   unmarkRead,
   unreadMarker,
@@ -988,29 +990,31 @@ const T18 = Math.floor(Date.parse("2026-08-17T18:00:00") / 1000);
 const FAILED = "failed" as Task["status"];
 
 describe("dropLanes", () => {
-  it("a task with no session has nothing to triage, so it cannot lift", () => {
-    // ...and nothing pending either, so there is nothing to run early.
+  it("locks the two lanes that are Claude's, not the reader's", () => {
+    // In Progress is a run in flight: a card leaves it when the run ends and at
+    // no other moment. Archive is where things rest, and there is no way back
+    // out by dragging — the row draws no Unarchive either.
+    for (const status of ["in_progress", "archived"] as const) {
+      expect(dropLanes(task({ status }))).toEqual([]);
+      expect(isDraggable(task({ status }))).toBe(false);
+    }
+  });
+
+  it("offers Archive from every unlocked lane, session or no session", () => {
+    // Archiving is one verb over a TASK KEY now (api.archiveTask), so the
+    // never-run row — which has no session to file under — is filed by
+    // cancelling its work. That row could not be archived at all before.
     const pending = task({ key: "pending:e1", session_id: "", status: "upcoming" });
-    expect(dropLanes(pending)).toEqual([]);
-    expect(isDraggable(pending)).toBe(false);
-  });
-
-  it("offers the other two triage lanes, never the one it is already in", () => {
-    expect(dropLanes(task({ status: "done" }))).toEqual(["in_progress", "archived"]);
-    expect(dropLanes(task({ status: "in_progress" }))).toEqual(["done", "archived"]);
-    expect(isDraggable(task({ status: "done" }))).toBe(true);
-  });
-
-  it("refuses to send a lane setSessionTriage does not accept", () => {
-    expect(triageStatus("upcoming")).toBe(null);
-    expect(triageStatus("done")).toBe("done");
+    expect(dropLanes(pending)).toEqual(["archived"]);
+    expect(isDraggable(pending)).toBe(true);
+    expect(dropLanes(task({ status: "done" }))).toEqual(["archived"]);
   });
 
   // Upcoming → In Progress is a RUN, not a filing (Akshil, 2026-08-16). Its
   // precondition is therefore a message to send, not a session to file under.
   it("lets a never-run scheduled task into In Progress: run needs no session", () => {
     const t = upcoming([T9], { key: "pending:e1", session_id: "" });
-    expect(dropLanes(t)).toEqual(["in_progress"]);
+    expect(dropLanes(t)).toEqual(["in_progress", "archived"]);
     expect(isDraggable(t)).toBe(true);
   });
 
@@ -1019,7 +1023,7 @@ describe("dropLanes", () => {
     // nothing to fire — so the drop is illegal BEFORE the card lands rather
     // than a call that fails after it.
     const chat = task({ status: "upcoming" }); // factory messages are `sent`
-    expect(dropLanes(chat)).toEqual(["done", "archived"]);
+    expect(dropLanes(chat)).toEqual(["archived"]);
     // Same for one whose only scheduled message was already cancelled.
     const dead = task({
       status: "upcoming",
@@ -1028,18 +1032,19 @@ describe("dropLanes", () => {
     expect(dropLanes(dead).includes("in_progress")).toBe(false);
   });
 
-  // Failed is the fifth lane and it is asymmetric: nothing goes in, and out of
-  // it there are exactly two moves.
-  it("never offers Failed as a destination, from any lane", () => {
+  it("never offers Upcoming, Failed or Done as a destination", () => {
+    // Upcoming: a task cannot be un-run. Failed: it is something that HAPPENED,
+    // and a lane you can drag a healthy task into is a lane whose count means
+    // nothing. Done: a run says that, not a reader.
     for (const status of ["upcoming", "in_progress", "done", "archived"] as const) {
-      expect(dropLanes(task({ status })).includes("failed")).toBe(false);
+      for (const lane of ["upcoming", "failed", "done"] as const) {
+        expect(dropLanes(task({ status })).includes(lane)).toBe(false);
+      }
     }
-    expect(dropLanes(upcoming([T9])).includes("failed")).toBe(false);
+    expect(dropLanes(upcoming([T9]))).toEqual(["in_progress", "archived"]);
   });
 
-  it("lets a failed task out to In Progress (re-run) and Archive, never Done", () => {
-    // A run that broke did not finish, so filing it as Done would put back the
-    // exact lie the lane exists to remove.
+  it("lets a failed task out to In Progress (re-run) and Archive", () => {
     const retryable = upcoming([T9], { status: FAILED });
     expect(dropLanes(retryable)).toEqual(["in_progress", "archived"]);
     // With nothing pending there is nothing to re-run — but it can still be
@@ -1157,15 +1162,13 @@ describe("dropAction", () => {
     });
   });
 
-  it("reads every other legal drop as a triage write", () => {
-    expect(dropAction(upcoming([T9]), "archived")).toEqual({
-      kind: "triage",
-      status: "archived",
-    });
-    expect(dropAction(task({ status: "done" }), "in_progress")).toEqual({
-      kind: "triage",
-      status: "in_progress",
-    });
+  it("reads a drop on Archive as the archive verb, with no payload", () => {
+    // One call over the task key (api.archiveTask) — it cancels the work and
+    // files the session — so there is nothing left for the drop to compose.
+    expect(dropAction(upcoming([T9]), "archived")).toEqual({ kind: "archive" });
+    expect(dropAction(task({ status: "done" }), "archived")).toEqual({ kind: "archive" });
+    // And Done → In Progress is not a move at all any more.
+    expect(dropAction(task({ status: "done" }), "in_progress")).toBe(null);
   });
 
   it("reads Failed → In Progress as a re-run, not a triage write", () => {
@@ -1175,23 +1178,27 @@ describe("dropAction", () => {
       messageId: "MSG-001",
     });
     // ...and Failed → Archive as an ordinary filing.
-    expect(dropAction(upcoming([T9], { status: FAILED }), "archived")).toEqual({
-      kind: "triage",
-      status: "archived",
-    });
+    expect(dropAction(upcoming([T9], { status: FAILED }), "archived"))
+      .toEqual({ kind: "archive" });
   });
 
   it("is null for anything dropLanes would not have allowed", () => {
-    // The lane it is already in, a lane triage cannot express, and the run lane
-    // on a task with nothing to run.
+    // The lane it is already in, a lane nothing may be dropped into, and the
+    // run lane on a task with nothing to run.
     expect(dropAction(task({ status: "done" }), "done")).toBe(null);
     expect(dropAction(task({ status: "done" }), "upcoming")).toBe(null);
     expect(dropAction(task({ status: "upcoming" }), "in_progress")).toBe(null);
     expect(dropAction(task({ status: "done" }), "failed")).toBe(null);
     expect(dropAction(upcoming([T9], { status: FAILED }), "done")).toBe(null);
-    // A never-run task may run, but may not be filed.
+    // Both locked lanes refuse everything.
+    for (const lane of ["in_progress", "archived"] as const) {
+      expect(dropAction(task({ status: "in_progress" }), lane)).toBe(null);
+      expect(dropAction(task({ status: "archived" }), lane)).toBe(null);
+    }
+    // A never-run task may now be filed as well as run: archiving is keyed by
+    // task, not by session.
     const fresh = upcoming([T9], { key: "pending:e1", session_id: "" });
-    expect(dropAction(fresh, "archived")).toBe(null);
+    expect(dropAction(fresh, "archived")).toEqual({ kind: "archive" });
   });
 });
 
@@ -1368,10 +1375,10 @@ describe("taskRunIntent", () => {
     const spent = broke();
     expect(dropLanes(spent)).toEqual(["archived"]);
     expect(dropAction(spent, "in_progress")).toBe(null);
-    // And every legal drop is still a run or a triage write, never a resend.
+    // And every legal drop is still a run or an archive, never a resend.
     for (const lane of ["in_progress", "done", "archived"] as const) {
       const action = dropAction(upcoming([T9], { status: FAILED }), lane);
-      if (action) expect(["run", "triage"]).toContain(action.kind);
+      if (action) expect(["run", "archive"]).toContain(action.kind);
     }
   });
 });
@@ -1385,44 +1392,44 @@ describe("archiveIntent", () => {
   it("offers Archive on a task that has run", () => {
     const a = archiveIntent(task({ status: "done" }))!;
     expect(a.label).toBe("Archive");
-    expect(a.status).toBe("archived");
     expect(a.lane).toBe("archived");
-    expect(a.restore).toBe(false);
-    // The half a person reaching for Delete is actually asking about.
+    // The two halves a person reaching for Delete is actually asking about: the
+    // run still booked is called off, and the conversation is not destroyed.
     expect(a.title).toContain("kept");
+    expect(a.title).toContain("calls off");
   });
 
-  it("offers the way BACK on a task already archived", () => {
-    // Archiving with no way out is a trap, and the Board's drag can already
-    // pull a card out of Archive — so the List must not be a one-way door.
-    const a = archiveIntent(task({ status: "archived" }))!;
-    expect(a.label).toBe("Unarchive");
-    expect(a.status).toBe("in_progress");
-    expect(a.lane).toBe("in_progress");
-    expect(a.restore).toBe(true);
-    // Never Done: archiving recorded nothing about whether the work finished.
-    expect(a.status).not.toBe("done");
+  it("offers no way back out of Archive", () => {
+    // Archive is a locked lane on the Board and the row draws no Unarchive, so
+    // there is one answer to "how do I get this back?" instead of two. It costs
+    // nothing: archiving destroys nothing (D306).
+    expect(archiveIntent(task({ status: "archived" }))).toBe(null);
   });
 
-  it("offers nothing on a task with no session to triage", () => {
-    // `pending:<entry>` — triage is an overlay on triage.json keyed by SESSION
-    // id, and a task that has never run has none. A button here would be a
-    // button that can only fail.
+  it("offers nothing while a run is in flight", () => {
+    // In Progress is Claude's output. The card cannot leave that lane by any
+    // gesture, and the button asks the same question the drop does.
+    expect(archiveIntent(task({ status: "in_progress" }))).toBe(null);
+  });
+
+  it("offers Archive on a task with no session at all", () => {
+    // `pending:<entry>` — the row the old session-keyed triage write could not
+    // touch. Archiving is one verb over a TASK KEY now, and for a task that has
+    // never run it means exactly "cancel the work", which the server does.
     expect(archiveIntent(task({ key: "pending:e1", session_id: "", status: "upcoming" })))
-      .toBe(null);
-    // ...even when it is otherwise draggable, because run-now needs no session.
+      .not.toBe(null);
     const fresh = upcoming([T9], { key: "pending:e1", session_id: "" });
     expect(isDraggable(fresh)).toBe(true);
-    expect(archiveIntent(fresh)).toBe(null);
+    expect(archiveIntent(fresh)!.lane).toBe("archived");
   });
 
-  it("is offered from every lane a session-bearing task can sit in", () => {
-    for (const status of ["upcoming", "in_progress", "done", "archived"] as const) {
+  it("is offered from every unlocked lane", () => {
+    for (const status of ["upcoming", "done"] as const) {
       expect(archiveIntent(task({ status }))).not.toBe(null);
     }
     // Including the one lane Done is refused from — filing a failed run away is
     // exactly what a person wants to do with it.
-    expect(archiveIntent(task({ status: FAILED }))!.status).toBe("archived");
+    expect(archiveIntent(task({ status: FAILED }))!.lane).toBe("archived");
   });
 
   it("never disagrees with the drop the Board already makes", () => {
@@ -1433,7 +1440,6 @@ describe("archiveIntent", () => {
       task({ status: FAILED }),
       upcoming([T9]),
       upcoming([T18, T9], { status: FAILED }),
-      // The two that offer nothing.
       task({ key: "pending:e1", session_id: "", status: "upcoming" }),
       upcoming([T9], { key: "pending:e1", session_id: "" }),
     ];
@@ -1443,7 +1449,7 @@ describe("archiveIntent", () => {
         const action = dropAction(t, col.key);
         if (a && col.key === a.lane) {
           // The button makes the drop's call, on the drop's own lane.
-          expect(action).toEqual({ kind: "triage", status: a.status });
+          expect(action).toEqual({ kind: "archive" });
           expect(dropLanes(t)).toContain(a.lane);
         } else if (!a) {
           // Offering nothing is only correct while the drag has no filing move
@@ -3242,47 +3248,33 @@ describe("the archive action", () => {
     // Only when there is something to file — a session-less row grows nothing.
     expect(row).toContain("{file && (");
     // The same class Run now / Edit / Cancel wear, which is what makes it quiet.
-    expect(row).toMatch(/"tasks-act (?:.|\n)*?tasks-act--unarchive/);
+    expect(row).toContain("tasks-act--archive");
     expect(row).toContain("ICON_ARCHIVE");
-    expect(row).toContain("ICON_UNARCHIVE");
-    // Both directions are still WRITTEN — which of them is drawn is SHOW_UNARCHIVE's
-    // business, below — and the label comes from tasks-lib rather than the row.
-    expect(row).toContain("file.status");
+    // The words come from tasks-lib rather than from the row.
     expect(row).toContain("aria-label={file.label}");
   });
 
-  it("hides the way BACK for now, without deleting it", () => {
-    // Akshil, 2026-08-18: keep archive, hide unarchive. A second flag rather than a
-    // second value of SHOW_ROW_ACTIONS, because they are two different requests and
-    // neither should move when the other is answered.
-    expect(VIEWS).toMatch(/const SHOW_UNARCHIVE: boolean = false;/);
-    // Gated where the intent is READ, not in the markup: `file` then means exactly
-    // "the filing button this row draws", so the button needs no second condition
-    // and the card's strip cannot be drawn around a button that is not there.
-    expect(
-      (VIEWS.match(
-        /const file = filing && \(SHOW_UNARCHIVE \|\| !filing\.restore\) \? filing : null;/g,
-      ) ?? []).length,
-    ).toBe(2);
-    // BOTH views, from ONE flag: a Board that offers the way back where the List
-    // does not is the divergence this page's vocabulary is written against.
+  it("is one-way, on both views and in the drag", () => {
+    // Archive is a locked lane (tasks-lib's drag matrix), so there is no
+    // Unarchive anywhere: not a button, not a glyph, not a drop. It used to be
+    // written-but-hidden on the row and LIVE on the Board, which is two answers
+    // to one question — the divergence this page's vocabulary is written
+    // against.
+    expect(VIEWS).not.toContain("SHOW_UNARCHIVE");
+    expect(VIEWS).not.toContain("ICON_UNARCHIVE");
+    expect(archiveIntent(task({ status: "archived" }))).toBe(null);
+    expect(dropLanes(task({ status: "archived" }))).toEqual([]);
+    // BOTH views read the same intent, and neither composes a status: the
+    // server verb is one call over the task key.
     for (const src of [ROW, CARD]) {
       expect(src).toContain("{file && (");
     }
-    expect((VIEWS.match(/const filing = archiveIntent\(task\);/g) ?? []).length).toBe(2);
-    // NOTHING UNDERNEATH IS DELETED — that is the difference between gating and
-    // removing. The intent still computes both directions and is still tested both
-    // ways; the handler still takes either status; the glyph is still written down
-    // beside its pair, because the two only read as a pair together.
-    expect(archiveIntent(task({ status: "archived" }))!.restore).toBe(true);
-    expect(archiveIntent(task({ status: "done" }))!.restore).toBe(false);
-    expect(VIEWS).toContain("const ICON_UNARCHIVE = icon(");
-    expect(VIEWS).toContain("{file.restore ? ICON_UNARCHIVE : ICON_ARCHIVE}");
-    expect(VIEWS).toContain("const triage = async (status: ArchiveStatus)");
-    // Not rendered rather than hidden in CSS, the same rule the strip obeys: an
-    // `opacity: 0` button is still in the tab order.
+    expect((VIEWS.match(/const file = archiveIntent\(task\);/g) ?? []).length).toBe(2);
+    expect((VIEWS.match(/archiveTask\(task\.key\)/g) ?? []).length).toBe(3);
+    // Not hidden in CSS, the same rule the strip obeys: an `opacity: 0` button
+    // is still in the tab order.
     expect(TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(
-      ".tasks-act--unarchive { display: none",
+      ".tasks-act--unarchive",
     );
   });
 
@@ -3600,13 +3592,13 @@ describe("the hidden row actions", () => {
       "archiveIntent(task)",
       "openThreadIntent(task, unread)",
       "const markSeen = async () => {",
-      "const triage = async (status: ArchiveStatus)",
+      "const archive = async () => {",
       "const openChat = (intent: OpenThreadIntent)",
     ]) {
       expect(VIEWS).toContain(kept);
     }
     expect(CARD).toContain("void runNow(run)");
-    expect(CARD).toContain("void triage(file.status)");
+    expect(CARD).toContain("void archive()");
   });
 
   it("keeps the strip's geometry, which is what it comes back to", () => {
@@ -3708,7 +3700,7 @@ describe("the folder chip on a row and a card", () => {
     // On the card the chip is the only thing in the foot, so the foot goes with it
     // rather than leaving a line of padding.
     expect(CARD).toMatch(
-      /\{showProject && \(\s*<span className="schedule-tv-card-foot">/,
+      /\{\(showProject \|\| soon\) && \(\s*<span className="schedule-tv-card-foot">/,
     );
     // The path is still on the row itself, so nothing is unreachable: the row's
     // `title` is the task's own, and the chip's tooltip was never the only copy.
@@ -4052,7 +4044,7 @@ describe("opening a thread, from either view", () => {
     const acts = CARD.slice(actsAt);
     expect(acts).not.toContain("onOpen");
     expect(acts).toContain("void runNow(run)");
-    expect(acts).toContain("void triage(file.status)");
+    expect(acts).toContain("void archive()");
   });
 
   it("is the row ITSELF now, and a real link at that", () => {
@@ -5567,5 +5559,118 @@ describe("the tasks toolbar", () => {
     // thing that exceeds the measure, and it scrolls inside itself — which it has
     // always done at any window narrower than five lanes (design-principles §0).
     expect(board).toContain("overflow-x: auto");
+  });
+});
+
+// ---- the List's sections -----------------------------------------------------
+// The List is grouped by the same fact the Board is (taskColumn), in the List's
+// own order, with the empties dropped.
+
+describe("listSections", () => {
+  it("names every lane exactly once, in the list's order", () => {
+    expect(LIST_SECTIONS).toEqual([
+      "upcoming",
+      "in_progress",
+      "failed",
+      "done",
+      "archived",
+    ]);
+    // Same set as the Board's — a sixth lane cannot be silently unlistable.
+    expect([...LIST_SECTIONS].sort()).toEqual(
+      BOARD_COLUMNS.map((c) => c.key).slice().sort(),
+    );
+  });
+
+  it("drops empty sections entirely, header and all", () => {
+    const rows = [task({ key: "a", status: "done" }), task({ key: "b", status: "done" })];
+    const sections = listSections(rows);
+    expect(sections.map((s) => s.key)).toEqual(["done"]);
+    expect(sections[0].tasks).toHaveLength(2);
+    expect(listSections([])).toEqual([]);
+  });
+
+  it("orders Failed above Done and Archive last, whatever the input order", () => {
+    const rows = [
+      task({ key: "d", status: "archived" }),
+      task({ key: "c", status: "done" }),
+      task({ key: "b", status: FAILED }),
+      task({ key: "a", status: "upcoming" }),
+    ];
+    expect(listSections(rows).map((s) => s.key)).toEqual([
+      "upcoming",
+      "failed",
+      "done",
+      "archived",
+    ]);
+  });
+
+  it("keeps the server's order inside a section, and never re-sorts", () => {
+    const rows = [
+      task({ key: "first", status: "done", last_active: 1 }),
+      task({ key: "second", status: "done", last_active: 999 }),
+    ];
+    expect(listSections(rows)[0].tasks.map((t) => t.key)).toEqual(["first", "second"]);
+  });
+
+  it("speaks the Board's own words, never a second spelling", () => {
+    const rows = LIST_SECTIONS.map((status, i) => task({ key: `k${i}`, status }));
+    for (const section of listSections(rows)) {
+      expect(section.label).toBe(columnLabel(section.key));
+    }
+  });
+
+  it("loses no task: every row lands in exactly one section", () => {
+    const rows = [
+      task({ key: "a", status: "upcoming" }),
+      task({ key: "b", status: "in_progress" }),
+      task({ key: "c", status: FAILED }),
+      task({ key: "d", status: "done" }),
+      task({ key: "e", status: "archived" }),
+      // An unreadable status lands in Done, exactly as taskColumn says.
+      task({ key: "f", status: "invented" as Task["status"] }),
+    ];
+    const landed = listSections(rows).flatMap((s) => s.tasks.map((t) => t.key));
+    expect(landed.slice().sort()).toEqual(["a", "b", "c", "d", "e", "f"]);
+  });
+});
+
+// ---- "and it runs again on Tuesday" ------------------------------------------
+
+describe("nextRunChip", () => {
+  const AHEAD = Math.floor(NOW / 1000) + 3600;
+
+  it("says the run ahead on a settled task that has one", () => {
+    // The recurring case: the last run finished (so the task sits in Done) and
+    // the next occurrence is booked. Without this the row loses that fact.
+    const t = task({ status: "done", next_run: AHEAD, next_run_entry: "e2" });
+    const chip = nextRunChip(t, NOW)!;
+    expect(chip.at).toBe(AHEAD);
+    expect(chip.text).toBe(`next ${relativeWhen(AHEAD, NOW)}`);
+    expect(chip.text).toContain("in 1h");
+    // The exact instant is in the tooltip, like every other time on the page.
+    expect(chip.title).toContain("Next run");
+  });
+
+  it("says nothing on an Upcoming row, whose own time is already that run", () => {
+    // taskWhen reads LANE_SORTS: Upcoming is ordered and stamped by the run
+    // ahead, so a chip there would print the number beside it twice.
+    const t = upcoming([AHEAD]);
+    expect(taskWhen(t, NOW).kind).toBe("next");
+    expect(nextRunChip(t, NOW)).toBe(null);
+  });
+
+  it("says nothing when there is no run ahead at all", () => {
+    expect(nextRunChip(task({ status: "done" }), NOW)).toBe(null);
+  });
+
+  it("says nothing about a run whose time has already passed", () => {
+    // An overdue pending is not news about what happens NEXT; it is the work
+    // the Upcoming lane already surfaces.
+    const t = task({
+      status: "done",
+      next_run: Math.floor(NOW / 1000) - 60,
+      next_run_entry: "e2",
+    });
+    expect(nextRunChip(t, NOW)).toBe(null);
   });
 });
