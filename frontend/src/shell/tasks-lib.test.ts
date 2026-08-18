@@ -5801,12 +5801,10 @@ describe("sortByLane", () => {
     // mental picture of where a status sits, so the disagreement was wrong in
     // whichever view they were not looking at. The SEQUENCE is asserted identical,
     // not merely the same set: that is what a drift would break.
+    // The literal above already pins Failed before Done, so this equality is the
+    // whole of the second view's order too — no separate per-array check, which
+    // would only be able to fail if this line had already failed.
     expect(LIST_ORDER).toEqual(BOARD_COLUMNS.map((c) => c.key));
-    // And Failed is the one before Done in both — the pair this pass was about.
-    const failedFirst = (keys: readonly string[]) =>
-      keys.indexOf("failed") < keys.indexOf("done");
-    expect(failedFirst(LIST_ORDER)).toBe(true);
-    expect(failedFirst(BOARD_COLUMNS.map((c) => c.key))).toBe(true);
     // Same set, so a sixth lane cannot be silently unsortable.
     expect([...LIST_ORDER].sort()).toEqual(
       BOARD_COLUMNS.map((c) => c.key).slice().sort(),
