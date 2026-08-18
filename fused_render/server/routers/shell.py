@@ -28,7 +28,11 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 
 @router.get("/home")
 @router.get("/learn")
-@router.get("/sessions")
+# `/sessions` — the Claude Sessions inbox — stood here until 2026-08-18 and is
+# gone with the page it served: Tasks answers the same question and answers it
+# better (Akshil). The sessions MOUNT is untouched: the bundled inbox app is
+# still on disk under the mounts root and still opens in the explorer like any
+# other view. What was deleted is the shell page that gave it a route.
 # The Claude pages: the settings panel (frontend apps/claude_config) and the
 # retired /claude-md page, which the client rewrites to the panel's MD Files
 # section. Listed here for the same reason as the rest — in-app navigation is
