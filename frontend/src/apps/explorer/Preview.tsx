@@ -1521,16 +1521,26 @@ function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir:
   // every field below reads off the checked value, not back off `entry`.
   const resetTarget = entry.key !== null && entry.overridesCore && entry.disabled ? entry : null;
   const registryError = entry.registryError;
-  if (!resetTarget && !registryError) return null;
+  const coreRegistryError = entry.coreRegistryError;
+  if (!resetTarget && !registryError && !coreRegistryError) return null;
 
-  const run = (action: () => Promise<unknown>) => {
+  // `isFixed` lets a no-op success (repair's `{repaired: false}` — the file
+  // already parsed fine, nothing to do) skip the "Fixed" claim instead of
+  // reloading and toasting over a state that never changed. Reset has no
+  // such no-op shape given how resetTarget is gated above, so it takes the
+  // default (every resolution counts as fixed).
+  const run = <T,>(action: () => Promise<T>, isFixed: (result: T) => boolean = () => true) => {
     setBusy(true);
     setActionError(null);
     action().then(
-      () => {
+      (result) => {
         setBusy(false);
-        pushToast({ msg: "Fixed — reloading this file's preview…", tone: "info" });
-        onReload?.();
+        if (isFixed(result)) {
+          pushToast({ msg: "Fixed — reloading this file's preview…", tone: "info" });
+          onReload?.();
+        } else {
+          setActionError("Nothing to repair — the registry file already reads fine.");
+        }
       },
       (err: Error) => {
         setBusy(false);
@@ -1553,11 +1563,21 @@ function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir:
             type="button"
             className="btn btn-primary"
             disabled={busy}
-            onClick={() => run(repairTemplateRegistry)}
+            onClick={() => run(repairTemplateRegistry, (r) => r.repaired)}
           >
             Repair Template Registry
           </button>
         </>
+      )}
+      {coreRegistryError && (
+        // No button: this is fused-render's own PACKAGED registry, not
+        // anything a request handler may rewrite — it's immutable data healed
+        // only by ensure_core_templates' startup check, so the honest fix
+        // really is "restart the app", not a click here.
+        <p>
+          Fused Render's built-in Template Registry couldn't be read: <code>{coreRegistryError}</code>. Restarting
+          the app usually fixes this.
+        </p>
       )}
       {resetTarget && (
         <>

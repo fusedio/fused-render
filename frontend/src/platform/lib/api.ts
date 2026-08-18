@@ -1787,13 +1787,16 @@ export function resetRegistryBinding(key: string): Promise<RegistryEntry | Regis
 // Which registry key (if any) governs previews for one path — the seam
 // FallbackPreview uses to offer "restore default previews" instead of sending
 // someone off to hand-edit registry.json. `{key: null}` means neither registry
-// has a matching key at all (nothing to fix from here). `registryError` can be
-// set even alongside a resolved `key`: the built-in registry answered fine but
-// the USER registry.json failed to parse, so any override it might have held
-// is invisible right now — a distinct problem from one key's own `error`.
-export type RegistryEntryForPath =
-  | (RegistryEntry & { registryError?: string | null })
-  | { key: null; registryError?: string | null };
+// has a matching key at all (nothing to fix from here). Either error field can
+// be set even alongside a resolved `key`: a registry FILE that fails to parse
+// can hide a key that would otherwise have matched — a distinct problem from
+// one key's own `error`. The two error fields are NEVER merged: `registryError`
+// (the user's registry.json) is the one `repairTemplateRegistry` can act on;
+// `coreRegistryError` (the packaged core registry) has no in-app fix — it's
+// immutable package data, healed only by the app's own startup check — so a
+// caller must not offer the repair action for it.
+type RegistryFileErrors = { registryError?: string | null; coreRegistryError?: string | null };
+export type RegistryEntryForPath = (RegistryEntry & RegistryFileErrors) | ({ key: null } & RegistryFileErrors);
 
 export function getRegistryEntryForPath(path: string, isDir: boolean): Promise<RegistryEntryForPath> {
   const params = new URLSearchParams({ path, is_dir: isDir ? "true" : "false" });

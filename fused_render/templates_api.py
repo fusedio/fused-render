@@ -438,10 +438,16 @@ def api_registry_for_path(path: str, is_dir: bool = False):
     `overridesCore` (is there a user binding to reset at all) and read
     `coreTemplates` (what a reset would restore). `{"key": None}` when
     neither registry has a matching key — a genuinely unbound file type,
-    nothing to reset. `registryError` carries a registry FILE that failed to
-    parse (distinct from a per-key `error`, which is a value-shape problem on
-    an otherwise-readable file) — set even when `key` is null, since a
-    corrupt user registry can hide a key that would otherwise have matched.
+    nothing to reset. `registryError`/`coreRegistryError` carry a registry
+    FILE that failed to parse (distinct from a per-key `error`, which is a
+    value-shape problem on an otherwise-readable file) — set even when `key`
+    is null, since either failure can hide a key that would otherwise have
+    matched. Kept as TWO separate fields, never merged: `POST
+    /api/templates/registry/repair` can only ever fix the USER file (the core
+    one is immutable package data, healed by `ensure_core_templates` on the
+    next process start, not by any request this process serves) — a merged
+    field would have the UI call repair "fixed" on a builtin failure it did
+    nothing for.
     """
     basename = os.path.basename(os.path.normpath(path))
     builtin_reg, user_reg, builtin_err, user_err = _load_registries()
@@ -457,9 +463,10 @@ def api_registry_for_path(path: str, is_dir: bool = False):
         if matched is not None
         else {"key": None}
     )
-    registry_error = user_err or builtin_err
-    if registry_error:
-        result["registryError"] = registry_error
+    if user_err:
+        result["registryError"] = user_err
+    if builtin_err:
+        result["coreRegistryError"] = builtin_err
     return result
 
 

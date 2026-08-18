@@ -471,6 +471,44 @@ def test_for_path_corrupt_user_registry_reports_registry_error(ctx):
     assert entry["key"] == ".html"
     # ...but the read failure is still surfaced, not swallowed.
     assert "registryError" in entry and "registry.json" in entry["registryError"]
+    # Only the USER file is broken here -- must not ALSO claim the core one is
+    # (Cursor Bugbot #585: a merged field made the frontend offer a "repair"
+    # action that silently no-ops when it's actually the core registry that's
+    # unreadable, since repair only ever touches the user file).
+    assert "coreRegistryError" not in entry
+
+
+def test_for_path_corrupt_core_registry_reports_core_registry_error_only(ctx, monkeypatch):
+    # The core registry failing is a DIFFERENT problem from the user one
+    # failing: nothing this process serves can fix a broken core registry.json
+    # (it's healed by ensure_core_templates on the next process start), so it
+    # must report under its own key and never be confused with the
+    # repairable-by-this-API `registryError`.
+    broken_core = ctx.home / "broken-core-registry.json"
+    broken_core.write_text("{also not json", encoding="utf-8")
+    monkeypatch.setattr(_server_templates, "BUILTIN_REGISTRY", str(broken_core))
+
+    resp = ctx.client.get(
+        "/api/templates/registry/for-path", params={"path": "/x/app/index.html"}
+    )
+    entry = resp.json()
+    # No core registry to match .html against, and no user override either.
+    assert entry["key"] is None
+    assert "coreRegistryError" in entry and "built-in registry.json" in entry["coreRegistryError"]
+    assert "registryError" not in entry
+
+
+def test_repair_does_not_touch_core_registry(ctx, monkeypatch):
+    # POST /repair must be a no-op when it's the CORE file that's broken --
+    # repairing the user file (which parses fine) would falsely report
+    # `repaired: true` for a problem it never touched.
+    broken_core = ctx.home / "broken-core-registry.json"
+    broken_core.write_text("{also not json", encoding="utf-8")
+    monkeypatch.setattr(_server_templates, "BUILTIN_REGISTRY", str(broken_core))
+
+    resp = ctx.client.post("/api/templates/registry/repair", headers=FUSED)
+    assert resp.json() == {"repaired": False}
+    assert broken_core.read_text(encoding="utf-8") == "{also not json"  # untouched
 
 
 def test_for_path_directory_matches_directory_key(ctx):
