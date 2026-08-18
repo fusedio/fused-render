@@ -46,6 +46,9 @@ export default function Canvases() {
   const [creating, setCreating] = useState(false); // form visible
   const [newName, setNewName] = useState("");
   const [createBusy, setCreateBusy] = useState(false);
+  // Preview URLs that failed to load (expired presigned URL, deleted asset) —
+  // fall back to the monogram instead of a broken-image icon.
+  const [brokenPreviews, setBrokenPreviews] = useState<Set<string>>(new Set());
   const pollRef = useRef<number | null>(null);
   // creds_stamp at the moment login started: a re-login over a stale-but-
   // present store never flips logged_in, so completion = the stamp changing.
@@ -299,12 +302,19 @@ export default function Canvases() {
                 disabled={busy !== null || createBusy}
               >
                 <span className="canvas-card-thumb">
-                  {canvas.preview_url ? (
+                  {canvas.preview_url && !brokenPreviews.has(canvas.preview_url) ? (
                     <img
                       className="canvas-card-img"
                       src={canvas.preview_url}
                       alt=""
                       loading="lazy"
+                      onError={() =>
+                        setBrokenPreviews((prev) => {
+                          const next = new Set(prev);
+                          next.add(canvas.preview_url!);
+                          return next;
+                        })
+                      }
                     />
                   ) : (
                     canvas.name.charAt(0).toUpperCase()
