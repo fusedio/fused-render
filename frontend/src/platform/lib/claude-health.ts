@@ -115,10 +115,10 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
     });
   }
 
-  // STRICTLY `false`, never falsy. `null` is macOS, whose credential lives in
-  // the login Keychain — absence of a file proves nothing there, and telling a
-  // signed-in user to go and sign in is the wrong-advice failure this whole
-  // module is arranged to avoid.
+  // STRICTLY `false`, never falsy. `null` means the CLI could not be ASKED
+  // (missing, or older than `claude auth status`), which is not the same as it
+  // answering no — and telling a signed-in user to go and sign in is the
+  // wrong-advice failure this whole module is arranged to avoid.
   if (health.signed_in === false) {
     issues.push({
       id: "signed-out",

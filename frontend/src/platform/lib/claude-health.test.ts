@@ -70,8 +70,9 @@ test("a null snapshot is not a finding", () => {
 });
 
 test("an unknown sign-in state says nothing about signing in", () => {
-  // null is macOS, whose credential lives in the login Keychain: absence of a
-  // file proves nothing, so there is nothing to report.
+  // null means `claude auth status` could not be asked (no runnable CLI, or one
+  // predating the subcommand) — not that it answered no. There is nothing to
+  // report, and reporting anyway would tell a signed-in user to go sign in.
   expect(ids(healthy({ signed_in: null }))).toEqual([]);
 });
 

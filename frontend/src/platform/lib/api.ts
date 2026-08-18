@@ -178,9 +178,10 @@ export interface ClaudeHealth {
   /** Only ever true for a version we actually READ and that is below the
       floor — an unreadable version is never reported as outdated. */
   outdated: boolean;
-  /** true / false / null-for-unknown. null is macOS, whose credential lives in
-      the login Keychain: absence of a file proves nothing there, so the UI must
-      only offer a sign-in fix on an explicit `false`. */
+  /** true / false / null-for-unknown, from `claude auth status` — the only
+      party that actually knows, on every platform. null means it could not be
+      asked (no runnable CLI, or one predating the subcommand), NOT that it said
+      no: the UI may only offer a sign-in fix on an explicit `false`. */
   signed_in: boolean | null;
   config_dir: string;
   checked_at: number;

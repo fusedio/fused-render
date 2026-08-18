@@ -18,6 +18,13 @@ import pytest
 from fused_render import claude_health
 
 
+# Captured before any fixture stubs them, so a test that wants the REAL probe
+# can ask for it by name. Cleaner than `monkeypatch.undo()`, which would drop
+# the whole isolation fixture along with the one stub the test wants gone.
+_REAL_SHELL_PROBE = claude_health._shell_probe
+_REAL_AUTH_STATUS = claude_health._auth_status
+
+
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
     """Every test gets its own shell home (so the cache file is its own) and a
@@ -29,10 +36,12 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
-    # The login-shell probe is the one thing here that would spawn the SUITE
-    # RUNNER's shell and read its profile. Off by default; the tests that care
-    # about it turn it back on explicitly.
+    # The two probes that would spawn something real: the login-shell probe
+    # would source the SUITE RUNNER's own profile, and the auth probe would ask
+    # the developer's actual Claude Code whether they are signed in. Both off by
+    # default; the tests that care restore the real one by name.
     monkeypatch.setattr(claude_health, "_shell_probe", lambda: None)
+    monkeypatch.setattr(claude_health, "_auth_status", lambda path: None)
 
 
 def _fake_cli(tmp_path, name="claude", executable=True):
@@ -173,7 +182,6 @@ def test_shell_probe_scrubs_the_bundled_interpreter_vars(monkeypatch):
     """The packaged app exports PYTHONHOME/PYTHONPATH for its own interpreter;
     a child that inherits them and is not that interpreter dies with
     "No module named 'encodings'"."""
-    monkeypatch.undo()  # drop the autouse stub for _shell_probe
     monkeypatch.setenv("PYTHONHOME", "/bundle/python")
     monkeypatch.setenv("PYTHONPATH", "/bundle/lib")
     monkeypatch.setenv("SHELL", "/bin/sh")
@@ -187,7 +195,7 @@ def test_shell_probe_scrubs_the_bundled_interpreter_vars(monkeypatch):
         return R()
 
     monkeypatch.setattr(claude_health.subprocess, "run", fake_run)
-    claude_health._shell_probe()
+    _REAL_SHELL_PROBE()  # the isolation fixture stubs the module attribute
     assert "PYTHONHOME" not in seen
     assert "PYTHONPATH" not in seen
 
@@ -250,6 +258,37 @@ def test_probe_version_survives_a_hung_or_missing_binary(monkeypatch):
     assert claude_health.probe_version("/x/claude") is None
 
 
+def test_a_windows_cmd_shim_goes_through_cmd_exe(monkeypatch):
+    """npm installs claude as a .cmd, which CreateProcess cannot run directly.
+    Without the hop both probes OSError on every npm-installed Windows CLI and
+    report everything as unknown."""
+    monkeypatch.setattr(claude_health.os, "name", "nt")
+    cmd = claude_health._probe_cmd(r"C:\Users\A B\npm\claude.cmd", "auth", "status")
+    assert isinstance(cmd, str)
+    # every element quoted, so a space in the path cannot re-split the line
+    assert cmd == r'"C:\Users\A B\npm\claude.cmd" "auth" "status"'
+    # ...and an .exe on the same platform stays a plain argv list
+    assert claude_health._probe_cmd(r"C:\npm\claude.exe", "--version") == [
+        r"C:\npm\claude.exe", "--version"]
+
+
+def test_a_posix_path_is_never_shelled(monkeypatch):
+    monkeypatch.setattr(claude_health.os, "name", "posix")
+    # a POSIX file that merely ENDS in .cmd is still exec'd directly
+    assert claude_health._probe_cmd("/home/a/claude.cmd", "--version") == [
+        "/home/a/claude.cmd", "--version"]
+
+
+def test_a_quote_in_the_path_is_refused_not_misquoted(monkeypatch):
+    monkeypatch.setattr(claude_health.os, "name", "nt")
+    with pytest.raises(ValueError):
+        claude_health._probe_cmd('C:\\ev"il\\claude.cmd', "auth", "status")
+    # and the probes turn that into "unknown" rather than a 500
+    monkeypatch.setattr(claude_health, "_auth_status", _REAL_AUTH_STATUS)
+    assert claude_health.probe_version('C:\\ev"il\\claude.cmd') is None
+    assert claude_health.signed_in('C:\\ev"il\\claude.cmd') is None
+
+
 def test_the_version_probe_never_forks(monkeypatch):
     """close_fds=False is what keeps CPython on posix_spawn: a fork() with
     libproj resident in the server runs PROJ's atfork handler into a SIGSEGV
@@ -275,7 +314,67 @@ def test_the_version_probe_never_forks(monkeypatch):
 # -- sign-in ------------------------------------------------------------------
 
 
-def test_signed_in_from_a_credentials_file(tmp_path, monkeypatch):
+def _auth_says(monkeypatch, stdout, returncode=0, stderr=""):
+    """Put the REAL `_auth_status` back (the isolation fixture stubs it) over a
+    fake `claude auth status`, so the parse itself is what's under test."""
+    monkeypatch.setattr(claude_health, "_auth_status", _REAL_AUTH_STATUS)
+
+    def fake_run(argv, **kwargs):
+        assert argv[1:] == ["auth", "status"], argv
+        return type("R", (), {"returncode": returncode, "stdout": stdout,
+                              "stderr": stderr})()
+
+    monkeypatch.setattr(claude_health.subprocess, "run", fake_run)
+
+
+def test_the_cli_is_asked_and_believed(monkeypatch):
+    """`claude auth status` is the only party that actually knows, and it knows
+    on every platform."""
+    _auth_says(monkeypatch, '{"loggedIn": false, "authMethod": "none"}')
+    assert claude_health.signed_in("/x/claude") is False
+    _auth_says(monkeypatch, '{"loggedIn": true, "authMethod": "oauth_token"}')
+    assert claude_health.signed_in("/x/claude") is True
+
+
+def test_the_cli_beats_local_evidence(monkeypatch, tmp_path):
+    """A credentials file left behind by a since-revoked login must not
+    outvote the CLI saying it is signed out."""
+    cfg = tmp_path / "claude"
+    cfg.mkdir()
+    (cfg / ".credentials.json").write_text("{}")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    _auth_says(monkeypatch, '{"loggedIn": false}')
+    assert claude_health.signed_in("/x/claude") is False
+
+
+@pytest.mark.parametrize("stdout,rc,stderr", [
+    # a CLI too old for the subcommand: nothing on stdout, error on stderr
+    ("", 1, "error: unknown command 'status'"),
+    ("not json at all", 0, ""),
+    ('{"loggedIn": "yes"}', 0, ""),     # right key, wrong type
+    ('{"authMethod": "none"}', 0, ""),  # no loggedIn at all
+    ("[]", 0, ""),                      # JSON, but not an object
+])
+def test_an_unreadable_answer_is_unknown_never_false(monkeypatch, stdout, rc, stderr):
+    """Guessing "signed out" from output we could not read is how a signed-in
+    user gets told to go and sign in."""
+    _auth_says(monkeypatch, stdout, returncode=rc, stderr=stderr)
+    assert claude_health.signed_in("/x/claude") is None
+
+
+def test_a_hung_or_missing_cli_is_unknown(monkeypatch):
+    import subprocess as sp
+
+    monkeypatch.setattr(claude_health, "_auth_status", _REAL_AUTH_STATUS)
+    monkeypatch.setattr(claude_health.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(sp.TimeoutExpired("claude", 1)))
+    assert claude_health.signed_in("/x/claude") is None
+    monkeypatch.setattr(claude_health.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("gone")))
+    assert claude_health.signed_in("/x/claude") is None
+
+
+def test_signed_in_from_a_credentials_file_when_the_cli_cannot_be_asked(tmp_path, monkeypatch):
     cfg = tmp_path / "claude"
     cfg.mkdir()
     (cfg / ".credentials.json").write_text("{}")
@@ -294,21 +393,33 @@ def test_a_blank_env_token_is_not_a_credential(monkeypatch):
     assert claude_health.signed_in() is not True
 
 
-def test_missing_credentials_is_false_on_linux_and_windows(monkeypatch):
-    """Both keep the credential in the config dir, so we can see it and its
-    absence is a real answer (supervisor/paths.py learned this the hard way)."""
-    monkeypatch.setattr(claude_health.sys, "platform", "linux")
-    assert claude_health.signed_in() is False
-    monkeypatch.setattr(claude_health.sys, "platform", "win32")
-    assert claude_health.signed_in() is False
+def test_absent_local_evidence_is_never_false_on_any_platform(monkeypatch):
+    """THE REGRESSION THIS REPLACED A PLATFORM RULE TO PREVENT.
+
+    This used to conclude "no credentials file on Linux/Windows, therefore
+    signed out". Measured on a container that is demonstrably logged in
+    (`claude auth status` → loggedIn: true) with no credentials file and no
+    token in the environment, that rule answered False: the credential arrived
+    on an inherited file descriptor. Absence of a file is not evidence of being
+    signed out, on any platform — only the CLI's own answer is.
+    """
+    for platform in ("linux", "win32", "darwin"):
+        monkeypatch.setattr(claude_health.os, "name",
+                            "nt" if platform == "win32" else "posix")
+        assert claude_health.signed_in() is None, platform
 
 
-def test_missing_credentials_is_unknown_on_macos(monkeypatch):
-    """macOS keeps it in the login Keychain, which we will not prompt for. An
-    absent file therefore proves nothing, and claiming False would tell a
-    signed-in user to go and sign in."""
-    monkeypatch.setattr(claude_health.sys, "platform", "darwin")
-    assert claude_health.signed_in() is None
+def test_a_missing_binary_is_not_asked_for_its_auth_state(monkeypatch):
+    """Nothing to spawn, so nothing to ask — and the answer stays unknown
+    rather than becoming a False nobody established."""
+    spawned = []
+    monkeypatch.setattr(claude_health.subprocess, "run",
+                        lambda *a, **k: spawned.append(a) or None)
+    monkeypatch.setattr(claude_health, "resolve", lambda **k: (None, None))
+    snap = claude_health._measure()
+    assert snap["found"] is False
+    assert snap["signed_in"] is None
+    assert spawned == []
 
 
 def test_config_dir_prefers_claude_code_s_own_variable(monkeypatch):

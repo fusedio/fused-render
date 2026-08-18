@@ -34,7 +34,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from typing import Any, Optional
@@ -129,6 +128,49 @@ _VERSION_RE = re.compile(r"(\d+(?:\.\d+)*)")
 # which on a heavily-configured machine genuinely takes seconds.
 _VERSION_TIMEOUT_S = 10
 _SHELL_TIMEOUT_S = 8
+# `claude auth status` measured at 0.6-1.5s (it reads local credential state;
+# it is not a round trip to the API). Bounded like everything else here so a
+# wedged CLI cannot pin the probe.
+_AUTH_TIMEOUT_S = 10
+
+
+def _probe_cmd(path: str, *args: str):
+    """How to spawn `path` with `args` for a probe: an argv list, or — behind a
+    Windows .cmd/.bat shim — one command STRING for the cmd.exe hop.
+
+    npm installs claude as a .cmd shim, which CreateProcess cannot run directly;
+    only cmd.exe can. Without this both probes below would raise OSError on
+    every npm-installed Windows CLI and report version and sign-in as "unknown"
+    — safe, since unknown never produces advice, but useless to the one platform
+    where the PATH problem this module exists for is worst.
+
+    server/ai.py:_popen_cmd solves the same problem for the completion spawn and
+    is not reused here: it cannot be (ai.py imports THIS module, so the
+    dependency only runs one way), and it does not need to be. Its difficulty is
+    quoting values that came from a caller; every argument here is a static
+    literal of ours plus a path we resolved, so the simple form is correct. A
+    path containing a quote is refused rather than mis-quoted — Windows paths
+    cannot contain one, so this is an assertion, not a fallback.
+    """
+    if not (os.name == "nt" and path.lower().endswith((".cmd", ".bat"))):
+        return [path, *args]
+    if '"' in path:
+        raise ValueError(f"path may not contain a double quote: {path!r}")
+    return " ".join(f'"{part}"' for part in (path, *args))
+
+
+def _run_probe(path: str, *args: str, timeout: float):
+    """Run a bounded probe, returning the completed process (or raising).
+
+    `shell=True` ONLY on the .cmd path, where `_probe_cmd` returned a string:
+    that is the cmd.exe hop, not a shell-injection surface — the payload is
+    ours, fully quoted, and carries no user text.
+    """
+    cmd = _probe_cmd(path, *args)
+    return subprocess.run(
+        cmd, capture_output=True, timeout=timeout, shell=isinstance(cmd, str),
+        env={**os.environ, "PATH": augmented_path()}, **SUBPROCESS_KWARGS,
+    )
 
 
 def parse_version(text: str) -> Optional[tuple]:
@@ -308,11 +350,8 @@ def probe_version(path: str) -> Optional[str]:
     to the caller: the version is unknown, so no version claim may be made.
     """
     try:
-        res = subprocess.run(
-            [path, "--version"], capture_output=True, timeout=_VERSION_TIMEOUT_S,
-            env={**os.environ, "PATH": augmented_path()}, **SUBPROCESS_KWARGS,
-        )
-    except (OSError, subprocess.SubprocessError):
+        res = _run_probe(path, "--version", timeout=_VERSION_TIMEOUT_S)
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
     if res.returncode != 0:
         return None
@@ -336,36 +375,77 @@ def config_dir() -> str:
             or os.path.expanduser("~/.claude"))
 
 
-def signed_in() -> Optional[bool]:
+def _auth_status(path: str) -> Optional[bool]:
+    """`claude auth status`'s own answer, or None when it did not give one.
+
+    THE CLI IS THE ONLY THING THAT ACTUALLY KNOWS. It prints JSON:
+
+        {"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}
+
+    Parsed rather than trusted by exit code, and the parse is the compatibility
+    check too: a CLI too old for the subcommand exits 1 with
+    `error: unknown command 'status'` on stderr and NOTHING on stdout, so
+    "stdout is JSON carrying a boolean loggedIn" cleanly separates a real answer
+    from every way of not getting one. Any other shape is None, not False —
+    guessing "signed out" from output we could not read is how a signed-in user
+    gets told to go and sign in.
+    """
+    try:
+        res = _run_probe(path, "auth", "status", timeout=_AUTH_TIMEOUT_S)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    try:
+        data = json.loads(res.stdout or "")
+    except ValueError:
+        return None
+    value = data.get("loggedIn") if isinstance(data, dict) else None
+    return value if isinstance(value, bool) else None
+
+
+def signed_in(path: Optional[str] = None) -> Optional[bool]:
     """Whether Claude Code has a credential — True, False, or None for unknown.
 
-    TRI-STATE, and the None is the whole reason this is careful rather than a
-    boolean. Where the credential lives is platform-specific, and
-    supervisor/paths.py already had to learn this the hard way (see its
-    CLAUDE_CONFIG_DIR note — relocating the config dir logged Linux and Windows
-    users out of a CLI they were signed into, while macOS hid the bug):
+    TRI-STATE, and the None carries real weight: `False` is what puts "sign in"
+    in front of the user, so it may only ever come from an authoritative answer.
 
-      * Linux/Windows — the credential is `.credentials.json` in the config
-        dir. We can see it, so its absence is REAL: False.
-      * macOS — the credential is in the login Keychain. We cannot read that
-        without risking an access prompt, and prompting the user for their
-        Keychain to draw a status line is not a trade worth making. Absence of
-        a file therefore proves nothing: None.
+    Order, and the ordering is the correctness argument:
 
-    False means "signed out, and I checked". None means "I cannot tell from
-    here". The UI must only ever offer a sign-in fix on False — claiming a
-    signed-in macOS user is signed out is exactly the wrong-advice failure the
-    reactive path's `_account_error` was written to avoid.
+    1. **Ask the CLI** (`claude auth status`). It is the only party that knows,
+       and it knows on every platform.
+    2. **Positive evidence only** — an env token, or `.credentials.json` in the
+       config dir. Enough to say True when the CLI could not be asked (it is
+       missing, or predates the subcommand).
+    3. **Otherwise None.**
+
+    STEP 2 CAN NEVER ANSWER FALSE, and that is a correction rather than caution.
+    This used to conclude "no credential file on Linux/Windows, therefore signed
+    out", reasoning from supervisor/paths.py's note that macOS keeps its
+    credential in the login Keychain while the others keep it in the config dir.
+    That note is true and the inference from it was still wrong: a credential
+    can also arrive on an inherited file descriptor
+    (CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR), through a managed provider, or in
+    any other place a future release chooses. Measured on a container that is
+    demonstrably logged in (`claude auth status` → `"loggedIn": true`) with no
+    credentials file and no token in the environment, the old rule answered
+    False — the wrong-advice failure this module is arranged to avoid, produced
+    by the module itself.
+
+    So absence of a file is not evidence of being signed out, on any platform,
+    and the platform split is gone with it: what separates a real False from
+    "cannot tell" is whether the CLI answered, not which OS this is.
     """
+    if path:
+        answer = _auth_status(path)
+        if answer is not None:
+            return answer
     # A token in the environment is a credential on every platform, and it is
     # what a headless/CI run uses.
     for name in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
         if (os.environ.get(name) or "").strip():
             return True
-    creds = os.path.join(config_dir(), ".credentials.json")
-    if os.path.isfile(creds):
+    if os.path.isfile(os.path.join(config_dir(), ".credentials.json")):
         return True
-    return None if sys.platform == "darwin" else False
+    return None
 
 
 # --- the cached snapshot ------------------------------------------------------
@@ -413,7 +493,7 @@ def _measure(allow_shell: bool = True) -> dict:
     #
     # Only the override needs checking here. Every other source verified the file
     # during resolution — `which` tests access(X_OK) itself, and the direct probe
-    # is `_executable` — while an override is taken entirely on faith, which is
+    # is `executable` — while an override is taken entirely on faith, which is
     # exactly why it is the one that can be wrong.
     usable = bool(path) and (source != "override" or executable(path))
     return {
@@ -425,7 +505,10 @@ def _measure(allow_shell: bool = True) -> dict:
         # Only ever True on a version we actually read AND that is below the
         # floor — see is_outdated.
         "outdated": is_outdated(version),
-        "signed_in": signed_in(),
+        # The resolved path only when it is RUNNABLE: asking a binary that
+        # isn't there for its auth state wastes a spawn on a certain failure,
+        # and the fallback below still answers True on positive evidence.
+        "signed_in": signed_in(path if usable else None),
         "config_dir": config_dir(),
         "checked_at": time.time(),
         "fingerprint": _fingerprint(path),
