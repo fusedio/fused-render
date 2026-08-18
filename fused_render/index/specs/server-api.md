@@ -20,6 +20,7 @@ unguarded like every other read endpoint and none of them can write.
 | `GET /api/index/stats?root=` | — | totals + per-extension breakdown (`query.md §2`) |
 | `GET /api/index/lookup?q=&limit=&offset=&sort=` | — | path lookup (`query.md §3`) |
 | `GET /api/index/search?root=&q=&limit=&fmt=` | — | the explorer's in-folder corpus (`query.md §6`); `fmt=columns` for the compact encoding (§6) |
+| `GET /api/index/rank?root=&q=&limit=` | — | the home page's search: filtered AND ranked server-side, top `limit` hits (§7) |
 | `POST /api/index/query` `{sql, limit?}` | X-Fused | run ONE read-only statement over `files`/`dirs`; `{columns, rows, truncated}` (`query.md §5`) |
 | `POST /api/index/ask` `{prompt, limit?}` | X-Fused | compile a question to SQL through the AI relay, run it under the same guard, echo the `sql` (`query.md §5`) |
 | `GET /api/index/config` · `POST /api/index/config` | X-Fused on write | scan roots + ignore list (§3) |
@@ -137,9 +138,11 @@ developer's real home. The scheduler's own tests call `run_startup_scan()` direc
 ### 4.1 The startup warm
 
 The same hook then calls `startup_warm()`, which spawns one detached daemon thread
-running `run_startup_warm()`: `search_under` + `filter_corpus` over `expanduser("~")`
-— exactly the request the explorer's home page makes on the first keystroke, under
-exactly the same pool key.
+running `run_startup_warm()`: `search_under` + `filter_corpus` over `expanduser("~")`,
+and then `search_ranked` with a representative query over the same root — exactly the
+two requests the explorer makes (the in-folder corpus and the home page's ranked
+search), under exactly the same pool key. Warming only the corpus would leave the
+ranked path's own duckdb plan cold, and that is the one a keystroke waits on.
 
 Everything that path caches is **per process** and starts empty: the gitignore verdict
 pool has no verdicts until some request sweeps `git check-ignore` over the whole corpus,
@@ -217,6 +220,65 @@ Rejected: front-coding the rels (they arrive depth-then-path ordered, so neighbo
 share long prefixes). It takes the body to 12.4 MB, but costs 0.45 s of Python per
 corpus — more of the first search's budget than it saves, and gzip finds most of the
 same redundancy for an eighth of the time.
+
+## 7. The ranked search — `GET /api/index/rank`
+
+`GET /api/index/rank?root=&q=&limit=` answers `{ok, covered, fresh, updated, age_s,
+root, hits, total, truncated, escalated, scanned_partitions, of_partitions}`, where each
+hit is `{rel, is_dir, size, mtime, score, longest_run, tier, depth}` and `limit`
+defaults to 200 (hard cap `MAX_RANK_LIMIT`, 2,000). Plain JSON, a few KB — no columnar
+encoding and no gzip special-casing, because that machinery (§6) exists for a 20 MB
+corpus and this is not one. A miss is a 200 with `covered: false` and no hits, exactly
+as for the corpus.
+
+**Why it exists.** §6's corpus is the whole ranking set shipped to the browser: 19.8 MB
+raw / 5.4 MB gzipped for 164,405 rows on a home directory whose index actually held
+571,429 files. `MAX_CORPUS` (200,000, depth-ordered) plus the gitignore filter is what
+cut it down, so ~71% of that home was unfindable from the home search while the
+response reported `truncated: true` and the client ranked what it got. This route
+filters and ranks over the WHOLE index and returns the part anybody reads.
+
+**Two stages** (`query.md`, `search_ranked`), because neither is affordable alone: SQL
+narrows and coarse-orders over every row under the root; Python's ranker
+(`index/rank.py`) scores a bounded slice of at most `RANK_CANDIDATE_CAP` (2,000) rows.
+Scoring every subsequence candidate in Python is the 186 ms case that shape avoids.
+
+Stage A is itself a **ladder**, cheapest pass first:
+
+| pass | filter | `render` over 571k rows | `readme.md` |
+|---|---|---|---|
+| 1 | `lower(rel) LIKE '%q%'` | 30,319 rows / 51 ms | 3,056 / 41 ms |
+| 2 | `regexp_matches(lower(rel), 'a.*b.*c')` | 176,505 / 143 ms | 11,766 / 45 ms |
+
+Pass 2 runs only when pass 1 cannot fill the returned `limit` after ranking and
+gitignore filtering, and `escalated` says which happened. That is **lossless, not an
+approximation**: `fuzzyMatch`'s substring branch sets `longestRun = len(q)`, the maximum
+the subsequence branch can never reach, and `rankCompare` orders on `longestRun` first,
+so every substring hit outranks every subsequence-only hit and a filled cut leaves pass
+2 nothing to contribute above it. The check runs on the FILTERED count, so it needs no
+safety margin.
+
+**The gitignore filter runs before the cut to `limit`**, never after — filtering after
+the cut is precisely what let the corpus report more rows than it held.
+
+**`positions` are not returned.** The client re-runs `fuzzyMatch` over the ~200 rows it
+got back to build its highlights, so `platform/lib/fuzzy.ts` stays the single source of
+truth for what highlights, and the server's port of it stays free to carry positions
+internally without them becoming a wire contract.
+
+**Parity is a test, not an intention.** `index/rank.py` is a port of `fuzzy.ts` +
+`listing/search.ts`, which remain the authority — the in-folder search still ranks a
+live streamed walk in the browser, and only a browser-side ranker can rank a stream. The
+same box is therefore answered by either ranker depending on coverage, so both assert
+against `tests/fixtures/rank-parity.json` (generated from the JS side by `bun
+scripts/gen-rank-fixture.ts`): `tests/test_index_rank.py` and
+`frontend/src/apps/explorer/listing/rank-parity.test.ts`.
+
+**Known and logged:** stage A's cap can in principle drop a row stage B would have
+ranked first. Tier ordering makes it unlikely (a name-substring hit outranks a
+fuzzy-only one in `rank_compare` too), and a cap that bites is a `logger.warning` plus
+`truncated: true` — silent truncation is what this route removes, not what it
+reintroduces.
 
 ## Non-goals
 
