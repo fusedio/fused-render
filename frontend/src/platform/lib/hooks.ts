@@ -340,9 +340,31 @@ function probeReadiness(): Promise<SelfFixReadiness> {
 // went on saying the opposite about the same machine.
 const readinessListeners = new Set<(value: SelfFixReadiness) => void>();
 
+// GENERATION, the same device `platform/lib/selffix`'s PollGen uses and for the
+// same reason: an answer is only worth applying if it belongs to the question
+// still being asked. Each mount also holds a `.then` on the probe that was
+// current when it mounted, and `recheck` starts a NEW one — so without this the
+// slower first reply lands last and overwrites the recheck, putting the button
+// back on "Set up Claude Code" after the server has already accepted a session.
+// The exact trap this hook was rewritten to close, re-entering through the
+// rewrite.
+let readinessGen = 0;
+
+/** Resolve the current probe and hand the value to `apply` — unless a `recheck`
+    has since superseded it. */
+function deliverReadiness(apply: (value: SelfFixReadiness) => void): void {
+  const gen = readinessGen;
+  probeReadiness().then((value) => {
+    if (gen === readinessGen) apply(value);
+  });
+}
+
 function refreshReadiness(): void {
   readinessProbe = null;
+  readinessGen += 1;
+  const gen = readinessGen;
   probeReadiness().then((value) => {
+    if (gen !== readinessGen) return;  // a later recheck already superseded this
     for (const notify of [...readinessListeners]) notify(value);
   });
 }
@@ -350,6 +372,7 @@ function refreshReadiness(): void {
 /** Test seam: forget the cached probe so a case can serve a different config. */
 export function resetSelfFixReadiness(): void {
   readinessProbe = null;
+  readinessGen += 1;
 }
 
 export function useSelfFixReadiness(): SelfFixReadinessState {
@@ -360,7 +383,7 @@ export function useSelfFixReadiness(): SelfFixReadinessState {
       if (!cancelled) setReady(value);
     };
     readinessListeners.add(apply);
-    probeReadiness().then(apply);
+    deliverReadiness(apply);
     return () => {
       cancelled = true;
       readinessListeners.delete(apply);

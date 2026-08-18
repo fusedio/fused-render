@@ -7693,10 +7693,18 @@ the installation, and the mark that says so.
   something a user has any reason to sort by. The SESSION POINTER follows the
   same rule for the same reason: written in one home it must still be found from
   the other, or a second agent starts on a tree the first is still editing.
-  The state dir is not offered as a candidate at all when the tree is known
-  unwritable — it is the one home we already know cannot take a write, and
-  trying it first would spend an exception per record to learn what `os.access`
-  had already answered.
+  **They are TWO lists, not one shared one** (`record_homes` for writers,
+  `reader_homes` for readers), and collapsing them reintroduces the bug in the
+  other direction. A writer must not be offered the state dir once the tree is
+  known unwritable: that is a guaranteed exception per record to learn what
+  `os.access` had already answered correctly. A reader has no such excuse —
+  nothing about a home's writability bears on whether it can be READ — so its
+  list never consults the prediction at all. Sharing the writer's list meant an
+  install that WAS writable and is now not (a `chmod`, a remount, an ownership
+  change) dropped its in-tree reports and, worse, its session pointer out of
+  view; that pointer is half the one-at-a-time guard (SF-13a), so a live fix
+  session would stop excluding a second one the moment the tree it is editing
+  turned read-only underneath it.
 - **SF-13a** **ONE Claude session at a time in the installation** (409 naming
   the run), because they all edit the same tree: two agents rewriting one
   installation is not a slow path but a conflict, and each report then describes

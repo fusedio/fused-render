@@ -226,6 +226,38 @@ describe("useSelfFixReadiness", () => {
     second.unmount();
   });
 
+  test("a slow first reply cannot overwrite a recheck", async () => {
+    // THE ORDERING TRAP. Each mount holds a `.then` on the probe current when it
+    // mounted; `recheck` starts a new one. Without a generation the first reply
+    // lands LAST and wins, putting the button back on "Set up Claude Code" after
+    // the server has already accepted a session — the very failure the recheck
+    // was added to prevent, re-entering through the fix.
+    let releaseFirst: (value: ClaudeHealth) => void = () => {};
+    healthReply = () =>
+      new Promise<ClaudeHealth>((resolve) => {
+        releaseFirst = resolve;
+      });
+    const probe = mount();
+    await settle();
+
+    // The user installs Claude Code and clicks again; the recheck answers first.
+    healthReply = () => Promise.resolve(health());
+    await act(async () => {
+      probe.current().recheck();
+    });
+    await settle();
+    expect(probe.current().claudeMissing).toBe(false);
+
+    // NOW the original probe finally replies, with the stale answer.
+    await act(async () => {
+      releaseFirst(health({ found: false }));
+      await Promise.resolve();
+    });
+    await settle();
+    expect(probe.current().claudeMissing).toBe(false);  // still the fresh answer
+    probe.unmount();
+  });
+
   test("three failed rows ask ONCE, not three times", async () => {
     // The PROMISE is cached, not just the answer, so simultaneous mounts share
     // one request. A user with three failed downloads is the ordinary way to

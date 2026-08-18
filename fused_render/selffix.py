@@ -161,38 +161,58 @@ def out_of_tree_dir() -> str:
     return os.path.join(home_dir(), "selffix")
 
 
+def _dedup(paths: list[str]) -> list[str]:
+    seen, out = set(), []
+    for path in paths:
+        key = os.path.normcase(os.path.realpath(path))
+        if key not in seen:
+            seen.add(key)
+            out.append(path)
+    return out
+
+
 def record_homes() -> list[str]:
-    """Both records homes, PREFERRED FIRST — and why there have to be two lists.
+    """Where a WRITER may try, preferred first.
 
     `writable()` is a PREDICTION (`os.access` on the install root), and a
     prediction is the wrong thing to build a promise on. It answers for the real
     uid's permission bits and knows nothing about an ACL that denies, a mount
     remounted read-only, an immutable flag, or a full disk — so an install can
-    predict "writable" and refuse the very next write. Everything here therefore
-    follows one rule instead of trusting the prediction twice:
+    predict "writable" and refuse the very next write. Hence one rule instead of
+    trusting the prediction twice:
 
         WRITERS take the first home that will actually have them.
-        READERS look in all of them.
+        READERS look in all of them  (`reader_homes`, and it is a SEPARATE list).
 
-    That is what makes the promise in `records_dir` true rather than aspirational.
-    A report is a document about a machine's problem and outlives the
-    installation (SF-13b) — but `list_reports` used to walk only the home the
-    CURRENT prediction names, so reports a diagnostic session wrote out of tree
-    stopped being listed the moment the install started looking writable (a
-    `chmod`, a move, an admin copy taken over). The files were still there; the
-    panel had simply stopped looking where it had put them.
+    The state dir is not offered here when the tree is known unwritable: it is
+    the one home we already know cannot take a write, and trying it first would
+    spend an exception per record to learn what `os.access` had answered
+    correctly. That skip is right for a writer and WRONG for a reader, which is
+    why the two lists exist rather than one shared one — see `reader_homes`.
     """
     homes = [state_dir(), out_of_tree_dir()] if writable() else [out_of_tree_dir()]
-    # The state dir is never a candidate when the tree is unwritable: it is the
-    # one home we KNOW cannot take a write, and offering it first would spend an
-    # exception per record to learn what `os.access` already answered.
-    seen, out = set(), []
-    for home in homes:
-        key = os.path.normcase(os.path.realpath(home))
-        if key not in seen:
-            seen.add(key)
-            out.append(home)
-    return out
+    return _dedup(homes)
+
+
+def reader_homes() -> list[str]:
+    """Every home a record could be in — ALWAYS both, whatever today's
+    prediction says.
+
+    This is the half that a shared list got wrong in BOTH directions, and the
+    second direction is the worse one. Reading only `records_dir()` hid the
+    out-of-tree reports a diagnostic session wrote, once an install started
+    looking writable. Reading `record_homes()` hides the mirror image: an
+    install that WAS writable and is now not — a `chmod`, a remount, an
+    ownership change — has its in-tree reports and, worse, its session pointer
+    dropped out of view. That pointer is half the one-at-a-time guard (SF-13a),
+    so a live fix session could stop excluding a second one the moment the tree
+    it is editing turned read-only underneath it.
+
+    Nothing about a home's writability bears on whether it can be READ, so this
+    list never consults the prediction at all. Missing directories cost one
+    failed `listdir` each, which is what the callers already tolerate.
+    """
+    return _dedup([state_dir(), out_of_tree_dir()])
 
 
 def in_state_dir(path: str) -> bool:
@@ -544,12 +564,13 @@ def active_run() -> str:
     """The run id last recorded here, or "". Says nothing about liveness — the
     caller asks the process, which is the only thing that knows.
 
-    The NEWEST pointer across both records homes (`record_homes`), because an
-    installation's writability can change between one session and the next and
-    the guard must not lose sight of a live agent just because the pointer it
-    wrote now sits in the other home."""
+    The NEWEST pointer across EVERY home (`reader_homes`), because an
+    installation's writability can change between one session and the next — in
+    both directions — and the guard must not lose sight of a live agent just
+    because the pointer it wrote now sits in a home today's prediction would not
+    have offered a writer."""
     newest, run = 0.0, ""
-    for home in record_homes():
+    for home in reader_homes():
         path = os.path.join(home, SESSION_NAME)
         record = _read_json(path)
         if not record:
@@ -1025,7 +1046,7 @@ def list_reports() -> list[dict]:
     file is the artefact, so a listing that could go missing under a cap would
     be the one thing this feature is not allowed to lose.
 
-    EVERY home, not the one today's prediction names (`record_homes`). A
+    EVERY home, not the one today's prediction names (`reader_homes`). A
     diagnostic session writes out of tree, and an installation's writability is
     not fixed for life — a `chmod`, a move out of /Applications, an admin copy
     whose ownership changes — so reading only `records_dir()` made those reports
@@ -1035,7 +1056,7 @@ def list_reports() -> list[dict]:
     promises a report outlives the installation (SF-13b).
     """
     out, seen = [], set()
-    for home in record_homes():
+    for home in reader_homes():
         reports = os.path.join(home, REPORTS_DIR)
         try:
             names = os.listdir(reports)
