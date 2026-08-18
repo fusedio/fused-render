@@ -358,6 +358,11 @@ export function FilesSearch({
       inflight.current = ctl;
       issuedAt.current = Date.now();
       setPending(true);
+      // The previous failure is not this request's verdict. Left standing it
+      // kept the banner up over rows that were about to be replaced, and — via
+      // rankingSettled — armed the AI row on every keystroke after one
+      // transient error.
+      setFailure("");
       indexRank(home, q, { signal: ctl.signal, limit: RANK_FETCH_LIMIT }).then(
         (res) => {
           if (ctl.signal.aborted) return;

@@ -328,7 +328,10 @@ export function stepHighlight(
  * there spends a call on a query that was about to answer itself.
  *
  * A failed request IS settled — no answer is coming for it, so the AI row
- * really is the only content left.
+ * really is the only content left. But only while nothing is in flight:
+ * `pending` is checked FIRST, because a request that is still out may yet
+ * answer, and reading the previous failure as this query's verdict is how a
+ * single transient failure turned every later keystroke into an armed AI row.
  */
 export function rankingSettled(
   answer: HomeAnswer | null,
@@ -336,8 +339,8 @@ export function rankingSettled(
   pending: boolean,
   failed: boolean,
 ): boolean {
-  if (failed) return true;
   if (pending) return false;
+  if (failed) return true;
   return answer !== null && answer.query === query;
 }
 
@@ -368,6 +371,14 @@ export function activeRow(
  * this app where Enter is the obvious gesture. It still never falls through to
  * the AI row that way: reaching a paid action takes either zero settled hits or
  * an explicit highlight.
+ *
+ * That fallthrough is gated on `settled` for the same reason the AI row is, and
+ * the reason arrived with server-side ranking: the list is deliberately never
+ * blanked, so rows for the PREVIOUS query are on screen while this one is in
+ * flight, and "the top hit" then means the top hit for something the user has
+ * already finished typing over. Typing "read", then "readme", then Enter
+ * navigated to "read"'s best match. An explicit highlight still commits —
+ * the user pointed at a row they can actually see.
  */
 export function submitRow(
   highlight: number | null,
@@ -376,5 +387,5 @@ export function submitRow(
 ): number | null {
   const row = activeRow(highlight, fileCount, settled);
   if (row !== null) return row;
-  return fileCount > 0 ? 0 : null;
+  return settled && fileCount > 0 ? 0 : null;
 }

@@ -260,6 +260,18 @@ describe("submitRow", () => {
     expect(submitRow(null, 5, true)).toBe(0);
   });
 
+  it("commits NOTHING while the rows on screen answer the previous query", () => {
+    // The list is never blanked, so hits are on screen for a query that has
+    // not been answered yet. Enter used to open the top one — type "read",
+    // then "readme", press Enter before the answer lands, and the app
+    // navigated to "read"'s best match. Opening a file is now gated on
+    // `settled` exactly as the AI row already was.
+    expect(submitRow(null, 5, false)).toBeNull();
+    // An explicit arrow-key choice still commits: the user pointed at a row
+    // they can see.
+    expect(submitRow(2, 5, false)).toBe(2);
+  });
+
   it("runs the AI row only once ranking has settled on zero hits", () => {
     expect(submitRow(null, 0, true)).toBe(0); // fileCount 0 → the AI row
     // Mid-scan: nothing to commit yet, and the AI row must not be armed.
@@ -284,6 +296,14 @@ describe("rankingSettled", () => {
     // here would spend a model call on a query that was about to answer itself.
     expect(rankingSettled(answer({ query: "rea" }), "read", false, false)).toBe(false);
     expect(rankingSettled(null, "read", false, false)).toBe(false);
+  });
+
+  it("is false while a request is in flight even after an EARLIER failure", () => {
+    // `failed` must not outrank `pending`. It did, and the consequence was a
+    // paid model call: after one transient failure every later keystroke read
+    // as settled while its request was still out, so the AI row pre-selected
+    // itself and Enter committed it for a query that was about to answer.
+    expect(rankingSettled(null, "read", true, true)).toBe(false);
   });
 
   it("is true for an answer to THIS query, and for one that will never come", () => {
