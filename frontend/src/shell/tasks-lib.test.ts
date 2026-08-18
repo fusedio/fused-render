@@ -5274,6 +5274,22 @@ describe("the tasks toolbar", () => {
     expect(block(SCHEDULE_CSS, ".schedule-view-btn").length).toBeGreaterThan(0);
   });
 
+  it("shows the same three filters on all three views, and means them", () => {
+    // The filters used to be gated on `view !== "calendar"`. A control that
+    // vanishes when you change lens makes three lenses read as three pages, and a
+    // person who has just narrowed the List to one project meant to keep looking at
+    // that project (design-principles §1).
+    expect(PAGE).not.toContain('view !== "calendar" && (');
+    expect(PAGE).toContain("<TaskFilterControls");
+    // And the calendar is handed the FILTERED set, or the controls would be shown
+    // doing nothing — worse than hidden.
+    const cal = PAGE.slice(PAGE.indexOf("<ScheduleCalendar"));
+    expect(cal.slice(0, cal.indexOf("/>"))).toContain("tasks={shown}");
+    // `shown` is the same derivation the other two views read, not a second one.
+    expect(PAGE).toContain("const shown = useMemo(() => filterTasks(tasks, filters), [tasks, filters]);");
+    expect(PAGE).toContain("<TaskBoard tasks={shown}");
+  });
+
   it("centres the page on one measure wide enough for the widest view", () => {
     // Edge-to-edge was the absence of a decision: on a 27" display the List ran to
     // 2000px and the title sat marooned at the far left of it (design-principles

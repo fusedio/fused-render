@@ -387,18 +387,26 @@ export default function Scheduled() {
                 Calendar
               </button>
             </div>
-            {/* Search, Status and Project belong to the two task views: the
-                calendar answers "when", and a week with tasks filtered out of
-                it is a week that lies. They sit AFTER the toggle, so hiding
-                them here cannot move it. */}
-            {view !== "calendar" && (
-              <TaskFilterControls
-                filters={filters}
-                projects={projects}
-                home={home}
-                onChange={setFilters}
-              />
-            )}
+            {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
+                used to be hidden on the calendar, on the argument that it
+                answers "when" and a week with tasks filtered out of it is a week
+                that lies. That reading did not survive contact: the filters are
+                not a claim about what exists, they are how you read the page
+                this minute — the same three lenses, and a person who has just
+                narrowed the List to one project and switched to Calendar meant
+                to keep looking at that project, not to be handed everything
+                back. Views are lenses on one dataset (design-principles §1), and
+                a control that vanishes when you change lens makes them read as
+                three different pages.
+
+                They sit AFTER the toggle, which owns the row's only auto margin,
+                so nothing here can move either end of the bar. */}
+            <TaskFilterControls
+              filters={filters}
+              projects={projects}
+              home={home}
+              onChange={setFilters}
+            />
             <button type="button" className="btn btn-primary schedule-new"
                     onClick={() => openForm("blank", null)}>
               + New task
@@ -411,15 +419,20 @@ export default function Scheduled() {
               only ever appeared for one of the two filters, which made the page
               look like it had lost the other. Clearing is where setting is: in
               the menu. */}
-          {view !== "calendar" && tasksFailed && (
-            // One quiet line, not a banner: the form and the calendar still
-            // work, and only the rows are missing.
+          {tasksFailed && (
+            // One quiet line, not a banner: the form still works and only the
+            // tasks are missing. Shown on the calendar too since 2026-08-18 —
+            // its chips come from the same feed, so an empty week and an
+            // unreadable one looked identical there.
             <p className="schedule-tv-note">Tasks could not be loaded.</p>
           )}
 
           {view === "calendar" ? (
             <ScheduleCalendar
-              tasks={tasks}
+              // The FILTERED set, same as the other two views get: the toolbar's
+              // three controls are live here now, and a filter that is shown but
+              // does nothing is worse than one that is hidden.
+              tasks={shown}
               entries={entries}
               queued={queued}
               running={running}
