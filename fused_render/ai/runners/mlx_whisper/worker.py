@@ -189,20 +189,17 @@ def download(model_id):
     return snapshot
 
 
-#: What an MLX conversion always has and neither of the other two Whisper
-#: formats does. `.npz` is what `mlx-community` publishes today and
-#: `.safetensors` is what `mlx_whisper.load_models` prefers when it is there, so
-#: both are accepted — a repo with either is loadable, and requiring the older
-#: spelling would refuse a re-upload that works.
-#:
-#: Checked by NAME rather than by catching the loader's error, for the reason
-#: `faster_whisper/worker.py` gives about `model.bin`: what that error says is
-#: "No such file or directory: '…/weights.npz'", and a user reading it has no
-#: way to know their repo was the wrong FORMAT rather than a broken download.
-#: From `formats` for the reason the CT2 runner's own constant gives: the AI
-#: Models page reads it too, and its engine tag must not promise a load this
-#: function refuses.
-_MLX_WEIGHTS = formats.MLX_WHISPER_WEIGHTS
+def _snapshot_config(fetched) -> dict:
+    """The snapshot's `config.json`, or {} — the disambiguator the format check
+    needs: mlx-community's newer re-uploads call their weights
+    `model.safetensors`, the name every transformers repo also has, and the
+    native `n_mels`/`n_audio_ctx` config beside it is what says whisper."""
+    try:
+        with open(os.path.join(fetched, "config.json"), encoding="utf-8") as f:
+            loaded = json.load(f)
+        return loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def load(model_id, fetched):
@@ -212,19 +209,45 @@ def load(model_id, fetched):
     # not about this environment, and importing first would replace the
     # explanation below with whichever ImportError happened to come first.
     #
+    # Checked by `formats.is_mlx_whisper_snapshot` rather than by catching the
+    # loader's error, for the reason `faster_whisper/worker.py` gives about
+    # `model.bin`: what that error says is "No such file or directory:
+    # '…/weights.npz'", and a user reading it has no way to know their repo was
+    # the wrong FORMAT rather than a broken download. From `formats` for the
+    # reason the CT2 runner's own constant gives: the AI Models page reads the
+    # same predicate, and its engine tag must not promise a load this function
+    # refuses.
+    #
     # **There are now THREE incompatible Whisper formats in this app** — CT2
-    # (`model.bin`), MLX (here), and transformers (`model.safetensors`) — and
-    # the AI Models page offers Load on anything whose task label says "speech
-    # recognition", because the format is not in the label. This message is the
-    # only thing between a user and a search engine, so it names the format they
-    # have, the format this runner needs, and a repo that works.
-    if not any(os.path.isfile(os.path.join(fetched, name)) for name in _MLX_WEIGHTS):
+    # (`model.bin`), MLX (here), and transformers — and the AI Models page
+    # offers Load on anything whose task label says "speech recognition",
+    # because the format is not in the label. This message is the only thing
+    # between a user and a search engine, so it names the format they have, the
+    # format this runner needs, and a repo that works.
+    names = set(os.listdir(fetched))
+    if not formats.is_mlx_whisper_snapshot(names, _snapshot_config(fetched)):
         raise RuntimeError(
-            f"{model_id} has no {_MLX_WEIGHTS[0]} — this runner loads MLX "
-            "conversions of Whisper, and this repo is in another format "
-            "(CTranslate2 repos carry model.bin, transformers repos carry "
-            "model.safetensors). Try mlx-community/whisper-large-v3-turbo or "
+            f"{model_id} is not an MLX conversion of Whisper — this runner "
+            f"needs {formats.MLX_WHISPER_WEIGHTS[0]}, "
+            f"{formats.MLX_WHISPER_WEIGHTS[1]}, or model.safetensors beside "
+            "whisper's own config.json, and this repo is in another format "
+            "(CTranslate2 repos carry model.bin; transformers repos carry "
+            "model.safetensors with a transformers config). Try "
+            "mlx-community/whisper-large-v3-turbo or "
             "mlx-community/whisper-medium-mlx.")
+
+    # The RELEASED library (0.4.x) looks for `weights.safetensors` then
+    # `weights.npz` — `model.safetensors` support exists only on mlx-examples
+    # main, unreleased. Without this link, a repo the format check just accepted
+    # dies inside `mx.load` on the missing `.npz` path with "[load_npz] Input
+    # must be a zip file…", which explains nothing. One relative symlink in the
+    # snapshot makes the accepted layout the one the library already reads;
+    # drop it when the pin moves past a release that reads `model.safetensors`
+    # itself.
+    if (formats.MLX_WHISPER_SHARED_WEIGHTS in names
+            and not any(name in names for name in formats.MLX_WHISPER_WEIGHTS)):
+        os.symlink(formats.MLX_WHISPER_SHARED_WEIGHTS,
+                   os.path.join(fetched, "weights.safetensors"))
 
     module = _transcribe_module()
     import mlx.core as mx
