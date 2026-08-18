@@ -33,6 +33,7 @@ let shortTitle: typeof import("./NewJobModal").shortTitle;
 let TITLE_MAX: typeof import("./NewJobModal").TITLE_MAX;
 let deletePress: typeof import("./NewJobModal").deletePress;
 let saveEnabled: typeof import("./NewJobModal").saveEnabled;
+let saveBlockedReason: typeof import("./NewJobModal").saveBlockedReason;
 let TITLE_PLACEHOLDER: typeof import("./NewJobModal").TITLE_PLACEHOLDER;
 let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
@@ -55,6 +56,7 @@ beforeAll(async () => {
   TITLE_MAX = mod.TITLE_MAX;
   deletePress = mod.deletePress;
   saveEnabled = mod.saveEnabled;
+  saveBlockedReason = mod.saveBlockedReason;
   TITLE_PLACEHOLDER = mod.TITLE_PLACEHOLDER;
   pastNoteFor = mod.pastNoteFor;
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
@@ -223,6 +225,7 @@ describe("the payload", () => {
       buildSchedulePayload(form({ sessionId: "abc", rule: DAILY, repeat: "daily" })).session_id,
     ).toBeUndefined();
   });
+
 });
 
 // BOTH prominent fields are required now (Akshil, 2026-08-17): the description
@@ -284,6 +287,86 @@ describe("what Save refuses", () => {
     expect(saveEnabled(gate({ repeat: "cron", legacyCron: "0 9 * * *", pickedOk: false }))).toBe(
       true,
     );
+  });
+
+  // WHY A REFUSAL HAS TO SPEAK. Save used to be `disabled` on a false
+  // `saveEnabled`, and a dead button answers a press with nothing at all — no
+  // message, no caret moved, the card just sitting there. The commonest way to
+  // meet it is the commonest thing to forget: open the form, type a name, press
+  // Save, and the description is still empty (QA, 2026-08-18). The rules did not
+  // change — an empty description is a task with nothing to do, and
+  // `schedule.create` refuses it on the server too — only the silence did.
+  describe("…and how it says so", () => {
+    test("a form that saves has nothing to say", () => {
+      expect(saveBlockedReason(gate())).toBe(null);
+    });
+
+    test("every refusal names a field, and the sentence is a thing to DO", () => {
+      // Each of the two prose fields answers for itself rather than sharing one
+      // "fill in the required fields" — the point is to say WHICH.
+      const noAsk = saveBlockedReason(gate({ message: "" }));
+      expect(noAsk?.field).toBe("message");
+      expect(noAsk?.text).toContain("Say what Claude should do");
+      // Whitespace is refused, and refused with the same sentence: a textarea
+      // full of newlines is not an instruction.
+      expect(saveBlockedReason(gate({ message: "\n\n  \t" }))?.text).toBe(noAsk?.text);
+
+      const noTitle = saveBlockedReason(gate({ title: "   " }));
+      expect(noTitle?.field).toBe("title");
+      expect(noTitle?.text).toContain("name");
+
+      expect(saveBlockedReason(gate({ target: "" }))?.field).toBe("target");
+      // A path that failed its existence check already wrote a sentence for a
+      // human; the banner repeats THAT rather than inventing a second one.
+      expect(saveBlockedReason(gate({ pathError: "This folder or file doesn't exist" })))
+        .toEqual({ text: "This folder or file doesn't exist", field: "target" });
+    });
+
+    test("the reasons that are not a field still say something, and focus nothing", () => {
+      // Nothing to put a caret in: the repeat lives behind a dialog and the
+      // date-time behind two popovers, so the sentence is the whole answer.
+      for (const over of [
+        { repeatOn: true, repeat: "custom", customRule: null },
+        { pickedOk: false },
+        { repeat: "cron", legacyCron: "" },
+        { replaced: true },
+      ]) {
+        const blocked = saveBlockedReason(gate(over));
+        expect(blocked?.field).toBe(null);
+        expect((blocked?.text ?? "").length).toBeGreaterThan(0);
+      }
+    });
+
+    test("it agrees with saveEnabled on every case saveEnabled decides", () => {
+      // The two are ONE rule set with two readers, so they must not drift: a
+      // form saveEnabled refuses has a reason, and one it allows has none. This
+      // is what keeps a new refusal from being added silently to only one of
+      // them.
+      const cases: Partial<Parameters<typeof saveEnabled>[0]>[] = [
+        {}, { message: "" }, { message: "  " }, { title: "" }, { title: "\t" },
+        { target: "" }, { pathError: "no such folder" }, { replaced: true },
+        { pickedOk: false }, { repeatOn: true, repeat: "custom", customRule: null },
+        { repeatOn: true, repeat: "custom", customRule: DAILY },
+        { repeat: "cron", legacyCron: "" },
+        { repeat: "cron", legacyCron: "0 9 * * *", pickedOk: false },
+        { title: "", message: "" },
+      ];
+      for (const over of cases) {
+        expect(saveBlockedReason(gate(over)) === null).toBe(saveEnabled(gate(over)));
+      }
+    });
+
+    test("the topmost problem is the one reported, in the card's reading order", () => {
+      // One reason at a time. A form with everything wrong reads back the FIRST
+      // field on the card, not a list — fixing the top one often fixes the rest,
+      // and a scolding is not a hint.
+      expect(saveBlockedReason(gate({ title: "", message: "", target: "" }))?.field).toBe("title");
+      expect(saveBlockedReason(gate({ message: "", target: "" }))?.field).toBe("message");
+      // Except `replaced`, which outranks everything: the task IS saved, so
+      // naming a missing field would be telling the user to fix a form whose
+      // work is already done.
+      expect(saveBlockedReason(gate({ replaced: true, title: "" }))?.field).toBe(null);
+    });
   });
 });
 
