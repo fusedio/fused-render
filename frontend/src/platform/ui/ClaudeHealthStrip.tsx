@@ -165,10 +165,6 @@ export function ClaudeHealthStrip() {
           <IssueRow key={issue.id} issue={issue} />
         ))}
       </ul>
-      <p className="claude-health-foot">
-        Everything else in Fused Render works without this — browsing, previews
-        and your own apps are unaffected.
-      </p>
     </section>
   );
 }

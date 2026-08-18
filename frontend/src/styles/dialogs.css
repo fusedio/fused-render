@@ -292,9 +292,3 @@
   flex-wrap: wrap;
   margin-bottom: 8px;
 }
-
-.claude-health-foot {
-  margin: 12px 0 0;
-  color: var(--fg-muted);
-  font-size: 12px;
-}

@@ -123,9 +123,7 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
     issues.push({
       id: "signed-out",
       title: "Claude Code isn't signed in",
-      detail:
-        "Open a terminal, run `claude`, type /login and finish signing in. " +
-        "It happens once.",
+      detail: "Open a terminal, run `claude`, type /login and finish signing in.",
       helpKind: "login",
     });
   }
