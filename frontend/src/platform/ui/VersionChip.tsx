@@ -1,5 +1,5 @@
 // The sidebar's version indicator — and, when this installation has been
-// changed by a self-fix session, the one place that says so (SPEC §42, SF-6).
+// changed by a self-fix session, the one place that says so (SPEC §43, SF-6).
 //
 // **Why the version, and not a badge of its own.** "v0.4.18" is a claim: it
 // names the bytes you are running, and every support conversation starts by

@@ -104,7 +104,7 @@ getConfig().then(
     // THE BOOT FAILURE, and the one error surface that cannot describe itself:
     // /api/config is what failed, so there is no version, no install path and
     // no platform to put in the report — the card degrades to the error and the
-    // help link, which is exactly what SF-43's `troubleReport` is built to do.
+    // help link, which is exactly what §42's `troubleReport` is built to do.
     // It still beats what was here (one red line naming an endpoint), because
     // the user reading it has an unusable app and no idea whether to reinstall,
     // restart, or ask someone.

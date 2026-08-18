@@ -54,8 +54,8 @@ test("a failure SHAPE about something else is not about Claude", () => {
   // wrong advice TR-2 exists to prevent, arriving from the other side.
   expect(
     troubleKind(
-      "could not write the incident file: [Errno 2] No such file or directory: " +
-        "'/Volumes/gone/.fused-render-selffix/incidents/x.md'"
+      "could not write the report: [Errno 2] No such file or directory: " +
+        "'/Volumes/gone/notes/report.md'"
     )
   ).toBe("raw");
   expect(troubleKind("mount probe failed: authentication failed for s3://bucket")).toBe("raw");
@@ -99,7 +99,7 @@ test("the report carries the installation, which is what the user cannot look up
     install_root: "/Applications/FusedRender.app/Contents/Resources/lib/python3.12/fused_render",
     version: "0.4.22",
     platform: "macOS-15.0",
-    page: "/preferences?tab=selffix",
+    page: "/explorer/view/Users/me/data.parquet",
   });
   expect(text).toContain("/Applications/FusedRender.app");
   expect(text).toContain("v0.4.22");

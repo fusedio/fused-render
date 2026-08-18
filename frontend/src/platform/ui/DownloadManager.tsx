@@ -266,7 +266,7 @@ function Bar({ job }: { job: Job }) {
   );
 }
 
-// "Fix this" — the self-fix trigger (SPEC §42, SF-1). Offered on a FAILED row
+// "Fix this" — the self-fix trigger (SPEC §43, SF-1). Offered on a FAILED row
 // and nowhere else, which is the whole of its placement argument: a failure is
 // the one moment where the app has already admitted it cannot do the thing, so
 // an offer to go and look at why is not an interruption. On a running row it

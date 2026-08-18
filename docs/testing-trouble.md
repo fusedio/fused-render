@@ -1,6 +1,6 @@
 # Test plan — when something around the app is broken
 
-Covers the four failures in SPEC §43 (D328): Claude Code missing, Claude not
+Covers the four failures in SPEC §42 (D328): Claude Code missing, Claude not
 signed in, Claude over its usage limit, and the two non-Claude cases — config
 that will not load at boot, and a template registry that will not parse.
 
@@ -84,12 +84,22 @@ Simulate without uninstalling anything — run the server with a PATH that has n
 env PATH=/usr/bin:/bin .venv/bin/python -m fused_render.cli
 ```
 
-- Preferences → **Fix this app** → describe anything → **Start a fix session**.
+- Open the builder's home and create an app: type anything into the composer
+  and submit. The folder is created, then the session fails to start.
 - Expect: *"The app can't find Claude Code"*, the install command
   (`curl -fsSL https://claude.ai/install.sh | bash`) with its own Copy button,
-  and a link to `#troubleshooting-notfound`.
-- Do the same from a **failed download row's Fix this** button. Expect the
-  compact card — same title, clamped error, Copy + link, no install block.
+  a link to `#troubleshooting-notfound`, and — the part specific to this
+  surface — the line *"The app folder was created — only the session failed"*.
+  That distinction is the whole reason the hero keeps the spawn error in its
+  own state instead of prefixing it into the generic error banner.
+- Check the app folder really is there afterwards. A card that says the folder
+  exists while it does not would be worse than the red string it replaced.
+- Then the two surfaces self-fix adds. Preferences → **Fix this app** →
+  describe anything → **Start a fix session**: same title, the install command
+  with its own Copy button, the link to `#troubleshooting-notfound`. And a
+  **failed download row's Fix this** button: the compact card — same title,
+  clamped error, Copy + link, no install block, because that surface is a
+  340px notification.
 
 ### 2. Claude is installed but not signed in
 
@@ -103,7 +113,7 @@ bun test src/platform/lib/trouble.test.ts -t "signed-out"
 
 - Expect: *"Claude Code isn't signed in"* and `#troubleshooting-login`.
 - **Regression to watch:** this must never say "install Claude Code". That is
-  the failure mode the ordering in `PATTERNS` exists to prevent.
+  the failure mode the two-tier ordering in `trouble.ts` exists to prevent.
 
 ### 3. Usage limit reached
 
@@ -138,8 +148,9 @@ echo '{ this is not json' > ~/.fused-render/templates/registry.json
 - Expect the **toast**, once per broken registry: the built-in registry still
   matches, so the file previews and only your own bindings stop applying — that
   partial failure is the reported symptom, the one no fallback card can reach,
-  and the reason this is a toast rather than a card per file. Its Preferences
-  action opens the tab, which holds the whole error and copies it.
+  and the reason this is a toast rather than a card per file. Its **Copy
+  details** action puts the same block on the clipboard that every other card
+  here hands over — paste it and check it names the registry error verbatim.
 - Open a file that has **no** view at all and you get #585's
   `RegistryFixNotice` above the metadata card instead: same error, plus a
   **Repair Template Registry** button. That surface is not this feature's — do
@@ -155,10 +166,10 @@ echo '{ this is not json' > ~/.fused-render/templates/registry.json
 - Restore (`rm` the file or fix the JSON) and reopen the file — the card is
   gone, with no restart. The registry is read per stat.
 - **If you see nothing at all**, the shell bundle is stale — see the build step
-  at the top. The server half is testable without it:
-  `curl "localhost:PORT/api/selffix" | grep template_error`.
-- **Regression to watch:** an ordinary file with no preview and a *healthy*
-  registry must show no card at all. Check one (e.g. a `.xyz`) in the same run.
+  at the top. The server half is testable without it: any
+  `curl "localhost:PORT/api/fs/stat?path=<a file>"` carries `template_error`.
+- **Regression to watch:** a *healthy* registry must produce no toast at all.
+  Check one ordinary file in the same run, with the broken registry removed.
 
 ## Cross-cutting checks
 

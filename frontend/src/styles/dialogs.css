@@ -35,18 +35,17 @@
 }
 
 
-/* ---- Trouble card (SPEC §43) ---------------------------------------------
+/* ---- Trouble card (SPEC §42) ---------------------------------------------
  * The "something around the app is broken" surface: Claude Code missing, a
  * session that would not start, config that would not load, a template
- * registry that will not parse. Rendered in four places that look nothing
- * alike — a full page at boot, inside the Preferences tab, under a failed
- * download row, and in the preview's fallback card — so it carries its own
- * plate and sizing rather than inheriting whatever it landed in.
+ * registry that will not parse. Rendered in places that look nothing alike — a
+ * full page at boot, under the builder's composer, inside the Preferences tab,
+ * and (compact) under a failed download row — so it carries its own plate and
+ * sizing rather than inheriting whatever it landed in.
  *
- * WARNING-toned, not error-toned, and that is the same argument the modified
- * badge makes: nothing here is a crash. The app is working; a thing beside it
- * is not, and it is usually a minute's work to fix. A red card would say
- * "this is broken" about the wrong subject. */
+ * WARNING-toned, not error-toned: nothing here is a crash. The app is working;
+ * a thing beside it is not, and it is usually a minute's work to fix. A red
+ * card would say "this is broken" about the wrong subject. */
 .trouble-card {
   max-width: 640px;
   margin: 12px 0;

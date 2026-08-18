@@ -1,6 +1,6 @@
 // The card shown when something AROUND the app is broken — Claude Code
 // missing, a session that would not start, config that would not load, a
-// template registry that will not parse (SPEC §43, lib/trouble).
+// template registry that will not parse (SPEC §42, lib/trouble).
 //
 // One component for all of them, because the user's next three questions are
 // always the same: what happened, what do I do, and how do I hand this to

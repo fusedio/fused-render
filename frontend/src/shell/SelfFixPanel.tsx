@@ -1,4 +1,4 @@
-// Preferences → "Fix this app" (SPEC §42, SF-14). The self-fix feature's HOME,
+// Preferences → "Fix this app" (SPEC §43, SF-14). The self-fix feature's HOME,
 // as opposed to its notification.
 //
 // **Why a tab and not only the failed-row button.** The download manager's

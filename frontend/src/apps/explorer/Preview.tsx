@@ -38,7 +38,7 @@ import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { dismissToast, pushToast } from "@platform/lib/toast";
-import { syncRegistryToast } from "@platform/lib/trouble";
+import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { runCommunity, touchCommunityApp, communityCacheSlug } from "@platform/lib/community";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
@@ -1565,15 +1565,6 @@ function FallbackPreview({
     <>
       {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu} />}
       <div className="preview-body">
-        {/* THE REGISTRY, when this file has no view because of it. #585's
-            RegistryFixNotice answers exactly the case this branch used to
-            answer with a TroubleCard, and answers it better: the same
-            unreadable-registry error, plus a button that repairs it. A
-            copyable report is the right shape when nobody can act; here
-            somebody can, so the one-click fix wins and the card goes. The
-            toast below still exists for the PARTIAL failure, which this
-            notice cannot reach: when the built-in registry still matches,
-            the file previews and no fallback is rendered at all. */}
         <div className="metadata-stack">
           <RegistryFixNotice fsPath={fsPath} isDir={stat.is_dir} onReload={onReload} />
           <div className="metadata-card">
@@ -1641,23 +1632,28 @@ export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, act
   const visible = visibleModes(templates, conditions);
 
   // A REGISTRY THAT WILL NOT PARSE, announced once — and only for the failure
-  // that has nowhere else to appear (SPEC §43, TR-9).
+  // that has nowhere else to appear (SPEC §42, TR-9).
   //
   // GATED ON THIS FILE ACTUALLY HAVING A VIEW, which is the whole scope. A file
-  // with NO view falls through to FallbackPreview, where #585's
-  // RegistryFixNotice states the same error and offers a button that repairs
-  // it; announcing there too put two descriptions of one fault on one screen,
-  // this one saying "your own bindings are not applying" about a file whose
-  // preview was gone entirely. What is left is the PARTIAL failure — built-in
-  // registry still matching, file previewing, only the user's own bindings
-  // quietly dropped — which is the reported symptom and renders no card
-  // anywhere for an answer to sit on.
+  // with NO view falls through to FallbackPreview, where RegistryFixNotice
+  // states the same error and offers a button that repairs it; announcing there
+  // too would put two descriptions of one fault on one screen, this one saying
+  // "your own bindings are not applying" about a file whose preview was gone
+  // entirely. What is left is the PARTIAL failure — built-in registry still
+  // matching, file previewing, only the user's own bindings quietly dropped —
+  // which is the reported symptom and renders no card anywhere for an answer
+  // to sit on.
   //
   // The lifecycle itself is `syncRegistryToast` rather than three branches
   // written out here: dismiss on recovery, supersede on a different error, stay
-  // quiet otherwise. It is a state machine, and both bugs it has had were in
-  // its transitions rather than in anything rendered, so it belongs somewhere a
-  // test can reach it.
+  // quiet otherwise. It is a state machine, and it belongs somewhere a test can
+  // reach it.
+  //
+  // The action COPIES rather than navigates, because the error is longer than a
+  // toast line and what a user does with it is paste it — into their own AI, or
+  // into an issue. `troubleReport` is the same block every other trouble
+  // surface hands over, so what is pasted from here reads identically to what
+  // is pasted from the boot failure.
   const previews = !resolving && visible.length > 0;
   useEffect(() => {
     const error = stat.template_error || "";
@@ -1668,7 +1664,18 @@ export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, act
           msg: `Your template registry could not be read, so your own view bindings are not applying: ${error}`,
           tone: "error",
           ttlMs: 0,
-          action: { label: "Preferences", onClick: () => navigateUrl("/preferences?tab=selffix") },
+          action: {
+            label: "Copy details",
+            onClick: () => {
+              void copyToClipboard(
+                troubleReport({
+                  what: "reading the template registry that decides which view opens a file",
+                  error,
+                  page: location.pathname + location.search,
+                })
+              );
+            },
+          },
         }),
     });
   }, [stat.template_error, previews]);

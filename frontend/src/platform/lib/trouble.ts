@@ -1,6 +1,6 @@
 // When the app cannot do the thing at all — Claude Code missing, a session
 // that would not start, the config that would not load, a template registry
-// that will not parse (SPEC §43).
+// that will not parse (SPEC §42).
 //
 // **Why this is a module and not four `catch` blocks.** These failures share a
 // shape: the app is fine, something *around* it is not, and the person looking
@@ -184,7 +184,7 @@ export const FIND_INSTALL_COMMANDS: string[] = [
 
 /** User data — NOT the installation, and the distinction is load-bearing: a
     reinstall replaces one and never touches the other. It holds the template
-    registry, which is itself one of the four failures here (§43). */
+    registry, which is itself one of the four failures here (§42). */
 export const USER_DATA_DIR = "~/.fused-render";
 
 /** This session's log. Per-pid in the system temp dir (fused_render/logs.py),
