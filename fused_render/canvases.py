@@ -1702,7 +1702,19 @@ class _SyncManager:
                     # download failed) — pushing now would wholesale-replace
                     # edits we haven't seen, the exact clobber the merge
                     # exists to prevent. Re-arm and retry after the debounce.
+                    #
+                    # This is a benign, retryable deferral, not a push
+                    # failure — clear any STALE last_error/error_detail from
+                    # an earlier failed push. They only clear on a successful
+                    # push otherwise, so without this a merge-abort here would
+                    # report last time's validation errors verbatim: the
+                    # status endpoint's caller (and _fix_prompt, and the CLI
+                    # interception's error_detail passthrough) would send the
+                    # session to fix a problem this attempt never even
+                    # encountered, one it may have already fixed.
                     self.push_state = "pending"
+                    self.last_error = None
+                    self.error_detail = []
                     self._dirty_since = time.time()
                     return
         # Baseline BEFORE the push: a save landing while the push runs must

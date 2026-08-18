@@ -1285,6 +1285,48 @@ def test_push_aborts_when_remote_moved_and_zip_unavailable(harness, tmp_path, mo
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
+def test_merge_abort_clears_a_stale_error_from_an_earlier_failed_push(
+        harness, tmp_path, monkeypatch):
+    """A merge-abort (remote moved, zip download failed) is a benign,
+    retryable deferral — push_state goes "pending", not "error". But if an
+    EARLIER push failed with a real validation error, last_error/error_detail
+    stayed set (they only clear on a successful push), so a later merge-abort
+    would report last time's validation errors verbatim even though this
+    attempt never got far enough to see them. `_fix_prompt` and the CLI
+    interception's error_detail passthrough would then send a Claude session
+    to fix a problem it may have already fixed."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 1000.0)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    # First, a real validation failure: last_error/error_detail get set.
+    harness.set_scenario({"push_fail_lines": _VALIDATION_LINES})
+    (harness.root / "alpha" / "a.py").write_text("a-broken\n", encoding="utf-8")
+    status = _wait_status(harness, lambda s: s["push_state"] == "error")
+    assert status and status["push_state"] == "error", status
+    assert status["error_detail"], status
+
+    # Now: remote moved, zip download fails → the NEXT push attempt aborts
+    # via merge, not via a real push failure.
+    harness.set_scenario({"push_fail_lines": None})
+    broken_zip = tmp_path / "broken_zip2.py"
+    broken_zip.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+    monkeypatch.setattr(
+        canvases_mod, "_shim_zip_command", lambda cli: [sys.executable, str(broken_zip)]
+    )
+    shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
+    shims.set_manifest("t2")
+    (harness.root / "alpha" / "a.py").write_text("a-fixed\n", encoding="utf-8")
+
+    status = _wait_status(harness, lambda s: s["push_state"] == "pending")
+    assert status and status["push_state"] == "pending", status
+    assert status["error"] is None, status
+    assert status["error_detail"] == [], status
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
 def test_clone_seeds_claude_md_and_fusedignore(harness, tmp_path, monkeypatch):
     # A clone gets a CLAUDE.md pointing the session at the workbench:* skills
     # and a .fusedignore keeping both files out of every push. Seeding never
