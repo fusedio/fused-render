@@ -7099,22 +7099,26 @@ an AI Models page that could say what was on disk but not what was *running*.
   a model having been sent an empty prompt. Sessions Claude Code runs elsewhere in the app (the
   `claude` template, the task runner) are not this endpoint's traffic and are
   not counted.
-- **AI-12b** **A failure is counted, by kind, and is never a completion.** Every
-  exit that reached for a model and produced no text — `timeout`,
-  `ai_unavailable` (including a missing `claude` binary), `ai_error`, and the
-  409 `model_loading` that starts a download instead of answering — increments
-  a failure against its model, its tier and its bucket, so a period of failures
-  MARKS the timeline that would otherwise draw it as quiet. It is not folded
-  into `completions`, which must stay the count of calls that answered. A body
-  refused as malformed (400) is counted nowhere: nothing was asked of a model,
-  and folding a caller's typo into the failure rate would make the one number
-  that means "the AI is not working" mean "somebody sent a bad request" as
-  well. The type is kept because "3 failed" and "3 timed out" send a user to
+- **AI-12b** **A failure is counted BY KIND, is never a completion, and is
+  never shown as one total.** Every exit that reached a model for text and got
+  none — `timeout`, `ai_unavailable` (including a missing `claude` binary) and
+  `ai_error` — increments a failure against its model, its tier and its bucket,
+  so a period of failures MARKS the timeline that would otherwise draw it as
+  quiet. Three things are deliberately NOT counted, each for the same reason —
+  a number has to mean one thing:
+  * a **completion**, which must stay the count of calls that answered;
+  * a body refused as **malformed** (400), which asked no model anything, and
+    would make "the AI is not working" also mean "somebody sent a bad request";
+  * a **409 from a model that is still loading**, which did exactly what AI-5
+    designed it to do — start the download and hand back the job id to watch.
+    Counting it is how "3 failed" comes to mean "one model is downloading".
+
+  The kind is kept because "3 failed" and "3 timed out" send a reader to
   different places, and it is safe to keep unbounded: the keys are this
-  server's own vocabulary, never a caller's string. It is shown in the page's
-  ordinary weight, NOT in error styling: a refused call is a fact about a
-  session — a Stop, a model still downloading — and a red figure made one of
-  them read as the app being broken.
+  server's own vocabulary, never a caller's string. **The kinds are also the
+  only failure figure the tab shows** — no headline count, no tile, no column.
+  One number spanning several unrelated conditions is one a reader cannot act
+  on, while `2 × timeout` names the next step.
 - **AI-12c** **Bounded by construction, unguarded on read, clamped on ask.** The
   ring is a fixed 360 slots and the breakdown a fixed 32 named models plus one
   overflow row — which names no TIER, because it holds whatever mixture arrived

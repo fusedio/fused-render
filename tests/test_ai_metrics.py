@@ -253,7 +253,7 @@ def test_a_failure_is_counted_but_is_not_a_completion():
     store.record("haiku", {"output_tokens": 5})
     store.record_failure("haiku", "timeout")
     store.record_failure("haiku", "timeout")
-    store.record_failure("org/chat", "model_loading")
+    store.record_failure("org/chat", "ai_unavailable")
 
     snap = store.snapshot(5)
     assert snap["totals"]["completions"] == 1
@@ -263,7 +263,7 @@ def test_a_failure_is_counted_but_is_not_a_completion():
     # By kind, because "3 failed" and "3 timed out" send a user to different
     # places — and a model that is still loading is not a broken one.
     assert snap["failure_types"] == [{"type": "timeout", "count": 2},
-                                     {"type": "model_loading", "count": 1}]
+                                     {"type": "ai_unavailable", "count": 1}]
     by_model = {m["model"]: m["failures"] for m in snap["models"]}
     assert by_model == {"haiku": 2, "org/chat": 1}
 
@@ -298,7 +298,7 @@ def test_the_two_tiers_are_counted_apart_on_the_slash_seam():
     store = _store(clock)
     store.record("claude-opus-5", {"input_tokens": 4, "output_tokens": 10})
     store.record("mlx-community/Qwen3-8B-4bit", {"output_tokens": 90, "seconds": 3.0})
-    store.record_failure("mlx-community/Qwen3-8B-4bit", "model_loading")
+    store.record_failure("mlx-community/Qwen3-8B-4bit", "ai_error")
 
     tiers = store.snapshot(5)["tiers"]
     assert tiers["claude"]["output_tokens"] == 10
@@ -483,9 +483,12 @@ def test_a_missing_claude_binary_is_counted(monkeypatch):
         [{"type": "ai_unavailable", "count": 1}]
 
 
-def test_a_model_that_is_still_loading_is_counted_as_its_own_kind(monkeypatch):
-    """409 is not "broken": the call started a download and said so (AI-5). It
-    still produced no text, so it is counted — under a type that says which."""
+def test_a_model_that_is_still_loading_is_not_a_failure(monkeypatch):
+    """A 409 did exactly what AI-5 designed it to do: a cold model cannot answer
+    in the seconds a caller has, so the load STARTS and the job id comes back
+    for the page to watch. Counting it is how "3 failed" comes to mean "one
+    model is downloading" — and a number that means two things is one nobody
+    can act on."""
     def cold(model, request):
         raise supervisor.ModelNotReady("org/chat is loading now", "sys:ai-model:orgchat")
         yield  # pragma: no cover - generator function, never reached
@@ -493,10 +496,12 @@ def test_a_model_that_is_still_loading_is_counted_as_its_own_kind(monkeypatch):
     monkeypatch.setattr(supervisor, "generate_text", cold)
     resp = asyncio.run(_server_ai._ai_relay({"prompt": "hi", "model": "org/chat"}))
     assert resp.status_code == 409
+    assert json.loads(bytes(resp.body))["error"]["jobId"]  # the load it started
 
     snap = ai_metrics.snapshot(5)
-    assert snap["failure_types"] == [{"type": "model_loading", "count": 1}]
-    assert snap["tiers"]["local"]["failures"] == 1
+    assert snap["failure_types"] == []
+    assert snap["totals"]["failures"] == 0
+    assert snap["tiers"]["local"]["failures"] == 0
 
 
 def test_a_refused_request_never_reaches_the_counter(monkeypatch):

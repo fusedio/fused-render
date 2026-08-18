@@ -21,9 +21,15 @@
 //
 // Volume is not the whole question, so three more counters share the tab, each
 // answering something the token count alone cannot:
-//   * FAILURES, by kind. A page whose every call times out has generated zero
-//     tokens — indistinguishable from a page nobody opened until the failures
-//     are on screen beside them, which is why they also mark the timeline.
+//   * FAILURES, BY KIND — and only by kind. A page whose every call times out
+//     has generated zero tokens, indistinguishable from a page nobody opened,
+//     so what went wrong is named (`timeout`, `ai_unavailable`, `ai_error`) and
+//     the timeline is marked where it happened. There is deliberately NO total
+//     "failed" figure in a headline, a tile, or a column: one number over
+//     several unrelated conditions is a number a reader cannot act on, and the
+//     kinds are the part that sends them somewhere. A model that is merely
+//     still loading is not counted at all (AI-12b) — that call started a
+//     download and said so.
 //   * SPEED (tokens/second, and the seconds behind it). The number anybody
 //     choosing between two local models actually wants, and the explanation
 //     when a model that landed on the CPU (AI-11b) "feels broken".
@@ -265,7 +271,6 @@ function UsageModels({
           <th>Read</th>
           <th>Generated</th>
           <th>Speed</th>
-          <th>Failed</th>
           {/* The unit is in the header, not in the box: a placeholder inside an
               input disappears the moment somebody types, and this is the one
               thing a reader has to know to trust the column beside it. It also
@@ -301,10 +306,6 @@ function UsageModels({
               <td>{row.input_tokens === null ? "—" : fmt(row.input_tokens)}</td>
               <td>{fmt(row.output_tokens)}</td>
               <td>{row.tokens_per_second === null ? "—" : `${row.tokens_per_second}/s`}</td>
-              {/* Not error-styled. A failure count is a fact about a session,
-                  not an alarm the page raises — colouring it red made a single
-                  refused call read as something being wrong with the app. */}
-              <td>{row.failures ? fmt(row.failures) : "—"}</td>
               <td>
                 <input
                   className="am-usage-rate"
@@ -325,7 +326,7 @@ function UsageModels({
       {usage.models.length > 1 && (
         <tfoot>
           <tr>
-            <td colSpan={7}>Estimated total</td>
+            <td colSpan={6}>Estimated total</td>
             <td>{total === null ? "—" : money(total)}</td>
           </tr>
         </tfoot>
@@ -338,18 +339,16 @@ function UsageModels({
  *  one at zero: "you have never run a model locally" is a true and useful thing
  *  for THIS page to say, and an absent row would just read as a rendering gap. */
 function TierLine({ tier, counts }: { tier: AiUsageTier; counts: AiUsageCounts }) {
-  const idle = counts.completions === 0 && counts.failures === 0;
   return (
     <div className="am-usage-tier-line">
       <b>{tier === "claude" ? "Claude" : "Local models"}</b>{" "}
-      {idle ? (
+      {counts.completions === 0 ? (
         <span className="am-usage-muted">nothing yet</span>
       ) : (
         <>
           {fmt(counts.output_tokens)} generated · {fmt(counts.completions)}{" "}
           {counts.completions === 1 ? "completion" : "completions"}
           {counts.tokens_per_second !== null && ` · ${counts.tokens_per_second}/s`}
-          {counts.failures > 0 && ` · ${fmt(counts.failures)} failed`}
         </>
       )}
     </div>
@@ -421,14 +420,6 @@ export default function AiModelsUsage() {
                   {usage.window.tokens_per_second !== null &&
                     ` · ${usage.window.tokens_per_second} tok/s`}
                 </span>
-                {/* Beside the headline, not in a corner: a window in which
-                    calls failed is worth seeing without going looking. In the
-                    caption's own colour, though — a failed call is a fact about
-                    the session, not an alarm this page raises, and red made one
-                    refused call read as the app being broken. */}
-                {usage.window.failures > 0 && (
-                  <span className="am-usage-sub"> · {fmt(usage.window.failures)} failed</span>
-                )}
               </div>
               {/* Same segmented-control vocabulary as the page's tab strip,
                   because it is the same kind of control — one of a few, always
@@ -483,15 +474,6 @@ export default function AiModelsUsage() {
                 <div className="cc-mdcard am-usage-tile">
                   <div className="am-usage-tile-value">{fmt(usage.totals.completions)}</div>
                   <div className="am-usage-tile-label">completions</div>
-                </div>
-                <div className="cc-mdcard am-usage-tile">
-                  {/* A zero here is a REAL answer — unlike a missing input
-                      count — so it is printed. In the same weight as every
-                      other tile: this counts calls that produced no text, which
-                      is ordinary (a Stop, a model still downloading), and error
-                      styling would make the tile shout on a healthy session. */}
-                  <div className="am-usage-tile-value">{fmt(usage.totals.failures)}</div>
-                  <div className="am-usage-tile-label">failed</div>
                 </div>
                 <div className="cc-mdcard am-usage-tile">
                   <div className="am-usage-tile-value">

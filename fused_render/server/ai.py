@@ -118,10 +118,12 @@ def _ai_failed(model: str, type_: str, message: str, status: int = 502):
     """An error response that is also COUNTED (AI-12): a call that reached for a
     model and got nothing back.
 
-    Only for failures past the validation gate. A malformed body is refused with
-    `_ai_error` and counted nowhere — nothing was asked of a model, and folding
-    a typo into the failure rate would make the one number that means "the AI is
-    not working" mean "somebody sent a bad request" as well.
+    Only for failures past the validation gate, and only for calls that asked a
+    model for text and got none. A malformed body is refused with `_ai_error`
+    and counted nowhere — nothing was asked of a model — and neither is a 409
+    from a model that is still loading, which did the thing AI-5 designed it to
+    do. Both would make the one number that means "the AI is not working" mean
+    something else as well.
     """
     ai_metrics.record_failure(model, type_)
     return _ai_error(type_, message, status=status)
@@ -797,9 +799,13 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         events = supervisor.generate_text(model, request)
         first = next(events, None)
     except supervisor.ModelNotReady as e:
-        # Counted, like any other call that produced no text — the TYPE is what
-        # says this one started a download rather than broke.
-        ai_metrics.record_failure(model, "model_loading")
+        # NOT counted as a failure (AI-12b). This call did exactly what AI-5
+        # says it should: a model that is not resident cannot answer in the
+        # seconds a caller has, so the load STARTS and the job id comes back —
+        # the caller is meant to watch it and ask again. Counting that beside a
+        # timeout or a missing binary is how "3 failed" comes to mean "one
+        # model is downloading", which is the conflation this rule exists to
+        # prevent: the number has to mean one thing.
         return JSONResponse(
             {"ok": False, "error": {"type": "model_loading", "message": str(e),
                                     "jobId": e.job_id}},

@@ -12,7 +12,8 @@ Four counters, because volume alone answers only the first of those:
 * **Tokens and completions**, bucketed over time — the graph.
 * **Failures, by kind** — a page whose calls all time out has generated zero
   tokens, which is the same picture as a page nobody opened until the failures
-  are counted beside them.
+  are counted beside them. A model that is merely still LOADING is not one of
+  them: that call started a download and said so.
 * **Seconds spent generating**, and the tokens/second that falls out of it —
   the number anybody choosing between two local models actually wants, and the
   explanation when a model on the CPU (AI-11b) "feels broken".
@@ -216,8 +217,8 @@ class _Store:
             self._totals = _Counts()
             # Error TYPE -> count, since start. Unbounded on purpose and safe to
             # be: the keys are this server's own vocabulary (`ai_error`,
-            # `timeout`, `ai_unavailable`, `model_loading`), never a caller's
-            # string, so there is nothing here for a page to grow.
+            # `timeout`, `ai_unavailable`), never a caller's string, so there is
+            # nothing here for a page to grow.
             self._failure_types: dict[str, int] = {}
             self._last_completion: float | None = None
             self._started_mono = self._monotonic()
@@ -281,11 +282,13 @@ class _Store:
             self._last_completion = self._wall()
 
     def record_failure(self, model: str, error_type: str) -> None:
-        """Count one call that asked a model for something and got nothing.
+        """Count one call that asked a model for text and got nothing back.
 
         Deliberately NOT counted as a completion: it generated no tokens, and
         folding it in would make "44 completions" a number that includes 3
-        things that never answered.
+        things that never answered. And deliberately NOT every non-2xx: a 409
+        from a model that is still loading started the load it was supposed to
+        start (AI-5), so it is not counted here at all — see AI-12b.
         """
         with self._lock:
             for row in (*self._rows(model), self._totals):
