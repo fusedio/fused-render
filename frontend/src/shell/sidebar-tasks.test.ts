@@ -141,6 +141,24 @@ describe("the sidebar's tasks pulse", () => {
     expect(seenAfterVisit([task({ key: "a", status: "in_progress" })])).toEqual({});
   });
 
+  it("merges a visit's stamps over the ones already held", () => {
+    // BUGBOT, 2026-08-18: rebuilding the map out of the DONE rows alone dropped
+    // the stamp of any task that was momentarily something else. A finished task
+    // that has just been re-run reads `in_progress` for the length of that run,
+    // so the old rule threw its stamp away mid-run and the PREVIOUS completion
+    // popped back as unseen the moment the new one landed.
+    const prev: TasksSeen = { a: 100, b: 200 };
+    const rerunning = task({ key: "a", status: "in_progress", last_active: 400 });
+    const finished = task({ key: "b", status: "done", unread: 1, last_active: 250 });
+    const next = seenAfterVisit([rerunning, finished], prev);
+    expect(next).toEqual({ a: 100, b: 250 });
+    // The prune is the ANSWER'S OWN membership: a task that has left the list
+    // takes its stamp with it, so the row cannot grow without bound.
+    expect(seenAfterVisit([finished], prev)).toEqual({ b: 250 });
+    // With nothing held, a merge is the plain stamping it always was.
+    expect(seenAfterVisit([finished])).toEqual({ b: 250 });
+  });
+
   it("reads a hand-edited or ancient store as 'nothing dismissed'", () => {
     // One extra dot is the failure mode; a throw inside a render is not.
     for (const raw of [null, "", "not json", "[]", '"x"', "7"]) {
@@ -189,10 +207,29 @@ describe("one poll behind both readers", () => {
     // stops with the last, like aiRuntime's.
     expect(STORE).toContain("listeners.add(setCurrent)");
     expect(STORE).toContain("listeners.delete(setCurrent)");
-    expect(STORE).toMatch(/if \(listeners\.size === 0\)/);
+    expect(STORE).toMatch(/if \(listeners\.size === 0 \|\| feeders > 0\) return;/);
     // Cadence follows the state, and idle is slower than the page's own 20s.
     expect(STORE).toContain("pulse.running > 0 ? ACTIVE_MS : IDLE_MS");
     expect(STORE).toContain("const IDLE_MS = 30_000");
+  });
+
+  it("stands down completely while the page is the poller", () => {
+    // BUGBOT, 2026-08-18: restarting the timer on every publish was not enough.
+    // The page polls every 20s and this module re-armed at ACTIVE_MS (10s)
+    // whenever anything was running — so the busiest case, /tasks open with work
+    // in flight, fired an EXTRA request between the page's own. A feeder is not a
+    // hint about timing: it says this module is not the poller, and the timer
+    // does not run at all while one is held.
+    expect(STORE).toContain("export function useTasksFeeder()");
+    expect(STORE).toContain("feeders++");
+    expect(STORE).toContain("feeders--");
+    expect(SCHEDULED).toContain("useTasksFeeder();");
+    // Held for the page's whole life, so it is armed exactly while the page's own
+    // poll is — not toggled per fetch, where a failed round would hand the job
+    // back mid-visit.
+    expect(SCHEDULED.indexOf("useTasksFeeder();")).toBeLessThan(
+      SCHEDULED.indexOf("const reload = () =>"),
+    );
   });
 
   it("keeps the route in the sidebar and the storage in the store", () => {
@@ -217,6 +254,27 @@ describe("one poll behind both readers", () => {
     expect(STORE).toContain("localStorage.getItem(TASKS_SEEN_KEY)");
     expect(STORE).toContain("localStorage.setItem(TASKS_SEEN_KEY");
     expect((STORE.match(/try \{/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("never stamps from a store that has not been filled yet", () => {
+    // BUGBOT, 2026-08-18: the sidebar's effect runs on the FIRST render on
+    // /tasks, before the fetch answers. Stamping "every done task on screen"
+    // over an empty store wrote `{}` and threw away every dismissal the reader
+    // had — and someone who opened the page and left before the first poll came
+    // back lost them permanently. `[]` before the first answer and `[]` on a
+    // machine with no tasks are different facts, so the store records which one
+    // it is holding.
+    expect(STORE).toContain("let loaded = false;");
+    expect(STORE).toContain("loaded = true;");
+    expect(STORE).toMatch(/export function markTasksSeen\(\) \{\n  if \(!loaded\) return;/);
+    // Only a real answer sets it: the flag is raised where the rows arrive.
+    const publish = STORE.slice(
+      STORE.indexOf("export function publishTasks"),
+      STORE.indexOf("}", STORE.indexOf("export function publishTasks")),
+    );
+    expect(publish).toContain("loaded = true;");
+    // And the write MERGES over what is already stored rather than replacing it.
+    expect(STORE).toContain("seenAfterVisit(tasks, seen)");
   });
 });
 

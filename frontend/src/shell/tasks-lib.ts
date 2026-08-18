@@ -2739,19 +2739,31 @@ export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
 }
 
 /**
- * The dismissal a visit to /tasks earns: every DONE task on screen, stamped
- * with the completion that was on screen.
+ * The dismissal a visit to /tasks earns: every DONE task on screen, stamped with
+ * the completion that was on screen — MERGED over what was already known.
  *
- * Done tasks only, and only the ones in this answer — which is also the pruning
- * rule, so the row cannot grow without bound as tasks come and go. A running
- * task is deliberately not stamped: its completion has not happened yet, and
- * pre-dismissing it is how the one mark this feature exists for would never be
- * drawn.
+ * Done tasks only. A running task is deliberately not stamped: its completion
+ * has not happened yet, and pre-dismissing it is how the one mark this feature
+ * exists for would never be drawn.
+ *
+ * A MERGE, NOT A REPLACEMENT (bugbot, 2026-08-18). Rebuilding the map out of the
+ * done rows alone silently dropped the stamp of any task that was momentarily
+ * something else — a finished task that has just been re-run reads `in_progress`
+ * for the length of that run, and the old rule threw its stamp away mid-run, so
+ * the PREVIOUS completion popped back as unseen the moment the new one landed.
+ * Anything this answer still lists keeps what was known about it.
+ *
+ * The PRUNE is the answer's own membership: a key absent from `tasks` is
+ * dropped, so the row cannot grow without bound as tasks come and go. That is
+ * only sound against a REAL answer — tasksPulse.markTasksSeen refuses to run
+ * this before the first fetch has landed, because an empty store and an empty
+ * machine are not the same fact.
  */
-export function seenAfterVisit(tasks: Task[]): TasksSeen {
+export function seenAfterVisit(tasks: Task[], prev: TasksSeen = {}): TasksSeen {
   const next: TasksSeen = {};
   for (const t of tasks) {
     if (taskColumn(t) === "done") next[t.key] = t.last_active;
+    else if (prev[t.key] !== undefined) next[t.key] = prev[t.key];
   }
   return next;
 }

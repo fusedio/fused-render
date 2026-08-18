@@ -267,6 +267,12 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // comes back only for a completion stamped after the visit
   // (tasks-lib.seenAfterVisit), which is why the dismissal is a stamp per task
   // and not a flag.
+  //
+  // It fires on the FIRST render here too, before any answer has landed, and the
+  // store is what makes that harmless: markTasksSeen is a no-op until a real
+  // fetch has come back, because stamping "everything on screen" over an empty
+  // store would write an empty map and throw away every dismissal the reader
+  // had (bugbot, 2026-08-18).
   useEffect(() => {
     if (tasksActive) markTasksSeen();
   }, [tasksActive, pulse]);

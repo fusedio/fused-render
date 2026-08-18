@@ -548,6 +548,15 @@ button.tasks-caret,
      one of these buttons would navigate instead of acting. */
   position: relative;
   z-index: 2;
+  /* AND INVISIBLE MEANS INTANGIBLE (bugbot, 2026-08-18). `opacity: 0` alone
+     leaves a live control sitting at `z-index: 2` over the row's stretched link,
+     so a press there hits a button nobody can see and NOTHING happens — the dead
+     click design-principles §0 forbids. It was harmless while these sat in their
+     own reserved boxes at the row's end; it stopped being harmless the moment
+     Archive moved on top of the status ring, where it covered the one mark a
+     reader is most likely to aim at. The reveal below hands the events back
+     with the ink, so a control is graspable exactly when it is visible. */
+  pointer-events: none;
 }
 
 .tasks-row:hover .tasks-act,
@@ -556,6 +565,7 @@ button.tasks-caret,
 .tasks-msg:focus-within .tasks-act,
 .tasks-act:focus-visible {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .tasks-act:hover:not(:disabled),
@@ -761,7 +771,11 @@ button.tasks-caret,
 
 .tasks-card-act,
 .prefs-section .tasks-card-act {
-  pointer-events: auto;
+  /* The events come back with the INK (see the reveal rule below), not here.
+     This used to be an unconditional `auto`, which put an invisible button over
+     a card that is itself a button: a press on that corner at rest hit the
+     hidden control and did nothing, instead of opening the chat like the rest of
+     the card. Same rule as the row's `.tasks-act` — visible or intangible. */
   /* NO SKIN. The button lets the card show through and paints only on its own
      hover (`.tasks-act:hover`, above).
 
@@ -788,6 +802,7 @@ button.tasks-caret,
 .tasks-card-wrap:focus-within .tasks-card-act,
 .tasks-card-act:focus-visible {
   opacity: 1;
+  pointer-events: auto;
 }
 
 /* Mid-write, same as the row's: the card is being pointed at, so full opacity is

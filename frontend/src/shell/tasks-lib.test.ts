@@ -3433,7 +3433,14 @@ describe("the archive action", () => {
     // The strip is invisible chrome over a card that IS a button, so the gap
     // between its children must not swallow the press that opens the chat.
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*pointer-events: none/);
+    // The button takes its events back with its INK, not at rest: an invisible
+    // control over a card that is itself a button ate the press that should have
+    // opened the chat (bugbot, 2026-08-18 — the row's own fix, applied to the
+    // card for the same reason).
     expect(TASKS_CSS).toMatch(
+      /\.tasks-card-wrap:hover \.tasks-card-act,\n[^{]*\{[^}]*pointer-events: auto/,
+    );
+    expect(TASKS_CSS).not.toMatch(
       /\.tasks-card-act,\n\.prefs-section \.tasks-card-act \{[^}]*pointer-events: auto/,
     );
   });
@@ -3487,6 +3494,23 @@ describe("the archive action", () => {
     // A row with nothing to file keeps its ring under the pointer: a blank slot
     // where the row's status was is worse than no swap at all.
     expect(TASKS_CSS).toContain(":not(:has(.tasks-act--archive)) .schedule-ring");
+
+    // AND THE INVISIBLE BUTTON CANNOT TAKE A PRESS (bugbot, 2026-08-18, HIGH).
+    // `opacity: 0` alone left a live control at `z-index: 2` sitting over the
+    // ring and the row's stretched link, so a click on the row's most-aimed-at
+    // mark hit a button nobody could see and did nothing — a dead click, which
+    // design-principles §0 forbids outright. The events come back with the ink
+    // and not a moment before.
+    const rest = block(TASKS_CSS, ".tasks-act");
+    expect(rest).toContain("pointer-events: none");
+    const reveal = block(TASKS_CSS, ".tasks-row:hover .tasks-act");
+    expect(reveal).toContain("opacity: 1");
+    expect(reveal).toContain("pointer-events: auto");
+    // The keyboard arm is in the SAME rule, so a tabbed-to button is graspable
+    // too rather than visible-but-inert.
+    expect(TASKS_CSS).toMatch(
+      /\.tasks-act:focus-visible \{\n\s*opacity: 1;\n\s*pointer-events: auto;/,
+    );
   });
 
   it("leaves the board card's archive exactly where it was", () => {

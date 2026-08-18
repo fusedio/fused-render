@@ -42,6 +42,14 @@ let seen: TasksSeen = readSeen();
 let pulse: TasksPulse = EMPTY_TASKS_PULSE;
 let timer: number | null = null;
 let inFlight = false;
+/** Has a real answer landed? `tasks` is `[]` both before the first read and on a
+ *  machine with no tasks, and those two must not be treated alike — see
+ *  markTasksSeen, where mistaking one for the other throws away the reader's
+ *  dismissals. */
+let loaded = false;
+/** How many owners are feeding this store from their OWN poll (the Tasks page).
+ *  While there is one, this module does not poll at all — see schedule. */
+let feeders = 0;
 const listeners = new Set<(p: TasksPulse) => void>();
 
 function readSeen(): TasksSeen {
@@ -90,21 +98,49 @@ async function poll() {
   }
 }
 
+/**
+ * Arm the next self-poll — or, deliberately, do not.
+ *
+ * NOTHING IS POLLED WHILE SOMEONE ELSE IS FEEDING US (bugbot, 2026-08-18).
+ * Restarting the timer on every publish was not enough: the page polls every 20s
+ * and this module re-armed at 10s whenever anything was running, so the busiest
+ * case — the Tasks page open with work in flight — fired an EXTRA request between
+ * the page's own, which is exactly the double-poll the shared store exists to
+ * prevent. A feeder is not a hint about timing, it is a statement that this
+ * module is not the poller, so the timer simply does not run.
+ */
 function schedule() {
   if (timer !== null) window.clearTimeout(timer);
-  if (listeners.size === 0) {
-    timer = null;
-    return;
-  }
+  timer = null;
+  if (listeners.size === 0 || feeders > 0) return;
   timer = window.setTimeout(poll, pulse.running > 0 ? ACTIVE_MS : IDLE_MS);
 }
 
-/** Hand over a known-fresh answer — what the Tasks page's own poll returned — so
- *  the sidebar tracks the page for free and this module's timer starts over. */
+/** Hand over a known-fresh answer — what the Tasks page's own poll returned. */
 export function publishTasks(next: Task[]) {
   tasks = next;
+  loaded = true;
   recompute();
   schedule();
+}
+
+/**
+ * "I poll this endpoint myself; take my answers and do not make your own calls."
+ *
+ * The Tasks page holds one of these for as long as it is mounted, which is
+ * exactly as long as its own poll is running. Mount/unmount rather than a
+ * timestamp heuristic: the store then knows whether it is the poller instead of
+ * guessing from how recently someone published.
+ */
+export function useTasksFeeder() {
+  useEffect(() => {
+    feeders++;
+    schedule();
+    return () => {
+      feeders--;
+      schedule();
+    };
+  }, []);
 }
 
 /**
@@ -114,9 +150,19 @@ export function publishTasks(next: Task[]) {
  * makes the mark stay gone while the page is open — a dot pointing at a row the
  * reader is looking at is noise. It comes back when a task completes after the
  * visit, because that completion was never stamped (tasks-lib.seenAfterVisit).
+ *
+ * A NO-OP UNTIL A REAL ANSWER HAS LANDED (bugbot, 2026-08-18). The first render
+ * on /tasks runs this against an EMPTY store — the fetch has not come back yet —
+ * and stamping "every done task on screen" over an empty screen wrote `{}` and
+ * threw away every dismissal the reader had. Someone who opened the page and
+ * left before the first poll answered lost the lot, permanently. `loaded` is the
+ * difference between "no tasks" and "no answer yet", and the write MERGES over
+ * the answer (tasks-lib.seenAfterVisit) rather than replacing the map, so a
+ * stamp survives anything short of its task leaving the list.
  */
 export function markTasksSeen() {
-  writeSeen(seenAfterVisit(tasks));
+  if (!loaded) return;
+  writeSeen(seenAfterVisit(tasks, seen));
 }
 
 /** Subscribe to the summary. Polling starts with the first reader and stops with
