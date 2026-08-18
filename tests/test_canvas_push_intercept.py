@@ -46,6 +46,41 @@ def test_the_canonical_push_is_recognised():
     ) == {"source_dir": ".", "canvas": "alpha", "unsupported": []}
 
 
+@pytest.mark.parametrize("global_prefix", [
+    ["--env", "unstable"],
+    ["--backend", "local"],
+    ["--enable-infra"],
+    ["--enable-destructive"],
+    ["--disable-reset"],
+    ["--env=unstable"],
+    ["--backend=local"],
+    # Several stacked, in whatever order a session might type them.
+    ["--enable-infra", "--env", "unstable"],
+    ["--backend", "local", "--enable-infra", "--disable-reset"],
+])
+def test_a_global_option_before_the_subcommand_is_still_recognised(global_prefix):
+    """`fused` mounts `workbench` under a TOP-LEVEL group with its own options
+    (fused/agent_core/cli.py) — `fused --env unstable workbench canvas push .`
+    is a real shape a session can type, and matching `args[:3]` verbatim
+    missed it entirely, falling through to the raw, unguarded push."""
+    assert _canvas_push.parse_push([*global_prefix, "workbench", "canvas", "push", "."]) == {
+        "source_dir": ".", "canvas": None, "unsupported": []}
+    assert _canvas_push.parse_push(
+        [*global_prefix, "workbench", "canvas", "push", "/x/alpha", "--canvas", "alpha"]
+    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": []}
+
+
+def test_an_unrecognised_option_before_the_subcommand_falls_through():
+    """Conservative by construction: a global flag this parser has never heard
+    of must fall through rather than guess whether it takes a value."""
+    assert _canvas_push.parse_push(
+        ["--some-future-flag", "workbench", "canvas", "push", "."]
+    ) is None
+    # A malformed value-taking global option (nothing after it) is also left
+    # to the real CLI to complain about, not guessed at.
+    assert _canvas_push.parse_push(["--env"]) is None
+
+
 @pytest.mark.parametrize("args", [
     # Not a push at all — the overwhelming majority of `fused` traffic.
     ["workbench", "canvas", "pull", "alpha", "-o", "/x/alpha"],

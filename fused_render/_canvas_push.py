@@ -104,6 +104,44 @@ _UNSUPPORTED_FLAGS = ("--no-validate", "--no-ignore")
 _VALUE_OPTS = ("--canvas",)
 _BARE_OPTS = ("--id",)
 
+# fused._cli mounts the legacy `workbench` group under a TOP-LEVEL group
+# (`fused.agent_core.cli`) that has its own options — so
+# `fused --env unstable workbench canvas push .` is the canonical push command
+# with a global option in front of it, and matching `args[:3]` verbatim missed
+# it entirely (fell through to the raw, unguarded push). These are that
+# group's options as of this writing (`fused/agent_core/cli.py`'s `cli()`):
+# `--backend`/`--env` take a value, the rest are bare flags. Anything else
+# ahead of `workbench` is unrecognised, so parsing stops and falls through —
+# same conservative rule as everywhere else in this matcher.
+_GLOBAL_VALUE_OPTS = ("--backend", "--env")
+_GLOBAL_FLAG_OPTS = ("--enable-infra", "--enable-destructive", "--disable-reset")
+
+
+def _skip_global_options(args: list[str]) -> list[str]:
+    """Argv with any recognised leading global options removed, so the
+    `workbench canvas push` match below still fires behind them."""
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if token in _GLOBAL_FLAG_OPTS:
+            i += 1
+            continue
+        if token in _GLOBAL_VALUE_OPTS:
+            if i + 1 >= len(args):
+                break  # malformed; let the real CLI produce the error
+            i += 2
+            continue
+        matched = False
+        for opt in _GLOBAL_VALUE_OPTS:
+            if token.startswith(opt + "="):
+                i += 1
+                matched = True
+                break
+        if matched:
+            continue
+        break  # not a global option this recognises — stop here
+    return args[i:]
+
 
 def canvases_root() -> str:
     return os.environ.get(_CANVASES_DIR_ENV) or os.path.expanduser(_DEFAULT_CANVASES_DIR)
@@ -131,9 +169,10 @@ def parse_push(args: list[str]) -> dict | None:
 
     `args` is argv WITHOUT the program name, i.e. what click sees.
     """
-    if args[:3] != ["workbench", "canvas", "push"]:
+    skipped = _skip_global_options(args)
+    if skipped[:3] != ["workbench", "canvas", "push"]:
         return None
-    rest = args[3:]
+    rest = skipped[3:]
     positionals: list[str] = []
     canvas = None
     unsupported = []
