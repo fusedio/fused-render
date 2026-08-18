@@ -216,6 +216,10 @@ Case 1 above stages the same machine state; this checks the half that happens
 FUSED_RENDER_CLAUDE_BIN=/nonexistent PATH=/usr/bin:/bin scripts/dev.sh
 ```
 
+The same state #621's first-run strip reports on Home and /apps — and the same
+snapshot: both read `claude_health`, so if the strip and this button ever
+disagree about one machine, that is the bug to chase.
+
 - **A failed download row** reads **Set up Claude Code**, not *Fix this*.
   Clicking it still asks the server and shows the `notfound` card from the
   server's own answer.

@@ -21,6 +21,10 @@ from fused_render import __version__, claude_spawn, selffix
 from fused_render.server import create_app
 from fused_render.server.routers import selffix as selffix_routes
 
+# Captured before the autouse pin below replaces it, so the one test that is
+# ABOUT the resolution can exercise the real thing.
+REAL_CLAUDE_FOUND = selffix_routes._claude_found
+
 
 @pytest.fixture()
 def install(tmp_path, monkeypatch):
@@ -54,8 +58,7 @@ def _pin_the_claude_cli(monkeypatch):
     ordinary case is stated, and the tests that are ABOUT the missing CLI say so
     themselves.
     """
-    monkeypatch.setattr(selffix_routes, "_claude_cli_path",
-                        lambda: "/usr/local/bin/claude")
+    monkeypatch.setattr(selffix_routes, "_claude_found", lambda: True)
 
 
 @pytest.fixture()
@@ -1098,7 +1101,7 @@ def test_a_machine_with_no_claude_is_refused_BEFORE_the_body_is_validated(
     Same message and status as the post-hoc path, because it is the same fact
     found a moment earlier.
     """
-    monkeypatch.setattr(selffix_routes, "_claude_cli_path", lambda: None)
+    monkeypatch.setattr(selffix_routes, "_claude_found", lambda: False)
 
     res = post(client, "/api/selffix/start", {})       # the empty describe click
     assert res.status_code == 502
@@ -1120,23 +1123,30 @@ def test_an_empty_start_still_asks_what_is_wrong_when_claude_IS_installed(
     assert "say what is wrong" in res.json()["error"]
 
 
-def test_config_says_when_claude_is_missing_so_nothing_offers_a_session(
-        client, install, monkeypatch):
-    """The precondition that outranks read-only (SF-13f).
+def test_the_gate_asks_claude_health_and_nothing_else(client, install, monkeypatch):
+    """ONE resolver, which is the whole point of `claude_health` (#621).
 
-    Without the CLI no session can start — neither a fix nor a diagnosis — so a
-    surface that offers one is offering something that cannot happen. Same
-    "present only when true" convention as `read_only`, and resolved by the SAME
-    function the AI relay spawns with, so the offer and the spawn cannot
-    disagree about what is installed.
+    That module exists because four independent copies of the candidate list let
+    a CLI in `~/.bun/bin` give a working Claude-config tab and an
+    `ai_unavailable` on the same machine in the same second. A self-fix gate with
+    its own resolution would be that bug again in a new place: the button
+    refusing while the health strip beside it says the install is fine.
     """
-    from fused_render.server import ai
+    from fused_render import claude_health
 
-    monkeypatch.setattr(ai, "_claude_bin", lambda: "/usr/local/bin/claude")
-    assert "claude_missing" not in client.get("/api/config").json()
+    # The REAL resolver (the module fixture pins a stand-in for every other
+    # test), reading nothing but claude_health.
+    monkeypatch.setattr(claude_health, "summary", lambda: {"found": False})
+    assert REAL_CLAUDE_FOUND() is False
 
-    monkeypatch.setattr(ai, "_claude_bin", lambda: None)
-    assert client.get("/api/config").json()["claude_missing"] is True
+    monkeypatch.setattr(claude_health, "summary", lambda: {"found": True})
+    assert REAL_CLAUDE_FOUND() is True
+
+    # ...and a snapshot that could not tell reads as "no CLI", which is the
+    # refusal direction: claude_health never raises, it degrades, so an absent
+    # `found` must not be mistaken for a usable install.
+    monkeypatch.setattr(claude_health, "summary", lambda: {})
+    assert REAL_CLAUDE_FOUND() is False
 
 
 def test_clear_endpoint(client, install):

@@ -22,7 +22,7 @@ import {
 } from "react";
 import { NAV_EVENT } from "@platform/lib/router";
 import { createCloseDeferrer } from "@platform/lib/exit-animation";
-import { getConfig } from "@platform/lib/api";
+import { getClaudeHealth, getConfig } from "@platform/lib/api";
 import { navReach, subscribeNavReach, type NavReach } from "@platform/lib/nav-history";
 import {
   getSidebarState,
@@ -251,19 +251,28 @@ export interface SelfFixReadinessState extends SelfFixReadiness {
 }
 
 // The two preconditions a surface can check before it offers a self-fix session
-// (SPEC §43, SF-13f), read together off /api/config because they are read
-// together and neither is worth its own request. Preferences learns the
-// read-only half from the GET /api/selffix snapshot it opens with; the download
-// manager's failed rows learn both from here, because they have to word a
-// button BEFORE anyone clicks it, and the snapshot costs a directory walk and a
-// brew probe.
+// (SPEC §43, SF-13f). They come from two places because they are two kinds of
+// fact, and each already has an owner:
 //
-// ONLY WHAT IS ACTUALLY KNOWABLE. `readOnly` is an `os.access`, `claudeMissing`
-// is the same binary resolution the spawn uses. Whether Claude is SIGNED IN, or
-// over its usage limit, is deliberately absent: neither can be learned without
-// running the CLI, and a check that spawned a process per failed row to answer a
-// question that changes minute to minute would be worse than the click it saved.
-// Those two stay post-hoc, classified from the failure (lib/trouble.ts, §42).
+//   readOnly       /api/config — an `os.access` on the install root, cheap
+//                  enough to ride the payload every page already reads.
+//   claudeMissing  GET /api/claude/health — `found`, from the module that is
+//                  the package's ONE resolver of the CLI (#621). Its own
+//                  endpoint on purpose: those facts are backed by process
+//                  spawns behind a disk cache, and that router says plainly why
+//                  they may not be bolted onto the config payload.
+//
+// Reading `found` from anywhere else is the mistake #621 exists to prevent — it
+// was written because four independent lists let one CLI produce a working
+// Claude-config tab and an `ai_unavailable` on the same machine in the same
+// second. A self-fix button refusing on one answer while the health strip beside
+// it reports another would be that bug again, in a new place.
+//
+// ONLY THE BLOCKING ONE. `found` is false when no session can start at all;
+// `outdated` and `signed_out` are real findings the health strip reports
+// proactively and lib/trouble classifies after a failure, but neither is a
+// reason for THIS button to stop offering a session — an outdated CLI may well
+// run one, and a signed-out user is told by the card in seconds.
 //
 // One fetch per page, not per row: a user with three failed downloads mounts
 // three of these, and they are all asking the same question about the same
@@ -301,16 +310,24 @@ let readinessProbe: Promise<SelfFixReadiness> | null = null;
 
 function probeReadiness(): Promise<SelfFixReadiness> {
   if (!readinessProbe) {
-    readinessProbe = getConfig().then(
-      (config) => ({
-        readOnly: config.read_only === true,
-        claudeMissing: config.claude_missing === true,
-      }),
-      () => {
-        // Let the next mount try again — a transient fetch failure should not
-        // pin "ready" for the rest of the session.
-        readinessProbe = null;
-        return NOT_READY;
+    // Both, or neither. `allSettled` rather than `all` so one endpoint being
+    // unhappy does not throw away the other's answer: a health probe that
+    // cannot report is not a finding (the strip makes the same call), and it
+    // must not cost the read-only wording that has nothing to do with it.
+    readinessProbe = Promise.allSettled([getConfig(), getClaudeHealth()]).then(
+      ([config, health]) => {
+        const ready = {
+          readOnly:
+            config.status === "fulfilled" && config.value.read_only === true,
+          claudeMissing:
+            health.status === "fulfilled" && health.value.found === false,
+        };
+        // A failed read is not remembered as an answer — the next mount asks
+        // again rather than inheriting a shrug for the rest of the session.
+        if (config.status === "rejected" || health.status === "rejected") {
+          readinessProbe = null;
+        }
+        return ready;
       }
     );
   }

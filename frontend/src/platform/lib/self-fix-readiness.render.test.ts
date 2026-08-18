@@ -13,17 +13,25 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 import { createElement, type ReactElement } from "react";
-import type { Config } from "@platform/lib/api";
+import type { ClaudeHealth, Config } from "@platform/lib/api";
 import type { SelfFixReadinessState } from "@platform/lib/hooks";
 
 // --- the module boundary ------------------------------------------------------
 let reply: () => Promise<Config>;
 let calls = 0;
+// `found` is the ONE canonical answer about the CLI, from the module that owns
+// resolving it (#621) — not a field this feature added to /api/config.
+let healthReply: () => Promise<ClaudeHealth>;
+let healthCalls = 0;
 
 mock.module("@platform/lib/api", () => ({
   getConfig: () => {
     calls += 1;
     return reply();
+  },
+  getClaudeHealth: () => {
+    healthCalls += 1;
+    return healthReply();
   },
 }));
 
@@ -54,6 +62,8 @@ mock.module("@platform/lib/api", () => ({
 const { useSelfFixReadiness, resetSelfFixReadiness } = await import("@platform/lib/hooks");
 
 const config = (over: Partial<Config> = {}) => ({ version: "1.2.3", ...over }) as Config;
+const health = (over: Partial<ClaudeHealth> = {}) =>
+  ({ found: true, path: "/usr/local/bin/claude", ...over }) as ClaudeHealth;
 
 /** Mount the hook and expose its latest return value. */
 function mount(): { current: () => SelfFixReadinessState; unmount: () => void } {
@@ -86,7 +96,9 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   calls = 0;
+  healthCalls = 0;
   reply = () => Promise.resolve(config());
+  healthReply = () => Promise.resolve(health());
   resetSelfFixReadiness();
 });
 
@@ -129,7 +141,7 @@ describe("useSelfFixReadiness", () => {
     // The precondition that outranks the other one: without the CLI neither a
     // fix nor a diagnosis can start, so the surfaces stop offering a session at
     // all and name the thing that would make one possible.
-    reply = () => Promise.resolve(config({ claude_missing: true }));
+    healthReply = () => Promise.resolve(health({ found: false }));
     const probe = mount();
     await settle();
     expect(probe.current().claudeMissing).toBe(true);
@@ -139,7 +151,8 @@ describe("useSelfFixReadiness", () => {
   test("both preconditions ride ONE read", async () => {
     // They are read together because they are used together — an admin-installed
     // copy on a machine with no Claude is one config fetch, not two.
-    reply = () => Promise.resolve(config({ read_only: true, claude_missing: true }));
+    reply = () => Promise.resolve(config({ read_only: true }));
+    healthReply = () => Promise.resolve(health({ found: false }));
     const probe = mount();
     await settle();
     expect(probe.current().readOnly).toBe(true);
@@ -158,41 +171,55 @@ describe("useSelfFixReadiness", () => {
     probe.unmount();
   });
 
+  test("a health probe that cannot answer does not cost the read-only wording", async () => {
+    // Two endpoints, two kinds of fact — so one being unhappy must not throw
+    // away the other's answer. A failed probe is not a finding (the health strip
+    // makes the same call), and "is this install writable" has nothing to do
+    // with whether the CLI could be measured.
+    reply = () => Promise.resolve(config({ read_only: true }));
+    healthReply = () => Promise.reject(new Error("offline"));
+    const probe = mount();
+    await settle();
+    expect(probe.current().readOnly).toBe(true);
+    expect(probe.current().claudeMissing).toBe(false);
+    probe.unmount();
+  });
+
   test("recheck notices that the user installed what the button asked for", async () => {
     // THE BUG THIS EXISTS FOR. The button says "Set up Claude Code", so the one
     // state it caches is the one state it is asking the user to change — and
     // before `recheck`, a user who did exactly that and clicked again in the
     // same tab was still told the binary was missing until they reloaded.
-    reply = () => Promise.resolve(config({ claude_missing: true }));
+    healthReply = () => Promise.resolve(health({ found: false }));
     const probe = mount();
     await settle();
     expect(probe.current().claudeMissing).toBe(true);
 
-    reply = () => Promise.resolve(config());          // they installed it
+    healthReply = () => Promise.resolve(health());     // they installed it
     await act(async () => {
       probe.current().recheck();
     });
     await settle();
     expect(probe.current().claudeMissing).toBe(false);
-    expect(calls).toBe(2);                            // asked again, not guessed
+    expect(healthCalls).toBe(2);                       // asked again, not guessed
     probe.unmount();
   });
 
   test("recheck drops the SHARED cache, so every row agrees about one machine", async () => {
-    reply = () => Promise.resolve(config({ claude_missing: true }));
+    healthReply = () => Promise.resolve(health({ found: false }));
     const first = mount();
     const second = mount();
     await settle();
     expect(calls).toBe(1);
 
-    reply = () => Promise.resolve(config());
+    healthReply = () => Promise.resolve(health());
     await act(async () => {
       first.current().recheck();
     });
     await settle();
     // One re-read, and the row that did not ask for it sees the new answer too:
     // three failed rows must not disagree about whether Claude is installed.
-    expect(calls).toBe(2);
+    expect(healthCalls).toBe(2);
     expect(first.current().claudeMissing).toBe(false);
     expect(second.current().claudeMissing).toBe(false);
     first.unmount();

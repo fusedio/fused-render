@@ -7615,30 +7615,32 @@ the installation, and the mark that says so.
   overpromises beats mis-wording the button for everyone whose config fetch was
   merely slow.
 - **SF-13f** **A precondition that can be CHECKED is checked before the session is
-  OFFERED — and only the ones that can.** Two of them can, and both ride
-  `/api/config` beside `modified_install` (present only when true), because a
-  surface has to word a button before anyone clicks it and the `GET /api/selffix`
-  snapshot costs a directory walk and a brew probe:
-  `read_only` (an `os.access`) decides FIX versus DIAGNOSE, and **`claude_missing`
-  decides whether to offer a session at all** — without the CLI neither mode can
-  start, so it outranks the other. It is resolved by the SAME function that
-  spawns the AI relay (`server/ai.claude_cli_path`), so the offer and the spawn
-  cannot disagree about what is installed.
-  **What is deliberately NOT pre-checked is the more interesting half**: whether
-  Claude is SIGNED IN, and whether it is over its usage limit. Neither can be
-  known without running the CLI, both change between one minute and the next, and
-  a check that spawned a process per failed row would cost more than the click it
-  saved — and would still be answering a question whose answer had already
-  expired. Those stay POST-HOC, classified from the failure by §42's two-tier
-  rules, which is the right shape for them: a fact you can only learn by trying
-  is a fact you report after trying. The line is not "cheap versus expensive", it
-  is **knowable versus unknowable without spending a session** — a binary either
-  is on this machine or is not, and one `which` says which; being signed in is a
-  property of a service that only the CLI can ask about. Note what this line is
-  NOT: it is not "stable versus changing". `claude_missing` changes the moment
-  the user installs Claude Code — which this feature explicitly asks them to do —
-  and that is exactly why the answer may be cached for a LABEL and never for a
-  DECISION (below).
+  OFFERED — and only the ones that can.** Two of them can, and they come from two
+  places because they are two kinds of fact, each with an owner that already
+  exists.
+  **`read_only`** — an `os.access` on the install root — rides `/api/config`
+  beside `modified_install`, cheap enough for a payload every page already reads,
+  and decides FIX versus DIAGNOSE.
+  **Whether Claude Code is usable comes from `claude_health` (#621) and nowhere
+  else**, through its own `GET /api/claude/health`. That module is the package's
+  ONE resolver of the CLI, and it exists because four independent copies of the
+  candidate list once let a binary in `~/.bun/bin` produce a working
+  Claude-config tab and an `ai_unavailable` on the same machine in the same
+  second. A self-fix gate resolving the CLI for itself would be that bug again in
+  a new place — the button refusing while the health strip beside it calls the
+  install fine — so both the server's refusal and the button's wording read
+  `found` from that snapshot. Its own endpoint rather than `/api/config` is that
+  router's call, and its reason is stated there: those facts are backed by
+  process spawns behind a disk cache, and the config payload is on every page
+  load.
+  **Only the BLOCKING one is a reason not to offer.** `found: false` means no
+  session can start at all, so it outranks `read_only` and changes what the
+  button says. `outdated` and `signed_out` are real findings — `claude_health`
+  measures both, and the first-run strip reports them proactively — but neither
+  stops this button offering a session: an outdated CLI may well run one, and a
+  signed-out user is told by §42's card within seconds of trying. Being wrong
+  about those costs one failed attempt; refusing to offer over them would cost a
+  session that would have worked.
   **The pre-check WORDS the button; it never DECIDES the click.** That split is
   the correction to a trap this feature dug for itself. The obvious reading of
   "we already know the answer" is to short-circuit — answer from the cached value

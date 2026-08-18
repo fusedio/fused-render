@@ -41,12 +41,6 @@ export interface Config {
   // WHEN READ-ONLY, for the same reason as `modified_install` above: the
   // ordinary install is one the user owns.
   read_only?: boolean;
-  // Claude Code is not installed on this machine, so no self-fix session can
-  // start at all — neither a fix nor a diagnosis (SPEC §43, SF-13f). PRESENT
-  // ONLY WHEN MISSING, like the two fields above. Covers the BINARY only:
-  // signed-out and over-limit cannot be known without running the CLI, and stay
-  // post-hoc (lib/trouble.ts).
-  claude_missing?: boolean;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
