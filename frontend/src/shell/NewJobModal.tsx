@@ -141,6 +141,26 @@ const ICON_CHECK = (
   </svg>
 );
 
+// lucide "chevron-right", at the size the task list's disclosure uses — the
+// same mark, so the two read as one pattern. Points right when closed and is
+// rotated a quarter turn by CSS when the block opens.
+const ICON_CHEVRON = (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="9 18 15 12 9 6" />
+  </svg>
+);
+
+// lucide "chevron-down", at the size the app's native selects draw their own
+// (fields.css) — the mark that says "this opens a list", on every control that
+// does.
+const ICON_CHEVRON_DOWN = (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="6 9 12 15 18 9" />
+  </svg>
+);
+
 // lucide "trash-2", at the footer buttons' glyph scale. Carries the destructive
 // reading before the label is read, and stays through both press states so the
 // button does not change shape under the cursor.
@@ -516,7 +536,19 @@ function Dropdown({
         onClick={() => (open ? setOpen(false) : show())}
       >
         <span className="schedule-select-label">{value}</span>
-        <span className="schedule-select-caret" aria-hidden="true">▾</span>
+        {/* A DRAWN mark, not a "▾". The text triangle was a 10px glyph in a
+            32px chip: a flex box centres the glyph's LINE BOX, and where the
+            triangle's ink sits inside that box is the font's business — in the
+            UI stack it rides high in the em square, so the caret hung near the
+            top-right corner of the control instead of on the label's centre
+            line (Akshil, 2026-08-18 screenshot). An SVG has no baseline and no
+            font fallback; centred in a fixed square it lands on the middle of
+            the chip in every theme and on every machine. Same mark as the
+            native selects elsewhere in the app draw (fields.css) and as the
+            card's own disclosure. */}
+        <span className="schedule-select-caret" aria-hidden="true">
+          {ICON_CHEVRON_DOWN}
+        </span>
       </button>
       {open && (
         <div
@@ -1023,19 +1055,54 @@ export function initialRepeatKey(entry?: ScheduledMessage | null): string {
   return entry?.repeats ? "cron" : "none";
 }
 
-// What the big field opens with — the one prose field the form has, standing
-// for both of the two values the server stores. A new task opens on the chat
-// composer's draft, if it came from one; an Edit opens on what the entry has.
+// What the DESCRIPTION field opens with. An Edit opens on what the entry has; a
+// new task opens on the body of the chat composer's draft, whose first line has
+// gone to the title instead (see splitDraft).
 //
-// `message` first, because every entry has one and it is what Claude was
-// actually sent; `description` as the fallback, so a task whose prose lives
-// only there still fills the field instead of opening blank and re-creating
-// itself empty. `||`, not `??`: "" is a missing answer here, not an answer.
+// `description` FIRST now, and that order is the whole subtlety: `message` is
+// the composed title-plus-body Claude was sent (composeTaskMessage), so opening
+// the description on it would put the title back into the field under itself,
+// and the next Save would compose the heading a second time. `message` stays as
+// the fallback for every task stored before the two were composed — with the
+// heading peeled off if it is there, which is what `withoutTitleHeading` is for.
+// `||`, not `??`: "" is a missing answer here, not an answer.
 export function initialAskOf(
   entry?: ScheduledMessage | null,
   chatDraft?: string | null,
 ): string {
-  return entry?.message || entry?.description || chatDraft || "";
+  if (entry) {
+    return (
+      entry.description
+      || withoutTitleHeading(entry.message ?? "", entry.title ?? "")
+    );
+  }
+  return splitDraft(chatDraft).description;
+}
+
+// The inverse of composeTaskMessage, for the one reader that needs it: an Edit
+// falling back to a stored `message`. It has to invert BOTH shapes the composer
+// can produce, because the composer has two:
+//
+//   * `title\n\nbody` — the two-field task. The heading and its blank line come
+//     off and the body is what is left;
+//   * `title` alone — the TITLE-ONLY task, which is the ordinary case now that
+//     the second field is optional. Nothing was appended, so there is no prefix
+//     to spot, and treating it as unrecognised prose is the bug it was: the
+//     whole message came back as the additional instructions, the next Save
+//     composed `title\n\ntitle`, and every further edit stacked another copy
+//     (Bugbot, PR #595). It inverts to "" — there were no additional
+//     instructions, which is exactly what the field should open on.
+//
+// Still deliberately exact about what it will peel: an opening that merely
+// begins with the same words is prose and is left alone. The equality check is
+// on the trimmed message, so trailing whitespace the wire may have picked up
+// does not make a title-only task look like something else.
+export function withoutTitleHeading(message: string, title: string): string {
+  const name = title.trim();
+  if (!name) return message;
+  if (message.trim() === name) return "";
+  const head = `${name}\n\n`;
+  return message.startsWith(head) ? message.slice(head.length) : message;
 }
 
 // The thread a task ALREADY OWNS, if any. A repeating template LEARNS one: its
@@ -1155,12 +1222,26 @@ export function deleteFailureText(err: unknown, series: boolean): string {
 // blank required field costs the user one line of typing, while a field
 // prefilled with a guess costs them a task named after its own description.
 //
-// The placeholder is left with only the job a placeholder can honestly do —
-// saying which field this is. It used to say "optional, filled in
-// automatically", and it used to double as a PREVIEW of the chat's own name;
-// both went with the requirement. A previewed name that Save then refuses to
-// accept is the worst of the three states.
-export const TITLE_PLACEHOLDER = "Title";
+// The placeholder ASKS FOR THE TASK (Akshil, 2026-08-18), because that is what
+// this field now collects. It said "Title", which is what the value is USED for
+// — the row's name in the list — and not what the user is being asked to write;
+// people answered it with a label ("News") and then wrote the actual instruction
+// underneath, which is the split this whole pass exists to close. The question is
+// the same one the composer asks, and the answer to it is both the task's name
+// and the first line of what Claude is sent.
+//
+// (Two earlier wordings are gone for the same class of reason: "optional, filled
+// in automatically" outlived the requirement, and a PREVIEW of the chat's own
+// name is worse than a question when Save then refuses the preview.)
+export const TITLE_PLACEHOLDER = "What should Claude do?";
+
+// And the second field is the OVERFLOW of that question — the constraints, the
+// context, the "start with the parquet path" — never the task again. Both jobs a
+// placeholder can honestly do are in it: which field this is, and that it can be
+// left alone. It read "What should Claude do?" while it was the whole message,
+// and leaving that question here while the field above asks it too would put the
+// user in front of the same question twice.
+export const ASK_PLACEHOLDER = "Additional instructions (optional)";
 
 // One line of a block of prose, trimmed. Used to reduce a multi-line value to
 // something an <input> can hold — it would strip the newlines anyway. It also
@@ -1214,6 +1295,42 @@ export function shortTitle(text: string, max = TITLE_MAX): string {
   // before it rather than losing it.
   const boundary = line.slice(0, max + 1).lastIndexOf(" ");
   return (boundary > 0 ? line.slice(0, boundary) : line.slice(0, max)).trimEnd();
+}
+
+// -- The chat handoff fills BOTH fields ---------------------------------------
+// A draft arriving from the chat composer's Schedule button
+// (`?new=1&message=…`) is one block of prose written for Claude, and the form
+// now has two places to put it. It is SPLIT rather than dropped whole into the
+// description (Akshil, 2026-08-18): the first line is what the draft is about,
+// which is exactly what a title is, and the rest is the body.
+//
+// This is NOT the bug of 2026-08-17 coming back. That one prefilled Title with
+// `firstLine(ask)` while the SAME text also filled the description — the message
+// arrived duplicated into both fields, and the task ended up named after its own
+// body. Here the two fields PARTITION the draft: what goes in the first field is
+// removed from the second, and composeTaskMessage puts it back together on Save,
+// so nothing is said twice and nothing is lost.
+//
+// THE LINE BREAK IS THE ONLY CUT (Akshil, 2026-08-18). A long first line is kept
+// whole rather than clamped to a name: the field asks "What should Claude do?",
+// and a clamp answers that question with two thirds of a sentence. The clamp
+// that was here also had to keep the draft ENTIRE in the description to avoid
+// losing the tail, so a long draft arrived with its opening said twice — worse
+// than the long value it was avoiding. TITLE_MAX still governs a name DERIVED
+// from a session's first message (shortTitle), which is a different job: that is
+// the app naming a thread nobody named, where a clamp is all there is. Here the
+// user wrote the line, and the field is theirs to shorten.
+export function splitDraft(draft?: string | null): {
+  title: string;
+  description: string;
+} {
+  const text = (draft ?? "").trim();
+  if (!text) return { title: "", description: "" };
+  const brk = text.indexOf("\n");
+  return {
+    title: (brk < 0 ? text : text.slice(0, brk)).trim(),
+    description: brk < 0 ? "" : text.slice(brk + 1).trim(),
+  };
 }
 
 // A prefill this field must refuse, whichever source produced it: a transcript
@@ -1274,11 +1391,19 @@ export function initialTitleOf(entry?: ScheduledMessage | null): string {
 // `lookupSession` is "" for "do not fetch", and it carries BOTH refusals: a
 // stored title has won step 1 outright (an async overwrite would be data loss),
 // or there is no session to ask about in the first place.
+//
+// A CHAT DRAFT's first line (splitDraft) sits between the two, and it takes the
+// same refusal: it is a name the user has just written, this second, and the
+// /api/tasks lookup would land a beat later and replace it with the name of the
+// conversation they wrote it in. A stored title still outranks it — an Edit
+// never loses the name it has — and the draft's line only exists on a NEW task,
+// where there is nothing to lose.
 export function initialTitleStateOf(
   entry?: ScheduledMessage | null,
   sessionId?: string | null,
+  draftTitle?: string | null,
 ): { title: string; lookupSession: string } {
-  const title = initialTitleOf(entry);
+  const title = initialTitleOf(entry) || (entry ? "" : (draftTitle ?? "").trim());
   return { title, lookupSession: title ? "" : (sessionId ?? "") };
 }
 
@@ -1428,6 +1553,31 @@ export function pastNoteFor(
     : null;
 }
 
+// ---- The first message ---------------------------------------------------
+// TITLE AND DESCRIPTION ARE ONE MESSAGE (Akshil, 2026-08-18). The card collects
+// a name and a body, and what Claude is sent is both of them: the title as the
+// first line, the description under it. Two reasons:
+//
+//   * the title is real instruction. "Update the changelog" is the whole task
+//     most of the time, and a form that sent only the description threw that
+//     sentence away — the user had typed the task and then had to type it again
+//     underneath. That is what makes the description OPTIONAL now (saveEnabled);
+//   * a message that opens with its own heading reads to Claude the way it reads
+//     in the list: one titled instruction, not an anonymous paragraph.
+//
+// A BLANK LINE between them, which is the plainest heading there is in the
+// markdown Claude is read in — a single newline would run the two together as
+// one paragraph. Either side alone is sent alone: no leading blank line on a
+// description-only message (a task from before this rule, re-saved), and no
+// trailing one on a title-only task.
+export function composeTaskMessage(title: string, description: string): string {
+  const name = title.trim();
+  const body = description.trim();
+  if (!name) return body;
+  if (!body) return name;
+  return `${name}\n\n${body}`;
+}
+
 // The body POSTed to /api/schedule — api.ts's own parameter type, nothing
 // added to it. That type models `title`, `description` and `new_task_each_run`
 // itself, so this alias only names what the builder returns.
@@ -1435,19 +1585,22 @@ export type SchedulePayload = Parameters<typeof scheduleMessage>[0];
 
 export function buildSchedulePayload(form: {
   target: string;
-  // The SECOND field on the card and the required one: what Claude is sent,
-  // and — same text, no third field — the task's description (Akshil,
-  // 2026-08-17: "the big field is the description, that is the first message").
-  // It rides the wire twice, once as each, because the server stores them as
-  // two things and a task page that showed nothing under a task would be the
-  // only alternative. Never blank by the time it gets here: `saveEnabled`
-  // refuses Save on an empty one.
+  // The SECOND field on the card: the task's DESCRIPTION, and — joined under
+  // the title by `composeTaskMessage` — the second half of the first message
+  // Claude is sent. OPTIONAL as of 2026-08-18: a task whose whole instruction
+  // fits in its name ("Update the changelog") should not have to say it twice,
+  // so an empty one is legal here and the composed message is the title alone.
+  // It still rides the wire as `description` when it has content, because the
+  // server stores the two separately and a task page with nothing under the
+  // title would be the only alternative.
   message: string;
-  // The FIRST field on the card, and REQUIRED as of 2026-08-17: `saveEnabled`
-  // refuses Save on a blank one, so what reaches here is a name a human accepted
-  // or typed. The wire contract is unchanged — the server still names an untitled
-  // task from the transcript's `ai-title` (design §4) — so the empty branch below
-  // stays as the honest fallback for a caller this form's gate never saw.
+  // The FIRST field on the card, and the REQUIRED one (2026-08-17): a name for
+  // the list, and — as of 2026-08-18 — the first line of what Claude is sent.
+  // `saveEnabled` refuses Save on a blank one, so what reaches here is a name a
+  // human accepted or typed. The wire contract is unchanged — the server still
+  // names an untitled task from the transcript's `ai-title` (design §4) — so the
+  // empty branch below stays as the honest fallback for a caller this form's
+  // gate never saw.
   title: string;
   when: string;
   // The structured rule the current choice means; null for a one-off and for
@@ -1482,10 +1635,12 @@ export function buildSchedulePayload(form: {
 }): SchedulePayload {
   const repeating = form.rule !== null || form.repeat === "cron";
   const trimmedTitle = form.title.trim();
-  // The description IS the ask. Trimmed, because the padding a textarea
-  // collects is not part of what the task is about; `message` itself is sent
-  // verbatim, since that is what Claude actually receives.
+  // The description, trimmed: the padding a textarea collects is not part of
+  // what the task is about.
   const trimmedDescription = form.message.trim();
+  // WHAT CLAUDE IS ACTUALLY SENT — title and description as one message, not
+  // the description alone. See composeTaskMessage.
+  const composed = composeTaskMessage(form.title, form.message);
   // WHICH session, if any, the re-created entry continues. The two sources are
   // treated oppositely:
   //   · the task's own (learned) id survives everything except a template that
@@ -1503,7 +1658,7 @@ export function buildSchedulePayload(form: {
       : form.sessionId;
   return {
     target: form.target.trim(),
-    message: form.message,
+    message: composed,
     // A rule rides WITH its anchor (`due` = the first run); the legacy cron
     // line replaces due exactly as it always did; a one-off is due alone.
     ...(form.rule
@@ -1522,9 +1677,10 @@ export function buildSchedulePayload(form: {
     ...(continued && carriesLearned ? { session_learned: true } : {}),
     // Empty means "the server decides" for the title and "there isn't one" for
     // the description — in both cases the key is better left off the wire than
-    // sent as "". Neither branch is reachable from the form any more: Save
-    // refuses a blank on either field. They stay because the wire contract still
-    // allows both to be absent, and a builder that sent "" would be lying.
+    // sent as "". The title's empty branch is not reachable from the form (Save
+    // refuses a blank one); the description's is the ordinary case of a task
+    // named well enough to need no body, and `message` above still carries the
+    // title, so nothing empty reaches `schedule.create`.
     ...(trimmedTitle ? { title: trimmedTitle } : {}),
     ...(trimmedDescription ? { description: trimmedDescription } : {}),
     // Only ever sent on a repeating task: on a one-off there is no "each run"
@@ -1538,24 +1694,26 @@ export function buildSchedulePayload(form: {
 }
 
 // WHAT SAVE REFUSES. Pulled out of the component (it was an inline `ready`
-// expression) so the rules are assertable: BOTH prose fields are required — the
-// description because it is the text Claude is actually sent and a task with
-// nothing to do is not a task, and Title because a task nobody can name in a
-// list is not much better (Akshil, 2026-08-17).
+// expression) so the rules are assertable: ONE prose field is required — the
+// Title, because a task nobody can name in a list is not a task and because it
+// is now also the first line of what Claude is sent (composeTaskMessage). The
+// description is OPTIONAL as of 2026-08-18: "Update the changelog" is a whole
+// instruction, and a form that made the user write it twice was asking for
+// ceremony rather than information.
 //
 // Title being required is not softened by the field sometimes opening blank —
 // that is the point of the requirement rather than a hole in it. The form fills
 // the field from the session wherever a session has a name (initialTitleOf plus
-// the /api/tasks lookup behind it); where nothing honest is available it asks,
-// which is strictly better than the alternative it replaced — naming the task
-// after the message it is scheduling.
+// the /api/tasks lookup behind it), and from the chat draft's first line where
+// one arrived; where nothing honest is available it asks.
 //
-// Both use `.trim()`, because a textarea full of newlines is not an instruction
-// and a title of spaces is not a name. Both fields carry `aria-required`, and
-// pressing Save while one is empty SAYS SO — see `saveBlockedReason`, which is
-// the same set of rules read out loud.
+// `.trim()`, because a title of spaces is not a name. The field carries
+// `aria-required`, and pressing Save while it is empty SAYS SO — see
+// `saveBlockedReason`, which is the same set of rules read out loud.
 export function saveEnabled(f: {
-  // The ask / description. Required.
+  // The description. OPTIONAL — it is read by the gate no more; the parameter
+  // stays because everything else about the form's state travels in this one
+  // object and dropping it would make the two callers assemble two shapes.
   message: string;
   // The task's name. Required, and prefilled rather than asked for.
   title: string;
@@ -1576,7 +1734,6 @@ export function saveEnabled(f: {
 }): boolean {
   return (
     !f.replaced &&
-    f.message.trim() !== "" &&
     f.title.trim() !== "" &&
     f.target.trim() !== "" &&
     f.pathError === null &&
@@ -1592,22 +1749,25 @@ export function saveEnabled(f: {
 // control, not a hint. The commonest way to meet it is the commonest thing to
 // forget — open the form, type a name, press Save — and a disabled button
 // answers by doing NOTHING: no error, no focus move, the modal just sits there
-// (QA, 2026-08-18). The requirement itself is right and stays: an empty
-// description is a task with nothing to do, and the server refuses it too
-// (`schedule.create`: "message: cannot be empty"). What was wrong was refusing
-// it in silence.
+// (QA, 2026-08-18). That press is not blocked at all any more: a title alone is
+// a saveable task, and what goes over the wire as `message` is the title (the
+// server's "message: cannot be empty" is satisfied by composeTaskMessage, not by
+// a second required field).
 //
 // So Save stays pressable and this is what a press finds. `field` is the ref key
 // to focus, because a sentence naming a field the user then has to hunt for is
 // half an answer — `null` for the reasons that are not a field (an already-saved
 // edit, an unreachable path).
 //
-// ORDER IS THE READING ORDER OF THE CARD: title, description, folder, time,
-// repeat. One reason at a time, the topmost — a form that lists everything wrong
-// at once reads as a scolding, and fixing the first often fixes the rest.
+// ORDER IS THE READING ORDER OF THE CARD: title, folder, time, repeat. One
+// reason at a time, the topmost — a form that lists everything wrong at once
+// reads as a scolding, and fixing the first often fixes the rest. The
+// description is not in the list any longer: it is optional, so there is no
+// sentence to say about an empty one, and "message" is gone from `field` with
+// it rather than kept as a case nothing can return.
 export function saveBlockedReason(f: Parameters<typeof saveEnabled>[0]): {
   text: string;
-  field: "title" | "message" | "target" | null;
+  field: "title" | "target" | null;
 } | null {
   if (f.replaced) {
     return {
@@ -1616,10 +1776,16 @@ export function saveBlockedReason(f: Parameters<typeof saveEnabled>[0]): {
     };
   }
   if (f.title.trim() === "") {
-    return { text: "Give the task a name, so you can find it in the list.", field: "title" };
-  }
-  if (f.message.trim() === "") {
-    return { text: "Say what Claude should do — a task with no instructions has nothing to run.", field: "message" };
+    // The sentence asks for the TASK, not for a name, because that is what the
+    // field asks for now ("What should Claude do?"). "Give the task a name" sent
+    // the user looking for a label to invent, when what is missing is the
+    // instruction itself — and this empty field means there is no message to
+    // send at all. The caret lands in the same place either way: the primary
+    // field is where the answer goes.
+    return {
+      text: "Say what Claude should do — a task with no instructions has nothing to run.",
+      field: "title",
+    };
   }
   if (f.target.trim() === "") {
     return { text: "Pick the folder or file this task runs against.", field: "target" };
@@ -1658,7 +1824,9 @@ export default function NewJobModal({
   // offer when nobody said — and an Edit outranks both, having a stored target.
   initialTarget?: string | null;
   // The chat composer's handoff (Akshil, 2026-08-16): the draft the user had
-  // typed arrives as the ask — which is the message AND the description…
+  // typed arrives as the task's prose and is SPLIT across the card's two fields
+  // — first line to the title, the rest to the description (splitDraft), which
+  // Save composes back into one message…
   initialMessage?: string | null;
   // …the open conversation arrives as a session to CONTINUE — but only a
   // one-off resumes it; a repeating task always opens fresh chats, because
@@ -1679,11 +1847,15 @@ export default function NewJobModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  // One field, two stored values — see initialAskOf. Held in a const because
-  // the BASELINE below (`initial`) has to be the identical value, or an Edit
-  // opens looking dirty and its ✕ arms the close-twice guard on an untouched
-  // modal (QA 2026-08-14).
+  // The description field's opening value — see initialAskOf. Held in a const
+  // because the BASELINE below (`initial`) has to be the identical value, or an
+  // Edit opens looking dirty and its ✕ arms the close-twice guard on an
+  // untouched modal (QA 2026-08-14).
   const initialAsk = initialAskOf(editing, initialMessage);
+  // The chat handoff's two halves, and the same held-in-a-const discipline: the
+  // title below opens on `draft.title` and the description on the body that goes
+  // with it, so the split has to be taken once rather than per reader.
+  const draft = splitDraft(initialMessage);
   const [message, setMessage] = useState(initialAsk);
   // The FIRST field on the card, and REQUIRED (Akshil, 2026-08-17).
   // This is only the synchronous half of the precedence: a usable stored title,
@@ -1702,7 +1874,7 @@ export default function NewJobModal({
   // has to be the identical value or an untouched Edit reads as dirty.
   const nameSession = (editing?.session_id || chatSessionId) ?? "";
   const { title: derivedTitle, lookupSession: titleLookup } =
-    initialTitleStateOf(editing, nameSession);
+    initialTitleStateOf(editing, nameSession, draft.title);
   const [title, setTitle] = useState(derivedTitle);
   const [target, setTarget] = useState(editing?.target ?? initialTarget ?? "");
   // ONE date-time drives everything: a one-off runs at it, and every derived
@@ -2271,7 +2443,9 @@ export default function NewJobModal({
   // the two wordings differ rather than one covering both. See pastNoteFor.
   const pastNote = pastNoteFor(pickedOk ? picked : null, repeatOn, rule, new Date());
 
-  // See saveEnabled: both prose fields are required now, Title included.
+  // See saveEnabled: Title is the required prose field, and the description is
+  // not — a title alone is a whole task, and it is what goes on the wire as the
+  // message.
   const gate = {
     message,
     title,
@@ -2299,9 +2473,8 @@ export default function NewJobModal({
     }
     setError(blocked.text);
     const el = blocked.field === "title" ? titleRef.current
-      : blocked.field === "message" ? askRef.current
-        : blocked.field === "target" ? pathRef.current
-          : null;
+      : blocked.field === "target" ? pathRef.current
+        : null;
     el?.focus();
   };
 
@@ -2383,16 +2556,17 @@ export default function NewJobModal({
             leading icon, because a 14px glyph beside a 20px face read as
             debris and the gutter is what says "this is a detail".
 
-            REQUIRED, and prefilled from the SESSION where there is one to read
-            (Akshil, 2026-08-17): its `ai-title`, else its first user message —
-            see sessionTitleOf for the whole precedence and for what it refuses.
-            What it will never be again is the first line of the ask: that named
-            every chat-scheduled task after the message it was scheduling, so a
-            long message arrived duplicated into both fields. Opened from the New
-            task button, or from a session with nothing to say for itself, the
-            field is blank and the requirement is what asks for a name —
-            `aria-required` says so rather than leaving a disabled Save as the
-            only hint.
+            REQUIRED, and the only required field on the card now — it is both
+            the task's name in the list and the first line of what Claude is sent
+            (composeTaskMessage). Prefilled from the chat draft's first line
+            where the form was deep-linked from a composer (splitDraft, which
+            takes that line OUT of the description so nothing is said twice), and
+            otherwise from the SESSION where there is one to read: its
+            `ai-title`, else its first user message — see sessionTitleOf for the
+            whole precedence and for what it refuses. Opened from the New task
+            button, or from a session with nothing to say for itself, the field is
+            blank and the requirement is what asks for a name — `aria-required`
+            says so rather than leaving a disabled Save as the only hint.
 
             An <input>, not a textarea, and that is the whole overflow answer:
             one line that never wraps and never grows. Long text scrolls
@@ -2403,7 +2577,7 @@ export default function NewJobModal({
             ref={titleRef}
             type="text"
             className="new-task-field new-task-title"
-            aria-label="Title"
+            aria-label="What should Claude do?"
             aria-required="true"
             placeholder={TITLE_PLACEHOLDER}
             value={title}
@@ -2411,16 +2585,17 @@ export default function NewJobModal({
             autoFocus
           />
 
-          {/* …and the ask SECOND, still the only other prose the form collects:
-              what the user types here is what Claude is sent AND what the task
-              is described as (design §4 — three text fields for one thought did
-              not make sense, so `description` and `message` are one field).
-              REQUIRED, as Title above now is, and for a sharper reason: an empty
-              one is a task with nothing to do. `ready` refuses Save on it, and
-              aria-required says so to a screen reader rather than leaving a
-              disabled button as the only hint. Unlike Title there is nothing
-              honest to prefill it from, so this is the one field the user really
-              does have to write.
+          {/* …and the ADDITIONAL INSTRUCTIONS second: the rest of what Claude
+              is sent. The two fields are ONE message — the answer above is its
+              first line and this is the body under it (composeTaskMessage) —
+              which is what makes this field OPTIONAL as of 2026-08-18. "Update
+              the changelog" is a complete instruction, and the form used to make
+              the user type it twice: once to name the task and once to say it.
+              So no aria-required here, and Save no longer refuses an empty one.
+
+              It is named for what it ADDS rather than as a "description",
+              because the field above is now the one that asks the question: what
+              belongs here is the part that answer left out.
 
               Quieter and smaller than the title, and it keeps the growth Title
               deliberately does not have: multi-line, autogrowing with the text
@@ -2430,9 +2605,8 @@ export default function NewJobModal({
             ref={askRef}
             className="new-task-field new-task-ask"
             rows={2}
-            aria-label="What should Claude do?"
-            aria-required="true"
-            placeholder="What should Claude do?"
+            aria-label="Additional instructions"
+            placeholder={ASK_PLACEHOLDER}
             value={message}
             onChange={(e) => setMessage(e.target.value)}
           />
@@ -2714,9 +2888,15 @@ export default function NewJobModal({
               into its own thread by construction — that is the default and
               needs no flag. This is the opt-OUT: tick it and each occurrence
               mints a fresh task, with a session and a TASK-nnn of its own
-              (design §6). */}
+              (design §6).
+
+              "FRESH", not "New" (Akshil, 2026-08-18): the card's own button says
+              New task, so "New task each run" read as a second thing the form
+              could create rather than as what this run's thread does. The flag,
+              the wire (`new_task_each_run`) and the behaviour are untouched —
+              this is the word the user reads. */}
           <CheckField
-            label="New task each run"
+            label="Fresh task each run"
             checked={newTaskEachRun}
             onChange={setNewTaskEachRun}
             describedBy={threadHintId}
@@ -2760,7 +2940,22 @@ export default function NewJobModal({
         )}
 
         <details className="schedule-form-more">
-          <summary>More options</summary>
+          {/* The disclosure is a QUIET row, not a button: secondary text and a
+              chevron, the same object the task list opens its threads with
+              (`tasks-caret`). It used to be accent yellow, which made the one
+              thing on the card the user rarely needs the loudest thing on it —
+              and the accent belongs to Save. The chevron is drawn here rather
+              than as a CSS glyph so it is the app's own mark at the app's own
+              weight: a text triangle sat on the baseline while the label sat on
+              its x-height, which is the misalignment no amount of nudging fixed.
+              It rotates 90° on open (▸ → ▾), so the row is one object that
+              turns. */}
+          <summary>
+            <span className="schedule-form-more-caret" aria-hidden="true">
+              {ICON_CHEVRON}
+            </span>
+            More options
+          </summary>
           {/* Inside the same 26px icon gutter every other control hangs from —
               the details block was flush with the card edge, so the one control
               behind it was the only one in the form that did not line up

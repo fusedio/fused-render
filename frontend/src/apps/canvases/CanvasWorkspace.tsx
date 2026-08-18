@@ -114,7 +114,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // Sync status poll for the status strip; re-arms the watcher if it drops.
   // The button's enabled/disabled state reads straight off sync.fix_active —
   // set server-side the instant a fix spawns, cleared only by that run's own
-  // completion (D330 follow-up), never guessed from transcript activity here.
+  // completion (D336 follow-up), never guessed from transcript activity here.
   useEffect(() => {
     const id = window.setInterval(() => {
       void getSyncStatus(name)

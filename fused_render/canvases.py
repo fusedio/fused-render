@@ -685,7 +685,7 @@ class _SyncManager:
         # endpoint can hand them to a Claude session and the UI can list them.
         self.error_detail: list[str] = []
         # Set the instant a "Fix with Claude" session is spawned, cleared when
-        # the recorder thread that follows it exits for ANY reason (D330
+        # the recorder thread that follows it exits for ANY reason (D336
         # follow-up) — done, an exception, or the poll cap — never guessed
         # from transcript activity: a "no recent activity" read has a grace
         # window that's fine for a status badge and wrong for a lock, since a
@@ -1004,7 +1004,7 @@ def _fix_prompt(name: str, detail: list[str], error: str | None) -> str:
 @router.post("/api/canvases/fix")
 def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Spawn a detached Claude session on the canvas clone, primed with the
-    failing push's own output (D330). Mirrors the apps API's session spawn
+    failing push's own output (D336). Mirrors the apps API's session spawn
     (routers/apps.py): the fork-safe helper, permission mode "auto" for the
     same reason given there (nobody is polling `decide` until the page
     attaches, so "prompt" would park the first tool call for an hour), and a

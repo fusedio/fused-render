@@ -258,7 +258,9 @@ def test_delete_mount_single_file_succeeds_via_vfs(home, monkeypatch):
     _list_returns(monkeypatch, [_entry("notes.txt", size=5)])
     resp = DELETE({"path": target}, x_fused="1")
     assert _status(resp) == 200
-    assert _data(resp)["deleted"] == target
+    # A mount delete is a hard VFS unlink, never a trash move — so no
+    # `trashed_to`, and nothing here is undoable.
+    assert _data(resp) == {"deleted": target, "trashed": False}
     assert not os.path.exists(target)
 
 
