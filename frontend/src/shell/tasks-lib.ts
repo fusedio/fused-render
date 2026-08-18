@@ -916,6 +916,84 @@ export function isExpanded(expanded: Set<string>, key: string): boolean {
   return expanded.has(key);
 }
 
+// ---- which view is up, in the URL --------------------------------------------
+// The List/Board/Calendar choice was localStorage-only, which made it a fact
+// about this browser rather than about this page: a link to the Tasks page
+// opened whatever the recipient last looked at, and there was no way to send
+// somebody the board. It lives in the URL now (`/tasks?view=board`), with the
+// stored preference kept as the fallback for a bare `/tasks`.
+//
+// LIST OMITS THE PARAM, deliberately: it is the default, and `?view=list` is a
+// second spelling of `/tasks` that would show up in every share and every
+// bookmark while saying nothing at all.
+
+/** Which of the page's three views is up. */
+export type TaskView = "list" | "board" | "calendar";
+
+/** The query key that carries it. */
+export const VIEW_PARAM = "view";
+
+/**
+ * The view a URL asks for, or `fallback` when it asks for nothing this page
+ * knows — an unrecognised value is a typo or a stale link, and the page it
+ * should land on is the default one rather than an error.
+ *
+ * `search` is a raw query string, with or without its leading `?`.
+ */
+export function viewFromSearch(search: string, fallback: TaskView = "list"): TaskView {
+  const raw = search.startsWith("?") ? search.slice(1) : search;
+  const v = new URLSearchParams(raw).get(VIEW_PARAM);
+  return v === "list" || v === "board" || v === "calendar" ? v : fallback;
+}
+
+/**
+ * The same URL with the view switched — every OTHER param preserved, because
+ * this page's query also carries the chat's deep-link handoff, and switching
+ * between two views is not a reason to drop it.
+ *
+ * Returns path + query, ready for `history.replaceState`. Replace, not push:
+ * the toggle is a way of READING this page, and a back button that first walked
+ * back through six view switches before leaving would be a worse back button.
+ */
+export function viewUrl(pathname: string, search: string, view: TaskView): string {
+  const raw = search.startsWith("?") ? search.slice(1) : search;
+  const q = new URLSearchParams(raw);
+  if (view === "list") q.delete(VIEW_PARAM);
+  else q.set(VIEW_PARAM, view);
+  const rest = q.toString();
+  return pathname + (rest ? `?${rest}` : "");
+}
+
+// ---- a press that leaves this tab --------------------------------------------
+
+/**
+ * Does this click mean "somewhere else, not here" — a new tab, a new window, a
+ * download — and must therefore be left to the browser?
+ *
+ * Every row on this page is a real `<a href>` so that ⌘-click, middle-click and
+ * the context menu's "Open in new tab" all work without this page implementing
+ * any of them. The one thing its handler must do is GET OUT OF THE WAY: a
+ * modified click is never intercepted, never `preventDefault`ed, and never
+ * marks anything read — the reader is not looking at that thread, they are
+ * stacking it up for later, and a badge cleared for a tab nobody has read yet
+ * is the one thing a background open must not do.
+ *
+ * `button` is the mouse button as React reports it (0 = primary); a middle
+ * click reaches `onAuxClick` rather than `onClick`, and both ask this, so the
+ * rule is written once.
+ */
+export function opensElsewhere(e: {
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
+  button?: number;
+}): boolean {
+  return Boolean(
+    e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || (e.button !== undefined && e.button !== 0),
+  );
+}
+
 // ---- where a click goes ------------------------------------------------------
 // schedule-lib.explorerUrl is the app's one answer to "open this session in the
 // explorer, with the Claude pane on it". A message adds one thing: WHICH turn

@@ -53,6 +53,7 @@ import {
   nextRunAt,
   openMessageHref,
   openThreadIntent,
+  opensElsewhere,
   projectOptions,
   relativeWhen,
   ranOffSchedule,
@@ -78,6 +79,8 @@ import {
   unmarkRead,
   unreadMarker,
   upcomingEditEntry,
+  viewFromSearch,
+  viewUrl,
 } from "./tasks-lib";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
@@ -4788,5 +4791,66 @@ describe("string helpers", () => {
     expect(tildePath("/opt/x", "")).toBe("/opt/x");
     expect(basename("/Users/me/x/")).toBe("x");
     expect(basename("/")).toBe("/");
+  });
+});
+
+// ---- which view is up --------------------------------------------------------
+
+describe("the view in the URL", () => {
+  it("reads the three views and ignores anything else", () => {
+    expect(viewFromSearch("?view=board")).toBe("board");
+    expect(viewFromSearch("view=calendar")).toBe("calendar");
+    expect(viewFromSearch("?view=list")).toBe("list");
+    // A typo or a stale link lands on the default rather than on an error.
+    expect(viewFromSearch("?view=gantt")).toBe("list");
+    expect(viewFromSearch("")).toBe("list");
+  });
+
+  it("falls back to the remembered view only when the URL is silent", () => {
+    expect(viewFromSearch("", "calendar")).toBe("calendar");
+    expect(viewFromSearch("?new=1", "board")).toBe("board");
+    // The URL outranks the memory — that is the whole point of a shared link.
+    expect(viewFromSearch("?view=list", "board")).toBe("list");
+  });
+
+  it("writes the param, and omits it for the default", () => {
+    expect(viewUrl("/tasks", "", "board")).toBe("/tasks?view=board");
+    expect(viewUrl("/tasks", "?view=board", "calendar")).toBe("/tasks?view=calendar");
+    // List is the default, so it is spelled `/tasks` and never `?view=list`.
+    expect(viewUrl("/tasks", "?view=board", "list")).toBe("/tasks");
+    expect(viewUrl("/tasks", "", "list")).toBe("/tasks");
+  });
+
+  it("keeps every other param across a switch", () => {
+    expect(viewUrl("/tasks", "?new=1&target=%2Ftmp", "board"))
+      .toBe("/tasks?new=1&target=%2Ftmp&view=board");
+    expect(viewUrl("/tasks", "?view=calendar&new=1", "list")).toBe("/tasks?new=1");
+  });
+
+  it("round-trips: what viewUrl writes, viewFromSearch reads", () => {
+    for (const v of ["list", "board", "calendar"] as const) {
+      const url = viewUrl("/tasks", "", v);
+      const q = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+      expect(viewFromSearch(q)).toBe(v);
+    }
+  });
+});
+
+// ---- a press that leaves this tab --------------------------------------------
+
+describe("opensElsewhere", () => {
+  it("says yes to every gesture that means a new tab or window", () => {
+    expect(opensElsewhere({ metaKey: true })).toBe(true);
+    expect(opensElsewhere({ ctrlKey: true })).toBe(true);
+    expect(opensElsewhere({ shiftKey: true })).toBe(true);
+    expect(opensElsewhere({ altKey: true })).toBe(true);
+    // Middle click, as onAuxClick reports it.
+    expect(opensElsewhere({ button: 1 })).toBe(true);
+  });
+
+  it("says no to the plain press this page handles itself", () => {
+    expect(opensElsewhere({})).toBe(false);
+    expect(opensElsewhere({ button: 0 })).toBe(false);
+    expect(opensElsewhere({ metaKey: false, ctrlKey: false, button: 0 })).toBe(false);
   });
 });
