@@ -53,17 +53,6 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const [fixRunId, setFixRunId] = useState<string | null>(null);
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
-  // True once the push recovered while a fix run was attached: a LATER
-  // failure is a new problem, so the button must offer a new fix rather
-  // than pointing at the finished run forever. The iframe stays attached
-  // to the old run until a new fix replaces it.
-  const [fixStale, setFixStale] = useState(false);
-  // Guards fix_run_running's one blind spot: right after spawn, the run's
-  // transcript file may not exist yet, so a poll landing in that gap reads
-  // "not running" indistinguishable from "already finished". Only trust a
-  // "not running" reading once this run has been OBSERVED running at least
-  // once — reset per fixRunId in onFix.
-  const sawFixRunningRef = useRef(false);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const baseOriginRef = useRef<string | null>(null);
 
@@ -123,30 +112,22 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   }, [seedToken]);
 
   // Sync status poll for the status strip; re-arms the watcher if it drops.
+  // The button's enabled/disabled state reads straight off sync.fix_active —
+  // set server-side the instant a fix spawns, cleared only by that run's own
+  // completion (D330 follow-up), never guessed from transcript activity here.
   useEffect(() => {
     const id = window.setInterval(() => {
-      void getSyncStatus(name, fixRunId ?? undefined)
+      void getSyncStatus(name)
         .then((s) => {
           setSync(s);
           setDir((d) => d ?? s.dir);
-          // A push recovering ("idle") always means the button should offer a
-          // fresh fix for any later failure. Otherwise, while a run_id is
-          // attached, fix_run_running is the actual signal: push_state alone
-          // can't distinguish a fix still working (which must stay disabled,
-          // or a second click races it on the same clone) from one that
-          // finished and failed again (which must re-enable, or a bad fix
-          // leaves the button stuck on "Claude is on it" forever).
-          if (fixRunId && s.fix_run_running) sawFixRunningRef.current = true;
-          const fixRunDone =
-            fixRunId && s.fix_run_running === false && sawFixRunningRef.current;
-          if (s.push_state === "idle" || fixRunDone) setFixStale(true);
           // Self-heal: a server restart drops the watcher; re-arm it.
           if (!s.watching) void startSync(name).catch(() => undefined);
         })
         .catch(() => undefined);
     }, SYNC_POLL_MS);
     return () => window.clearInterval(id);
-  }, [name, fixRunId]);
+  }, [name]);
 
   // Splitter drag: track the pointer over the whole window so the drag
   // survives entering the iframes (which would otherwise swallow mousemove —
@@ -186,9 +167,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     setFixError(null);
     try {
       const { run_id } = await fixWithClaude(name);
-      sawFixRunningRef.current = false;
       setFixRunId(run_id);
-      setFixStale(false);
     } catch (e) {
       setFixError((e as Error).message);
     } finally {
@@ -224,11 +203,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             <strong>{sync.error}</strong>
             <button
               className="btn btn-primary"
-              disabled={fixBusy || (!!fixRunId && !fixStale)}
+              disabled={fixBusy || !!sync.fix_active}
               onClick={() => void onFix()}
               title="Start a Claude session on the local clone, primed with these errors"
             >
-              {fixRunId && !fixStale
+              {sync.fix_active
                 ? "Claude is on it — see chat →"
                 : fixBusy
                   ? "Starting…"

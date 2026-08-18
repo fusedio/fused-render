@@ -643,35 +643,48 @@ def test_fix_endpoint_spawns_a_primed_claude_session(harness, monkeypatch):
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
-def test_sync_status_reports_fix_run_liveness(harness, monkeypatch):
-    # fix_run_running only appears when the caller passes run_id, and mirrors
-    # session_liveness verbatim — the status endpoint doesn't invent its own
-    # notion of "still working", it asks the one module that reads transcripts.
-    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
-    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
-    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+def test_fix_active_blocks_a_concurrent_fixer_until_the_run_completes(harness, monkeypatch):
+    # fix_active is set the instant a fix spawns and is what a second click
+    # gets 409'd against — never a guess from transcript activity, because
+    # that has a grace window a slow tool call could hide inside (the bug
+    # this replaced). It only clears via the run's own completion callback.
+    from fused_render import claude_spawn
 
-    status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
-    assert "fix_run_running" not in status
-
-    seen = {}
-
-    def _running_true(run_id, now, projects_dir=None):
-        seen["run_id"] = run_id
-        return True
-
-    monkeypatch.setattr(canvases_mod, "session_running", _running_true)
-    status = harness.client.get(
-        "/api/canvases/sync/status?name=alpha&run_id=run-77").json()
-    assert status["fix_run_running"] is True
-    assert seen["run_id"] == "run-77"
-
+    _fail_push_with_validation(harness, monkeypatch)
+    on_tick_holder = {}
     monkeypatch.setattr(
-        canvases_mod, "session_running",
-        lambda run_id, now, projects_dir=None: False)
-    status = harness.client.get(
-        "/api/canvases/sync/status?name=alpha&run_id=run-77").json()
-    assert status["fix_run_running"] is False
+        claude_spawn, "spawn_helper",
+        lambda target, prompt, mode, session_id="": {"run_id": "run-1"})
+
+    def _fake_record(agent, run_id, on_tick=None):
+        on_tick_holder["on_tick"] = on_tick
+
+    monkeypatch.setattr(claude_spawn, "record_session_when_ready", _fake_record)
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: object())
+
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200
+    status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    assert status["fix_active"] is True
+
+    # A second click while the first fixer is still working is refused, not
+    # raced onto the same clone.
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 409
+
+    # Only the run's own completion (agent._poll's "done", fed through
+    # on_tick) clears it — simulate the background thread's final tick.
+    on_tick_holder["on_tick"]({"done": True})
+    status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    assert status["fix_active"] is False
+
+    # A push still in error and no active fixer → a new fix is allowed again.
+    monkeypatch.setattr(
+        claude_spawn, "spawn_helper",
+        lambda target, prompt, mode, session_id="": {"run_id": "run-2"})
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200
+    assert res.json()["run_id"] == "run-2"
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 

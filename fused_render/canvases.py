@@ -45,7 +45,6 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
-from fused_render.session_liveness import session_running
 
 router = APIRouter()
 
@@ -685,6 +684,14 @@ class _SyncManager:
         # away the 4 lines that name the files. Kept verbatim so the fix
         # endpoint can hand them to a Claude session and the UI can list them.
         self.error_detail: list[str] = []
+        # Set the instant a "Fix with Claude" session is spawned, cleared by
+        # that session's own completion callback (agent._poll's `done`, D330
+        # follow-up) — never by a heuristic transcript-liveness read. A guess
+        # ("no recent transcript activity") has an inherent grace window that
+        # is fine for a status badge and wrong for a lock: a slow tool call
+        # mid-fix would read as "finished" and let a second click spawn a
+        # concurrent session on the same clone.
+        self.active_fix_run_id: str | None = None
         self.pull_seq = 0
         self.last_pull_at: float | None = None
         self._fingerprint = self._take_fingerprint()
@@ -923,6 +930,7 @@ class _SyncManager:
             "last_pull_at": self.last_pull_at,
             "error": self.last_error,
             "error_detail": list(self.error_detail),
+            "fix_active": self.active_fix_run_id is not None,
         }
 
 
@@ -998,7 +1006,15 @@ def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(defaul
     same reason given there (nobody is polling `decide` until the page
     attaches, so "prompt" would park the first tool call for an hour), and a
     recorder thread so the run lands in the folder's session sidecar. The
-    caller attaches its chat iframe with the returned run_id."""
+    caller attaches its chat iframe with the returned run_id.
+
+    `active_fix_run_id` guards against a concurrent second fixer on the same
+    clone — set the instant this spawn succeeds, cleared only by that run's
+    own completion callback (`agent._poll`'s `done`), never by a guess from
+    transcript activity. A heuristic "no recent activity" read has a grace
+    window that's fine for a status badge and wrong for a lock: a slow
+    `fused workbench canvas validate .` mid-fix would read as "finished" and
+    let a second click through onto the same files."""
     from fused_render import claude_spawn
 
     guard = _require_fused(x_fused)
@@ -1012,6 +1028,8 @@ def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(defaul
         # Nothing to fix: the button only renders on an error, so reaching
         # this means the push recovered between the click and the POST.
         return _error("this canvas has no failing push to fix", 409)
+    if manager.active_fix_run_id is not None:
+        return _error("a fix is already running for this canvas", 409)
     prompt = _fix_prompt(name, manager.error_detail, manager.last_error)
     try:
         res = claude_spawn.spawn_helper(manager.dir, prompt, "auto")
@@ -1020,29 +1038,29 @@ def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(defaul
     if res.get("error") or not res.get("run_id"):
         return _error(str(res.get("error") or "failed to start Claude session"), 500)
     run_id = str(res["run_id"])
+    manager.active_fix_run_id = run_id
+
+    def _on_tick(data: dict) -> None:
+        if data.get("done") and manager.active_fix_run_id == run_id:
+            manager.active_fix_run_id = None
+
     threading.Thread(
         target=claude_spawn.record_session_when_ready,
         args=(claude_spawn.load_agent(), run_id),
+        kwargs={"on_tick": _on_tick},
         daemon=True, name="fused-canvas-fix-record",
     ).start()
     return {"ok": True, "run_id": run_id}
 
 
 @router.get("/api/canvases/sync/status")
-def api_canvases_sync_status(name: str = "", run_id: str = ""):
+def api_canvases_sync_status(name: str = ""):
     if not _NAME_RE.fullmatch(name or ""):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
     manager = _sync_manager(name, create=False)
     if manager is None:
-        result = {"name": name, "watching": False, "push_state": "idle", "push_seq": 0,
-                  "last_push_at": None, "pull_seq": 0, "last_pull_at": None,
-                  "error": None, "error_detail": [], "dir": _canvas_dir(name)}
-    else:
-        result = manager.status()
-    # Whether a "Fix with Claude" run the caller is attached to is still mid-
-    # turn (session_liveness's transcript read, D330 follow-up): push_state
-    # alone can't tell a fix that is still working from one that finished and
-    # failed again, and only the caller knows which run_id it's watching.
-    if run_id:
-        result["fix_run_running"] = session_running(run_id, time.time())
-    return result
+        return {"name": name, "watching": False, "push_state": "idle", "push_seq": 0,
+                "last_push_at": None, "pull_seq": 0, "last_pull_at": None,
+                "error": None, "error_detail": [], "dir": _canvas_dir(name),
+                "fix_active": False}
+    return manager.status()
