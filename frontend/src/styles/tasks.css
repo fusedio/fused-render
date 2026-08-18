@@ -149,10 +149,9 @@
    untouched. `content-box` is what makes that true — `flex-basis` then sizes the
    CONTENT box and the padding rides outside it.
 
-   The pair cancels exactly: padding-left `--tasks-row-pad` against margin-left
-   `-(--tasks-row-pad)`, padding-right half a gap against the same negative, and
-   7px of vertical padding against -7px of margin (the row's own vertical
-   padding, so the zone is the row's full height and no taller).
+   That growth is applied to `button.tasks-caret` and not here, because this
+   selector also matches the placeholder span on leaf rows — see the note on that
+   rule for why an enlarged placeholder is a bug and not a bigger target.
 
    Written twice, `.prefs-section` scope included, for house rule 2 at the top of
    this file: `.prefs-section button` (0,1,1) repaints any unarmoured button on
@@ -169,25 +168,45 @@
   width: var(--tasks-caret-w);
   height: var(--tasks-caret-w);
   flex: 0 0 var(--tasks-caret-w);
-  padding: 7px calc(var(--tasks-row-gap) / 2) 7px var(--tasks-row-pad);
-  margin: -7px calc(var(--tasks-row-gap) / -2) -7px calc(var(--tasks-row-pad) * -1);
   color: var(--fg-muted);
   background: none;
   border: 0;
-  /* Above the stretched row link, so the leading gutter EXPANDS and everything
-     else NAVIGATES — two zones, no overlap a person could land in by accident. */
-  position: relative;
-  z-index: 2;
 }
 
 /* Only the expandable row's caret is a real button; the rest is an empty box
-   holding the gutter open (see the note at its call site). */
+   holding the gutter open (see the note at its call site).
+
+   THE ENLARGED HIT ZONE AND THE STACKING LIVE HERE, ON THE BUTTON ONLY, and that
+   placement is the whole point of splitting this rule (bugbot, 2026-08-18). They
+   used to sit on the bare `.tasks-caret` above, which is also the placeholder
+   `<span>` on every leaf row — so on a row with nothing to expand, an inert span
+   was painted over the stretched `.tasks-rowlink` at the row's leading edge,
+   full row height and out to the row's own padding. Clicks there hit markup that
+   does nothing: the gutter of a one-message row was simply dead, while the row
+   still showed a pointer cursor and still opened the conversation everywhere
+   else. A placeholder must hold space and nothing more, so it gets no padding, no
+   negative margins and no `z-index`, and the rowlink underneath collects the
+   press like it does on the rest of the row.
+
+   The pair of padding and margin cancels exactly: padding-left `--tasks-row-pad`
+   against margin-left `-(--tasks-row-pad)`, padding-right half a gap against the
+   same negative, and 7px of vertical padding against -7px of margin (the row's
+   own vertical padding, so the zone is the row's full height and no taller).
+   `content-box` above is what makes that true — `flex-basis` sizes the CONTENT
+   box, so both the padded button and the bare span still contribute exactly
+   `--tasks-caret-w` to the flex row and the rail measured from it never moves. */
 button.tasks-caret,
 .prefs-section button.tasks-caret {
   cursor: pointer;
   align-self: center;
   appearance: none;
   -webkit-appearance: none;
+  padding: 7px calc(var(--tasks-row-gap) / 2) 7px var(--tasks-row-pad);
+  margin: -7px calc(var(--tasks-row-gap) / -2) -7px calc(var(--tasks-row-pad) * -1);
+  /* Above the stretched row link, so the leading gutter EXPANDS and everything
+     else NAVIGATES — two zones, no overlap a person could land in by accident. */
+  position: relative;
+  z-index: 2;
 }
 
 /* NO HOVER SKIN. `.prefs-section button:hover` fills and outlines every button on

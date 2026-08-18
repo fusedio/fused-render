@@ -2929,8 +2929,11 @@ describe("an upcoming row's click", () => {
     // grows it to the row's full height and out to the row's leading edge, and
     // matching negative margins take that growth back out, which only works
     // because the box is sized content-box.
-    const css = block(TASKS_CSS, ".tasks-caret");
-    expect(css).toContain("box-sizing: content-box");
+    //
+    // It hangs off `button.tasks-caret`, NOT off the shared `.tasks-caret` — see
+    // the leaf-row test below for why that distinction is the whole rule.
+    expect(block(TASKS_CSS, ".tasks-caret")).toContain("box-sizing: content-box");
+    const css = block(TASKS_CSS, "button.tasks-caret");
     expect(css).toContain("padding: 7px calc(var(--tasks-row-gap) / 2) 7px var(--tasks-row-pad)");
     expect(css).toContain(
       "margin: -7px calc(var(--tasks-row-gap) / -2) -7px calc(var(--tasks-row-pad) * -1)",
@@ -2944,6 +2947,30 @@ describe("an upcoming row's click", () => {
     // its own and slide it visibly left.
     expect(block(TASKS_CSS, ".tasks-caret-glyph.is-open")).toContain("transform: rotate(90deg)");
     expect(TASKS_CSS).not.toContain(".tasks-caret.is-open {");
+  });
+
+  it("leaves a leaf row's gutter to the row link, rather than to an inert span", () => {
+    // Both arms of the caret wear `.tasks-caret`, so anything that rule grants is
+    // also granted to the empty placeholder on a row with nothing to expand. Two
+    // of those grants would make the placeholder eat presses: the enlarged hit
+    // zone paints it over the row's leading edge for the row's full height, and
+    // `z-index: 2` lifts it above the stretched `.tasks-rowlink`. Nothing listens
+    // on a span, so that corner of a one-message row would be dead — pointer
+    // cursor and all, while every other pixel of the same row opens the chat.
+    //
+    // So the shared rule holds SPACE ONLY, and the growth and the stacking live
+    // on the button.
+    const shared = block(TASKS_CSS, ".tasks-caret");
+    expect(shared).toContain("flex: 0 0 var(--tasks-caret-w)");
+    expect(shared).not.toContain("z-index");
+    expect(shared).not.toContain("position: relative");
+    expect(shared).not.toContain("padding:");
+    expect(shared).not.toContain("margin:");
+    // Written twice over, so the `.prefs-section` copy must not smuggle back what
+    // the bare one gave up.
+    expect(block(TASKS_CSS, ".prefs-section .tasks-caret")).toBe(shared);
+    // The placeholder really is a bare span: no handler, nothing to press.
+    expect(ROW).toContain('<span className="tasks-caret" aria-hidden />');
   });
 
   it("falls through rather than opening a blank form when the entry is unknown", () => {
