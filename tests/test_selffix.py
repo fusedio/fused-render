@@ -854,6 +854,33 @@ def test_reports_written_out_of_tree_survive_the_install_becoming_writable(
                                                               diagnostic_report]
 
 
+def test_in_tree_records_survive_the_install_becoming_READ_ONLY(install, monkeypatch):
+    """The mirror of the writable-flip case, and the half a shared list hid.
+
+    A writer must not be offered the state dir once the tree is known
+    unwritable — that is a guaranteed exception per record. A READER has no such
+    excuse: nothing about a home's writability bears on whether it can be read.
+    Sharing one list meant an install that WAS writable and is now not — a
+    `chmod`, a remount, an ownership change — dropped its in-tree reports and,
+    worse, its session pointer out of view. That pointer is half the
+    one-at-a-time guard, so a live fix session would stop excluding a second one
+    the moment the tree it is editing turned read-only underneath it.
+    """
+    monkeypatch.setattr(selffix, "writable", lambda: True)
+    _, in_tree = selffix.record_incident({"title": "while writable"}, now=1000.0)
+    selffix.note_session("run-in-tree")
+    assert selffix.in_state_dir(in_tree)
+
+    monkeypatch.setattr(selffix, "writable", lambda: False)
+    # The writer's list correctly stops offering a home that cannot take a write.
+    assert selffix.record_homes() == [selffix.out_of_tree_dir()]
+    # The reader's list never drops one, so neither record went out of view.
+    assert selffix.state_dir() in selffix.reader_homes()
+    assert in_tree in [r["path"] for r in selffix.list_reports()]
+    assert selffix.active_run() == "run-in-tree", (
+        "the guard lost a live session's pointer when the tree turned read-only")
+
+
 def test_the_session_pointer_is_found_after_the_install_becomes_writable(
         install, monkeypatch):
     """Same rule for the guard's pointer: written in one home, still found from
