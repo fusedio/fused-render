@@ -425,3 +425,33 @@ def test_a_disconnected_stream_stops_and_joins_generation(worker, monkeypatch):
 
     assert "thread" in producer
     assert not producer["thread"].is_alive()
+
+
+# -- what the prompt cost ------------------------------------------------------
+
+
+def test_the_encoded_prompt_length_is_the_input_token_count(worker):
+    """`input_tokens` (SPEC AI-3) is free here — the prompt has just been
+    tokenized and its last dimension IS the answer — where anything upstream
+    would have to estimate it and then disagree with the model."""
+
+    class _Ids:
+        shape = (1, 37)
+
+    assert worker._prompt_tokens(_Ids()) == 37
+
+
+def test_a_sequence_without_a_shape_is_still_counted(worker):
+    """The stub tokenizers in this file hand back plain lists, and so does any
+    tokenizer returning python ids — length is the same answer."""
+    assert worker._prompt_tokens([4, 5, 6]) == 3
+
+
+def test_a_shape_this_cannot_read_costs_the_metric_not_the_generation(worker):
+    """None means "not reported", which every reader already handles."""
+
+    class _Odd:
+        shape = None
+
+    assert worker._prompt_tokens(_Odd()) is None
+    assert worker._prompt_tokens(object()) is None

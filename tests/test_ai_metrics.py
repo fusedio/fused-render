@@ -421,8 +421,26 @@ def test_the_local_tier_records_a_streamed_completion(monkeypatch):
     frames = asyncio.run(go())
     assert frames[-1] == {"type": "done", "ok": True, "result": {
         "text": "hi", "model": "org/chat",
-        "usage": {"output_tokens": 3, "seconds": 0.1}}}
+        # `input_tokens` is present and null: this worker did not count the
+        # prompt, and the key says so rather than being absent for one runner
+        # and present for another.
+        "usage": {"input_tokens": None, "output_tokens": 3, "seconds": 0.1}}}
     assert ai_metrics.snapshot(5)["totals"]["output_tokens"] == 3
+
+
+def test_a_local_worker_that_counts_the_prompt_is_believed(monkeypatch):
+    """The worker holds the tokenizer, so it is the only process that can say
+    how long the prompt was in the model's own tokens (AI-3). Reported, it
+    reaches both the caller's `usage` and the counter."""
+    _local(monkeypatch, [{"type": "chunk", "text": "hi"},
+                         {"type": "done", "ok": True, "tokens": 4,
+                          "input_tokens": 37, "seconds": 0.2}])
+    resp = asyncio.run(_server_ai._ai_relay({"prompt": "hi", "model": "org/chat"}))
+    told = json.loads(bytes(resp.body))["result"]
+    assert told["usage"]["input_tokens"] == 37
+
+    row, = ai_metrics.snapshot(5)["models"]
+    assert row["input_tokens"] == 37 and row["output_tokens"] == 4
 
 
 def test_a_cancelled_local_generation_counts_the_tokens_it_made(monkeypatch):

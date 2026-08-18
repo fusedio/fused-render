@@ -30,6 +30,15 @@
 //   * TIER. This page's subject is the local half of `fused.ai`, so Claude and
 //     local models are counted apart — one merged figure answers neither
 //     "what is this laptop doing" nor "what am I sending out".
+//
+// The one number here that is NOT measured is the ESTIMATED COST, and it is
+// labelled that way everywhere it appears. This app knows what a model
+// generated; it does not know what anybody is charging for it, so the rate is
+// an input box per model rather than a table of prices that would go stale
+// silently and be believed anyway. It defaults to $1 per million OUTPUT tokens
+// and counts output only — a default nobody's real bill matches exactly, which
+// is the point of it being editable and of the word "estimated" beside every
+// figure it produces.
 import { useEffect, useState, type CSSProperties } from "react";
 import {
   getAiUsage,
@@ -38,7 +47,6 @@ import {
   type AiUsageCounts,
   type AiUsageTier,
 } from "@platform/lib/api";
-import { timeAgo } from "@platform/lib/format";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 
@@ -55,6 +63,30 @@ const RANGES = [5, 15, 60] as const;
 const POLL_MS = 5000;
 
 const fmt = (n: number) => n.toLocaleString();
+
+// $ per MILLION output tokens. One rate, on output only: input tokens are not
+// counted here at all, so a row's estimate is a single multiplication a reader
+// can check in their head against the Generated column.
+const DEFAULT_RATE = 1;
+const PER = 1_000_000;
+
+/** `output_tokens` at `rate` per million, as dollars — or null when the rate
+ *  box has been emptied or typed into something that is not a number, which is
+ *  a state to render blank rather than to guess a zero for. */
+function cost(outputTokens: number, rate: string): number | null {
+  const value = Number(rate);
+  if (rate.trim() === "" || !Number.isFinite(value) || value < 0) return null;
+  return (outputTokens / PER) * value;
+}
+
+/** Money, at a precision that does not round a real cost to nothing: fractions
+ *  of a cent are the ordinary case for a local session, and "$0.00" beside
+ *  40,000 tokens reads as a broken calculation rather than as a small bill. */
+function money(dollars: number): string {
+  if (dollars === 0) return "$0";
+  if (dollars < 0.01) return `$${dollars.toFixed(4)}`;
+  return `$${dollars.toFixed(2)}`;
+}
 
 /** Compact, for a label that has to fit over a bar: 940, 1.2k, 3.4M. */
 function compact(n: number): string {
@@ -195,8 +227,31 @@ const TIER_LABEL: Record<AiUsageTier, string> = {
  *  Speed is a per-MODEL column and not just a total, because that is the level
  *  it means something at: "this machine averages 30 tok/s" is a mixture of
  *  whatever ran, while "this 8B model runs at 24 tok/s here" is the number
- *  somebody is choosing between two downloads with. */
-function UsageModels({ usage }: { usage: AiUsage }) {
+ *  somebody is choosing between two downloads with.
+ *
+ *  So is the RATE, for a different reason: every model is priced differently
+ *  and this app knows none of those prices, so the rate is a box per row rather
+ *  than one figure for the table. `rates` is held by the caller so a poll — one
+ *  every five seconds — cannot reset a number somebody is still typing.
+ */
+function UsageModels({
+  usage,
+  rates,
+  onRate,
+}: {
+  usage: AiUsage;
+  rates: Record<string, string>;
+  onRate: (model: string, rate: string) => void;
+}) {
+  const rateFor = (model: string) => rates[model] ?? String(DEFAULT_RATE);
+  // Rows whose rate box is empty or unparseable contribute nothing rather than
+  // a zero, and the total says so by going blank itself only when NO row could
+  // be priced — a half-priced table still has a real subtotal.
+  const priced = usage.models
+    .map((row) => cost(row.output_tokens, rateFor(row.model)))
+    .filter((c): c is number => c !== null);
+  const total = priced.length ? priced.reduce((a, b) => a + b, 0) : null;
+
   return (
     <table className="am-usage-table">
       <thead>
@@ -207,37 +262,67 @@ function UsageModels({ usage }: { usage: AiUsage }) {
           <th>Generated</th>
           <th>Speed</th>
           <th>Failed</th>
+          {/* The unit is in the header, not in the box: a placeholder inside an
+              input disappears the moment somebody types, and this is the one
+              thing a reader has to know to trust the column beside it. */}
+          <th>$/M output</th>
+          <th>Est. cost</th>
         </tr>
       </thead>
       <tbody>
-        {usage.models.map((row) => (
-          <tr key={row.model}>
-            <td className="am-usage-model" title={row.model}>
-              {/* The tier as a chip rather than as a column of its own: it is
-                  readable off the id (a slash means a Hub repo, AI-1) and this
-                  spares four characters of table width for saying so. The
-                  overflow row gets no chip: it holds whatever mixture arrived
-                  past the cap, and either label on it would be a guess. */}
-              {row.tier !== null && (
-                <span className={"am-usage-tier am-usage-tier-" + row.tier}>
-                  {TIER_LABEL[row.tier]}
-                </span>
-              )}
-              {row.model}
-            </td>
-            <td>{fmt(row.completions)}</td>
-            {/* An em dash, never a 0: this model's tier never reported what it
-                read, and printing zero would be an answer instead of an
-                absence. Same rule for a speed nothing timed. */}
-            <td>{row.input_tokens === null ? "—" : fmt(row.input_tokens)}</td>
-            <td>{fmt(row.output_tokens)}</td>
-            <td>{row.tokens_per_second === null ? "—" : `${row.tokens_per_second}/s`}</td>
-            <td className={row.failures ? "am-usage-bad" : undefined}>
-              {row.failures ? fmt(row.failures) : "—"}
-            </td>
-          </tr>
-        ))}
+        {usage.models.map((row) => {
+          const estimate = cost(row.output_tokens, rateFor(row.model));
+          return (
+            <tr key={row.model}>
+              <td className="am-usage-model" title={row.model}>
+                {/* The tier as a chip rather than as a column of its own: it is
+                    readable off the id (a slash means a Hub repo, AI-1) and this
+                    spares four characters of table width for saying so. The
+                    overflow row gets no chip: it holds whatever mixture arrived
+                    past the cap, and either label on it would be a guess. */}
+                {row.tier !== null && (
+                  <span className={"am-usage-tier am-usage-tier-" + row.tier}>
+                    {TIER_LABEL[row.tier]}
+                  </span>
+                )}
+                {row.model}
+              </td>
+              <td>{fmt(row.completions)}</td>
+              {/* An em dash, never a 0: this model's tier never reported what it
+                  read, and printing zero would be an answer instead of an
+                  absence. Same rule for a speed nothing timed. */}
+              <td>{row.input_tokens === null ? "—" : fmt(row.input_tokens)}</td>
+              <td>{fmt(row.output_tokens)}</td>
+              <td>{row.tokens_per_second === null ? "—" : `${row.tokens_per_second}/s`}</td>
+              {/* Not error-styled. A failure count is a fact about a session,
+                  not an alarm the page raises — colouring it red made a single
+                  refused call read as something being wrong with the app. */}
+              <td>{row.failures ? fmt(row.failures) : "—"}</td>
+              <td>
+                <input
+                  className="am-usage-rate"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  aria-label={`Dollars per million output tokens for ${row.model}`}
+                  value={rateFor(row.model)}
+                  onChange={(e) => onRate(row.model, e.target.value)}
+                />
+              </td>
+              <td>{estimate === null ? "—" : money(estimate)}</td>
+            </tr>
+          );
+        })}
       </tbody>
+      {usage.models.length > 1 && (
+        <tfoot>
+          <tr>
+            <td colSpan={7}>Estimated total</td>
+            <td>{total === null ? "—" : money(total)}</td>
+          </tr>
+        </tfoot>
+      )}
     </table>
   );
 }
@@ -257,9 +342,7 @@ function TierLine({ tier, counts }: { tier: AiUsageTier; counts: AiUsageCounts }
           {fmt(counts.output_tokens)} generated · {fmt(counts.completions)}{" "}
           {counts.completions === 1 ? "completion" : "completions"}
           {counts.tokens_per_second !== null && ` · ${counts.tokens_per_second}/s`}
-          {counts.failures > 0 && (
-            <span className="am-usage-bad"> · {fmt(counts.failures)} failed</span>
-          )}
+          {counts.failures > 0 && ` · ${fmt(counts.failures)} failed`}
         </>
       )}
     </div>
@@ -270,6 +353,13 @@ export default function AiModelsUsage() {
   const [minutes, setMinutes] = useState<number>(15);
   const [usage, setUsage] = useState<AiUsage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Model id -> the rate typed for it, as the STRING the box holds: a half-typed
+  // "1." or an emptied box are states a number would erase under the cursor.
+  // Held here, above the table, so the five-second poll re-renders rows without
+  // touching what somebody is editing.
+  const [rates, setRates] = useState<Record<string, string>>({});
+  const setRate = (model: string, rate: string) =>
+    setRates((prev) => ({ ...prev, [model]: rate }));
 
   // Poll, and keep the LAST good answer on a failure. A metrics read that lost
   // a race with a restarting server should leave the graph as it was, exactly
@@ -325,13 +415,12 @@ export default function AiModelsUsage() {
                     ` · ${usage.window.tokens_per_second} tok/s`}
                 </span>
                 {/* Beside the headline, not in a corner: a window in which
-                    calls failed is the one thing on this tab a user needs to
-                    see without going looking. */}
+                    calls failed is worth seeing without going looking. In the
+                    caption's own colour, though — a failed call is a fact about
+                    the session, not an alarm this page raises, and red made one
+                    refused call read as the app being broken. */}
                 {usage.window.failures > 0 && (
-                  <span className="am-usage-bad">
-                    {" "}
-                    · {fmt(usage.window.failures)} failed
-                  </span>
+                  <span className="am-usage-sub"> · {fmt(usage.window.failures)} failed</span>
                 )}
               </div>
               {/* Same segmented-control vocabulary as the page's tab strip,
@@ -390,14 +479,11 @@ export default function AiModelsUsage() {
                 </div>
                 <div className="cc-mdcard am-usage-tile">
                   {/* A zero here is a REAL answer — unlike a missing input
-                      count — so it is printed, and only a non-zero is coloured. */}
-                  <div
-                    className={
-                      "am-usage-tile-value" + (usage.totals.failures ? " am-usage-bad" : "")
-                    }
-                  >
-                    {fmt(usage.totals.failures)}
-                  </div>
+                      count — so it is printed. In the same weight as every
+                      other tile: this counts calls that produced no text, which
+                      is ordinary (a Stop, a model still downloading), and error
+                      styling would make the tile shout on a healthy session. */}
+                  <div className="am-usage-tile-value">{fmt(usage.totals.failures)}</div>
                   <div className="am-usage-tile-label">failed</div>
                 </div>
                 <div className="cc-mdcard am-usage-tile">
@@ -430,21 +516,26 @@ export default function AiModelsUsage() {
                 <TierLine tier="claude" counts={usage.tiers.claude} />
                 <TierLine tier="local" counts={usage.tiers.local} />
               </div>
-              <UsageModels usage={usage} />
+              <UsageModels usage={usage} rates={rates} onRate={setRate} />
+              {/* The assumption, written down beside the column that makes it.
+                  Nobody's real bill is output-only at a flat rate, and the
+                  figure is worth having anyway — as long as the page says which
+                  arithmetic it did. */}
+              <p className="am-usage-note">
+                Estimated cost only: tokens generated × the rate you set, per model. Input
+                tokens are not counted, and nothing here is a bill — set each rate to what
+                your provider charges to make the estimate yours.
+              </p>
             </>
           )}
 
           {/* The disclaimer is the point, not the small print: these are not
-              billing figures and not a daily total, and the only way to say so
-              is to state the window they cover. */}
+              billing figures and not a daily total. Two sentences and no
+              mechanism — where the numbers live is this file's business, and
+              what a reader needs is that they are bounded and by what. */}
           <p className="am-usage-note">
-            Counted in memory by this server process — {duration(usage.now - usage.since)} so far,
-            since {clock(usage.since)}. Nothing is written to disk, and the numbers start again
-            when the app restarts.
-            {/* "Quiet for a while" and "never used" are the same empty graph
-                until something dates the last completion. */}
-            {usage.last_completion_at !== null &&
-              ` Last completion ${timeAgo(usage.last_completion_at)}.`}
+            Metrics reset when Fused Render restarts. {duration(usage.now - usage.since)} so far,
+            since {clock(usage.since)}.
           </p>
         </>
       )}

@@ -6075,7 +6075,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   supervisor. The port is **ephemeral and published by the child** — anything the
   parent reserved could be taken between its bind and the exec — and every
   request carries a per-worker token in a header, so a foreign page that guessed
-  the port still cannot drive the model.
+  the port still cannot drive the model. A text runner's terminal `done` frame
+  reports **both** counts — `tokens` for what it generated and `input_tokens`
+  for the prompt it read — because the worker is the only process holding the
+  tokenizer that decides the second one, and anything upstream could only
+  estimate it and then disagree with the model. Counted before the first token,
+  so a CANCELLED generation reports it too, and fail-soft: a tokenizer that
+  cannot answer costs the count (`null` — not reported) and never the
+  completion.
 - **AI-4** **One resident model per capability, auto-evicting.** Loading a second
   text model stops the first BEFORE the new one loads. Arithmetic, not taste: two
   8GB models on a 16GB machine is a swap storm, and a swap storm reads to the user
@@ -7087,9 +7094,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   into any speed, since it reported no duration; a completion whose client went
   away mid-stream is counted NOWHERE, because only the terminal frame carries a
   count and there is nothing honest to add; and input tokens are counted only
-  where a tier reports them — a local worker counts what it generated and never
-  sees a prompt token (AI-3), so those rows report `null`, never a zero that
-  would read as an answer. Sessions Claude Code runs elsewhere in the app (the
+  where a tier reports them — both tiers do (AI-3), so `null` is reserved for a
+  runner that genuinely could not count, and is never a zero that would read as
+  a model having been sent an empty prompt. Sessions Claude Code runs elsewhere in the app (the
   `claude` template, the task runner) are not this endpoint's traffic and are
   not counted.
 - **AI-12b** **A failure is counted, by kind, and is never a completion.** Every
@@ -7104,7 +7111,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   that means "the AI is not working" mean "somebody sent a bad request" as
   well. The type is kept because "3 failed" and "3 timed out" send a user to
   different places, and it is safe to keep unbounded: the keys are this
-  server's own vocabulary, never a caller's string.
+  server's own vocabulary, never a caller's string. It is shown in the page's
+  ordinary weight, NOT in error styling: a refused call is a fact about a
+  session — a Stop, a model still downloading — and a red figure made one of
+  them read as the app being broken.
 - **AI-12c** **Bounded by construction, unguarded on read, clamped on ask.** The
   ring is a fixed 360 slots and the breakdown a fixed 32 named models plus one
   overflow row — which names no TIER, because it holds whatever mixture arrived
@@ -7122,6 +7132,20 @@ an AI Models page that could say what was on disk but not what was *running*.
   process started counting: the graph would rather be short — and say so, with
   a hatched stretch the tab draws for it — than claim an idle hour it was not
   present for.
+- **AI-12d** **Cost is ESTIMATED, per model, at a rate the user types — and it
+  is the one number here that is not measured.** This app knows what each model
+  generated; it does not know what anybody is charging for it, and a built-in
+  price table would go stale silently and be believed anyway. So each model row
+  carries a `$ per million output tokens` box (default **1**, output only —
+  input tokens are not priced at all), and the figure beside it is that
+  multiplication and nothing more. Every place it appears says **estimated**,
+  and the note under the table states the arithmetic and what it leaves out, so
+  a reader can tell a real bill from this one at a glance. An emptied or
+  unparseable box prices its row at nothing rather than at zero — a blank is a
+  rate nobody has given, and the subtotal still stands for the rows that have
+  one. The rate lives in the page's own state (not the prefs store, not the
+  server): it is a what-if a reader is doing on numbers in front of them, and
+  persisting it would make a guess look like a setting the app stands behind.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

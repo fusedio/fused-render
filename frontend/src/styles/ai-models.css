@@ -1269,13 +1269,6 @@
   color: var(--fg-muted);
 }
 
-/* A count that is bad news — failures, wherever they are shown. Colour is the
-   ONLY thing it changes: the figure keeps its place in the row so a table of
-   numbers does not reflow when one of them goes wrong. */
-.am-usage-bad {
-  color: var(--error);
-}
-
 .am-usage-muted {
   color: var(--fg-muted);
 }
@@ -1297,6 +1290,42 @@
 
 .am-usage-failtypes {
   margin-top: -4px;
+}
+
+/* The $/million box on a model row. Sized to the number it holds — a full-width
+   input in a table of figures reads as a form, and this is one cell of data the
+   reader happens to own. Right-aligned with the columns around it, spinners
+   left to the browser: they are how a rate gets nudged. */
+.am-usage-rate {
+  width: 72px;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--fg);
+  background: var(--ctl-quiet-bg);
+  border: 1px solid var(--ctl-quiet-border);
+  border-radius: 5px;
+}
+
+.am-usage-rate:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* The estimated total. A footer, not another tile: it is the sum of the column
+   above it and belongs at the bottom of that column. */
+.am-usage-table tfoot td {
+  padding: 6px 8px;
+  font-weight: 600;
+  border-top: 1px solid var(--border);
+}
+
+.am-usage-table tfoot td:first-child {
+  text-align: right;
+  font-weight: 400;
+  color: var(--fg-muted);
 }
 
 /* Which half of `fused.ai` served a row. Quiet by design — it is a category,
