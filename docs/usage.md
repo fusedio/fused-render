@@ -427,7 +427,9 @@ what you describe before changing anything*, and to say so and change nothing if
 it cannot — so "I could not make that happen" is a possible and useful outcome.
 
 The same tab shows the state of this installation: whether it has been modified,
-every report a fix session has written, and how to reinstall.
+and every report a fix session has written. (How to *reinstall* is not here —
+that answers a question the amber badge raises, so it lives in the badge's own
+panel, below.)
 
 ### Something failed
 

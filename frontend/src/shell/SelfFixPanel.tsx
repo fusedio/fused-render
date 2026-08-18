@@ -17,8 +17,10 @@
 //
 // It is also where the installation's own state belongs. The version chip's
 // popover has to be small and is a notification: something happened, here is
-// the report. This is the full-size account — every report ever written, the
-// reinstall instructions, the dismiss — with room to read it.
+// the report. This is the full-size account — every report ever written and the
+// dismiss — with room to read it. NOT the reinstall instructions: those stayed
+// in the chip's panel, where they answer the question the badge just raised
+// (SF-14b2).
 import { useEffect, useState } from "react";
 
 import { navigate, navigateUrl } from "@platform/lib/router";
@@ -104,11 +106,18 @@ function DescribeSection({
           rows={4}
         />
       </Field>
+      {/* SELF-CONTAINED ON PURPOSE. This used to end "see the reinstall
+          instructions below", and the instructions below are gone (SF-14b2) —
+          a banner that points at a section nobody removed the pointer from is
+          worse than one that says less. It also has nowhere left to point:
+          reinstall advice lives in the version chip's panel, which only exists
+          while a badge is up, and this banner fires on installs that were
+          never modified at all. So it carries its own answer. */}
       {!writable && (
         <ErrorBanner>
-          This installation is read-only, so a fix cannot be applied to it. See
-          the reinstall instructions below, or install fused-render somewhere you
-          own.
+          This installation is read-only, so a fix cannot be applied to it —
+          there is nothing here Claude could change. Install fused-render
+          somewhere you own and run that copy instead.
         </ErrorBanner>
       )}
       {/* NOT an ErrorBanner. Two of the three things that fail here — Claude
@@ -330,7 +339,7 @@ export function SelfFixPanel() {
   // is still broadly true, not a reason to replace the entire tab with a
   // sentence — the nudge fires this read on every state change, so one blip
   // (the server restarting mid-fix, which is a thing fix sessions cause) would
-  // otherwise take away the reinstall instructions and the report list.
+  // otherwise take away the report list and the installation's own state.
   if (!snapshot) {
     return error ? (
       <ErrorBanner>{error}</ErrorBanner>
