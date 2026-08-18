@@ -36,6 +36,9 @@ import {
   isFailedTask,
   isMessageRunning,
   isRunningNow,
+  isRunningIn,
+  activeMessage,
+  hasStarted,
   isPastDue,
   isUnread,
   isUpcomingTask,
@@ -3363,17 +3366,18 @@ describe("the archive action", () => {
     expect(ROW).toMatch(/\{file && \(\s*<button/);
     expect(CARD).toMatch(/\{file && \(\s*<button/);
     // Its neighbours are all still gated, each by its own guard rather than by a
-    // group's — which is what lets Archive keep its place in the strip's order
-    // (clear it, run it, file it, open it) instead of jumping to the front the day
-    // the flag flips.
+    // group's, and their order survives whichever of them are rendered.
     for (const guarded of ["seen", "run", "chat"]) {
       expect(ROW).toContain(`{SHOW_ROW_ACTIONS && ${guarded} && (`);
     }
     expect(ROW.indexOf("{SHOW_ROW_ACTIONS && run && (")).toBeLessThan(
-      ROW.indexOf("{file && ("),
-    );
-    expect(ROW.indexOf("{file && (")).toBeLessThan(
       ROW.indexOf("{SHOW_ROW_ACTIONS && chat && ("),
+    );
+    // And Archive is no longer IN that strip at all (2026-08-18): it is at the
+    // row's LEADING edge, in the mark slot, ahead of every one of them — see "the
+    // archive button swaps with the status ring" below.
+    expect(ROW.indexOf("{file && (")).toBeLessThan(
+      ROW.indexOf("{SHOW_ROW_ACTIONS && seen && ("),
     );
     // Hidden by OPACITY and not by `display`/`visibility`, deliberately: the
     // button has to stay in the tab order and light up when a keyboard reaches
@@ -3429,9 +3433,94 @@ describe("the archive action", () => {
     // The strip is invisible chrome over a card that IS a button, so the gap
     // between its children must not swallow the press that opens the chat.
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*pointer-events: none/);
+    // The button takes its events back with its INK, not at rest: an invisible
+    // control over a card that is itself a button ate the press that should have
+    // opened the chat (bugbot, 2026-08-18 — the row's own fix, applied to the
+    // card for the same reason).
     expect(TASKS_CSS).toMatch(
+      /\.tasks-card-wrap:hover \.tasks-card-act,\n[^{]*\{[^}]*pointer-events: auto/,
+    );
+    expect(TASKS_CSS).not.toMatch(
       /\.tasks-card-act,\n\.prefs-section \.tasks-card-act \{[^}]*pointer-events: auto/,
     );
+  });
+
+  it("swaps with the status ring on a List row, in the ring's own box", () => {
+    // The button used to sit out by the folder chip, at the row's busiest end.
+    // It is in the MARK SLOT now: ring at rest, Archive under the pointer, same
+    // place. Both occupants are inside one wrapper, which is the only way the two
+    // can be held to one box.
+    const from = VIEWS.indexOf('<span className="tasks-rowmark">');
+    expect(from).toBeGreaterThan(-1);
+    const slot = VIEWS.slice(from, VIEWS.indexOf("</span>", from));
+    expect(slot).toContain("<StatusIcon");
+    expect(slot).toContain("tasks-act--archive");
+    // It is drawn BEFORE the row's id chip — i.e. at the leading edge, where the
+    // ring is — and there is exactly one archive button on a row.
+    expect(from).toBeLessThan(VIEWS.indexOf("<IdChip id={task.task_id}"));
+    expect((ROW.match(/tasks-act--archive/g) ?? []).length).toBe(1);
+
+    // NOTHING MOVES when they swap, and that is a claim about the CSS: the slot is
+    // exactly the rail's width and the button is out of flow inside it, so the
+    // rail, the thread's indent under it and the caret's box beside it cannot
+    // shift by a pixel whichever occupant is showing.
+    const mark = block(TASKS_CSS, ".tasks-rowmark");
+    expect(mark).toContain("width: var(--tasks-rail-w)");
+    expect(mark).toContain("flex: 0 0 var(--tasks-rail-w)");
+    expect(mark).toContain("position: relative");
+    // No z-index on the SLOT: the row's stretched link has to keep painting over
+    // the ring's box, exactly as it did when the ring was the flex child.
+    expect(mark).not.toContain("z-index");
+    const button = block(
+      TASKS_CSS,
+      ".tasks-rowmark .tasks-act--archive",
+    );
+    expect(button).toContain("position: absolute");
+    expect(button).toContain("transform: translate(-50%, -50%)");
+
+    // The handover itself: the ring fades on the same triggers that reveal the
+    // button, and stops collecting presses while it is invisible.
+    const fade = block(
+      TASKS_CSS,
+      ".tasks-row:hover .tasks-rowmark .schedule-ring",
+    );
+    expect(fade).toContain("opacity: 0");
+    expect(fade).toContain("pointer-events: none");
+    // Keyboard reachability is why `:focus-within` is in the trigger list — a tab
+    // onto the button reveals it, and the ring in front of it must get out of the
+    // way (the same rule the strip has always obeyed).
+    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-rowmark .schedule-ring");
+    expect(TASKS_CSS).toContain(".tasks-act:focus-visible");
+    // A row with nothing to file keeps its ring under the pointer: a blank slot
+    // where the row's status was is worse than no swap at all.
+    expect(TASKS_CSS).toContain(":not(:has(.tasks-act--archive)) .schedule-ring");
+
+    // AND THE INVISIBLE BUTTON CANNOT TAKE A PRESS (bugbot, 2026-08-18, HIGH).
+    // `opacity: 0` alone left a live control at `z-index: 2` sitting over the
+    // ring and the row's stretched link, so a click on the row's most-aimed-at
+    // mark hit a button nobody could see and did nothing — a dead click, which
+    // design-principles §0 forbids outright. The events come back with the ink
+    // and not a moment before.
+    const rest = block(TASKS_CSS, ".tasks-act");
+    expect(rest).toContain("pointer-events: none");
+    const reveal = block(TASKS_CSS, ".tasks-row:hover .tasks-act");
+    expect(reveal).toContain("opacity: 1");
+    expect(reveal).toContain("pointer-events: auto");
+    // The keyboard arm is in the SAME rule, so a tabbed-to button is graspable
+    // too rather than visible-but-inert.
+    expect(TASKS_CSS).toMatch(
+      /\.tasks-act:focus-visible \{\n\s*opacity: 1;\n\s*pointer-events: auto;/,
+    );
+  });
+
+  it("leaves the board card's archive exactly where it was", () => {
+    // The swap is the LIST's, and only the List's. A card's ring is not in a rail
+    // and its head has an empty right end the strip was measured against
+    // (`--tasks-card-head-h`), so moving the button there would be a change with
+    // nothing behind it.
+    expect(CARD).toContain("tasks-card-act tasks-act--archive");
+    expect(CARD).not.toContain("tasks-rowmark");
+    expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
   });
 
   it("never paints it red — archiving destroys nothing", () => {
@@ -5602,11 +5691,16 @@ describe("the tasks toolbar", () => {
     // §3). The measure is the LIST's number, not the board's — it was the board's
     // for a few hours, and letting the one view that CAN scroll inside itself set
     // the width for the two that cannot was the wrong way round.
-    const measure = 1240;
-    // Comfortably inside the flow reference's 1200-1400, and tighter than the
-    // board's own five-lane span, which is the point: the board scrolls.
-    expect(measure).toBeGreaterThanOrEqual(1200);
-    expect(measure).toBeLessThanOrEqual(1400);
+    const measure = 1050;
+    // 15% off the 1240 it was for a day (Akshil, 2026-08-18), rounded to the
+    // nearest 50: a row's ink is an id, a title and two short times, and the
+    // measure is what stops the title's ellipsis sitting a screen away from the
+    // times it is being clipped for. Still far wider than the 760px prose column
+    // this page opts out of, and still tighter than the board's own five-lane
+    // span — which is the point: the board is the view that can scroll.
+    expect(measure).toBeGreaterThanOrEqual(1000);
+    expect(measure).toBeLessThanOrEqual(1100);
+    expect(Math.round(1240 * 0.85 / 50) * 50).toBe(measure);
     const lane = block(SCHEDULE_CSS, ".schedule-tv-lane");
     expect(lane).toContain("flex: 0 0 260px");
     const board = block(SCHEDULE_CSS, ".schedule-tv-board");
@@ -5825,5 +5919,99 @@ describe("isRunningNow", () => {
     const idle = msg({ message_id: "MSG-001", state: "sent", turn: "idle" });
     const t = task({ status: "done", live: false, messages: [idle] });
     expect(isRunningNow(t, idle)).toBe(false);
+  });
+
+  // BUGBOT, 2026-08-18: "the newest row" was doing the work of "the active
+  // message", and on a RECURRING task those are routinely different rows. `at`
+  // is when a message is DUE, so `messages[0]` on a task that runs daily is
+  // tomorrow's `pending` occurrence — which has never run and cannot be what the
+  // task is doing now. The shimmer went to tomorrow's chip while this afternoon's
+  // real run wore nothing.
+  it("never calls a future promise the work in flight", () => {
+    const TODAY = Math.floor(Date.parse("2026-08-16T09:00:00") / 1000);
+    const TOMORROW = Math.floor(Date.parse("2026-08-17T09:00:00") / 1000);
+    // What the server sends for a daily rule mid-run: tomorrow's occurrence is
+    // the newest row, today's is the one being worked on.
+    const promise = msg({ message_id: "MSG-002", at: TOMORROW, ran_at: 0, state: "pending" });
+    const today = msg({
+      message_id: "MSG-001", at: TODAY, ran_at: TODAY, state: "sent", turn: "idle",
+    });
+    const t = task({ status: "in_progress", live: false, messages: [promise, today] });
+
+    expect(isRunningNow(t, promise)).toBe(false);
+    expect(isRunningNow(t, today)).toBe(true);
+    expect(activeMessage(t)?.message_id).toBe("MSG-001");
+  });
+
+  it("picks the newest STARTED message, and knows which states those are", () => {
+    // Only a message the scheduler has actually spent can be the active one.
+    for (const state of ["sending", "sent", "error"] as const) {
+      expect(hasStarted(msg({ state }))).toBe(true);
+    }
+    for (const state of ["pending", "missed", "cancelled", "skipped"] as const) {
+      expect(hasStarted(msg({ state }))).toBe(false);
+    }
+    const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+    const older = msg({ message_id: "MSG-001", at: at("2026-08-16T05:00:00"), state: "sent" });
+    const newer = msg({ message_id: "MSG-002", at: at("2026-08-16T14:00:00"), state: "sent" });
+    const skipped = msg({
+      message_id: "MSG-003", at: at("2026-08-16T20:00:00"), state: "skipped",
+    });
+    expect(activeMessage(task({ messages: [skipped, newer, older] }))?.message_id)
+      .toBe("MSG-002");
+    // A task that has only ever been scheduled has no active message at all, and
+    // therefore nothing for the task's own verdict to land on.
+    const never = task({ status: "in_progress", messages: [msg({ state: "pending" })] });
+    expect(activeMessage(never)).toBe(null);
+    expect(isRunningNow(never, never.messages[0])).toBe(false);
+  });
+});
+
+// ---- and what a calendar CHIP asks ---------------------------------------------
+// A chip is not a message: it is one task on one DAY, anchored at that day's
+// earliest message with the rest nested inside it (schedule-lib.taskChips). Two
+// questions therefore go wrong when the chip asks about its anchor alone, and the
+// second is the one bugbot caught.
+
+describe("isRunningIn", () => {
+  const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  // A daily task, mid-afternoon: this morning's run finished, the 14:00 run is in
+  // flight, and tomorrow's occurrence is already on the books as the newest row.
+  const morning = msg({
+    message_id: "MSG-001", at: at("2026-08-16T05:00:00"),
+    ran_at: at("2026-08-16T05:00:00"), state: "sent", turn: "done",
+  });
+  const afternoon = msg({
+    message_id: "MSG-002", at: at("2026-08-16T14:00:00"),
+    ran_at: at("2026-08-16T14:00:00"), state: "sent", turn: "idle",
+  });
+  const tomorrow = msg({
+    message_id: "MSG-003", at: at("2026-08-17T05:00:00"), ran_at: 0, state: "pending",
+  });
+  const daily = task({
+    status: "in_progress", live: false, messages: [tomorrow, afternoon, morning],
+  });
+
+  it("shimmers today's chip and leaves tomorrow's alone", () => {
+    // Today's chip holds both of today's messages and is ANCHORED on the finished
+    // 05:00 one — asking the anchor would say no.
+    expect(isRunningIn(daily, [morning, afternoon])).toBe(true);
+    expect(isRunningNow(daily, morning)).toBe(false);
+    // And tomorrow's chip is a promise, on a task that happens to be running.
+    expect(isRunningIn(daily, [tomorrow])).toBe(false);
+  });
+
+  it("says no when nothing under the chip is the active run", () => {
+    const settled = task({ status: "done", messages: [tomorrow, afternoon, morning] });
+    expect(isRunningIn(settled, [morning, afternoon])).toBe(false);
+    expect(isRunningIn(daily, [])).toBe(false);
+  });
+
+  it("is what the calendar actually asks", () => {
+    // The claim that cannot be held by the pure half: the view must hand over the
+    // CHIP's messages, not `chip.anchor`.
+    const CAL = readFileSync(join(SHELL, "ScheduleCalendar.tsx"), "utf8");
+    expect(CAL).toContain('isRunningIn(chip.task, chip.messages) ? " is-running" : ""');
+    expect(CAL).not.toContain("isRunningNow(chip.task, chip.anchor)");
   });
 });

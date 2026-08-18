@@ -256,6 +256,175 @@ a.sidebar-rail-btn {
   opacity: 0.85;
 }
 
+/* -- The trailing slot on a nav row -------------------------------------------
+   Whatever the row has to say about the page behind it (SidebarFrame.NavItem's
+   `trailing`): the Tasks entry's "N running" and its unread count. ONE auto
+   margin, so the group parks at the row's end and the label keeps its place at
+   the start — a second one anywhere in this row would split the free space and
+   leave the group floating in the middle. */
+.sidebar-item-trail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  /* The row's `gap: 10px` already stands between the label and this; without
+     shrink-0 a long label would squeeze the count instead of ellipsising. */
+  flex: 0 0 auto;
+}
+
+/* -- The count chip, once ------------------------------------------------------
+   The bookmark FOLDER's nested count is where this shape was settled (a folder
+   row says "7" at its trailing edge), and the Tasks row's unread count is the
+   same kind of fact about a different container — so it is the same element,
+   not a lookalike. The skin lives here and both wear it; `.folder-count` keeps
+   only what is peculiar to a folder row (it is absolutely positioned over the
+   hover actions and fades for them, which a nav row has none of). A second
+   hand-tuned 10.5px pill is exactly how two counts in one sidebar end up half a
+   pixel and one shade apart. */
+.sidebar-count-chip {
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.07);
+  border-radius: 8px;
+  padding: 3px 6px;
+  letter-spacing: normal;
+}
+
+/* -- "N running" ---------------------------------------------------------------
+   The In Progress hue (--status-progress: the status ring's own yellow, so the
+   sidebar and the page name the state in one colour), with the ink SHIMMERING
+   while the work does — the same "something is happening that I am not driving"
+   a thinking indicator states. It is the one animation in this sidebar, and it
+   is load-bearing: it is what separates "2 running" as a live readout from "2
+   running" as a number that might be stale.
+
+   Drawn as a moving highlight through the text itself (background-clip: text)
+   rather than as a sweeping overlay, because the element is 60px of small type
+   with nothing behind it to sweep across.
+
+   THE WORDS NEVER FADE (Akshil, 2026-08-18: the label must stay readable the
+   whole way through). The first cut swept toward `--bg`, so the band travelling
+   across the text took each letter down to a whisper of the page colour as it
+   passed — a blink, not a shimmer, and for a third of the cycle the readout was
+   barely there. The travelling band is BRIGHTER than the resting ink now, never
+   dimmer: every stop is the full status hue or the status hue mixed toward
+   `--fg`, which raises contrast against the sidebar in BOTH themes (dark `--fg`
+   over the light theme's amber, light `--fg` over the dark theme's yellow). The
+   floor of the animation is therefore the flat, fully readable label the
+   reduced-motion arm below draws, and the motion only ever adds to it.
+
+   AND IT NEVER DISAPPEARS EITHER (Akshil, screenshot, 2026-08-18: the label
+   animated in and out). Not a fade and not a mount — a hole in the PAINT. With
+   `background-clip: text` the glyphs are a window onto the background and
+   `-webkit-text-fill-color: transparent` means there is no ink of their own
+   behind it, so anywhere the background does not reach, the letters are simply
+   not drawn. Two ways that was happening, and both are fixed here:
+
+     * THE SWEEP RAN OFF THE BOX. `no-repeat` plus a travel from 150% to -150%
+       put the whole gradient outside the element for most of the cycle, which
+       blanked the label and then brought it back — read, correctly, as the text
+       animating in and out. The travel now stays inside 100% → 0% (with a
+       300%-wide image, every position in that range still covers the box) and
+       the fill repeats, so there is no reachable frame with bare box in it.
+     * THE GLYPHS OVERFLOWED IT. At `line-height: 1` the background box is
+       shorter than the type it is clipped to, so the descender of the "g" in
+       "running" fell outside the paint and came out chipped. The box is given
+       room to hold the whole glyph — leading plus a hair of vertical padding —
+       rather than the text being trimmed to fit it.
+
+   Both are why the two rules below are load-bearing rather than cosmetic: no
+   part of the cycle may leave any part of a letter unpainted. */
+.sidebar-running {
+  font-size: 10.5px;
+  /* The CLIP BOX, not just the text's spacing: ascenders and descenders have to
+     fall inside the painted area or they are not drawn at all. */
+  line-height: 1.6;
+  padding: 1px 1px;
+  color: var(--status-progress);
+  background-image: linear-gradient(
+    100deg,
+    var(--status-progress) 30%,
+    color-mix(in srgb, var(--status-progress) 65%, var(--fg)) 50%,
+    var(--status-progress) 70%
+  );
+  background-size: 300% 100%;
+  /* Belt to the in-range keyframes' braces: even a rounding error at the ends of
+     the travel tiles the fill rather than exposing an unpainted letter. The
+     gradient's first and last stops are the same hue, so a tile boundary is
+     invisible. */
+  background-repeat: repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: sidebar-running-shimmer 2.2s linear infinite;
+  white-space: nowrap;
+}
+
+/* ONE property animates, and it is the position of the highlight — never
+   opacity, never the fill, never anything that could take a letter away. The
+   range is 100% → 0%: with a background 300% the width of the box, both ends (and
+   everything between) still paint every pixel of it, so the label is fully
+   visible at every frame and only the bright band moves. */
+@keyframes sidebar-running-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+
+/* The blanket reduced-motion rule (reduced-motion.css) collapses the duration
+   and runs the sweep ONCE, which would park the gradient wherever 0.01ms leaves
+   it — a readout whose ink depends on where an animation stopped. So the whole
+   gradient is dropped instead and the text is the flat status hue: the same
+   fully-readable label the moving version rests on, stated statically. */
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-running {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: var(--status-progress);
+  }
+}
+
+/* -- The collapsed rail's dot --------------------------------------------------
+   The rail has no label, so the entry's whole signal is one 7px dot in the
+   icon's top-right corner. Same shape as the Settings row's resident-model dot
+   (.account-signedin-dot, account.css) — a dot on a nav icon means "there is
+   something behind this" everywhere in this sidebar — and the same border-hole
+   trick, so the mark reads as sitting ON the glyph rather than merging with it.
+
+   Positioned against the 28px button, not the 16px glyph: the icon has no box
+   of its own here (the rail renders the owner's svg directly), and 5px in from
+   the button's corner IS the glyph's corner. */
+.sidebar-rail-btn {
+  position: relative;
+}
+
+.sidebar-rail-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--bg);
+  box-sizing: content-box;
+}
+
+/* The two states, in the status ring's own hues (schedule.css): yellow while
+   anything is in flight, green for work that finished and has not been read.
+   Yellow outranks green in the MARKUP (GlobalSidebar picks one), not here — two
+   dots in one corner is not a state this can draw. */
+.sidebar-rail-dot.is-running {
+  background: var(--status-progress);
+}
+
+.sidebar-rail-dot.is-unread {
+  background: var(--status-done);
+}
+
 /* Bottom Preferences trigger (GlobalSidebar): a <button> wearing the
    .sidebar-item look — resets the UA button chrome so it sits in the list
    like the <a> rows above it. */
@@ -345,15 +514,11 @@ button.sidebar-prefs-trigger {
   user-select: none;
 }
 
-.recents-count {
-  font-size: 10.5px;
-  line-height: 1;
-  color: var(--fg-muted);
-  background: rgba(var(--tint), 0.07);
-  border-radius: 8px;
-  padding: 3px 6px;
-  letter-spacing: normal;
-}
+/* The heading's collapsed count. No skin of its own since 2026-08-18: it wears
+   `.sidebar-count-chip` (above) alongside this class, which now exists only to
+   name the element. The three counts in this sidebar — a folder's children, a
+   collapsed section's leaves, the Tasks entry's unread — are one shape stated
+   once. */
 
 .recent-row {
   text-decoration: none;
@@ -478,6 +643,9 @@ button.sidebar-prefs-trigger {
   cursor: pointer;
 }
 
+/* The chip's SKIN is `.sidebar-count-chip`, which this element wears as well
+   (one count shape for the whole sidebar — see that rule). What is left here is
+   only what is peculiar to a folder row. */
 .folder-count {
   /* Overlays the always-reserved (but invisible until hover) actions area,
      so it sits at the row's far right without shifting the name. */
@@ -485,12 +653,6 @@ button.sidebar-prefs-trigger {
   right: 10px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 10.5px;
-  line-height: 1;
-  color: var(--fg-muted);
-  background: rgba(var(--tint), 0.07);
-  border-radius: 8px;
-  padding: 3px 6px;
   /* Hidden on hover so the action buttons can take the slot. Faded rather than
      `display: none`d: the count and the buttons overlay the same spot, so this
      one has to disappear — but a display flip can't ease, which made the
