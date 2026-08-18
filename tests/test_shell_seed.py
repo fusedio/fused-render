@@ -42,7 +42,7 @@ def test_idempotent_second_run_is_noop(tmp_path, monkeypatch):
 
 
 def test_the_default_is_out_of_the_icloud_synced_documents_tree(monkeypatch):
-    """D336: ~/Documents (and ~/Desktop) are synced by macOS "Desktop &
+    """D337: ~/Documents (and ~/Desktop) are synced by macOS "Desktop &
     Documents Folders", which churns the workspace's git trees through iCloud
     and exposes them to dataless-stub eviction."""
     monkeypatch.delenv("FUSED_RENDER_DIR", raising=False)

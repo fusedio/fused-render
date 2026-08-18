@@ -1928,7 +1928,7 @@ when one exists, else the folder itself.
   <subpath>` (plain filtered clone for repo-root links) using the user's own
   git — public repos clone anonymously, private repos ride the user's
   existing credentials. Destination is `~/Fused/<subpath basename>` (the workspace, moved
-  out of the iCloud-synced `~/Documents` by D336)
+  out of the iCloud-synced `~/Documents` by D337)
   (repo name for root links); the repo root, `.git` included, lives at the
   destination, so the opened view is the nested `<dest>/<subpath>` path. A
   failed clone removes the partial destination (retryable). Git runs

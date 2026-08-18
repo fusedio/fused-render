@@ -229,7 +229,7 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     Returns the server and its thread (quit drains it — `should_exit` alone is
     fire-and-forget, and uvicorn never resets `started`, so the thread ending is
     the only observable "it has stopped serving")."""
-    # The D336 workspace migration does NOT run here: it runs in `main()`,
+    # The D337 workspace migration does NOT run here: it runs in `main()`,
     # before the run loop and before anything reads state (see the call site).
     # This thread starts long after it, so onboarding below is still strictly
     # after the migration — the ordering cli._run_serve records.
@@ -691,7 +691,7 @@ def main() -> None:
         return
 
     # One-shot relocation of the workspace out of iCloud-synced ~/Documents
-    # (D336) — HERE, before the run loop, not in the server thread. The
+    # (D337) — HERE, before the run loop, not in the server thread. The
     # migration rewrites on-disk state, so it is a precondition of every
     # component that READS that state, and the menu-bar pin reads its
     # (workspace-absolute) path in PinController.__init__, which the boot timer

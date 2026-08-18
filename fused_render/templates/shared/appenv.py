@@ -67,7 +67,7 @@ def workspace_dir() -> str:
 
     This module runs in template subprocesses and is stdlib-only — it CANNOT
     import fused_render — so the default is a copy that must be kept in step
-    with `shell/seed.fused_dir()` by hand (D336 moved it out of ~/Documents).
+    with `shell/seed.fused_dir()` by hand (D337 moved it out of ~/Documents).
     """
     d = os.environ.get("FUSED_RENDER_WORKSPACE_DIR")
     if d:

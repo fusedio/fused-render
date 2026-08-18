@@ -1,5 +1,5 @@
 """Tests for the one-shot ~/Documents/Fused -> ~/Fused workspace migration
-(fused_render/workspace_migration.py, D336).
+(fused_render/workspace_migration.py, D337).
 
 Every test redirects HOME and FUSED_RENDER_HOME at a tmp dir and CLEARS
 FUSED_RENDER_DIR (conftest sets it for the whole run), so the migration sees a
