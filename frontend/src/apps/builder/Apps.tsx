@@ -3,8 +3,9 @@
 // of big preview cards — each thumbnail is the app itself rendered in a
 // scaled, non-interactive iframe (AppPreviewCard). The list is narrowed by a
 // filter row — a Category/Repo mode selector with chips derived from the apps
-// themselves (categories from each folder's metadata.json, repos from the
-// top-level tag dirs) — and a search box (name/title/tag/category,
+// themselves (categories from each folder's metadata.json, ordered learn-first
+// by app-categories; repos from the top-level tag dirs, plain alphabetical) —
+// and a search box (name/title/tag/category,
 // case-insensitive). Order is always recently-opened (modified time stands in
 // for an app never opened — appEntry.sortApps); filtering never reorders cards
 // relative to each other.
@@ -17,6 +18,7 @@ import { runCommunity, SHOWCASE_TAG } from "@platform/lib/community";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
+import { orderCategories } from "@apps/builder/app-categories";
 import { useNavEpoch } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { HomeHero } from "./HomeHero";
@@ -144,9 +146,11 @@ export default function Apps({ config }: { config: Config }) {
   const all = apps.status === "ok" ? apps.data : [];
   const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);
   // Categories scanned from the apps themselves (metadata.json `category`).
-  // Apps without one carry null and so only ever appear under All.
+  // Apps without one carry null and so only ever appear under All. Ordered
+  // learn-first (orderCategories), not plain alphabetical, so the tutorial and
+  // starter chips lead the row; card order in the grid is unaffected.
   const categories = useMemo(
-    () => [...new Set(all.map((a) => a.category).filter((c): c is string => !!c))].sort(),
+    () => orderCategories(all.map((a) => a.category).filter((c): c is string => !!c)),
     [all],
   );
   const clonedSlugs = useShowcaseSync(() => setNonce((n) => n + 1));
