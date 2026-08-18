@@ -136,6 +136,28 @@ def state_dir() -> str:
     return os.path.join(install_root(), STATE_DIR_NAME)
 
 
+def records_dir() -> str:
+    """Where incidents and reports are written — NOT always the state dir.
+
+    A read-only installation still gets a session; it just cannot be given a
+    fix, only a diagnosis (SF-4a). Everything that makes that session useful is
+    a file: the incident it reads, and the report it leaves behind. Both would
+    fail to write inside a tree the user cannot touch, so when the install is
+    read-only they go to the user's own dir instead.
+
+    THE MARKER STAYS PUT, deliberately, and this is not an inconsistency: the
+    marker is a claim about an INSTALLATION and has to die with it, which is why
+    it lives inside the tree a reinstall replaces (module docstring). A report
+    is a document about a machine's problem — it outlives the installation on
+    purpose, and on a read-only one there was never anything to mark.
+    """
+    if writable():
+        return state_dir()
+    from fused_render.shell.storage import home_dir
+
+    return os.path.join(home_dir(), "selffix")
+
+
 def marker_path() -> str:
     return os.path.join(state_dir(), MARKER_NAME)
 
@@ -741,12 +763,15 @@ def record_incident(context: dict, *, now: float | None = None) -> tuple[str, st
     copy back accurately. The session rewrites this file; if it never gets that
     far, what survives is still the most useful half.
 
-    Both files live in the state dir, which the digest ignores — so writing them
-    is not itself a modification of the installation.
+    Both files live in `records_dir()` — the state dir when the installation is
+    writable, which the digest ignores, so writing them is not itself a
+    modification of the installation; the user's own dir when it is not, since
+    a diagnostic session's report still has to land somewhere (SF-4a).
     """
     now = time.time() if now is None else now
-    incidents = os.path.join(state_dir(), INCIDENTS_DIR)
-    reports = os.path.join(state_dir(), REPORTS_DIR)
+    where = records_dir()
+    incidents = os.path.join(where, INCIDENTS_DIR)
+    reports = os.path.join(where, REPORTS_DIR)
     os.makedirs(incidents, exist_ok=True)
     os.makedirs(reports, exist_ok=True)
     # Second resolution, plus a suffix when that is not enough. A user with two
@@ -865,7 +890,7 @@ def list_reports() -> list[dict]:
     file is the artefact, so a listing that could go missing under a cap would
     be the one thing this feature is not allowed to lose.
     """
-    reports = os.path.join(state_dir(), REPORTS_DIR)
+    reports = os.path.join(records_dir(), REPORTS_DIR)
     out = []
     try:
         names = os.listdir(reports)
@@ -902,7 +927,8 @@ def list_reports() -> list[dict]:
 FIX_PERMISSION_MODE = "prompt"
 
 
-def fix_prompt(incident: str, report: str, *, reported_error: bool = True) -> str:
+def fix_prompt(incident: str, report: str, *, reported_error: bool = True,
+               diagnostic: bool = False) -> str:
     """What the fix session is told. Written as instructions to a colleague who
     has never seen this machine and cannot ask the user anything.
 
@@ -913,6 +939,15 @@ def fix_prompt(incident: str, report: str, *, reported_error: bool = True) -> st
     signed binaries breaks the app far worse than the bug it came to fix), and
     that THE REPORT IS THE DELIVERABLE (the fix helps one machine; the report is
     the only thing that can help everyone else).
+
+    `diagnostic` is the READ-ONLY installation (SF-4a), and it changes more than
+    a sentence. An agent told to fix something it cannot write to will try,
+    fail, and spend its remaining turns working around the permission error —
+    so it is told up front that the tree is not writable, that the report is the
+    ENTIRE deliverable, and that the report lives outside the installation. The
+    third one matters on its own: left at the default path it would try to
+    create a file inside the read-only tree as its last act, and lose the
+    diagnosis with it.
     """
     root = install_root()
     # TWO WAYS IN, and they hand over different things. A failed job row carries
@@ -939,6 +974,59 @@ def fix_prompt(incident: str, report: str, *, reported_error: bool = True) -> st
         "   change nothing: a described problem you could not observe is a "
         "question,\n   not a diagnosis."
     )
+    placement = (
+        """ What you change here changes the app running on
+this one machine, right now, and nowhere else."""
+        if not diagnostic else
+        """
+
+**THIS INSTALLATION IS READ-ONLY.** You cannot change anything in it — an
+install an administrator made for everyone, or a bundle mounted where this user
+cannot write. Do not spend turns working around that: it is a fact about the
+machine, not an obstacle to route around, and the report is the whole job."""
+    )
+    step_two = (
+        "If there is a small, safe fix, apply it here. Smallest change that "
+        "fixes the\n   reported problem; no refactors, no drive-by cleanups, no "
+        "dependency changes."
+        if not diagnostic else
+        "DO NOT ATTEMPT A FIX — you cannot write here. Work out what the fix "
+        "would be\n   instead, precisely enough that someone with write access "
+        "could apply it: which\n   file, which lines, what to change them to."
+    )
+    common_rules = """- Only edit source and text — .py, .html, .css, .json, .md, and template
+  assets. Never a compiled artefact (.so, .dylib, .pyc) and never the built
+  frontend under static/shell-dist/: that is minified build output, patching it
+  by hand is not a fix anyone can carry upstream.
+- Do not install, upgrade or remove packages, do not run the app's updater, and
+  do not touch ~/.claude or ~/.fused-render."""
+    rules = (
+        f"""- Only edit files under {root}. Never anything outside it: not the user's own
+  files, not other Python packages beside this one, not the app bundle's
+  binaries, frameworks or Info.plist.
+{common_rules}
+- Python changes need the app to be restarted before they take effect. Say so in
+  the report if you changed any.
+- If the right fix cannot be made here — it needs a new release, a rebuilt
+  frontend, or a change outside this folder — change nothing and say that in the
+  report. That is a good outcome, not a failure.
+
+fused-render is watching this folder while you work. If you change anything in
+it, the app marks the installation as modified and shows the user a badge on the
+version number that leads to your report. So write the report even if you fixed
+nothing: an unexplained modified install is the one outcome this must not leave
+behind."""
+        if not diagnostic else
+        f"""- CHANGE NOTHING under {root}, and nothing anywhere else on this machine
+  either. Read it, run it, reason about it — that is the whole of your access.
+- The report is the only file you write, and it is deliberately OUTSIDE the
+  installation so that you can. Its path is above; use exactly that path.
+- Say plainly in **What I changed** that you changed nothing and why: the
+  installation is read-only. A report that is vague about that reads like a fix
+  that silently failed.
+- **For the developers** carries more weight here than usual — it is the only
+  thing that can act on what you found, because nobody at this machine can."""
+    )
     return f"""\
 You are fixing a problem in the fused-render installation on this machine.
 
@@ -954,15 +1042,13 @@ Your working directory is this machine's INSTALLED copy of fused-render:
 
 That is the app's own Python package inside the installation. It is not a source
 checkout: there is no test suite here, no git history, no way to open a pull
-request, and no frontend build. What you change here changes the app running on
-this one machine, right now, and nowhere else.
+request, and no frontend build.{placement}
 
 ## What to do
 
 1. {investigate} Say "I could not find it" rather than
    guessing — a wrong patch to an installation is worse than no patch.
-2. If there is a small, safe fix, apply it here. Smallest change that fixes the
-   reported problem; no refactors, no drive-by cleanups, no dependency changes.
+2. {step_two}
 3. Rewrite the report at
 
      {report}
@@ -981,26 +1067,7 @@ this one machine, right now, and nowhere else.
 
 ## Rules
 
-- Only edit files under {root}. Never anything outside it: not the user's own
-  files, not other Python packages beside this one, not the app bundle's
-  binaries, frameworks or Info.plist.
-- Only edit source and text — .py, .html, .css, .json, .md, and template
-  assets. Never a compiled artefact (.so, .dylib, .pyc) and never the built
-  frontend under static/shell-dist/: that is minified build output, patching it
-  by hand is not a fix anyone can carry upstream.
-- Do not install, upgrade or remove packages, do not run the app's updater, and
-  do not touch ~/.claude or ~/.fused-render.
-- Python changes need the app to be restarted before they take effect. Say so in
-  the report if you changed any.
-- If the right fix cannot be made here — it needs a new release, a rebuilt
-  frontend, or a change outside this folder — change nothing and say that in the
-  report. That is a good outcome, not a failure.
-
-fused-render is watching this folder while you work. If you change anything in
-it, the app marks the installation as modified and shows the user a badge on the
-version number that leads to your report. So write the report even if you fixed
-nothing: an unexplained modified install is the one outcome this must not leave
-behind.
+{rules}
 """
 
 

@@ -7533,10 +7533,37 @@ the installation, and the mark that says so.
   middle, and `mark_modified` would then delete a dismissal it never saw. The
   check in `settle` is an early out; the authoritative one is inside
   `mark_modified`'s lock, where it declines to stamp at all.
-- **SF-13** **A read-only installation is refused BEFORE the spawn** (409, with
-  the path). A session that cannot write spends several minutes reading and then
-  reports a fix that was never applied — which, to the user watching, reads
-  exactly like a fix that was.
+- **SF-13** **A read-only installation gets a DIAGNOSTIC session, not a
+  refusal.** It was a 409, on the argument that a session which cannot write
+  spends several minutes reading and then reports a fix that was never applied —
+  which, to the user watching, reads exactly like a fix that was. That argument
+  is about a session which does not KNOW it cannot write. Told up front, the
+  same session is the most useful thing available on a machine nobody can patch:
+  it names the cause and writes it down for someone who can, which beats a
+  refusal that leaves the user holding the original error and nothing else. An
+  admin-installed copy is precisely where a user is least able to help
+  themselves, so it is the wrong place to be strictest.
+  **Four things follow, and each one alone would make the session worthless.**
+  (a) *The prompt says so, in its own section.* An agent that discovers the
+  permission error itself spends its remaining turns routing around it; told the
+  tree is read-only, it spends them on the cause. Its step 2 becomes *work out
+  what the fix would be, precisely enough that someone with write access could
+  apply it* — which file, which lines, what to change them to.
+  (b) *The report moves out of the installation* (`records_dir()`:
+  `<home>/selffix` rather than the state dir). It is the entire deliverable
+  here, and left at the default path the session's last act would be to create
+  a file inside the tree it could not write to — losing the diagnosis with it.
+  **The MARKER stays where it is**, and that is not an inconsistency: a marker
+  is a claim about an INSTALLATION and must die with it (SF-8), while a report
+  is a document about a machine's problem and deliberately outlives one. On a
+  read-only install there was never anything to mark.
+  (c) *No baseline and no watcher.* Both write into the tree, and both exist to
+  answer "did this session change it?" — a question whose answer is no by
+  construction.
+  (d) *The UI sets the expectation rather than closing the door*: the button
+  reads **Start a diagnostic session**, and the note beside it says a session
+  can diagnose but not fix, with the fix needing a copy the user owns. It is not
+  an error banner, because nothing has gone wrong.
 - **SF-13a** **ONE Claude session at a time in the installation** (409 naming
   the run), because they all edit the same tree: two agents rewriting one
   installation is not a slow path but a conflict, and each report then describes

@@ -106,19 +106,18 @@ function DescribeSection({
           rows={4}
         />
       </Field>
-      {/* SELF-CONTAINED ON PURPOSE. This used to end "see the reinstall
-          instructions below", and the instructions below are gone (SF-14b2) —
-          a banner that points at a section nobody removed the pointer from is
-          worse than one that says less. It also has nowhere left to point:
-          reinstall advice lives in the version chip's panel, which only exists
-          while a badge is up, and this banner fires on installs that were
-          never modified at all. So it carries its own answer. */}
+      {/* NOT AN ERROR, AND NO LONGER A REFUSAL (SF-4a). A read-only install
+          still gets a session; it just cannot be given a fix, only a diagnosis
+          — which on a machine nobody can patch is the most useful thing
+          available, and an admin-installed copy is exactly where the user is
+          least able to help themselves. So this sets an expectation rather than
+          closing a door, and the button below stays live. */}
       {!writable && (
-        <ErrorBanner>
-          This installation is read-only, so a fix cannot be applied to it —
-          there is nothing here Claude could change. Install fused-render
-          somewhere you own and run that copy instead.
-        </ErrorBanner>
+        <p className="deploy-muted">
+          This installation is read-only, so a session can <strong>diagnose but
+          not fix</strong>. Claude will find the cause and write a report you
+          can send on; applying the fix needs a copy you own.
+        </p>
       )}
       {/* NOT an ErrorBanner. Two of the three things that fail here — Claude
           Code missing, Claude not signed in — are fixable by the user in a
@@ -136,9 +135,9 @@ function DescribeSection({
       <button
         type="button"
         onClick={start}
-        disabled={busy || !writable || !describedProblemIsSendable(note)}
+        disabled={busy || !describedProblemIsSendable(note)}
       >
-        {busy ? "Starting…" : "Start a fix session"}
+        {busy ? "Starting…" : writable ? "Start a fix session" : "Start a diagnostic session"}
       </button>
     </section>
   );

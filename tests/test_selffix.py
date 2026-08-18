@@ -656,18 +656,74 @@ def test_start_requires_the_write_guard(client):
     assert client.post("/api/selffix/start", json={}).status_code == 403
 
 
-def test_start_refuses_a_read_only_installation(client, monkeypatch):
-    """Refused BEFORE the spawn: a session that cannot write spends minutes
-    reading and then reports a fix that was never applied, which reads to the
-    user exactly like a fix that was."""
+def test_a_read_only_installation_gets_a_DIAGNOSTIC_session(client, install,
+                                                            monkeypatch):
+    """Not refused — told.
+
+    This was a 409, on the argument that a session which cannot write spends
+    minutes reading and then reports a fix that was never applied. That argument
+    is about a session which does not KNOW it cannot write. Told up front, the
+    same session is the most useful thing available on a machine nobody can
+    patch, and an admin-installed copy is exactly where the user is least able
+    to help themselves.
+
+    Four things have to be true together, and each one alone would make the
+    session worthless: it starts, the prompt says the tree is read-only, the
+    report lands somewhere writable, and nothing tries to stamp an installation
+    that cannot have changed.
+    """
     monkeypatch.setattr(selffix, "writable", lambda: False)
-    called = []
-    monkeypatch.setattr(selffix_routes, "_spawn_helper",
-                        lambda *a, **k: called.append(a) or {"run_id": "r"})
+    seen = {}
+
+    def fake_spawn(target, prompt, mode):
+        seen.update(target=target, prompt=prompt, mode=mode)
+        return {"run_id": "run-ro"}
+
+    monkeypatch.setattr(selffix_routes, "_spawn_helper", fake_spawn)
+    watched = []
+    monkeypatch.setattr(selffix_routes, "_watch_fix",
+                        lambda *a, **k: watched.append(a))
+
     res = post(client, "/api/selffix/start", {"title": "boom"})
-    assert res.status_code == 409
-    assert "read-only" in res.json()["error"]
-    assert called == []
+    assert res.status_code == 200
+    body = res.json()
+    assert body["diagnostic"] is True
+    assert body["target"] == str(install)
+
+    # The agent is told, in the prompt, before it wastes a turn discovering it.
+    assert "READ-ONLY" in seen["prompt"]
+    assert "DO NOT ATTEMPT A FIX" in seen["prompt"]
+    assert "CHANGE NOTHING" in seen["prompt"]
+
+    # ...and the report is somewhere it can actually write: NOT under the
+    # installation, which is the whole reason it cannot fix anything.
+    assert not body["report"].startswith(str(install))
+    assert not body["incident"].startswith(str(install))
+    assert os.path.exists(body["incident"])
+    assert os.path.exists(body["report"])
+
+    # Nothing to watch and nothing to stamp: no marker, no baseline, and no
+    # watcher thread that would poll a digest which cannot move.
+    assert watched == []
+    assert selffix.status() is None
+    assert not os.path.exists(selffix.baseline_path())
+
+
+def test_a_writable_installation_is_not_told_it_is_read_only(client, install,
+                                                             monkeypatch):
+    """The mirror, because a prompt that hedges on both is worse than either.
+    An agent told "you may not be able to write" will check before it acts and
+    report the check instead of the cause."""
+    seen = {}
+    monkeypatch.setattr(selffix_routes, "_spawn_helper",
+                        lambda target, prompt, mode: seen.update(prompt=prompt)
+                        or {"run_id": "run-rw"})
+    monkeypatch.setattr(selffix_routes, "_watch_fix", lambda *a, **k: None)
+    res = post(client, "/api/selffix/start", {"title": "boom"})
+    assert res.status_code == 200
+    assert res.json().get("diagnostic") is None
+    assert "READ-ONLY" not in seen["prompt"]
+    assert "DO NOT ATTEMPT A FIX" not in seen["prompt"]
 
 
 def test_start_spawns_on_the_install_root_and_hands_back_the_run(client, install,
