@@ -143,8 +143,15 @@ echo '{ this is not json' > ~/.fused-render/templates/registry.json
 - Open a file that has **no** view at all and you get #585's
   `RegistryFixNotice` above the metadata card instead: same error, plus a
   **Repair Template Registry** button. That surface is not this feature's — do
-  not expect a TroubleCard there, and if you find one, two cards are describing
-  one fault (TR-9).
+  not expect a TroubleCard there, and **no toast either**: the toast is gated
+  on the file having a view, so a no-view file shows exactly one description
+  of the fault — the one with the button (TR-9).
+- Click **Repair Template Registry** with a sticky toast up from an earlier
+  file: it must disappear. A permanent "the registry could not be read"
+  sitting beside "Fixed — reloading this file's preview…" is the regression
+  that gating alone would not catch.
+- Break the registry the same way again afterwards and open a file that
+  previews: the toast comes back. Silence would read as the repair holding.
 - Restore (`rm` the file or fix the JSON) and reopen the file — the card is
   gone, with no restart. The registry is read per stat.
 - **If you see nothing at all**, the shell bundle is stale — see the build step

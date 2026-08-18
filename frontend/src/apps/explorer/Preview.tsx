@@ -37,8 +37,17 @@ import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
-import { pushToast } from "@platform/lib/toast";
-import { shouldAnnounceTemplateError } from "@platform/lib/trouble";
+import { dismissToast, pushToast } from "@platform/lib/toast";
+import {
+  resetAnnouncedTemplateErrors,
+  shouldAnnounceTemplateError,
+} from "@platform/lib/trouble";
+
+// The outstanding registry toast, so it can be taken down when the registry
+// starts parsing again. Module scope rather than component state because the
+// toast outlives any one Preview: it is pushed while looking at one file and
+// is still on screen several files later, which is the point of it.
+let registryToastId: number | null = null;
 import { runCommunity, touchCommunityApp, communityCacheSlug } from "@platform/lib/community";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
@@ -1629,26 +1638,6 @@ export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, act
     (t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)
   );
   // Deferred gates (CT-12): resolve condition.py verdicts in the background.
-  // A REGISTRY THAT WILL NOT PARSE, announced once (SPEC §43, TR-9).
-  //
-  // Said here rather than only in the fallback card below, because the failure
-  // is usually PARTIAL: the built-in registry still matches, so the file still
-  // previews and only the user's own bindings quietly stop applying — which is
-  // the reported symptom ("apps aren't rendering properly") and is invisible by
-  // construction. A toast rather than a card, because the error rides every
-  // stat and a card would be one per file; `shouldAnnounceTemplateError` is
-  // what makes it once per broken registry instead.
-  useEffect(() => {
-    if (!stat.template_error) return;
-    if (!shouldAnnounceTemplateError(stat.template_error)) return;
-    pushToast({
-      msg: `Your template registry could not be read, so your own view bindings are not applying: ${stat.template_error}`,
-      tone: "error",
-      ttlMs: 0,
-      action: { label: "Preferences", onClick: () => navigateUrl("/preferences?tab=selffix") },
-    });
-  }, [stat.template_error]);
-
   // The first unconditional template renders immediately — only an
   // ALL-conditional list has nothing safe to show and waits here.
   const conditions = useConditions(fsPath, templates);
@@ -1659,6 +1648,46 @@ export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, act
   // back to the default (activeTemplate) or, if nothing survives, to
   // FallbackPreview below.
   const visible = visibleModes(templates, conditions);
+
+  // A REGISTRY THAT WILL NOT PARSE, announced once — and only for the failure
+  // that has nowhere else to appear (SPEC §43, TR-9).
+  //
+  // GATED ON THIS FILE ACTUALLY HAVING A VIEW, which is the whole scope. A file
+  // with NO view falls through to FallbackPreview, where #585's
+  // RegistryFixNotice states the same error and offers a button that repairs
+  // it; toasting there too put two descriptions of one fault on one screen, the
+  // toast's saying "your own bindings are not applying" about a file whose
+  // preview was gone entirely. What is left is the PARTIAL failure — built-in
+  // registry still matching, file previewing, only the user's own bindings
+  // quietly dropped — which is the reported symptom and renders no card
+  // anywhere for an answer to sit on.
+  //
+  // Sticky (`ttlMs: 0`) because it describes a STATE rather than an event. A
+  // state ends, so the id is kept: when the error clears — Repair in that
+  // notice, or the user fixing the JSON, either way followed by a re-stat —
+  // the claim is taken down instead of sitting there insisting the registry is
+  // broken beside that notice's own "Fixed" toast. Forgetting the message at
+  // the same time is deliberate: the same fault arriving again after a repair
+  // is news again, and silence would read as the repair having held.
+  const previews = !resolving && visible.length > 0;
+  useEffect(() => {
+    if (!stat.template_error) {
+      if (registryToastId !== null) {
+        dismissToast(registryToastId);
+        registryToastId = null;
+        resetAnnouncedTemplateErrors();
+      }
+      return;
+    }
+    if (!previews) return;
+    if (!shouldAnnounceTemplateError(stat.template_error)) return;
+    registryToastId = pushToast({
+      msg: `Your template registry could not be read, so your own view bindings are not applying: ${stat.template_error}`,
+      tone: "error",
+      ttlMs: 0,
+      action: { label: "Preferences", onClick: () => navigateUrl("/preferences?tab=selffix") },
+    });
+  }, [stat.template_error, previews]);
   if (resolving && templates.length > 0 && templates.every((t) => t.conditional)) {
     return (
       <>

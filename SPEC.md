@@ -7514,6 +7514,17 @@ go. Four failures, one answer.
   (`shouldAnnounceTemplateError`), because the error rides every stat and a card
   per file would be a card per click for as long as the registry stays broken;
   its action opens Preferences, which holds the whole error and copies it.
+  **The toast is GATED on this file having a view** — the same boundary from
+  the other side. Ungated it fired on the no-view file too, putting a second
+  description of one fault beside the notice that fixes it, and saying "your
+  own bindings are not applying" about a file whose preview was gone
+  altogether. **And it comes down when the error clears.** It is sticky
+  (`ttlMs: 0`) because it describes a state rather than an event, so the id is
+  kept and dismissed on the next stat that parses; discarded, a successful
+  Repair left a permanent "could not be read" sitting beside that notice's own
+  "Fixed". The remembered message is dropped at the same moment, so the
+  identical fault arriving again is announced again instead of reading as a
+  repair that held.
 - **TR-10** **The install command is pinned by a test**, because it is shown as
   a thing to copy into a terminal and a wrong one there is worse than none.
 - **TR-11** **The agent brief always says WHERE, and when it cannot state the
