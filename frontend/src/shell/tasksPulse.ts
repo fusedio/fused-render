@@ -42,6 +42,11 @@ let seen: TasksSeen = readSeen();
 let pulse: TasksPulse = EMPTY_TASKS_PULSE;
 let timer: number | null = null;
 let inFlight = false;
+/** Which answer is newest. Every publish bumps it; a self-poll captures it on
+ *  departure and publishes only if nothing fresher landed while it was in
+ *  flight (bugbot, 2026-08-18: a stale self-poll resolving after the page's
+ *  own publish must lose, not overwrite). */
+let generation = 0;
 /** Has a real answer landed? `tasks` is `[]` both before the first read and on a
  *  machine with no tasks, and those two must not be treated alike — see
  *  markTasksSeen, where mistaking one for the other throws away the reader's
@@ -87,8 +92,12 @@ function recompute() {
 async function poll() {
   if (inFlight) return;
   inFlight = true;
+  const departed = generation;
   try {
-    publishTasks((await getTasks()).tasks ?? []);
+    const answer = (await getTasks()).tasks ?? [];
+    // A feeder took over, or a fresher publish landed, while this request was
+    // in the air: this answer is already history. Drop it.
+    if (feeders === 0 && generation === departed) publishTasks(answer);
   } catch {
     // A failed read is not news: the sidebar keeps the last answer it had rather
     // than dropping a dot because one poll lost a race with a restart.
@@ -118,6 +127,7 @@ function schedule() {
 
 /** Hand over a known-fresh answer — what the Tasks page's own poll returned. */
 export function publishTasks(next: Task[]) {
+  generation += 1;
   tasks = next;
   loaded = true;
   recompute();

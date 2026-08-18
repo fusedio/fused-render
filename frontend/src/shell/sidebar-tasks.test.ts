@@ -236,6 +236,20 @@ describe("one poll behind both readers", () => {
     );
   });
 
+  it("drops a stale self-poll that resolves after a fresher publish", () => {
+    // BUGBOT, 2026-08-18: a self-poll already in the air when the page starts
+    // feeding (or when a fresher publish lands) must LOSE, not overwrite. The
+    // poll captures the generation on departure and publishes only if nothing
+    // moved it while the request was in flight.
+    expect(STORE).toContain("const departed = generation;");
+    expect(STORE).toMatch(
+      /if \(feeders === 0 && generation === departed\) publishTasks\(answer\);/,
+    );
+    // Every publish — the page's or a poll's own — is a new generation, so two
+    // racing polls can't both win either.
+    expect(STORE).toMatch(/generation \+= 1;\s*\n\s*tasks = next;/);
+  });
+
   it("keeps the route in the sidebar and the storage in the store", () => {
     // A store that reads location.pathname is a store that has to be told when
     // the pathname changed. The sidebar owns "the reader is on /tasks".
