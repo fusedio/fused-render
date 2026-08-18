@@ -1017,6 +1017,113 @@ def _fs_delete(body: dict, x_fused: str | None):
     return {"deleted": path, "trashed": False}
 
 
+def _xdg_trash_entry_info(path: str):
+    """The `.trashinfo` belonging to `path`, or None when `path` is not genuinely
+    an entry sitting directly inside the recognized XDG `Trash/files` directory.
+
+    THIS IS THE SECURITY BOUNDARY of /api/fs/trash-move, and the reason it is a
+    function rather than a string operation at the call site. The endpoint DELETES
+    the file this returns, so "is this path in the trash?" must be answered by
+    resolving the path and comparing it against a trash root the SERVER computed
+    — never by pattern-matching caller-supplied text like `"/files/" in path` or
+    by joining a caller-supplied name onto the info directory. A caller may
+    therefore aim this at any path it likes and the worst it can do is have its
+    sidecar request ignored.
+
+    How the comparison is made safe:
+      • the trash root comes from _xdg_trash_dir() ($XDG_DATA_HOME/Trash), not
+        from the request;
+      • the path's PARENT is realpath'd and must equal the realpath'd `files`
+        directory, so `…/Trash/files/../../evil` and a symlinked parent both fail
+        (the leaf itself is deliberately not resolved — a trashed symlink is an
+        entry in its own right, and resolving it would test its target instead);
+      • the name is `os.path.basename` of that path, which cannot contain a
+        separator, and `.`/`..`/empty are refused outright.
+    """
+    if not path or not os.path.isabs(path):
+        return None
+    name = os.path.basename(path.rstrip("/"))
+    if not name or name in (".", ".."):
+        return None
+    trash = _xdg_trash_dir()
+    try:
+        files_real = os.path.realpath(trash / "files")
+        parent_real = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+    except OSError:
+        return None
+    if parent_real != files_real:
+        return None
+    return trash / "info" / f"{name}.trashinfo"
+
+
+def _fs_trash_move(body: dict, x_fused: str | None):
+    # Move an entry INTO or OUT OF the OS bin, keeping the bin's own bookkeeping
+    # straight. This is the single primitive the explorer's undo/redo calls for a
+    # `"delete"` op: undo renames the entry out of the trash, redo renames it back
+    # in, and each direction needs the XDG sidecar handled the opposite way.
+    #
+    # WHY AN ENDPOINT AND NOT A BRANCH IN THE UNDO MECHANICS. The frontend stack's
+    # whole claim is that a delete is the same symmetric rename a move is
+    # (lib/fs-undo); the only thing that is NOT symmetric is a bookkeeping file
+    # the SERVER owns and the client has no business knowing about. Putting that
+    # here keeps `applyFsOp` at one branch — which primitive to call — and keeps
+    # trash-shaped knowledge on the side of the wire that already has it.
+    #
+    # EVERY GUARD IS _fs_rename'S, by delegation rather than by reimplementation:
+    # the X-Fused header, absolute paths, the snapshot refusal, the mount rules,
+    # readonly, 404 on a missing source and 409 on an occupied destination. A
+    # looser contract on this endpoint would be a way around all of them.
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    src = body.get("from")
+    dst = body.get("to")
+    # Validated here as well as in _fs_rename, only so the message names the keys
+    # this endpoint actually takes.
+    if not isinstance(src, str) or not src or not os.path.isabs(src):
+        return _error("'from' must be an absolute filesystem path")
+    if not isinstance(dst, str) or not dst or not os.path.isabs(dst):
+        return _error("'to' must be an absolute filesystem path")
+
+    # Resolved BEFORE the move, because afterwards `src` no longer exists and its
+    # parent can no longer be checked. Both may be set at once (a move within the
+    # trash), so they are independent branches rather than an either/or.
+    info_out = _xdg_trash_entry_info(src)   # leaving the trash → drop its sidecar
+    info_in = _xdg_trash_entry_info(dst)    # entering the trash → write one
+
+    result = _fs_rename({"src": src, "dst": dst, "overwrite": False}, x_fused)
+    # Any refusal comes back verbatim and the sidecars are left exactly as they
+    # were: nothing moved, so nothing about the bin's bookkeeping has changed.
+    if isinstance(result, JSONResponse):
+        return result
+
+    if info_out is not None:
+        # The entry is out; its metadata describes something that is no longer
+        # there. Removed quietly on purpose: the restore has already succeeded and
+        # is what the user asked for, so failing the request now would report a
+        # lie, and the residue is an orphan .trashinfo every trash client already
+        # tolerates.
+        _unlink_quietly(info_out)
+    if info_in is not None:
+        try:
+            info_in.parent.mkdir(parents=True, exist_ok=True)
+            # Plain write, not O_EXCL. The exclusive create in _move_to_xdg_trash
+            # is there to CLAIM a free name; here the name was already decided by
+            # the recorded pair and the rename above proved it free in `files/`
+            # (an occupied one is a 409), so an info file still sitting there is
+            # stale and describes an entry that no longer exists.
+            info_in.write_text(_trashinfo_body(src, datetime.datetime.now()),
+                               encoding="utf-8")
+        except OSError:
+            # Same reasoning as above, mirrored: the entry IS in the bin, and
+            # saying otherwise would be false. A missing sidecar costs the entry
+            # its "restore" in other trash clients, not its recoverability here —
+            # our own undo works off the recorded pair, not off the sidecar.
+            pass
+    return result
+
+
 def _fs_rename(body: dict, x_fused: str | None):
     # Move/rename src -> dst. dst must be absolute and its parent writable
     # (same "outside"/readonly guards as elsewhere). An existing dst is a 409
@@ -1320,6 +1427,13 @@ def _compress_dest(body: dict) -> str | None:
 def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     result = _fs_delete(body, x_fused)
     _invalidate_stat_cache(body.get("path"))
+    return result
+
+@router.post("/api/fs/trash-move")
+def api_fs_trash_move(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    result = _fs_trash_move(body, x_fused)
+    # Both ends change, exactly as a rename does.
+    _invalidate_stat_cache(body.get("from"), body.get("to"))
     return result
 
 @router.post("/api/fs/rename")

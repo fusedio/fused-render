@@ -22,6 +22,7 @@ from fused_render.server.fs_mutate import _fs_copy as COPY
 from fused_render.server.fs_mutate import _fs_delete as DELETE
 from fused_render.server.fs_mutate import _fs_mkdir as MKDIR
 from fused_render.server.fs_mutate import _fs_rename as RENAME
+from fused_render.server.fs_mutate import _fs_trash_move as TRASH_MOVE
 
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
@@ -483,6 +484,127 @@ def test_trash_supported_on_the_three_desktops_only(monkeypatch):
     for name in ("freebsd13", "emscripten"):
         _force_platform(monkeypatch, name)
         assert not _server_fs_mutate._trash_supported()
+
+
+
+
+# ------------------------------------------------------------- trash-move
+#
+# The ONE primitive the explorer's undo/redo calls for a "delete" op: a rename
+# that also fixes the XDG sidecar in whichever direction it is going. Outside a
+# recognized trash root it is a plain rename and nothing else.
+
+
+def _xdg_trash_root(monkeypatch, tmp_path):
+    data = tmp_path / "xdg"
+    data.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(data))
+    trash = data / "Trash"
+    (trash / "files").mkdir(parents=True)
+    (trash / "info").mkdir(parents=True)
+    return trash
+
+
+def test_trash_move_outside_a_trash_root_is_a_plain_rename(tmp_path, monkeypatch):
+    # macOS ~/.Trash, and every other case: no sidecar exists, none is invented.
+    _xdg_trash_root(monkeypatch, tmp_path)
+    src = tmp_path / "a.txt"
+    src.write_text("x")
+    dst = tmp_path / "b.txt"
+    out = _data(TRASH_MOVE({"from": str(src), "to": str(dst)}, x_fused="1"))
+    assert out["path"] == str(dst)
+    assert dst.read_text() == "x"
+    assert not src.exists()
+
+
+def test_trash_move_into_the_trash_writes_the_sidecar(tmp_path, monkeypatch):
+    # Redo of a delete: back into files/, and the .trashinfo has to come back with
+    # it or other trash clients can no longer restore the entry.
+    trash = _xdg_trash_root(monkeypatch, tmp_path)
+    src = tmp_path / "a b.txt"
+    src.write_text("x")
+    dst = trash / "files" / "a b.txt"
+    _data(TRASH_MOVE({"from": str(src), "to": str(dst)}, x_fused="1"))
+    assert dst.read_text() == "x"
+    info = (trash / "info" / "a b.txt.trashinfo").read_text()
+    # Path= names where it came FROM, percent-encoded like the backend's own.
+    assert f"Path={str(src).replace(' ', '%20')}\n" in info
+    assert "DeletionDate=" in info
+
+
+def test_trash_move_out_of_the_trash_removes_the_sidecar(tmp_path, monkeypatch):
+    # Undo of a delete: the entry goes home, so its metadata must not linger
+    # describing something that is no longer in files/.
+    trash = _xdg_trash_root(monkeypatch, tmp_path)
+    src = trash / "files" / "a.txt"
+    src.write_text("x")
+    info = trash / "info" / "a.txt.trashinfo"
+    info.write_text("[Trash Info]\n")
+    dst = tmp_path / "a.txt"
+    _data(TRASH_MOVE({"from": str(src), "to": str(dst)}, x_fused="1"))
+    assert dst.read_text() == "x"
+    assert not info.exists()
+
+
+def test_trash_move_within_the_trash_swaps_the_sidecar(tmp_path, monkeypatch):
+    # Both branches at once, which is why they are independent rather than an
+    # either/or: the old name's metadata goes, the new name's arrives.
+    trash = _xdg_trash_root(monkeypatch, tmp_path)
+    src = trash / "files" / "a.txt"
+    src.write_text("x")
+    (trash / "info" / "a.txt.trashinfo").write_text("[Trash Info]\n")
+    dst = trash / "files" / "b.txt"
+    _data(TRASH_MOVE({"from": str(src), "to": str(dst)}, x_fused="1"))
+    assert not (trash / "info" / "a.txt.trashinfo").exists()
+    assert (trash / "info" / "b.txt.trashinfo").exists()
+
+
+def test_trash_move_refuses_to_touch_an_info_file_for_an_outside_path(tmp_path, monkeypatch):
+    # THE SECURITY CASE. A caller aims the move at a path that merely LOOKS like a
+    # trash entry — same basename as a real one, a parent that traverses out of
+    # files/ — and the sidecar for the real entry must survive untouched. The
+    # endpoint decides by resolving the parent against the server's own trash
+    # root, never by matching the text it was handed.
+    trash = _xdg_trash_root(monkeypatch, tmp_path)
+    victim = trash / "info" / "precious.trashinfo"
+    victim.write_text("[Trash Info]\n")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    src = outside / "precious"
+    src.write_text("x")
+    _data(TRASH_MOVE({"from": str(src), "to": str(tmp_path / "moved")}, x_fused="1"))
+    assert victim.read_text() == "[Trash Info]\n"  # not unlinked
+
+    # And the traversal shape: a path whose parent only reaches files/ by going
+    # back out of it resolves elsewhere, so it gets no sidecar either.
+    trav = trash / "files" / ".." / ".." / "outside.txt"
+    (trash.parent / "outside.txt").write_text("y")
+    _data(TRASH_MOVE({"from": str(trav), "to": str(tmp_path / "trav-moved")}, x_fused="1"))
+    assert not (trash / "info" / "outside.txt.trashinfo").exists()
+
+
+def test_trash_move_keeps_renames_guards(tmp_path, monkeypatch):
+    # Not a looser contract than /api/fs/rename: the X-Fused guard, absolute
+    # paths, 404 for a missing source and 409 for an occupied destination — with
+    # overwrite off, always, because an undo must never clobber.
+    trash = _xdg_trash_root(monkeypatch, tmp_path)
+    assert _status(TRASH_MOVE({"from": "/a", "to": "/b"}, x_fused=None)) == 403
+    assert _status(TRASH_MOVE({"from": "rel", "to": str(tmp_path / "b")}, x_fused="1")) == 400
+    assert _status(TRASH_MOVE({"from": str(tmp_path / "a"), "to": "rel"}, x_fused="1")) == 400
+    src = trash / "files" / "a.txt"
+    src.write_text("x")
+    info = trash / "info" / "a.txt.trashinfo"
+    info.write_text("[Trash Info]\n")
+    assert _status(TRASH_MOVE({"from": str(trash / "files" / "nope"),
+                               "to": str(tmp_path / "a.txt")}, x_fused="1")) == 404
+    taken = tmp_path / "taken.txt"
+    taken.write_text("mine")
+    resp = TRASH_MOVE({"from": str(src), "to": str(taken)}, x_fused="1")
+    assert _status(resp) == 409
+    # A refused move changes NOTHING about the bin's bookkeeping.
+    assert info.exists()
+    assert src.read_text() == "x"
+    assert taken.read_text() == "mine"
 
 
 # -------------------------------------------------------------------- rename
