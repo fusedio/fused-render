@@ -2915,9 +2915,45 @@ describe("the archive action", () => {
     expect(row).toMatch(/"tasks-act (?:.|\n)*?tasks-act--unarchive/);
     expect(row).toContain("ICON_ARCHIVE");
     expect(row).toContain("ICON_UNARCHIVE");
-    // Both directions, and the label comes from tasks-lib rather than the row.
+    // Both directions are still WRITTEN — which of them is drawn is SHOW_UNARCHIVE's
+    // business, below — and the label comes from tasks-lib rather than the row.
     expect(row).toContain("file.status");
     expect(row).toContain("aria-label={file.label}");
+  });
+
+  it("hides the way BACK for now, without deleting it", () => {
+    // Akshil, 2026-08-18: keep archive, hide unarchive. A second flag rather than a
+    // second value of SHOW_ROW_ACTIONS, because they are two different requests and
+    // neither should move when the other is answered.
+    expect(VIEWS).toMatch(/const SHOW_UNARCHIVE: boolean = false;/);
+    // Gated where the intent is READ, not in the markup: `file` then means exactly
+    // "the filing button this row draws", so the button needs no second condition
+    // and the card's strip cannot be drawn around a button that is not there.
+    expect(
+      (VIEWS.match(
+        /const file = filing && \(SHOW_UNARCHIVE \|\| !filing\.restore\) \? filing : null;/g,
+      ) ?? []).length,
+    ).toBe(2);
+    // BOTH views, from ONE flag: a Board that offers the way back where the List
+    // does not is the divergence this page's vocabulary is written against.
+    for (const src of [ROW, CARD]) {
+      expect(src).toContain("{file && (");
+    }
+    expect((VIEWS.match(/const filing = archiveIntent\(task\);/g) ?? []).length).toBe(2);
+    // NOTHING UNDERNEATH IS DELETED — that is the difference between gating and
+    // removing. The intent still computes both directions and is still tested both
+    // ways; the handler still takes either status; the glyph is still written down
+    // beside its pair, because the two only read as a pair together.
+    expect(archiveIntent(task({ status: "archived" }))!.restore).toBe(true);
+    expect(archiveIntent(task({ status: "done" }))!.restore).toBe(false);
+    expect(VIEWS).toContain("const ICON_UNARCHIVE = icon(");
+    expect(VIEWS).toContain("{file.restore ? ICON_UNARCHIVE : ICON_ARCHIVE}");
+    expect(VIEWS).toContain("const triage = async (status: ArchiveStatus)");
+    // Not rendered rather than hidden in CSS, the same rule the strip obeys: an
+    // `opacity: 0` button is still in the tab order.
+    expect(TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(
+      ".tasks-act--unarchive { display: none",
+    );
   });
 
   it("is the ONE row action not behind SHOW_ROW_ACTIONS, on both views", () => {

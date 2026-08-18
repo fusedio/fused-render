@@ -147,6 +147,35 @@ export type { TaskFilters };
  */
 const SHOW_ROW_ACTIONS: boolean = false;
 
+/**
+ * Whether the ARCHIVE button's other direction — Unarchive — is drawn.
+ *
+ * OFF at Akshil's request, 2026-08-18: keep the archive button, hide unarchive for
+ * now. Archive itself stays out from behind SHOW_ROW_ACTIONS on both views; this
+ * takes away only the way BACK, which is what an already-archived row or card
+ * offers (tasks-lib.archiveIntent decides the direction, `restore: true`).
+ *
+ * A SECOND FLAG rather than a second value of the first, because they are two
+ * different requests and neither should move when the other is answered: one hid
+ * the whole hover strip, this hides one direction of one surviving button. Same
+ * shape, same `boolean` annotation, so flipping either is a value change and the
+ * guarded branch is never narrowed to dead code.
+ *
+ * NOTHING UNDERNEATH IS TOUCHED, which is the point of gating rather than
+ * deleting. `archiveIntent` still computes both directions and is still tested
+ * both ways; `triage` still takes either status; the Board's DRAG still moves a
+ * card out of the Archive lane, which is the way back that survives this and is
+ * why hiding the button costs a shortcut rather than a capability. ICON_UNARCHIVE
+ * stays too — it is still the glyph the button reaches for the day this flips, and
+ * the pair only reads as a pair while both are written down together.
+ *
+ * NOT RENDERED rather than hidden with CSS, for the same reason as the strip
+ * above: `.tasks-act` rests at `opacity: 0`, so hiding this one in the stylesheet
+ * would leave a button in the tab order that a keyboard could focus and press
+ * blind.
+ */
+const SHOW_UNARCHIVE: boolean = false;
+
 // ---- icons -------------------------------------------------------------------
 // The page's own recipe (ScheduleCalendar's `icon`): a 24-viewBox lucide
 // geometry at stroke 2 with round caps, inlined rather than pulled from a
@@ -980,7 +1009,14 @@ function TaskNode({
   // what "archive it" used to cost, and the reason the honest answer to "can a
   // task be deleted?" (no: it is archived, D306) was barely true. tasks-lib
   // decides everything, by asking dropAction the same question the drag does.
-  const file = archiveIntent(task);
+  //
+  // The intent is computed BOTH ways and only the rendering is gated: `restore`
+  // is the way back, hidden for now behind SHOW_UNARCHIVE. Filtering here rather
+  // than in the JSX keeps `file` meaning exactly "the filing button this row
+  // draws", so the button's own markup needs no second condition and the strip
+  // below cannot be drawn for a button that is not there.
+  const filing = archiveIntent(task);
+  const file = filing && (SHOW_UNARCHIVE || !filing.restore) ? filing : null;
   // Mark read — the whole task at once, so clearing 89 unread messages is not 89
   // clicks through 89 transcripts. Asked of the count this row is DRAWING, so
   // the button leaves on its own press rather than on the next poll.
@@ -2014,7 +2050,14 @@ function TaskCard({
   // be the ONLY way: the lane it aims at is collapsed by default, so the whole
   // gesture starts with "expand Archive first". Same predicate as the drop, by
   // construction — archiveIntent asks dropAction.
-  const file = archiveIntent(task);
+  //
+  // Gated exactly as the List row's is, and from the same flag: Unarchive is
+  // hidden for now (SHOW_UNARCHIVE), Archive is not. One flag for both views,
+  // because a Board that offers the way back where the List does not is the
+  // divergence this page's whole vocabulary is written against. The card's DRAG
+  // out of the Archive lane is untouched and is the way back that survives.
+  const filing = archiveIntent(task);
+  const file = filing && (SHOW_UNARCHIVE || !filing.restore) ? filing : null;
   // Run now / Re-run, which the List row and the calendar popover both already
   // offer and this card did not. The SAME function decides it here as there
   // (tasks-lib.taskRunIntent, which asks runNowIntent — the very function
