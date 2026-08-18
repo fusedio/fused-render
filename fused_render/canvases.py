@@ -850,6 +850,19 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
         return _error("'name' must be a canvas name (letters, digits, underscore)")
     if not _logged_in():
         return _error("not signed in to Fused — sign in first", 409)
+    # Re-look for the `workbench` plugin, whose skills the CLAUDE.md seeded
+    # below names. Startup already looked; doing it again here picks up a plugin
+    # installed since, so the session in the right pane gets those skills
+    # without a server restart — and this is the canvases-scoped moment, rather
+    # than a cost every user pays at startup for a feature most never open.
+    # A lookup only (a few listdirs): no install, no config mutation, and a
+    # failure is swallowed — a clone must still succeed without it.
+    try:
+        from fused_render.skill_plugin import export_workbench_plugin_env
+
+        export_workbench_plugin_env()
+    except Exception:  # noqa: BLE001 — never fail a clone over a skill lookup
+        logger.debug("workbench plugin lookup failed", exc_info=True)
     target = _canvas_dir(name)
     os.makedirs(target, exist_ok=True)
     # --force: the clone folder is OURS (under ~/.fused-render/canvases); a
