@@ -821,6 +821,7 @@ function writeListMemory(memory: ListMemory): void {
 export function TaskList({
   tasks,
   home = "",
+  stale = false,
   onEditEntry,
   onReload,
   emptyLabel = "Nothing to show here.",
@@ -829,6 +830,13 @@ export function TaskList({
   tasks: Task[];
   /** $HOME, only so a folder tooltip can say "~/Desktop/fused". */
   home?: string;
+  /** Is this empty list a FAILURE rather than an answer? A failed poll sets
+   * `tasks` to `[]` exactly like a filter that matched nothing does (Scheduled
+   * `tasksFailed`), and the scroll memory below has to tell them apart: a list
+   * the reader emptied is worth forgetting the offset for, a list the network
+   * lost is not. Defaults false, so a caller that never fails never has to
+   * think about it. */
+  stale?: boolean;
   /** Open the schedule form on a message that has not gone out yet. Omitted ⇒
    * no edit affordance; the thread is then read-only, which is all a thread of
    * already-sent messages could ever be anyway. */
@@ -1074,14 +1082,24 @@ export function TaskList({
   // component mounts against an empty `tasks` while the fetch is out, and zeroing
   // the memory there would erase the very offset this whole section exists to pay
   // back, before the rows it belongs to have even arrived.
+  //
+  // AND ONLY FOR AN EMPTINESS THE SERVER MEANT (bugbot, 2026-08-18). A failed
+  // poll also sets `tasks` to `[]` — the page keeps its shape and says "Tasks
+  // could not be loaded" over an empty list (Scheduled `tasksFailed`) — so a
+  // single dropped request in the 20s poll used to be indistinguishable from a
+  // filter that matched nothing, and permanently forgot where the reader was.
+  // That is the worst possible moment to forget it: the rows are coming back in
+  // twenty seconds, and the reader is about to be dropped at the top of a list
+  // they were halfway down. `stale` is the poll saying "this empty is mine, not
+  // the data's", and an empty we cannot vouch for changes nothing at all.
   const hadRows = useRef(false);
   if (hasRows) hadRows.current = true;
   useEffect(() => {
-    if (hasRows || !hadRows.current) return;
+    if (hasRows || stale || !hadRows.current) return;
     owed.current = null;
     settled.current = null;
     remember({ ...memory.current, scroll: 0 });
-  }, [hasRows]);
+  }, [hasRows, stale]);
 
   if (!hasRows) {
     return <p className="schedule-tv-empty">{emptyLabel}</p>;

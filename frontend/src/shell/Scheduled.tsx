@@ -418,6 +418,11 @@ export default function Scheduled() {
             <TaskList
               tasks={shown}
               home={home}
+              // A failed poll empties `tasks` too, and the List cannot tell that
+              // apart from a filter that matched nothing — but it must, because
+              // one is a reason to forget where the reader was and the other is
+              // a reason to hold onto it. See `stale` in TaskList.
+              stale={tasksFailed}
               onEditEntry={editEntry}
               // Cancelling a message changes server state. The 20s poll would
               // catch it anyway, so this is about the row not looking stuck for
