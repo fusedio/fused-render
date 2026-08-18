@@ -528,11 +528,32 @@ This folder is a live clone of the Fused canvas **{name}**, two-way synced by
 fused-render: a watcher pushes every quiet change set upstream and pulls
 remote edits (made in the hosted workbench) back down, merging per file.
 
-## Rules
+## How the sync works (know this before running sync commands yourself)
 
-- NEVER run `fused canvas push` or `fused canvas pull` here — the sync
-  watcher owns both directions; a manual push races it and can clobber
-  remote edits.
+A watcher in the fused-render app syncs this folder continuously:
+
+- **Auto-push**: after ~1.5s of file quiet it runs `fused canvas push`,
+  which REPLACES the remote UDF set with this folder (deletes propagate).
+  Before pushing it probes the remote and merges concurrent workbench
+  edits in, per file.
+- **Auto-pull**: every ~10s it checks the remote; workbench edits are
+  pulled down (clean clone) or merged per file (dirty clone — a file only
+  you changed keeps your version; only they changed gets theirs; both →
+  yours wins).
+
+You MAY run `fused canvas push` / `fused canvas pull` yourself, e.g. to
+reconcile a conflict — just account for the side-effects:
+
+- Your saved edits push themselves within seconds; a manual push is
+  usually redundant. Pushing mid-edit ships a half-done state.
+- `fused canvas pull --force` overwrites the WHOLE folder with remote:
+  any unpushed local edits are lost, and it deletes this CLAUDE.md /
+  .fusedignore (the watcher re-seeds them on its own pulls).
+- After a manual pull, the watcher may see the changed files as fresh
+  local edits and push them back — expected, mention it if surprising.
+
+Other rules:
+
 - After structural edits (renaming a node, adding/removing nodes or edges),
   check the clone with `fused workbench canvas validate .` — the auto-push
   rejects an invalid canvas and the error surfaces to the user.
