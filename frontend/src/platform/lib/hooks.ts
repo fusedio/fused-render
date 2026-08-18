@@ -229,12 +229,28 @@ function useBuiltinMountReady(initial: boolean, key: BuiltinMountKey): boolean {
   return ready;
 }
 
-// Whether this installation is read-only, which is what decides whether a
-// self-fix session can FIX or only DIAGNOSE (SPEC §43, SF-13). Preferences knows
-// this already, from the GET /api/selffix snapshot it opens with; the download
-// manager's failed rows do not, and they have to word a button BEFORE anyone
-// clicks it — so this reads the one bit off /api/config, which is a plain
-// `os.access` on the server.
+/** What a surface needs to know BEFORE it offers a self-fix session. */
+export interface SelfFixReadiness {
+  /** The installation cannot be written to: a session can diagnose, not fix. */
+  readOnly: boolean;
+  /** Claude Code is not installed: no session can start at all. */
+  claudeMissing: boolean;
+}
+
+// The two preconditions a surface can check before it offers a self-fix session
+// (SPEC §43, SF-13f), read together off /api/config because they are read
+// together and neither is worth its own request. Preferences learns the
+// read-only half from the GET /api/selffix snapshot it opens with; the download
+// manager's failed rows learn both from here, because they have to word a
+// button BEFORE anyone clicks it, and the snapshot costs a directory walk and a
+// brew probe.
+//
+// ONLY WHAT IS ACTUALLY KNOWABLE. `readOnly` is an `os.access`, `claudeMissing`
+// is the same binary resolution the spawn uses. Whether Claude is SIGNED IN, or
+// over its usage limit, is deliberately absent: neither can be learned without
+// running the CLI, and a check that spawned a process per failed row to answer a
+// question that changes minute to minute would be worse than the click it saved.
+// Those two stay post-hoc, classified from the failure (lib/trouble.ts, §42).
 //
 // One fetch per page, not per row: a user with three failed downloads mounts
 // three of these, and they are all asking the same question about the same
@@ -246,46 +262,52 @@ function useBuiltinMountReady(initial: boolean, key: BuiltinMountKey): boolean {
 // app was installed, and a copy that changes owner mid-session has bigger
 // problems than a stale button label.
 //
-// Absence answers FALSE — the label falls back to promising a fix. Deliberate:
-// nearly every installation is one the user owns, and the failure mode on the
-// rare read-only one is a button that overpromises for a moment, against a
-// server response that still tells the truth (`diagnostic`) and a session that
+// Absence answers FALSE on both — the label falls back to promising an ordinary
+// fix. Deliberate: nearly every installation is one the user owns with Claude
+// installed, and the failure mode on the rare other one is a button that
+// overpromises for a moment, against a server response that still tells the
+// truth (`diagnostic`, or the spawn's own "isn't installed") and a session that
 // is told in its own prompt. Defaulting the other way would mis-word the button
 // for everyone whose config fetch was merely slow.
-let readOnlyProbe: Promise<boolean> | null = null;
+const NOT_READY: SelfFixReadiness = { readOnly: false, claudeMissing: false };
 
-function probeReadOnly(): Promise<boolean> {
-  if (!readOnlyProbe) {
-    readOnlyProbe = getConfig().then(
-      (config) => config.read_only === true,
+let readinessProbe: Promise<SelfFixReadiness> | null = null;
+
+function probeReadiness(): Promise<SelfFixReadiness> {
+  if (!readinessProbe) {
+    readinessProbe = getConfig().then(
+      (config) => ({
+        readOnly: config.read_only === true,
+        claudeMissing: config.claude_missing === true,
+      }),
       () => {
         // Let the next mount try again — a transient fetch failure should not
-        // pin "writable" for the rest of the session.
-        readOnlyProbe = null;
-        return false;
+        // pin "ready" for the rest of the session.
+        readinessProbe = null;
+        return NOT_READY;
       }
     );
   }
-  return readOnlyProbe;
+  return readinessProbe;
 }
 
 /** Test seam: forget the cached probe so a case can serve a different config. */
-export function resetInstallReadOnly(): void {
-  readOnlyProbe = null;
+export function resetSelfFixReadiness(): void {
+  readinessProbe = null;
 }
 
-export function useInstallReadOnly(): boolean {
-  const [readOnly, setReadOnly] = useState(false);
+export function useSelfFixReadiness(): SelfFixReadiness {
+  const [ready, setReady] = useState(NOT_READY);
   useEffect(() => {
     let cancelled = false;
-    probeReadOnly().then((value) => {
-      if (!cancelled) setReadOnly(value);
+    probeReadiness().then((value) => {
+      if (!cancelled) setReady(value);
     });
     return () => {
       cancelled = true;
     };
   }, []);
-  return readOnly;
+  return ready;
 }
 
 // Live sidebar chrome state (platform/lib/sidebarstate) — collapsed flag and

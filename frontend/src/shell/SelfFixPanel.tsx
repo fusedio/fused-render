@@ -29,7 +29,9 @@ import { TroubleCard } from "@platform/ui/TroubleCard";
 import type { TroubleFacts } from "@platform/lib/trouble";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { Field, TextArea } from "@platform/ui/field/fields";
+import { useSelfFixReadiness } from "@platform/lib/hooks";
 import {
+  CLAUDE_MISSING_ERROR,
   clearSelfFix,
   describedProblemIsSendable,
   failureContextFromNote,
@@ -69,8 +71,20 @@ function DescribeSection({
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The precondition the SNAPSHOT cannot answer. `writable` above is a fact
+  // about the installation and rides the snapshot this panel opens with;
+  // whether Claude Code exists on the machine is a fact about the MACHINE, and
+  // it lives on /api/config beside the other things every surface checks
+  // (SF-13f).
+  const { claudeMissing } = useSelfFixReadiness();
 
   const start = async () => {
+    if (claudeMissing) {
+      // Answered rather than attempted — same sentence the spawn would have
+      // returned, so this card and that one are the same card.
+      setError(CLAUDE_MISSING_ERROR);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -112,11 +126,21 @@ function DescribeSection({
           available, and an admin-installed copy is exactly where the user is
           least able to help themselves. So this sets an expectation rather than
           closing a door, and the button below stays live. */}
-      {!writable && (
+      {!writable && !claudeMissing && (
         <p className="deploy-muted">
           This installation is read-only, so a session can <strong>diagnose but
           not fix</strong>. Claude will find the cause and write a report you
           can send on; applying the fix needs a copy you own.
+        </p>
+      )}
+      {/* Said INSTEAD of the read-only note, not beside it: without the CLI
+          neither mode can start, so which mode it would have been is not the
+          user's problem yet. */}
+      {claudeMissing && (
+        <p className="deploy-muted">
+          A session runs on <strong>Claude Code</strong>, which isn&rsquo;t
+          installed on this machine — so nothing can start here yet. The button
+          below shows how to get it.
         </p>
       )}
       {/* NOT an ErrorBanner. Two of the three things that fail here — Claude
@@ -135,9 +159,15 @@ function DescribeSection({
       <button
         type="button"
         onClick={start}
-        disabled={busy || !describedProblemIsSendable(note)}
+        disabled={busy || (!claudeMissing && !describedProblemIsSendable(note))}
       >
-        {busy ? "Starting…" : writable ? "Start a fix session" : "Start a diagnostic session"}
+        {busy
+          ? "Starting…"
+          : claudeMissing
+            ? "Set up Claude Code"
+            : writable
+              ? "Start a fix session"
+              : "Start a diagnostic session"}
       </button>
     </section>
   );

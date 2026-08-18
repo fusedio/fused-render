@@ -131,3 +131,46 @@ def test_both_gate_the_shapes_on_the_message_being_about_claude():
     was missing."""
     assert "ABOUT_CLAUDE" in _shell()
     assert "TROUBLE_ABOUT_CLAUDE" in _template()
+
+
+SELFFIX_LIB = ROOT / "frontend" / "src" / "platform" / "lib" / "selffix.ts"
+
+
+def test_the_precheck_says_exactly_what_the_spawn_would_have_said():
+    """One fact, one sentence, wherever the user meets it (SF-13f).
+
+    A surface that knows in advance that Claude Code is missing answers with
+    `CLAUDE_MISSING_ERROR` instead of spending a doomed spawn. That string has to
+    stay byte-identical to the one `spawn_helper` returns when the CLI really is
+    absent: a user can meet both in one sitting — the pre-check on a failed row,
+    and the spawn's own answer from a session started before the config read
+    landed — and two accounts of one fact read as two different problems.
+
+    The wording is load-bearing past politeness: "Claude Code isn't installed" is
+    the NAMED pattern lib/trouble.ts classifies as `notfound`, which is what puts
+    the install command and the troubleshooting link on the card.
+    """
+    from fused_render.claude_spawn import CLAUDE_MISSING_ERROR
+
+    source = SELFFIX_LIB.read_text(encoding="utf-8")
+    match = re.search(r"CLAUDE_MISSING_ERROR\s*=\s*(.*?);", source, re.S)
+    assert match, "CLAUDE_MISSING_ERROR is gone from platform/lib/selffix.ts"
+    # Adjacent string literals joined by `+`, folded the way the compiler folds
+    # them. Only double-quoted pieces, which is how this file is written.
+    shell_text = "".join(re.findall(r'"([^"]*)"', match.group(1)))
+
+    assert shell_text == CLAUDE_MISSING_ERROR, (
+        "the pre-check and the spawn disagree about what a missing CLI says:\n"
+        f"  shell:  {shell_text!r}\n"
+        f"  server: {CLAUDE_MISSING_ERROR!r}")
+    assert troubleKindIsNotFound(shell_text), (
+        "the sentence stopped matching trouble.ts's NAMED notfound pattern")
+
+
+def troubleKindIsNotFound(text: str) -> bool:
+    """The NAMED `notfound` rule from lib/trouble.ts, restated for this one
+    assertion — the shell's own test suite owns the classifier, this only needs
+    to know that the sentence still trips it."""
+    return bool(re.search(r"claude code isn'?t installed|claude cli not found"
+                          r"|claude not found", text, re.I))
+

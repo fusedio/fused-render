@@ -93,9 +93,14 @@ import {
   type QueueCount,
 } from "@platform/lib/jobs";
 import { navigateUrl } from "@platform/lib/router";
-import { useInstallReadOnly } from "@platform/lib/hooks";
+import { useSelfFixReadiness } from "@platform/lib/hooks";
 import { TroubleCard } from "@platform/ui/TroubleCard";
-import { failureContextFromJob, fixSessionUrl, startSelfFix } from "@platform/lib/selffix";
+import {
+  CLAUDE_MISSING_ERROR,
+  failureContextFromJob,
+  fixSessionUrl,
+  startSelfFix,
+} from "@platform/lib/selffix";
 
 const COLLAPSED_KEY = "fused-render:jobs-collapsed";
 
@@ -280,14 +285,26 @@ function Bar({ job }: { job: Job }) {
 // their app while they look at a spinner.
 function FixButton({ job, onError }: { job: Job; onError: (msg: string | null) => void }) {
   const [busy, setBusy] = useState(false);
-  // WORDED BEFORE THE CLICK, not after (SF-13d). On a read-only installation the
-  // server starts a session that can only diagnose, and this button used to
-  // promise a fix to everyone — so the one user who cannot be helped locally was
-  // the one told most confidently that they could. Preferences already says this
-  // in a sentence; a row has space for a verb, so the verb changes.
-  const readOnly = useInstallReadOnly();
+  // WORDED BEFORE THE CLICK, not after (SF-13d, SF-13f). Two preconditions the
+  // row can know in advance, and each changes what it is honest to offer:
+  //
+  //   read-only      the session can diagnose but not fix → "Diagnose this"
+  //   Claude absent  no session can start AT ALL → do not offer one. The button
+  //                  names the thing that would make it possible instead.
+  //
+  // Claude-missing wins, because without the CLI neither mode runs. Preferences
+  // says both in sentences; a row has space for a verb, so the verb changes.
+  const { readOnly, claudeMissing } = useSelfFixReadiness();
 
   const start = async () => {
+    if (claudeMissing) {
+      // ANSWERED, NOT ATTEMPTED. We already know the spawn's outcome, so
+      // spending it would cost the user a wait to be told something we could
+      // have said at once — and the row renders the identical card either way,
+      // because this is the identical sentence (CLAUDE_MISSING_ERROR).
+      onError(CLAUDE_MISSING_ERROR);
+      return;
+    }
     setBusy(true);
     onError(null);
     try {
@@ -314,12 +331,20 @@ function FixButton({ job, onError }: { job: Job; onError: (msg: string | null) =
       onClick={start}
       disabled={busy}
       title={
-        readOnly
-          ? "This installation is read-only: open a Claude session to find the cause and write it up — applying the fix needs a copy you own"
-          : "Open a Claude session on this installation and try to fix it here"
+        claudeMissing
+          ? "This needs Claude Code, which isn't installed on this machine — see how to get it"
+          : readOnly
+            ? "This installation is read-only: open a Claude session to find the cause and write it up — applying the fix needs a copy you own"
+            : "Open a Claude session on this installation and try to fix it here"
       }
     >
-      {busy ? "Starting…" : readOnly ? "Diagnose this" : "Fix this"}
+      {busy
+        ? "Starting…"
+        : claudeMissing
+          ? "Set up Claude Code"
+          : readOnly
+            ? "Diagnose this"
+            : "Fix this"}
     </button>
   );
 }

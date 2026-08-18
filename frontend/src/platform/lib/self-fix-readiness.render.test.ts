@@ -1,5 +1,6 @@
-// `useInstallReadOnly`, DRIVEN — the hook the download manager's failed row uses
-// to decide whether its button may promise a fix (SPEC §43, SF-13d).
+// `useSelfFixReadiness`, DRIVEN — the hook the download manager's failed row and
+// the Preferences panel use to decide what it is honest to OFFER, before anyone
+// clicks (SPEC §43, SF-13d, SF-13f).
 //
 // Worth driving rather than asserting on source, because three of the four
 // things it has to get right are invisible in a screenshot and in a grep: how
@@ -13,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 import { createElement, type ReactElement } from "react";
 import type { Config } from "@platform/lib/api";
+import type { SelfFixReadiness } from "@platform/lib/hooks";
 
 // --- the module boundary ------------------------------------------------------
 let reply: () => Promise<Config>;
@@ -49,15 +51,15 @@ mock.module("@platform/lib/api", () => ({
   clearTimeout: globalThis.clearTimeout.bind(globalThis),
 };
 
-const { useInstallReadOnly, resetInstallReadOnly } = await import("@platform/lib/hooks");
+const { useSelfFixReadiness, resetSelfFixReadiness } = await import("@platform/lib/hooks");
 
 const config = (over: Partial<Config> = {}) => ({ version: "1.2.3", ...over }) as Config;
 
 /** Mount the hook and expose its latest return value. */
-function mount(): { current: () => boolean; unmount: () => void } {
-  let latest = false;
+function mount(): { current: () => SelfFixReadiness; unmount: () => void } {
+  let latest: SelfFixReadiness = { readOnly: false, claudeMissing: false };
   const Probe = (): ReactElement | null => {
-    latest = useInstallReadOnly();
+    latest = useSelfFixReadiness();
     return null;
   };
   let renderer: ReturnType<typeof create>;
@@ -81,19 +83,19 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   calls = 0;
   reply = () => Promise.resolve(config());
-  resetInstallReadOnly();
+  resetSelfFixReadiness();
 });
 
 afterEach(() => {
-  resetInstallReadOnly();
+  resetSelfFixReadiness();
 });
 
-describe("useInstallReadOnly", () => {
+describe("useSelfFixReadiness", () => {
   test("a read-only installation is reported, so the button can change its verb", async () => {
     reply = () => Promise.resolve(config({ read_only: true }));
     const probe = mount();
     await settle();
-    expect(probe.current()).toBe(true);
+    expect(probe.current().readOnly).toBe(true);
     probe.unmount();
   });
 
@@ -103,7 +105,7 @@ describe("useInstallReadOnly", () => {
     // would report every writable install as read-only.
     const probe = mount();
     await settle();
-    expect(probe.current()).toBe(false);
+    expect(probe.current().readOnly).toBe(false);
     probe.unmount();
   });
 
@@ -115,7 +117,38 @@ describe("useInstallReadOnly", () => {
     reply = () => new Promise(() => {}); // a config read nobody answers
     const probe = mount();
     await settle();
-    expect(probe.current()).toBe(false);
+    expect(probe.current().readOnly).toBe(false);
+    probe.unmount();
+  });
+
+  test("a missing Claude Code is reported, so nothing offers a session", async () => {
+    // The precondition that outranks the other one: without the CLI neither a
+    // fix nor a diagnosis can start, so the surfaces stop offering a session at
+    // all and name the thing that would make one possible.
+    reply = () => Promise.resolve(config({ claude_missing: true }));
+    const probe = mount();
+    await settle();
+    expect(probe.current().claudeMissing).toBe(true);
+    probe.unmount();
+  });
+
+  test("both preconditions ride ONE read", async () => {
+    // They are read together because they are used together — an admin-installed
+    // copy on a machine with no Claude is one config fetch, not two.
+    reply = () => Promise.resolve(config({ read_only: true, claude_missing: true }));
+    const probe = mount();
+    await settle();
+    expect(probe.current()).toEqual({ readOnly: true, claudeMissing: true });
+    expect(calls).toBe(1);
+    probe.unmount();
+  });
+
+  test("absence answers no on BOTH — the ordinary machine", async () => {
+    // Neither field has a false shape on the wire; a hook that checked for one
+    // would report every healthy machine as broken.
+    const probe = mount();
+    await settle();
+    expect(probe.current()).toEqual({ readOnly: false, claudeMissing: false });
     probe.unmount();
   });
 
@@ -127,7 +160,7 @@ describe("useInstallReadOnly", () => {
     const probes = [mount(), mount(), mount()];
     await settle();
     expect(calls).toBe(1);
-    for (const probe of probes) expect(probe.current()).toBe(true);
+    for (const probe of probes) expect(probe.current().readOnly).toBe(true);
     for (const probe of probes) probe.unmount();
   });
 
@@ -138,13 +171,13 @@ describe("useInstallReadOnly", () => {
     reply = () => Promise.reject(new Error("offline"));
     const first = mount();
     await settle();
-    expect(first.current()).toBe(false);
+    expect(first.current().readOnly).toBe(false);
     first.unmount();
 
     reply = () => Promise.resolve(config({ read_only: true }));
     const second = mount();
     await settle();
-    expect(second.current()).toBe(true);
+    expect(second.current().readOnly).toBe(true);
     expect(calls).toBe(2);
     second.unmount();
   });
@@ -159,7 +192,7 @@ describe("useInstallReadOnly", () => {
 
     const second = mount();
     await settle();
-    expect(second.current()).toBe(true);
+    expect(second.current().readOnly).toBe(true);
     expect(calls).toBe(1);
     second.unmount();
   });

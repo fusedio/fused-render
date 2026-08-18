@@ -289,6 +289,23 @@ export function maySchedule(issued: PollGen, now: PollGen): boolean {
  * it decides is invisible when wrong: nothing breaks, the chip just polls twelve
  * times a minute for half an hour looking for a badge that cannot appear.
  */
+/**
+ * What the server says when the CLI is missing — repeated here so a surface that
+ * knows in ADVANCE can say the same thing without spending a doomed spawn.
+ *
+ * Byte-identical to `claude_spawn.spawn_helper`'s message (pinned by
+ * tests/test_trouble_parity.py), for two reasons that both matter. It classifies
+ * as `notfound` through the same NAMED pattern, so the row and the panel render
+ * the install command and the troubleshooting link they already render for the
+ * post-hoc case; and a user who hits this twice — once pre-checked, once because
+ * they started a session before the config answered — must not get two different
+ * accounts of one fact.
+ */
+export const CLAUDE_MISSING_ERROR =
+  "Claude Code isn't installed (or couldn't be found). Install it, check that " +
+  "`claude` runs in a terminal, then try again. Help: " +
+  "https://render.fused.io/#troubleshooting-notfound";
+
 export function shouldNoteStart(started: SelfFixStart): boolean {
   return !started.diagnostic;
 }
