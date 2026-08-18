@@ -5,10 +5,12 @@ import {
   MAX_SCANNING_POLLS,
   UNCOVERED_GRACE,
   nextStep,
+  remembersAnswer,
+  searchProgress,
 } from "@apps/explorer/listing/index-source";
 
 const at = (over: Partial<Parameters<typeof nextStep>[0]> = {}) =>
-  nextStep({ reason: "", asked: false, sinceAsk: 0, polls: 0, ...over });
+  nextStep({ reason: "", asked: false, sinceAsk: 0, polls: 0, covered: true, ...over });
 
 describe("what to do with a ranked answer", () => {
   test("a covered folder is simply answered", () => {
@@ -58,6 +60,18 @@ describe("what to do with a ranked answer", () => {
     // what the poll is for.
     expect(at({ reason: "scanning", polls: MAX_SCANNING_POLLS - 1 })).toBe("poll");
     expect(at({ reason: "scanning", polls: MAX_SCANNING_POLLS })).toBe("answer");
+  });
+
+  test("giving up on a scan that never covered the folder goes to the walk", () => {
+    // The other door into "blame the user's files for the app's state". A scan
+    // of an UNCOVERED root reports `scanning` too, so settling for what we have
+    // at the ceiling would render covered:false, hits:[] — an empty list for a
+    // folder the walk would have searched fine.
+    expect(at({ reason: "scanning", polls: MAX_SCANNING_POLLS, covered: false }))
+      .toBe("walk");
+    // ...while a covered folder really does have rows worth settling for.
+    expect(at({ reason: "scanning", polls: MAX_SCANNING_POLLS, covered: true }))
+      .toBe("answer");
   });
 
   test("a probe answer cannot count as the on-demand scan's first look", () => {
@@ -115,10 +129,47 @@ describe("useWalkSearch's half of the decision", () => {
     expect(scan).toContain("setWalkMode(true)");
   });
 
+  test("a reply that outlived its folder or generation is dropped", () => {
+    // The two requests that outlive the effect that issued them — the scan ask
+    // and the focus probe — both end in setWalkMode(true), and this hook is
+    // NOT remounted per folder. Without the epoch tag, a `refused` for the
+    // folder you just left pins the folder you just opened to the live walk,
+    // and only a generation change ever clears that.
+    const asks = HOOK.slice(HOOK.indexOf('if (step === "scan") {'),
+                            HOOK.indexOf('if (step === "poll")'));
+    expect(asks).toContain("const epoch = sourceEpoch.current;");
+    expect(asks.match(/if \(sourceEpoch\.current !== epoch\) return;/g)).toHaveLength(2);
+    const probe = HOOK.slice(HOOK.indexOf("const probeKey ="),
+                             HOOK.indexOf("// Debounced URL mirror"));
+    expect(probe).toContain("if (sourceEpoch.current !== epoch) return;");
+    // ...and the epoch has to actually move with the folder and generation.
+    expect(HOOK).toContain("sourceEpoch.current += 1;");
+  });
+
+  test("the poll counts its own ticks, not the answers it gets back", () => {
+    // A tick aborts the request in flight, so a rank that consistently
+    // outlasts the interval produces no answers — and a ceiling counted in
+    // answers is one the loop can starve, leaving a 1.5s request loop running
+    // long after the scan it was waiting for finished.
+    const timer = HOOK.slice(HOOK.indexOf("  useEffect(() => {\n    if (!polling"),
+                             HOOK.indexOf("--- the live walk"));
+    expect(timer).toContain("polls.current += 1;");
+    expect(timer).toContain("nextStep(");
+    // ...and nothing else increments it.
+    expect(HOOK.split("\n").filter((l) => l.includes("polls.current += 1"))).toHaveLength(1);
+  });
+
+  test("a poll tick never aborts a request that is still out", () => {
+    expect(HOOK).toContain("if (inflightKey.current === key) return;");
+  });
+
   test("the memo is not consulted while a scan is landing rows", () => {
     // A remembered answer taken mid-scan is precisely the one that is out of
     // date, and serving it would freeze the trickle the poll exists to show.
     expect(HOOK).toContain("const remembered = polling ? undefined : memo.current.get(q)");
+    // ...and the WRITE side asks the pure rule rather than the same flag,
+    // which is a commit behind at exactly the moment a scan ends.
+    expect(HOOK).toContain('remembersAnswer(step, res.reason ?? "")');
   });
 
   test("the ranked rows are rendered under whatever query they answer", () => {
@@ -127,5 +178,64 @@ describe("useWalkSearch's half of the decision", () => {
     // would blank the list on every keystroke.
     expect(HOOK).toContain("const indexRows = searching && !walkMode ? (answer?.hits ?? []) : []");
     expect(HOOK).toContain("const displayHits = walkMode ? walkDisplay.hits : indexRows;");
+  });
+});
+
+
+// -- what the box is allowed to remember ---------------------------------------
+
+describe("remembersAnswer", () => {
+  test("a settled, covered answer is worth remembering", () => {
+    expect(remembersAnswer("answer", "")).toBe(true);
+  });
+
+  test("an answer taken mid-scan is not", () => {
+    // It is a snapshot of a folder still being indexed; serving it back on a
+    // backspace would freeze the trickle the poll exists to show.
+    expect(remembersAnswer("poll", "scanning")).toBe(false);
+    expect(remembersAnswer("scan", "uncovered")).toBe(false);
+    // ...including the one that settles only because the poll ceiling ran out.
+    expect(remembersAnswer("answer", "scanning")).toBe(false);
+  });
+
+  test("nothing is remembered for a folder handed to the walk", () => {
+    expect(remembersAnswer("walk", "mount")).toBe(false);
+  });
+});
+
+// -- is an answer still coming, and are these rows momentary? ------------------
+
+describe("searchProgress", () => {
+  const p = (over: Partial<Parameters<typeof searchProgress>[0]> = {}) =>
+    searchProgress({ searching: true, walkMode: false, pending: false,
+                     polling: false, scanning: false, ...over });
+
+  test("a scan landing rows means an answer is still coming", () => {
+    // THE regression: the first uncovered answer clears `pending` while the
+    // on-demand scan runs, and an empty list then read as a finished zero-hit
+    // result — "No matches" for the whole window the scan is working in.
+    expect(p({ polling: true }).answerComing).toBe(true);
+    expect(p({ pending: true }).answerComing).toBe(true);
+    expect(p().answerComing).toBe(false);
+  });
+
+  test("a scan is not a MOMENTARY state, so it does not drive the heavy dim", () => {
+    // The two dims say different things: `inFlight` is a round trip that
+    // clears in a moment, and a scan that runs for ten seconds is the caveat's
+    // job ("indexing…"), not a dim calibrated for a moment.
+    expect(p({ polling: true }).inFlight).toBe(false);
+    expect(p({ pending: true }).inFlight).toBe(true);
+  });
+
+  test("the walk reports its own scoring pass, and never the poll", () => {
+    // A walk-backed folder has no ranked request and no scan to wait for.
+    expect(p({ walkMode: true, scanning: true }).answerComing).toBe(true);
+    expect(p({ walkMode: true, scanning: true }).inFlight).toBe(true);
+    expect(p({ walkMode: true, polling: true, pending: true }).answerComing).toBe(false);
+  });
+
+  test("nothing is coming when nobody is searching", () => {
+    expect(p({ searching: false, pending: true, polling: true }).answerComing).toBe(false);
+    expect(p({ searching: false, pending: true }).inFlight).toBe(false);
   });
 });

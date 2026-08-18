@@ -62,7 +62,11 @@ import { useRankedScan } from "@apps/explorer/listing/useRankedScan";
 import { shouldReconcile } from "@apps/explorer/listing/revalidate";
 import { capHits } from "@apps/explorer/listing/result-cap";
 import { hitsFromRank } from "@apps/explorer/listing/ranked-hits";
-import { nextStep } from "@apps/explorer/listing/index-source";
+import {
+  nextStep,
+  remembersAnswer,
+  searchProgress,
+} from "@apps/explorer/listing/index-source";
 import {
   IDLE_WALK,
   RERANK_COMMIT_MS,
@@ -185,11 +189,29 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // Bumped by the poll timer to re-ask while a scan is running.
   const [pollTick, setPollTick] = useState(0);
   const [polling, setPolling] = useState(false);
+  // Whether the LAST answer covered the folder, for the decision at the poll
+  // ceiling: settling for what we have is only honest if there is something.
+  const covered = useRef(false);
+  // Which folder+generation the async replies below still speak for.
+  //
+  // Two requests outlive the effect that issued them — the scan ask and the
+  // focus probe — and both end in `setWalkMode(true)`. Neither is abortable in
+  // any useful sense (aborting the fetch would not stop a scan the server has
+  // already started), so they are tagged instead: a reply from before a
+  // navigation or a reconcile is dropped rather than applied to whatever the
+  // box is showing now. Without this, a `refused` for the folder you just left
+  // pins the folder you just opened to the live walk — and since only a
+  // generation change clears `walkMode`, it stays pinned. This hook is NOT
+  // remounted per folder (only the embedded listing is keyed on its path), so
+  // there is no mount boundary doing this for us.
+  const sourceEpoch = useRef(0);
   useEffect(() => {
+    sourceEpoch.current += 1;
     setWalkMode(false);
     asked.current = false;
     sinceAsk.current = 0;
     polls.current = 0;
+    covered.current = false;
     setPolling(false);
   }, [fsPath, pinned]);
 
@@ -199,6 +221,9 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   const [pending, setPending] = useState(false);
   const memo = useRef(new QueryMemo<RankAnswer>());
   const inflight = useRef<AbortController | null>(null);
+  // Identity of the request in flight (folder, generation, attempt, query), or
+  // null. See the guard in the fetch effect.
+  const inflightKey = useRef<string | null>(null);
   const issuedAt = useRef(0);
   const answerSeq = useRef(0);
   useEffect(() => {
@@ -213,16 +238,18 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // this is the wiring for it.
   const applyStep = (res: IndexRankResult) => {
     if (asked.current) sinceAsk.current += 1;
+    covered.current = res.covered;
     const step = nextStep({
       reason: res.reason ?? "",
       asked: asked.current,
       sinceAsk: sinceAsk.current,
       polls: polls.current,
+      covered: res.covered,
     });
     if (step === "walk") {
       setWalkMode(true);
       setPolling(false);
-      return false;
+      return step;
     }
     if (step === "scan") {
       asked.current = true;
@@ -231,29 +258,32 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       // A refusal is durable — mount-backed, gone, or scanned too recently to
       // scan again (server/routers/index.py). Nothing is coming, so stop
       // polling for it and let the walk answer, which is what the folder would
-      // have got before any of this existed.
+      // have got before any of this existed. Tagged with the epoch, because
+      // this reply can land on a folder the box has since navigated away from.
+      const epoch = sourceEpoch.current;
       void requestFolderScan(fsPath).then(
         (r) => {
+          if (sourceEpoch.current !== epoch) return;
           if (!r.started) {
             setPolling(false);
             setWalkMode(true);
           }
         },
         () => {
+          if (sourceEpoch.current !== epoch) return;
           setPolling(false);
           setWalkMode(true);
         },
       );
-      return true;
+      return step;
     }
     if (step === "poll") {
-      polls.current += 1;
       setPolling(true);
-      return true;
+      return step;
     }
     polls.current = 0;
     setPolling(false);
-    return true;
+    return step;
   };
 
   // ONE REQUEST PER QUERY, abortable, and never queued: the answer to a query
@@ -262,6 +292,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   useEffect(() => {
     if (walkMode || !searching) {
       inflight.current?.abort();
+      inflightKey.current = null;
       setPending(false);
       // Leaving search drops the answer. Keeping it would carry one search
       // session's rows into the next one's first frame under a query they
@@ -276,13 +307,22 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     const remembered = polling ? undefined : memo.current.get(q);
     if (remembered) {
       inflight.current?.abort();
+      inflightKey.current = null;
       setAnswer(remembered);
       setFailure("");
       setPending(false);
       return;
     }
+    // The request this run would issue. Compared against the one already out,
+    // so a poll tick does not abort a live request and start it again: a rank
+    // that outlasts SCAN_POLL_MS would otherwise never be allowed to finish,
+    // and the loop would outlive the scan it is waiting for. It also drops the
+    // duplicate that the `polling` flag flipping used to cost.
+    const key = [fsPath, pinned, retryNonce, q].join("\u0000");
+    if (inflightKey.current === key) return;
     const run = () => {
       inflight.current?.abort();
+      inflightKey.current = key;
       const ctl = new AbortController();
       inflight.current = ctl;
       issuedAt.current = Date.now();
@@ -292,7 +332,8 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       indexRank(fsPath, q, { signal: ctl.signal, limit: SEARCH_RANK_LIMIT }).then(
         (res) => {
           if (ctl.signal.aborted) return;
-          const settled = applyStep(res);
+          inflightKey.current = null;
+          const step = applyStep(res);
           answerSeq.current += 1;
           const next: RankAnswer = {
             query: q,
@@ -301,14 +342,18 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
             total: res.total,
           };
           // Remembered only once nothing is on its way to change it: an answer
-          // taken mid-scan is a snapshot of a folder still being indexed.
-          if (settled && !polling && (res.reason ?? "") === "") memo.current.put(q, next);
+          // taken mid-scan is a snapshot of a folder still being indexed. The
+          // decision reads the step we just computed, never the `polling`
+          // state — that state is one commit behind here, so the answer that
+          // ENDS a scan would be the one answer never remembered.
+          if (remembersAnswer(step, res.reason ?? "")) memo.current.put(q, next);
           setAnswer(next);
           setFailure("");
           setPending(false);
         },
         (err: Error) => {
           if (ctl.signal.aborted || err.name === "AbortError") return;
+          inflightKey.current = null;
           // The rows in hand STAY (see the header); the error only reaches the
           // screen when there is nothing else to show.
           setFailure(err.message);
@@ -333,9 +378,32 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // on a modest cadence and repaint. The ordering WILL shift as rows land;
   // what must not happen is the list going empty between repaints, and it
   // cannot — the previous answer stays until the next one replaces it.
+  //
+  // The TICK is what is counted against the ceiling, not the answers. A poll
+  // whose request keeps outlasting the interval produces no answers at all, so
+  // a ceiling counted in answers is one this loop can starve — and the loop
+  // would then outlive the scan it exists to wait for. Counting here bounds it
+  // in wall-clock time whatever the server does.
   useEffect(() => {
     if (!polling || !searching || walkMode) return;
-    const timer = window.setTimeout(() => setPollTick((n) => n + 1), SCAN_POLL_MS);
+    const timer = window.setTimeout(() => {
+      polls.current += 1;
+      const step = nextStep({
+        reason: "scanning",
+        asked: asked.current,
+        sinceAsk: sinceAsk.current,
+        polls: polls.current,
+        covered: covered.current,
+      });
+      if (step === "poll") {
+        setPollTick((n) => n + 1);
+        return;
+      }
+      // Out of patience — the same rule the answer path uses, so there is one
+      // definition of what running out means (listing/index-source).
+      setPolling(false);
+      if (step === "walk") setWalkMode(true);
+    }, SCAN_POLL_MS);
     return () => window.clearTimeout(timer);
   }, [polling, searching, walkMode, pollTick]);
 
@@ -450,16 +518,21 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     // it learns the SOURCE — so a mount-backed folder has its walk running by
     // the time a character is typed, exactly as when focus started the walk
     // directly. It never asks for a scan: focus is not a request for one.
-    const key = fsPath + ":" + pinned;
-    if (probed.current === key) return;
-    probed.current = key;
+    const probeKey = fsPath + ":" + pinned;
+    if (probed.current === probeKey) return;
+    probed.current = probeKey;
+    const epoch = sourceEpoch.current;
     void indexRank(fsPath, "", { limit: 1 }).then(
       (res) => {
+        // Same staleness as the scan ask: a probe issued for the folder you
+        // just left must not pin the one you just opened to the walk.
+        if (sourceEpoch.current !== epoch) return;
         // Through the same decision as a real answer, so there is one place
         // that knows which verdicts mean "walk". `asked: false` keeps a probe
         // from ever counting as the on-demand scan's first look.
         const step = nextStep({ reason: res.reason ?? "", asked: false,
-                                sinceAsk: 0, polls: 0 });
+                                sinceAsk: 0, polls: 0,
+                                covered: res.covered });
         if (step === "walk") setWalkMode(true);
       },
       () => {},
@@ -643,11 +716,17 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // True while an answer for the current query has not arrived yet — the
   // "Searching…" row keys off this, so it has to mean "an answer is still
   // coming", not merely "the deferred value lags".
-  const scanPending = searching && (walkMode ? scanning : pending);
-  // Momentary states: an answer in flight, a deferred value that has not
+  // Two questions, not one (listing/index-source): whether an answer is still
+  // coming, and whether the wait is the momentary kind. A scan landing rows is
+  // the first without being the second.
+  const progress = searchProgress({ searching, walkMode, pending, polling, scanning });
+  const scanPending = progress.answerComing;
+  // Momentary states: a request in flight, a deferred value that has not
   // caught up, or rows ranked against a corpus a generation old. All three get
-  // the heavy dim, which is calibrated for something that clears in a moment.
-  const isStale = deferredStale || scanPending || (walkMode && corpus.stale);
+  // the heavy dim, which is calibrated for something that clears in a moment —
+  // so a scan running for a minute is deliberately NOT one of them; it has the
+  // "indexing…" caveat instead.
+  const isStale = deferredStale || progress.inFlight || (walkMode && corpus.stale);
   // Being a generation behind is NOT momentary: the folder or the index moved
   // and this search deliberately did not follow, and it will stay that way
   // until a real boundary (listing/revalidate). Rows answering a query the

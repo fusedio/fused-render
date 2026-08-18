@@ -135,8 +135,13 @@ export type ListingState =
 // for; `validWalk` in useWalkSearch treats a stale tag as idle, so a dir-watch
 // bump invalidates the cache synchronously WITHOUT itself triggering a
 // re-fetch (fetching is driven by `walkReq` — see useWalkSearch). The
-// component remounts per folder (keyed on fsPath in App), so no path tagging
-// is needed.
+// component is NOT remounted per folder — only the preview pane's embedded
+// listing is keyed on its path (ListingPreviewPane); the top-level one takes
+// `fsPath` as a plain prop and keeps its state across a navigation. Anything
+// that outlives a request therefore has to carry its own tag: `forRefresh`
+// here, and `sourceEpoch` for the replies that outlive an effect
+// (useWalkSearch). An earlier version of this comment claimed the remount, and
+// that claim is why two async paths shipped untagged.
 //
 // `key` names the CONTENT this corpus is: same key ⇒ same entries, whoever
 // asked and however many times. It is not the same claim as `forRefresh`,

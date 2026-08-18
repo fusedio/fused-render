@@ -52,19 +52,28 @@ export interface SourceInput {
   asked: boolean;
   /** Ranked answers received since that ask. */
   sinceAsk: number;
-  /** Polls issued for the current scan. */
+  /** Polls ISSUED for the current scan — ticks, not answers (see below). */
   polls: number;
+  /** Whether the last answer actually covered the folder. */
+  covered: boolean;
 }
 
 /** What the box should do with the answer it just got. */
 export function nextStep(input: SourceInput): SearchStep {
-  const { reason, asked, sinceAsk, polls } = input;
+  const { reason, asked, sinceAsk, polls, covered } = input;
   // Permanently uncoverable, each for its own reason, all one condition here.
   if (reason === "mount" || reason === "package" || reason === "ignored") {
     return "walk";
   }
   if (reason === "scanning") {
-    return polls >= MAX_SCANNING_POLLS ? "answer" : "poll";
+    if (polls < MAX_SCANNING_POLLS) return "poll";
+    // Out of patience. What that means depends on whether the scan ever
+    // produced anything: a COVERED folder has real rows to settle for, while
+    // an uncovered one would settle for `hits: []` — an empty list for a
+    // folder the walk searches fine, which is the same "blame the user's files
+    // for the app's state" the uncovered branch below refuses. A scan of an
+    // uncovered root reports `scanning` too, so this is not a rare corner.
+    return covered ? "answer" : "walk";
   }
   if (reason === "uncovered") {
     if (!asked) return "scan";
@@ -77,4 +86,63 @@ export function nextStep(input: SourceInput): SearchStep {
   // "" — and anything a newer server grows that this build has not heard of:
   // it ANSWERED, and its hits are on screen.
   return "answer";
+}
+
+/**
+ * Whether an answer is worth putting in the session memo.
+ *
+ * Only a settled one for a covered folder. An answer taken while a scan is
+ * running is a snapshot of a folder still being indexed, and serving it back
+ * on a backspace would freeze the very trickle the poll exists to show — which
+ * includes the answer that settles only because the poll ceiling ran out, the
+ * case a `step === "answer"` test alone would get wrong.
+ *
+ * Takes the step and the reason rather than reading the caller's "am I
+ * polling?" state, because that state is one React commit behind at exactly
+ * the moment this is asked: the answer that ENDS a scan is delivered by a
+ * callback whose closure still says a scan is running.
+ */
+export function remembersAnswer(step: SearchStep, reason: RankReason): boolean {
+  return step === "answer" && reason === "";
+}
+
+export interface ProgressInput {
+  searching: boolean;
+  /** The live walk is answering this folder. */
+  walkMode: boolean;
+  /** A ranked request is out. */
+  pending: boolean;
+  /** A scan covering this folder is running and being polled. */
+  polling: boolean;
+  /** The walk's browser-side scoring pass has not published yet. */
+  scanning: boolean;
+}
+
+export interface Progress {
+  /** An answer is still on its way: the "Searching…" row and the spinner. */
+  answerComing: boolean;
+  /** ...and it is a MOMENTARY wait, which is what the heavy dim is for. */
+  inFlight: boolean;
+}
+
+/**
+ * The two different questions the box asks about its own progress.
+ *
+ * They came apart when the index gained an on-demand scan. "Is an answer
+ * coming?" now has two sources — a round trip, and a scan landing rows — and
+ * answering it with the round trip alone is what made an empty first answer
+ * during a scan render as a confident "No matches" for the whole time the scan
+ * was working.
+ *
+ * They must not be merged either. The heavy dim is calibrated for something
+ * that clears in a moment; a scan runs for seconds to minutes, and dimming the
+ * rows for its duration would say "this is about to change" for far longer
+ * than a reader can hold that thought. That state already has its own, quieter
+ * treatment: the "indexing…" caveat.
+ */
+export function searchProgress(input: ProgressInput): Progress {
+  const { searching, walkMode, pending, polling, scanning } = input;
+  if (!searching) return { answerComing: false, inFlight: false };
+  if (walkMode) return { answerComing: scanning, inFlight: scanning };
+  return { answerComing: pending || polling, inFlight: pending };
 }
