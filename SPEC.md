@@ -145,7 +145,7 @@ The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket n
 
 **An unmatched chord is left completely alone** — no `preventDefault`, no state change — so whatever else owns it still works. A matched chord with nothing to act on (an empty selection, an empty clipboard) is likewise left alone rather than swallowed. The only chord that *wants* a secondary modifier is ⌘/Ctrl+Shift+N (new folder), and it takes Shift and nothing else. The table is pure and tested (`listing/shortcut-chord.ts`); the hook around it only wires it to the document and asks whether there is anything to act on.
 
-### Undo/redo covers the ops that are a rename both ways (D330, D331)
+### Undo/redo covers the ops that are a rename both ways (D330, D335)
 
 - **FS-17** **`⌘/Ctrl+Z` (and `⇧⌘/Ctrl+Z`) undo the explorer's RELOCATIONS — a drag-move, a cut-paste, a rename, and the TRASH delete where the bin's destination is one the server named — and nothing else.** All of them are one primitive at the filesystem: they rename a path, their inverse is another rename, it destroys nothing, and applying the inverse twice is the original op, so undo, redo and undo-again all run the same code (`lib/fs-undo`: an op is a list of `{from, to}` absolute-path pairs, never a closure; `UNDO_CAP` = 50 ops; a module-level in-flight guard, because a move can navigate mid-gesture and a guard living in a component would remount to `false`).
   **The trash delete is in the list because it IS a rename, not because the rule was relaxed.** On macOS `_move_to_macos_trash` renames into `~/.Trash/<deduped name>`; on Linux `_move_to_xdg_trash` renames into `$XDG_DATA_HOME/Trash/files/<name>` (defaulting to `~/.local/share`). In both the SERVER picks the destination, so it can report it as **`trashed_to`** on `/api/fs/delete`; the listing records the batch as one `delete` op, so a single `⌘Z` moves the whole selection back out of the bin and `⇧⌘Z` moves it back in. The restore asks for the **exact recorded path with overwrite off**, so a name retaken since the delete is a 409 the toast says out loud rather than a silent restore as "… copy"; an emptied bin is a 404 per pair, reported the same way; a systemic refusal (a read-only destination) stops the batch and leaves the untried pairs undoable.
@@ -174,7 +174,7 @@ The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket n
 | `GET /api/fs/list?path=` | entries with metadata |
 | `GET /api/fs/stat?path=` | single-entry metadata |
 | `GET /api/fs/raw?path=` | streamed bytes, `Range` support (video/audio seek), correct `Content-Type` |
-| `POST /api/fs/trash-move` | `{from, to}` — the reversible half of a trash delete: a rename under `/api/fs/rename`'s guards that also writes or removes the XDG `.trashinfo` sidecar as the entry enters or leaves the trash (FS-17, D331) |
+| `POST /api/fs/trash-move` | `{from, to}` — the reversible half of a trash delete: a rename under `/api/fs/rename`'s guards that also writes or removes the XDG `.trashinfo` sidecar as the entry enters or leaves the trash (FS-17, D335) |
 
 ---
 

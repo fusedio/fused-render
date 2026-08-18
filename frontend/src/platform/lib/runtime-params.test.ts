@@ -499,6 +499,89 @@ describe("runtime params → history", () => {
     expect(ctx.length).toBe(2);
   });
 
+  // ---- removal: `set(k, null)` (the claude template's spent `msg` anchor) ----
+  //
+  // The case neither knob reaches. `set(k, "")` writes `k=`, and `{default: ""}`
+  // can only DROP a write that would have changed nothing — so a param that is
+  // genuinely present and now means nothing had no spelling that took it off the
+  // URL, and every link the reader copied carried the dangling fragment.
+
+  test("a null value removes the key instead of writing it empty", () => {
+    const c = createContext(VIEW + "?session_id=s1&msg=abc");
+    const fused = c.mount();
+    c.gesture();
+    fused.params.set("msg", null, { history: "replace" });
+    c.flushTimers();
+
+    expect(c.url).toBe(VIEW + "?session_id=s1"); // no `msg=` left behind
+    expect(fused.params.get("msg")).toBeUndefined();
+    // `replace` still means replace: spending the visit's push on unwinding a
+    // link the reader followed would leave a Back that re-fires the flare.
+    expect(c.length).toBe(1);
+    expect(c.log.filter((l) => l.startsWith("push"))).toEqual([]);
+  });
+
+  test("removing a key that is already absent writes nothing at all", () => {
+    // Same no-op rule every other write obeys: the URL already says this.
+    const fused = ctx.mount();
+    ctx.gesture();
+    fused.params.set("msg", null, { history: "replace" });
+    ctx.flushTimers();
+
+    expect(ctx.url).toBe(VIEW);
+    expect(ctx.log).toEqual([]);
+    expect(ctx.length).toBe(1);
+  });
+
+  test("a removal coalesces with the writes around it, last one winning", () => {
+    // A removal is a WRITE of the same key (it rides the pending delta), so the
+    // ordering rule cannot have a special case: whichever of set/remove arrives
+    // last is what lands, and an unrelated key in the same burst is untouched.
+    const c = createContext(VIEW + "?msg=abc");
+    const fused = c.mount();
+    c.gesture();
+    fused.params.set("dir", "/a"); // spends the one push
+    fused.params.set("msg", null, { history: "replace" }); // queued
+    fused.params.set("msg", "zzz", { history: "replace" }); // queued after it
+    c.flushTimers();
+    expect(c.url).toBe(VIEW + "?msg=zzz&dir=%2Fa");
+
+    fused.params.set("msg", null, { history: "replace" });
+    c.flushTimers();
+    expect(c.url).toBe(VIEW + "?dir=%2Fa");
+  });
+
+  test("a removal notifies onChange like any other change", () => {
+    const c = createContext(VIEW + "?msg=abc");
+    const fused = c.mount();
+    c.gesture();
+    const seen: Array<string | undefined> = [];
+    fused.params.onChange((p: Record<string, string>) => seen.push(p.msg));
+
+    fused.params.set("msg", null, { history: "replace" });
+    expect(seen).toEqual([undefined]);
+  });
+
+  test("a removal keeps the layout span and refuses a pointless default", () => {
+    const c = createContext(VIEW + "?msg=abc&_layout=(h:a|b(c&d))");
+    const fused = c.mount();
+    c.gesture();
+    // `default` says what an ABSENCE means and a removal is how you produce
+    // one; asking for both is a caller who thinks one of them does something it
+    // does not, so it is a loud error rather than a param that stays behind.
+    expect(() =>
+      fused.params.set("msg", null, { history: "replace", default: "" })
+    ).toThrow(/options\.default is meaningless when removing 'msg'/);
+    // Every other non-string is still refused, and the message now says so.
+    expect(() => fused.params.set("msg", 0 as never)).toThrow(
+      /must be a string or null/
+    );
+
+    fused.params.set("msg", null, { history: "replace" });
+    c.flushTimers();
+    expect(c.url).toBe(VIEW + "?_layout=(h:a|b(c&d))");
+  });
+
   test("onChange fires on Back/Forward, which write nothing at all", () => {
     const fused = ctx.mount();
     ctx.gesture();

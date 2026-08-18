@@ -554,9 +554,16 @@ function ChipPopover({
           {/* The Board's ring, at row scale. `is-ghost` is the one thing the
               Board has no case for: a projected run, dashed because the word
               beside it says "Upcoming" like any other scheduled run and
-              something has to tell the two apart. */}
+              something has to tell the two apart.
+
+              It carries this row's UNREAD too, since 2026-08-18 — a filled centre
+              on a run nobody has opened, hollow once they have — which is the same
+              glyph the List's thread rows and the Board's cards wear, and it
+              replaced a blue dot of the calendar's own that sat after the body.
+              Three views, one mark. No `count`: this is a leaf, and "1 unread"
+              over a dot that already means unread is a caption for nothing. */}
           <span className={"schedule-cal-ring" + (status.projected ? " is-ghost" : "")}>
-            <StatusIcon status={status.column} failed={status.failed} />
+            <StatusIcon status={status.column} failed={status.failed} unread={m.unread} />
           </span>
           <span className="schedule-cal-msg-time">
             {sameDayRow
@@ -564,13 +571,11 @@ function ChipPopover({
               : t.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
           </span>
           <span className="schedule-cal-msg-body">{firstLine(m.body) || "(no prompt)"}</span>
-          {/* role="img" so the dot is legitimately exposed: an aria-label on a
-              role-less span is not reliably announced, and this dot is the ONLY
-              carrier of the fact — unlike the ↻ and the pulse, it duplicates
-              nothing, so it is named rather than hidden. */}
-          {m.unread && (
-            <span className="schedule-cal-msg-unread" role="img" aria-label="Unread" />
-          )}
+          {/* No `.schedule-cal-msg-unread` dot here any more (2026-08-18). It was
+              a 6px accent disc after the body and it was this view's OWN unread
+              vocabulary — the List and the Board said the same thing with a
+              different mark in a different place. The ring above says it for all
+              three now. */}
           {note && (
             <span
               className={

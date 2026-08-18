@@ -167,6 +167,21 @@ def skill_plugin_dir() -> str | None:
     return os.environ.get("FUSED_RENDER_SKILL_PLUGIN_DIR") or None
 
 
+def fused_cli_dir() -> str | None:
+    """The dir holding the `fused` CLI wrapper the server put on the PATH the
+    sessions we spawn inherit, or None when there is no CLI to offer.
+
+    Set by `fusedcli.export_fused_cli_env` (D334) before the server serves.
+    Its presence is the templates' whole answer to "can this session run
+    `fused`?" — the claude template pre-allows `Bash(fused:*)` and mentions
+    the CLI in its prompt exactly when this is set, so a machine without the
+    CLI never gets a prompt promising a command that would fail. Like the
+    skill plugin var, absent means "no server around, or nothing to hand" —
+    the decision arrives here already made.
+    """
+    return os.environ.get("FUSED_RENDER_FUSED_CLI_DIR") or None
+
+
 def _sidecar_subpath(abs_path: str) -> str:
     """Mirrors shell/storage.py:_sidecar_subpath; keep the two in step.
 
