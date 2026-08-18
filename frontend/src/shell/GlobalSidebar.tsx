@@ -45,10 +45,10 @@ const CLAUDE_CONFIG_ICON = (
   </svg>
 );
 
-// The Inbox tray icon lived here. Inbox (/sessions) no longer has a sidebar
-// entry — Tasks does its job now — and the ROUTE is untouched, so anything
-// already open, and any direct link to it, still works. It is simply not
-// advertised any more.
+// The Inbox tray icon lived here. Inbox is GONE, not merely unadvertised
+// (Akshil, 2026-08-18: "why do we have sessions route? i thought we remove
+// sessions.. let's remove this we don't need this") — Tasks supersedes it, and
+// a route nothing links to is a page nobody maintains.
 
 // Stacked disks — the AI Models entry is an inventory of what the Hugging
 // Face cache is storing on this machine, so it reads as storage, not as a chip.
@@ -248,7 +248,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // highlighting both the row and the thing you opened read as two selections.
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
-  const tasksActive = pathname === "/scheduled";
+  const tasksActive = pathname === "/tasks";
 
   // Everything that is not primary nav lives in the bottom menu for now:
   // the former sidebar entries (Config / App Basics), then the settings
@@ -263,7 +263,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   menuEntries.push(
     { href: "/templates", label: "Templates", icon: TEMPLATES_ICON },
     { href: "/mounts", label: "Mounts", icon: MOUNTS_ICON },
-    // No /scheduled entry here on purpose: Tasks is primary nav now (see the
+    // No /tasks entry here on purpose: Tasks is primary nav now (see the
     // rail below). Listing the same route in the menu too would light the Tasks
     // row and the Preferences trigger at once, since `prefsActive` treats every
     // menu href as "you are on one of my pages" — the same double-selection the
@@ -299,7 +299,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   const rail: SidebarRailItem[] = [
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
-    { key: "scheduled", label: "Tasks", icon: SCHEDULED_ICON, href: "/scheduled", active: tasksActive },
+    { key: "tasks", label: "Tasks", icon: SCHEDULED_ICON, href: "/tasks", active: tasksActive },
     {
       key: "preferences",
       label: "Preferences",
@@ -335,12 +335,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             active={homeActive}
           />
           {/* Tasks took Inbox's place as well as its job: the two pages showed
-              the same pile of work from two ends, and the one that survives in
-              the nav is the one that can say when the work runs. Inbox itself is
-              only unadvertised, never removed — /sessions still answers. */}
+              the same pile of work from two ends, and the one that survives is
+              the one that can say when the work runs. Inbox is deleted. */}
           <NavItem
-            href="/scheduled"
-            id="scheduled-link"
+            href="/tasks"
+            id="tasks-link"
             label="Tasks"
             icon={SCHEDULED_ICON}
             active={tasksActive}

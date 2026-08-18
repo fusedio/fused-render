@@ -2,7 +2,7 @@
 and scaffold new ones.
 
 Apps live ONE TO THREE levels under the workspace (``fused_dir()``,
-~/Documents/Fused), found by a bounded recursive walk whose per-level rules are
+~/Fused), found by a bounded recursive walk whose per-level rules are
 written down in ``app_listing.workspace_apps``: A DECLARED PAGE IS WHAT MAKES A
 FOLDER AN APP — its entry is the first non-hidden direct-child ``.html``
 carrying ``<meta name="fused-app">``, the one signal at every depth (D301;

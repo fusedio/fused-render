@@ -61,7 +61,6 @@ from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.selffix import router as selffix_router
-from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.tasks import router as tasks_router
 from fused_render.server.routers.update import router as update_router
@@ -129,6 +128,13 @@ def export_app_env() -> None:
     # ran `claude --help`, and blocking here blocks the socket bind, which the
     # desktop supervisor reads as a server that failed to start.
     skill_plugin.export_skill_plugin_env()
+    # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
+    # script under home_dir()/fused-bin goes on PATH and its dir is published
+    # as one more FUSED_RENDER_* var, so a Claude session can `fused workbench
+    # canvas push` against the same environment the canvases iframe shows.
+    # Filesystem-only, like the skill plugin export above.
+    from fused_render import fusedcli
+    fusedcli.export_fused_cli_env()
     _export_bundled_uv_path()
 
 
@@ -420,7 +426,7 @@ def create_app(start_dir: str) -> FastAPI:
     # probe. Its POSTs mutate, so they carry the D3 X-Fused guard.
     app.include_router(claude_config_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
-    # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
+    # POST /api/clone sparse-clone into ~/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
     from fused_render.deeplink import router as deeplink_router
 
@@ -438,12 +444,12 @@ def create_app(start_dir: str) -> FastAPI:
 
     app.include_router(templates_router)
 
-    # Per-file session restore (LSN-*/_server_session.py), the fs read routes
-    # (stat/conditions/list/walk/raw/events/reveal — _server_fs_read.py), the
-    # fs mutation routes (write/mkdir/delete/rename/copy — _server_fs_mutate.py),
-    # /render (_server_render.py), /api/run (_server_run.py), fused.ai
-    # (_server_ai.py), and /api/export (_server_export.py).
-    app.include_router(session_router)
+    # The fs read routes (stat/conditions/list/walk/raw/events/reveal —
+    # _server_fs_read.py), the fs mutation routes
+    # (write/mkdir/delete/rename/copy — _server_fs_mutate.py), /render
+    # (_server_render.py), /api/run (_server_run.py), fused.ai (_server_ai.py),
+    # and /api/export (_server_export.py). GET/PUT /api/session used to lead
+    # this list; the per-file session restore it served is gone (D329).
     app.include_router(fs_read_router)
     app.include_router(search_router)
     app.include_router(fs_mutate_router)

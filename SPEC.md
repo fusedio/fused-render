@@ -145,6 +145,28 @@ The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket n
 
 **An unmatched chord is left completely alone** — no `preventDefault`, no state change — so whatever else owns it still works. A matched chord with nothing to act on (an empty selection, an empty clipboard) is likewise left alone rather than swallowed. The only chord that *wants* a secondary modifier is ⌘/Ctrl+Shift+N (new folder), and it takes Shift and nothing else. The table is pure and tested (`listing/shortcut-chord.ts`); the hook around it only wires it to the document and asks whether there is anything to act on.
 
+### Undo/redo covers the ops that are a rename both ways (D330, D335)
+
+- **FS-17** **`⌘/Ctrl+Z` (and `⇧⌘/Ctrl+Z`) undo the explorer's RELOCATIONS — a drag-move, a cut-paste, a rename, and the TRASH delete where the bin's destination is one the server named — and nothing else.** All of them are one primitive at the filesystem: they rename a path, their inverse is another rename, it destroys nothing, and applying the inverse twice is the original op, so undo, redo and undo-again all run the same code (`lib/fs-undo`: an op is a list of `{from, to}` absolute-path pairs, never a closure; `UNDO_CAP` = 50 ops; a module-level in-flight guard, because a move can navigate mid-gesture and a guard living in a component would remount to `false`).
+  **The trash delete is in the list because it IS a rename, not because the rule was relaxed.** On macOS `_move_to_macos_trash` renames into `~/.Trash/<deduped name>`; on Linux `_move_to_xdg_trash` renames into `$XDG_DATA_HOME/Trash/files/<name>` (defaulting to `~/.local/share`). In both the SERVER picks the destination, so it can report it as **`trashed_to`** on `/api/fs/delete`; the listing records the batch as one `delete` op, so a single `⌘Z` moves the whole selection back out of the bin and `⇧⌘Z` moves it back in. The restore asks for the **exact recorded path with overwrite off**, so a name retaken since the delete is a 409 the toast says out loud rather than a silent restore as "… copy"; an emptied bin is a 404 per pair, reported the same way; a systemic refusal (a read-only destination) stops the batch and leaves the untried pairs undoable.
+  **RECOVERABLE IS NOT THE SAME PROMISE AS UNDOABLE, and the two are decided by one question: did WE name the destination?** Every desktop platform has an OS-level bin and each has a backend, so a Delete is recoverable everywhere the bin is reachable. It is *undoable* only where the move was a rename to a path the server chose — which is what makes it invertible by another rename. Six cases, and the spec states them rather than letting a reader generalise from macOS:
+
+  | Case | Backend | Recoverable | Undoable (⌘Z) |
+  |---|---|---|---|
+  | macOS, local FS | `os.rename` → `~/.Trash` | ✓ | **✓** |
+  | macOS, cross-device | `osascript` → Finder | ✓ (in Finder) | ✗ |
+  | Linux, same device | XDG trash (`files/` + `info/` sidecar) | ✓ | **✓** |
+  | Linux, cross-device (`EXDEV`) | none — **501**, confirm-then-hard-delete | ✗ | ✗ |
+  | Windows | Recycle Bin (`SHFileOperationW`, `FOF_ALLOWUNDO`) | ✓ (in Explorer) | ✗ |
+  | Remote mount-backed file, any platform | none — **501**, confirm-then-hard-delete | ✗ | ✗ |
+
+  **The two ✗-but-recoverable rows are not exceptions; they are the same rule.** The macOS Finder fallback and the Windows Recycle Bin both let the OS choose where the entry goes — the bin stores an item as `$R…` beside a `$I…` metadata file under `C:\$Recycle.Bin\<SID>\` and restores it through the shell, not by a path rename — so there is no destination to record, and **a destination we cannot name is never recorded as an undo pair**. Guessing one would aim an undo at a path nothing is at.
+  **The 501 rows really are irreversible, and keep the confirm dialog that says so.** A remote mount is refused because lifting the file off the mount would read the whole thing through the kernel; a Linux cross-device delete is refused for the same reason inverted — we will **not** copy the bytes across the boundary (no `shutil.move` fallback, and no per-volume `.Trash-$uid` directories), because a delete must not become the most expensive operation in the app. Both answer the same **501 `trash unsupported`** the client already routes into its confirm-then-hard-delete flow; the Linux one is raised *after* an attempt that moved nothing, so the file is still in place when the dialog appears. Since every desktop now has a backend, that dialog has stopped being the ordinary Windows/Linux delete and is what it always claimed to be: the irreversible case.
+  **`FOF_ALLOWUNDO` still erases permanently in cases nobody can detect up front** — UNC/network shares, most removable and FAT-formatted volumes, and items over the bin's quota. The delete succeeds and is reported `trashed: true` regardless, because the shell did perform the recoverable delete it was asked for and the app cannot promise what the volume does with it. Stated here rather than papered over.
+  **Undo/redo of a delete goes through ONE endpoint, `POST /api/fs/trash-move {from, to}`, not through `/api/fs/rename`.** It delegates to the rename handler — the same X-Fused guard, absolute-path, snapshot, mount, readonly, 404 and 409 contract, overwrite always off — and adds the only part of a trash that is *not* symmetric: the XDG **`.trashinfo` sidecar**, written when an entry moves into `Trash/files` and removed when it moves back out (both, for a move within the trash). That is server-side bookkeeping, so it lives on the server side of the wire: `applyFsOp` branches on `op.kind` to pick the primitive (`trashMove` for `"delete"`, `renameEntry` otherwise) **and that is its only branch** — the pairs stay plain absolute paths and `invertFsOp`, the reversal semantics, the epoch, the in-flight guard and `UNDO_CAP` know nothing about trash. Restoring with a plain rename would leave the sidecar behind and the bin still claiming to hold an entry that had gone home. **The sidecar branch is a security boundary**: it fires only for a path whose *parent* resolves (`realpath`) to the server-computed trash `files` directory, with the info name taken as a `basename`, so no caller-supplied text can steer the endpoint into unlinking an arbitrary file.
+  **Undoability is additionally session-scoped**: the stack is in memory, so a reload — or an eviction past `UNDO_CAP` — leaves the entry sitting in the bin for the user to drag out through the OS. On macOS the rename also writes none of Finder's own put-back record (Finder keeps that in the Trash's private `.DS_Store`, not on the item), so Finder's "Put Back" is not a second way home for what this app trashed. Recents loses the entry in every case (`notePathDeleted`) and the undo does not re-note it: the file returns to the filesystem, its place in the recents list does not.
+  **The HARD delete is NOT undoable and its dialog keeps saying so** ("This can't be undone"): its inverse is not a rename, it is the bytes back. Same exclusion, same reason, for the explorer's other asymmetric ops — **copy-paste, duplicate, new file/folder, compress**, whose inverse would be a delete: undo would destroy data on the user's behalf and no redo could reproduce what was lost. A stack whose every entry is one primitive is the reason this can be trusted, not a limitation waiting to be grown out of.
+
 ### Server FS API (shape, not final contract)
 
 | Endpoint | Purpose |
@@ -152,6 +174,7 @@ The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket n
 | `GET /api/fs/list?path=` | entries with metadata |
 | `GET /api/fs/stat?path=` | single-entry metadata |
 | `GET /api/fs/raw?path=` | streamed bytes, `Range` support (video/audio seek), correct `Content-Type` |
+| `POST /api/fs/trash-move` | `{from, to}` — the reversible half of a trash delete: a rename under `/api/fs/rename`'s guards that also writes or removes the XDG `.trashinfo` sidecar as the entry enters or leaves the trash (FS-17, D335) |
 
 ---
 
@@ -1287,87 +1310,64 @@ in-app affordance to gate.
 
 ---
 
-## 21. Session Restore — Per-File Last Params (D84)
+## 21. Session Restore — Per-File Last Params (D84) — **REMOVED (D329)**
 
-Goal: opening a file the way most opens happen — a listing click, a Finder/DMG
-double-click, the root redirect — should not lose whatever params you last had
-on it. A **file** (never a directory, never an embed-mode pane) remembers its
-last shell query in the same `.html.json` sidecar the `claude` chat template
-(§7) and bookmark history (SB-7) already use.
+**The per-file session sidecar is gone and the section is kept only as a
+tombstone, so the LSN-* ids other sections still cite resolve to an explanation
+rather than to nothing.** A viewed **file** used to remember its last shell query
+as a `lastSession: {search, updated_at}` key in the same sidecar the `claude`
+chat template (§7) and bookmark history (SB-7) use, so that opening it the way
+most opens happen — a listing click, a Finder/DMG double-click, the root redirect
+— replayed the params you last had on it. `GET`/`PUT /api/session`
+(`server/session.py`) read and wrote it; the frontend (`platform/lib/session.ts`,
+wired into `App.tsx`'s `StatView`) restored via `history.replaceState` before the
+preview mounted and held the preview until that decision was made, then tracked
+qualifying param changes back with a 400 ms debounced fire-and-forget `PUT`.
+Directories and embed panes never took part (**LSN-6** — the posture RC-9 still
+cites for its own confirmed-file gate), a bare open replayed while a non-empty
+query won outright (**LSN-4**/**LSN-5**), a `_mode`-only query never *started* a
+session but updated one (**LSN-3**), and dropping params back to empty left the
+stored query in place for a later bare open to re-apply (**LSN-11**, an accepted
+quirk).
 
-- **LSN-1** A viewed file's last URL params are stored as `lastSession` in its
-  `<file>.json` sidecar, sibling to the claude template's `claudeSessions` key
-  and SB-7's `bookmarkHistory`.
-- **LSN-2** `lastSession = {search, updated_at}` — `search` is the shell query
-  string verbatim, no leading `?` (same literal-URL posture as bookmarks, SB-2).
-- **LSN-3** Tracking upserts when the shell query has a param **other than
-  `_mode` and other than the never-persisted params of LSN-12**, or when a
-  `lastSession` already exists for the file (so once a session is going, a later
-  `_mode`-only change is remembered too); a query that is empty, or `_mode`-only
-  with no prior session, never starts one. *`_side` used to qualify, which is the
-  bug D326 records: opening the file preview's companion sidebar STARTED that
-  file's session and the sidecar replayed `_side` on every later bare open.*
-- **LSN-4** Opening a file with an **empty** shell query restores `lastSession`
-  (if present) via `history.replaceState` before the preview mounts.
-- **LSN-5** Opening a file with a **non-empty** query (bookmark, hand-typed,
-  refresh) — those params win, no restore — and, if qualifying (LSN-3), become
-  the new `lastSession`.
-- **LSN-6** Directories and embed-mode panes (panel/tab, D72) neither track
-  nor restore — layout mode already owns pane params.
-- **LSN-7** Persistence is `GET`/`PUT /api/session` (`fused_render/server.py`);
-  `PUT` carries the `X-Fused` guard (D36), `GET` is unguarded (read-only).
-- **LSN-8** Sidecar writes read-merge-write the whole dict, so `claudeSessions`,
-  `bookmarkHistory`, and `lastSession` never clobber one another (last-write-wins
-  on a true simultaneous write — D3).
-- **LSN-9** The preview is held (a brief loading state) until the restore
-  decision resolves — no flash of default params before the restored ones apply.
-- **LSN-10** Tracking writes are debounced (400 ms) and fire-and-forget; a
-  sidecar read/write failure never blocks the view — it just renders bare.
-- **LSN-11** Dropping params back to empty/`_mode`-only leaves the stored
-  `lastSession` untouched — a later bare open re-applies it. Accepted quirk,
-  not a bug.
-- **LSN-12** **SOME PARAMS MAY NEVER REACH A SIDECAR, and `_side` is the first**
-  (D326). The file preview's companion sidebar — whether it is up and which
-  companion it shows — is **session-only by policy**: it opens at its default on
-  every page load and a refresh is the way back from any change to it (FS-13's
-  posture, now stated for the file surface too). A sidecar that records `_side`
-  breaks exactly that, because **a refresh is WHEN the sidecar is replayed**: one
-  file then opens with a sidebar forever while its neighbour never does, with no
-  way back a user can find. So it is **stripped on WRITE and ignored on READ** —
-  the frontend drops it before the `PUT` (`platform/lib/session-params.ts`, which
-  is also what makes a `_side`-only URL read as a *bare* one and fire no round trip
-  at all) and the server is the authority (`_strip_side`, run *before* the LSN-3
-  gate). Both halves, because stripping alone would leave the sidecars already on
-  disk replaying a stale `_side` until each file's next qualifying change, while
-  ignoring alone would keep writing a key we then have to keep ignoring; together
-  an old sidecar is inert on the next read and clean on the next write, so it
-  **self-heals with no migration pass**. *Refusing the write (a 400, or a skip) was
-  the alternative and is worse: `_side` arrives alongside perfectly good params, so
-  refusing would discard a real session update to punish one key the caller never
-  chose to send.* The strip is **textual**, never `parse_qsl` + `urlencode`, because
-  LSN-2 says the stored query is the shell's verbatim and a round trip would rewrite
-  what it keeps (`q=a+b%2Cc`, `stretch=2,1471`). A stored query that was **nothing
-  but** never-persisted params reads as **no session at all**, not as
-  `{"search": ""}` — an empty session is still a `lastSession` dict, which is what
-  LSN-3 keys "a session already exists" off, and **one reader** (`_stored_session`)
-  serves both the `GET` and that gate so the two cannot disagree about whether a
-  file has a session.
-  - **The RESTORE GATE reads the stripped query too** (LSN-4/5): "opened with an
-    empty query" means empty *of session params*, so a url carrying nothing but
-    `?_side=off` — which a close click writes, where it used to delete the param —
-    is still a bare open and still gets its replay. And because the restore replaces
-    the WHOLE query, the LIVE url's omitted params are carried through the write
-    (`restoredSearch`): otherwise a replay would silently reopen a sidebar the user
-    had just shut. Nothing to replay writes nothing at all, so a `_side`-only
-    sidecar cannot reopen it by replacing the query with an empty one either.
-  - **RECENTS strips the same params** (§29): it captures `currentUrl()` verbatim on
-    every url change and lands on disk, so without this every close of the sidebar
-    was persisted and every later open from the Recents list came up shut — the
-    preference simply moved house. **BOOKMARKS deliberately do NOT strip**: SB-2 says
-    a bookmark captures the URL verbatim and it is an explicit "save this view"
-    gesture, which is how `_mode`, sort and a chosen `_side` companion all end up in
-    one. Same param, opposite answer, because one capture is chosen and the other is
-    a side effect.
+**What was removed with it:** `server/session.py` entirely (its
+`_is_file_mount_safe` mount-safety helper moved to `server/common.py`, where
+`/render` — now its only caller — reads it), both routes, `platform/lib/session.ts`,
+`getSession`/`putSession`/`LastSession` in `platform/lib/api.ts`, the `writable`
+gate and the `ready` preview hold in `StatView`, and `restoredSearch` in
+`platform/lib/session-params.ts`. **No migration:** a `lastSession` key already on
+disk is simply never read or written again, and sits inert beside the sidecar's
+live keys (`claudeSessions`, `bookmarkHistory`, `comments`, `revertStash`,
+`slides`, `docs`, `excel`, `latex`, `usd`), which are untouched by this — the
+sidecar file itself is not going anywhere.
+
+**ONE RULE SURVIVES AND IS STILL BINDING — LSN-12's never-persisted params, now
+owned by RECENTS.**
+
+- **LSN-12** **SOME PARAMS MAY NEVER BE PERSISTED, and `_side` is the first**
+  (D326). The companion sidebar — whether it is up and which companion it shows —
+  is **session-only by policy**: it opens at its default on every page load and a
+  refresh is the way back from any change to it (FS-13's posture, stated for the
+  file surface too). The rule was written because a sidecar that recorded `_side`
+  broke exactly that — **a refresh is WHEN a sidecar is replayed**, so one file
+  opened with a sidebar forever while its neighbour never did, with no way back a
+  user could find. With the sidecar gone, the surviving consumer is the **RECENTS
+  store** (§29): it captures `currentUrl()` verbatim on every url change and lands
+  on disk, so without the strip every close of the sidebar was persisted and every
+  later open from the Recents list came up shut — the preference simply moved
+  house. A recents row must hold what the FILE was, not what the chrome around it
+  was doing. **BOOKMARKS deliberately do NOT strip**: SB-2 says a bookmark captures
+  the URL verbatim and it is an explicit "save this view" gesture, which is how
+  `_mode`, sort and a chosen `_side` companion all end up in one. Same param,
+  opposite answer, because one capture is chosen and the other is a side effect.
+  The strip is **textual**, never `parse_qsl` + `urlencode`, because a recorded
+  query is the shell's verbatim and a round trip would rewrite what it keeps
+  (`q=a+b%2Cc`, `stretch=2,1471`). It now has **one implementation**
+  (`platform/lib/session-params.ts`'s `stripSessionParams`) rather than two halves
+  that had to agree: the server's `_strip_side` went with `server/session.py`, and
+  `recents.py` stores what it is given. *The stripped-on-write-AND-ignored-on-read
+  pairing this clause used to specify, and the self-healing it bought for sidecars
+  already on disk, went with the sidecar — there is no longer a read side.*
 
 ## 22. Explorer Search — Streamed Recursive Walk (M14)
 
@@ -1889,7 +1889,7 @@ A shareable link that lands a GitHub repository subdirectory in fused-render:
 — the original GitHub tree URL, verbatim, as the `git` query param (a link
 author copies the GitHub URL and prefixes it). Clicking it launches (or
 reuses) the app, shows a confirm page, sparse-clones the subdirectory into
-`~/Documents/Fused/<subpath basename>`, and opens the folder's `index.html`
+`~/Fused/<subpath basename>`, and opens the folder's `index.html`
 when one exists, else the folder itself.
 
 - **DL-1** Link shape: `fused-render://open?git=<github URL>`. The action
@@ -1927,7 +1927,8 @@ when one exists, else the folder itself.
   route): `git clone --filter=blob:none --sparse` + `sparse-checkout set
   <subpath>` (plain filtered clone for repo-root links) using the user's own
   git — public repos clone anonymously, private repos ride the user's
-  existing credentials. Destination is `~/Documents/Fused/<subpath basename>`
+  existing credentials. Destination is `~/Fused/<subpath basename>` (the workspace, moved
+  out of the iCloud-synced `~/Documents` by D337)
   (repo name for root links); the repo root, `.git` included, lives at the
   destination, so the opened view is the nested `<dest>/<subpath>` path. A
   failed clone removes the partial destination (retryable). Git runs
@@ -2110,8 +2111,9 @@ lists the last files opened in the app, each carrying the params it last had.
   otherwise (`recorded: false`) — the client stays dumb about the target's
   kind.
 - **RC-9** Recording is fire-and-forget (a recents failure never affects the
-  view being opened); the recording hook rides the StatView seam beside
-  session tracking (same confirmed-file gate, LSN-6 posture).
+  view being opened); the recording hook rides the StatView seam it used to
+  share with session tracking, and keeps that hook's confirmed-file gate (LSN-6
+  posture, the surviving half of a §21 that is now a tombstone).
 - **RC-10** The section is hidden entirely while there are no entries.
 - **RC-11** **Data is MRU, display is stable slots.** The store stays strict
   MRU (RC-6), but the visible top-3 must never move under the user's own
@@ -2373,7 +2375,7 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   "last file by name" as "newest records" — not the store walk (CL-12), and not
   any bounded newest-first probe a future gate does (CL-11), which must order by
   **mtime**: on reverse name order its whole window can be stale same-day files. Not the `<file>.json`
-  sidecar (§21, D82–D84): every writer there does a whole-file
+  sidecar (SB-7, §7, D82–D84): every writer there does a whole-file
   read-merge-write, which at call volume is O(n²) plus a lost-update race —
   the sidecar is right for low-frequency history, wrong for a firehose. Not
   the app log (`logs.py`): that file is disposable by design (D68) and
@@ -7180,7 +7182,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
 
 ---
 
-## 43. Self-Fix — A Claude Session on This Installation (D329)
+## 43. Self-Fix — A Claude Session on This Installation (D341)
 
 Goal: when the app fails on a machine we cannot see, the user has one more
 option than "dismiss it and hope" — they can ask Claude to look at the failure

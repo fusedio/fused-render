@@ -214,6 +214,32 @@ export const ICON_SKIP = icon(<><polygon points="5 4 15 12 5 20 5 4" /><line x1=
 export const ICON_CANCEL = icon(<><circle cx="12" cy="12" r="9" /><path d="M8 8l8 8M16 8l-8 8" /></>);
 export const ICON_NOTES = icon(<><line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="14" y2="17" /></>);
 export const ICON_RESTORE = icon(<><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /></>);
+// The three views, as marks — the List / Board / Calendar switcher in
+// Scheduled.tsx. They live here with the rest of the page's vocabulary rather
+// than in that file because this is where `icon()` is, and a second copy of
+// that helper is how two icon sizes start. lucide `list`, `columns-3` and
+// `calendar`, unmodified: the switcher is the first control a person reads on
+// this page, so it should wear the shapes they already know from every other
+// board and calendar they use rather than bespoke ones.
+//
+// ICON_NOTES above is three lines too, and stays a separate glyph: it means
+// "this run has a note", and a mark that means two things on one page means
+// neither. The list icon carries the leading dots that one does not.
+export const ICON_VIEW_LIST = icon(
+  <><line x1="9" y1="6" x2="20" y2="6" /><line x1="9" y1="12" x2="20" y2="12" />
+    <line x1="9" y1="18" x2="20" y2="18" /><line x1="4" y1="6" x2="4.01" y2="6" />
+    <line x1="4" y1="12" x2="4.01" y2="12" /><line x1="4" y1="18" x2="4.01" y2="18" /></>,
+);
+export const ICON_VIEW_BOARD = icon(
+  <><rect x="3" y="3" width="18" height="18" rx="2" />
+    <line x1="9" y1="3" x2="9" y2="21" /><line x1="15" y1="3" x2="15" y2="21" /></>,
+);
+export const ICON_VIEW_CALENDAR = icon(
+  <><rect x="3" y="4" width="18" height="17" rx="2" />
+    <line x1="3" y1="10" x2="21" y2="10" /><line x1="8" y1="2" x2="8" y2="6" />
+    <line x1="16" y1="2" x2="16" y2="6" /></>,
+);
+
 export const ICON_INBOX = icon(<><path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></>);
 // Run now, and the word for doing it AGAIN. Two glyphs rather than one, for the
 // reason the archive pair is two: a person looking at a task that broke has to
@@ -554,9 +580,16 @@ function ChipPopover({
           {/* The Board's ring, at row scale. `is-ghost` is the one thing the
               Board has no case for: a projected run, dashed because the word
               beside it says "Upcoming" like any other scheduled run and
-              something has to tell the two apart. */}
+              something has to tell the two apart.
+
+              It carries this row's UNREAD too, since 2026-08-18 — a filled centre
+              on a run nobody has opened, hollow once they have — which is the same
+              glyph the List's thread rows and the Board's cards wear, and it
+              replaced a blue dot of the calendar's own that sat after the body.
+              Three views, one mark. No `count`: this is a leaf, and "1 unread"
+              over a dot that already means unread is a caption for nothing. */}
           <span className={"schedule-cal-ring" + (status.projected ? " is-ghost" : "")}>
-            <StatusIcon status={status.column} failed={status.failed} />
+            <StatusIcon status={status.column} failed={status.failed} unread={m.unread} />
           </span>
           <span className="schedule-cal-msg-time">
             {sameDayRow
@@ -564,13 +597,11 @@ function ChipPopover({
               : t.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
           </span>
           <span className="schedule-cal-msg-body">{firstLine(m.body) || "(no prompt)"}</span>
-          {/* role="img" so the dot is legitimately exposed: an aria-label on a
-              role-less span is not reliably announced, and this dot is the ONLY
-              carrier of the fact — unlike the ↻ and the pulse, it duplicates
-              nothing, so it is named rather than hidden. */}
-          {m.unread && (
-            <span className="schedule-cal-msg-unread" role="img" aria-label="Unread" />
-          )}
+          {/* No `.schedule-cal-msg-unread` dot here any more (2026-08-18). It was
+              a 6px accent disc after the body and it was this view's OWN unread
+              vocabulary — the List and the Board said the same thing with a
+              different mark in a different place. The ring above says it for all
+              three now. */}
           {note && (
             <span
               className={

@@ -33,7 +33,7 @@ def api_config(
     config = {
         "start_dir": start_dir,
         "home": os.path.expanduser("~"),
-        # The Fused workspace dir (~/Documents/Fused, D81) — the sidebar's
+        # The Fused workspace dir (~/Fused, D81) — the sidebar's
         # "Fused" entry navigates here. Path only; the dir is created + seeded
         # at the process entry points (cli/app), not on this read.
         "fused_dir": fused_dir(),

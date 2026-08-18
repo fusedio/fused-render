@@ -6,7 +6,7 @@ app is a REAL GET, and if `routers/shell.py` has no entry for that path it 404s.
 
 That asymmetry is what makes the failure so easy to ship: the page works
 perfectly for the person who built it (they always arrive by clicking) and is
-broken for everyone who reloads. `/scheduled` shipped exactly that way and was
+broken for everyone who reloads. `/tasks` (as `/scheduled`) shipped exactly that way and was
 found by hand.
 
 So the list is DERIVED rather than restated. The shell's own route table is the
@@ -53,7 +53,7 @@ def test_the_shell_actually_declares_routes():
     file would silently assert nothing at all."""
     routes = shell_routes()
     assert len(routes) >= 8, routes
-    assert "/scheduled" in routes, "the page this test was written for"
+    assert "/tasks" in routes, "the page this test was written for"
     assert "/mounts" in routes
 
 

@@ -1,7 +1,7 @@
 /* -- Tasks page: the List accordion ------------------------------------------
    shell/ScheduleTaskViews.tsx. Everything the Tasks page ADDS to the vocabulary
    styles/schedule.css already established — the accordion node, the thread
-   rows, the TASK-n/MSG-n id chips, the unread dot — lives here. The shared
+   rows, the TASK-n/MSG-n id chips — lives here. The shared
    pieces (the status ring, the live ping, the folder chip, the board's lanes,
    cards and rails, the filter popover) are still schedule.css's: the three
    views are one page and must not drift into three dialects.
@@ -58,13 +58,14 @@
    under the task it belongs to by the width of a whole mark rather than by a
    number someone liked.
 
-   Two marks have left the rail, and both for the same reason. The task row's
-   unread COUNT led it first, and a number at the very start of a row made the
-   messages outrank the task they belong to; then the message row's unread DOT was
-   found doing the identical thing one indent in, which also left the thread
-   reading as a different dialect from the row above it (Akshil, 2026-08-17). Both
-   trail their titles now, and by the end of that day they were one mark rather than
-   two — `.tasks-dot`, the count deleted.
+   Two marks left the rail, and both for the same reason. The task row's unread
+   COUNT led it first, and a number at the very start of a row made the messages
+   outrank the task they belong to; then the message row's unread DOT was found
+   doing the identical thing one indent in, which also left the thread reading as a
+   different dialect from the row above it (Akshil, 2026-08-17). Both trailed their
+   titles after that, then became one dot rather than two, and on 2026-08-18 that
+   dot went as well — read-state is the RING's shape now, so the only mark left in
+   either column is the ring the column was built around.
 
    The dot's departure is why `--tasks-msg-ring-x` is written down. The message
    row's ring used to be pushed into its column by the empty slot the dot reserved
@@ -75,9 +76,17 @@
    THAT — never typed. Retune any part and every indent moves together; hand-tune
    one and they part company, which is the whole bug. */
 .tasks-node {
-  --tasks-row-pad: 12px; /* the task row's left padding */
+  --tasks-row-pad: 14px; /* the task row's left padding */
+  /* The vertical half, named because both rows now state it and it is the whole
+     of "these rows can breathe" (§3, 2026-08-18: the list felt crowded). 7px and
+     5px gave a 13px title 27px of line to sit in; 10px and 8px give it 33px, and
+     a message row 29px. Deliberately not more: a task list is scanned down, and
+     past about 36px a row stops reading as one line of a column and starts
+     reading as a card, which is the Board's job. */
+  --tasks-row-pad-y: 10px;
+  --tasks-msg-pad-y: 8px;
   --tasks-caret-w: 16px; /* the disclosure gutter, OUTSIDE the rail */
-  --tasks-row-gap: 8px; /* the flex gap every row here uses */
+  --tasks-row-gap: 10px; /* the flex gap every row here uses */
   --tasks-rail-w: 16px; /* the status ring's width — what a rail slot is sized to */
   --tasks-msg-indent: 13px; /* a message row's own left padding */
   --tasks-rail-x: calc(
@@ -93,13 +102,44 @@
   display: flex;
   align-items: center;
   gap: var(--tasks-row-gap);
-  padding: 7px var(--tasks-row-pad);
+  padding: var(--tasks-row-pad-y) var(--tasks-row-pad);
   font-size: 13px;
   cursor: pointer;
   transition: background-color 0.08s ease;
+  /* What `.tasks-rowlink` below is measured against. The row's navigation is a
+     real <a> stretched over the whole row rather than a click handler on this
+     div, so ⌘-click, middle click and "Open in new tab" are the browser's job
+     and not this page's. */
+  position: relative;
 }
 
 .tasks-row:hover {
+  background: var(--row-bg-hover);
+}
+
+/* WHERE THE READER JUST WAS. The row whose conversation was last opened from
+   this list keeps a mark while the page is away and wears it again on the way
+   back (ScheduleTaskViews `selected`, stored in the List's sessionStorage memory
+   beside the scroll offset and the open rows).
+
+   THE SAME FILL AS HOVER, and nothing else. The first cut used
+   `--row-bg-active` plus a 2px accent rule down the left — the app's louder
+   "this is the current row" — and on a page whose accent is a bright lime that
+   made one row in ninety look selected the way a dialog's default button looks
+   selected: an olive-tinted plate with a yellow edge, shouting a fact that only
+   needs to be findable (Akshil, screenshot, 2026-08-18). A returning reader is
+   looking for "which one did I just read", and the quietest possible answer is
+   enough to find it.
+
+   Hover and selected therefore look identical, which is fine and was asked for:
+   only one row can be hovered, the pointer is usually nowhere near the list
+   after a page change, and if the two ever coincide the row is both — there is
+   no fact being hidden.
+
+   Stated after the hover rule anyway, so the fill does not blink off when the
+   pointer leaves a selected row. */
+.tasks-row.is-selected,
+.tasks-row.is-selected:hover {
   background: var(--row-bg-hover);
 }
 
@@ -116,27 +156,161 @@
   background: transparent;
 }
 
-/* An open task keeps a tint under its header so the thread beneath it reads as
-   belonging to that row rather than floating between two. */
-.tasks-row.is-open {
-  background: rgba(var(--tint), 0.04);
-}
+/* NO TINT ON AN OPEN TASK. It used to keep `rgba(var(--tint), 0.04)` under its
+   header, on the argument that the thread beneath needed to read as belonging to
+   that row rather than floating between two. In a long list that argument loses
+   to what it costs: an expanded task became a darker block among its neighbours,
+   which reads as a state the row is IN — selected, active, different — rather
+   than as one that is merely open (Akshil, screenshot, 2026-08-18).
 
-.tasks-caret {
+   The belonging was never carried by the tint anyway. The chevron says the row
+   is open, and the thread's rows are indented a whole ring slot to the right of
+   their task's (see the geometry block at the top of this file) — a structural
+   answer that survives at a glance and in a screenshot, where a 4% wash does
+   not. One background for every row in the list, and expansion is a shape. */
+
+/* THE DISCLOSURE, AND ITS HITBOX — which is much bigger than it looks, on
+   purpose (2026-08-18).
+
+   The chevron is the ONLY way to expand a row now (the row's own press opens the
+   conversation), so a 16px glyph became a control a person has to aim at. It
+   still LOOKS like a 16px glyph in exactly the same place: the padding below
+   grows the hit area up to the row's full height and left to the row's own
+   edge, and the negative margins take that growth straight back out of the
+   layout, so the element still contributes exactly `--tasks-caret-w` to the flex
+   row and every rail measured from it (see the geometry block at the top) is
+   untouched. `content-box` is what makes that true — `flex-basis` then sizes the
+   CONTENT box and the padding rides outside it.
+
+   That growth is applied to `button.tasks-caret` and not here, because this
+   selector also matches the placeholder span on leaf rows — see the note on that
+   rule for why an enlarged placeholder is a bug and not a bigger target.
+
+   Written twice, `.prefs-section` scope included, for house rule 2 at the top of
+   this file: `.prefs-section button` (0,1,1) repaints any unarmoured button on
+   this page with a bordered pill and outranks a bare `.tasks-caret` (0,1,0), so
+   the chevron would come up padded, boxed and left-aligned — and would grow a
+   pill on hover — the moment it stopped being a span. Same treatment `.tasks-act`
+   already gets. */
+.tasks-caret,
+.prefs-section .tasks-caret {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  box-sizing: content-box;
   width: var(--tasks-caret-w);
   height: var(--tasks-caret-w);
   flex: 0 0 var(--tasks-caret-w);
   color: var(--fg-muted);
+  background: none;
+  border: 0;
+}
+
+/* Only the expandable row's caret is a real button; the rest is an empty box
+   holding the gutter open (see the note at its call site).
+
+   THE ENLARGED HIT ZONE AND THE STACKING LIVE HERE, ON THE BUTTON ONLY, and that
+   placement is the whole point of splitting this rule (bugbot, 2026-08-18). They
+   used to sit on the bare `.tasks-caret` above, which is also the placeholder
+   `<span>` on every leaf row — so on a row with nothing to expand, an inert span
+   was painted over the stretched `.tasks-rowlink` at the row's leading edge,
+   full row height and out to the row's own padding. Clicks there hit markup that
+   does nothing: the gutter of a one-message row was simply dead, while the row
+   still showed a pointer cursor and still opened the conversation everywhere
+   else. A placeholder must hold space and nothing more, so it gets no padding, no
+   negative margins and no `z-index`, and the rowlink underneath collects the
+   press like it does on the rest of the row.
+
+   The pair of padding and margin cancels exactly: padding-left `--tasks-row-pad`
+   against margin-left `-(--tasks-row-pad)`, padding-right half a gap against the
+   same negative, and `--tasks-row-pad-y` of vertical padding against the same
+   negative — the row's OWN vertical padding, so the zone is the row's full
+   height and no taller. `content-box` above is what makes that true —
+   `flex-basis` sizes the CONTENT box, so both the padded button and the bare
+   span still contribute exactly `--tasks-caret-w` to the flex row and the rail
+   measured from it never moves.
+
+   THE VERTICAL PAIR IS THE TOKEN, NOT A NUMBER (bugbot, 2026-08-18). It was
+   written as a literal 7px, which was the row's vertical padding on the day it
+   was written; the rows-polish pass then moved that padding into
+   `--tasks-row-pad-y` and raised it to 10px to let the list breathe, and this
+   rule did not follow. The zone came up 3px short at the top and 3px at the
+   bottom, so the outermost strips of the gutter — exactly where a pointer
+   travelling down a column of chevrons lands — fell through to the row link and
+   opened the conversation instead of expanding the row. Two zones that are
+   meant to tile a row cannot each state the row's height separately. */
+button.tasks-caret,
+.prefs-section button.tasks-caret {
+  cursor: pointer;
+  align-self: center;
+  appearance: none;
+  -webkit-appearance: none;
+  padding: var(--tasks-row-pad-y) calc(var(--tasks-row-gap) / 2)
+    var(--tasks-row-pad-y) var(--tasks-row-pad);
+  margin: calc(var(--tasks-row-pad-y) * -1) calc(var(--tasks-row-gap) / -2)
+    calc(var(--tasks-row-pad-y) * -1) calc(var(--tasks-row-pad) * -1);
+  /* Above the stretched row link, so the leading gutter EXPANDS and everything
+     else NAVIGATES — two zones, no overlap a person could land in by accident. */
+  position: relative;
+  z-index: 2;
+}
+
+/* NO HOVER SKIN. `.prefs-section button:hover` fills and outlines every button on
+   this page, which on a 16px chevron reads as a second control appearing under
+   the pointer — and the row's own hover tint is already the feedback. The zone is
+   felt, not seen: that is the whole design of it. */
+.prefs-section button.tasks-caret:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
+}
+
+/* The rotation is on the GLYPH, not on the button: the button's box is now the
+   whole hit zone, and rotating that would swing the chevron around the zone's
+   centre instead of its own and slide it visibly left. */
+.tasks-caret-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   /* transform, not `all`: the row's background is transitioning too, and one
      rule owning both smears the caret on hover. */
   transition: transform 0.12s ease;
 }
 
-.tasks-caret.is-open {
+.tasks-caret-glyph.is-open {
   transform: rotate(90deg);
+}
+
+/* THE ROW'S NAVIGATION, as a real link stretched over the row.
+
+   Invisible and empty — it carries no ink, only the href, the tab stop and the
+   accessible name — so the row's own children are what a reader sees and this is
+   what a reader presses. It sits UNDER the caret and the hover actions (both
+   `z-index: 2`), which is the whole zoning rule: the leading gutter expands, the
+   action buttons act, and every other pixel of the row opens the conversation.
+
+   `z-index: 1` rather than 0, deliberately: the status ring is itself positioned
+   (it hangs an `::after` centre dot off itself) and comes LATER in the row, so an
+   auto-stacked link would paint under it and leave a 16px hole in the middle of
+   the row where the click did nothing.
+
+   Why a link at all: ⌘-click, middle click, and the context menu's "Open in new
+   tab" are then the browser's behaviour rather than something this page has to
+   reimplement — and the one thing the click handler does is stand aside when the
+   press was modified (tasks-lib.opensElsewhere). */
+.tasks-rowlink {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  /* A link with no text still must not be underlined or tinted if it ever
+     inherits a rule from elsewhere. */
+  text-decoration: none;
+  color: inherit;
+}
+
+.tasks-rowlink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
 }
 
 .tasks-title {
@@ -145,6 +319,26 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* A task whose work has not happened yet (tasks-lib.isUpcomingTask, 2026-08-18).
+   The List is mostly history, and the rows scheduled ahead are the ones a reader
+   is not being asked to read yet; greying them lets the eye fall on what actually
+   ran without any of them leaving the list.
+
+   `--fg-muted`, the page's own quiet register — the same token the row's id, time
+   and folder already speak in — rather than an `opacity` on the title. Opacity
+   would blend the words into whatever is behind them and change with the row's
+   hover fill; a colour token is one value, it is themed, and it is the value every
+   other de-emphasised thing on this page uses.
+
+   THE TITLE ONLY. The ring, the id, the folder and the time stay at full strength:
+   fading a whole row is how this page says "archived", which is a different fact
+   with a lane of its own, and the time is precisely what a reader wants to read on
+   an upcoming row. Nor is the weight touched — `font-weight: 500` above holds, so
+   the column of titles keeps one shape and only its colour recedes. */
+.tasks-title.is-upcoming {
+  color: var(--fg-muted);
 }
 
 /* The row's ONE spacer (see the header note). */
@@ -166,9 +360,48 @@
   color: var(--fg-muted);
 }
 
+/* The TASK id is a reference, not a heading. It was 600 — heavier than the title
+   beside it at 500 — so a row announced its id before the work it is about, which
+   is the same inverted reading priority the unread mark was moved twice to fix.
+   Normal weight and the muted grey `.tasks-id` already sets, so the eye lands on
+   the title and finds the id when it goes looking (Akshil, 2026-08-18: the id
+   should read gray and quiet, the title bright). */
 .tasks-id--task {
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 400;
+}
+
+/* -- Said, not shown ------------------------------------------------------------
+   Text that exists for the accessibility tree and not for the eye. This page has
+   one user of it and it is the reason the class exists: a board card says unread
+   with its TITLE'S WEIGHT, and `font-weight` is not a fact a screen reader has, so
+   an unread card and a read one were the same card to anybody not looking at it
+   (bugbot, PR #596).
+
+   `display: none` and `visibility: hidden` are the two things this must never be —
+   both remove the node from the tree as well as from the page, which is the whole
+   failure being fixed. So it is the standard clip: a 1px box, its content clipped
+   away, taken out of flow so it cannot open a gap in the line it sits in.
+
+   `white-space: nowrap` matters more than it looks: without it a 1px-wide box wraps
+   its text one character per line, and some readers announce that as spelling.
+   `clip-path` alongside the legacy `clip` because the old property is deprecated
+   and the new one is not honoured by every engine this ships against.
+
+   Prefer real visible words wherever they fit. This is for facts a design has
+   deliberately encoded as pixels — weight, colour, position — which are exactly
+   the facts that reach nobody else. */
+.tasks-said {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 .tasks-id--message {
@@ -177,66 +410,41 @@
 }
 
 /* -- Unread ------------------------------------------------------------------
-   THE ONE MARK for unread, worn by an unread MESSAGE row and by any TASK that has
-   something unread — the List row and the Board card alike.
+   THERE IS NO `.tasks-dot` ANY MORE (2026-08-18), and no mark of unread's own on
+   this page at all. Read-state is the STATUS RING's shape — filled centre while
+   something inside is unread, hollow once it is not — and the rule and the whole
+   argument for it live with the ring, in schedule.css
+   (`.schedule-ring--done.schedule-ring--unread`). One mark per unit of work, hue
+   for the state and shape for whether anybody has looked.
 
-   GREY, not blue (Akshil, 2026-08-17, on a screenshot of `TASK-058 sho time ●`:
-   make it "a subtle grey dot instead of a blue dot"). It wore `--activity` while
-   it spoke for one message at a time, and a column of blue dots down a list of
-   tasks read as a page full of alerts. Unread is news, not an alarm: the mark has
-   to be FINDABLE, which is a matter of it being there at all, and it stops needing
-   a hue to do that once it is the only thing in that slot.
+   Four marks died to get here and the sequence is worth keeping, because each one
+   was a fix for the last and the last fix was to stop adding marks:
 
-   `--fg-muted` outright, the token the row's own metadata already speaks in, so no
-   new colour enters the page. It stays legible rather than merely present: 7.0:1 on
-   the resting row and 5.6:1 on the hover fill in dark, 5.9:1 and 4.7:1 in light,
-   6.0:1 on a board card's panel — the blue it replaced was 5.2–7.2:1, so nothing
-   was traded away except the shouting.
+     * A blue dot at the far RIGHT of a message row, beside the time, with the
+       word "unread" after it. Missed entirely (Akshil, 2026-08-16: "on the right
+       hand I missed it, I did not even see it") — a column is scanned down its
+       left edge.
+     * So it led the row, in a reserved rail slot drawn even when empty. And a
+       neutral numeric pill (`.tasks-count`) led the TASK row, for the thread's
+       total.
+     * Both moved to the END of their title (2026-08-17): a mark in front of every
+       line announces the marks before the words they are about, which "breaks the
+       reading priority" (Akshil).
+     * The number went ("only show a single dot like the notification that we
+       show"), the two marks became one 7px dot, and it went grey rather than blue
+       because a column of blue dots reads as a page full of alerts.
+     * And then the dot itself went, into the ring. A row carrying a ring AND a dot
+       is two glyphs to pair up before either means anything, and the ring was
+       already in the one column all three views agree on.
 
-   `--activity` KEEPS everything it was split out for — the live ping, Run now,
-   the drag-to-run outline, the calendar's run button. That token exists precisely
-   so those could stay blue when Upcoming went grey, and only the unread mark moved.
+   `--activity` keeps everything it was split out for — the live ping, Run now, the
+   drag-to-run outline, the calendar's run button — and no new colour ever entered
+   the page for unread, which is now painted in the status hue it belongs to.
 
-   The one collision worth naming: `--status-upcoming` is also `--fg-muted`, so an
-   Upcoming row now carries two grey marks. They do not twin — the ring is a 16px
-   HOLLOW circle in the left rail, this is a 7px FILLED disc after the last word of
-   the title, and the row's whole width sits between them. Checked on screen in both
-   themes before this shipped.
-
-   There were two marks until 2026-08-17: this dot on a message, and a neutral
-   numeric pill (`.tasks-count`) on the task. Akshil asked for "only show a single
-   dot like the notification that we show", and the number had no reader — the one
-   decision a task's unread total feeds is "is there anything new in here?", which
-   is a single bit that `211` spent three characters on. So the pill is gone and a
-   task wears this. The COUNT is not lost, only unprinted: it is the mark's
-   accessible name and its tooltip (tasks-lib.taskUnreadLabel, "3 unread
-   messages").
-
-   It sits immediately AFTER the title on both rows (2026-08-17). Leading the row,
-   in a reserved slot on the rail, it was an inverted reading priority — the mark
-   announced before the words it is about — and the task row above had already been
-   fixed, so a thread read as a different dialect from the task it hangs under.
-
-   `flex: 0 0 7px` and no margin. The row's `gap` is the separation; an `auto`
-   margin here would be the second one in the row, and flex answers two by
-   splitting the free space between them, which re-centres the trailing group
-   instead of pushing it to the end. `display: inline-block` is what lets the Board
-   card put the same mark INSIDE its title's text flow, where it lands after the
-   last word however many lines the title takes; the two declarations that needs on
-   top of this (a leading margin and `vertical-align`) are stated beside that title
-   in schedule.css, because they are true of the card and not of the row.
-
-   Nothing is drawn at all on a read message or an all-read task. Trailing a title
-   there is no column to hold open — which is the whole reason the empty rail slot
-   could go with it. */
-.tasks-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  flex: 0 0 7px;
-  border-radius: 999px;
-  background: var(--fg-muted);
-}
+   THE COUNT is not lost, only unprinted: it is the ring's tooltip and part of its
+   accessible name on any CONTAINER (a task row over its thread, a lane header over
+   its cards) — tasks-lib.taskUnreadLabel, "3 unread". A leaf gets no such name,
+   because a dot that already means unread does not need a caption. */
 
 /* No reserved slot at the head of a MESSAGE row any more. There was one — the ring
    slot's width, contents centred, drawn even when empty so the dots could not
@@ -286,18 +494,39 @@
   flex: 0 0 auto;
 }
 
+/* And on a ROW the folder's NAME reads at title strength (Akshil, 2026-08-18).
+   Everywhere else it is `--fg-muted`, which is right on a board card, where the
+   chip sits alone in a foot and has nothing to be quieter than. On a row it is one
+   of two pieces of content — where the work happened, and what the work was — and
+   muting it made the right-hand end of every row look like metadata about a title
+   rather than the other half of the sentence.
+
+   The GLYPH beside it stays muted, and so does the time after it: the name is the
+   word being read, the folder icon only says what kind of word it is, and the time
+   is deliberately untouched here (it keeps `.tasks-msg-time`'s register, which the
+   thread below shares — two weights for one fact is how a row and its thread part
+   company). */
+.tasks-row .schedule-tv-id-name {
+  color: var(--fg);
+}
+
 /* -- Quiet row action (Open chat) ---------------------------------------------
    Hidden until the row is pointed at: it applies to every task that has run,
    and a permanent icon on every row would out-shout the work itself. Kept
    reachable by keyboard — focus-within reveals it.
 
-   NOTE, 2026-08-17: the TASK ROW's and the BOARD CARD's strips are not rendered at
-   all right now — `SHOW_ROW_ACTIONS` in ScheduleTaskViews.tsx, off at Akshil's
-   request. These rules stay untouched and stay tested, because they are what the
-   strip comes back to when the flag flips; and hiding those buttons was done by not
-   rendering them rather than by turning this `opacity` permanent, since an
-   invisible button is still in the tab order. The rules below are still LIVE for
-   the message row's own Edit and Cancel, which are not part of that strip. */
+   NOTE, 2026-08-17, amended 2026-08-18: most of the TASK ROW's and the BOARD
+   CARD's strip is still not rendered at all — `SHOW_ROW_ACTIONS` in
+   ScheduleTaskViews.tsx, off at Akshil's request — but ARCHIVE is out from behind
+   it again and is LIVE on both views, revealed by exactly these rules.
+
+   Which is why the reveal is `opacity` plus a `:focus-visible` arm and never
+   `display: none` or `visibility: hidden`: the button has to stay in the tab order
+   and light up when a keyboard reaches it. Hiding the OTHER actions was done by not
+   rendering them at all rather than by turning this `opacity` permanent, for the
+   same reason from the other side — an invisible button that is still tabbable is
+   one a keyboard presses blind. These rules are also LIVE for the message row's own
+   Edit and Cancel, which are not part of that strip. */
 .tasks-act,
 .prefs-section .tasks-act {
   display: inline-flex;
@@ -315,6 +544,10 @@
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+  /* Above the row's stretched link, or the link would eat the press and every
+     one of these buttons would navigate instead of acting. */
+  position: relative;
+  z-index: 2;
 }
 
 .tasks-row:hover .tasks-act,
@@ -445,11 +678,12 @@
   position: absolute;
   /* Centred on the head's line: the card's own top padding plus half of
      `--tasks-card-head-h`, less half a 22px button. Which is why the head has to
-     keep that height even now that nothing 16px tall stands in it — and why this
-     moved from 5px to 7px on 2026-08-17, when the card's padding was loosened from
-     8px to 10px (schedule.css). Left at 5px the strip rides high on the head. */
-  top: 7px;
-  right: 8px;
+     keep that height even now that nothing 16px tall stands in it. It has moved
+     twice, both times behind the card's padding: 5px → 7px when that went 8px →
+     10px (2026-08-17), and 7px → 9px when it went 10px → 12px (2026-08-18, the
+     breathing-room pass). Left behind, the strip rides high on the head. */
+  top: 9px;
+  right: 10px;
   /* Above the card it overlays; the card sets no z-index of its own. */
   z-index: 1;
   display: flex;
@@ -461,12 +695,26 @@
 .tasks-card-act,
 .prefs-section .tasks-card-act {
   pointer-events: auto;
-  /* An opaque skin in the card's OWN surface colour, so the strip reads as
-     floating over the head rather than as part of the head's row of marks. It
-     tracks the card: that surface became `--bg-panel` when the lane's fill was
-     removed and the card had to lift off the page by itself (schedule.css), and a
-     button still painted `--bg` would have been a visible patch on it in dark. */
-  background: var(--bg-panel);
+  /* NO SKIN. The button lets the card show through and paints only on its own
+     hover (`.tasks-act:hover`, above).
+
+     It used to carry an opaque fill in the card's surface colour, so the strip
+     would read as floating over the head rather than as part of the head's row
+     of marks. Chasing that colour was a losing game: the card's fill has moved
+     three times (`--bg` → `--bg-panel` → `--tasks-card-bg`), and each time a
+     button left behind on the old value became a visible patch on it in dark.
+     The last move was the one that made the idea untenable rather than merely
+     fragile — the card now LIFTS on hover (`color-mix(--fg 6%, --tasks-card-bg)`,
+     schedule.css), so a fill matching the resting colour is a dark rectangle on
+     a lit card, and matching both would mean restating the card's hover
+     expression here for the two to drift apart at the next tuning (Bugbot,
+     2026-08-18).
+
+     Transparent is not a compromise, it is the accurate answer: this strip is
+     only ever SEEN over a hovered or focused card (`.tasks-card-acts` rests at
+     `opacity: 0`), and the head's right end it sits over is empty on every card
+     by construction. There is nothing to occlude and nothing to match. */
+  background: transparent;
 }
 
 .tasks-card-wrap:hover .tasks-card-act,
@@ -551,23 +799,25 @@
   /* The full indent, not indent-minus-1: the 1px used to be the rule's own
      width, and the row has to keep landing in the same column now that the
      rule is gone. */
-  padding: 5px 8px 5px var(--tasks-msg-indent);
+  padding: var(--tasks-msg-pad-y) 10px var(--tasks-msg-pad-y) var(--tasks-msg-indent);
   font-size: 12.5px;
   cursor: pointer;
   transition: background-color 0.08s ease;
+  /* Same stretched-link treatment as the task row above: a message row is a
+     real link to its own turn in the transcript, so ⌘-click opens it in a tab. */
+  position: relative;
 }
 
 .tasks-msg:hover {
   background: var(--row-bg-hover);
 }
 
-.tasks-msg-kind {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  color: var(--fg-muted);
-  opacity: 0.7;
-}
+/* No `.tasks-msg-kind` any more (2026-08-18). It held a 12px clock or speech
+   bubble between the ring and MSG-003 on every thread row, saying whether the
+   scheduler or a person put the message there. Removed at Akshil's request: a
+   12.5px line that opens with a status ring and an id does not have room for a
+   third mark, and nothing on this page acts on the distinction — the row's words
+   and its time say it anyway. */
 
 .tasks-msg-body {
   min-width: 0;
@@ -612,9 +862,10 @@
    time is now one relative unit with the full story in its tooltip — both instants,
    named, whenever they differ (tasks-lib.messageWhenTitle). */
 
-/* The message row's own unread mark is `.tasks-dot`, defined with the rest of the
-   unread vocabulary near the top of this file — beside the task row's count,
-   because the two are one decision and have to keep answering to it together. */
+/* The message row's own unread mark is its status RING (schedule.css
+   `.schedule-ring--unread`), the same one the task row above it wears — see the
+   Unread block near the top of this file for the four marks that came before it
+   and why none of them survived. */
 
 .tasks-thread-error {
   margin: 4px 0 0;
@@ -623,45 +874,70 @@
   color: var(--error);
 }
 
-/* -- Show more -----------------------------------------------------------------
-   Only ever drawn when the server's own `message_count` says there IS more, so
-   it is never a button that does nothing. Dashed, like the board's own reveal:
-   both mean "there is more behind this". */
-.tasks-more,
-.prefs-section .tasks-more {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  align-self: flex-start;
-  margin: 4px 0 0 12px;
-  padding: 4px 10px;
+/* The way out of that failure, beside the sentence that reports it (§4). It is
+   the ONE control on this page that is not hover-revealed and not behind a flag:
+   the hover-revealed actions are conveniences on a working row, and this is the
+   only thing a person can do with a broken one — hiding it until the pointer
+   happens to cross the row would be hiding the recovery inside the failure.
+
+   An underlined word rather than a bordered pill. It sits INSIDE a sentence, and
+   a 22px chip in the middle of an 11px line would out-weigh the error it is
+   attached to; the underline is what says "this one is pressable" without
+   changing the line's height or its register. It borrows `currentColor` from that
+   line, so it is red because the sentence is red — one fact, one hue, and no
+   second token to keep in step.
+
+   The `.prefs-section` twin is not optional: that scope repaints any unarmored
+   button here as a bordered 5px/12px pill, which is exactly the chip this rule
+   exists to avoid. */
+.tasks-retry,
+.prefs-section .tasks-retry {
+  padding: 0;
   font: inherit;
-  font-size: 11.5px;
-  font-weight: 500;
-  color: var(--fg-muted);
+  color: inherit;
   background: transparent;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
+  border: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
   cursor: pointer;
-  transition: color 0.08s ease, border-color 0.08s ease;
 }
 
-.tasks-more:hover:not(:disabled),
-.prefs-section .tasks-more:hover:not(:disabled) {
-  color: var(--fg);
+.tasks-retry:hover:not(:disabled),
+.prefs-section .tasks-retry:hover:not(:disabled) {
   background: transparent;
-  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
+  text-decoration-thickness: 2px;
 }
 
-.tasks-more:disabled,
-.prefs-section .tasks-more:disabled {
+/* Mid-retry. The press has been taken and the line is about to be replaced by the
+   loading line, so this only has to stop a second press landing on top of the
+   first — the feedback comes from the line that replaces it. */
+.tasks-retry:disabled,
+.prefs-section .tasks-retry:disabled {
   opacity: 0.6;
   cursor: default;
 }
 
-.tasks-more-icon {
-  display: inline-flex;
-  align-items: center;
+/* -- The rest of the thread, on its way ----------------------------------------
+   There was a "Show N more" BUTTON here: dashed, quiet, drawn whenever the
+   server's `message_count` said the three the listing carried were not all of
+   them. It is gone (Akshil, 2026-08-18) — reading a thread of twenty-six was two
+   gestures for one intention, and a person who expands a task has asked for the
+   task rather than for a sample of it. The chevron fetches the whole thread now
+   (ScheduleTaskViews.TasksList.toggle).
+
+   What stands in its place is not a control, so it is not styled as one: a plain
+   muted line in the thread's own register, indented to the message rows it is
+   waiting to be joined by, and gone the moment they arrive. No dashes and no
+   border — those said "press me", which is the one thing this must not say.
+
+   The trip is short and the three newest are already on screen while it happens,
+   so there is no spinner and no skeleton: a moving glyph for a sub-second wait is
+   more motion than information. */
+.tasks-thread-loading {
+  margin: 4px 0 0;
+  padding-left: var(--tasks-msg-indent);
+  font-size: 11.5px;
+  color: var(--fg-muted);
 }
 
 /* -- The filter popovers -------------------------------------------------------
@@ -705,22 +981,22 @@
 }
 
 /* -- Failed, the fifth lane ----------------------------------------------------
-   schedule.css already paints `.schedule-ring--failed` red — it was the
-   modifier that repainted a Done ring — so the new column needs no hue of its
-   own. What it needs is the FILLED centre every settled state carries: Failed
-   is terminal, and a hollow ring beside Done's solid one would read as "still
-   going" in the one column where nothing is. `.schedule-ring--done::after`
-   already defines that dot; this only widens who gets it. */
-.schedule-ring--failed::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: currentColor;
-}
+   schedule.css already paints `.schedule-ring--failed` red — it was the modifier
+   that repainted a Done ring — so this column needs no hue of its own.
+
+   AND NO CENTRE OF ITS OWN EITHER, since 2026-08-18. There was a rule here that
+   widened `.schedule-ring--done::after` to cover Failed, because the dot meant
+   "settled" and Failed is settled. The dot means UNREAD now, and its rule names
+   no lane at all — `.schedule-ring--unread::after`, one gate for every ring on
+   the page — so a copy scoped to one lane would be a duplicate whose only future
+   is to go stale. Deleted rather than restated.
+
+   Why the gate is not the terminal columns, which is the part worth not
+   re-deriving: an Upcoming task can hold unread output from a past run (a
+   recurring rule whose next fire is ahead of it), so `--upcoming --unread` is a
+   real combination and gating the dot on Done/Failed drew it hollow under a
+   tooltip that said "1 unread". The full reasoning lives once, beside the rule,
+   in schedule.css. */
 
 /* -- The one drop that is not filing ------------------------------------------
    Upcoming → In Progress sends the task's next scheduled message immediately
@@ -755,9 +1031,9 @@
 .tasks-row:focus-visible,
 .tasks-msg:focus-visible,
 .tasks-act:focus-visible,
-.tasks-more:focus-visible,
+.tasks-retry:focus-visible,
 .prefs-section .tasks-act:focus-visible,
-.prefs-section .tasks-more:focus-visible {
+.prefs-section .tasks-retry:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }

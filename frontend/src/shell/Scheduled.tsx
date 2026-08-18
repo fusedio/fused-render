@@ -27,7 +27,7 @@
 // time filled in.
 //
 // The composer also has a THIRD affordance that lands here: its Schedule button
-// links to `/scheduled?new=1&target=…`, for the case the pill cannot serve — a
+// links to `/tasks?new=1&target=…`, for the case the pill cannot serve — a
 // task that wants a title, a description or a repeat rule. It is a handoff, not
 // a second form: the chat sends the folder it is bound to and nothing else, and
 // the effect below opens the modal on it.
@@ -64,7 +64,11 @@ import type {
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
-import ScheduleCalendar from "./ScheduleCalendar";
+import ScheduleCalendar, {
+  ICON_VIEW_BOARD,
+  ICON_VIEW_CALENDAR,
+  ICON_VIEW_LIST,
+} from "./ScheduleCalendar";
 import NewJobModal from "./NewJobModal";
 import {
   EMPTY_FILTERS,
@@ -75,6 +79,8 @@ import {
   projectOptions,
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
+import { viewFromSearch, viewUrl } from "./tasks-lib";
+import type { TaskView } from "./tasks-lib";
 
 // How often the page re-reads itself. A `pending` message becomes `sent` on the
 // server's own tick (30s), so anything much slower than this shows a message as
@@ -85,6 +91,12 @@ const POLL_MS = 20000;
 // calendar plans on the calendar every time. List is the default now (Akshil,
 // 2026-08-17): the page's first question turned out to be "what is running",
 // not "when", and the calendar is the drill-down for the scheduled subset.
+//
+// SECOND to the URL, since 2026-08-18. `?view=` (tasks-lib.viewFromSearch) is
+// what a link carries and therefore what wins; this key is the fallback for a
+// bare `/tasks`, which is how the page is opened from the sidebar. Both are
+// kept in step, so switching the view in one tab still greets the next visit
+// the same way.
 const VIEW_KEY = "fused-render:scheduled-view";
 
 // How far ahead a deep link's prefilled time lands. The form's own default is
@@ -93,8 +105,6 @@ const VIEW_KEY = "fused-render:scheduled-view";
 // rather than one because the when-field is minute-precision, and a value
 // inside the CURRENT minute opens the form on a time already behind the clock.
 const NEW_LINK_LEAD_MS = 120_000;
-
-type View = "list" | "board" | "calendar";
 
 export default function Scheduled() {
   const [state, setState] = useState<ScheduleResult | null>(null);
@@ -106,13 +116,19 @@ export default function Scheduled() {
   // localStorage can THROW (private mode, locked-down webviews), and this read
   // runs during first render — unguarded it took the whole page down for a
   // preference. Storage failing costs the memory, never the page.
-  const [view, setView] = useState<View>(() => {
+  const [view, setView] = useState<TaskView>(() => {
+    let saved: TaskView = "list";
     try {
-      const saved = localStorage.getItem(VIEW_KEY);
-      return saved === "board" || saved === "calendar" ? saved : "list";
+      const stored = localStorage.getItem(VIEW_KEY);
+      if (stored === "board" || stored === "calendar") saved = stored;
     } catch {
-      return "list";
+      // A blocked store just means no remembered view; the URL may still say.
     }
+    // The URL outranks the memory, and the memory is what a bare `/tasks`
+    // falls back to. Read once, in the initialiser: the page remounts on every
+    // navigation (App.tsx keys it on the nav epoch), so a back button onto
+    // `?view=board` comes through here rather than needing a subscription.
+    return viewFromSearch(location.search, saved);
   });
   // null = closed; a Date = open, prefilled (from a calendar slot click);
   // "blank" = open from the New task button, prefilled with "in an hour".
@@ -121,6 +137,33 @@ export default function Scheduled() {
   // OCCURRENCE means editing its rule: the template is what gets edited, and
   // the resolver below is what makes a click on any run land there.
   const [editing, setEditing] = useState<ScheduledMessage | null>(null);
+  // WHICH OPENING THIS IS. Bumped every time the form is opened, and part of the
+  // modal's `key` below, so no two openings can ever share a React identity.
+  //
+  // The form reads `editing` in `useState` initialisers — they run ONCE, on
+  // mount — so an opening that reuses the previous one's mount inherits every
+  // value the user left behind. The key was `editing ? "edit:<id>" : "new"`,
+  // which is not an identity but a MODE: two different new-task openings, and
+  // two clicks on two different calendar slots, are the same string. That is how
+  // a fresh card came up with Repeat ticked on "Weekly on Monday, 5 times" and a
+  // date in three weeks — settings from a form the user had opened earlier and
+  // never chosen here (QA, 2026-08-18). A stale recurrence is not a cosmetic
+  // slip: pressing Save on it schedules a repeating task nobody asked for.
+  //
+  // A counter rather than more fields in the key, because the bug is not about
+  // WHAT the openings differ in — it is that "this is a new opening" was never
+  // stated at all, and any key built out of the form's inputs collides again the
+  // moment two openings happen to share them.
+  const [openSeq, setOpenSeq] = useState(0);
+  // The single door into the form, so "clean slate" is one rule in one place: a
+  // new opening is a new mount, and opening a NEW task drops whatever was being
+  // edited (leaving it set kept the card in Edit mode under a "+ New task"
+  // press).
+  const openForm = (at: Date | "blank" | null, entry: ScheduledMessage | null) => {
+    setOpenSeq((n) => n + 1);
+    setEditing(entry);
+    setCreating(at);
+  };
   // What a deep link named (see the effect below); all null for every other
   // way of opening the form.
   const [newTarget, setNewTarget] = useState<string | null>(null);
@@ -159,13 +202,15 @@ export default function Scheduled() {
     if (q.get("new") !== "1") return;
     setEditId(q.get("edit"));
     setNewTarget(q.get("target"));
-    // The chat's whole handoff: the typed draft becomes the description, the
+    // The chat's whole handoff: the typed draft fills the card's two prose
+    // fields — its first line names the task and the rest is the description
+    // (NewJobModal splitDraft) — the
     // open conversation the session a ONE-OFF will continue, and the chat's URL
     // the way back — the form's round trip.
     setNewMessage(q.get("message"));
     setNewSession(q.get("session_id"));
     setNewBack(q.get("back"));
-    setCreating(new Date(Date.now() + NEW_LINK_LEAD_MS));
+    openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null);
     q.delete("new");
     q.delete("target");
     q.delete("message");
@@ -222,8 +267,18 @@ export default function Scheduled() {
     return () => window.clearInterval(id);
   }, []);
 
-  const pickView = (v: View) => {
+  const pickView = (v: TaskView) => {
     setView(v);
+    // Into the URL, so the view is a thing you can link to and reload onto.
+    // replaceState, not push: see tasks-lib.viewUrl — the toggle is a way of
+    // reading this page, not a place to come back to. The path is taken from
+    // `location` rather than hardcoded so this cannot be the thing that has to
+    // be remembered on the next rename.
+    try {
+      history.replaceState(history.state, "", viewUrl(location.pathname, location.search, v));
+    } catch {
+      // Some embeddings refuse history writes; the switch itself still happens.
+    }
     try {
       localStorage.setItem(VIEW_KEY, v);
     } catch {
@@ -249,8 +304,7 @@ export default function Scheduled() {
     const template = entry.template_id
       ? entries.find((e) => e.id === entry.template_id)
       : null;
-    setEditing(template ?? entry);
-    setCreating(null);
+    openForm(null, template ?? entry);
   };
 
   // Resolve `?edit=<entry id>` once the schedule has actually arrived. The chat
@@ -272,8 +326,7 @@ export default function Scheduled() {
       ? all.find((e) => e.id === entry.template_id)
       : null;
     if (entry) {
-      setEditing(template ?? entry);
-      setCreating(null);
+      openForm(null, template ?? entry);
     }
     setEditId(null);
   }, [editId, state]);
@@ -303,40 +356,59 @@ export default function Scheduled() {
                 sits beside it. List first and default: the page's question is
                 "what is running", and the calendar is the drill-down for the
                 scheduled subset of it. */}
+            {/* Icon + label on each half, added 2026-08-18. The three words are
+                short and near-identical in weight, so the row read as a block of
+                text you had to actually read; a list, a set of columns and a
+                calendar are shapes you recognise before you read anything. The
+                labels stay — an icon-only switcher for a control this central
+                would be recognition traded for guessing (design-principles §4)
+                — and the marks are lucide's, at the same 14px every other glyph
+                on this page uses (ScheduleCalendar's `icon`). */}
             <div className="schedule-form-seg" role="radiogroup" aria-label="View">
               <button type="button"
-                      className={"btn btn-secondary" + (view === "list" ? " is-active" : "")}
+                      className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
                       aria-pressed={view === "list"}
                       onClick={() => pickView("list")}>
+                {ICON_VIEW_LIST}
                 List
               </button>
               <button type="button"
-                      className={"btn btn-secondary" + (view === "board" ? " is-active" : "")}
+                      className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
                       aria-pressed={view === "board"}
                       onClick={() => pickView("board")}>
+                {ICON_VIEW_BOARD}
                 Board
               </button>
               <button type="button"
-                      className={"btn btn-secondary" + (view === "calendar" ? " is-active" : "")}
+                      className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
                       aria-pressed={view === "calendar"}
                       onClick={() => pickView("calendar")}>
+                {ICON_VIEW_CALENDAR}
                 Calendar
               </button>
             </div>
-            {/* Search, Status and Project belong to the two task views: the
-                calendar answers "when", and a week with tasks filtered out of
-                it is a week that lies. They sit AFTER the toggle, so hiding
-                them here cannot move it. */}
-            {view !== "calendar" && (
-              <TaskFilterControls
-                filters={filters}
-                projects={projects}
-                home={home}
-                onChange={setFilters}
-              />
-            )}
+            {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
+                used to be hidden on the calendar, on the argument that it
+                answers "when" and a week with tasks filtered out of it is a week
+                that lies. That reading did not survive contact: the filters are
+                not a claim about what exists, they are how you read the page
+                this minute — the same three lenses, and a person who has just
+                narrowed the List to one project and switched to Calendar meant
+                to keep looking at that project, not to be handed everything
+                back. Views are lenses on one dataset (design-principles §1), and
+                a control that vanishes when you change lens makes them read as
+                three different pages.
+
+                They sit AFTER the toggle, which owns the row's only auto margin,
+                so nothing here can move either end of the bar. */}
+            <TaskFilterControls
+              filters={filters}
+              projects={projects}
+              home={home}
+              onChange={setFilters}
+            />
             <button type="button" className="btn btn-primary schedule-new"
-                    onClick={() => setCreating("blank")}>
+                    onClick={() => openForm("blank", null)}>
               + New task
             </button>
           </div>
@@ -347,20 +419,25 @@ export default function Scheduled() {
               only ever appeared for one of the two filters, which made the page
               look like it had lost the other. Clearing is where setting is: in
               the menu. */}
-          {view !== "calendar" && tasksFailed && (
-            // One quiet line, not a banner: the form and the calendar still
-            // work, and only the rows are missing.
+          {tasksFailed && (
+            // One quiet line, not a banner: the form still works and only the
+            // tasks are missing. Shown on the calendar too since 2026-08-18 —
+            // its chips come from the same feed, so an empty week and an
+            // unreadable one looked identical there.
             <p className="schedule-tv-note">Tasks could not be loaded.</p>
           )}
 
           {view === "calendar" ? (
             <ScheduleCalendar
-              tasks={tasks}
+              // The FILTERED set, same as the other two views get: the toolbar's
+              // three controls are live here now, and a filter that is shown but
+              // does nothing is worse than one that is hidden.
+              tasks={shown}
               entries={entries}
               queued={queued}
               running={running}
               onReload={reload}
-              onCreateAt={(t) => setCreating(t)}
+              onCreateAt={(t) => openForm(t, null)}
               onEditEntry={editEntry}
             />
           ) : view === "board" ? (
@@ -369,6 +446,11 @@ export default function Scheduled() {
             <TaskList
               tasks={shown}
               home={home}
+              // A failed poll empties `tasks` too, and the List cannot tell that
+              // apart from a filter that matched nothing — but it must, because
+              // one is a reason to forget where the reader was and the other is
+              // a reason to hold onto it. See `stale` in TaskList.
+              stale={tasksFailed}
               onEditEntry={editEntry}
               // Cancelling a message changes server state. The 20s poll would
               // catch it anyway, so this is about the row not looking stuck for
@@ -386,14 +468,23 @@ export default function Scheduled() {
 
       {(creating !== null || editing) && state && (
         <NewJobModal
-          // Keyed on WHAT is being edited, because the form reads `editing` in
-          // `useState` initialisers — they run once, on mount. The `?edit=<id>`
-          // deep link cannot avoid arriving in two steps: it opens the modal
-          // immediately and can only resolve the entry once the schedule fetch
-          // answers, so without a key the card mounted on `editing = null` and
-          // then sat there with both fields blank under an "Edit task" heading.
-          // Changing the key remounts it on the entry it is actually for.
-          key={editing ? `edit:${editing.id}` : "new"}
+          // Keyed on WHICH OPENING this is, and on what is being edited, because
+          // the form reads `editing` in `useState` initialisers — they run once,
+          // on mount.
+          //
+          // The entry half is what the `?edit=<id>` deep link needs: it cannot
+          // avoid arriving in two steps — it opens the modal immediately and can
+          // only resolve the entry once the schedule fetch answers — so without
+          // it the card mounted on `editing = null` and then sat there with both
+          // fields blank under an "Edit task" heading.
+          //
+          // `openSeq` is the other half and the one that makes this an IDENTITY
+          // rather than a mode: `"new"` was the same string for every new-task
+          // opening and for every calendar slot, so React reused the mount and
+          // the card came up wearing the last form's answers — a Repeat rule the
+          // user never chose, one Save away from a real repeating task. See
+          // `openSeq` above.
+          key={`${editing ? `edit:${editing.id}` : "new"}#${openSeq}`}
           initialTime={creating instanceof Date ? creating : null}
           initialTarget={newTarget}
           initialMessage={newMessage}

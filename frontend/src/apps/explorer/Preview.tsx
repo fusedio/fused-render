@@ -17,7 +17,7 @@ import {
   repairTemplateRegistry,
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
-import { navigate, navigateUrl, urlForFsPath, replaceSearch, IS_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
   dirname,
@@ -263,6 +263,17 @@ function usePreviewFileMenu(
   const doTrash = () => {
     trashEntry(fsPath, stat.is_dir).then((r) => {
       if (r.status === "trashed") {
+        // Undoable, exactly as the rename below is and for the same reason: the
+        // stack is module-level and the chord belongs to whichever Listing is
+        // mounted, so a delete made HERE is nearly always undone from the parent
+        // listing this navigates to. A delete that skipped this left the stack's
+        // top entry describing an older op, so Cmd+Z after it would undo that
+        // one instead — and the file stayed unreachable in the Trash.
+        //
+        // `to` is absent wherever the OS owns the location (the Recycle Bin, the
+        // macOS cross-device Finder fallback), and then there is no pair to
+        // record — recoverable from the OS, just not from here.
+        if (r.to) recordFsOp({ kind: "delete", pairs: [{ from: fsPath, to: r.to }] });
         notePathDeleted(fsPath);
         navigate(parent, { isDir: true });
       } else if (r.status === "unsupported") {
@@ -787,8 +798,9 @@ function TemplatePreview({
   // point: a borrowed `git` that resolves to DENIED takes the split off with it,
   // and a `_side=git` left in the URL there is a param naming a state nothing on
   // this file can honour. (It used to be worse than that — the session sidecar
-  // recorded the query and replayed it on the next bare open — which `_side` is now
-  // stripped at both ends to prevent, lib/session and server/session.py.)
+  // recorded the query and replayed it on the next bare open, which the `_side`
+  // strip was written to prevent. That sidecar is gone outright now, D329; the
+  // strip lives on for the recents store, lib/session-params.)
   const sideKeys = sidebarModes.map((e) => e.mode).join(",");
   useEffect(() => {
     const search = reconcileSideSearch(location.search, {
@@ -1367,12 +1379,36 @@ function TemplatePreview({
             is a dead end, not a degradation, and it is left standing on purpose —
             the fix is either a chip that does not sit under the pane's corner or a
             pane the embed does not get, and re-gating either on a WIDTH is what
-            D282 removed. Recorded in D282 for the owner to rule on. */}
+            D282 removed. Recorded in D282 for the owner to rule on.
+
+            **Under a FOREIGN host the chip navigates the TOP WINDOW instead**
+            (D331). An embed framed by a non-explorer page (the canvases
+            workspace's chat pane) is a component in someone else's layout: an
+            in-place `_mode` swap there turns the host's chat column into a
+            chrome-free listing — half a browsing surface where the host put a
+            conversation — and walks straight into the dead end above. "Browse
+            contents" under that host means "take me to the real explorer for
+            this folder", so the whole page goes to the view-prefixed URL (a
+            plain location.assign: the host is a different document, and Back
+            returns to it). Inside the explorer's own surfaces (panel panes,
+            tabs — IS_FOREIGN_EMBED is false there) the in-place switch stays:
+            those panes own their layout and a top nav would blow it away. */}
         {toggleListing && !listingPaneOpen && (
           <button
             type="button"
             className="preview-browse-chip"
-            onClick={toggleListing}
+            onClick={
+              IS_FOREIGN_EMBED
+                ? () =>
+                    window.top?.location.assign(
+                      // `?_mode=_listing` pins the folder's contents listing —
+                      // without it the directory opens on its default mode
+                      // (the registry's first entry), not the listing the chip
+                      // promises.
+                      viewUrlForFsPath(fsPath, "?_mode=_listing"),
+                    )
+                : toggleListing
+            }
           >
             Browse contents
           </button>

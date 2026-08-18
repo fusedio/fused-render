@@ -35,7 +35,7 @@ and is never recorded/registered when rendered. The starter template already
 carries it; when authoring an entry page by hand, add it yourself.
 
 **Migrating an existing app** (one that predates the marker, or lives outside
-`~/Documents/Fused`): add the tag to the entry page's `<head>`:
+`~/Fused`): add the tag to the entry page's `<head>`:
 
 ```html
 <head>
