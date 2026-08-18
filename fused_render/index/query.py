@@ -13,17 +13,22 @@ pay a duckdb import.
 
 See specs/query.md.
 """
+import logging
 import os
 import re
 
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import is_inside_leaf_dir, is_leaf_dir, norm
+from fused_render.index.rank import query_wants_hidden as _wants_hidden
+from fused_render.index.rank import rank_entries
 from fused_render.index.store import (
     depth_expr,
     like_literal,
     parquet_src,
     read_manifest,
 )
+
+logger = logging.getLogger(__name__)
 
 _DRIVE = re.compile(r"^[A-Za-z]:/")
 
@@ -228,6 +233,32 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
             "partitions": m["partitions"], "types": types}
 
 
+def _root_is_covered(con, cfg: IndexConfig, root: str) -> bool:
+    """Has the scan actually visited this exact directory?
+
+    That exactness is what keeps a partial index honest: a root whose parent
+    was scanned but which was itself pruned (ignored, or below a cancelled
+    run's frontier) has no row.
+
+    A package directory is the exception: the scan records it as ONE opaque
+    row and never lists it (scan.scan_dir_once), so its dirs row means "this
+    is a leaf", not "we know what is inside". The explorer can still navigate
+    into a .app, and the live walk answers that (it only refuses to descend
+    leaf CHILDREN, not a leaf it was pointed at) — so hand it over, exactly as
+    for any other uncovered folder, instead of reporting an empty corpus as
+    complete.
+
+    The test is is_inside_leaf_dir as well, not just the root's own final
+    component: any index written before the leaf rule still holds real dirs
+    rows for paths INSIDE a package, and answering `/x/Foo.app/Contents` from
+    that partial set while `/x/Foo.app` one level up goes to the walk is the
+    two-interchangeable-sources-disagree bug in miniature."""
+    if is_leaf_dir(root) or is_inside_leaf_dir(root):
+        return False
+    return con.execute(f"SELECT count(*) FROM {dirs_src(cfg)} "
+                       f"WHERE dir = '{_q(root)}'").fetchone()[0] > 0
+
+
 def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORPUS,
                  include_dirs: bool = True) -> dict:
     """The explorer's in-folder corpus for `root`, from the index.
@@ -267,26 +298,7 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     age = (time.time() - updated) if isinstance(updated, (int, float)) else None
     fresh = age is not None and age <= FRESH_MAX_AGE_S
     con = duckdb.connect()
-    # Coverage is "the scan visited this exact directory", which is what keeps
-    # a partial index honest: a root whose parent was scanned but which was
-    # itself pruned (ignored, or below a cancelled run's frontier) has no row.
-    #
-    # A package directory is the exception: the scan records it as ONE opaque
-    # row and never lists it (scan.scan_dir_once), so its dirs row means "this
-    # is a leaf", not "we know what is inside". The explorer can still navigate
-    # into a .app, and the live walk answers that (it only refuses to descend
-    # leaf CHILDREN, not a leaf it was pointed at) — so hand it over, exactly as
-    # for any other uncovered folder, instead of reporting an empty corpus as
-    # complete.
-    # The test is is_inside_leaf_dir as well, not just the root's own final
-    # component: any index written before the leaf rule still holds real dirs
-    # rows for paths INSIDE a package, and answering `/x/Foo.app/Contents` from
-    # that partial set while `/x/Foo.app` one level up goes to the walk is the
-    # two-interchangeable-sources-disagree bug in miniature.
-    inside_pkg = is_leaf_dir(root) or is_inside_leaf_dir(root)
-    covered = not inside_pkg and con.execute(
-        f"SELECT count(*) FROM {dirs_src(cfg)} "
-        f"WHERE dir = '{_q(root)}'").fetchone()[0] > 0
+    covered = _root_is_covered(con, cfg, root)
     if not covered:
         return {**empty, "updated": updated, "age_s": age}
     prefix = (root + "/") if root != "/" else "/"
@@ -341,3 +353,172 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
             "root": root, "scanned_partitions": len(hit),
             "of_partitions": len(m["partitions"]), "entries": entries,
             "truncated": truncated, "total": len(entries)}
+
+
+# Rows stage A hands to the Python ranker. Measured basis (571k rows under
+# /Users/<me>): the subsequence regex over every row costs 31-143 ms depending
+# on the query, while scoring in Python costs ~4 us a row — 3,576 candidates
+# scored in 14 ms, 176,505 in 186 ms. So SQL narrows and coarse-orders over
+# everything, and Python does the real fuzzy scoring on a bounded slice. This
+# is the bound.
+RANK_CANDIDATE_CAP = 2_000
+
+# Ranked hits a search answers with. The client renders a list; nobody scrolls
+# past a couple of hundred fuzzy matches, and the whole point of ranking here
+# is that the tail is the part nobody needed.
+RANK_LIMIT = 200
+
+# Whatever a caller asks for, they get at most this. `search_ranked` is not a
+# corpus endpoint — `search_under` is, and it has its own MAX_CORPUS.
+MAX_RANK_LIMIT = 2_000
+
+# RE2 metachars, escaped one at a time. Not `re.escape`: that escapes a space
+# as `\ `, which RE2 rejects as an unknown escape, and this pattern is executed
+# by duckdb, not by Python.
+_RE2_META = set("\\.^$|()[]{}*+?")
+
+
+def _subseq_regex(q: str) -> str:
+    """`q` as a subsequence pattern: `abc` -> `a.*b.*c`, ready for a duckdb
+    string literal (single quotes doubled; backslashes are literal in a
+    standard SQL string, so they need no doubling)."""
+    return ".*".join(("\\" + c if c in _RE2_META else c).replace("'", "''")
+                     for c in q)
+
+
+def search_ranked(cfg: IndexConfig, root: str, q: str = "",
+                  limit: int = RANK_LIMIT, include_dirs: bool = True,
+                  cap: int = RANK_CANDIDATE_CAP,
+                  gitignore_filter=None) -> dict:
+    """Search `root` for `q` — filtered AND ranked here, top `limit` returned.
+
+    The home page used to fetch the whole corpus and rank it in the browser:
+    19.8 MB and 164k rows on one keystroke, and silently capped at MAX_CORPUS,
+    so ~71% of a 571k-file home could not be found AT ALL. This answers a few
+    KB from the whole index instead.
+
+    Two stages, because neither alone is affordable:
+
+    - **A, in SQL, over every row under `root`.** A subsequence regex on the
+      rel (the same relation `fuzzy_match` tests, so a candidate here is a
+      possible hit there) plus a coarse `tier` — name-exact / name-prefix /
+      name-contains / rel-contains / subsequence-only — and `ORDER BY tier,
+      depth, rel LIMIT cap`. Files and directories compete in ONE query, for
+      the reason `search_under` explains at length: two queries served files
+      first and folder search died on any tree big enough to fill the budget.
+    - **B, in Python.** `rank_entries` (index/rank.py) over those ≤`cap` rows —
+      the real fuzzy scoring, in parity with the browser's ranker — then the
+      gitignore filter, THEN the cut to `limit`. That order is not incidental:
+      filtering after the cut is what makes today's corpus report `truncated`
+      while holding fewer rows than it claims.
+
+    KNOWN, and logged rather than hidden: stage A's cap can in principle drop a
+    row stage B would have ranked first. It is unlikely because the two agree
+    on what is coarsely good — a name-substring hit outranks a fuzzy-only one
+    in `rank_compare` too, and tier 1-3 rows are emitted before any tier 5 one
+    — but it is not impossible, so a cap that bites is a warning in the log and
+    `truncated: true` in the response. Silent truncation is what this removes,
+    not what it reintroduces.
+
+    `gitignore_filter(root, entries) -> entries` is how the server layer hands
+    in `index_gitignore.filter_corpus`; the index package does not import the
+    server. Omitted, nothing is filtered.
+
+    Coverage semantics are `search_under`'s exactly: an uncovered root, a
+    missing index or a package directory answers `covered: false` with no hits
+    — never an error, because "no index yet", "not covered" and "a scan is
+    running" are one condition to a search box.
+    """
+    root = norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/") or "/"
+    m = read_manifest(cfg)
+    empty = {"covered": False, "fresh": False, "updated": None, "age_s": None,
+             "root": root, "hits": [], "truncated": False, "total": 0,
+             "scanned_partitions": 0,
+             "of_partitions": len(((m or {}).get("partitions")) or [])}
+    if m is None or not root or not os.path.exists(cfg.dirs_parquet):
+        return empty
+    import time
+
+    import duckdb
+
+    updated = m.get("updated")
+    age = (time.time() - updated) if isinstance(updated, (int, float)) else None
+    fresh = age is not None and age <= FRESH_MAX_AGE_S
+    con = duckdb.connect()
+    if not _root_is_covered(con, cfg, root):
+        return {**empty, "updated": updated, "age_s": age}
+    prefix = (root + "/") if root != "/" else "/"
+    prefix_like = (like_literal(root) + "/") if root != "/" else "/"
+    limit = max(0, min(int(limit), MAX_RANK_LIMIT))
+    cap = max(1, int(cap))
+    hit = prune(m["partitions"], prefix)
+    base = {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
+            "root": root, "scanned_partitions": len(hit),
+            "of_partitions": len(m["partitions"])}
+    qs = (q or "").strip()
+    if not qs:
+        # Nothing typed is not "everything": the empty query has no ranking to
+        # apply, and answering with an arbitrary 200 files would be noise.
+        return {**base, "hits": [], "truncated": False, "total": 0}
+
+    # `substr` from the prefix's length, so every comparison below is against
+    # the REL — exactly the string stage B scores. Filtering on the full path
+    # would let the root's own spelling admit rows no fuzzy match will keep.
+    rel_from = len(prefix) + 1
+    branches = []
+    if hit:
+        fsrc = files_src(cfg, hit)
+        branches.append(
+            f"SELECT substr(path, {rel_from}) AS rel, size, mtime, "
+            f"false AS is_dir, {_depth_col(con, fsrc, 'path')} AS depth "
+            f"FROM {fsrc} WHERE path LIKE '{prefix_like}%' ESCAPE '\\'")
+    if include_dirs:
+        dsrc = dirs_src(cfg)
+        branches.append(
+            f"SELECT substr(dir, {rel_from}) AS rel, CAST(NULL AS BIGINT) AS size, "
+            f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
+            f"{_depth_col(con, dsrc, 'dir')} AS depth "
+            f"FROM {dsrc} WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'")
+    if not branches:
+        return {**base, "hits": [], "truncated": False, "total": 0}
+
+    ql = like_literal(qs.lower())
+    qq = _q(qs.lower())
+    # The coarse tier. Deliberately cruder than `rank_entries`' — it exists to
+    # decide which `cap` rows are worth scoring properly, not to order the
+    # answer, and every extra SQL expression here is paid on all 571k rows.
+    tier = (f"CASE WHEN nm = '{qq}' THEN 1 "
+            f"WHEN nm LIKE '{ql}%' ESCAPE '\\' THEN 2 "
+            f"WHEN nm LIKE '%{ql}%' ESCAPE '\\' THEN 3 "
+            f"WHEN lrel LIKE '%{ql}%' ESCAPE '\\' THEN 4 "
+            f"ELSE 5 END")
+    # Hidden entries are dropped HERE as well as in the ranker, so a query that
+    # does not want them cannot spend the candidate cap on them (rank.py's
+    # query_wants_hidden / is_hidden_rel are the definitions; this mirrors them).
+    hidden = ("" if _wants_hidden(qs)
+              else " AND NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')")
+    sql = (f"SELECT rel, size, mtime, is_dir FROM ("
+           f"SELECT *, lower(rel) AS lrel, "
+           f"regexp_extract(lower(rel), '[^/]*$') AS nm FROM ("
+           + " UNION ALL ".join(branches) + ")) "
+           f"WHERE regexp_matches(lrel, '{_subseq_regex(qs.lower())}')"
+           f"{hidden} "
+           # One row past the cap, so "the cap bit" is known without a count.
+           f"ORDER BY {tier}, depth, rel LIMIT {cap + 1}")
+    rows = con.execute(sql).fetchall()
+    capped = len(rows) > cap
+    if capped:
+        logger.warning(
+            "index rank: the candidate cap (%d) bit for %r under %s — the "
+            "ranked answer is drawn from stage A's coarse top rows only",
+            cap, qs, root)
+    entries = [{"rel": rel, "is_dir": bool(is_dir),
+                "size": int(size) if size is not None else None,
+                "mtime": float(mtime) if mtime is not None else None}
+               for rel, size, mtime, is_dir in rows[:cap]]
+    ranked = rank_entries(qs, entries)
+    if gitignore_filter is not None:
+        ranked = gitignore_filter(root, ranked)
+    return {**base, "hits": ranked[:limit],
+            "truncated": capped or len(ranked) > limit,
+            "total": len(ranked[:limit])}

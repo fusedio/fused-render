@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.index.config import IndexConfig, load_config
-from fused_render.index.query import search_under
+from fused_render.index.query import search_ranked, search_under
 from fused_render.index.store import Sink, compact, partition_files
 from fused_render.server import create_app
 
@@ -294,3 +294,92 @@ def test_an_index_written_without_a_depth_column_still_reads(tmp_path):
     out = search_under(cfg, "/r", limit=2)
     assert out["covered"] is True
     assert sorted(e["rel"] for e in out["entries"]) == ["a", "top.txt"]
+
+
+# -- search_ranked: filtering AND ranking, server-side -------------------------
+#
+# The home page used to fetch the whole corpus (20 MB, 164k rows, silently
+# capped at MAX_CORPUS so ~71% of the user's files could not be found at all)
+# and rank it in the browser. `search_ranked` does both here and returns ~200
+# rows. The ranker itself is pinned by tests/test_index_rank.py; these are
+# about the two-stage query around it.
+
+def test_search_ranked_returns_the_best_match_first(tmp_path):
+    cfg = _index(tmp_path, "/r",
+                 ["/r/readme.md", "/r/docs/readme-draft.md",
+                  "/r/readme/other.txt", "/r/unrelated.bin"],
+                 dirs=["/r/docs", "/r/readme"])
+    out = search_ranked(cfg, "/r", "readme.md")
+    assert out["covered"] is True
+    assert out["hits"][0]["rel"] == "readme.md"
+
+
+def test_search_ranked_finds_a_subsequence_the_like_filter_would_miss(tmp_path):
+    """Stage A's coarse filter must admit fuzzy hits, not just substrings —
+    that is the whole reason it is a subsequence regex and not an ILIKE."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha-beta.txt"])
+    out = search_ranked(cfg, "/r", "albe")
+    assert [h["rel"] for h in out["hits"]] == ["alpha-beta.txt"]
+
+
+def test_search_ranked_hits_are_walk_shaped_and_carry_the_ranking(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt"])
+    [hit] = search_ranked(cfg, "/r", "alpha")["hits"]
+    assert hit["rel"] == "alpha.txt" and hit["is_dir"] is False
+    assert hit["size"] == 10 and hit["mtime"] == 100.0
+    assert hit["score"] > 0 and hit["tier"] == 1 and hit["depth"] == 1
+
+
+def test_search_ranked_ranks_directories_against_files_in_one_query(tmp_path):
+    """The same property search_under has, for the same reason: two queries
+    gave folders only the budget the files left over, and folder search died
+    on any tree big enough to fill it."""
+    cfg = _index(tmp_path, "/r", [f"/r/target/f{i}.txt" for i in range(5)],
+                 dirs=["/r/target"])
+    out = search_ranked(cfg, "/r", "target", limit=2)
+    assert out["hits"][0]["rel"] == "target"
+    assert out["hits"][0]["is_dir"] is True
+
+
+def test_search_ranked_answers_an_empty_query_with_no_hits(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt"])
+    out = search_ranked(cfg, "/r", "")
+    assert out["covered"] is True and out["hits"] == [] and out["total"] == 0
+
+
+def test_search_ranked_is_a_quiet_miss_on_an_uncovered_root(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt"])
+    out = search_ranked(cfg, "/elsewhere", "alpha")
+    assert out["covered"] is False and out["hits"] == []
+
+
+def test_search_ranked_filters_gitignored_entries_BEFORE_cutting_to_limit(tmp_path):
+    """Filtering after the cut is what makes today's corpus report `truncated`
+    while holding fewer rows than it says: the cap was spent on entries that
+    were then dropped. So `limit` counts entries the user can actually see."""
+    cfg = _index(tmp_path, "/r", [f"/r/alpha{i}.txt" for i in range(10)])
+    dropped = {"alpha0.txt", "alpha1.txt", "alpha2.txt"}
+    out = search_ranked(cfg, "/r", "alpha", limit=5,
+                        gitignore_filter=lambda root, es:
+                            [e for e in es if e["rel"] not in dropped])
+    assert len(out["hits"]) == 5
+    assert not dropped & {h["rel"] for h in out["hits"]}
+    assert out["truncated"] is True
+
+
+def test_search_ranked_flags_nothing_when_every_hit_fits(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.txt"])
+    out = search_ranked(cfg, "/r", "alpha", limit=5)
+    assert out["truncated"] is False and out["total"] == 1
+
+
+def test_the_stage_a_cap_keeps_the_name_matches_over_the_fuzzy_ones(tmp_path):
+    """Stage A can in principle drop a row stage B would rank top. Its coarse
+    tier ordering is what makes that unlikely, and this is the property: with a
+    cap far below the candidate count, the rows that survive are the ones the
+    real ranker also puts first."""
+    files = [f"/r/noise/a{i}-l-p-h-a.txt" for i in range(50)]
+    files.append("/r/alpha.txt")
+    cfg = _index(tmp_path, "/r", files, dirs=["/r/noise"])
+    out = search_ranked(cfg, "/r", "alpha", cap=3)
+    assert out["hits"][0]["rel"] == "alpha.txt"
