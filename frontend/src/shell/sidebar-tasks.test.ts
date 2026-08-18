@@ -15,6 +15,7 @@ import {
   EMPTY_TASKS_PULSE,
   TASKS_SEEN_KEY,
   isDoneUnread,
+  isUnseenCompletion,
   parseTasksSeen,
   pulseTitle,
   runningLabel,
@@ -65,14 +66,13 @@ describe("the sidebar's tasks pulse", () => {
     const tasks = [
       task({ key: "a", status: "in_progress" }),
       task({ key: "b", status: "done", unread: 2 }),
-      // Read: the completion has been looked at, so there is nothing to send
-      // anybody to the page for.
+      // Read: the completion has been dealt with, so there is nothing waiting.
       task({ key: "c", status: "done", unread: 0 }),
       // Not a completion at all.
       task({ key: "d", status: "upcoming" }),
       task({ key: "e", status: "archived", unread: 3 }),
     ];
-    expect(tasksPulse(tasks, {})).toEqual({ running: 1, doneUnread: 1 });
+    expect(tasksPulse(tasks, {})).toEqual({ running: 1, doneUnread: 1, unseen: 1 });
     expect(tasksPulse([], {})).toEqual(EMPTY_TASKS_PULSE);
   });
 
@@ -82,34 +82,52 @@ describe("the sidebar's tasks pulse", () => {
     // hue would be the one place in the app where a colour disagreed with the
     // ring the row itself draws (design-principles §1).
     const broke = [task({ key: "f", status: "failed", unread: 1 })];
-    expect(tasksPulse(broke, {})).toEqual({ running: 0, doneUnread: 0 });
+    expect(tasksPulse(broke, {})).toEqual({ running: 0, doneUnread: 0, unseen: 0 });
   });
 
-  it("clears on a visit, and only for the completions that visit showed", () => {
+  it("keeps the COUNT through a visit and drops only the dot", () => {
+    // The two are different kinds of statement (Akshil, 2026-08-18). The dot is
+    // an interruption and the visit answers it; the count is a standing fact
+    // about unread work, and glancing at the list does not make it untrue.
     const finished = task({ key: "b", status: "done", unread: 1, last_active: 500 });
-    const running = task({ key: "a", status: "in_progress" });
-    const before = [running, finished];
-    expect(tasksPulse(before, {}).doneUnread).toBe(1);
+    const before = [task({ key: "a", status: "in_progress" }), finished];
+    expect(tasksPulse(before, {})).toEqual({ running: 1, doneUnread: 1, unseen: 1 });
 
+    const seen = seenAfterVisit(before);
+    const after = tasksPulse(before, seen);
+    expect(after.unseen).toBe(0);
+    expect(after.doneUnread).toBe(1);
+    // The count falls when the work is READ — the server's own `unread`, nothing
+    // this module stores.
+    const read = [task({ key: "b", status: "done", unread: 0, last_active: 500 })];
+    expect(tasksPulse(read, seen).doneUnread).toBe(0);
+    expect(isDoneUnread(finished)).toBe(true);
+    expect(isDoneUnread(read[0])).toBe(false);
+  });
+
+  it("brings the dot back for a completion the visit never showed", () => {
+    const finished = task({ key: "b", status: "done", unread: 1, last_active: 500 });
+    const before = [task({ key: "a", status: "in_progress" }), finished];
     // Landing on /tasks stamps every DONE task with the completion on screen.
     const seen = seenAfterVisit(before);
     expect(seen).toEqual({ b: 500 });
-    expect(tasksPulse(before, seen).doneUnread).toBe(0);
+    expect(tasksPulse(before, seen).unseen).toBe(0);
     // Still nothing after a poll that changes nothing — the whole point of
     // persisting the stamp rather than a "dismissed" flag on the session.
-    expect(tasksPulse([...before], seen).doneUnread).toBe(0);
+    expect(tasksPulse([...before], seen).unseen).toBe(0);
 
     // The RUNNING task completing is a new completion: it was never stamped,
     // because its completion had not happened when the reader was there.
     const settled = [task({ key: "a", status: "done", unread: 1 }), finished];
-    expect(tasksPulse(settled, seen).doneUnread).toBe(1);
+    expect(tasksPulse(settled, seen).unseen).toBe(1);
 
     // And so is the SAME task running again and finishing again: `last_active`
     // moves, so the stamp no longer describes what is on screen. A bare set of
     // dismissed keys would have swallowed this one forever.
     const again = [task({ key: "b", status: "done", unread: 1, last_active: 900 })];
-    expect(tasksPulse(again, seen).doneUnread).toBe(1);
-    expect(isDoneUnread(again[0], seen)).toBe(true);
+    expect(tasksPulse(again, seen).unseen).toBe(1);
+    expect(isUnseenCompletion(again[0], seen)).toBe(true);
+    expect(isUnseenCompletion(finished, seen)).toBe(false);
   });
 
   it("prunes the dismissal to the tasks in the answer", () => {
@@ -134,11 +152,15 @@ describe("the sidebar's tasks pulse", () => {
   });
 
   it("compares pulses and dismissals by value", () => {
-    // The store publishes only on a CHANGED pair, and the sidebar's own
+    // The store publishes only on a CHANGED triple, and the sidebar's own
     // mark-seen effect runs on every published pulse — value equality is what
-    // keeps that from looping.
-    expect(samePulse({ running: 1, doneUnread: 0 }, { running: 1, doneUnread: 0 })).toBe(true);
-    expect(samePulse({ running: 1, doneUnread: 0 }, { running: 1, doneUnread: 2 })).toBe(false);
+    // keeps that from looping. `unseen` is in the comparison: it is the field the
+    // dismissal moves, and a publish that skipped it would leave the dot up.
+    const p = { running: 1, doneUnread: 1, unseen: 1 };
+    expect(samePulse(p, { running: 1, doneUnread: 1, unseen: 1 })).toBe(true);
+    expect(samePulse(p, { running: 1, doneUnread: 1, unseen: 0 })).toBe(false);
+    expect(samePulse(p, { running: 1, doneUnread: 2, unseen: 1 })).toBe(false);
+    expect(samePulse(p, { running: 0, doneUnread: 1, unseen: 1 })).toBe(false);
     const a: TasksSeen = { x: 1, y: 2 };
     expect(sameSeen(a, { y: 2, x: 1 })).toBe(true);
     expect(sameSeen(a, { x: 1 })).toBe(false);
@@ -146,9 +168,12 @@ describe("the sidebar's tasks pulse", () => {
   });
 
   it("says the same sentence in both collapse states", () => {
+    // The tooltip names the STATE, not the dismissal, so a dot and a chip on the
+    // same entry cannot quote different numbers.
     expect(runningLabel(1)).toBe("1 running");
-    expect(pulseTitle({ running: 2, doneUnread: 1 })).toBe("2 running · 1 finished, not read");
-    expect(pulseTitle({ running: 0, doneUnread: 3 })).toBe("3 finished, not read");
+    expect(pulseTitle({ running: 2, doneUnread: 1, unseen: 0 }))
+      .toBe("2 running \u00b7 1 finished, not read");
+    expect(pulseTitle({ running: 0, doneUnread: 3, unseen: 1 })).toBe("3 finished, not read");
     expect(pulseTitle(EMPTY_TASKS_PULSE)).toBe("");
   });
 });
@@ -180,7 +205,12 @@ describe("one poll behind both readers", () => {
     // And the count is not drawn at all while that page is the one on screen —
     // the dismissal needs a poll to land, and a chip that flashes beside the row
     // of the open page and then clears itself is worse than no chip.
-    expect(SIDEBAR).toContain("doneUnread: tasksActive ? 0 : pulse.doneUnread");
+    // And the DOT is not drawn at all while that page is the one on screen — the
+    // stamp needs a poll to land, and a dot flashing beside the open page and
+    // then clearing itself is worse than no dot. The CHIP is untouched by the
+    // visit on purpose (see the pulse tests above).
+    expect(SIDEBAR).toContain("const unseen = tasksActive ? 0 : pulse.unseen;");
+    expect(SIDEBAR).not.toContain("tasksActive ? 0 : pulse.doneUnread");
     // localStorage is only ever touched inside a try — a blocked store costs the
     // dismissal, never the sidebar (the same rule Scheduled.tsx's view memory
     // follows).
@@ -197,9 +227,12 @@ describe("the Tasks entry's two marks", () => {
     // running" is the fact that outranks "something is ready".
     expect(SIDEBAR).toContain("sidebar-rail-dot is-running");
     expect(SIDEBAR).toContain("sidebar-rail-dot is-unread");
-    expect(SIDEBAR.indexOf("shown.running > 0 ? (")).toBeLessThan(
-      SIDEBAR.indexOf("shown.doneUnread > 0 ? ("),
+    expect(SIDEBAR.indexOf("pulse.running > 0 ? (")).toBeLessThan(
+      SIDEBAR.indexOf("unseen > 0 ? ("),
     );
+    // The dot reads the DISMISSAL-GATED number, which is the whole difference
+    // between it and the chip beside the label.
+    expect(SIDEBAR).toContain(") : unseen > 0 ? (");
     // Nothing at all when there is nothing to say.
     expect(SIDEBAR).toContain("badge: tasksDot");
     expect(FRAME).toContain("{item.badge}");
@@ -218,8 +251,11 @@ describe("the Tasks entry's two marks", () => {
       SIDEBAR.indexOf("// Everything that is not primary nav"),
     );
     expect(trailing).not.toContain("sidebar-rail-dot");
-    expect(trailing).toContain("runningLabel(shown.running)");
-    expect(trailing).toContain("{shown.doneUnread}");
+    expect(trailing).toContain("runningLabel(pulse.running)");
+    // The chip reads the RAW state — no dismissal, no visit suppression: it says
+    // what is waiting to be read until it is read.
+    expect(trailing).toContain("{pulse.doneUnread}");
+    expect(trailing).not.toContain("unseen");
     expect(SIDEBAR).toContain("trailing={tasksTrailing}");
     expect(FRAME).toContain('<span className="sidebar-item-trail">{trailing}</span>');
     // Both marks name the state in the status ring's own tokens, so the sidebar
@@ -262,10 +298,33 @@ describe("the Tasks entry's two marks", () => {
     expect(SIDEBAR_CSS).toContain("animation: sidebar-running-shimmer");
     expect(SIDEBAR_CSS).toContain("@keyframes sidebar-running-shimmer");
     expect(SIDEBAR_CSS).toContain("background-clip: text");
+
+    // AND THE WORDS NEVER VANISH (Akshil, 2026-08-18). A band that sweeps toward
+    // the page colour takes each letter down to a whisper as it passes — a blink,
+    // not a shimmer, with the readout barely there for a third of the cycle.
+    // Every stop is the full status hue or the status hue mixed toward `--fg`, so
+    // the travelling band is BRIGHTER than the resting ink and the animation's
+    // floor is the flat, fully readable label.
+    const grad = SIDEBAR_CSS.slice(
+      SIDEBAR_CSS.indexOf(".sidebar-running {"),
+      SIDEBAR_CSS.indexOf("@keyframes sidebar-running-shimmer"),
+    );
+    expect(grad).toContain("color-mix(in srgb, var(--status-progress) 65%, var(--fg))");
+    expect(grad).not.toContain("var(--bg)");
+    expect(grad).not.toContain("transparent)");
+    // The sweep is a background POSITION and nothing else: no opacity in the
+    // cycle, no colour keyframes — nothing that can take the element towards
+    // invisible on its way past.
+    const frames = SIDEBAR_CSS.slice(SIDEBAR_CSS.indexOf("@keyframes sidebar-running-shimmer"));
+    const cycle = frames.slice(0, frames.indexOf("\n}"));
+    expect(cycle).toContain("background-position");
+    expect(cycle).not.toContain("opacity");
+    expect(cycle).not.toContain("color");
+
     // The blanket reduced-motion rule runs an animation ONCE at 0.01ms, which
-    // would park this gradient mid-travel and leave the words half-faded — a
-    // dimmed readout reads as stale, the opposite of what it says. So the
-    // gradient is dropped and the ink is the flat status hue.
+    // would park this gradient wherever it stopped — a readout whose ink depends
+    // on an animation frame. So the gradient is dropped and the ink is the flat
+    // status hue: the same label the moving version rests on.
     const rm = SIDEBAR_CSS.slice(SIDEBAR_CSS.indexOf("@media (prefers-reduced-motion: reduce)"));
     expect(rm).toContain(".sidebar-running");
     expect(rm).toContain("animation: none");

@@ -2624,36 +2624,65 @@ export function parseTasksSeen(raw: string | null): TasksSeen {
   return out;
 }
 
-/** Has this task finished work nobody has looked at yet, given what has already
- *  been dismissed? */
-export function isDoneUnread(task: Task, seen: TasksSeen): boolean {
-  if (taskColumn(task) !== "done") return false;
-  if (!(task.unread > 0)) return false;
-  return seen[task.key] !== task.last_active;
+/**
+ * Has this task finished work nobody has READ?
+ *
+ * The state, with no dismissal in it. This is what the expanded sidebar's count
+ * prints, and it falls only when the work is actually read — visiting the page
+ * does not make a number about unread work untrue.
+ */
+export function isDoneUnread(task: Task): boolean {
+  return taskColumn(task) === "done" && task.unread > 0;
+}
+
+/**
+ * The same completion, NOT YET SHOWN to the reader: the state above, minus what
+ * a visit to the page has already stamped (TasksSeen).
+ *
+ * The two exist apart because a count and a dot are different kinds of
+ * statement. A COUNT is a standing fact — "three finished things are waiting" —
+ * and it is still true after you have glanced at the list; it goes away by being
+ * dealt with. A DOT is an interruption, and an interruption that survives the
+ * reader going where it points is just a decoration. So the collapsed rail's dot
+ * clears on the visit and the expanded row's chip does not, and neither is a bug
+ * in the other (Akshil, 2026-08-18).
+ */
+export function isUnseenCompletion(task: Task, seen: TasksSeen): boolean {
+  return isDoneUnread(task) && seen[task.key] !== task.last_active;
 }
 
 export interface TasksPulse {
-  /** Tasks whose work is in flight — the yellow half. */
+  /** Tasks whose work is in flight — the yellow half, in both modes. */
   running: number;
-  /** Tasks that finished and have not been looked at — the green half. */
+  /** Tasks that finished with something unread, dismissal or no dismissal —
+   *  the expanded row's count chip. */
   doneUnread: number;
+  /** Of those, the ones the reader has not been shown yet — the collapsed
+   *  rail's green dot, which a visit to /tasks clears. */
+  unseen: number;
 }
 
-export const EMPTY_TASKS_PULSE: TasksPulse = { running: 0, doneUnread: 0 };
+export const EMPTY_TASKS_PULSE: TasksPulse = { running: 0, doneUnread: 0, unseen: 0 };
 
 /** The whole sidebar signal, from the rows the page already has. */
 export function tasksPulse(tasks: Task[], seen: TasksSeen): TasksPulse {
   let running = 0;
   let doneUnread = 0;
+  let unseen = 0;
   for (const t of tasks) {
-    if (taskColumn(t) === "in_progress") running++;
-    else if (isDoneUnread(t, seen)) doneUnread++;
+    if (taskColumn(t) === "in_progress") {
+      running++;
+      continue;
+    }
+    if (!isDoneUnread(t)) continue;
+    doneUnread++;
+    if (isUnseenCompletion(t, seen)) unseen++;
   }
-  return { running, doneUnread };
+  return { running, doneUnread, unseen };
 }
 
 export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
-  return a.running === b.running && a.doneUnread === b.doneUnread;
+  return a.running === b.running && a.doneUnread === b.doneUnread && a.unseen === b.unseen;
 }
 
 /**

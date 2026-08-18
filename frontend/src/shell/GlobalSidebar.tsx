@@ -252,42 +252,45 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const homeActive = pathname === "/home";
   const tasksActive = pathname === "/tasks";
 
-  // WHAT THE TASKS ENTRY KNOWS, and it is two numbers: what is running, and what
-  // finished that nobody has read (shell/tasksPulse — one poll shared with the
-  // page, which publishes into it). Two numbers rather than a badge count
-  // because they are two different sentences: yellow is "the machine is working
-  // for you", green is "go and look". Yellow WINS whenever both are true — a
-  // reader who is being told work is still in flight does not also need to be
-  // sent to the page mid-flight, and the trip is still waiting when it settles.
+  // WHAT THE TASKS ENTRY KNOWS: what is running, and what finished with
+  // something unread (shell/tasksPulse — one poll shared with the page, which
+  // publishes into it). Two facts rather than a badge count, because they are two
+  // different sentences: yellow is "the machine is working for you", green is
+  // "go and look". Yellow WINS whenever both are true — a reader being told work
+  // is still in flight does not also need sending to the page mid-run, and the
+  // trip is still waiting when it settles.
   const pulse = useTasksPulse();
-  // LANDING ON THE PAGE IS THE DISMISSAL. Not a button and not a per-row read:
-  // "an in-progress task completed" is news exactly until the reader has been
-  // where it is shown. Repeated on every pulse while the entry is active so the
-  // mark stays gone while the page is open; it comes back only for a completion
-  // stamped after the visit (tasks-lib.seenAfterVisit), which is why the
-  // dismissal is a stamp per task and not a flag.
+  // LANDING ON THE PAGE IS THE DISMISSAL — OF THE DOT, and only the dot. Not a
+  // button and not a per-row read: "an in-progress task completed" is news
+  // exactly until the reader has been where it is shown. Repeated on every pulse
+  // while the entry is active so the mark stays gone while the page is open; it
+  // comes back only for a completion stamped after the visit
+  // (tasks-lib.seenAfterVisit), which is why the dismissal is a stamp per task
+  // and not a flag.
   useEffect(() => {
     if (tasksActive) markTasksSeen();
   }, [tasksActive, pulse]);
-  // AND WHILE THE READER IS ON /tasks, THERE IS NO COUNT AT ALL. The dismissal
-  // above needs a poll to land before it can stamp anything, so a completion that
-  // arrives in the same tick as the navigation would flash a chip beside the row
-  // of the page being looked at, then clear itself. Suppressed here rather than
-  // fixed in the store, because it is not a timing detail: a "go and look" mark
-  // pointing at the open page is noise whatever the clock says. RUNNING is not
-  // suppressed — it is a live state, not an errand.
-  const shown = { running: pulse.running, doneUnread: tasksActive ? 0 : pulse.doneUnread };
-  const tasksTip = pulseTitle(shown);
+  // THE DOT AND THE CHIP COUNT DIFFERENT THINGS, on purpose (Akshil,
+  // 2026-08-18). `unseen` is dismissal-gated and is the dot: an interruption
+  // that has done its job once the reader has been where it points — and it is
+  // suppressed outright while that page IS the one on screen, since the stamp
+  // needs a poll to land and a dot flashing beside the open page is noise. The
+  // CHIP reads `doneUnread`, the raw state, and no visit touches it: "three
+  // finished things are waiting" stays true until they are read, and a number
+  // that cleared itself for being glanced at would be a number nobody could
+  // trust. See tasks-lib.isDoneUnread / isUnseenCompletion.
+  const unseen = tasksActive ? 0 : pulse.unseen;
+  const tasksTip = pulseTitle(pulse);
 
   // The collapsed rail has no label to hang a word on, so the whole signal is
   // one dot in the icon's top-right corner: yellow while anything runs, green
-  // for unread completions, nothing at all otherwise. The hues are the status
-  // ring's own (--status-progress / --status-done, schedule.css) — one status,
-  // one colour, on every surface that names it (design-principles §1).
+  // for completions not yet shown, nothing at all otherwise. The hues are the
+  // status ring's own (--status-progress / --status-done, schedule.css) — one
+  // status, one colour, on every surface that names it (design-principles §1).
   const tasksDot =
-    shown.running > 0 ? (
+    pulse.running > 0 ? (
       <span className="sidebar-rail-dot is-running" title={tasksTip} />
-    ) : shown.doneUnread > 0 ? (
+    ) : unseen > 0 ? (
       <span className="sidebar-rail-dot is-unread" title={tasksTip} />
     ) : undefined;
 
@@ -297,16 +300,16 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the same element for the same kind of fact, not a lookalike. NO DOT here:
   // a dot on the icon plus a readout beside the label is one fact stated twice.
   const tasksTrailing =
-    shown.running > 0 || shown.doneUnread > 0 ? (
+    pulse.running > 0 || pulse.doneUnread > 0 ? (
       <>
-        {shown.running > 0 && (
+        {pulse.running > 0 && (
           <span className="sidebar-running" title={tasksTip}>
-            {runningLabel(shown.running)}
+            {runningLabel(pulse.running)}
           </span>
         )}
-        {shown.doneUnread > 0 && (
+        {pulse.doneUnread > 0 && (
           <span className="sidebar-count-chip" title={tasksTip}>
-            {shown.doneUnread}
+            {pulse.doneUnread}
           </span>
         )}
       </>

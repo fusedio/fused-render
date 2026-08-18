@@ -301,16 +301,27 @@ a.sidebar-rail-btn {
 
    Drawn as a moving highlight through the text itself (background-clip: text)
    rather than as a sweeping overlay, because the element is 60px of small type
-   with nothing behind it to sweep across. */
+   with nothing behind it to sweep across.
+
+   THE WORDS NEVER FADE (Akshil, 2026-08-18: the label must stay readable the
+   whole way through). The first cut swept toward `--bg`, so the band travelling
+   across the text took each letter down to a whisper of the page colour as it
+   passed — a blink, not a shimmer, and for a third of the cycle the readout was
+   barely there. The travelling band is BRIGHTER than the resting ink now, never
+   dimmer: every stop is the full status hue or the status hue mixed toward
+   `--fg`, which raises contrast against the sidebar in BOTH themes (dark `--fg`
+   over the light theme's amber, light `--fg` over the dark theme's yellow). The
+   floor of the animation is therefore the flat, fully readable label the
+   reduced-motion arm below draws, and the motion only ever adds to it. */
 .sidebar-running {
   font-size: 10.5px;
   line-height: 1;
   color: var(--status-progress);
   background-image: linear-gradient(
     100deg,
-    var(--status-progress) 20%,
-    color-mix(in srgb, var(--status-progress) 35%, var(--bg)) 40%,
-    var(--status-progress) 60%
+    var(--status-progress) 30%,
+    color-mix(in srgb, var(--status-progress) 65%, var(--fg)) 50%,
+    var(--status-progress) 70%
   );
   background-size: 300% 100%;
   background-repeat: no-repeat;
@@ -331,10 +342,10 @@ a.sidebar-rail-btn {
 }
 
 /* The blanket reduced-motion rule (reduced-motion.css) collapses the duration
-   and runs the sweep ONCE, which would park the gradient mid-travel and leave
-   the words half-faded — a dimmed readout reads as "stale", the opposite of
-   what this says. So the whole gradient is dropped instead and the text is the
-   flat status hue: the fact, stated statically. */
+   and runs the sweep ONCE, which would park the gradient wherever 0.01ms leaves
+   it — a readout whose ink depends on where an animation stopped. So the whole
+   gradient is dropped instead and the text is the flat status hue: the same
+   fully-readable label the moving version rests on, stated statically. */
 @media (prefers-reduced-motion: reduce) {
   .sidebar-running {
     animation: none;
