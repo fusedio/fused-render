@@ -128,6 +128,13 @@ def export_app_env() -> None:
     # ran `claude --help`, and blocking here blocks the socket bind, which the
     # desktop supervisor reads as a server that failed to start.
     skill_plugin.export_skill_plugin_env()
+    # The `fused` CLI wrapper the chats we spawn can run (D329): a wrapper
+    # script under home_dir()/fused-bin goes on PATH and its dir is published
+    # as one more FUSED_RENDER_* var, so a Claude session can `fused workbench
+    # canvas push` against the same environment the canvases iframe shows.
+    # Filesystem-only, like the skill plugin export above.
+    from fused_render import fusedcli
+    fusedcli.export_fused_cli_env()
     _export_bundled_uv_path()
 
 
