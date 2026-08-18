@@ -20,6 +20,17 @@
 #                   itself; both are load-bearing here and neither is named
 #                   again, for the reason the whisper runner names `av` —
 #                   a dependency this file relies on should be visible in it.
+#                   **BOUNDED, and the bound was earned.** `mflux` used to be
+#                   named here with no version at all, and the `uv.lock` beside
+#                   this file is gitignored — so the first environment built
+#                   after mflux 0.19.0 shipped re-resolved 0.18.1 -> 0.19.0,
+#                   which pins `mlx>=0.32,<0.33`, and mlx 0.32 is the release
+#                   that made default streams per-thread. Every local render
+#                   started aborting on its first denoising step with no repo
+#                   change behind it (see `worker.py::_pin_stream`). A minor
+#                   range means the next such move is a deliberate bump with a
+#                   render behind it rather than a silent one on a user's
+#                   machine.
 #   huggingface_hub downloads
 #   psutil          the RSS half of "how much memory is this costing"; the MLX
 #                   half comes from mlx's own allocator (see `memory()`)
@@ -31,7 +42,7 @@ name = "fused-render-runner-mflux-image"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "mflux",
+    "mflux>=0.19,<0.20",
     "huggingface_hub",
     "psutil",
 ]

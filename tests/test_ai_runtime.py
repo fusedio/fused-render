@@ -1065,6 +1065,28 @@ def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
                 f"{runner.code} declares a source build: {dependency}")
 
 
+def test_the_mflux_runner_BOUNDS_mflux():
+    """`mflux` was declared with no version at all, and the `uv.lock` beside it
+    is gitignored — so every environment provisioned after mflux 0.19.0 shipped
+    re-resolved 0.18.1 -> 0.19.0, whose own `mlx>=0.32,<0.33` bound pulled in the
+    mlx release that made default streams per-thread. Local image generation
+    started aborting on its first denoising step with no commit behind it
+    (`mflux_image/worker.py::_pin_stream`).
+
+    Only this dependency, and deliberately not "every runner bounds everything":
+    the claim being pinned is not a house style, it is that THIS library's next
+    minor is a deliberate bump with a real render behind it, because its last one
+    silently changed the threading contract of the code that drives it.
+    """
+    from fused_render import projectenv
+
+    runner = next(r for r in registry.all_runners() if r.code == "mflux-image")
+    declared = projectenv.dependencies_of(runner.folder)
+    bounds = [d for d in declared if d.replace(" ", "").startswith("mflux")]
+    assert bounds, f"mflux is not declared at all: {declared}"
+    assert bounds[0].replace(" ", "") == "mflux>=0.19,<0.20", bounds
+
+
 # -- the supervisor -------------------------------------------------------------
 
 
