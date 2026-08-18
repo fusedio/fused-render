@@ -223,9 +223,13 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
         time.sleep(WARM_WAIT_POLL_S)
 
 
-# The query the startup warm ranks with. Anything selective enough to exercise
-# the two-stage plan without matching the whole tree; it is thrown away.
-WARM_RANK_QUERY = "readme"
+# The query the startup warm ranks with, and it is deliberately one that MATCHES
+# NOTHING. A query with hits stops at the cheap substring pass (the ladder in
+# `search_ranked`), leaving the subsequence-regex plan — the expensive half, and
+# the one a mistyped query lands on — cold for the first user who needs it. A
+# no-match query runs both passes, plus the ignore-root discovery behind the
+# gitignore filter, and returns an empty body.
+WARM_RANK_QUERY = "zqxjv"
 
 
 def _ranked(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT) -> dict:

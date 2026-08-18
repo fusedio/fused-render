@@ -139,10 +139,14 @@ developer's real home. The scheduler's own tests call `run_startup_scan()` direc
 
 The same hook then calls `startup_warm()`, which spawns one detached daemon thread
 running `run_startup_warm()`: `search_under` + `filter_corpus` over `expanduser("~")`,
-and then `search_ranked` with a representative query over the same root — exactly the
-two requests the explorer makes (the in-folder corpus and the home page's ranked
+and then `search_ranked` with a query that matches NOTHING over the same root — exactly
+the two requests the explorer makes (the in-folder corpus and the home page's ranked
 search), under exactly the same pool key. Warming only the corpus would leave the
-ranked path's own duckdb plan cold, and that is the one a keystroke waits on.
+ranked path's own duckdb plan cold, and that is the one a keystroke waits on. The
+no-match query is not laziness: the ladder above stops at the substring pass as soon as
+it has enough, so a query WITH hits never touches the subsequence-regex plan — the
+expensive half, and the one a mistyped query lands on. The client's idle warm
+(`FilesHome.tsx`) sends the same shape of query for the same reason.
 
 Everything that path caches is **per process** and starts empty: the gitignore verdict
 pool has no verdicts until some request sweeps `git check-ignore` over the whole corpus,
@@ -276,7 +280,7 @@ scripts/gen-rank-fixture.ts`): `tests/test_index_rank.py` and
 
 **Known and logged:** stage A's cap can in principle drop a row stage B would have
 ranked first. Tier ordering makes it unlikely (a name-substring hit outranks a
-fuzzy-only one in `rank_compare` too), and a cap that bites is a `logger.warning` plus
+fuzzy-only one in `rank_compare` too), and a cap that bites is a `logger.debug` line plus
 `truncated: true` — silent truncation is what this route removes, not what it
 reintroduces.
 

@@ -485,7 +485,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     row stage B would have ranked first. It is unlikely because the two agree
     on what is coarsely good — a name-substring hit outranks a fuzzy-only one
     in `rank_compare` too, and tier 1-3 rows are emitted before any tier 5 one
-    — but it is not impossible, so a cap that bites is a warning in the log and
+    — but it is not impossible, so a cap that bites is a debug line in the log and
     `truncated: true` in the response. Silent truncation is what this removes,
     not what it reintroduces.
 
@@ -583,7 +583,13 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             f"WHERE {predicate}{hidden} "
             f"ORDER BY {tier}, depth, rel LIMIT {cap + 1}").fetchall()
         if len(rows) > cap:
-            logger.warning(
+            # DEBUG, not WARNING: this fires on every keystroke of any broad
+            # query — "a" and "e" alone exceed the cap on the substring pass —
+            # and a line that appears whenever the app is working normally
+            # trains everyone to ignore the log. The response says the same
+            # thing where it can be acted on (`truncated: true`), so nothing is
+            # silent; it is just not shouted.
+            logger.debug(
                 "index rank: the candidate cap (%d) bit for %r under %s — the "
                 "ranked answer is drawn from stage A's coarse top rows only",
                 cap, qs, root)

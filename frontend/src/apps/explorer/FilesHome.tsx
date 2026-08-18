@@ -83,10 +83,14 @@ type AiPhase =
 const AI_OFF: AiPhase = { status: "off" };
 
 // What the on-mount idle warm asks for. Nothing renders it — it exists to pay
-// the server's cold cost (the duckdb import, the gitignore verdict pool) before
-// the first keystroke rather than on it. Selective enough to exercise the real
-// two-stage plan; `limit: 1` keeps the response a rounding error.
-const WARM_QUERY = "readme";
+// the server's cold cost (the duckdb import, the ignore-root discovery, the
+// gitignore verdict pool) before the first keystroke rather than on it.
+//
+// It matches NOTHING on purpose, and that is what makes it a real warm: the
+// server escalates from a cheap substring pass to a subsequence regex only when
+// the cheap pass cannot fill the limit, so a query WITH hits leaves the
+// expensive plan cold. This one runs both passes and comes back empty.
+const WARM_QUERY = "zqxjv";
 
 function MagnifierIcon() {
   return (
