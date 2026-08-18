@@ -3363,17 +3363,18 @@ describe("the archive action", () => {
     expect(ROW).toMatch(/\{file && \(\s*<button/);
     expect(CARD).toMatch(/\{file && \(\s*<button/);
     // Its neighbours are all still gated, each by its own guard rather than by a
-    // group's — which is what lets Archive keep its place in the strip's order
-    // (clear it, run it, file it, open it) instead of jumping to the front the day
-    // the flag flips.
+    // group's, and their order survives whichever of them are rendered.
     for (const guarded of ["seen", "run", "chat"]) {
       expect(ROW).toContain(`{SHOW_ROW_ACTIONS && ${guarded} && (`);
     }
     expect(ROW.indexOf("{SHOW_ROW_ACTIONS && run && (")).toBeLessThan(
-      ROW.indexOf("{file && ("),
-    );
-    expect(ROW.indexOf("{file && (")).toBeLessThan(
       ROW.indexOf("{SHOW_ROW_ACTIONS && chat && ("),
+    );
+    // And Archive is no longer IN that strip at all (2026-08-18): it is at the
+    // row's LEADING edge, in the mark slot, ahead of every one of them — see "the
+    // archive button swaps with the status ring" below.
+    expect(ROW.indexOf("{file && (")).toBeLessThan(
+      ROW.indexOf("{SHOW_ROW_ACTIONS && seen && ("),
     );
     // Hidden by OPACITY and not by `display`/`visibility`, deliberately: the
     // button has to stay in the tab order and light up when a keyboard reaches
@@ -3432,6 +3433,67 @@ describe("the archive action", () => {
     expect(TASKS_CSS).toMatch(
       /\.tasks-card-act,\n\.prefs-section \.tasks-card-act \{[^}]*pointer-events: auto/,
     );
+  });
+
+  it("swaps with the status ring on a List row, in the ring's own box", () => {
+    // The button used to sit out by the folder chip, at the row's busiest end.
+    // It is in the MARK SLOT now: ring at rest, Archive under the pointer, same
+    // place. Both occupants are inside one wrapper, which is the only way the two
+    // can be held to one box.
+    const from = VIEWS.indexOf('<span className="tasks-rowmark">');
+    expect(from).toBeGreaterThan(-1);
+    const slot = VIEWS.slice(from, VIEWS.indexOf("</span>", from));
+    expect(slot).toContain("<StatusIcon");
+    expect(slot).toContain("tasks-act--archive");
+    // It is drawn BEFORE the row's id chip — i.e. at the leading edge, where the
+    // ring is — and there is exactly one archive button on a row.
+    expect(from).toBeLessThan(VIEWS.indexOf("<IdChip id={task.task_id}"));
+    expect((ROW.match(/tasks-act--archive/g) ?? []).length).toBe(1);
+
+    // NOTHING MOVES when they swap, and that is a claim about the CSS: the slot is
+    // exactly the rail's width and the button is out of flow inside it, so the
+    // rail, the thread's indent under it and the caret's box beside it cannot
+    // shift by a pixel whichever occupant is showing.
+    const mark = block(TASKS_CSS, ".tasks-rowmark");
+    expect(mark).toContain("width: var(--tasks-rail-w)");
+    expect(mark).toContain("flex: 0 0 var(--tasks-rail-w)");
+    expect(mark).toContain("position: relative");
+    // No z-index on the SLOT: the row's stretched link has to keep painting over
+    // the ring's box, exactly as it did when the ring was the flex child.
+    expect(mark).not.toContain("z-index");
+    const button = block(
+      TASKS_CSS,
+      ".tasks-rowmark .tasks-act--archive",
+    );
+    expect(button).toContain("position: absolute");
+    expect(button).toContain("transform: translate(-50%, -50%)");
+
+    // The handover itself: the ring fades on the same triggers that reveal the
+    // button, and stops collecting presses while it is invisible.
+    const fade = block(
+      TASKS_CSS,
+      ".tasks-row:hover .tasks-rowmark .schedule-ring",
+    );
+    expect(fade).toContain("opacity: 0");
+    expect(fade).toContain("pointer-events: none");
+    // Keyboard reachability is why `:focus-within` is in the trigger list — a tab
+    // onto the button reveals it, and the ring in front of it must get out of the
+    // way (the same rule the strip has always obeyed).
+    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-rowmark .schedule-ring");
+    expect(TASKS_CSS).toContain(".tasks-act:focus-visible");
+    // A row with nothing to file keeps its ring under the pointer: a blank slot
+    // where the row's status was is worse than no swap at all.
+    expect(TASKS_CSS).toContain(":not(:has(.tasks-act--archive)) .schedule-ring");
+  });
+
+  it("leaves the board card's archive exactly where it was", () => {
+    // The swap is the LIST's, and only the List's. A card's ring is not in a rail
+    // and its head has an empty right end the strip was measured against
+    // (`--tasks-card-head-h`), so moving the button there would be a change with
+    // nothing behind it.
+    expect(CARD).toContain("tasks-card-act tasks-act--archive");
+    expect(CARD).not.toContain("tasks-rowmark");
+    expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
   });
 
   it("never paints it red — archiving destroys nothing", () => {
@@ -5602,11 +5664,16 @@ describe("the tasks toolbar", () => {
     // §3). The measure is the LIST's number, not the board's — it was the board's
     // for a few hours, and letting the one view that CAN scroll inside itself set
     // the width for the two that cannot was the wrong way round.
-    const measure = 1240;
-    // Comfortably inside the flow reference's 1200-1400, and tighter than the
-    // board's own five-lane span, which is the point: the board scrolls.
-    expect(measure).toBeGreaterThanOrEqual(1200);
-    expect(measure).toBeLessThanOrEqual(1400);
+    const measure = 1050;
+    // 15% off the 1240 it was for a day (Akshil, 2026-08-18), rounded to the
+    // nearest 50: a row's ink is an id, a title and two short times, and the
+    // measure is what stops the title's ellipsis sitting a screen away from the
+    // times it is being clipped for. Still far wider than the 760px prose column
+    // this page opts out of, and still tighter than the board's own five-lane
+    // span — which is the point: the board is the view that can scroll.
+    expect(measure).toBeGreaterThanOrEqual(1000);
+    expect(measure).toBeLessThanOrEqual(1100);
+    expect(Math.round(1240 * 0.85 / 50) * 50).toBe(measure);
     const lane = block(SCHEDULE_CSS, ".schedule-tv-lane");
     expect(lane).toContain("flex: 0 0 260px");
     const board = block(SCHEDULE_CSS, ".schedule-tv-board");

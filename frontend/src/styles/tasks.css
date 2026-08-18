@@ -615,6 +615,75 @@ button.tasks-caret,
   border-color: var(--border);
 }
 
+/* -- The mark slot: ring at rest, Archive on hover ------------------------------
+   ONE BOX, TWO OCCUPANTS (2026-08-18). The row's leading mark is the status ring;
+   put a pointer on the row and the Archive button takes its place, in the same
+   place. Archive used to live out by the folder chip, at the row's busiest end,
+   which made filing a task a control the reader had to travel to — and left the
+   quietest, most-scanned position in the row doing nothing while hovered.
+
+   NOTHING MOVES. The slot is sized to the ring (`--tasks-rail-w`, the width every
+   rail on this page is measured from) and the button is taken OUT OF FLOW inside
+   it, so the swap cannot change the row's metrics: `--tasks-rail-x`, the thread's
+   indent under it, the caret's hit zone to its left and the chevron's own box are
+   all untouched, whichever of the two is showing. The button is 22px against a
+   16px ring on purpose — a 16px hit target is too small to aim at — and it is
+   CENTRED on the slot, so the extra 3px hangs symmetrically over the gap on
+   either side rather than pushing anything.
+
+   The slot itself takes no `z-index`: `.tasks-rowlink` (z-index 1) must keep
+   painting over it, so the ring area still opens the conversation exactly as it
+   did when the ring was the flex child. The BUTTON's own `z-index: 2` (see
+   `.tasks-act`) is what lifts it back above that link, and only where it is. */
+.tasks-rowmark {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: content-box;
+  width: var(--tasks-rail-w);
+  height: var(--tasks-rail-w);
+  flex: 0 0 var(--tasks-rail-w);
+}
+
+.tasks-rowmark .tasks-act--archive,
+.prefs-section .tasks-rowmark .tasks-act--archive {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+/* The handover. The ring fades as the button arrives — the same `opacity` swap,
+   on the same triggers, that the bookmarks sidebar's folder count uses to hand
+   its slot to the row's actions (`.folder-count`, sidebar.css), and for the same
+   reason: two things overlaying one box means one has to go, and a `display` flip
+   cannot ease, which made the handover the sharpest pop on the page.
+
+   `pointer-events` travels with the fade, or the invisible ring would keep
+   collecting the presses meant for the button under it.
+
+   `:focus-within` is in the list because the button must be reachable by
+   keyboard: a tab onto it reveals it (`.tasks-act:focus-visible`) and the ring it
+   is standing in front of has to get out of the way for it. */
+.tasks-row:hover .tasks-rowmark .schedule-ring,
+.tasks-row:focus-within .tasks-rowmark .schedule-ring {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Only where there IS a button to hand over to. A row with nothing to file
+   (`archiveIntent` → null, so no button is rendered) must keep its ring under the
+   pointer — the alternative is a blank slot where the row's status was. */
+.tasks-row:hover .tasks-rowmark:not(:has(.tasks-act--archive)) .schedule-ring,
+.tasks-row:focus-within .tasks-rowmark:not(:has(.tasks-act--archive)) .schedule-ring {
+  opacity: 1;
+}
+
+.tasks-rowmark .schedule-ring {
+  transition: opacity 0.08s ease;
+}
+
 /* -- The same actions on a board card ------------------------------------------
    The card is a `<button>`, so the actions cannot live inside it — nested buttons
    do not parse. They are siblings, and this wrapper is what they are positioned
