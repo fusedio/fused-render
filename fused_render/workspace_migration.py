@@ -112,9 +112,18 @@ def _run() -> None:
 
 # --------------------------------------------------------------- path remapping
 
-def _remap(path: str, src: str, dst: str) -> str | None:
+def _remap(path: object, src: str, dst: str) -> str | None:
     """`path` re-rooted from `src` to `dst`, or None when it is not under
     `src`.
+
+    `path` is typed `object`, not `str`, because that is what the callers
+    actually have: every value here comes straight out of a user's JSON
+    (`rec["path"]`, `entry["target"]`) and may be anything at all. The
+    isinstance guard below is the load-bearing part — `run()` swallows
+    exceptions, so a raise on one corrupt value would silently abandon the
+    migration part-way and leave the state half-rewritten. Annotating `str`
+    made a type checker call that guard unreachable, which is an invitation to
+    delete it.
 
     The two sides arrive in different shapes and are compared in
     ``_view_url_codec.canonical_fs_path`` form so they can meet: `src`/`dst`
@@ -157,10 +166,14 @@ def _encode(path: str) -> str:
                     for seg in canonical_fs_path(path).lstrip("/").split("/") if seg)
 
 
-def _remap_url(url: str, src: str, dst: str) -> str | None:
+def _remap_url(url: object, src: str, dst: str) -> str | None:
     """A shell view url re-rooted from `src` to `dst`, or None when it does not
     point into `src`. The query string is carried through untouched — it holds
-    the page's params, and re-encoding it would rewrite bytes we do not own."""
+    the page's params, and re-encoding it would rewrite bytes we do not own.
+
+    `url` is `object` for the same reason `_remap`'s `path` is: it arrives
+    from bookmarks.json / recents.json and is only a string if the file says
+    so."""
     if not isinstance(url, str):
         return None
     try:
@@ -192,7 +205,9 @@ def _remap_url(url: str, src: str, dst: str) -> str | None:
 
 
 def _remap_file_param(query: str, src: str, dst: str) -> str | None:
-    m = _FILE_PARAM_RE.search(query or "")
+    # `query` really is a str here (urlsplit's, empty when there is none) —
+    # unlike this module's other inputs it never came out of untrusted JSON.
+    m = _FILE_PARAM_RE.search(query)
     if not m:
         return None
     remapped = _remap(unquote(m.group(2)), src, dst)

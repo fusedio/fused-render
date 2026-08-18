@@ -415,3 +415,55 @@ def test_an_existing_new_workspace_sidecar_file_is_never_clobbered(machine):
         assert json.load(f) == {"old": 1}
     with open(new_file, encoding="utf-8") as f:
         assert json.load(f) == {"new": 1}
+
+
+# --------------------------------------------- untrusted values in state JSON
+
+def test_a_corrupt_value_does_not_abort_the_rewrite(machine, monkeypatch):
+    """Every path/url read out of these files is whatever JSON happens to hold.
+    A non-string one must be SKIPPED, not raise: run() swallows exceptions, so
+    a raise here would silently abandon the migration part-way and leave the
+    user's state half-rewritten. This pins the isinstance guards in _remap /
+    _remap_url — the reason their parameters are typed `object`."""
+    legacy, new, home = machine
+    legacy.mkdir(parents=True)
+    from fused_render import community
+
+    installs = home / "community" / "installs.json"
+    monkeypatch.setattr(community, "INSTALLS_JSON", str(installs))
+    storage.write_json(str(installs), {"installs": {
+        "bad": {"path": None},
+        "worse": {"path": 17},
+        "good": {"path": str(legacy / "app")},
+    }})
+    bookmarks = os.path.join(str(home), "bookmarks.json")
+    storage.write_json(bookmarks, [
+        {"id": "1", "name": "bad", "url": None},
+        {"id": "2", "name": "worse", "url": {"nested": 1}},
+        {"id": "3", "name": "good", "url": "/explorer/view" + str(legacy / "a.html")},
+    ])
+    recents = os.path.join(str(home), "recents.json")
+    storage.write_json(recents, {"entries": [
+        {"url": 42},
+        {"url": "/explorer/view" + str(legacy / "b.html")},
+    ]})
+    store = os.path.join(str(home), "scheduled_messages.json")
+    storage.write_json(store, {"entries": [
+        {"id": "a", "target": ["not", "a", "path"]},
+        {"id": "b", "target": str(legacy / "proj")},
+    ]})
+
+    wm.run()
+
+    # The neighbours of every corrupt value are still rewritten...
+    assert storage.read_json(str(installs))["installs"]["good"]["path"] \
+        == str(new / "app")
+    assert storage.read_json(bookmarks)[2]["url"] \
+        == "/explorer/view" + str(new / "a.html")
+    assert storage.read_json(recents)["entries"][1]["url"] \
+        == "/explorer/view" + str(new / "b.html")
+    assert storage.read_json(store)["entries"][1]["target"] == str(new / "proj")
+    # ...and the corrupt ones are left exactly as they were.
+    assert storage.read_json(str(installs))["installs"]["bad"]["path"] is None
+    assert storage.read_json(bookmarks)[0]["url"] is None
+    assert storage.read_json(recents)["entries"][0]["url"] == 42
