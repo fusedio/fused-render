@@ -1461,7 +1461,8 @@ function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir:
           onReload?.();
         } else {
           // The action no-opped (repair found the file already parses fine —
-          // maybe another tab beat this one to it). The stale `entry` fetched
+          // maybe another tab beat this one to it, or fixed the binding this
+          // exact file needs while doing so). The stale `entry` fetched
           // before this click still shows the "unreadable" banner and button,
           // so it must be refetched rather than left standing while only
           // actionError changes (Cursor Bugbot #585). A toast carries the
@@ -1473,6 +1474,13 @@ function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir:
             (r) => setEntry(r),
             () => setEntry({ key: null })
           );
+          // Also re-stat: "already reads fine" can mean whoever got there
+          // first restored the WORKING binding this file needs, not just an
+          // empty {} — in which case the file itself renders again now, and
+          // only a re-stat (not just refetching this notice's own entry)
+          // surfaces that (Cursor Bugbot #585 follow-up). A harmless extra
+          // re-stat otherwise.
+          onReload?.();
         }
       },
       (err: Error) => {
