@@ -7202,9 +7202,9 @@ the installation, and the mark that says so.
   notification.** The version chip's popover must stay small and says *something
   happened, here is the report*; the tab is the full-size account — every report
   ever written (including those a dismissed badge left behind, so "did I already
-  ask about this?" is answerable either way), the reinstall instructions, and
-  the dismiss — with room to read it. Read-only installs say so up front here
-  rather than only on click, since there is space to say it.
+  ask about this?" is answerable either way) and the dismiss — with room to read
+  it. Read-only installs say so up front here rather than only on click, since
+  there is space to say it.
 - **SF-14b1** **With no marker the tab says NOTHING about the bytes**, because
   it cannot. It used to read *"Unmodified — this is the released build, exactly
   as it shipped"*, and Dismiss makes that a lie by design: it clears the mark
@@ -7217,6 +7217,19 @@ the installation, and the mark that says so.
   answer; the section states the version, the path and the reports, and stops.
   *An integrity claim would need a signed per-file manifest we do not ship —
   which is SF-7a's argument, arriving at the UI.*
+- **SF-14b2** **The tab does NOT say how to reinstall**, and losing that
+  section is the point rather than an omission. It used to carry the same
+  restore block as the chip — the per-install command, the `git status` line for
+  a checkout — which put "here is how to throw this copy away" in front of
+  somebody who had opened Preferences to *describe a bug*. Reinstall advice
+  answers a question the BADGE raises ("this copy is not the released one, how
+  do I get back?"), so it belongs where the badge is and nowhere else; the
+  payload is still served, and `VersionChip` still renders it. The read-only
+  banner lost its *"see the reinstall instructions below"* with it, and could
+  not simply be re-pointed: it fires on installs that were never modified, where
+  the chip's panel does not exist either. It states its own remedy instead —
+  install somewhere you own — because a banner whose only advice is a pointer at
+  a section that is gone (or unreachable) is worse than one that says less.
 - **SF-14c** **"Every report" means WHILE a badge is up as well**, and the tab
   reads the DIRECTORY beside the marker rather than instead of it. The marker's
   `fixes` is capped (`selffix.MAX_FIXES`), a dismiss drops the marker while

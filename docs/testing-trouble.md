@@ -22,9 +22,16 @@ is working fine.
 cd frontend && npx vite build      # or: scripts/dev.sh, which watches
 ```
 
-Then restart the server. If you are testing the chat's card as well, note that
-the claude template is STAGED into `~/.fused-render/.core-templates/` and the
-staging is a marker compare — an edited template does not restage on its own:
+Then **restart the server** — that word is doing real work here. The chat's copy
+of the card lives in `fused_render/templates/claude/template.html`, which is not
+served from the package: it is staged into `~/.fused-render/.core-templates/`
+once, at import. The gate is content-addressed (`.version` holds
+`<app version> <sha256 of the packaged tree>`), so an edited template DOES
+restage by itself — but only when a process starts and re-runs the check. Edit
+the template under a running server and you keep testing the old copy.
+
+If you want to see the staging happen, delete the marker or the dir; it is
+rebuilt on the next start and is not a repair step:
 
 ```
 rm -rf ~/.fused-render/.core-templates    # restaged on next start
