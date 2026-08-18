@@ -270,8 +270,9 @@ function usePreviewFileMenu(
         // top entry describing an older op, so Cmd+Z after it would undo that
         // one instead — and the file stayed unreachable in the Trash.
         //
-        // `to` is absent when Finder did the move (the server could not name the
-        // destination), and then there is no pair to record.
+        // `to` is absent wherever the OS owns the location (the Recycle Bin, the
+        // macOS cross-device Finder fallback), and then there is no pair to
+        // record — recoverable from the OS, just not from here.
         if (r.to) recordFsOp({ kind: "delete", pairs: [{ from: fsPath, to: r.to }] });
         notePathDeleted(fsPath);
         navigate(parent, { isDir: true });

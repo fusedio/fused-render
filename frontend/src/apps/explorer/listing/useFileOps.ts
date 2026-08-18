@@ -526,15 +526,21 @@ export function useFileOps({
     });
   };
 
-  // Delete: a recoverable delete (moves to the macOS Trash), so no confirm dialog.
-  // Acts on every row passed in (the whole selection). Where the server can't
-  // trash (non-macOS → "unsupported") those rows fall back to the existing
+  // Delete: a recoverable delete (moves the rows to the OS bin), so no confirm
+  // dialog. Acts on every row passed in (the whole selection). Where the server
+  // can't trash a row ("unsupported" — a remote mount, a Linux cross-device move,
+  // a platform with no backend) THOSE rows fall back to the existing
   // confirm-then-hard-delete flow, which IS irreversible and so keeps its
-  // warning. Success shows a low-key, count-aware info toast.
+  // warning. Since every desktop platform now has a bin backend, that dialog has
+  // stopped being the ordinary Windows/Linux delete and is what it always claimed
+  // to be: the irreversible case. Success shows a low-key, count-aware info toast.
   //
-  // UNDOABLE, as one op for the whole batch: a trash is a rename into ~/.Trash
-  // whose destination the server names (`to`), so the delete records exactly the
-  // pair a move would and Cmd+Z renames the entries back out (lib/fs-undo).
+  // UNDOABLE WHERE THE DESTINATION IS NAMED, as one op for the whole batch: on
+  // macOS-local and Linux-XDG the trash is a rename the server chose the
+  // destination for (`to`), so the delete records exactly the pair a move would
+  // and Cmd+Z moves the entries back out (lib/fs-undo). The Recycle Bin and the
+  // macOS Finder fallback name nothing, so those rows are recoverable through the
+  // OS and not through Cmd+Z.
   const doTrash = (allRows: RowCtx[]) => {
     // As in startDelete: trashing a folder takes everything inside it, so a
     // selection that also holds rows from within that folder must not trash them
@@ -543,11 +549,12 @@ export function useFileOps({
     const rows = pruneDescendantRows(allRows);
     if (!rows.length) return;
     void (async () => {
-      // Where each trashed row WENT, for the undo op. `to` is absent when the
-      // server fell back to Finder for the move, which picks the location
-      // itself — those rows are trashed and recoverable in Finder but contribute
-      // NO pair (trashUndoPairs drops them), because an undo needs a path to
-      // rename back FROM and inventing one would aim it at nothing.
+      // Where each trashed row WENT, for the undo op. `to` is absent wherever the
+      // OS owns the location — the Windows Recycle Bin, and the macOS
+      // cross-device Finder fallback. Those rows ARE in the bin and recoverable
+      // from the OS's own UI, but they contribute NO pair (trashUndoPairs drops
+      // them), because an undo needs a path to move back FROM and inventing one
+      // would aim it at nothing.
       const trashed: { path: string; to?: string }[] = [];
       const unsupported: RowCtx[] = [];
       let failed: { row: RowCtx; message: string } | null = null;

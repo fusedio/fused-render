@@ -292,24 +292,28 @@ export function friendlyFsError(err: unknown, ctx: { verb: string; name: string 
   return `Couldn't ${verb} "${name}". ${raw}`;
 }
 
-// Outcome of a Delete (trash) attempt. "unsupported" is the non-macOS 501 case
-// where the caller should fall back to a hard-delete confirm; "error" is any
-// other failure (surface it as a toast).
+// Outcome of a Delete (trash) attempt. "unsupported" is the 501 case — this path
+// cannot go to the OS bin (a Linux cross-device move, a remote mount, a platform
+// with no backend) and nothing was moved, so the caller should fall back to a
+// hard-delete confirm; "error" is any other failure (surface it as a toast, and
+// note the entry is still in place).
 //
-// `to` on the "trashed" variant is WHERE IT LANDED in ~/.Trash, and it is
-// optional for a reason rather than for tidiness: the server names it only when
-// its own os.rename chose the path, not when Finder did the move (api.ts's
-// `trashed_to`). A trash WITH a destination is an undoable rename pair; one
-// without is a delete nothing can describe, and a caller must not invent a path
-// for it.
+// `to` on the "trashed" variant is WHERE IT LANDED in the bin, and it is optional
+// for a reason rather than for tidiness: the server names it only where the move
+// was a rename IT chose the destination for (api.ts's `trashed_to`) — macOS
+// ~/.Trash and the Linux XDG trash. It is absent for the macOS cross-device
+// Finder fallback and for the Windows Recycle Bin, where the OS owns the location
+// and restoring goes through the OS's own UI. A trash WITH a destination is an
+// undoable rename pair; one without is recoverable but not undoable, and a caller
+// must not invent a path for it.
 export type TrashOutcome =
   | { status: "trashed"; to?: string }
   | { status: "unsupported" }
   | { status: "error"; message: string };
 
-// Delete: a recoverable delete (moves to the macOS Trash). Where the server can't trash
-// (non-macOS → 501 "trash unsupported") this reports "unsupported" so the
-// caller can fall back to the irreversible confirm-then-hard-delete flow.
+// Delete: a recoverable delete (moves the entry to the OS bin). Where the server
+// can't trash THIS path (501 "trash unsupported") this reports "unsupported" so
+// the caller can fall back to the irreversible confirm-then-hard-delete flow.
 export async function trashEntry(path: string, isDir: boolean): Promise<TrashOutcome> {
   try {
     const r = await deleteEntry(path, isDir, true);

@@ -873,9 +873,11 @@ export function mkdir(path: string): Promise<StatResult> {
 
 // Remove a file or directory. A non-empty directory needs recursive=true (the
 // context menu passes it only after the confirm dialog spells that out).
-// With trash=true the entry is moved to the user's Trash instead (macOS only);
-// where that's unsupported the server replies 501 "trash unsupported" and the
-// caller falls back to a hard delete.
+// With trash=true the entry is moved to the OS bin instead — ~/.Trash on macOS,
+// the freedesktop XDG trash on Linux, the Recycle Bin on Windows. Where THIS PATH
+// cannot use the bin (a Linux cross-device move, a remote mount, a platform with
+// no backend) the server replies 501 "trash unsupported" and the caller falls
+// back to the irreversible hard delete.
 //
 // `trashed_to` is WHERE a trash move landed — present only when the server
 // chose that path itself (its own os.rename into ~/.Trash), absent when Finder
