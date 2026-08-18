@@ -455,3 +455,67 @@ def test_a_shape_this_cannot_read_costs_the_metric_not_the_generation(worker):
 
     assert worker._prompt_tokens(_Odd()) is None
     assert worker._prompt_tokens(object()) is None
+
+
+def test_both_terminal_frames_carry_the_prompt_count(worker, monkeypatch):
+    """Including the CANCELLED one: the prompt was read whether or not the
+    answer was still wanted by the end. The MLX runner is held to the same rule
+    in tests/test_ai_mlx_worker.py — one API, one shape of terminal frame."""
+    fake_transformers = types.ModuleType("transformers")
+
+    class StoppingCriteria:
+        pass
+
+    class StoppingCriteriaList(list):
+        pass
+
+    class Streamer:
+        """Hands back one token and then ends, so `generate` reaches its
+        terminal frame without a thread to wait on."""
+
+        def __init__(self, *_args, **_kwargs):
+            self.items = queue.Queue()
+
+        def __iter__(self):
+            yield "one token"
+
+        def end(self):
+            pass
+
+    fake_transformers.StoppingCriteria = StoppingCriteria
+    fake_transformers.StoppingCriteriaList = StoppingCriteriaList
+    fake_transformers.TextIteratorStreamer = Streamer
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    torch = _fake_torch()
+    torch.inference_mode = contextlib.nullcontext
+    torch.ones_like = lambda ids: _Tensor([1] * len(ids))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    class Model:
+        device = "cpu"
+
+        def generate(self, **_kwargs):
+            return None
+
+    tokenizer = _Tokenizer()
+    tokenizer.pad_token_id = 0
+    tokenizer.eos_token_id = 1
+    worker._loaded.update(model=Model(), tokenizer=tokenizer)
+
+    # `_Tokenizer.__call__` (the no-chat-template path) encodes to two ids.
+    frames = []
+    worker.generate({"prompt": "hello", "max_tokens": 8}, frames.append)
+    done = frames[-1]
+    assert done["type"] == "done" and done["ok"] is True
+    assert done["input_tokens"] == 2 and done["tokens"] == 1
+
+    frames.clear()
+    worker_base = sys.modules["worker_base"]
+    worker_base.CANCEL.set()
+    try:
+        worker.generate({"prompt": "hello", "max_tokens": 8}, frames.append)
+    finally:
+        worker_base.CANCEL.clear()
+    assert frames[-1]["cancelled"] is True
+    assert frames[-1]["input_tokens"] == 2
