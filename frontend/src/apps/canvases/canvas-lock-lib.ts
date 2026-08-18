@@ -3,17 +3,29 @@
 // it wrong re-opens the clobber window the lock exists to close.
 //
 // TRIGGER, by deliberate owner decision (superseding an earlier "lock while a
-// Claude session is live" design): the lock engages ONLY while a sync
-// operation is actually moving the clone's files — a push in flight, or a
-// pull/merge in flight — never merely because a Claude run is live. Claude may
-// make many changes over a long chat, and the user must not be blocked from
-// the workbench for the whole length of it; a plain "hi" with no edits at all
-// must never lock anything. The accepted trade-off: a user editing in the
-// workbench WHILE Claude is mid-edit (but between sync operations) is no
-// longer prevented by this lock. D338's per-file three-way merge is what
-// handles that now — a same-file conflict may surface where the lock used to
-// simply forbid the collision, which is a deliberate, accepted cost of not
-// blocking the user for the length of a chat.
+// Claude session is live" design, D352): the lock engages ONLY while a sync
+// operation is actually moving the clone's files — a push in flight
+// (`push_state === "pushing"`), or a pull/merge in flight — never merely
+// because a Claude run is live, and NOT while a change set is merely queued.
+// D354 narrowed this further: `push_state === "pending"` means the watcher
+// has recorded dirty files and is HOLDING the auto-push because a session is
+// live (D350) — no sync op has started moving anything yet, so there is
+// nothing in flight to protect. The sync watcher sets "pending" the instant
+// Claude writes its first file, and holds it there for the entire edit/chat
+// stretch until the explicit push runs; treating "pending" as a lock trigger
+// re-creates exactly the "locks from Claude's first file write" bug D352 was
+// written to fix, just one field over. Claude may make many changes over a
+// long chat, and the user must not be blocked from the workbench for the
+// whole length of it; a plain "hi" with no edits at all must never lock
+// anything, and neither must an edit that has not yet started publishing.
+// The accepted trade-off: a user editing in the workbench WHILE Claude is
+// mid-edit, or while a change set sits "pending" awaiting push, is no longer
+// prevented by this lock. D338's per-file three-way merge is what handles
+// that now — a same-file conflict may surface where the lock used to simply
+// forbid the collision, which is a deliberate, accepted cost of not blocking
+// the user for the length of a chat. The only coverage this gives up versus
+// locking on "pending" is the no-session auto-push's own ~1.5s debounce
+// window — the merge covers that too, so nothing is actually lost.
 //
 // Releasing is the subtle half, and only for a PUSH. On unlock the workbench
 // FLUSHES whatever is dirty in its memory, and it only notices upstream
@@ -73,7 +85,12 @@ export function decideLock(
   // the pane stays read-only with nothing left to free it.
   if (!status || !status.watching) return { hold: null, settledAt: null };
   if (status.pulling) return { hold: "pulling", settledAt: null };
-  if (status.push_state === "pending" || status.push_state === "pushing") {
+  // "pending" is deliberately NOT here (D354): it means the watcher is
+  // holding queued local edits while a session is live, not that a push is
+  // moving anything. Only "pushing" means a sync op is actually in flight —
+  // that is the only moment the D339 clobber risk exists, so that is the
+  // only moment this locks.
+  if (status.push_state === "pushing") {
     // The session's final change set has not landed. Unlocking now lets the
     // workbench flush stale state over work still on its way up.
     return { hold: "publishing", settledAt: null };

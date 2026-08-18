@@ -22,8 +22,17 @@ describe("engaging the lock", () => {
   it("locks the instant a push starts, even on a page that just loaded", () => {
     // No "already engaged" precondition for publishing/pulling any more: a
     // sync operation in flight is never safe to ignore.
-    const d = decideLock(st({ push_state: "pending" }), null, null, T, GRACE);
+    const d = decideLock(st({ push_state: "pushing" }), null, null, T, GRACE);
     expect(d.hold).toBe("publishing");
+    expect(d.settledAt).toBeNull();
+  });
+
+  it("does not lock on a merely-pending change set (D354)", () => {
+    // "pending" means the watcher is holding queued edits while a session is
+    // live, not that a push is moving anything — no sync op is in flight, so
+    // this must behave exactly like idle for locking purposes.
+    const d = decideLock(st({ push_state: "pending" }), null, null, T, GRACE);
+    expect(d.hold).toBeNull();
     expect(d.settledAt).toBeNull();
   });
 
@@ -71,11 +80,41 @@ describe("releasing after a push", () => {
     // Releasing here is the D339 shape reproduced by our own unlock: on unlock
     // the workbench flushes its dirty in-memory state, and last-writer-wins
     // then overwrites the push that had not landed yet.
-    for (const push_state of ["pending", "pushing"] as const) {
-      const d = decideLock(st({ push_state }), "publishing", null, T, GRACE);
-      expect(d.hold).toBe("publishing");
-      expect(d.settledAt).toBeNull();
-    }
+    const d = decideLock(st({ push_state: "pushing" }), "publishing", null, T, GRACE);
+    expect(d.hold).toBe("publishing");
+    expect(d.settledAt).toBeNull();
+  });
+
+  it("a push that drops back to pending mid-flight arms settling, not publishing (D354)", () => {
+    // "pending" is never itself a hold — but it IS treated as "not pushing",
+    // so coming out of an active "publishing" hold it falls into the same
+    // settling-grace path idle does, rather than continuing to hold.
+    const d = decideLock(st({ push_state: "pending" }), "publishing", null, T, GRACE);
+    expect(d.hold).toBe("settling");
+    expect(d.settledAt).toBe(T);
+  });
+
+  it("pending -> pushing -> idle still arms the settling grace (D354)", () => {
+    // A real push (even one that was "pending" moments before) still moves
+    // the remote, so it still needs the grace window on the way out.
+    const pending = decideLock(st({ push_state: "pending" }), null, null, T, GRACE);
+    expect(pending.hold).toBeNull();
+
+    const pushing = decideLock(st({ push_state: "pushing" }), pending.hold, pending.settledAt, T + 1000, GRACE);
+    expect(pushing.hold).toBe("publishing");
+
+    const settled = decideLock(st(), pushing.hold, pushing.settledAt, T + 2000, GRACE);
+    expect(settled.hold).toBe("settling");
+    expect(settled.settledAt).toBe(T + 2000);
+  });
+
+  it("pending -> idle (push never started, e.g. merged away) does not arm settling (D354)", () => {
+    const pending = decideLock(st({ push_state: "pending" }), null, null, T, GRACE);
+    expect(pending.hold).toBeNull();
+
+    const idle = decideLock(st(), pending.hold, pending.settledAt, T + 1000, GRACE);
+    expect(idle.hold).toBeNull();
+    expect(idle.settledAt).toBeNull();
   });
 
   it("holds through the grace window, then releases", () => {
