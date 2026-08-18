@@ -17,7 +17,7 @@ import {
   repairTemplateRegistry,
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
-import { navigate, navigateUrl, urlForFsPath, replaceSearch, IS_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
   dirname,
@@ -1368,12 +1368,29 @@ function TemplatePreview({
             is a dead end, not a degradation, and it is left standing on purpose —
             the fix is either a chip that does not sit under the pane's corner or a
             pane the embed does not get, and re-gating either on a WIDTH is what
-            D282 removed. Recorded in D282 for the owner to rule on. */}
+            D282 removed. Recorded in D282 for the owner to rule on.
+
+            **Under a FOREIGN host the chip navigates the TOP WINDOW instead**
+            (D331). An embed framed by a non-explorer page (the canvases
+            workspace's chat pane) is a component in someone else's layout: an
+            in-place `_mode` swap there turns the host's chat column into a
+            chrome-free listing — half a browsing surface where the host put a
+            conversation — and walks straight into the dead end above. "Browse
+            contents" under that host means "take me to the real explorer for
+            this folder", so the whole page goes to the view-prefixed URL (a
+            plain location.assign: the host is a different document, and Back
+            returns to it). Inside the explorer's own surfaces (panel panes,
+            tabs — IS_FOREIGN_EMBED is false there) the in-place switch stays:
+            those panes own their layout and a top nav would blow it away. */}
         {toggleListing && !listingPaneOpen && (
           <button
             type="button"
             className="preview-browse-chip"
-            onClick={toggleListing}
+            onClick={
+              IS_FOREIGN_EMBED
+                ? () => window.top?.location.assign(viewUrlForFsPath(fsPath))
+                : toggleListing
+            }
           >
             Browse contents
           </button>
