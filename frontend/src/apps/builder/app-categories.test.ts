@@ -23,12 +23,14 @@ describe("orderCategories", () => {
     ]);
   });
 
-  it("ranks a category the same however its name is cased or separated", () => {
-    expect(orderCategories(["zebra", "How It Works", "how_to"])).toEqual([
-      "How It Works",
-      "how_to",
-      "zebra",
-    ]);
+  it("ranks a learn category the same however its name is cased or separated", () => {
+    // "aaa" wins on locale order, so each spelling below only leads the row if
+    // normalize actually matched it against LEARN_ORDER's "howitworks" — drop
+    // the case-folding or the separator stripping and the ordering breaks, not
+    // just the rank-equality check.
+    expect(orderCategories(["aaa", "How It Works"])).toEqual(["How It Works", "aaa"]);
+    expect(orderCategories(["aaa", "how_it_works"])).toEqual(["how_it_works", "aaa"]);
+    expect(orderCategories(["aaa", "How-It-Works"])).toEqual(["How-It-Works", "aaa"]);
     expect(learnRank("how-it-works")).toBe(learnRank("How_It Works"));
   });
 

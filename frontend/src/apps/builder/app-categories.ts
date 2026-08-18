@@ -3,7 +3,13 @@
 // workspace happens to contain — but a newcomer landing on /apps should meet
 // the learning apps first, not whichever topic sorts earliest. So the chips
 // lead with the learn-oriented categories in the order below and put
-// everything else after them, alphabetically as before.
+// everything else after them, locale-alphabetically.
+//
+// That tail order is deliberately NOT the previous one: the chips used to come
+// out of a bare Array#sort, i.e. UTF-16 code-unit order, where "Zebra" sorts
+// before "apple" because every capital does. These names are freehand author
+// strings, so localeCompare's collation — case-insensitive-ish, and kinder to
+// punctuation like the "-" in "local-ai" — is what a reader expects to see.
 
 // Learn-oriented category names, in intended display order. Compared in
 // normalized form (see normalize), so an author writing "How It Works" or
