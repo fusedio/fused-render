@@ -7182,7 +7182,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
 
 ---
 
-## 43. Self-Fix — A Claude Session on This Installation (D349)
+## 43. Self-Fix — A Claude Session on This Installation (D350)
 
 Goal: when the app fails on a machine we cannot see, the user has one more
 option than "dismiss it and hope" — they can ask Claude to look at the failure

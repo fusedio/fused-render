@@ -1721,6 +1721,50 @@ def test_either_MLX_weight_spelling_loads(monkeypatch, base, tmp_path, weights):
     assert transcribe.loads
 
 
+def test_the_SHARED_weight_spelling_loads_when_the_config_says_whisper(
+        monkeypatch, base, tmp_path):
+    """The newer quantized mlx-community re-uploads (whisper-tiny.en-8bit) call
+    their weights `model.safetensors` — the name every transformers repo has —
+    and `mlx_whisper.load_models` looks for that spelling FIRST. What settles it
+    is the native whisper config beside it."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "model.safetensors").write_bytes(b"")
+    (snapshot / "config.json").write_text(json.dumps(
+        {"n_mels": 80, "n_audio_ctx": 1500, "n_vocab": 51864,
+         "quantization": {"group_size": 64, "bits": 8}}))
+    transcribe = FakeTranscribeModule()
+    mlx_core = types.SimpleNamespace(float16="FLOAT16")
+    worker = load_worker(monkeypatch, base, transcribe_module=transcribe, mlx_core=mlx_core)
+
+    worker.load("mlx-community/whisper-tiny.en-8bit", str(snapshot))
+
+    assert transcribe.loads
+    # The released library reads `weights.safetensors`, not the shared name —
+    # the load works because `load()` left this link for it.
+    assert (snapshot / "weights.safetensors").is_symlink()
+    assert os.readlink(snapshot / "weights.safetensors") == "model.safetensors"
+
+    # …and a second load of the same snapshot must not trip over its own link.
+    worker.load("mlx-community/whisper-tiny.en-8bit", str(snapshot))
+
+
+def test_a_transformers_whisper_repo_is_still_refused(monkeypatch, base, tmp_path):
+    """`model.safetensors` beside a TRANSFORMERS config is the format this
+    runner cannot read, and accepting the filename alone would trade the
+    sentence below for a KeyError inside the library's init."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "model.safetensors").write_bytes(b"")
+    (snapshot / "config.json").write_text(json.dumps(
+        {"model_type": "whisper", "num_mel_bins": 80, "d_model": 384}))
+    worker = load_worker(monkeypatch, base)
+
+    with pytest.raises(RuntimeError) as caught:
+        worker.load("openai/whisper-tiny.en", str(snapshot))
+    assert "not an MLX conversion" in str(caught.value)
+
+
 def test_the_other_two_whisper_formats_are_named_as_the_cause(monkeypatch, base, tmp_path):
     """There are now THREE incompatible Whisper formats in this app — CT2, MLX
     and transformers — and the AI Models page offers Load on anything whose
