@@ -511,6 +511,76 @@ def _rmtree_quiet(path: str) -> None:
         pass
 
 
+# Files seeded into every clone for the Claude session working there —
+# invisible to the sync in BOTH directions: excluded from the watcher's
+# fingerprint/hash walks (below) so they never dirty the clone or enter the
+# merge base, and listed in .fusedignore so `canvas push` never uploads them.
+# The CLI's `pull --force` deletes them (they're not in the bundle), so every
+# pull path re-seeds afterwards.
+_SYNC_IGNORED_BASENAMES = frozenset({"CLAUDE.md", ".fusedignore"})
+
+_CLONE_FUSEDIGNORE = "CLAUDE.md\n.fusedignore\n"
+
+_CLONE_CLAUDE_MD = """\
+# Fused canvas clone: {name}
+
+This folder is a live clone of the Fused canvas **{name}**, two-way synced by
+fused-render: a watcher pushes every quiet change set upstream and pulls
+remote edits (made in the hosted workbench) back down, merging per file.
+
+## Rules
+
+- NEVER run `fused canvas push` or `fused canvas pull` here — the sync
+  watcher owns both directions; a manual push races it and can clobber
+  remote edits.
+- After structural edits (renaming a node, adding/removing nodes or edges),
+  check the clone with `fused workbench canvas validate .` — the auto-push
+  rejects an invalid canvas and the error surfaces to the user.
+- `canvas.toml` defines the canvas (nodes, edges, viewport); every node
+  needs its source file next to it (`<udfName>.py`; widgets are `.json`).
+
+## Required skills
+
+Before editing, load the Fused plugin skills — they carry the format
+references and workflows for this folder:
+
+- `fused:canvas-toml` — canvas.toml format and folder layout
+- `fused:fused-udfs` — writing Fused UDFs
+- `fused:json-ui-schemas` — widget JSON component props
+- `fused:fused-cli` — the fused CLI reference
+
+If no `fused:*` skills appear in your available-skills list, the Fused
+Claude plugin is not installed — STOP and ask the user to run:
+
+    fused claude plugin add
+
+(registers the `fusedio/claude-plugins` marketplace and installs
+`fused@fused-marketplace`; a new session picks the skills up.)
+"""
+
+
+def _seed_clone_claude_files(target: str, name: str) -> None:
+    """Best-effort: (re)write CLAUDE.md + .fusedignore into a clone. Runs
+    after clone and after every CLI force pull (which deletes them).
+
+    Skipped for an external FUSED_RENDER_FUSED_BIN: that path syncs via
+    `pull --dry-run`, which reports the seeded local-only files as a diff
+    on every poll — a permanent pull/reseed churn (until the CLI's
+    _PULL_DELETE_IGNORE_BASENAMES learns these names)."""
+    cli = fused_cli()
+    if cli is None or _shim_manifest_command(cli) is None:
+        return
+    for basename, content in (
+        ("CLAUDE.md", _CLONE_CLAUDE_MD.format(name=name)),
+        (".fusedignore", _CLONE_FUSEDIGNORE),
+    ):
+        try:
+            with open(os.path.join(target, basename), "w", encoding="utf-8") as f:
+                f.write(content)
+        except OSError:
+            pass
+
+
 def _iso_epoch(value) -> float | None:
     """ISO-8601 timestamp (control-plane last_updated) → epoch seconds."""
     if not isinstance(value, str) or not value:
@@ -732,6 +802,11 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
     proc, err = _run_cli(
         ["workbench", "canvas", "pull", name, "-o", target, "--force"], PULL_TIMEOUT
     )
+    if err is None:
+        # Seed BEFORE resume's rebaseline (harmless either way — both files
+        # are excluded from the fingerprint) and after the CLI pull, which
+        # deletes any previous seed (not in the bundle).
+        _seed_clone_claude_files(target, name)
     if manager is not None:
         # Only adopt the pulled content as the clean baseline on success — a
         # failed pull leaves the folder as it was, so any local edits pending
@@ -876,7 +951,7 @@ class _SyncManager:
         for root, dirs, files in os.walk(self.dir):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for f in files:
-                if f.startswith("."):
+                if f.startswith(".") or f in _SYNC_IGNORED_BASENAMES:
                     continue
                 path = os.path.join(root, f)
                 try:
@@ -896,7 +971,7 @@ class _SyncManager:
         for root, dirs, files in os.walk(self.dir):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for f in files:
-                if f.startswith("."):
+                if f.startswith(".") or f in _SYNC_IGNORED_BASENAMES:
                     continue
                 path = os.path.join(root, f)
                 try:
@@ -1138,6 +1213,11 @@ class _SyncManager:
                 rel = _safe_zip_member_relpath(info.filename)
                 if rel is None:
                     continue
+                # A seeded helper file that somehow reached the remote (a
+                # push from elsewhere with --no-ignore) must not overwrite
+                # the local seed.
+                if rel.rsplit("/", 1)[-1] in _SYNC_IGNORED_BASENAMES:
+                    continue
                 bundle[os.path.join(*rel.split("/"))] = zf.read(info.filename)
         new_base = dict(base)
         trash: str | None = None
@@ -1288,6 +1368,9 @@ class _SyncManager:
             return
         self.pull_seq += 1
         self.last_pull_at = time.time()
+        # The CLI's --force removed the seeded Claude helper files (they're
+        # not in the bundle) — put them back before rebaselining.
+        _seed_clone_claude_files(self.dir, self.name)
         self._fingerprint = self._take_fingerprint()
         self._dirty_since = None
         self._base_files = self._take_file_hashes()
@@ -1425,6 +1508,7 @@ class _SyncManager:
             return
         self.pull_seq += 1
         self.last_pull_at = time.time()
+        _seed_clone_claude_files(self.dir, self.name)
         # Did local diverge from remote again during the force pull? If so,
         # local wins — queue a push instead of baselining as clean.
         try:

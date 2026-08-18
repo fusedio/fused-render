@@ -917,8 +917,10 @@ _BASE_FILES = {
 def _cloned_shim_harness(harness, tmp_path, monkeypatch) -> SyncShims:
     harness.log_in()
     harness.set_scenario({"pull_files": _BASE_FILES})
-    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    # Shims wired BEFORE the clone: CLAUDE.md seeding is gated on shim
+    # availability (external-CLI installs never seed).
     shims = SyncShims(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
     shims.seed_base("alpha", _BASE_FILES, "t1")
     shims.set_manifest("t1")
     shims.set_remote_files(_BASE_FILES)
@@ -1118,4 +1120,45 @@ def test_sync_merge_rolls_back_when_it_breaks_validation(harness, tmp_path, monk
     # The merge's write to b.py was undone; local edits untouched.
     assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"
     assert (harness.root / "alpha" / "a.py").read_text() == "a-local\n"
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_clone_seeds_claude_md_and_fusedignore(harness, tmp_path, monkeypatch):
+    # A clone gets a CLAUDE.md pointing the session at the fused:* skills
+    # (with the plugin-install fallback) and a .fusedignore keeping both
+    # files out of every push. Seeding never dirties the sync.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    claude_md = harness.root / "alpha" / "CLAUDE.md"
+    assert claude_md.exists()
+    text = claude_md.read_text()
+    assert "fused:canvas-toml" in text
+    assert "fused claude plugin add" in text
+    ignore = (harness.root / "alpha" / ".fusedignore").read_text()
+    assert "CLAUDE.md" in ignore and ".fusedignore" in ignore
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    time.sleep(0.4)
+    # The seeded files are invisible to the watcher — no push fired.
+    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_clean_pull_reseeds_claude_md(harness, tmp_path, monkeypatch):
+    # The CLI's `pull --force` deletes the seeded files (not in the bundle);
+    # the pull leg puts them back.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    (harness.root / "alpha" / "CLAUDE.md").unlink()
+
+    shims.set_remote_files({**_BASE_FILES, "remote_udf.py": "print('x')\n"})
+    harness.set_scenario(
+        {"pull_files": {**_BASE_FILES, "remote_udf.py": "print('x')\n"}}
+    )
+    shims.set_manifest("t2")
+    status = _wait_status(harness, lambda s: s["pull_seq"] >= 1)
+    assert status and status["pull_seq"] >= 1, status
+    assert (harness.root / "alpha" / "CLAUDE.md").exists()
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
