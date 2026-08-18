@@ -990,12 +990,24 @@ export function TaskList({
   // The restore window closes on its own. Without this, a list that can never
   // grow tall enough (rows deleted since the visit) would keep pinning itself to
   // the bottom on every poll.
+  //
+  // IT OPENS ON THE FIRST ROWS, NOT ON MOUNT (bugbot, 2026-08-18). Tasks arrive
+  // from a fetch, so this component mounts against an empty list and stays that
+  // way for as long as the request takes; a deadline started at mount was
+  // therefore spending most of itself — sometimes all of it, on a cold server or
+  // a slow disk — waiting for the rows it was meant to be measuring. The window
+  // is supposed to be "a few seconds of settling once there is something to
+  // settle", so `hasRows` is what starts the clock. It goes false→true once, so
+  // this arms once too, and a filter that empties the list later cannot rewind
+  // it (by then the restore is long since paid or given up on).
+  const hasRows = tasks.length > 0;
   useEffect(() => {
+    if (!hasRows) return;
     const t = setTimeout(() => {
       owed.current = null;
     }, RESTORE_WINDOW_MS);
     return () => clearTimeout(t);
-  }, []);
+  }, [hasRows]);
 
   // One writer for both halves, so the stored row is always whole. Debounced,
   // because the scroll half fires per frame and this leaves the page by pushState
@@ -1027,16 +1039,51 @@ export function TaskList({
   const onScroll = () => {
     const el = listRef.current;
     if (!el) return;
-    // A scroll the reader made, rather than one this code just made, means they
-    // have chosen where to be — the owed offset stops being owed.
-    if (settled.current === null || Math.abs(el.scrollTop - settled.current) > 1) {
-      owed.current = null;
-    }
+    // Whose scroll was this? The layout effect above records every offset IT
+    // sets in `settled`, so an event landing on that exact offset is the echo of
+    // this code's own write and an event landing anywhere else is the reader.
+    const mine = settled.current !== null && Math.abs(el.scrollTop - settled.current) <= 1;
     settled.current = el.scrollTop;
+    // A RESTORE IN PROGRESS WRITES NOTHING (bugbot, 2026-08-18). The restore is
+    // paid in instalments — the wanted offset is past the end of a list whose
+    // rows are still growing as their threads land, so the layout effect gets
+    // partway there, and partway again, until the content is tall enough. Every
+    // one of those partial offsets used to be saved over the real one, so a
+    // reader who left at 1200px and came back to a list that momentarily only
+    // reached 300 had their position quietly rewritten to 300 — the memory
+    // destroyed by the act of restoring it. Only the reader's own scroll is a
+    // statement about where they want to be, so only the reader's own is stored.
+    if (mine) return;
+    // And their scroll means they have chosen where to be: the owed offset stops
+    // being owed.
+    owed.current = null;
     remember({ ...memory.current, scroll: el.scrollTop });
   };
 
-  if (tasks.length === 0) {
+  // AN EMPTY LIST IS A POSITION TOO, and it is the top (bugbot, 2026-08-18).
+  // Typing in the search box until nothing matches unmounts the scroller, and the
+  // scroller is the only thing that reports scrolling — so the last offset from
+  // before the filter narrowed just sat in the store, describing a list that is
+  // no longer on screen. Clearing the search then restored it, and the reader who
+  // had scrolled to the top to start typing was thrown back down the list by a
+  // number they had stopped meaning several keystrokes ago. There is nothing
+  // below an empty state to be scrolled to, so the honest memory is zero, and
+  // nothing is owed either: whatever restore was pending has nowhere to land.
+  //
+  // ONLY FOR A LIST THAT EMPTIED, never for one that has not filled yet: this
+  // component mounts against an empty `tasks` while the fetch is out, and zeroing
+  // the memory there would erase the very offset this whole section exists to pay
+  // back, before the rows it belongs to have even arrived.
+  const hadRows = useRef(false);
+  if (hasRows) hadRows.current = true;
+  useEffect(() => {
+    if (hasRows || !hadRows.current) return;
+    owed.current = null;
+    settled.current = null;
+    remember({ ...memory.current, scroll: 0 });
+  }, [hasRows]);
+
+  if (!hasRows) {
     return <p className="schedule-tv-empty">{emptyLabel}</p>;
   }
 

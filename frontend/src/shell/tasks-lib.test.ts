@@ -5024,4 +5024,61 @@ describe("what the List remembers between visits", () => {
     // of its thread; the restore makes that trip itself, once.
     expect(LIST).toContain("if (task && threadView(task).more) void showMore(task);");
   });
+
+  it("does not let the restore overwrite the offset it is restoring", () => {
+    // The restore is paid in instalments: rows grow as their threads land, so the
+    // layout effect reaches part of the wanted offset, then more of it. Those
+    // partial positions used to be written straight back into the memory, so a
+    // reader who left at 1200 and came back to a list that momentarily only
+    // reached 300 had 300 saved over it — the memory destroyed by restoring it.
+    //
+    // `settled` is how the two are told apart: the layout effect records every
+    // offset it sets, so an event on that offset is this code's own echo.
+    expect(LIST).toContain(
+      "const mine = settled.current !== null && Math.abs(el.scrollTop - settled.current) <= 1;",
+    );
+    // And a programmatic scroll leaves BEFORE the write — it neither stores an
+    // offset nor cancels what is still owed.
+    const scroll = LIST.slice(LIST.indexOf("const onScroll = () => {"));
+    const body = scroll.slice(0, scroll.indexOf("\n  };"));
+    expect(body).toContain("if (mine) return;");
+    expect(body.indexOf("if (mine) return;")).toBeLessThan(
+      body.indexOf("remember({ ...memory.current, scroll: el.scrollTop });"),
+    );
+    expect(body.indexOf("if (mine) return;")).toBeLessThan(body.indexOf("owed.current = null;"));
+  });
+
+  it("starts the restore deadline when rows arrive, not when the page mounts", () => {
+    // Tasks come from a fetch, so the component mounts against an empty list. A
+    // deadline armed at mount spent itself waiting for the rows it was meant to
+    // be measuring, and on a slow load the window was gone before the first row
+    // existed — the restore silently never happened.
+    expect(LIST).toContain("const hasRows = tasks.length > 0;");
+    const deadline = LIST.slice(LIST.indexOf("const t = setTimeout(() => {"));
+    expect(deadline.slice(0, deadline.indexOf("}, ["))).toContain("RESTORE_WINDOW_MS");
+    expect(LIST).toContain("if (!hasRows) return;");
+    // Armed off `hasRows`, which flips once, so the window opens once.
+    expect(LIST).toMatch(/return \(\) => clearTimeout\(t\);\s*\}, \[hasRows\]\);/);
+  });
+
+  it("forgets the offset when a filter empties the list, but not before it fills", () => {
+    // The empty state unmounts the scroller, and the scroller is the only thing
+    // that reports scrolling — so the offset from before the search narrowed sat
+    // there describing a list nobody can see, and clearing the search threw the
+    // reader back down to it.
+    expect(LIST).toContain("remember({ ...memory.current, scroll: 0 });");
+    // Nothing is owed either: a pending restore has nowhere to land.
+    const empty = LIST.slice(LIST.indexOf("if (hasRows || !hadRows.current) return;"));
+    const body = empty.slice(0, empty.indexOf("}, [hasRows]);"));
+    expect(body).toContain("owed.current = null;");
+    expect(body).toContain("settled.current = null;");
+    // ONLY for a list that emptied. On the first paint `tasks` is empty because
+    // the fetch is still out, and zeroing there would erase the very offset the
+    // restore exists to pay back.
+    expect(LIST).toContain("const hadRows = useRef(false);");
+    expect(LIST).toContain("if (hasRows) hadRows.current = true;");
+    // The empty state is asked the same question as everything else above it.
+    expect(LIST).toContain("if (!hasRows) {");
+    expect(LIST).not.toContain("if (tasks.length === 0) {");
+  });
 });
