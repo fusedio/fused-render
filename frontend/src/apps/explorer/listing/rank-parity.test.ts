@@ -1,10 +1,16 @@
 // The JS half of the cross-language ranking contract.
 //
-// Home search now filters AND ranks on the server (fused_render/index/rank.py),
-// while the in-folder search over a live streamed walk is still ranked here —
-// this module is the only thing that CAN rank a stream. Two rankers answer the
-// same box, so they must agree, and tests/fixtures/rank-parity.json is the
-// agreement, generated from THIS ranker (`bun scripts/gen-rank-fixture.ts`).
+// Both search boxes filter AND rank on the server now
+// (fused_render/index/rank.py); this ranker answers the folders no scan can
+// cover — a mount, a package, one the ignore list excludes — over a live
+// streamed walk, which it is the only thing that CAN rank.
+//
+// The fixture (tests/fixtures/rank-parity.json, generated from THIS ranker by
+// `bun scripts/gen-rank-fixture.ts`) keeps its full scope for two reasons: a
+// mount folder and a local folder must rank alike, and — the one that touches
+// every answer — the server ranks while THIS side highlights, since
+// `/api/index/rank` returns no match positions and the client re-runs
+// `fuzzyMatch` over the rows it got back (listing/ranked-hits).
 //
 // This test's job is to fail loudly when the JS ordering changes: an
 // intentional change means regenerating the fixture AND updating rank.py, and
