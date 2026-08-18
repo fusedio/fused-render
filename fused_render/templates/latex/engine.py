@@ -268,7 +268,8 @@ def _pandoc_convert(src, to, out, extra):
         args = json.dumps({"src": src, "to": to, "out": out, "extra": extra})
         p = subprocess.run([vpy, "-c", code, args], capture_output=True, text=True,
                            env=_clean_env(),
-                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                           encoding="utf-8", errors="replace")
         if p.returncode != 0 or not os.path.exists(out):
             detail = (p.stderr or p.stdout or "").strip().splitlines()
             raise RuntimeError(detail[-1] if detail else "pandoc conversion failed")
@@ -437,7 +438,8 @@ def _run_tectonic(cmd, env, cwd, hard_timeout: int = 28):
     .stdout/.stderr carry the run's output for the usual diagnostics parsing."""
     p = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-        cwd=cwd, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        cwd=cwd, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        encoding="utf-8", errors="replace")
     out_chunks, err_chunks = [], []
 
     def _drain(stream, sink):

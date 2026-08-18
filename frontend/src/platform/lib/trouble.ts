@@ -134,6 +134,69 @@ export function troubleReport(ctx: TroubleContext): string {
 }
 
 
+/** The block behind "Copy Claude Code instructions".
+ *
+ * A DIFFERENT DOCUMENT from `troubleReport`, and the difference is the reader.
+ * The report describes a problem to a person: here is what broke, here is which
+ * copy of the app it broke in. This is a brief for an agent that can act — it
+ * states the goal, names the checks worth running first, and says what "fixed"
+ * looks like, because a prompt that only pastes an error gets a guess back.
+ *
+ * The steps are per-case, since the useful first command is different for each:
+ * there is no point asking an agent to check PATH when the CLI is installed and
+ * simply signed out.
+ */
+export function troubleInstructions(ctx: TroubleContext): string {
+  const kind = troubleKind(ctx.error);
+  const steps: Record<TroubleKind, string[]> = {
+    notfound: [
+      "Check whether the CLI exists and where: `which claude`, and look in ~/.local/bin and /opt/homebrew/bin.",
+      "If it is missing, install it: `curl -fsSL https://claude.ai/install.sh | bash`.",
+      "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
+      "Confirm with `claude --version`, then tell me to quit Fused Render and reopen it.",
+    ],
+    login: [
+      "Confirm the CLI runs: `claude --version`.",
+      "Sign in: run `claude`, then `/login`, and complete it in the browser.",
+      "Confirm the session works, then tell me to retry in Fused Render.",
+    ],
+    limit: [
+      "Confirm this is a plan limit rather than a fault — the message should say when it resets.",
+      "Tell me when it resets and whether anything else is worth doing in the meantime.",
+      "Do not change any configuration for this: nothing is broken.",
+    ],
+    raw: [
+      "Work out what this error is actually about before changing anything.",
+      "If it names a path, check whether that path exists and is writable.",
+      "Tell me the smallest change that would fix it, and what to check afterwards.",
+    ],
+  };
+  const lines = [
+    "I am using Fused Render (a local file explorer / app builder) and something",
+    "around it is broken. Please diagnose and fix it on this machine.",
+    "",
+    `What the app was doing: ${ctx.what}`,
+    "",
+    "The exact error it reported:",
+    String(ctx.error || "(no message)").trim(),
+    "",
+  ];
+  const facts: string[] = [];
+  if (ctx.version) facts.push(`Fused Render version: ${ctx.version}`);
+  if (ctx.install_root) facts.push(`Fused Render is installed at: ${ctx.install_root}`);
+  if (ctx.platform) facts.push(`Platform: ${ctx.platform}`);
+  if (ctx.python) facts.push(`Python: ${ctx.python}`);
+  if (facts.length) lines.push(...facts, "");
+  lines.push("Please:");
+  steps[kind].forEach((step, i) => lines.push(`${i + 1}. ${step}`));
+  lines.push(
+    "",
+    "Explain what you find in plain language before you change anything, and tell",
+    "me what to check in the app once you are done."
+  );
+  return lines.join("\n");
+}
+
 // -- The template registry, which fails PARTIALLY -----------------------------
 //
 // A `~/.fused-render` registry that will not parse does NOT leave a file with no

@@ -731,7 +731,8 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
         # path is gone. The worker is short-lived and needs no inherited fds.
         proc = subprocess.run([vpy, wpath, file, action, json.dumps(opts)],
                               capture_output=True, text=True, timeout=900,
-                              env=env, close_fds=False)
+                              env=env, close_fds=False,
+                              encoding="utf-8", errors="replace")
         if proc.returncode != 0:
             tail = (proc.stderr or "").strip().splitlines()
             return {"error": "worker failed: " + (tail[-1] if tail else "unknown error")}

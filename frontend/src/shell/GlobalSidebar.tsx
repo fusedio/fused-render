@@ -16,8 +16,6 @@ import { LearnIcon } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { useUrlVersion, useLearnMountReady } from "@platform/lib/hooks";
-import { useAccountLoggedIn } from "@platform/lib/account";
-import { useDeployEnabled } from "@platform/lib/prefs";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useAiRuntime } from "@shell/aiRuntime";
 import { formatSize } from "@platform/lib/format";
@@ -224,8 +222,6 @@ function PreferencesPopover({
 export default function GlobalSidebar({ config }: { config: Config }) {
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
-  const accountLoggedIn = useAccountLoggedIn();
-  const deployEnabled = useDeployEnabled();
 
   const learnMountReady = useLearnMountReady(config.learn_mount_ready);
   // No sessions-mount gate any more: the one entry it guarded (Inbox) is gone
@@ -276,15 +272,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // itself, and there is no machine state that hides the concept.
     { href: "/canvases", label: "Canvases", icon: CANVASES_ICON },
     { href: "/ai-models", label: "AI Models", icon: AI_MODELS_ICON, extra: residentDot },
-    {
-      href: "/preferences",
-      label: "Preferences",
-      icon: PREFERENCES_ICON,
-      // Fused-account signed-in signal (SPEC AC-1). Gated on Deploy being
-      // enabled — that's the only reason a Fused account matters here.
-      extra:
-        deployEnabled && accountLoggedIn ? <span className="account-signedin-dot" /> : undefined,
-    }
+    { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
   );
 
   // The trigger (and its rail icon) is the only sidebar chrome that can show
@@ -326,10 +314,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   ];
 
   // The trigger's own dot mirrors the strongest signal inside the menu, so
-  // neither is silently hidden while the menu is closed.
-  const triggerDot =
-    residentDot ??
-    (deployEnabled && accountLoggedIn ? <span className="account-signedin-dot" /> : undefined);
+  // it is not silently hidden while the menu is closed.
+  const triggerDot = residentDot;
 
   return (
     <>

@@ -9,6 +9,27 @@ of them is a path the app takes only when something *else* is wrong. The point
 of each case below is not "does a message appear" but **does the user learn
 which minute to spend**.
 
+## Before you start: BUILD THE SHELL
+
+Every case below except #5's server half is **frontend** code, and
+`fused_render/static/shell-dist` is gitignored — it is not in the branch. A
+checkout runs whatever bundle you last built, so without this step the app shows
+the OLD error handling and every case here "does not seem to result in any
+observable error screen", which is exactly what it looks like when the feature
+is working fine.
+
+```
+cd frontend && npx vite build      # or: scripts/dev.sh, which watches
+```
+
+Then restart the server. If you are testing the chat's card as well, note that
+the claude template is STAGED into `~/.fused-render/.core-templates/` and the
+staging is a marker compare — an edited template does not restage on its own:
+
+```
+rm -rf ~/.fused-render/.core-templates    # restaged on next start
+```
+
 ## What "passing" means
 
 For every case:
@@ -103,8 +124,16 @@ echo '{ this is not json' > ~/.fused-render/templates/registry.json
 - Open any file that would normally have a preview (a `.parquet`, a `.csv`).
 - Expect: the fallback metadata card, and **above it** a card naming the
   registry and the parse error.
+- Expect the **toast** first, once per broken registry: the built-in registry
+  still matches, so the file previews and only your own bindings stop applying
+  (that partial failure is the reported symptom, and why a toast rather than a
+  card per file). Its Preferences action opens the tab, which holds the whole
+  error and copies it.
 - Restore (`rm` the file or fix the JSON) and reopen the file — the card is
   gone, with no restart. The registry is read per stat.
+- **If you see nothing at all**, the shell bundle is stale — see the build step
+  at the top. The server half is testable without it:
+  `curl "localhost:PORT/api/selffix" | grep template_error`.
 - **Regression to watch:** an ordinary file with no preview and a *healthy*
   registry must show no card at all. Check one (e.g. a `.xyz`) in the same run.
 

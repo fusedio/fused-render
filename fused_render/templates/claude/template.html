@@ -1306,6 +1306,58 @@
     word-break: break-word;
   }
 
+  /* The trouble card (SPEC §43): a failure the user can act on, as opposed to
+     the plain red row above. WARNING-toned rather than error-toned on the same
+     argument the shell's card makes — the app is running, Claude is not — and
+     wide enough to hold an install command without wrapping it. */
+  .turn.trouble {
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+  .turn.trouble .trouble-title { font-weight: 600; margin-bottom: 4px; }
+  .turn.trouble .trouble-explain { margin: 0 0 8px; color: var(--dim); }
+  .turn.trouble .trouble-error {
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    max-height: 200px;
+    overflow: auto;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .turn.trouble .trouble-cmd {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 6px;
+  }
+  .turn.trouble .trouble-cmd code {
+    flex: 1 1 auto;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    overflow-x: auto;
+  }
+  .turn.trouble .trouble-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .turn.trouble .trouble-btn {
+    padding: 3px 10px;
+    font: inherit;
+    font-size: 12px;
+    color: var(--fg);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .turn.trouble .trouble-btn:hover { border-color: var(--border-strong); }
+
   /* working indicator */
   .working { display: flex; align-items: baseline; gap: 8px; color: var(--dim); font-size: 13px; }
   .working .star { color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
@@ -8730,10 +8782,177 @@ function addAssistantTurn(text, segments) {
   return turn;
 }
 
-function addError(text) {
+// WHEN THE FAILURE IS CLAUDE ITSELF (SPEC §43). This is the surface a user
+// reaches for when they want to use Claude, so "claude CLI not found" landing
+// here as a red line is the exact complaint the trouble card exists to answer:
+// it names a CLI in our vocabulary and leaves the reader with nowhere to go.
+//
+// TWIN of frontend/src/platform/lib/trouble.ts, and duplicated ON PURPOSE: this
+// page is served standalone and shares no module with the shell. The strings
+// that must match are pinned by tests/test_trouble_parity.py, so the two cannot
+// drift quietly — which is the only honest way to keep a copy.
+const TROUBLE_ABOUT_CLAUDE = /claude/i;
+const TROUBLE_NAMED = [
+  ["login", /please run \/login|invalid api key/i],
+  ["limit", /usage limit|session limit/i],
+  ["notfound", /claude code isn'?t installed|claude cli not found|claude not found/i],
+];
+const TROUBLE_SHAPES = [
+  ["login", /not (?:signed|logged) in|oauth|authenticat/i],
+  ["limit", /rate.?limit|quota/i],
+  ["notfound", /couldn'?t be found|command not found|enoent|no such file/i],
+];
+const TROUBLE_SAID = {
+  notfound: ["The app can't find Claude Code",
+    "Fused Render uses Claude Code on this computer to build and fix things, " +
+    "and it could not find it. Either it was never installed, or it is " +
+    "somewhere the app cannot see."],
+  login: ["Claude Code isn't signed in",
+    "Claude Code is installed but not signed in to your account yet, so " +
+    "nothing can run. Signing in happens in a terminal, once."],
+  limit: ["Your Claude usage limit was reached",
+    "Nothing is broken — your plan includes a set amount of use and it is " +
+    "spent for now. The message below says when it resets."],
+};
+const CLAUDE_INSTALL_COMMAND = "curl -fsSL https://claude.ai/install.sh | bash";
+
+function troubleKind(text) {
+  const t = String(text || "");
+  for (const [kind, re] of TROUBLE_NAMED) if (re.test(t)) return kind;
+  if (TROUBLE_ABOUT_CLAUDE.test(t)) {
+    for (const [kind, re] of TROUBLE_SHAPES) if (re.test(t)) return kind;
+  }
+  return "raw";
+}
+
+// A brief for an AGENT, as opposed to troubleReport's description for a person.
+// Twin of troubleInstructions in lib/trouble.ts — see the parity test.
+const TROUBLE_STEPS = {
+  notfound: [
+    "Check whether the CLI exists and where: `which claude`, and look in ~/.local/bin and /opt/homebrew/bin.",
+    "If it is missing, install it: `curl -fsSL https://claude.ai/install.sh | bash`.",
+    "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
+    "Confirm with `claude --version`, then tell me to quit Fused Render and reopen it.",
+  ],
+  login: [
+    "Confirm the CLI runs: `claude --version`.",
+    "Sign in: run `claude`, then `/login`, and complete it in the browser.",
+    "Confirm the session works, then tell me to retry in Fused Render.",
+  ],
+  limit: [
+    "Confirm this is a plan limit rather than a fault — the message should say when it resets.",
+    "Tell me when it resets and whether anything else is worth doing in the meantime.",
+    "Do not change any configuration for this: nothing is broken.",
+  ],
+  raw: [
+    "Work out what this error is actually about before changing anything.",
+    "If it names a path, check whether that path exists and is writable.",
+    "Tell me the smallest change that would fix it, and what to check afterwards.",
+  ],
+};
+
+function troubleInstructions(what, error) {
+  const kind = troubleKind(error);
+  const lines = [
+    "I am using Fused Render (a local file explorer / app builder) and something",
+    "around it is broken. Please diagnose and fix it on this machine.",
+    "",
+    "What the app was doing: " + what,
+    "",
+    "The exact error it reported:",
+    String(error || "(no message)").trim(),
+    "",
+  ];
+  if (FILE) lines.push("Chat target: " + FILE, "");
+  lines.push("Please:");
+  TROUBLE_STEPS[kind].forEach((step, i) => lines.push((i + 1) + ". " + step));
+  lines.push("",
+    "Explain what you find in plain language before you change anything, and tell",
+    "me what to check in the app once you are done.");
+  return lines.join("\n");
+}
+
+function troubleReport(what, error) {
+  const lines = ["Fused Render — problem report", "",
+                 "What the app was doing: " + what, "",
+                 "Error:", String(error || "(no message)").trim(), ""];
+  if (FILE) lines.push("Chat target: " + FILE);
+  lines.push("Page: " + location.pathname + location.search, "");
+  lines.push("Help: https://render.fused.io/#troubleshooting-" + troubleKind(error));
+  return lines.join("\n");
+}
+
+function copyButton(text, label) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "trouble-btn";
+  b.textContent = label;
+  b.onclick = async () => {
+    try { await navigator.clipboard.writeText(text); } catch { return; }
+    b.textContent = "Copied";
+    setTimeout(() => { b.textContent = label; }, 2000);
+  };
+  return b;
+}
+
+// The rich card, for the three failures a user can actually do something about.
+function troubleCard(kind, text) {
+  const [title, explain] = TROUBLE_SAID[kind];
   const d = document.createElement("div");
-  d.className = "turn error";
-  d.textContent = text;
+  d.className = "turn trouble";
+
+  const h = document.createElement("div");
+  h.className = "trouble-title";
+  h.textContent = title;
+  const p = document.createElement("p");
+  p.className = "trouble-explain";
+  p.textContent = explain;
+  // VERBATIM. Rewording it makes it unsearchable, and searching it is the first
+  // thing anyone does.
+  const pre = document.createElement("pre");
+  pre.className = "trouble-error";
+  pre.textContent = String(text || "").trim();
+  d.append(h, p, pre);
+
+  if (kind === "notfound") {
+    const cmd = document.createElement("div");
+    cmd.className = "trouble-cmd";
+    const code = document.createElement("code");
+    code.textContent = CLAUDE_INSTALL_COMMAND;
+    cmd.append(code, copyButton(CLAUDE_INSTALL_COMMAND, "Copy"));
+    const hint = document.createElement("p");
+    hint.className = "trouble-explain";
+    hint.textContent = "Run it in a terminal, then quit Fused Render and open it again.";
+    d.append(cmd, hint);
+  }
+
+  const acts = document.createElement("div");
+  acts.className = "trouble-actions";
+  const doing = "using the chat on " + (FILE || "this folder");
+  acts.append(copyButton(troubleReport(doing, text), "Copy the details"));
+  acts.append(copyButton(troubleInstructions(doing, text), "Copy Claude Code instructions"));
+  const a = document.createElement("a");
+  a.className = "trouble-btn";
+  a.href = "https://render.fused.io/#troubleshooting-" + kind;
+  a.target = "_blank";
+  a.rel = "noreferrer";
+  a.textContent = "How to fix this \u2197";
+  acts.append(a);
+  d.append(acts);
+  return d;
+}
+
+function addError(text) {
+  const kind = troubleKind(text);
+  // `raw` keeps the plain red row: it is a real answer for "some other error",
+  // and dressing every failed turn as a troubleshooting card would bury the
+  // ones a user can act on.
+  const d = kind === "raw" ? (() => {
+    const el = document.createElement("div");
+    el.className = "turn error";
+    el.textContent = text;
+    return el;
+  })() : troubleCard(kind, text);
   log.appendChild(d);
   scrollBottom();
 }

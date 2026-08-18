@@ -1,6 +1,7 @@
 /* ---- File-operation dialogs (components/FsDialogs.tsx) -------------------- */
-/* Reuses .deploy-overlay/.deploy-dialog/.deploy-body; these tune the compact
-   prompt/confirm shape (narrower than the deploy modal) and its controls. */
+/* Reuses .deploy-overlay/.deploy-dialog/.deploy-body (the shared modal chassis'
+   chrome, Modal.tsx); these tune the compact prompt/confirm shape (narrower
+   than a full-size modal) and its controls. */
 .fs-dialog {
   width: min(420px, 100%);
 }

@@ -4,18 +4,13 @@
 //   Render preferences — Appearance, Default model (which Claude model the
 //     chat and fused.ai reach for when nothing else has said), Call log
 //     (capture/redaction/retention for
-//     fused_render/calls.py), Deploy to Fused account (the opt-in Deploy-button
-//     toggle), and Accessibility. Always present; the
+//     fused_render/calls.py), and Accessibility. Always present; the
 //     default (clean URL). No Tour button — the tour still runs itself on a
 //     first visit (App.tsx's maybeAutoStartTour); it is onboarding, not a
 //     preference. The app's OWN log is not here either: it is disposable
 //     temp-dir output (D68) reached from the desktop tray's "Open app logs", and a
 //     second "Logs" heading next to the Call log section only ever read as the
 //     call log's own settings.
-//   Fused account       — the account/sign-in/environments panel (formerly
-//     its own `/view/_account` page, folded in once it stopped being a
-//     separate sidebar entry). Shown only once Deploy is enabled — that's
-//     the only reason this app cares about a Fused account.
 // **Inference engines used to be a tab here and is not any more** — it is the
 // Engines tab of /ai-models (shell/AiModelsEngines.tsx). It was the one control
 // on this page about MODELS rather than about rendering, and every consequence
@@ -28,7 +23,7 @@
 // briefly sat here, and a settings page hosting a second settings app — with
 // its own section nav and scroll containers — inside one of its tabs never read
 // as one page. It has its own sidebar routes now (shell/GlobalSidebar).
-// The active tab lives in the URL (`?tab=account`), same pattern as
+// The active tab lives in the URL (`?tab=indexing`), same pattern as
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
 import { useEffect, useState } from "react";
@@ -38,20 +33,17 @@ import {
   putCallsParamsMode,
   putCallsRetentionDays,
   putDefaultModel,
-  putDeployEnabled,
   putReaderEnabled,
 } from "@platform/lib/api";
 import type { CallsParamsMode, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
-import { notifyPrefsChanged } from "@platform/lib/prefs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
-import { AccountPanel } from "@shell/Account";
 import { IndexingPanel } from "@shell/Indexing";
 import { SelfFixPanel } from "@shell/SelfFixPanel";
 
-type PrefsTab = "render" | "indexing" | "selffix" | "account";
+type PrefsTab = "render" | "indexing" | "selffix";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -103,42 +95,6 @@ function AppearanceSection() {
         </span>
       </label>
     </section>
-  );
-}
-
-function DeployToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const enabled = prefs.deploy.enabled;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      onChange(await putDeployEnabled(!enabled));
-      // The sidebar's signed-in dot (useDeployEnabled) is mounted alongside
-      // this page, not remounted by navigation — without this it would only
-      // pick up the flip on the next focus/visibility return.
-      notifyPrefsChanged();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Show the Deploy button</b> on renderable pages. Deploy publishes a page to a
-          public hosted URL through the <code>fused</code> CLI.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </>
   );
 }
 
@@ -383,32 +339,6 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
   );
 }
 
-function DeploymentsSection({
-  prefs,
-  onChange,
-  onOpenAccount,
-}: {
-  prefs: Prefs;
-  onChange: (p: Prefs) => void;
-  onOpenAccount: () => void;
-}) {
-  return (
-    <section className="prefs-section">
-      <h2>Deploy to Fused account</h2>
-      <DeployToggle prefs={prefs} onChange={onChange} />
-      {prefs.deploy.enabled && (
-        <p className="deploy-muted">
-          The per-environment share list (every deployed mount, with Revoke) lives on the{" "}
-          <button type="button" className="link-button" onClick={onOpenAccount}>
-            Fused account tab
-          </button>{" "}
-          beside your environments.
-        </p>
-      )}
-    </section>
-  );
-}
-
 export default function Preferences() {
   const [prefs, setPrefs] = useState<Prefs | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -423,26 +353,18 @@ export default function Preferences() {
     };
   }, []);
 
-  // Requested tab lives in the URL (`?tab=account`) — bookmarkable, and how
-  // the Deploy modal and the old `/view/_account` redirect (App.tsx) land
-  // here directly on the account tab. Falls back to "render" whenever the
-  // account tab wouldn't be offered (Deploy not enabled) rather than showing
-  // a tab with no button pointing at it.
+  // Requested tab lives in the URL (`?tab=indexing`) — bookmarkable.
   const requested = new URLSearchParams(location.search).get("tab");
   // `?tab=engines` never reaches here: `rewriteLegacyUrl` sends it to
   // /ai-models?tab=engines before this page renders, which is why an unknown
   // tab falling back to "render" is not the answer for that one — a bookmark
   // pointing at the engine picker should land ON the engine picker.
   //
-  // A membership test rather than a ternary chain: at four tabs the nesting was
-  // the line every new branch conflicted on, and adding a fifth should not mean
-  // re-indenting the other four.
-  const requestedTab: PrefsTab =
-    requested === "account" || requested === "indexing" || requested === "selffix"
-      ? requested
-      : "render";
+  // A membership test rather than a ternary chain: the nesting was the line
+  // every new branch conflicted on, and adding one more should not mean
+  // re-indenting the rest.
   const tab: PrefsTab =
-    requestedTab === "account" && !prefs?.deploy.enabled ? "render" : requestedTab;
+    requested === "indexing" || requested === "selffix" ? requested : "render";
   const setTab = (next: PrefsTab) => {
     const params = new URLSearchParams(location.search);
     if (next === "render") params.delete("tab");
@@ -469,9 +391,8 @@ export default function Preferences() {
               Render preferences
             </button>
             {/* Indexing — the file index behind the explorer's search. Always
-                present: unlike the account tab it needs no opt-in, and a user
-                looking for "why is search finding/missing this" has nowhere
-                else to go. */}
+                present: needs no opt-in, and a user looking for "why is search
+                finding/missing this" has nowhere else to go. */}
             <button
               type="button"
               className={"prefs-tab" + (tab === "indexing" ? " active" : "")}
@@ -493,15 +414,6 @@ export default function Preferences() {
             >
               Fix this app
             </button>
-            {prefs.deploy.enabled && (
-              <button
-                type="button"
-                className={"prefs-tab" + (tab === "account" ? " active" : "")}
-                onClick={() => setTab("account")}
-              >
-                Fused account
-              </button>
-            )}
           </div>
           <div className="prefs-tabpanel">
             {tab === "render" && (
@@ -509,17 +421,11 @@ export default function Preferences() {
                 <AppearanceSection />
                 <ModelSection prefs={prefs} onChange={setPrefs} />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
-                <DeploymentsSection
-                  prefs={prefs}
-                  onChange={setPrefs}
-                  onOpenAccount={() => setTab("account")}
-                />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "indexing" && <IndexingPanel />}
             {tab === "selffix" && <SelfFixPanel />}
-            {tab === "account" && prefs.deploy.enabled && <AccountPanel />}
           </div>
         </>
       )}

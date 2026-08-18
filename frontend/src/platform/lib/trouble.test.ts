@@ -4,6 +4,7 @@ import { expect, test } from "bun:test";
 
 import {
   CLAUDE_INSTALL_COMMAND,
+  troubleInstructions,
   resetAnnouncedTemplateErrors,
   shouldAnnounceTemplateError,
   isClaudeTrouble,
@@ -151,4 +152,47 @@ test("an empty message is never announced", () => {
   resetAnnouncedTemplateErrors();
   expect(shouldAnnounceTemplateError("")).toBe(false);
   expect(shouldAnnounceTemplateError("   ")).toBe(false);
+});
+
+
+// -- the brief for an agent ---------------------------------------------------
+
+test("the instructions tell an agent what to RUN, not just what broke", () => {
+  // A prompt that only pastes an error gets a guess back. The first command is
+  // per-case for the same reason: there is no point checking PATH for a CLI
+  // that is installed and merely signed out.
+  const missing = troubleInstructions({
+    what: "starting a fix session",
+    error: "claude CLI not found",
+    install_root: "/opt/fused_render",
+    version: "0.4.23",
+  });
+  expect(missing).toContain("which claude");
+  expect(missing).toContain("curl -fsSL https://claude.ai/install.sh | bash");
+  expect(missing).toContain("/opt/fused_render");
+
+  const signedOut = troubleInstructions({
+    what: "starting a fix session",
+    error: "Invalid API key · Please run /login",
+  });
+  expect(signedOut).toContain("/login");
+  // ...and must NOT tell someone to install what they already have.
+  expect(signedOut).not.toContain("install.sh");
+});
+
+test("a usage limit tells the agent to change nothing", () => {
+  // The one case where the correct action is no action, and an agent left to
+  // its own devices will happily "fix" a working configuration.
+  const text = troubleInstructions({ what: "x", error: "Usage limit reached" });
+  expect(text).toContain("nothing is broken");
+  expect(text).not.toContain("install.sh");
+});
+
+test("the instructions and the report are different documents", () => {
+  // Same failure, two readers: one describes it to a person, the other briefs
+  // an agent. If they ever converge, one of the two buttons is dead weight.
+  const ctx = { what: "starting a fix session", error: "claude CLI not found" };
+  expect(troubleInstructions(ctx)).not.toBe(troubleReport(ctx));
+  expect(troubleReport(ctx)).not.toContain("Please:");
+  expect(troubleInstructions(ctx)).toContain("Please:");
 });

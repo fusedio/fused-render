@@ -1,20 +1,7 @@
-/* ---- Deploy button + modal (SPEC §19) ------------------------------------ */
-
-/* Header action for deployable pages: same chrome as its .preview-actions
-   siblings, plus a live dot when the page's deployment pointer reads active. */
-.preview-actions .deploy-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.deploy-live-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--success-bright);
-  flex: 0 0 auto;
-}
+/* ---- Shared modal chrome (SPEC: modal/form design system) ---------------- */
+/* Named .deploy-* for historical reasons (first modal built in the app, since
+   removed) — every dialog's chassis (Modal.tsx) still keys off these classes,
+   so they stay under this name rather than being renamed file-wide. */
 
 .deploy-overlay {
   position: fixed;

@@ -137,7 +137,8 @@ def main(file: str = "", max_points: int = 400000):
             return {"error": f"venv setup failed: {e}"}
         env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONPATH")}
         r = subprocess.run([py, "-c", WORKER, file, npz, str(max_points)],
-                           capture_output=True, text=True, env=env, timeout=600)
+                           capture_output=True, text=True, env=env, timeout=600,
+                           encoding="utf-8", errors="replace")
         if r.returncode != 0:
             return {"error": f"could not read point cloud: {r.stderr.strip()[-800:]}"}
 

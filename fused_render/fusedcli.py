@@ -1,15 +1,13 @@
-"""The fused CLI seam shared by deploy.py and account.py.
+"""The fused CLI seam: which `fused` CLI to run, and how.
 
-Everything here answers one of two questions both feature routers ask:
-"which fused CLI do I run, and how?" (resolution + child-env hygiene +
-error mapping) and "what does the fused CLI's own on-disk state say?"
-(login signal, env store reads). It owns NO endpoints and NO subprocess
-orchestration of its own — deploy.py runs `fused share …`, account.py runs
-`fused cloud …`; both build their child processes from these primitives.
+Answers "which fused CLI do I run, and how?" (resolution + child-env hygiene +
+error mapping) for canvases.py, which runs `fused login`/`canvas push`/`canvas
+pull` through it. It owns NO endpoints and NO subprocess orchestration of its
+own — canvases.py builds its child processes from these primitives.
 
-Split out of deploy.py when the account surface landed (SPEC §27, DECISIONS
-D112): the two routers must stay mutually acyclic, and neither may import
-server.py (server includes both routers).
+Originally split out of deploy.py (now removed) when the account surface
+landed (SPEC §27, DECISIONS D112), to keep feature routers mutually acyclic;
+canvases.py is the sole remaining consumer.
 """
 from __future__ import annotations
 
@@ -18,13 +16,6 @@ import importlib
 import importlib.util
 import os
 import sys
-
-from fused_render.shell import storage
-
-# Backends that can answer a served URL (flow's HOSTED_BACKENDS): the managed
-# Fused control plane, or an AWS env whose serving plane `fused infra serve`
-# provisioned. `local` has no serving plane and is never eligible.
-HOSTED_BACKENDS = ("fused", "aws")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -52,11 +43,10 @@ def fused_cli() -> FusedCli | None:
       2. the `fused` package importable in THIS interpreter — run as
          ``[sys.executable, _fused_cli.py]`` (the shim sets argv[0] and calls
          fused._cli.main). Covers a venv server that pip-installed the
-         [fused] extra (including via POST /api/deploy/install) AND the
-         packaged macOS app, whose py2app bundle has no console scripts but
-         bakes the fused package in (build_dmg.sh) and whose sys.executable
-         is a real re-invokable interpreter (the executor's _child.py spawn
-         pattern).
+         [fused] extra AND the packaged macOS app, whose py2app bundle has no
+         console scripts but bakes the fused package in (build_dmg.sh) and
+         whose sys.executable is a real re-invokable interpreter (the
+         executor's _child.py spawn pattern).
     """
     override = os.environ.get("FUSED_RENDER_FUSED_BIN")
     if override:
@@ -76,12 +66,10 @@ def child_env(cli: FusedCli, env_name: str | None = None) -> dict[str, str]:
     """The child environment for a fused CLI run.
 
     OPENFUSED_ENV targets the chosen env when one is given (the CLI's own
-    override channel) — deploy runs are env-targeted. Account runs
-    (`cloud login/logout/orgs/setup`, `env default/delete`) pass None and get
-    the variable CLEARED instead of inherited: today's `fused cloud` commands
-    never read it, but an ambient value in the server's own environment
-    (common when testing deploys) must not leak an env target into a child
-    whose scope is the account.
+    override channel). Callers that have no env to target (canvases.py's
+    `fused login`/`canvas push`/`canvas pull`) pass None and get the variable
+    CLEARED instead of inherited, so an ambient value in the server's own
+    environment can't leak an unrelated env target into the child.
     For an EXTERNAL cli (FUSED_RENDER_FUSED_BIN), interpreter-scoped vars are
     scrubbed: inside the packaged macOS app the process carries PYTHONHOME/
     PYTHONPATH pointing into the bundle, which would break any other Python's
@@ -106,7 +94,7 @@ def setup_cli_hint() -> str:
 
     Inside the packaged macOS app (py2app sets sys.frozen) there is no
     user-facing `fused` on PATH — but the bundle ships a terminal wrapper
-    that runs the same baked-in CLI the Deploy button uses, at
+    that runs the same baked-in CLI canvases.py uses, at
     ``Contents/Resources/bin/fused`` (build_dmg.sh §4c — under Resources, not
     MacOS, because a shell script in a code directory breaks the codesign
     bundle seal). sys.executable is ``…/Contents/MacOS/python``; the wrapper
@@ -139,102 +127,3 @@ def cli_error(stderr: str, fallback: str) -> str:
     return message
 
 
-def credentials_path() -> str:
-    """Where the fused CLI keeps its control-plane credentials
-    (`fused cloud login` → ~/.openfused/fused-cloud-credentials.json), with
-    the same env override the CLI itself honors (onboarding.py)."""
-    return os.environ.get("OPENFUSED_FUSED_CLOUD_CREDENTIALS") or os.path.expanduser(
-        "~/.openfused/fused-cloud-credentials.json"
-    )
-
-
-def fused_cloud_logged_in() -> bool:
-    """Whether the fused CLI's control-plane credentials exist on disk.
-
-    Presence-only, deliberately: an expired-but-refreshable token still works
-    (the CLI refreshes silently), and validating deeper would duplicate the
-    CLI's own logic — this signal exists so the UI can warn BEFORE a doomed
-    action (deploy to a managed env with no login at all) and so the account
-    page can render its signed-in/out state cheaply; the CLI stays the
-    authority at action time. The account page's deeper probe
-    (`fused cloud orgs`) is the authoritative check when one is wanted.
-    """
-    return os.path.isfile(credentials_path())
-
-
-def credentials_stamp() -> float | None:
-    """A cheap fingerprint of the credentials file — its mtime, or None when
-    absent. The account page caches its `cloud orgs` probe to avoid a
-    control-plane call on every refresh; comparing this stamp lets it drop
-    that cache when the credentials CHANGE (a re-login as a different account,
-    or a token refresh — the CLI rewrites the file both times) even if
-    `logged_in` never flips false in between. Same account, untouched file →
-    stable stamp → cache kept."""
-    try:
-        return os.path.getmtime(credentials_path())
-    except OSError:
-        return None
-
-
-def envs_file() -> str:
-    # The same override the fused CLI itself honors (environments.py), so a
-    # relocated store stays consistent between the CLI and this reader.
-    return os.environ.get("OPENFUSED_ENVS_FILE") or os.path.expanduser("~/.openfused/envs.json")
-
-
-def all_envs() -> dict:
-    """Every env in the store (any backend) + the store's own default pointer.
-
-    The account page's management view: unlike eligible_envs (the deploy
-    picker, hosted-only, with a deploy-oriented default derivation) this is
-    the raw store — local envs included, each flagged with whether it can be
-    a deploy target, and `default` exactly as the store records it.
-    """
-    data = storage.read_json(envs_file())
-    raw_envs = data.get("envs") if isinstance(data, dict) else None
-    envs = []
-    if isinstance(raw_envs, dict):
-        for entry in raw_envs.values():
-            if not isinstance(entry, dict):
-                continue
-            name, backend = entry.get("name"), entry.get("backend")
-            if isinstance(name, str) and isinstance(backend, str):
-                envs.append(
-                    {"name": name, "backend": backend, "hosted": backend in HOSTED_BACKENDS}
-                )
-    envs.sort(key=lambda e: e["name"])
-    default = data.get("default") if isinstance(data, dict) else None
-    return {"envs": envs, "default": default if isinstance(default, str) else None}
-
-
-def eligible_envs() -> dict:
-    """Hosted envs from the fused store + the picker's default.
-
-    The deploy-picker view over one all_envs() read (a direct store read,
-    like the flow app's readEnvs, so the picker renders even when the CLI is
-    not installed yet). Default pick: OPENFUSED_ENV when it names an eligible
-    env (explicit intent for this process), else the first `fused`-backend
-    env — preferring the store's own default when that is one — else the
-    store default, else the first eligible.
-    """
-    store = all_envs()
-    envs = [{"name": e["name"], "backend": e["backend"]} for e in store["envs"] if e["hosted"]]
-
-    by_name = {e["name"]: e for e in envs}
-    store_default = store["default"]
-    fused_backed = [e["name"] for e in envs if e["backend"] == "fused"]
-
-    default = None
-    ambient = os.environ.get("OPENFUSED_ENV")
-    if ambient in by_name:
-        default = ambient
-    elif store_default in by_name and by_name[store_default]["backend"] == "fused":
-        default = store_default
-    elif fused_backed:
-        default = fused_backed[0]
-    elif store_default in by_name:
-        default = store_default
-    elif envs:
-        default = envs[0]["name"]
-
-    return {"envs": envs, "default_env": default, "envs_file": envs_file()}

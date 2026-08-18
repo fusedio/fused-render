@@ -132,13 +132,23 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
 
     The prompt never enters argv (`input=`, and `message_via_stdin` on the far
     side): this runs inside the server process, whose argv every local user can
-    read with `ps`."""
+    read with `ps`.
+
+    text=True alone decodes stdout/stderr with locale.getpreferredencoding(False),
+    which is ASCII on a GUI-launched server with no LANG/LC_ALL — see
+    claude_config/lib.py's SUBPROCESS_KWARGS for the fuller writeup of this same
+    bug. The helper's JSON result routinely carries non-ASCII bytes (the prompt
+    echoed back, a scaffolded app's name/title, model output), so without
+    encoding="utf-8" the first em dash or curly quote raises UnicodeDecodeError
+    here and the whole app-creation call reports "failed to start Claude
+    session" instead of the real result."""
     proc = subprocess.run(
         [sys.executable, "-c", SESSION_HELPER],
         input=json.dumps(
             {"agent": agent_path(), "file": target, "message": prompt,
              "session_id": session_id, "permission_mode": permission_mode}),
-        capture_output=True, text=True, timeout=60, close_fds=False,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=60, close_fds=False,
     )
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
