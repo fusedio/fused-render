@@ -245,6 +245,12 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     from fused_render import meta_migration
 
     meta_migration.run_once_in_background(start_dir)
+    # Probe Claude Code (found / version / signed-in) off the request path, so
+    # the first-run strip's GET is a disk read. Mirrors cli._run_serve — an entry
+    # point, never create_app.
+    from fused_render import claude_health
+
+    claude_health.warm_in_background()
     app = create_app(start_dir=start_dir)
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi
     # tile daemon) read store bytes from THIS port, not the branch default.
