@@ -14,11 +14,16 @@
 // them: it is the one entry that outlives any toast, so it must not shuffle as
 // toasts come and go. Styling is .notif-host in shell.css.
 //
-// The column is ordered by LIFETIME, which is why the download manager (SPEC
-// §36) sits between the toasts and the server card: a toast is seconds, a
-// background job is minutes, the server card outlives the session. Anything
-// long-lived must be below anything short-lived, or a job's rows would shift
-// under the pointer every time an unrelated "Path copied" arrived and expired.
+// The column is ordered by LIFETIME, which is why the activity card (SPEC §36)
+// sits between the toasts and the server card: a toast is seconds, work in
+// progress is minutes, the server card outlives the session. Anything long-lived
+// must be below anything short-lived, or a job's rows would shift under the
+// pointer every time an unrelated "Path copied" arrived and expired.
+//
+// That is ONE entry in the column, not two. The scheduled-message queue used to
+// take a card of its own directly above the manager and it is now folded into it
+// (see DownloadManager's header): same corner, same plate, same kind of thing, so
+// two headers over one lifecycle was the bug.
 //
 // Panes keep their attribution for free: in panel/tab mode each pane is its
 // own document, so a pane's toast renders in THAT pane's bottom-right corner,
@@ -26,13 +31,29 @@
 // download manager (an embed would otherwise render one per pane, all saying
 // the same thing — and the job list is global, so every copy would be
 // identical).
+import type { ReactNode } from "react";
 import Toast from "@platform/ui/Toast";
 import DownloadManager from "@platform/ui/DownloadManager";
 import ServerStatusBanner from "@platform/ui/ServerStatusBanner";
 import { dismissToast, useToasts } from "@platform/lib/toast";
 import { IS_EMBED } from "@platform/lib/router";
 
-export default function NotificationHost() {
+// `activity` is the ONE work-in-progress card, handed in rather than imported
+// because of the layering: its queue rows have to offer "Open in Explorer", the
+// one answer to which lives in shell/schedule-lib (explorerUrl), and platform may
+// not import shell (frontend/scripts/check-boundaries.mjs). So the shell composes
+// the card (shell/QueueDock.tsx wraps DownloadManager with its queue slot) and
+// this file keeps owning where the one entry sits.
+//
+// Omitted, the bare download manager stands in its place: platform is not made to
+// depend on a shell that may not be there, and a host mounted without a scheduler
+// above it still shows the jobs pages report — INCLUDING a live scheduled run, which
+// is the case a bare mount used to lose. The card dropped every running scheduled job
+// on the assumption that a queue row above was drawing it, and with no queue slot
+// filled there was none, so the run had no row and no stop. It is told which runs the
+// slot covers now (DownloadManager's `QueueSlot.drawn`), and told nothing means it
+// draws them itself.
+export default function NotificationHost({ activity }: { activity?: ReactNode }) {
   const toasts = useToasts();
   return (
     <div className="notif-host">
@@ -51,7 +72,7 @@ export default function NotificationHost() {
           />
         </div>
       ))}
-      {!IS_EMBED && <DownloadManager />}
+      {!IS_EMBED && (activity ?? <DownloadManager />)}
       {!IS_EMBED && <ServerStatusBanner />}
     </div>
   );

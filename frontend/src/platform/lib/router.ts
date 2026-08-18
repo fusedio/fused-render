@@ -29,7 +29,6 @@ export function rewriteLegacyUrl(url: string): string {
   const qIdx = url.indexOf("?");
   const p = qIdx === -1 ? url : url.slice(0, qIdx);
   const q = qIdx === -1 ? "" : url.slice(qIdx);
-  if (p === "/view/_account") return "/preferences?tab=account";
   const mapped = LEGACY_SENTINELS[p];
   // A tab that MOVED PAGES, which the sentinel table cannot express: Inference
   // engines is the Engines tab of /ai-models now (shell/AiModelsEngines.tsx).
@@ -220,6 +219,38 @@ export const IS_PANEL_PANE = (function inPanelHost(): boolean {
   return false;
 })();
 
+// AM I AN EMBED FRAMED BY A NON-EXPLORER PAGE? — the fourth framing flag,
+// same idiom as IS_PANEL_PANE above (ask the host, climb the whole chain,
+// read once at module init — a document cannot be re-parented).
+//
+// An embed's host is either one of the explorer's own surfaces (a panel pane,
+// a tab, a bookmark card peek — every ancestor pathname under /explorer) or a
+// FOREIGN page that borrowed the embed as a component (the canvases workspace
+// framing a clone folder's chat). The distinction matters to exactly one
+// control so far: the "Browse contents" chip, whose in-place `_mode` switch is
+// right inside an explorer surface (the pane/tab owns its layout) and wrong
+// under a foreign host — there it swaps a column the host composed for a
+// different purpose, and lands in D282's recorded dead end (an embed listing
+// has no chip and no header, so there is no way back). A foreign embed's chip
+// navigates the TOP window to the real explorer page instead.
+//
+// A cross-origin ancestor answers false — the safe direction: an external site
+// framing us should never have its top window navigated by our chip.
+export const IS_FOREIGN_EMBED = (function foreignHost(): boolean {
+  if (!IS_EMBED || window === window.top) return false;
+  try {
+    let win: Window = window;
+    while (win !== win.parent) {
+      win = win.parent;
+      if (win.location.pathname.startsWith("/explorer")) return false;
+    }
+    return true;
+  } catch {
+    // Cross-origin ancestor: treat as not ours.
+    return false;
+  }
+})();
+
 // URL prefix for this page's mode. Keeps refresh, in-listing navigation, and
 // param sync (iframe runtime's history.replaceState) inside the active prefix.
 const PREFIX = IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX;
@@ -266,19 +297,39 @@ export function fsPathFromLocation(): string | null {
   return rootedFsPath(decoded);
 }
 
-export function urlForFsPath(fsPath: string, search?: string): string {
-  // Windows callers (server stat/list results, bookmarks) may carry
-  // backslashes; the URL codec speaks forward slashes only. Normalize ONLY
-  // drive-letter paths — on POSIX a backslash is a legal filename character
-  // and must round-trip untouched.
+// Shared by urlForFsPath/embedUrlForFsPath below: normalize ONLY drive-letter
+// paths — on POSIX a backslash is a legal filename character and must
+// round-trip untouched — then split into encoded segments.
+function encodeFsPathSegments(fsPath: string): string {
   const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
-  const rest = norm.replace(/^\/+/, "");
-  const encoded = rest
+  return norm
+    .replace(/^\/+/, "")
     .split("/")
     .filter((s) => s.length > 0)
     .map(encodeURIComponent)
     .join("/");
-  return PREFIX + encoded + (search || "");
+}
+
+export function urlForFsPath(fsPath: string, search?: string): string {
+  // Windows callers (server stat/list results, bookmarks) may carry
+  // backslashes; the URL codec speaks forward slashes only.
+  return PREFIX + encodeFsPathSegments(fsPath) + (search || "");
+}
+
+// Embed url for a raw fs path — same codec as urlForFsPath, but always onto
+// the chrome-free embed prefix regardless of the current page's own
+// IS_EMBED-derived PREFIX (a normal page embedding a fs path in an iframe).
+export function embedUrlForFsPath(fsPath: string, search?: string): string {
+  return EMBED_PREFIX + encodeFsPathSegments(fsPath) + (search || "");
+}
+
+// Full-page url for a raw fs path — the inverse pin of embedUrlForFsPath:
+// always the chrome-full view prefix, regardless of this page's own PREFIX.
+// For code inside an embed that navigates a WINDOW OTHER THAN ITS OWN (the
+// foreign-embed chip targeting `window.top`): urlForFsPath would stamp the
+// embed prefix there, framing the top window itself chrome-free.
+export function viewUrlForFsPath(fsPath: string, search?: string): string {
+  return VIEW_PREFIX + encodeFsPathSegments(fsPath) + (search || "");
 }
 
 export function navigate(
@@ -287,9 +338,11 @@ export function navigate(
 ): void {
   // Navigating between files/dirs drops old view params (fresh query string) —
   // EXCEPT the preview pane's own state (`_side`: which of its three modes it is
-  // showing, or that it is shut — listing/pane-side.ts), which is sticky across
-  // DIRECTORY navigation: a folder hop keeps the pane as the user left it, open on
-  // the same companion or closed. Reserved (`_`-prefixed) name, so no
+  // showing, or that it is shut — listing/pane-side.ts), which is sticky FROM ONE
+  // FOLDER TO ANOTHER: such a hop keeps the pane as the user left it, open on
+  // the same companion or closed. Folder to folder and nothing else — a hop OUT OF
+  // A FILE hands it on no more than a hop INTO one does, see the carry itself
+  // below. Reserved (`_`-prefixed) name, so no
   // template-param shadowing concern, and directory-only for the same reason its
   // predecessor was: a file view hosts a template iframe whose ancestor-climb
   // (runtime.js D72 globals) reads every shell-URL param.
@@ -322,7 +375,26 @@ export function navigate(
   const current = new URLSearchParams(location.search);
   const parts: string[] = [];
   if (current.get("snapshot") === "1") parts.push("snapshot=1");
-  if (opts?.isDir === true) {
+  // FOLDER TO FOLDER ONLY — both ends, and the SOURCE end is the half added in
+  // D326. `_side` is one param name on two surfaces (the file preview's companion
+  // sidebar and this pane), read the same way since that decision but describing
+  // different columns, so it may only be handed from a page that owns the pane to a
+  // page that has one. The destination half was always here (`opts.isDir`); the
+  // source half became necessary when a shut sidebar started saying `_side=off`
+  // instead of deleting the param: closing a file's sidebar and then taking the
+  // BREADCRUMB up landed on a folder with its pane shut, for a folder that was open
+  // when the user went into the file. Back restores that folder's own url and its
+  // pane with it, so the two ways out of a file disagreed — which is what makes it
+  // a defect rather than the coupling one could argue for.
+  //
+  // Provenance comes from the `{ fsDir }` hint the navigation that landed HERE
+  // stashed (navHintIsDir). UNKNOWN counts as "not mine to hand on": a fresh load, a
+  // typed url or a caller that passed no hint cannot claim the param. The two ways
+  // to be wrong are not symmetric — guessing "carry" shuts a pane the user never
+  // shut, guessing "drop" reopens one at its documented default (an absent `_side`
+  // means open) — so the fallback goes the harmless way. The stated cost: shut a
+  // folder's pane, hard-RELOAD, then hop to a sibling, and the pane comes back open.
+  if (opts?.isDir === true && navHintIsDir() === true) {
     const side = current.get("_side");
     if (side !== null) parts.push("_side=" + encodeURIComponent(side));
   }

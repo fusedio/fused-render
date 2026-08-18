@@ -6,19 +6,19 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  getDeployStatus,
   rawUrl,
   resolveConditions,
   renameEntry,
   copyEntry,
   revealPath,
   deleteEntry,
+  getRegistryEntryForPath,
+  resetRegistryBinding,
+  repairTemplateRegistry,
 } from "@platform/lib/api";
-import type { Deployment, StatResult, TemplateEntry } from "@platform/lib/api";
-import { navigate, navigateUrl, urlForFsPath, replaceSearch, IS_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
+import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
-import { useRefreshOnReturn } from "@platform/lib/hooks";
-import { useDeployEnabled } from "@platform/lib/prefs";
 import {
   dirname,
   join,
@@ -37,7 +37,8 @@ import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
-import { pushToast } from "@platform/lib/toast";
+import { dismissToast, pushToast } from "@platform/lib/toast";
+import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { runCommunity, touchCommunityApp, communityCacheSlug } from "@platform/lib/community";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
@@ -51,9 +52,13 @@ import {
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import {
   sideSplit,
-  initialSide,
+  parseSide,
+  resolveSide,
+  sideParam,
+  writeQueryParam,
   sideToggleTarget,
   reconcileSideSearch,
+  type SideRequest,
 } from "@apps/explorer/lib/preview-side";
 import {
   activeRev,
@@ -70,7 +75,6 @@ import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
-import DeployModal from "@platform/cloud/DeployModal";
 import Listing from "@apps/explorer/Listing";
 
 // The window global the injected runtime calls to hand this shell the commit the
@@ -259,6 +263,17 @@ function usePreviewFileMenu(
   const doTrash = () => {
     trashEntry(fsPath, stat.is_dir).then((r) => {
       if (r.status === "trashed") {
+        // Undoable, exactly as the rename below is and for the same reason: the
+        // stack is module-level and the chord belongs to whichever Listing is
+        // mounted, so a delete made HERE is nearly always undone from the parent
+        // listing this navigates to. A delete that skipped this left the stack's
+        // top entry describing an older op, so Cmd+Z after it would undo that
+        // one instead — and the file stayed unreachable in the Trash.
+        //
+        // `to` is absent wherever the OS owns the location (the Recycle Bin, the
+        // macOS cross-device Finder fallback), and then there is no pair to
+        // record — recoverable from the OS, just not from here.
+        if (r.to) recordFsOp({ kind: "delete", pairs: [{ from: fsPath, to: r.to }] });
         notePathDeleted(fsPath);
         navigate(parent, { isDir: true });
       } else if (r.status === "unsupported") {
@@ -461,14 +476,6 @@ function useConditions(fsPath: string, templates: TemplateEntry[]): Record<strin
   return verdicts;
 }
 
-// --- Deploy button (SPEC §19) -----------------------------------------------
-// Header action for deployable pages: any file whose mode list carries the
-// "_render" sentinel (i.e. a renderable page — the exact set /api/export
-// accepts). Shows a live dot when the local deployment pointer reads active;
-// the pointer is a cheap local read (no CLI shell-out) — the modal is what
-// reconciles against `share list`. A user who rebinds .html away from
-// "_render" loses the button too, consistently with losing the rendered view.
-
 // --- Held-frame mode swap (A1) ----------------------------------------------
 // How long the incoming preview frame takes to fade in over the outgoing one.
 // Must match `--dur-med` in shell.css (the CSS owns the actual transition; this
@@ -478,59 +485,6 @@ const FRAME_FADE_MS = 150;
 // (a /render 500, a wedged template daemon) must not strand the user on the
 // previous mode's content forever — past this the swap completes regardless.
 const FRAME_SWAP_TIMEOUT_MS = 4000;
-
-const DEPLOY_ICON = (
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 19V5" />
-    <path d="M5 12l7-7 7 7" />
-  </svg>
-);
-
-function DeployButton({ fsPath }: { fsPath: string }) {
-  const [open, setOpen] = useState(false);
-  const [deployment, setDeployment] = useState<Deployment | null>(null);
-
-  // Local pointer only (reconcile=false): opening a preview must never spawn
-  // the fused CLI. Errors are ignored — the button then just shows no dot.
-  // The pointer can change without this view remounting — a revoke from the
-  // Preferences page in ANOTHER tab, or any out-of-band /api/deploy/revoke
-  // (same-tab navigation remounts the view via the nav epoch, so it needs no
-  // handling). Re-read on focus/visibility regain (useRefreshOnReturn): a
-  // cheap local JSON read, the bookmarks-poll freshness posture (D77)
-  // without a timer.
-  const aliveDot = useRef(true);
-  useEffect(() => () => {
-    aliveDot.current = false;
-  }, []);
-  const refreshDot = () => {
-    getDeployStatus(fsPath, false)
-      .then((r) => {
-        if (aliveDot.current) setDeployment(r.deployment);
-      })
-      .catch(() => {});
-  };
-  useEffect(refreshDot, [fsPath]); // initial read (and per-file)
-  useRefreshOnReturn(refreshDot);
-
-  const live = deployment?.status === "active";
-  return (
-    <>
-      <button
-        type="button"
-        className={"deploy-btn" + (live ? " live" : "")}
-        title={live ? "Deployed — open the Deploy dialog to manage" : "Deploy this page to a hosted URL"}
-        onClick={() => setOpen(true)}
-      >
-        {DEPLOY_ICON}
-        Deploy
-        {live && <span className="deploy-live-dot" />}
-      </button>
-      {open && (
-        <DeployModal fsPath={fsPath} onClose={() => setOpen(false)} onChange={setDeployment} />
-      )}
-    </>
-  );
-}
 
 // The shell-level revision indicator: what a content pane wears while it is
 // showing a PAST commit instead of the live file.
@@ -682,6 +636,11 @@ function TemplatePreview({
     own: parts.sidebar,
     borrowed: borrowedGit,
     borrowedPending,
+    // This file's own gates, for `defaultSide` alone: an absent `_side` must not
+    // open a companion whose condition.py has not answered — `claude` HAS one, so
+    // that is every file for as long as /api/fs/conditions takes, and on a
+    // mount-backed file the answer is no (lib/preview-side's `defaultSide`).
+    conditionsPending: conditions === null,
     bound: [
       ...partitionModes(stat.templates).sidebar,
       ...(parentGit.bound ? [parentGit.bound] : []),
@@ -730,26 +689,24 @@ function TemplatePreview({
     if (mode !== activeMode) setModeState(activeMode);
   }, [mode, activeMode]);
 
-  // --- `_side`: which companion the sidebar shows, absent = closed -----------
-  // Read from the URL at mount, exactly like `_mode`, so a bookmark or a shared
-  // link restores the split. Then owned as state and written back through
-  // replaceSearch — the sidebar is a view of this same file, not a navigation.
-  // Resolved against the split's FULL list (pending placeholder included) and
-  // against `offered` rather than `on`, so a `?_side=git` deep link is captured at
-  // mount even for a file with no companion of its own — the verdict is what
-  // decides it, and waiting for the real entry would have let the reconciling
-  // effect below strip the param before the answer arrived (lib/preview-side).
-  const [side, setSideState] = useState<string | null>(() =>
-    initialSide(location.search, split)
-  );
-  // Same request/paint distinction as `mode` above: a verdict that DENIES the
-  // open companion drops it from `sidebarModes`, and this paint must not frame a
-  // mode that is no longer on offer. Everything downstream reads `activeSide`.
-  const sideEntry = sidebarModes.find((e) => e.mode === side) ?? null;
-  const activeSide = sideEntry?.mode ?? null;
-  useEffect(() => {
-    if (side !== activeSide) setSideState(activeSide);
-  }, [side, activeSide]);
+  // --- `_side`: which companion the sidebar shows, ABSENT = OPEN (D326) ------
+  // Read from the URL at mount as a REQUEST — open/shut plus the companion named,
+  // if any — then owned as state and written back through replaceSearch, since the
+  // sidebar is a view of this same file and not a navigation. An absent `_side`
+  // asks for "open at whatever this file offers first", exactly as it does on a
+  // folder (lib/preview-side's header has the whole argument, and why the old
+  // absent-means-closed rule had to go); `_side=off` is how a shut sidebar says so.
+  //
+  // Nothing about it is persisted anywhere. It rides the URL, so it survives the
+  // shell's pushState navigation within this file, and a refresh — or an open of a
+  // different file, which starts from a bare URL — lands on the default again.
+  const [sideReq, setSideReq] = useState<SideRequest>(() => parseSide(location.search));
+  // Same request/paint distinction as `mode` above, and here it is RESOLVED rather
+  // than reconciled: a verdict that denies the open companion cannot leave this
+  // paint framing it, because `activeSide` is recomputed from the lists every
+  // render and an unhonourable request falls to the default (lib/preview-side).
+  const activeSide = resolveSide(sideReq, split);
+  const sideEntry = activeSide ? sidebarModes.find((e) => e.mode === activeSide) ?? null : null;
   // Which companion a bare "open the sidebar" reopens: the last one the user had
   // open on this file, so closing and reopening is not a reset. STATE, not a ref,
   // because the toggle button RENDERS from it — it wears the icon of the mode it
@@ -809,13 +766,21 @@ function TemplatePreview({
   // column stands beside the crumb bar rather than under it.
   const sideSlot = usePreviewSideSlot();
 
+  // The one writer. `null` CLOSES, and closing is a value (`_side=off`) rather
+  // than a deleted param now that absence means open — while choosing the
+  // companion a bare URL would have opened deletes the param instead, so the
+  // ordinary state keeps the clean URL (`sideParam`, lib/preview-side).
   const setSide = (next: string | null) => {
-    const params = new URLSearchParams(location.search);
-    if (next) params.set("_side", next);
-    else params.delete("_side");
-    const search = params.toString();
+    // Written textually (`writeQueryParam`) so a click on the sidebar cannot
+    // re-encode a template's own params on its way past them — LSN-2's verbatim
+    // rule, and this runs on the first close of every auto-opened sidebar.
+    const search = writeQueryParam(
+      location.search.replace(/^\?/, ""),
+      "_side",
+      sideParam(next, split.defaultSide)
+    );
     replaceSearch(location.pathname + (search ? "?" + search : ""));
-    setSideState(next);
+    setSideReq({ open: next !== null, mode: next });
   };
   const toggleSide = () => {
     if (activeSide) setSide(null);
@@ -831,21 +796,25 @@ function TemplatePreview({
   //
   // Guarded on `splitCapable` and not on the split being ON, which is the whole
   // point: a borrowed `git` that resolves to DENIED takes the split off with it,
-  // and a `_side=git` left in the URL there is not inert — the session sidecar
-  // records the query (lib/session) and replays it on the next bare open.
+  // and a `_side=git` left in the URL there is a param naming a state nothing on
+  // this file can honour. (It used to be worse than that — the session sidecar
+  // recorded the query and replayed it on the next bare open, which the `_side`
+  // strip was written to prevent. That sidecar is gone outright now, D329; the
+  // strip lives on for the recents store, lib/session-params.)
   const sideKeys = sidebarModes.map((e) => e.mode).join(",");
   useEffect(() => {
     const search = reconcileSideSearch(location.search, {
       splitCapable,
       offered: split.offered,
+      open: sideReq.open,
       activeSide,
+      defaultSide: split.defaultSide,
     });
     if (search === null) return; // already agrees
     replaceSearch(location.pathname + (search ? "?" + search : ""));
     // `sideKeys` is in the deps because a landing verdict is what makes a
     // previously-fine `_side` stale.
-  }, [splitCapable, split.offered, activeSide, sideKeys]);
-  const deployEnabled = useDeployEnabled();
+  }, [splitCapable, split.offered, split.defaultSide, sideReq.open, activeSide, sideKeys]);
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
   // renders through this same header + body chrome (even a plain folder's
@@ -1191,22 +1160,9 @@ function TemplatePreview({
           toggles it off first (the template treats a click on the selected row as
           "deselect"), so getting the revision back takes a second click. */}
       {rev && <RevisionPill sha={rev} onLive={() => setRevSel(null)} />}
-      {/* Deployable = the mode list carries the "_render" sentinel AND the
-          file is .html/.htm — the exporter's actual contract. The extension
-          check matters because a registry rebind can put "_render" on any
-          type (D73), but /api/export and /api/deploy/preview accept only
-          .html/.htm — the button must not open a modal that can't deploy.
-          Directories never deploy (no _render binding exists for one today;
-          the guard keeps that true even if a registry ever says otherwise).
-          Gated on the opt-in Deploy pref (Preferences → Deployments): hidden
-          entirely unless the user has turned Deploy on. */}
       {/* Showcase app: Clone copies it into Fused/local so catalog refreshes
           never touch your copy. */}
       {communitySlug && !stat.is_dir && <CloneCommunityButton slug={communitySlug} />}
-      {!stat.is_dir &&
-        deployEnabled &&
-        templates.some((t) => t.mode === "_render") &&
-        /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
       {/* One mode control per view, and for an explorer FOLDER it is the
           preview pane's, not this one. The pane header carries a ModeMenu of
           its own beside the previewed row (ListingPreviewPane), so a folder
@@ -1423,12 +1379,36 @@ function TemplatePreview({
             is a dead end, not a degradation, and it is left standing on purpose —
             the fix is either a chip that does not sit under the pane's corner or a
             pane the embed does not get, and re-gating either on a WIDTH is what
-            D282 removed. Recorded in D282 for the owner to rule on. */}
+            D282 removed. Recorded in D282 for the owner to rule on.
+
+            **Under a FOREIGN host the chip navigates the TOP WINDOW instead**
+            (D331). An embed framed by a non-explorer page (the canvases
+            workspace's chat pane) is a component in someone else's layout: an
+            in-place `_mode` swap there turns the host's chat column into a
+            chrome-free listing — half a browsing surface where the host put a
+            conversation — and walks straight into the dead end above. "Browse
+            contents" under that host means "take me to the real explorer for
+            this folder", so the whole page goes to the view-prefixed URL (a
+            plain location.assign: the host is a different document, and Back
+            returns to it). Inside the explorer's own surfaces (panel panes,
+            tabs — IS_FOREIGN_EMBED is false there) the in-place switch stays:
+            those panes own their layout and a top nav would blow it away. */}
         {toggleListing && !listingPaneOpen && (
           <button
             type="button"
             className="preview-browse-chip"
-            onClick={toggleListing}
+            onClick={
+              IS_FOREIGN_EMBED
+                ? () =>
+                    window.top?.location.assign(
+                      // `?_mode=_listing` pins the folder's contents listing —
+                      // without it the directory opens on its default mode
+                      // (the registry's first entry), not the listing the chip
+                      // promises.
+                      viewUrlForFsPath(fsPath, "?_mode=_listing"),
+                    )
+                : toggleListing
+            }
           >
             Browse contents
           </button>
@@ -1464,7 +1444,155 @@ function TemplatePreview({
   );
 }
 
-function FallbackPreview({ fsPath, stat, actionsInTopbar }: { fsPath: string; stat: StatResult; actionsInTopbar?: boolean }) {
+// The "get me out of this" panel FallbackPreview shows when the reason
+// nothing renders is a fixable Template Registry state — a disabling user
+// override, or a corrupt user registry.json — rather than a genuinely
+// unbound file type (nothing to fix from here, so nothing is shown). Both
+// fixes are one click and stay entirely inside the app: no file to find, no
+// JSON to hand-edit.
+function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir: boolean; onReload?: () => void }) {
+  const [entry, setEntry] = useState<RegistryEntryForPath | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setEntry(null);
+    setActionError(null);
+    getRegistryEntryForPath(fsPath, isDir).then(
+      (r) => alive && setEntry(r),
+      () => alive && setEntry({ key: null })
+    );
+    return () => {
+      alive = false;
+    };
+  }, [fsPath, isDir]);
+
+  if (entry === null) return null; // first paint is instant; this enriches in the background
+
+  // The ONE registry state that truly empties a file's rendered template
+  // list is an explicit null/[] override on the key that would otherwise
+  // govern it — an unresolvable NAME alone self-heals, because
+  // _templates_for falls back to the core list when a user value resolves to
+  // nothing at all, so it never reaches this fallback card in the first
+  // place. Narrowed into its own variable (rather than a boolean flag) so
+  // every field below reads off the checked value, not back off `entry`.
+  const resetTarget = entry.key !== null && entry.overridesCore && entry.disabled ? entry : null;
+  const registryError = entry.registryError;
+  const coreRegistryError = entry.coreRegistryError;
+  if (!resetTarget && !registryError && !coreRegistryError) return null;
+
+  // `isFixed` lets a no-op success (repair's `{repaired: false}` — the file
+  // already parsed fine, nothing to do) skip the "Fixed" claim instead of
+  // reloading and toasting over a state that never changed. Reset has no
+  // such no-op shape given how resetTarget is gated above, so it takes the
+  // default (every resolution counts as fixed).
+  const run = <T,>(action: () => Promise<T>, isFixed: (result: T) => boolean = () => true) => {
+    setBusy(true);
+    setActionError(null);
+    action().then(
+      (result) => {
+        setBusy(false);
+        if (isFixed(result)) {
+          pushToast({ msg: "Fixed — reloading this file's preview…", tone: "info" });
+          onReload?.();
+        } else {
+          // The action no-opped (repair found the file already parses fine —
+          // maybe another tab beat this one to it, or fixed the binding this
+          // exact file needs while doing so). The stale `entry` fetched
+          // before this click still shows the "unreadable" banner and button,
+          // so it must be refetched rather than left standing while only
+          // actionError changes (Cursor Bugbot #585). A toast carries the
+          // message rather than inline text: refetching may make the whole
+          // notice disappear (nothing left to fix), which would otherwise
+          // take the message down with it before anyone reads it.
+          pushToast({ msg: "Nothing to repair — the registry file already reads fine.", tone: "info" });
+          getRegistryEntryForPath(fsPath, isDir).then(
+            (r) => setEntry(r),
+            () => setEntry({ key: null })
+          );
+          // Also re-stat: "already reads fine" can mean whoever got there
+          // first restored the WORKING binding this file needs, not just an
+          // empty {} — in which case the file itself renders again now, and
+          // only a re-stat (not just refetching this notice's own entry)
+          // surfaces that (Cursor Bugbot #585 follow-up). A harmless extra
+          // re-stat otherwise.
+          onReload?.();
+        }
+      },
+      (err: Error) => {
+        setBusy(false);
+        setActionError(err.message || String(err));
+      }
+    );
+  };
+
+  return (
+    <div className="metadata-card registry-fix-notice">
+      {registryError && (
+        <>
+          <p>
+            Your Template Registry file couldn't be read: <code>{registryError}</code>
+          </p>
+          <p className="registry-fix-hint">
+            Any custom preview bindings in it are being ignored until this is fixed.
+          </p>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={() => run(repairTemplateRegistry, (r) => r.repaired)}
+          >
+            Repair Template Registry
+          </button>
+        </>
+      )}
+      {coreRegistryError && (
+        // No button: this is fused-render's own PACKAGED registry, not
+        // anything a request handler may rewrite — it's immutable data healed
+        // only by ensure_core_templates' startup check, so the honest fix
+        // really is "restart the app", not a click here.
+        <p>
+          Fused Render's built-in Template Registry couldn't be read: <code>{coreRegistryError}</code>. Restarting
+          the app usually fixes this.
+        </p>
+      )}
+      {resetTarget && (
+        <>
+          <p>
+            Previews for <code>{resetTarget.key}</code> files are turned off in your Template Registry.
+          </p>
+          {resetTarget.coreTemplates && resetTarget.coreTemplates.length > 0 && (
+            <p className="registry-fix-hint">
+              Restoring the default will bring back: {resetTarget.coreTemplates.join(", ")}.
+            </p>
+          )}
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={() => run(() => resetRegistryBinding(resetTarget.key))}
+          >
+            Restore default previews for {resetTarget.key}
+          </button>
+        </>
+      )}
+      {actionError && <p className="registry-fix-error">{actionError}</p>}
+    </div>
+  );
+}
+
+function FallbackPreview({
+  fsPath,
+  stat,
+  actionsInTopbar,
+  onReload,
+}: {
+  fsPath: string;
+  stat: StatResult;
+  actionsInTopbar?: boolean;
+  onReload?: () => void;
+}) {
   // No renderable views back this file (that's why it's the fallback), so Open
   // With resolves to the empty "No views available" list without a re-stat.
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems([], () => {}));
@@ -1473,20 +1601,23 @@ function FallbackPreview({ fsPath, stat, actionsInTopbar }: { fsPath: string; st
     <>
       {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu} />}
       <div className="preview-body">
-        <div className="metadata-card">
-          <dl>
-            <dt>Name</dt>
-            <dd>{stat.name}</dd>
-            <dt>Path</dt>
-            <dd>{fsPath}</dd>
-            <dt>Size</dt>
-            <dd>{formatSize(stat.size)}</dd>
-            <dt>Modified</dt>
-            <dd>{formatMtimeFull(stat.mtime)}</dd>
-          </dl>
-          <a href={rawUrl(fsPath)} download={stat.name}>
-            Download
-          </a>
+        <div className="metadata-stack">
+          <RegistryFixNotice fsPath={fsPath} isDir={stat.is_dir} onReload={onReload} />
+          <div className="metadata-card">
+            <dl>
+              <dt>Name</dt>
+              <dd>{stat.name}</dd>
+              <dt>Path</dt>
+              <dd>{fsPath}</dd>
+              <dt>Size</dt>
+              <dd>{formatSize(stat.size)}</dd>
+              <dt>Modified</dt>
+              <dd>{formatMtimeFull(stat.mtime)}</dd>
+            </dl>
+            <a href={rawUrl(fsPath)} download={stat.name}>
+              Download
+            </a>
+          </div>
         </div>
       </div>
       {fileMenu.overlays}
@@ -1504,12 +1635,19 @@ interface PreviewProps {
   // Chrome-free render (the /learn page): no preview header, no mode switcher —
   // the content fills the body directly.
   hideHeader?: boolean;
-  // Explorer variant: no preview header bar; the mode switcher/deploy actions
+  // Explorer variant: no preview header bar; the mode switcher actions
   // portal into the breadcrumb bar's #topbar-mode-slot instead.
   actionsInTopbar?: boolean;
+  // Bumps StatView's reloadKey to re-fetch /api/fs/stat in place (App.tsx).
+  // FallbackPreview's RegistryFixNotice calls this after a fix succeeds, so a
+  // file that starts rendering again (e.g. "_render" is back) does so without
+  // a manual refresh. Undefined for callers that don't wire up StatView's
+  // reload (e.g. the learn page), where FallbackPreview simply omits the
+  // "reloading…" step.
+  onReload?: () => void;
 }
 
-export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, actionsInTopbar }: PreviewProps) {
+export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, actionsInTopbar, onReload }: PreviewProps) {
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
@@ -1528,6 +1666,55 @@ export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, act
   // back to the default (activeTemplate) or, if nothing survives, to
   // FallbackPreview below.
   const visible = visibleModes(templates, conditions);
+
+  // A REGISTRY THAT WILL NOT PARSE, announced once — and only for the failure
+  // that has nowhere else to appear (SPEC §42, TR-9).
+  //
+  // GATED ON THIS FILE ACTUALLY HAVING A VIEW, which is the whole scope. A file
+  // with NO view falls through to FallbackPreview, where RegistryFixNotice
+  // states the same error and offers a button that repairs it; announcing there
+  // too would put two descriptions of one fault on one screen, this one saying
+  // "your own bindings are not applying" about a file whose preview was gone
+  // entirely. What is left is the PARTIAL failure — built-in registry still
+  // matching, file previewing, only the user's own bindings quietly dropped —
+  // which is the reported symptom and renders no card anywhere for an answer
+  // to sit on.
+  //
+  // The lifecycle itself is `syncRegistryToast` rather than three branches
+  // written out here: dismiss on recovery, supersede on a different error, stay
+  // quiet otherwise. It is a state machine, and it belongs somewhere a test can
+  // reach it.
+  //
+  // The action COPIES rather than navigates, because the error is longer than a
+  // toast line and what a user does with it is paste it — into their own AI, or
+  // into an issue. `troubleReport` is the same block every other trouble
+  // surface hands over, so what is pasted from here reads identically to what
+  // is pasted from the boot failure.
+  const previews = !resolving && visible.length > 0;
+  useEffect(() => {
+    const error = stat.template_error || "";
+    syncRegistryToast(error, previews, {
+      dismiss: dismissToast,
+      push: () =>
+        pushToast({
+          msg: `Your template registry could not be read, so your own view bindings are not applying: ${error}`,
+          tone: "error",
+          ttlMs: 0,
+          action: {
+            label: "Copy details",
+            onClick: () => {
+              void copyToClipboard(
+                troubleReport({
+                  what: "reading the template registry that decides which view opens a file",
+                  error,
+                  page: location.pathname + location.search,
+                })
+              );
+            },
+          },
+        }),
+    });
+  }, [stat.template_error, previews]);
   if (resolving && templates.length > 0 && templates.every((t) => t.conditional)) {
     return (
       <>
@@ -1553,5 +1740,5 @@ export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, act
         actionsInTopbar={actionsInTopbar}
       />
     );
-  return <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} />;
+  return <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} onReload={onReload} />;
 }

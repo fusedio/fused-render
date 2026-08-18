@@ -29,8 +29,22 @@
    the scheduled-messages page is another settings-family surface that only adds
    its own row layout over the .prefs-* / .field-* / .btn vocabulary above. */
 @import "./styles/schedule.css";
+/* Immediately after schedule.css, and the order is load-bearing: the Tasks
+   page's List/Board reuse that file's vocabulary (the status ring, the live
+   ping, the folder chip, the board's lanes and rails) and tasks.css adds only
+   what is new — so the two must be adjacent, and the additions must come
+   second. */
+@import "./styles/tasks.css";
+/* Third of the same family and last of it: the New task form layers over both
+   the .field-* vocabulary far above and schedule.css's own modal chrome, and
+   adds only the rows new to it — the two checkboxes, title and description,
+   the past-time note. */
+@import "./styles/new-task.css";
 @import "./styles/setup-modal.css";
 @import "./styles/templates.css";
 @import "./styles/home.css";
+/* After home.css: the canvases listing is another page-family surface that
+   layers its card grid over the .btn / .field-control vocabulary above. */
+@import "./styles/canvases.css";
 @import "./styles/reduced-motion.css";
 @import "./styles/apps.css";

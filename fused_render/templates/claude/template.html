@@ -843,10 +843,14 @@
     flex: 1;
     min-width: 0;
   }
+  /* TASK-023 (see showSession) — tabular figures for the same reason the
+     composer block's `.sb-id` has them: the same identifier must not shift
+     width as its digits change. */
   #session {
     color: var(--faint);
     font-size: 11px;
     letter-spacing: .3px;
+    font-variant-numeric: tabular-nums;
   }
   #back {
     background: transparent;
@@ -861,6 +865,214 @@
     transition: color .12s, border-color .12s, background .12s;
   }
   #back:hover { color: var(--fg); border-color: var(--border-strong); background: var(--surface); }
+
+  /* the scheduled-message block (see the #schedblock markup)
+     It rides the COMPOSER'S column — same 720px measure, same 20px gutter as
+     #composer-chat below it — so it reads as a lid on that box rather than as a
+     band across the pane. No entry animation and no reserved space: the composer
+     is anchored at the bottom of #chat's flex column and #logwrap is the only
+     child that grows, so this appears into height the transcript gives up and the
+     box under the reader's cursor does not move (see applyComposerBlockState,
+     which puts a bottom-pinned transcript back at the bottom). */
+  #schedblock {
+    flex-shrink: 0;
+    max-width: 720px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 0 20px 6px;
+  }
+  #schedblock[hidden] { display: none; }
+  /* Never on the landing page: there is no session there, so nothing can be
+     pending "in this conversation" — the same rule #topbar and #logwrap take. */
+  #chat.home #schedblock { display: none; }
+  #schedblock .sb-card {
+    /* A COLUMN: reason, row, then the one control right-aligned under it. Side by
+       side, the row and the button fought over a pane that is often 340px wide and
+       the row's own right-hand cell — the time, the thing it is for — was the
+       first thing to be squeezed out. */
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 11px;
+    border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+    /* Slightly tighter than the composer's 20px: a lid, not a second box of
+       equal weight. */
+    border-radius: 14px;
+    /* A tint of the accent rather than a solid band: the notice has to read as
+       a state this pane is IN, not as a message in the transcript above it. */
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  #schedblock .sb-why { display: flex; gap: 6px; color: var(--dim); }
+  #schedblock .sb-ic { color: var(--accent-text); flex-shrink: 0; }
+
+  /* ── the task row ────────────────────────────────────────────────────────────
+     The Tasks LIST view's row, TRANSCRIBED and not linked: this template cannot
+     import frontend/src/styles/tasks.css, so the geometry that file defines is
+     copied here — the 8px row gap, the ring in the leading cell, TASK-nnn in
+     tabular mono, the ellipsed name, one spacer, and the fixed right-hand cell.
+     Every colour goes through this page's own tokens, so the row is the shell's
+     shape in the chat's palette rather than a second palette smuggled in.
+
+     It is a BUTTON because the hop is a pushState into the React shell rather
+     than a document load (see openTaskOnCalendar) — an <a href> here would be a
+     link that cannot be trusted to a middle click. */
+  #schedblock .sb-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 9px;
+    /* Sits BACK from the accent-tinted card rather than on top of it, which is
+       what makes it read as a row lifted out of the notice. --panel is the one
+       surface that steps away from --surface in both themes (down in dark, up in
+       light), so the separation survives the light block. */
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color .12s, border-color .12s;
+  }
+  #schedblock .sb-row:hover {
+    background: var(--surface);
+    border-color: var(--border-strong);
+  }
+  /* Reachable before the destructive button (it is first in the DOM) and visibly
+     so — the ring is the same one every control in this card wears. */
+  #schedblock .sb-row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  /* THE spacer, and there is exactly one: tasks.css's own house rule, because a
+     second `margin-left: auto` in the same row centres the right-hand group
+     instead of pinning it. */
+  #schedblock .sb-grow { flex: 1 1 auto; min-width: 8px; }
+  #schedblock .sb-id {
+    flex: 0 0 auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .01em;
+    color: var(--dim);
+  }
+  /* An EMPTY id is "/api/tasks could not be read", not "this task has no number":
+     the cell disappears rather than holding a gap open, and the rest of the row
+     still says which message is holding the box shut (see schedTaskRec). */
+  #schedblock .sb-id:empty { display: none; }
+  /* The name, and it is the one thing here allowed to be long — so it is the one
+     thing that gives way. */
+  #schedblock .sb-name {
+    min-width: 0;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* State and time, on the right, in one cell: "Upcoming · 14:00 tomorrow". Fixed
+     rather than flexible, because the whole point of the right end of this row is
+     that the time is always readable. */
+  #schedblock .sb-meta {
+    flex: 0 0 auto;
+    color: var(--dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  /* The status ring, drawn the way the shell draws it: a 2px currentColor circle,
+     so the STATE only ever changes the hue. 14px rather than the list's 16 — this
+     row sits at 12.5px inside a banner, not at 13px in a full-width table. */
+  #schedblock .sb-ring {
+    position: relative;
+    box-sizing: border-box;
+    flex: 0 0 14px;
+    width: 14px;
+    height: 14px;
+    border: 2px solid currentColor;
+    border-radius: 999px;
+    /* Upcoming, which is what a pending message almost always is. */
+    color: var(--accent-text);
+  }
+  #schedblock .sb-ring.sb-ring--in_progress { color: var(--code-fg); }
+  #schedblock .sb-ring.sb-ring--done { color: var(--ok); }
+  #schedblock .sb-ring.sb-ring--failed { color: var(--error); }
+  #schedblock .sb-ring.sb-ring--archived { color: var(--faint); }
+  /* Settled — well or badly — carries the inner dot, so the two terminal states
+     are told apart by more than a hue. */
+  #schedblock .sb-ring.sb-ring--done::after,
+  #schedblock .sb-ring.sb-ring--failed::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: currentColor;
+  }
+  /* A refused cancel, in the one colour this page keeps for a loss. `:empty`
+     rather than `hidden`, so the line costs nothing when there is nothing to
+     say (see renderSchedBlock — it is written every render, keyed to the entry). */
+  #schedblock .sb-note { color: var(--error); }
+  #schedblock .sb-note:empty { display: none; }
+  /* Under the row and against its right edge — the last thing read, which is what
+     a control that spends every future run of a task should be. */
+  #schedblock .sb-acts {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    justify-content: flex-end;
+  }
+  #schedblock .sb-acts button {
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 12px;
+    padding: 3px 9px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color .12s, border-color .12s, background .12s;
+  }
+  #schedblock .sb-acts button:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+  #schedblock .sb-acts button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  #schedblock .sb-acts button:disabled { opacity: .55; cursor: default; }
+  /* ARMED — one press in, and the next one cancels every future run of a repeat.
+     The colour changes with the label because the button is now a different
+     question, and this is the page's only red. */
+  #schedblock .sb-acts button.armed,
+  #schedblock .sb-acts button.armed:hover:not(:disabled) {
+    border-color: var(--error);
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
+  }
+  /* A run in flight BREATHES, and only where motion is welcome — `no-preference`
+     rather than a `reduce` override, so reduced motion is the state that needs no
+     opt-out. The ring's hue already says "in progress" on its own. */
+  @keyframes sb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+  @media (prefers-reduced-motion: no-preference) {
+    #schedblock .sb-ring.sb-ring--in_progress {
+      animation: sb-pulse 2s ease-in-out infinite;
+    }
+  }
+  /* The box itself says it is shut, since the banner is at the other end of the
+     pane and a reader who clicks into a dead textarea is owed an answer there. */
+  #box:disabled {
+    opacity: .6;
+    cursor: not-allowed;
+  }
 
   /* message log */
   #logwrap { flex: 1; overflow-y: auto; }
@@ -878,6 +1090,28 @@
   @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   @keyframes annrecpulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
   @media (prefers-reduced-motion: reduce) { .turn, #annrec.on { animation: none; } }
+
+  /* The turn a `?msg=` link asked for (see MESSAGE_ANCHOR). A HALO that fades,
+     not a selection state: the flare answers "this one" and then leaves, where
+     a permanent tint would sit there implying something is still selected and
+     that clearing it is the reader's job. Drawn entirely with box-shadow so it
+     costs no layout — a padded, backgrounded turn would nudge every turn under
+     it the moment the class landed, which reads as the page moving underneath a
+     scroll that is still settling. */
+  .turn.is-anchored {
+    border-radius: 10px;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent);
+    animation: anchor-flare 1.6s ease-out forwards;
+  }
+  @keyframes anchor-flare {
+    0%, 45% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent); }
+    100% { box-shadow: 0 0 0 4px transparent; }
+  }
+  /* Higher specificity than the `.turn { animation: none }` above, so the flare
+     has to be switched off on its own. The halo then simply holds until the JS
+     timer strips the class — a state change instead of a fade, which is what
+     reduced motion asks for. */
+  @media (prefers-reduced-motion: reduce) { .turn.is-anchored { animation: none; } }
 
   .user { display: flex; flex-direction: column; align-items: flex-end; }
   /* annotations a sent message carried — subtle receipt under the bubble */
@@ -999,8 +1233,7 @@
      quiet as its neighbours, and `.pill`'s own padding kept so the hover paints
      the shape the rest of the row paints. Spelled out rather than folded into
      the .viewshot selector: the two buttons share a look, not a fate, and
-     .viewshot's other two rules (hidden with the pane, disabled mid-capture) are
-     about photographing something this one never touches. */
+     .viewshot's `[hidden]` rule is about a pane this one never touches. */
   .schedbtn {
     display: inline-flex;
     align-items: center;
@@ -1008,6 +1241,18 @@
     min-height: 1.65em;
   }
   .schedbtn svg { display: block; }
+  /* Dead for as long as a scheduled message is pending in this session — the same
+     refusal as the disabled textarea above it, because a task queued from here is
+     input into that message's context exactly as a typed reply would be (see
+     applyComposerBlockState). The hover that would have contradicted the dim is
+     excluded on `.pill:hover` itself, where source order can no longer undo it.
+
+     `not-allowed`, which is #box:disabled's cursor and not .viewshot's `default`:
+     these two are the SAME refusal and should feel like one, while .viewshot's
+     disable is a one-second capture that is nobody's mistake to make. Dimmer than
+     the box (.45 against .6) because an 14px monochrome glyph at .6 still reads
+     as a live icon, where a whole greyed textarea does not. */
+  .schedbtn:disabled { opacity: .45; cursor: not-allowed; }
   .user .bubble {
     background: var(--bubble-user);
     border-radius: 18px 18px 4px 18px;
@@ -1090,6 +1335,58 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+
+  /* The trouble card (SPEC §42): a failure the user can act on, as opposed to
+     the plain red row above. WARNING-toned rather than error-toned on the same
+     argument the shell's card makes — the app is running, Claude is not — and
+     wide enough to hold an install command without wrapping it. */
+  .turn.trouble {
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+  .turn.trouble .trouble-title { font-weight: 600; margin-bottom: 4px; }
+  .turn.trouble .trouble-explain { margin: 0 0 8px; color: var(--dim); }
+  .turn.trouble .trouble-error {
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    max-height: 200px;
+    overflow: auto;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .turn.trouble .trouble-cmd {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 6px;
+  }
+  .turn.trouble .trouble-cmd code {
+    flex: 1 1 auto;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    overflow-x: auto;
+  }
+  .turn.trouble .trouble-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .turn.trouble .trouble-btn {
+    padding: 3px 10px;
+    font: inherit;
+    font-size: 12px;
+    color: var(--fg);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .turn.trouble .trouble-btn:hover { border-color: var(--border-strong); }
 
   /* working indicator */
   .working { display: flex; align-items: baseline; gap: 8px; color: var(--dim); font-size: 13px; }
@@ -1781,8 +2078,17 @@
      the "this is on" receipt disappearing under the cursor at exactly the moment
      the user is deciding whether to click. Relying on rule order for that is one
      reshuffle away from the bug coming back, and the next pressable pill in this
-     row inherits the fix rather than rediscovering it. */
-  .pill:hover:not([aria-pressed="true"]) { background-color: var(--surface-2); color: var(--fg); }
+     row inherits the fix rather than rediscovering it.
+
+     `:not(:disabled)` for the second half of the same argument. A dimmed pill that
+     still lights up under the cursor is a control saying two things at once, and
+     the reader believes the one that moves — this row now has a pill that goes dead
+     for as long as a scheduled message is pending (.schedbtn), so the exclusion is
+     spelled here rather than fought locally: at (0,2,0) a `.schedbtn:disabled`
+     override would lose to this rule on source order, which is the bug above with
+     the roles swapped. It is also the idiom the rest of this file already uses
+     (.stop, .perm button, .sb-acts button all hover `:not(:disabled)`). */
+  .pill:hover:not([aria-pressed="true"]):not(:disabled) { background-color: var(--surface-2); color: var(--fg); }
   .pill[aria-pressed="true"]:hover { filter: brightness(1.1); }
   /* Still styled, because the native popup is only SUPPRESSED for the pointer
      (openSelPop): a keyboard user who presses Space still gets the platform
@@ -2833,6 +3139,70 @@
       <span id="session" class="mono"></span>
     </div>
     <div id="logwrap"><div id="log"></div><div id="queue"></div></div>
+    <!-- A scheduled message pending IN THIS SESSION closes the composer, and this
+         is the notice that says why (Akshil, 2026-08-17). The reason is CONTEXT
+         POLLUTION, not politeness: a task is a session, so anything typed before
+         a scheduled message fires ends up inside that task's context — the run
+         reads a conversation the person who scheduled it never wrote.
+
+         DIRECTLY ABOVE THE COMPOSER, not above the log: it explains a box that
+         will not type, and a notice about a dead control belongs against the
+         control. It used to sit under the top bar, one pane-height away from the
+         thing it was about (Akshil, 2026-08-17). Arriving here costs the reader
+         nothing, because #logwrap is #chat's only `flex: 1` child — the height
+         this takes comes out of the TRANSCRIPT and the composer does not move.
+
+         A banner and not a modal: the transcript stays readable and the chat
+         stays navigable, which is the whole difference between "you cannot type
+         here" and "you cannot use this page". `hidden` until a pending entry
+         names this session — the block is a fact about the schedule, so a
+         schedule that cannot be read shows nothing and blocks nothing (see
+         applyComposerBlock).
+
+         The BODY IS A TASK ROW, and it is the Tasks LIST view's row rather than a
+         shape invented here (Akshil, 2026-08-17 — "this UI does not make sense to
+         me, it does not give me what I want"): a status ring, TASK-nnn, the name,
+         and when it runs at the right end. The reason above it is ONE short line,
+         because a paragraph explaining context pollution described the block
+         instead of showing what is doing it.
+
+         What the row does NOT carry is the folder and the session id, and that is
+         the user's own reasoning: "you will not show the folder because you are
+         already in that folder, you are not showing the session ID because you
+         are already there." Both are true of the page the reader is standing on,
+         so on this row they are noise where the list view needs them to tell two
+         projects apart.
+
+         The row is the LINK — it goes to the task on the Tasks calendar — and it
+         comes before the destructive button in the DOM so it comes first in tab
+         order too. Geometry copied from frontend/src/styles/tasks.css, never
+         linked: a template cannot import the shell's stylesheet. -->
+    <div id="schedblock" hidden>
+      <div class="sb-card" role="status">
+        <div class="sb-why"><span class="sb-ic" aria-hidden="true">⏱</span><span class="sb-when"></span></div>
+        <!-- One row, one hop. `sb-grow` is the list view's single spacer: a second
+             `margin-left: auto` anywhere in here would centre the right-hand cell
+             instead of pinning it (tasks.css says so in its own header). -->
+        <button id="sb-row" class="sb-row" type="button">
+          <span class="sb-ring" aria-hidden="true"></span>
+          <span class="sb-id"></span>
+          <span class="sb-name"></span>
+          <span class="sb-grow"></span>
+          <span class="sb-meta"></span>
+        </button>
+        <div class="sb-note"></div>
+        <!-- Exactly ONE control, and it is the one that actually reopens the box —
+             cancel for a one-off, stop-the-repeat for a repeat. "Edit schedule"
+             used to sit beside it and is GONE: the row now lands on the task where
+             Edit lives with its full popover, so the banner was two doors to one
+             room and its own door did not unblock (Akshil, 2026-08-17). The label
+             is written by renderSchedBlock, which is the only place that knows
+             which of the two cases this is. -->
+        <div class="sb-acts">
+          <button id="sb-stop" type="button"></button>
+        </div>
+      </div>
+    </div>
     <!-- `display: contents` is in the stylesheet, deliberately not here: an inline
          declaration cannot be overridden by the narrow layout's collapse, and
          the CSS force flag (`important`) is forbidden in this file (D146).
@@ -2873,7 +3243,13 @@
                  selects that only describe how a run behaves.
                  A calendar and not a clock: what it opens is a task with a date
                  on it, not a delay on this message (see openScheduler for what
-                 the composer stopped trying to do on its own). -->
+                 the composer stopped trying to do on its own).
+
+                 The title and aria-label here are the PRISTINE pair, and they are
+                 also the only place this button's wording lives: a pending
+                 scheduled message disables it along with the textarea and swaps
+                 both for the banner's reason, then puts these back when the block
+                 lifts (applyComposerBlockState reads them at boot). -->
             <button id="schedbtn" class="pill schedbtn" type="button"
                     aria-label="Schedule this as a task"
                     title="Schedule this as a task"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="3.2" width="12" height="10.6" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M2 6.6h12M5.4 1.8v2.6M10.6 1.8v2.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
@@ -3486,10 +3862,13 @@ function searchParamsOf(search) {
 // APP is running with would be describing our chrome as its state. `chat_only`
 // is the extreme case of that: it describes THIS DOCUMENT'S HOST (see
 // CHAT_ONLY), and there is no pane for it to be a param of.
+// `msg` is here for the `session_id` reason: it is this chat's own bookkeeping
+// (which turn a Tasks-list link asked to land on), and reporting it to the model
+// as a param the APP is running with describes our navigation as its state.
 const CHAT_PARAMS = new Set(["_file", "_mode", "session_id", "run", "split",
                              "model", "effort", "permission", "annotations",
                              "annmode", "leftmode", "paneview", "chat_only",
-                             "path"]);
+                             "path", "msg"]);
 
 function appParamsOf(all) {
   const out = {};
@@ -8017,7 +8396,7 @@ document.querySelectorAll(".perm-sel").forEach((el) =>
 // 2026-08-16): it could defer ONE message and nothing else — no title, no
 // description, no repeat rule, no second thought — which meant a row of send-later
 // presets sitting permanently in front of every user to serve the rarest thing
-// they do with a draft. Everything past a bare deferral is the /scheduled page's
+// they do with a draft. Everything past a bare deferral is the /tasks page's
 // form, so the whole job here is the HANDOFF, and the handoff is one button.
 //
 // What travels is what the page cannot know and this template always does: the
@@ -8044,7 +8423,7 @@ document.querySelectorAll(".perm-sel").forEach((el) =>
 // (platform/lib/router.ts navigateUrl does the same two lines); the href
 // assignment underneath is the fallback for a cross-origin or absent parent,
 // where reading `top.location.href` throws.
-const SCHEDULE_URL = "/scheduled";
+const SCHEDULE_URL = "/tasks";
 
 // Where "Back to chat" has to land. The TOP window's path when it is readable,
 // this document's otherwise — the same split every other navigation in this file
@@ -8064,7 +8443,20 @@ function backHere() {
 // form is where the description gets written, and arriving there with a blank
 // field is exactly what "+ New task" already does. Nothing is validated here —
 // this navigates, it does not create.
-function openScheduler(draft) {
+//
+// `editId` is the deep link's second errand: open the form ON an entry that
+// already exists rather than on a new one. It rides the SAME `?new=1&…` link
+// rather than a route of its own, because the destination is one form either way
+// and the params it already consumes (target, message, session, back) are exactly
+// what an edit needs too — `edit` only says which stored entry the form is
+// editing, and the Tasks page is what reads it.
+//
+// NO CALLER IN THIS TEMPLATE passes it any more. The blocked-composer banner used
+// to, as its "Edit schedule" control, and that control is gone: its row lands on
+// the task where Edit lives with its full popover instead (Akshil, 2026-08-17 —
+// two doors to one room, and the banner's did not unblock). The parameter stays
+// because it is the deep link's shape, not this template's private argument.
+function openScheduler(draft, editId) {
   // The draft SURVIVES the trip: leaving for the schedule page unloads this
   // document, and coming back rebuilt the composer empty — the message the
   // user had half-written was gone (Akshil, 2026-08-16). sessionStorage, not
@@ -8072,6 +8464,7 @@ function openScheduler(draft) {
   try { sessionStorage.setItem("fused:chatdraft:" + FILE, draft || ""); }
   catch (err) { /* storage denied — the draft just doesn't survive the trip */ }
   const url = SCHEDULE_URL + "?new=1"
+    + (editId ? "&edit=" + encodeURIComponent(editId) : "")
     + "&target=" + encodeURIComponent(FILE)
     + "&message=" + encodeURIComponent(draft || "")
     // The chat this task was thought of in, so the page can offer to continue it.
@@ -8134,6 +8527,12 @@ function openSchedConfirm(btn) {
 
 document.querySelectorAll(".schedbtn").forEach((btn) => {
   btn.addEventListener("click", () => {
+    // A pending scheduled message shuts this door as well as the composer's:
+    // a session that is already holding queued work takes no further input, and
+    // a task is input the same way a typed reply is (see applyComposerBlockState,
+    // which is what actually disables the button). Guarded here anyway, the same
+    // discipline `submitChat` keeps — disabled for the eye, guarded for the hand.
+    if (schedBlocked()) return;
     // A second press on the same button closes, rather than closing on the
     // document handler below and reopening here.
     const same = schedPopFor === btn;
@@ -8143,6 +8542,12 @@ document.querySelectorAll(".schedbtn").forEach((btn) => {
 });
 
 document.getElementById("schedpop-go").addEventListener("click", () => {
+  // The confirm can OUTLIVE the press that opened it: the 15s schedule poll may
+  // block this chat while the question is still on screen, and this is the only
+  // caller of openScheduler — so the last word on whether a task may be made from
+  // here is read here, not at open time. The block also closes the confirm
+  // (applyComposerBlockState), which makes this the race and not the ordinary path.
+  if (schedBlocked()) return;
   // The box belonging to the composer that was clicked, not "the visible one":
   // only one composer is on screen at a time, but reading the button's own form
   // is what keeps that a fact about the layout rather than an assumption here.
@@ -8386,9 +8791,58 @@ fetch("/api/prefs").then((r) => r.json()).then((p) => {
 // because `split` changed.
 fused.params.onChange(() => { applySplit(); applyLeftMode(); applyNarrowView(); renderAnn(); });
 
+// ── the name in the header ──────────────────────────────────────────────────
+//
+// A session IS a task, 1:1 (tasks_store), and the name that task answers to
+// everywhere else in this app — the List row, the calendar chip, the composer
+// block a few hundred lines below — is TASK-nnn. This corner used to print the
+// first eight characters of the session uuid, which names the same object in a
+// vocabulary nothing else on screen speaks: a reader could not carry `a3f91c0d`
+// to the Tasks page, and could not quote it to anyone, because no other surface
+// prints it. TASK-023 is a DESIGNED identifier — allocated once, never reused —
+// and it is what the header shows now.
+//
+// The numbers are allocated per project by tasks_store and only /api/tasks
+// hands them out, so this is a fetch. Cached per session id and never
+// refetched for one: a number does not change once allocated, so a poll would
+// buy nothing. The hash paints first and stays up until the number lands,
+// which also makes the answer to a slow listing "the old label", not a gap.
+//
+// FAILS OPEN to the hash, like everything else that reads this listing: an
+// unreadable /api/tasks, or a session so new the listing has not seen it yet,
+// costs the better name and never the cell. Nothing is cached on that path, so
+// the next showSession tries again.
+const taskIds = new Map();
+let taskIdBusy = "";
+
 function showSession() {
   const id = fused.params.get("session_id");
-  sessionEl.textContent = id ? id.slice(0, 8) : "";
+  sessionEl.textContent = (id && taskIds.get(id)) || (id ? id.slice(0, 8) : "");
+  // The full session id stays reachable for the reader who actually wants it
+  // (a log line, a bug report) without spending header width on it.
+  sessionEl.title = id || "";
+  if (id) loadTaskId(id);
+}
+
+async function loadTaskId(id) {
+  if (taskIds.has(id) || taskIdBusy === id) return;
+  taskIdBusy = id;
+  try {
+    const res = await fetch("/api/tasks");
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    const task = ((data && data.tasks) || []).find((t) => t && t.key === id);
+    const num = task && task.task_id ? String(task.task_id) : "";
+    if (!num) return;
+    taskIds.set(id, num);
+    // The session may have changed while this was in flight; showSession reads
+    // the CURRENT one, so a stale answer paints nothing.
+    showSession();
+  } catch (err) {
+    /* the hash stands */
+  } finally {
+    if (taskIdBusy === id) taskIdBusy = "";
+  }
 }
 showSession();
 
@@ -8447,6 +8901,165 @@ logwrap.addEventListener("scroll", () => {
   else if (nearBottom()) followTail = true;
   lastTop = top; lastHeight = h;
 }, { passive: true });
+
+// ── scroll to one message (?msg=<transcript record uuid>) ──────────────────
+//
+// The Tasks list links a MESSAGE, not just a session. Its rows carry the uuid of
+// the transcript record the server read that prompt out of, and the link is
+//
+//     /explorer/view/<path>?_side=claude&session_id=<id>&msg=<uuid>
+//
+// so the click both opens the right conversation and says which turn in it the
+// reader was pointing at (spec §7 — that click is also what marks the message
+// read, which the list does on its own side). Read through `fused.params`, not
+// `location.search`: this page sets no `_fusedParamBoundary`, so its params live
+// on the SHELL's url, which is where the list wrote this one. `chat_only` is the
+// counter-example a few hundred lines up and the distinction is the same one —
+// that param describes the iframe, this one describes the navigation.
+//
+// EVERYTHING here degrades to silence, deliberately. No param, a uuid from some
+// other transcript, a uuid whose record this page does not render (a slash
+// command, an app-state-only send), a transcript that fails to restore at all —
+// each ends with the chat exactly as it would have been without the param,
+// because landing at the bottom of the right conversation is a far better
+// failure than a chat that throws on a stale link.
+const MESSAGE_ANCHOR = fused.params.get("msg") || "";
+
+// Long enough to be seen after the scroll settles, short enough that it is
+// plainly a flare and not a mode. Matches the anchor-flare keyframes.
+const ANCHOR_FLARE_MS = 1600;
+
+// WHY THERE IS NO OBSERVER HERE, because "wait for the turn to appear" is the
+// obvious shape for this and it is the wrong one.
+//
+// Only ONE caller ever renders an anchorable turn: `loadHistory`, which is the
+// only `addUser` call site that passes a uuid — every other one (a live send,
+// `resumeRun`'s three repair branches) is a turn this frame is making up as it
+// goes, with no transcript record behind it and therefore no id an anchor could
+// ever match. And `loadHistory` renders its whole transcript in a single
+// synchronous loop before it yields, so there is no moment at which the turn
+// exists but has not been looked for: the call at the end of that loop sees
+// every turn there will be. A MutationObserver watching #log would fire only on
+// appends that can never match, and the page already pins itself to exactly one
+// observer (annObserveTarget, which watches the PREVIEWED APP's document, not
+// this one — so it could not be reused for this either).
+//
+// What genuinely does arrive late is LAYOUT, not turns: a restored transcript's
+// pictures load through /api/fs/raw after their turn is on screen, and every one
+// of them above the anchor pushes it off centre. That is the real "scrolled to
+// the wrong place" failure, and `settleAnchor` below is what answers it.
+
+// Spent on the first turn it matches, and held as state rather than re-read from
+// the url each time: a later session switch renders a DIFFERENT transcript, and
+// re-firing an anchor there would flare whichever turn happened to collide.
+let anchorPending = MESSAGE_ANCHOR;
+
+/** The rendered turn carrying this uuid, or null. Compared as a string against
+ * what the render wrote rather than built into a selector — a uuid off a url is
+ * untrusted input, and `[data-msg="..."]` with a quote in it throws. */
+function anchoredTurn() {
+  if (!anchorPending) return null;
+  for (const el of log.querySelectorAll(".turn[data-msg]"))
+    if (el.dataset.msg === anchorPending) return el;
+  return null;
+}
+
+function scrollToAnchor(el, still) {
+  try {
+    el.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "center" });
+  } catch (e) {
+    el.scrollIntoView();  // an engine that takes no options object
+  }
+}
+
+/**
+ * Hold the anchored turn in view while the transcript finishes settling.
+ *
+ * A restored turn's pictures are `<img>` elements pointed at /api/fs/raw, and
+ * they have no intrinsic height until they load. Every one that lands ABOVE the
+ * anchor grows the document under it, which slides the turn we just centred off
+ * the screen — so the link that worked in a text-only chat quietly lands in the
+ * wrong place in one with screenshots, which is most of them.
+ *
+ * Re-centres at a few decaying points rather than continuously, and only when
+ * the turn has actually drifted OUT of view: a turn that is merely off-centre
+ * has already done its job, and re-scrolling it would be the page tugging at a
+ * reader who has started reading. Any deliberate scroll cancels the rest
+ * outright — once the reader has taken the wheel, nothing here may take it back.
+ */
+const ANCHOR_SETTLE_MS = [120, 400, 1000];
+
+function settleAnchor(el, still) {
+  const timers = [];
+  const stop = () => {
+    for (const t of timers) clearTimeout(t);
+    timers.length = 0;
+    for (const ev of ["wheel", "touchstart", "pointerdown", "keydown"])
+      logwrap.removeEventListener(ev, stop);
+  };
+  for (const ev of ["wheel", "touchstart", "pointerdown", "keydown"])
+    logwrap.addEventListener(ev, stop, { passive: true });
+  for (const delay of ANCHOR_SETTLE_MS) {
+    timers.push(setTimeout(() => {
+      if (!el.isConnected) return stop();
+      // Out of the scroller's box, not merely off its centre.
+      const box = logwrap.getBoundingClientRect();
+      const seen = el.getBoundingClientRect();
+      if (seen.bottom <= box.top || seen.top >= box.bottom) scrollToAnchor(el, still);
+      if (delay === ANCHOR_SETTLE_MS[ANCHOR_SETTLE_MS.length - 1]) stop();
+    }, delay));
+  }
+}
+
+/** Land on the anchored turn if it is on screen. True when it did, so callers
+ * can fall back to their own scroll when it did not. */
+function revealAnchor() {
+  const el = anchoredTurn();
+  if (!el) return false;
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  scrollToAnchor(el, still);
+  settleAnchor(el, still);
+  el.classList.add("is-anchored");
+  setTimeout(() => el.classList.remove("is-anchored"), ANCHOR_FLARE_MS);
+  return true;
+}
+
+/**
+ * One attempt at the anchor, after which it is spent whether it landed or not.
+ *
+ * THE GIVE-UP CONDITION, and it is a state change rather than a deadline
+ * because nothing here is waiting on a clock: `loadHistory` is the only caller
+ * that can render an anchorable turn (see above), and by the time it calls this
+ * the whole transcript is on screen. So one attempt is every attempt there will
+ * ever be — the anchor names a turn in the conversation the link opened, and if
+ * it is not in THIS transcript it is not anywhere.
+ *
+ * Disarming on the miss is the part that matters. Left armed, a uuid that
+ * matched nothing here would sit waiting for the next `loadHistory` and flare
+ * whichever turn of a DIFFERENT conversation happened to carry that id — a
+ * stale link quietly pointing at the wrong message in the wrong chat, which is
+ * a worse failure than the link doing nothing at all.
+ */
+function consumeAnchor() {
+  const landed = revealAnchor();
+  if (anchorPending) {
+    anchorPending = "";
+    // Spent, so it comes OFF the url — `null`, not `""`. Absent is the spelling
+    // for "no anchor" (there is no such message as the empty one), and
+    // `set(k, "")` writes `k=`: the reader lands on their message, and the
+    // address bar they then copy from carries a dangling `&msg=` that means
+    // nothing to the page receiving it. `{default: ""}` cannot reach this — it
+    // only drops a write that would have changed nothing, and here the param is
+    // genuinely present, which is the one case it does not cover.
+    //
+    // `replace`, because arriving on the message is not a place anyone
+    // navigated to twice, and a Back that re-fired the flare would be a history
+    // entry nobody made. Left behind it would also re-scroll a reload the
+    // reader has since scrolled away from.
+    fused.params.set("msg", null, { history: "replace" });
+  }
+  return landed;
+}
 
 // Back to chats: the landing is both "start a new chat" and "open a past one".
 // Clear the session param so a reload lands on the landing page,
@@ -8578,9 +9191,15 @@ terminalOpt.addEventListener("click", async () => {
 });
 
 // ── log rendering ──
-function addUser(text) {
+// `uuid` — the transcript record this turn was restored from, when the caller
+// knows it (only `loadHistory` does; a turn typed in this frame has no record
+// yet). It is what a `?msg=` link addresses, so it goes on the element BEFORE
+// the append: the anchor watcher fires on that append, and a turn whose id
+// lands a tick later is a turn the watcher looks straight past.
+function addUser(text, uuid) {
   const d = document.createElement("div");
   d.className = "turn user";
+  if (uuid) d.dataset.msg = uuid;
   const b = document.createElement("div");
   b.className = "bubble";
   b.textContent = text;
@@ -8629,10 +9248,204 @@ function addAssistantTurn(text, segments) {
   return turn;
 }
 
-function addError(text) {
+// WHEN THE FAILURE IS CLAUDE ITSELF (SPEC §42). This is the surface a user
+// reaches for when they want to use Claude, so "claude CLI not found" landing
+// here as a red line is the exact complaint the trouble card exists to answer:
+// it names a CLI in our vocabulary and leaves the reader with nowhere to go.
+//
+// TWIN of frontend/src/platform/lib/trouble.ts, and duplicated ON PURPOSE: this
+// page is served standalone and shares no module with the shell. The strings
+// that must match are pinned by tests/test_trouble_parity.py, so the two cannot
+// drift quietly — which is the only honest way to keep a copy.
+const TROUBLE_ABOUT_CLAUDE = /claude/i;
+const TROUBLE_NAMED = [
+  ["login", /please run \/login|invalid api key/i],
+  ["limit", /usage limit|session limit/i],
+  ["notfound", /claude code isn'?t installed|claude cli not found|claude not found/i],
+];
+const TROUBLE_SHAPES = [
+  ["login", /not (?:signed|logged) in|oauth|authenticat/i],
+  ["limit", /rate.?limit|quota/i],
+  ["notfound", /couldn'?t be found|command not found|enoent|no such file/i],
+];
+const TROUBLE_SAID = {
+  notfound: ["The app can't find Claude Code",
+    "Fused Render uses Claude Code on this computer to build and fix things, " +
+    "and it could not find it. Either it was never installed, or it is " +
+    "somewhere the app cannot see."],
+  login: ["Claude Code isn't signed in",
+    "Claude Code is installed but not signed in to your account yet, so " +
+    "nothing can run. Signing in happens in a terminal, once."],
+  limit: ["Your Claude usage limit was reached",
+    "Nothing is broken — your plan includes a set amount of use and it is " +
+    "spent for now. The message below says when it resets."],
+};
+const CLAUDE_INSTALL_COMMAND = "curl -fsSL https://claude.ai/install.sh | bash";
+
+function troubleKind(text) {
+  const t = String(text || "");
+  for (const [kind, re] of TROUBLE_NAMED) if (re.test(t)) return kind;
+  if (TROUBLE_ABOUT_CLAUDE.test(t)) {
+    for (const [kind, re] of TROUBLE_SHAPES) if (re.test(t)) return kind;
+  }
+  return "raw";
+}
+
+// A brief for an AGENT, as opposed to troubleReport's description for a person.
+// Twin of troubleInstructions in lib/trouble.ts — see the parity test.
+const TROUBLE_STEPS = {
+  notfound: [
+    "Check whether the CLI exists and where: `which claude`, and look in ~/.local/bin and /opt/homebrew/bin.",
+    "If it is missing, install it: `curl -fsSL https://claude.ai/install.sh | bash`.",
+    "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
+    "Confirm with `claude --version`, then tell me to quit Fused Render and reopen it.",
+  ],
+  login: [
+    "Confirm the CLI runs: `claude --version`.",
+    "Sign in: run `claude`, then `/login`, and complete it in the browser.",
+    "Confirm the session works, then tell me to retry in Fused Render.",
+  ],
+  limit: [
+    "Confirm this is a plan limit rather than a fault — the message should say when it resets.",
+    "Tell me when it resets and whether anything else is worth doing in the meantime.",
+    "Do not change any configuration for this: nothing is broken.",
+  ],
+  raw: [
+    "Work out what this error is actually about before changing anything.",
+    "If the app's own server is what failed (a fetch error, a 5xx, a refused connection), check whether fused-render is still running and read the log named above before assuming the app itself is broken.",
+    "If it names a path, check whether that path exists and is writable.",
+    "Tell me the smallest change that would fix it, and what to check afterwards.",
+  ],
+};
+
+// Twin of FIND_INSTALL_COMMANDS / USER_DATA_DIR / LOG_LIST_COMMAND in
+// lib/trouble.ts. This page never knows where the app is installed — it is a
+// template rendered inside it — so the brief always has to say how to find it.
+const TROUBLE_FIND_INSTALL = [
+  "ls -d /Applications/FusedRender.app ~/Applications/FusedRender.app",
+  "ls -d /Applications/FusedRender.app/Contents/Resources/lib/python3.*/fused_render   # the code a fix edits",
+  "brew list --cask fused-render   # if this answers, Homebrew manages that copy",
+  'dir "%LOCALAPPDATA%\\Programs\\FusedRenderPy"   # Windows',
+];
+const TROUBLE_USER_DATA_DIR = "~/.fused-render";
+const TROUBLE_LOG_LIST = 'ls -t "${TMPDIR:-/tmp}"/fused-render-*.log | head -3';
+
+function troubleWhereToLook() {
+  const lines = ["Where to look on this machine:",
+    "- I do not know where the app is installed, and little else here is",
+    "  actionable without it. Find it first, and say which command answered:"];
+  TROUBLE_FIND_INSTALL.forEach((cmd) => lines.push("    " + cmd));
+  lines.push(
+    "- Settings, the template registry and the staged core templates: " + TROUBLE_USER_DATA_DIR,
+    "  (a different place from the installation — a reinstall does not touch it)",
+    "- This session's log: " + TROUBLE_LOG_LIST,
+    "");
+  return lines;
+}
+
+function troubleInstructions(what, error) {
+  const kind = troubleKind(error);
+  const lines = [
+    "I am using Fused Render (a local file explorer / app builder) and something",
+    "around it is broken. Please diagnose and fix it on this machine.",
+    "",
+    "What the app was doing: " + what,
+    "",
+    "The exact error it reported:",
+    String(error || "(no message)").trim(),
+    "",
+  ];
+  if (FILE) lines.push("Chat target: " + FILE, "");
+  lines.push.apply(lines, troubleWhereToLook());
+  lines.push("Please:");
+  TROUBLE_STEPS[kind].forEach((step, i) => lines.push((i + 1) + ". " + step));
+  lines.push("",
+    "Explain what you find in plain language before you change anything, and tell",
+    "me what to check in the app once you are done.");
+  return lines.join("\n");
+}
+
+function troubleReport(what, error) {
+  const lines = ["Fused Render — problem report", "",
+                 "What the app was doing: " + what, "",
+                 "Error:", String(error || "(no message)").trim(), ""];
+  if (FILE) lines.push("Chat target: " + FILE);
+  lines.push("Page: " + location.pathname + location.search, "");
+  lines.push("Help: https://render.fused.io/#troubleshooting-" + troubleKind(error));
+  return lines.join("\n");
+}
+
+function copyButton(text, label) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "trouble-btn";
+  b.textContent = label;
+  b.onclick = async () => {
+    try { await navigator.clipboard.writeText(text); } catch { return; }
+    b.textContent = "Copied";
+    setTimeout(() => { b.textContent = label; }, 2000);
+  };
+  return b;
+}
+
+// The rich card, for the three failures a user can actually do something about.
+function troubleCard(kind, text) {
+  const [title, explain] = TROUBLE_SAID[kind];
   const d = document.createElement("div");
-  d.className = "turn error";
-  d.textContent = text;
+  d.className = "turn trouble";
+
+  const h = document.createElement("div");
+  h.className = "trouble-title";
+  h.textContent = title;
+  const p = document.createElement("p");
+  p.className = "trouble-explain";
+  p.textContent = explain;
+  // VERBATIM. Rewording it makes it unsearchable, and searching it is the first
+  // thing anyone does.
+  const pre = document.createElement("pre");
+  pre.className = "trouble-error";
+  pre.textContent = String(text || "").trim();
+  d.append(h, p, pre);
+
+  if (kind === "notfound") {
+    const cmd = document.createElement("div");
+    cmd.className = "trouble-cmd";
+    const code = document.createElement("code");
+    code.textContent = CLAUDE_INSTALL_COMMAND;
+    cmd.append(code, copyButton(CLAUDE_INSTALL_COMMAND, "Copy"));
+    const hint = document.createElement("p");
+    hint.className = "trouble-explain";
+    hint.textContent = "Run it in a terminal, then quit Fused Render and open it again.";
+    d.append(cmd, hint);
+  }
+
+  const acts = document.createElement("div");
+  acts.className = "trouble-actions";
+  const doing = "using the chat on " + (FILE || "this folder");
+  acts.append(copyButton(troubleReport(doing, text), "Copy the details"));
+  acts.append(copyButton(troubleInstructions(doing, text), "Copy Claude Code instructions"));
+  const a = document.createElement("a");
+  a.className = "trouble-btn";
+  a.href = "https://render.fused.io/#troubleshooting-" + kind;
+  a.target = "_blank";
+  a.rel = "noreferrer";
+  a.textContent = "How to fix this \u2197";
+  acts.append(a);
+  d.append(acts);
+  return d;
+}
+
+function addError(text) {
+  const kind = troubleKind(text);
+  // `raw` keeps the plain red row: it is a real answer for "some other error",
+  // and dressing every failed turn as a troubleshooting card would bury the
+  // ones a user can act on.
+  const d = kind === "raw" ? (() => {
+    const el = document.createElement("div");
+    el.className = "turn error";
+    el.textContent = text;
+    return el;
+  })() : troubleCard(kind, text);
   log.appendChild(d);
   scrollBottom();
 }
@@ -10089,7 +10902,7 @@ function fillToolChipBody(body, seg) {
   }
   (Array.isArray(seg.images) ? seg.images : []).forEach((img) => {
     // The media type lands in a `data:` URL, so it is validated rather than
-    // trusted: base64 payload, image/* type, nothing else. A rejected image is
+    // trusted: base64 payload, an image subtype, nothing else. A rejected image is
     // skipped, not coerced — inventing `image/png` for something that said it
     // was text/html would be guessing about bytes we did not read.
     const type = String((img && img.media_type) || "");
@@ -11169,18 +11982,617 @@ function scheduleResetForNewTranscript() {
   SCHEDULE_ATTACHED.clear();
   SCHEDULE_NOTED.clear();
   scheduleBaselined = false;
+  // The block belongs to the conversation that WAS on screen, so it goes with it
+  // rather than hanging over the next one for up to a poll interval. Unblocking
+  // is the safe direction to be briefly wrong in (see applyComposerBlock), and
+  // the poll fired underneath re-establishes it for this session immediately.
+  clearComposerBlock();
+  pollScheduledRuns();
 }
 
+// ── the composer block: a pending scheduled message owns this thread ────────
+//
+// A task IS a session, so a message scheduled to run in THIS conversation will
+// read whatever is in it when it fires. Typing here first is not getting ahead —
+// it is CONTEXT POLLUTION: the run answers a conversation the person who
+// scheduled it never wrote, and nothing can take those words back out of the
+// context once the turn has read them.
+//
+// So the composer closes for as long as the schedule holds a pending message for
+// this session, and NOT for a window. An hour was offered first and is arbitrary
+// in the wrong direction (Akshil, 2026-08-17 — "why can't we block it until the
+// next task is scheduled? why only one hour?"): a message due tomorrow pollutes
+// exactly as much as one due in ten minutes, so the block is the pendency, not
+// the proximity.
+//
+// A BANNER, not a modal: the transcript stays readable and the session list
+// stays reachable. It carries ONE action, and that action is whichever one
+// actually reopens the box — which is not the same control in the two cases:
+//
+//   * a one-off pending message: cancelling it unblocks, full stop;
+//   * a REPEAT: cancelling the occurrence unblocks nothing, because
+//     `_materialize` arms the next one and it blocks again. The only thing that
+//     reopens the box is stopping the repeat itself — `schedule.cancel(template_id)`,
+//     which already means "no further runs" and takes the pending occurrence
+//     with it.
+//
+// The banner used to offer "Cancel this run" and "Reschedule" for both, and both
+// were wrong for a repeat: rescheduling leaves the message pending, so the block
+// survives it, and cancelling one run only moved the block to the next one — the
+// old copy said so in its own body, which was an admission that its own button
+// did not work (Akshil, 2026-08-17). A control whose only outcome leaves the user
+// still blocked does not belong in a notice about being blocked.
+//
+// WHAT IT SHOWS is the Tasks list view's own row — a status ring, TASK-nnn, the
+// name, and the state and time at the right end — because the second shape was
+// still wrong (Akshil, 2026-08-17 — "this UI is not good... it does not give me
+// what I want"): it explained the block in prose and then dumped the message
+// underneath as bare left-aligned text. A reader who knows the Tasks page already
+// knows how to read this row, and reusing that vocabulary is what makes the
+// banner a view of the schedule rather than a paragraph about it.
+//
+// Not on the row: the FOLDER and the SESSION ID. "You will not show the folder
+// because you are already in that folder, you are not showing the session ID
+// because you are already there" (Akshil, 2026-08-17). The list view carries both
+// because it spans projects; inside the conversation they are the context, not
+// news. The row's click is the way to everything the banner therefore leaves out.
+const schedBlockEl = document.getElementById("schedblock");
+const schedBlockWhen = schedBlockEl.querySelector(".sb-when");
+const schedBlockRow = document.getElementById("sb-row");
+const schedBlockRing = schedBlockEl.querySelector(".sb-ring");
+const schedBlockId = schedBlockEl.querySelector(".sb-id");
+const schedBlockName = schedBlockEl.querySelector(".sb-name");
+const schedBlockMeta = schedBlockEl.querySelector(".sb-meta");
+const schedBlockNote = schedBlockEl.querySelector(".sb-note");
+const schedBlockStop = document.getElementById("sb-stop");
+// THE CHAT COMPOSER'S CALENDAR BUTTON, which goes dead with the box it sits in
+// (Akshil, 2026-08-17 — "when we have a blocked panel we don't allow to type…
+// we should not allow to schedule the task as well"). A session already holding
+// pending scheduled work takes no further input of ANY kind: queuing a second
+// message into a context that is spoken for is the same pollution the block
+// exists to prevent, one step later. See applyComposerBlockState.
+//
+// The HOME card's copy (#hschedbtn) is deliberately not touched, for the same
+// reason `homebox` is not: there is no session on the landing page, so nothing
+// can be pending in the conversation it is about to start (schedPendingHere
+// returns [] without one) and a handle to it here would be dead wiring.
+const schedBtn = document.getElementById("schedbtn");
+const BOX_PLACEHOLDER = box.placeholder;
+// The pristine wording, read off the markup rather than retyped, which is what
+// BOX_PLACEHOLDER above is doing too: the button's own attributes stay the one
+// place its name lives, so a re-word there cannot leave this file restoring a
+// tooltip nobody writes any more.
+const SCHED_BTN_TITLE = schedBtn.title;
+const SCHED_BTN_LABEL = schedBtn.getAttribute("aria-label");
+
+// The pending messages that would land in this conversation, soonest first.
+// EMPTY is the only state in which the composer works — and it is also the state
+// a schedule that could not be read leaves behind (applyComposerBlock).
+let schedBlockers = [];
+// The entry whose cancel came back refused (it was already away). Kept by ID so
+// the sentence belongs to a message rather than to the banner — see
+// renderSchedBlock.
+let schedStopRefused = "";
+// The entry whose STOP has been pressed once. Stopping a repeat loses every
+// future run and nothing on this page can put them back, so it takes two presses
+// — the template's own idiom (see snapAction, and the ✕ / "Back to chat" pair),
+// where the button becomes the question in place rather than raising a dialog.
+//
+// Page state and keyed by ID, not a class on the button, for the reason
+// schedStopRefused is: the 15s poll re-renders this card, and an armed button
+// that quietly disarmed itself a few seconds after the press would be worse than
+// no confirm at all. A DIFFERENT entry arriving in front clears it — that press
+// was aimed at the repeat that was on screen.
+let schedStopArmed = "";
+
+function schedBlocked() { return schedBlockers.length > 0; }
+
+// Which pending messages are aimed at THIS conversation. `session_id` is the
+// input ("resume this one") and `claude_session_id` is what a run reported it
+// landed in; either naming the session on screen means the same thing here —
+// this thread is where those words are going. With no session on the URL nothing
+// can be pending in it (the landing page's conversation does not exist yet), so
+// the home composer is never blocked.
+function schedPendingHere(entries) {
+  const mine = fused.params.get("session_id") || "";
+  if (!mine) return [];
+  const ours = (entries || []).filter((e) => e && e.state === "pending"
+    && (e.session_id === mine || e.claude_session_id === mine));
+  ours.sort((a, b) => String(a.due || "").localeCompare(String(b.due || "")));
+  return ours;
+}
+
+// Local calendar days apart, computed from midnights rather than by dividing a
+// millisecond gap: on the two DST days of the year a day is 23 or 25 hours long,
+// and "tomorrow" is a calendar fact, not an 86_400_000ms one.
+function schedDayGap(then, now) {
+  const a = new Date(then.getFullYear(), then.getMonth(), then.getDate());
+  const b = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((a - b) / 86400000);
+}
+
+// When it goes, in the ROW's vocabulary — "14:00 tomorrow", the shape tasks-lib.ts
+// `messageTime` writes into the list view's time cell: a 24-hour clock, a space,
+// and a relative day word. TWENTY-FOUR HOUR and not the locale's clock, which is
+// the one place this row departs from the rest of the template: a 12-hour locale
+// renders "02:00 PM", three characters wider in a cell that has to stay readable
+// in a 340px pane, and it would not match the time on the page this row is
+// quoting. Past due is "any moment now" and not a time in the past — a queued
+// message is waiting for the next sweep, so the stamp on it stopped being the
+// answer to "when?".
+function schedPad2(n) { return String(n).padStart(2, "0"); }
+
+function schedWhenText(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "at its scheduled time";
+  if (d.getTime() <= Date.now()) return "any moment now";
+  const at = schedPad2(d.getHours()) + ":" + schedPad2(d.getMinutes());
+  const gap = schedDayGap(d, new Date());
+  if (gap <= 0) return at + " today";
+  if (gap === 1) return at + " tomorrow";
+  if (gap < 7) return at + " " + d.toLocaleDateString([], { weekday: "short" });
+  return at + " " + d.toLocaleDateString();
+}
+
+// The scheduled message on one line — the row's NAME when the tasks listing has
+// no title of its own to give (see schedTaskRec).
+//
+// Whitespace COLLAPSES rather than the first line winning: a prompt that opens
+// "Read the following and:" would otherwise preview as its own preamble. The CSS
+// ellipses whatever does not fit, so nothing is cut at a fixed character count
+// that a 340px pane and a 720px one would both get wrong.
+function schedMsgLine(entry) {
+  const text = String((entry && entry.message) || "").replace(/\s+/g, " ").trim();
+  return text || "A scheduled message";
+}
+
+// ── the task behind the blocker ────────────────────────────────────────────
+//
+// TASK-nnn, the task's name and its state are NOT in /api/schedule — the numbers
+// are allocated per project by tasks_store and only /api/tasks hands them out.
+// So the row is filled from two reads: the schedule says what is pending and
+// when (and is the only thing the BLOCK depends on), the tasks listing says what
+// to call it.
+//
+// Cached against the blocking entry's id and refetched only when that changes,
+// because the listing carries every task on the machine and this poll runs every
+// 15 seconds: what it is fetched for — a number and a name — does not change
+// while one message sits pending. `state` can go stale by a poll, which is the
+// cheaper of the two mistakes.
+let schedTaskRow = null;
+let schedTaskRowFor = "";
+let schedTaskRowBusy = false;
+
+// The five states the shell's board defines (schedule-lib.ts BOARD_COLUMNS), and
+// the words it puts on them. Unknown is "Upcoming" here rather than the shell's
+// "Done": every entry this banner can be looking at is PENDING, so a state that
+// does not parse is a listing that has not answered yet, not a finished job.
+const SB_STATES = {
+  upcoming: "Upcoming",
+  in_progress: "In Progress",
+  done: "Done",
+  failed: "Failed",
+  archived: "Archive",
+};
+
+// The listing row for the message holding this box shut. Three ways in, cheapest
+// first: a task keyed by THIS session (a scheduled entry naming a session is
+// folded into that session's task — routers/tasks.py `_collect`), a task keyed
+// `pending:<entry id>` (the entry has no session yet), and failing both a scan
+// for the message itself. The scan is last because the listing carries only each
+// task's three newest messages, so it is the one that can legitimately miss.
+function schedFindTask(tasks, entry) {
+  const id = String((entry && entry.id) || "");
+  const mine = fused.params.get("session_id") || "";
+  const pending = "pending:" + id;
+  let byMessage = null;
+  for (const task of (tasks || [])) {
+    if (!task) continue;
+    if ((mine && task.key === mine) || task.key === pending) return task;
+    if (!byMessage && (task.messages || []).some((m) => m && m.entry_id === id)) {
+      byMessage = task;
+    }
+  }
+  return byMessage;
+}
+
+// What the row knows about this entry, or null. Keyed by id so a cache belonging
+// to the message that WAS blocking cannot label the one that is.
+function schedTaskRec(entry) {
+  return entry && schedTaskRowFor === String(entry.id) ? schedTaskRow : null;
+}
+
+// FAILS OPEN, like everything else here: an unreadable listing costs the number
+// and the state, never the row and never the block — the schedule already said
+// this message is pending, and that is the fact the composer is shut on. No
+// `schedTaskRowFor` is recorded on a failure, so the next poll tries again.
+async function schedLoadTaskRow(entry) {
+  const id = String((entry && entry.id) || "");
+  if (!id || schedTaskRowBusy || schedTaskRowFor === id) return;
+  schedTaskRowBusy = true;
+  try {
+    const res = await fetch("/api/tasks");
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    schedTaskRow = schedFindTask(data.tasks, entry);
+    schedTaskRowFor = id;
+    // The entry may have been stopped while this was in flight; renderSchedBlock
+    // reads the CURRENT blocker, so a stale answer paints nothing.
+    renderSchedBlock();
+  } catch (err) {
+    schedTaskRow = null;
+  } finally {
+    schedTaskRowBusy = false;
+  }
+}
+
+// Where the row LANDS: the Tasks page, on the calendar, which is the view that
+// answers the question a blocked chat is asking — "when does this let go?".
+//
+// The view is chosen by writing the shell's own remembered-view row rather than
+// by a param, because Scheduled.tsx reads that preference on mount and has no URL
+// param for it. Writing it is the same gesture as pressing the page's Calendar
+// button, and a denied store just means the page opens on whichever view the
+// reader last used — one press from the right one, never a dead end.
+//
+// It cannot scroll the calendar to this task's chip: nothing in the page's URL
+// addresses a chip, and the week it opens on is its own. The reader lands on the
+// calendar with the task's own week in front of them, which is where Edit, Skip
+// and the whole rule live.
+const SCHEDULE_VIEW_KEY = "fused-render:scheduled-view";
+
+function openTaskOnCalendar() {
+  try {
+    window.top.localStorage.setItem(SCHEDULE_VIEW_KEY, "calendar");
+  } catch (err) { /* denied or cross-origin — the page keeps its own last view */ }
+  // The same top-window hop openScheduler makes, and for the same reason: the
+  // target is a shell ROUTE, so pushState + "fused:navigate" is the in-app move
+  // and a real navigation is the fallback for an absent or foreign parent.
+  try {
+    const host = window.top;
+    void host.location.href;   // throws when cross-origin
+    host.history.pushState(null, "", SCHEDULE_URL);
+    host.dispatchEvent(new Event("fused:navigate"));
+    return;
+  } catch (err) { /* fall through to a real navigation */ }
+  try { window.top.location.href = SCHEDULE_URL; }
+  catch (err) { location.href = SCHEDULE_URL; }
+}
+
+// A pending OCCURRENCE of a repeat carries `template_id`; a template itself
+// carries `repeats` or `rule`. Either way the honest word is "repeats", and the
+// banner has to say what that costs — see below.
+function schedIsRepeat(entry) {
+  return !!(entry && (entry.template_id || entry.repeats || entry.rule));
+}
+
+// What id, posted to /api/schedule/cancel, actually reopens this box. For a
+// repeat that is the TEMPLATE — the occurrence is replaced the moment it is
+// skipped, so cancelling it moves the block rather than lifting it.
+function schedStopTarget(entry) {
+  return schedIsRepeat(entry) && entry.template_id
+    ? String(entry.template_id) : String((entry && entry.id) || "");
+}
+
+// WHY THE BOX IS SHUT, in one sentence, and it has one author. The banner shows
+// it as its only line of prose and the calendar button carries it as its tooltip
+// and its spoken name — the two things the block switches off — so a reader
+// refused by the button reads the same words as the card six pixels above it.
+// Two literals would be two things to re-word, and the one that got missed would
+// be the one under the pointer.
+//
+// The repeat gets its own wording because the ESCAPE differs (see schedStopTarget):
+// "scheduled" is a message you can cancel, "repeating" is a job you have to stop.
+function schedBlockReason(entry) {
+  return schedIsRepeat(entry)
+    ? "Blocked — a repeating message runs in this chat."
+    : "Blocked — a scheduled message runs in this chat.";
+}
+
+function renderSchedBlock() {
+  const next = schedBlockers[0];
+  // Nothing blocking: hide it, and put the button back cold. A hidden card left
+  // holding an armed press is a destructive control one poll away from being on
+  // screen again — the class goes with the state that justified it.
+  if (!next) {
+    schedBlockEl.hidden = true;
+    schedStopArmed = "";
+    schedBlockStop.classList.remove("armed");
+    return;
+  }
+  const others = schedBlockers.length - 1;
+  const repeat = schedIsRepeat(next);
+  // ONE SHORT REASON, and nothing else in words: the state and the time moved onto
+  // the row below, where the list view keeps them. The old line spent a sentence
+  // explaining context pollution, which described the block instead of showing
+  // what was doing it (Akshil, 2026-08-17 — "use less words", and then "this UI
+  // does not make sense to me").
+  //
+  // The SOONEST is named by the row and the rest are counted here, because naming
+  // one is what answers "what is coming?" and a list of five would be the Tasks
+  // page in a strip above a chat.
+  let why = schedBlockReason(next);
+  if (others > 0) why += " " + others + " more after it.";
+  schedBlockWhen.textContent = why;
+  // ── the row ──
+  //
+  // Exactly four facts: which task, what it is called, what state it is in, and
+  // when it runs. NOT the folder and NOT the session — the reader is standing in
+  // both (Akshil, 2026-08-17: "you will not show the folder because you are
+  // already in that folder, you are not showing the session ID because you are
+  // already there"). The list view shows them because it has to tell projects
+  // apart; here they would be the page repeating itself back.
+  const rec = schedTaskRec(next);
+  const state = (rec && SB_STATES[rec.status] ? rec.status : "upcoming");
+  const label = (rec && rec.failed) ? "Failed" : SB_STATES[state];
+  schedBlockRing.className = "sb-ring sb-ring--"
+    + ((rec && rec.failed) ? "failed" : state);
+  schedBlockId.textContent = (rec && rec.task_id) || "";
+  // The task's own name when the listing gave one, the scheduled words otherwise:
+  // a task keyed by this session is titled by the conversation, and a message with
+  // no session yet is titled by what it says.
+  schedBlockName.textContent = (rec && rec.title) || schedMsgLine(next);
+  schedBlockMeta.textContent = label + " · " + schedWhenText(next.due);
+  // What the row DOES, on the row — the one title in this card, and it describes
+  // the hop rather than repeating text that is already on screen. The old card put
+  // the message on a title as well as in the body, so a short message rendered
+  // twice the moment the pointer rested on it.
+  schedBlockRow.title = "Open "
+    + ((rec && rec.task_id) || "this task") + " on the Tasks calendar";
+  // A refusal has to survive the re-render the same click asks for. Written from
+  // page state keyed to the ENTRY, not straight onto the node, so the poll that
+  // reconciles the store cannot quietly wipe the one sentence the user needs —
+  // and a different message coming up next clears it.
+  schedBlockNote.textContent = schedStopRefused === next.id
+    ? (repeat ? "The repeat is still on — it may already be running."
+              : "Still scheduled — it may already be running.")
+    : "";
+  // The armed press belongs to the entry it was made against.
+  if (schedStopArmed && schedStopArmed !== next.id) schedStopArmed = "";
+  const armed = schedStopArmed === next.id;
+  // Say what the control DOES, and for the repeat say what it costs on the press
+  // that spends it. "Stop the repeat" is the only label here that is true: it is
+  // the one action that reopens this box, and the second press names the loss
+  // because no control on this page can put those runs back.
+  schedBlockStop.textContent = repeat
+    ? (armed ? "Cancel every future run" : "Stop the repeat")
+    : "Cancel this message";
+  schedBlockStop.title = repeat
+    ? "Stops the repeating task: this chat reopens and no further runs are scheduled"
+    : "Cancels this scheduled message, and this chat reopens";
+  schedBlockStop.classList.toggle("armed", armed);
+  // A title belongs to the text that was measured, and this render just replaced
+  // it — schedNameTitle writes the next one, when there is a pointer to write it
+  // for.
+  schedBlockName.removeAttribute("title");
+  schedBlockEl.hidden = false;
+}
+
+// THE STRAY SECOND COPY, and its fix. The old card wrote the message onto a
+// `title` unconditionally, so a message short enough to fit rendered once in the
+// row and again in the native tooltip the moment the pointer rested on it — the
+// small boxed duplicate in the screenshot. Now the full name is offered only when
+// the cell actually clipped it.
+//
+// MEASURED WHEN THE POINTER ARRIVES, not when the row is drawn. At render time the
+// pane may still be laying out — the first paint reports every cell as clipped —
+// and a title written then would outlive the layout that justified it, which is
+// exactly the bug again with an extra step. Hover and focus are also the only two
+// moments the answer can matter.
+function schedNameTitle() {
+  if (schedBlockName.scrollWidth > schedBlockName.clientWidth + 1) {
+    schedBlockName.title = schedBlockName.textContent;
+  } else {
+    schedBlockName.removeAttribute("title");
+  }
+}
+
+schedBlockRow.addEventListener("pointerenter", schedNameTitle);
+schedBlockRow.addEventListener("focus", schedNameTitle);
+
+// Paint the block and shut the box. The box is disabled rather than merely
+// guarded so the state is visible where the hands are; `submitChat` guards
+// anyway, because an annotation- or screenshot-only send needs no typing at all
+// and would otherwise walk straight past a disabled textarea.
+//
+// The SEND BUTTON is deliberately left alone: while a run is live it is the STOP
+// button, and a chat that cannot stop its own running turn is a worse state than
+// the one this feature prevents.
+function applyComposerBlockState() {
+  // THE LAYOUT SHIFT, handled rather than reserved. The card sits directly above
+  // the composer, so the one thing it must never do is move the box a reader is
+  // reaching for — and it does not: #logwrap is the only `flex: 1` child of
+  // #chat, so the height the card takes is height the TRANSCRIPT gives up and
+  // the composer stays exactly where it was. Nothing is animated and no space is
+  // reserved; an empty strip above every unblocked composer would be a permanent
+  // cost paid for a rare state.
+  //
+  // What DOES move is the transcript's last line, by the card's height, so a
+  // reader who was at the bottom is put back at the bottom. Measured before the
+  // render, applied only on the hidden → shown edge: on the way out the log grows
+  // downward and there is nothing to correct.
+  const wasHidden = schedBlockEl.hidden;
+  const pinned = wasHidden && nearBottom();
+  renderSchedBlock();
+  if (pinned && !schedBlockEl.hidden) scrollBottom();
+  const blocked = schedBlocked();
+  box.disabled = blocked;
+  // Short, because this box is 300px wide in the side pane and a longer line is
+  // simply clipped. The banner above carries the explanation; this only has to
+  // say the box is not broken.
+  box.placeholder = blocked ? "Waiting on a scheduled message…" : BOX_PLACEHOLDER;
+  // THE CALENDAR BUTTON GOES WITH THE BOX, off the SAME `blocked` — not off a
+  // second read of the schedule. A parallel notion of "is this session blocked"
+  // is two answers to one question, and the day they disagree one of them is
+  // lying to the user about what their chat is doing.
+  //
+  // The real `disabled` attribute rather than a class that merely looks it: it
+  // stops the pointer AND the keyboard in one stroke, since a disabled <button>
+  // fires no click for Enter or Space either — a control that paints itself dead
+  // and still navigates is worse than one that never dimmed. The click handler
+  // guards as well, the same belt-and-braces `submitChat` uses.
+  const why = blocked ? schedBlockReason(schedBlockers[0]) : "";
+  schedBtn.disabled = blocked;
+  schedBtn.title = blocked ? why : SCHED_BTN_TITLE;
+  // And the SPOKEN name says it too, the way the box's placeholder does above:
+  // `disabled` takes the button out of tab order, so the title is unreachable by
+  // keyboard and the name is all a reader browsing this row will hear. The name
+  // stays first — what the control is, then why it is off — so the button is
+  // still identifiable while it is refusing.
+  schedBtn.setAttribute("aria-label", blocked ? SCHED_BTN_LABEL + " — " + why
+                                              : SCHED_BTN_LABEL);
+  // A confirm can already be up when the poll lands: "Schedule this as a task?"
+  // is a question about a button that has just died, and its Continue would hit
+  // the guard and do nothing visible. Take it down instead, so what the reader
+  // ends up looking at is the banner. Only on the way IN — closing a confirm the
+  // user opened the moment the block lifted would be the block reaching past its
+  // own end.
+  if (blocked) closeSchedConfirm();
+  // The row's number and name, fetched AFTER the card is on screen and never
+  // before the block: what shuts the composer is the schedule, and the listing
+  // only decorates the row (see schedLoadTaskRow). Guarded there against refetching
+  // for the same entry, so the 15s poll costs one read per blocking message.
+  if (blocked) schedLoadTaskRow(schedBlockers[0]);
+}
+
+function applyComposerBlock(entries) {
+  schedBlockers = schedPendingHere(entries);
+  applyComposerBlockState();
+}
+
+// A schedule that could not be read blocks NOTHING. A chat that locks itself
+// because one fetch failed is worse than the pollution the lock prevents — the
+// user loses a working composer over a network blip, and the schedule is the
+// only thing that could ever tell them why.
+function clearComposerBlock() {
+  schedBlockers = [];
+  applyComposerBlockState();
+}
+
+schedBlockStop.addEventListener("click", async () => {
+  const next = schedBlockers[0];
+  if (!next || !next.id) return;
+  const repeat = schedIsRepeat(next);
+  const target = schedStopTarget(next);
+  if (!target) return;
+  // TWO PRESSES for a repeat, and only for a repeat. The write below stops the
+  // recurring task, which spends every run it would ever have made, and nothing
+  // on this page can restore them — so the first press only arms, and the label
+  // it arms into names that loss ("Cancel every future run"). A one-off is a
+  // single press: cancelling it loses one message the user can schedule again,
+  // and a confirm on that would be ceremony.
+  //
+  // The button becomes the question, in place, which is this template's idiom
+  // (snapAction's "Really go back?", the ✕ / "Back to chat" pair) rather than a
+  // dialog over a chat the reader may be about to keep using.
+  if (repeat && schedStopArmed !== next.id) {
+    schedStopArmed = String(next.id);
+    applyComposerBlockState();
+    return;
+  }
+  schedStopArmed = "";
+  schedBlockStop.disabled = true;
+  try {
+    // The one write this template makes to the schedule store, and it exists
+    // because the block it lifts is this template's own. X-Fused is the guard
+    // every mutating schedule POST requires (D3) — a header a foreign page
+    // cannot send without a preflight we never answer.
+    //
+    // `target` is the TEMPLATE's id for a repeat and the entry's own for a
+    // one-off — see schedStopTarget. `schedule.cancel` already reads a template
+    // id as "no further runs" and cancels the materialized occurrence with it,
+    // so one endpoint serves both cases.
+    const res = await fetch("/api/schedule/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify({ id: target }),
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    // Applied locally so the box opens on the click rather than on the next poll
+    // — 15 seconds of dead composer after a successful cancel reads as a button
+    // that did nothing. The poll below is still the source of truth.
+    //
+    // A stopped repeat takes EVERY blocker that belongs to it, not just the first:
+    // the template is cancelled, so an occurrence of it left in the list would
+    // have the banner naming a run the server has already dropped.
+    schedStopRefused = "";
+    schedBlockers = repeat
+      ? schedBlockers.filter((e) => schedStopTarget(e) !== target)
+      : schedBlockers.slice(1);
+    applyComposerBlockState();
+  } catch (err) {
+    // A cancel that raced the send is refused, not silently swallowed: the entry
+    // is away, the composer stays shut, and that is the true state. Recorded
+    // against the ENTRY so the reconciling poll below re-renders it rather than
+    // wiping it (renderSchedBlock).
+    schedStopRefused = String(next.id);
+    applyComposerBlockState();
+  } finally {
+    schedBlockStop.disabled = false;
+  }
+  pollScheduledRuns();
+});
+
+// THE ROW IS THE LINK, and it replaced "Edit schedule" rather than joining it
+// (Akshil, 2026-08-17). The banner used to carry an Edit control so a schedule
+// could be changed without losing the message; the row now lands on the task
+// where Edit lives with its whole popover, so the two were two doors to one room
+// — and the banner's door was the one that could not unblock.
+//
+// It does NOT reopen the composer and does not pretend to: leaving a blocked chat
+// to look at the thing blocking it is a different errand from unblocking it, and
+// the button beside it is still the only control that does the second.
+schedBlockRow.addEventListener("click", () => {
+  if (!schedBlockers[0]) return;
+  openTaskOnCalendar();
+});
+
+// ── the way back out of an armed stop ──
+//
+// There is no second button to be the "Keep it" any more, so the escape is the
+// gesture instead — .selpop's own dismissal contract (a press outside, Escape),
+// which is what the rest of this template teaches a reader to expect. Disarming
+// is always the safe direction to be wrong in: the cost of a lost arm is one more
+// press, and the cost of a stale one is every future run of a task.
+function schedDisarmStop() {
+  if (!schedStopArmed) return;
+  schedStopArmed = "";
+  applyComposerBlockState();
+}
+
+document.addEventListener("pointerdown", (ev) => {
+  if (schedStopArmed && !schedBlockEl.contains(ev.target)) schedDisarmStop();
+});
+// Capture phase and the event is CONSUMED — the same discipline the schedule
+// confirm takes: the document-level Escape binding kills a live run, and backing
+// out of a half-pressed confirm must not also do that.
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || !schedStopArmed) return;
+  ev.stopPropagation();
+  ev.preventDefault();
+  schedDisarmStop();
+}, true);
+
 async function pollScheduledRuns() {
-  if (chatEl.classList.contains("home")) return;  // nothing to render into
   let data;
   try {
     const res = await fetch("/api/schedule");
-    if (!res.ok) return;
+    if (!res.ok) { clearComposerBlock(); return; }
     data = await res.json();
   } catch (e) {
+    // Fail OPEN, both halves: no turn to attach and no block to impose. See
+    // clearComposerBlock — a composer that shuts itself over an unreadable
+    // schedule is a worse failure than the pollution the block prevents.
+    clearComposerBlock();
     return;  // a blip; the next tick tries again
   }
+  // The composer block reads the SAME payload this watcher already fetches — a
+  // pending message is one of the entries in it — so the feature costs no second
+  // poll and no endpoint of its own. It is applied before the home-view return
+  // below, and before the baseline: a block is a fact about the schedule, not
+  // about what this frame has rendered.
+  applyComposerBlock(data.entries || []);
+  if (chatEl.classList.contains("home")) return;  // nothing to render into
   const fired = (data.entries || []).filter((e) => e.target === FILE && e.run_id);
   // The FIRST pass is a silent baseline: every run already recorded happened
   // before this frame existed, and the transcript restore has accounted for the
@@ -11285,10 +12697,22 @@ async function adoptLiveRun(session_id) {
 
 async function resumeRun(run_id, opts) {
   const neverShown = !!(opts && opts.neverShown);
+  const retryUnknown = !!(opts && opts.retryUnknown);
   if (sending) return;
   sending = true;
   try {
-    const probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+    let probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+    if (probe.error === "unknown run_id" && retryUnknown) {
+      // A frame handed a run id by its EMBEDDER (the canvases workspace's
+      // "Fix with Claude" navigates this iframe with ?run= the moment the
+      // spawn call returns) can boot before the freshly created run dir is
+      // visible to the agent — a race, not a stale bookmark. A few short
+      // retries tell the two apart; only then is the id written off.
+      for (let i = 0; i < 5 && probe.error === "unknown run_id"; i++) {
+        await new Promise((r) => setTimeout(r, 700));
+        probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+      }
+    }
     if (probe.error === "unknown run_id") {
       // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach
       // to, and nothing to hand annotations back to: resolve any stragglers
@@ -11367,6 +12791,11 @@ async function resumeRun(run_id, opts) {
 }
 
 function submitChat() {
+  // Nothing leaves this composer while a scheduled message is pending in this
+  // session — not a typed line, not a queued one, not an annotation-only send.
+  // The guard sits above the queue branch on purpose: parking text for the turn
+  // to drain puts it in the same context the block exists to keep clean.
+  if (schedBlocked()) return;
   // Send is a send, always. Deferral used to be decided HERE, above the queue
   // branch, and the whole question left the composer with the When pill — so what
   // this key does no longer depends on a dropdown two controls away, which was
@@ -11477,7 +12906,11 @@ async function loadHistory(session_id) {
       // optional). A restored turn renders through the same renderSegments the
       // live stream uses — no typer, because nothing is arriving.
       if (t.role === "user") {
-        addUser(stripBlocks(t.text));
+        // `t.uuid` is the transcript record's own id — the same value the Tasks
+        // list carries as a message's `anchor`, which is what makes `?msg=`
+        // resolvable here. Optional: a payload without it renders exactly as
+        // before and simply cannot be anchored to.
+        addUser(stripBlocks(t.text), t.uuid);
         // ...and the picture it carried, if it carried one. addUser appends the
         // turn, so the last `.turn.user` in the log is the one just made — the
         // same way sendMessage finds the turn to hang its own receipt on.
@@ -11486,7 +12919,12 @@ async function loadHistory(session_id) {
       } else addAssistantTurn(t.text, t.segments);
     }
     attachCodeCopy(log);  // one pass over the whole restored transcript
-    scrollBottom();
+    // The transcript is now on screen, so this is both the first moment a
+    // `?msg=` link can be honoured and the last one worth trying: the loop
+    // above rendered every turn there will be, synchronously. Falls through to
+    // the bottom when there is no anchor, or when the anchor names a turn this
+    // transcript does not contain.
+    if (!consumeAnchor()) scrollBottom();
   } catch (err) {
     log.innerHTML = "";
     console.warn("history restore failed:", err.message);
@@ -12397,7 +13835,7 @@ async function loadSnapshots() {
     // run streams, but a resumed conversation with nothing in flight never
     // reaches that loop — and its pages are no less published for it.
     if (session_id) pollArtifacts();
-    if (run_id) await resumeRun(run_id);
+    if (run_id) await resumeRun(run_id, { retryUnknown: true });
     // No `run` on the URL is not proof that nothing is running: a reload after
     // the param was dropped, a bookmark of the bare chat, or a mode switch all
     // land here with a live turn still streaming server-side. Ask before

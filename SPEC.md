@@ -1,7 +1,7 @@
 # fused-render — Requirements Specification
 
 **Status:** Living specification, maintained alongside the shipped product.
-**Scope:** A fully local, single-user, single-machine app — it runs no cloud service of its own. Publishing a page to a hosted URL delegates to the `fused` CLI (bundled in the macOS app, a pip extra otherwise — §19, §27); see Non-Goals.
+**Scope:** A fully local, single-user, single-machine app — it runs no cloud service of its own. Publishing a page to a hosted URL is done directly through the `fused` CLI, run by the user in a terminal (bundled in the macOS app, a pip extra otherwise) against a bundle from `POST /api/export` (§18); see Non-Goals. *(§19/§27 — the in-app Deploy button/modal and Fused-account sign-in panel that used to broker this — are removed; see those section numbers for the tombstone.)*
 
 ---
 
@@ -24,11 +24,13 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 ### Non-Goals
 
 - Cloud or remote deployment, multi-user access, authentication/user accounts.
-  (Unchanged by §19/§27: deploying delegates to the fused CLI — bundled in the
-  packaged macOS app, a pip extra for source/pip installs — and the §27 "Fused
-  account" surface manages the *fused CLI's own*
-  credentials for those deploys — fused-render itself still has no accounts,
-  no tokens, and no server-side users.)
+  (Publishing still delegates entirely to the `fused` CLI — bundled in the
+  packaged macOS app, a pip extra for source/pip installs — run directly by the
+  user in a terminal against a `POST /api/export` bundle; fused-render no
+  longer brokers that CLI in-app at all, nor manages any of its credentials —
+  fused-render itself still has no accounts, no tokens, and no server-side
+  users. *This used to be brokered in-app by §19's Deploy flow and §27's Fused
+  account sign-in panel; both are removed — see those sections.*)
 - File editing (v1 is read/preview oriented; editing is a possible v2).
 - Sandboxing Python for safety against the *user's own* code — the user's code is trusted. (Protecting against *other websites* driving the server is in scope; see §9.)
 
@@ -80,19 +82,19 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 The listing may show the selected entry's preview beside the list — Finder's list view. This is the one feature the deleted `preview` directory template had and the shell did not (D185); it lives here so it inherits the listing's watch (LS-1), file operations (§24), multi-select, streaming search (§22) and theming (§30) instead of re-implementing them.
 
 - **FS-9** **THE PANE IS NOT A CHOICE AND NOT A MEASUREMENT — a `Listing` that has a pane has one, at every width** (D282). The whole of "is there a pane" is *which* `Listing` this is: not an embedded one (the pane's own `_listing` mode — no nesting), not a frozen-tree snapshot, not a panel pane. Those are facts about the SURFACE, and each is the host-side question a measurement could never answer: a snapshot's listing and a panel pane's are both top-level listings handed a column by someone else, and both were wide enough to pass any threshold while being exactly the cases that must not split. **There is no width GATE and no visibility threshold anywhere in this path.** *A container measurement does exist again (D283) — the split container is observed so the companion's SHARE can step to 50% on a small one (FS-12) — and it decides how wide the pane is, never whether there is one. The distinction is the whole of FS-9: presence is a property of the surface, proportion is a property of the room.* *This retires `PANE_SPLIT_MIN_W` (700 px, measured on the split container) and everything that hung off it, on the owner's instruction to remove the breakpoint logic outright — the same instruction that flattened the width to one share (FS-12). **The consequence is stated rather than hedged, and it has two regimes.** Down to about **285 px** of container — the pane's 220 px floor, the 5 px divider and the list's 60 px floor (FS-12) — a narrow window shows a narrow listing beside a floored pane instead of the whole listing, and the way out is `_side=off` (FS-10), the same control it is on a wide one. **Below that the split OVERFLOWS HORIZONTALLY**: the floors no longer fit, `.listing-split` is a plain flex row with no `overflow` rule, and nothing clamps the RENDERED fraction — only the drag is clamped (`dragPaneFrac` refuses a container under 280 px, which is a rule about recording a choice, not about painting one). The old gate made this unreachable by refusing to split at all under 700 px. *Whether it stays reachable is deliberately left open: clamping the rendered fraction, or withholding the pane under the floor sum, is a width condition of exactly the kind this decision removed, so it is the owner's call rather than a fix to slip in beside it. Reachable in practice only in a very narrow embed or a heavily zoomed window.* The gate existed to answer "is a half-width listing beside a half-width preview still worth reading" — a judgement the app was making on the user's behalf, and the answer it is now allowed to make for itself.* *Before the gate there was a **Default OFF** clause and everything that hung off it. The pane used to be opt-in per folder, and that one bit lived in three places that had to agree — a toggle button, a sticky `?preview=true` URL param carried across directory navigation, and a `pane=0` view-state key so a folder remembered being closed. Three writers for one bit, and the bit was almost always a proxy for a question the layout can answer itself.*
-- **FS-10** **THE SURFACE DECIDES WHETHER THERE CAN BE A PANE; the user decides what it shows and whether it is up.** The surface half is FS-9's three flags and nothing else — no width in it, so nothing to re-decide on a resize and nothing that can disagree with what is on screen. *A resize does re-decide the pane's SHARE (FS-12's 1000 px step, D283); it can never re-decide its existence.* The *user's* half is **`_side` on the folder URL** (`listing/pane-side.ts`): which of the pane's **three modes** it is showing — **Preview** (the selected row's own default view, FS-11), **Claude** (the chat, `chat_only=1`, about the selected row) and **Git** (the OPEN FOLDER's working tree, which belongs to the folder and not to the row) — or `_side=off`, that the user has shut it. **An ABSENT `_side` means OPEN at `preview`**, deliberately the opposite of the file preview's sidebar, where absent means closed: the pane is not an extra beside a complete view, it is the folder view's other half, and every folder URL, bookmark and recent predates the param. `pane.on && sideState.open` is therefore the pane on screen, and an unknown value (a stale `_side` carried in from a file view) falls back silently, as an unknown `_mode` does — **to the first mode on offer, which is not always `preview`**: a selected FOLDER row has no Preview at all (FS-11, D281), so there the absent-or-unknown param resolves onward to Claude. An explicit choice that this target cannot offer is left in the URL untouched, so hopping out of a repository and back in does not silently reset the pane. There is still no separate mode, no `_mode` value and no registry entry for "listing with a pane" — the pane is a property of *how this folder is being viewed*, not a different view of it (precisely the distinction the `preview` template got wrong). The pane's **header strip** is present in every pane state (loading skeleton, error, metadata card, multi-selection placeholder, self target), and it is the PANE's bar rather than the row's: the way out of the column at its left end, the three-mode pill at its right (`SideChrome`, the one component both this pane and the file preview's sidebar render), with the previewed row's identity between them. **Closing and reopening is ONE AFFORDANCE IN TWO PLACES, chosen by state:** closing is the chevron in that header, on the seam the column collapses toward; reopening cannot live there, since a shut column hosts nothing, so that half is a mode-icon button in the listing's **search row** — the folder's own chrome, beside the folder's own search box — rendered *only* while the pane is shut, wearing the icon of the mode that would come back. Both on screen at once is two buttons for one bit of state a few pixels apart across a divider, which reads as a rendering fault rather than as a choice. *This clause used to specify the toggle as **one affordance in two places, chosen by state**: an icon-only "Hide preview" as the first item of the pane's header strip (on the seam it collapses toward), and a labelled glyph + "Preview" button in the listing's search row for reopening, the two never coexisting. **What was deleted is the TOGGLE, not that shape.** An on/off button for a bit the layout can answer itself went with `?preview=true`; the two-place, chosen-by-state affordance above is a **mode** control — it says which of the three would return, which is a question no measurement answers — and it keeps the rule that killed the old one, **closing needs a way back**, because its reopening half renders exactly while the pane is down. The **drag-to-close gesture** stays deleted: a divider dragged to the right edge shut the pane with no reopen affordance in that era, so it stayed shut until the window was resized. The drag now just holds at the pane's floor, which is what the clamp already did all the way to the edge.*
+- **FS-10** **THE SURFACE DECIDES WHETHER THERE CAN BE A PANE; the user decides what it shows and whether it is up.** The surface half is FS-9's three flags and nothing else — no width in it, so nothing to re-decide on a resize and nothing that can disagree with what is on screen. *A resize does re-decide the pane's SHARE (FS-12's 1000 px step, D283); it can never re-decide its existence.* The *user's* half is **`_side` on the folder URL** (`listing/pane-side.ts`): which of the pane's **three modes** it is showing — **Preview** (the selected row's own default view, FS-11), **Claude** (the chat, `chat_only=1`, about the selected row) and **Git** (the OPEN FOLDER's working tree, which belongs to the folder and not to the row) — or `_side=off`, that the user has shut it. **An ABSENT `_side` means OPEN at `preview`**: the pane is not an extra beside a complete view, it is the folder view's other half, and every folder URL, bookmark and recent predates the param. *This clause used to add "deliberately the opposite of the file preview's sidebar, where absent means closed". **It is no longer the opposite — the file sidebar reads an absent `_side` as OPEN too, and `off` as shut, exactly as this pane does** (D326, §21's LSN-12): the file half's rule made the sidebar's presence a stored PREFERENCE, which the per-file session sidecar then replayed forever. `_side` is one vocabulary across both surfaces now, so a param carried between them means the same thing in either direction; what still differs is only what "the first mode on offer" resolves to, since a folder and a file offer different things.* `pane.on && sideState.open` is therefore the pane on screen, and an unknown value (a stale `_side` carried in from a file view) falls back silently, as an unknown `_mode` does — **to the first mode on offer, which is not always `preview`**: a selected FOLDER row has no Preview at all (FS-11, D281), so there the absent-or-unknown param resolves onward to Claude. An explicit choice that this target cannot offer is left in the URL untouched, so hopping out of a repository and back in does not silently reset the pane. There is still no separate mode, no `_mode` value and no registry entry for "listing with a pane" — the pane is a property of *how this folder is being viewed*, not a different view of it (precisely the distinction the `preview` template got wrong). The pane's **header strip** is present in every pane state (loading skeleton, error, metadata card, multi-selection placeholder, self target), and it is the PANE's bar rather than the row's: the way out of the column at its left end, the three-mode pill at its right (`SideChrome`, the one component both this pane and the file preview's sidebar render), with the previewed row's identity between them. **Closing and reopening is ONE AFFORDANCE IN TWO PLACES, chosen by state:** closing is the chevron in that header, on the seam the column collapses toward; reopening cannot live there, since a shut column hosts nothing, so that half is a mode-icon button in the listing's **search row** — the folder's own chrome, beside the folder's own search box — rendered *only* while the pane is shut, wearing the icon of the mode that would come back. Both on screen at once is two buttons for one bit of state a few pixels apart across a divider, which reads as a rendering fault rather than as a choice. *This clause used to specify the toggle as **one affordance in two places, chosen by state**: an icon-only "Hide preview" as the first item of the pane's header strip (on the seam it collapses toward), and a labelled glyph + "Preview" button in the listing's search row for reopening, the two never coexisting. **What was deleted is the TOGGLE, not that shape.** An on/off button for a bit the layout can answer itself went with `?preview=true`; the two-place, chosen-by-state affordance above is a **mode** control — it says which of the three would return, which is a question no measurement answers — and it keeps the rule that killed the old one, **closing needs a way back**, because its reopening half renders exactly while the pane is down. The **drag-to-close gesture** stays deleted: a divider dragged to the right edge shut the pane with no reopen affordance in that era, so it stayed shut until the window was resized. The drag now just holds at the pane's floor, which is what the clamp already did all the way to the edge.*
 - **FS-11** **Selection-driven content, in the pane's `preview` mode.** Only this one of FS-10's three modes is about the selected row's own templates — `claude` is the chat aimed at the row, `git` is the open folder's working tree and does not follow the selection at all — and in it the pane renders whatever the currently selected row is. **THE PANE FOLLOWS THE LEAD ONCE IT HAS SETTLED** (`listing/pane-settle.ts`, 250 ms): a move from rest — a click, the first press of a key — reaches it at once, but a move made mid-burst re-arms, so a held arrow key mounts only the row it stops on. *A pane mount is an iframe load, and on the `claude` side that iframe spawns `agent.py` through `/api/run` before it can draw, so chasing a held key down a listing meant one subprocess per keystroke — on a path with this repo's fork-crash history. Same "settle before acting on the lead" as the `?sel=` write (FS-16).* The rows below are what a settled lead resolves to:
   - a **file** → its default template mode (PT-8/PT-9) in an **iframe**, `/render?path=<template>&_file=<file>`, exactly as the preview view builds it (PT-2) — one code path, so a file previews identically in the pane and full-screen. **No switcher over the ROW's templates** — the pane shows the default, and full-screen is a double-click on the row (FS-15). *A per-row switcher did sit in this header, synced to a `_panelMode` URL param, offering every mode the row resolved (image/photos/pano for a `.png`). It was retired when the header became the pane's own three-mode bar (FS-10): two mode controls over one row, and the companions in the new bar are not row views at all. What is genuinely lost is picking a NON-DEFAULT content template inside the pane; the expand button opens the row full-screen, where the content switcher lives. Nothing writes or reads `_panelMode` any more.* "Default" means PT-9's rule in full, including its tail: the first **unconditional** entry renders immediately (CT-12 — no waiting on a gate), and an **all-conditional** list resolves its gates and shows the first **allowed** one, so the pane never claims "no preview" for a file that opens fine full-screen. A file with no usable entry at all (empty list, or every gate denied/broken — fail closed) gets the metadata card below. **The pane never edits the mode list on account of its own width** (PT-15): it is a narrow host — 220 px at the floor, and 30 % of the container by default (FS-12) — and a template whose layout needs more than that collapses itself at its own breakpoint, which is why nothing here knows how wide any template wants to be.
-  - a **directory** → **no `preview` at all** (D281). A folder is not a thing this pane previews: rendering the page it holds is what D280 stopped, and the only other candidate — the embedded listing peek — is the listing already open on the left. So the pane's three-mode pill (FS-10) drops its **Preview** row for a selected folder row and the pane lands on **Claude**, the chat about that folder, sent `chat_only=1` so the chat template gives up its own preview pane (which for a folder it would fill with that folder's entry page — the same render, one level deeper). An explicit `?_side=git` still wins; only the absent param, which parses as `preview`, is resolved onward. **NO surface offers a folder a "Preview" any more**, which is the owner's bar and is met in two different ways: the pill drops the row above, and no list of TEMPLATE modes ever carried one — the full-screen topbar menu, the panel/tab pane menus and the Open With menu all render `modeTitle(mode)`, and a directory's modes label as `Claude, Listing, Git, Graph, …`. **`_listing` is "Listing" there, not "Preview"** (`mode-name.ts`'s sentinel names), which is exactly what lets a folder lose its Preview everywhere while keeping a plainly-named way to its file table. *A guard reads the shipped registry and fails if any directory key ever binds a mode that humanizes to "Preview" — the deleted D185 folder-preview template's own name is the likely way that returns.* **While the folder's companion probes are still OUT the pane has NO MODE and holds its skeleton** — it does not fall back to `preview`. A probe that has not answered is not a denial, and treating it as one put the pill on "Preview" over a rendered chat (the row's own `claude` default) for the window after a folder opens, then remounted and re-spawned `agent.py` when the verdict landed. The pill's two companion rows spin in that window (CT-12's spinner), so the header says "resolving" while the body does. A FILE row is unaffected: its `preview` is its own template list, which the folder's companion gates say nothing about. **Where NEITHER companion is offered** — a mount-backed folder, whose `claude` and `git` gates both refuse, this time answered — `preview` comes back as the fallback and shows the embedded `_listing` peek: the pane must show something, and that sentinel is unconditional, renders no template and runs no Python, so the fallback is never heavier than the default it replaces. *This is the answer to "what if a folder's `claude` is denied", and it is why `_listing` must stay in the universal directory key (PT-13) however the key is ordered.* *The pill and the body used to disagree here, which is how this was found: with `claude` leading the folder's mode list (D280) the pane rendered the chat while the pill still read "Preview" — two controls naming one thing differently. D280 deletes D269's pane half: A folder holding a top-level `.html` used to be RETARGETED to that page and previewed as an ordinary file — the whole pipeline downstream (the template list, the `/render` iframe, the expand button) being the page's — on the rule that such a folder IS its page. In this pane that made a SELECTION an execution: arrowing onto a row mounted the folder's app, ran its template's Python and put a live UI with working buttons in the sidebar for a folder the user had merely highlighted. The owner's words were "we don't want rendering". The `/api/fs/list` the retarget cost per selected folder goes with it, and so does the frontend copy of the entry rule (`apps/explorer/lib/app-entry.ts`, deleted — this pane was its only caller). D269's OTHER half stands: an app CARD still opens the entry page, and the server (`app_listing.app_entry`) and the claude template (`templates/shared/app_entry.py`) keep the rule for the surfaces that ask which page a folder is. Selecting a folder was already NOT the same as navigating INTO it, which opens its listing with nothing selected (FS-16); the two now agree that a folder is a folder.*
+  - a **directory** → **no `preview` at all** (D281). A folder is not a thing this pane previews: rendering the page it holds is what D280 stopped, and the only other candidate — the embedded listing peek — is the listing already open on the left. So the pane's three-mode pill (FS-10) drops its **Preview** row for a selected folder row and the pane lands on **Claude**, the chat about that folder, sent `chat_only=1` so the chat template gives up its own preview pane (which for a folder it would fill with that folder's entry page — the same render, one level deeper). An explicit `?_side=git` still wins; only the absent param, which parses as `preview`, is resolved onward. **NO surface offers a folder a "Preview" any more**, which is the owner's bar and is met in two different ways: the pill drops the row above, and no list of TEMPLATE modes ever carried one — the full-screen topbar menu, the panel/tab pane menus and the Open With menu all render `modeTitle(mode)`, and a directory's modes label as `Claude, Listing, Git, Graph, …`. **`_listing` is "Listing" there, not "Preview"** (`mode-name.ts`'s sentinel names), which is exactly what lets a folder lose its Preview everywhere while keeping a plainly-named way to its file table. *A guard reads the shipped registry and fails if any directory key ever binds a mode that humanizes to "Preview" — the deleted D185 folder-preview template's own name is the likely way that returns.* **While the folder's companion probes are still OUT the pane has NO MODE and holds its skeleton** — it does not fall back to `preview`. **"Still out" means the LEADING companion is still out, not that both are** (D326): the two probes are independent `useDirMode` calls with their own caches, so Git can answer first, and offering Git alone meanwhile put the pane on Git and then JUMPED it to Claude the moment Claude's verdict landed — `activePaneSide` resolves an absent `_side` against the live list on every render. A pane swapping its content under a reader is worse than a moment more skeleton, so an unanswered leader is a wait; a DENIAL is not (Git then leads whatever is left, which is a decision the pane can act on). *The file preview's sidebar had the identical defect and takes the identical rule — `lib/preview-side`'s `defaultSide` is the leading companion or nothing — so the two surfaces agree here by construction.* A probe that has not answered is not a denial, and treating it as one put the pill on "Preview" over a rendered chat (the row's own `claude` default) for the window after a folder opens, then remounted and re-spawned `agent.py` when the verdict landed. The pill's two companion rows spin in that window (CT-12's spinner), so the header says "resolving" while the body does. A FILE row is unaffected: its `preview` is its own template list, which the folder's companion gates say nothing about. **Where NEITHER companion is offered** — a mount-backed folder, whose `claude` and `git` gates both refuse, this time answered — `preview` comes back as the fallback and shows the embedded `_listing` peek: the pane must show something, and that sentinel is unconditional, renders no template and runs no Python, so the fallback is never heavier than the default it replaces. *This is the answer to "what if a folder's `claude` is denied", and it is why `_listing` must stay in the universal directory key (PT-13) however the key is ordered.* *The pill and the body used to disagree here, which is how this was found: with `claude` leading the folder's mode list (D280) the pane rendered the chat while the pill still read "Preview" — two controls naming one thing differently. D280 deletes D269's pane half: A folder holding a top-level `.html` used to be RETARGETED to that page and previewed as an ordinary file — the whole pipeline downstream (the template list, the `/render` iframe, the expand button) being the page's — on the rule that such a folder IS its page. In this pane that made a SELECTION an execution: arrowing onto a row mounted the folder's app, ran its template's Python and put a live UI with working buttons in the sidebar for a folder the user had merely highlighted. The owner's words were "we don't want rendering". The `/api/fs/list` the retarget cost per selected folder goes with it, and so does the frontend copy of the entry rule (`apps/explorer/lib/app-entry.ts`, deleted — this pane was its only caller). D269's OTHER half stands: an app CARD still opens the entry page, and the server (`app_listing.app_entry`) and the claude template (`templates/shared/app_entry.py`) keep the rule for the surfaces that ask which page a folder is. Selecting a folder was already NOT the same as navigating INTO it, which opens its listing with nothing selected (FS-16); the two now agree that a folder is a folder.*
   - a directory's **`_listing`** mode — the switch behind that default, and the default itself wherever `claude` is gate-denied → mounted as the **real shell `Listing` component, embedded** (`embedded` prop: full sorting, search and selection, but no URL writes, no global keyboard and no pane of its own — a listing inside a listing's pane is the one nesting case). *Three earlier answers are gone. It was the folder default itself until `claude` took the registry's lead (D280). Before that, a folder holding exactly one top-level page used to embed that page instead, through a pane-only `_app` sentinel that stood in wherever the registry's `app` mode was absent or gate-denied; both went with the app concept (D264), and the sentinel had to go with them or it would have become its only surviving carrier, labelled "Preview". Before either, the peek was a **read-only mini child list** (names + icons, no sort, no file ops, no search, not navigable) — deliberately read-only, because two live listings on screen means two watch sockets, two selection models and an ambiguous target for a delete. That argument lost: the pane exists to answer "what is in here" before you commit to going in, and the embedded listing answers it with the same columns, sorting and search as the folder you would have walked into, instead of a second, worse listing maintained beside the real one — which is D185's own lesson about forks. The `embedded` prop answers the half of those concerns that were about the HOST — no URL writes, a pane-local sort that never re-sorts the real listing, no global keyboard and no pane of its own — while the second dir-watch is simply accepted: the pane is showing a folder, and a stale picture of one is worse than a socket. Its `.pane-mini-*` styles are still in `explorer.css` with nothing rendering them.*
   - **nothing selected** → **the chat about the OPEN FOLDER** (D284). The subject is the folder already open on the left, and *a folder is not a thing this pane previews* — the same rule and the same words as a selected directory above, applied to the state **every folder opens into** (FS-16). So this state takes the identical treatment: **no `preview` on the pane's mode list and no Preview row in its pill**, and it lands on the first companion on offer, which is `claude` aimed at the folder (`paneSideTarget` already falls a null row back to the folder, so nothing new carries it). While the companion probes are still out the list is EMPTY and the pane holds its **skeleton** — resolving `preview` in that window is the bug D281 records, and here it would fire on every single folder open. **The `self` target survives as ONE case: neither companion offered** (a mount-backed folder, both gates refusing), where the body is the neutral hint `Select a file to preview.` (the `.pane-hint` the empty pane already had) and that hint is the pane's only possible content. *Until D284 the hint WAS this state's answer, under a pill reading "Preview" — which is what the owner reported: D281 gave a selected folder row this treatment and left the no-selection state, then FS-16/D278 made that state the default landing for every folder, so the wrong pill and a hint over a non-previewable folder were what a user met on every open.* A **multi-selection** is deliberately untouched and keeps both its Preview side and its "N items selected" placeholder: several rows are not a folder. The header carries the folder's icon and its name — no actions. *A folder's "Open as app" was once handed down into this slot; a folder has no primary action at all now, because D264 deleted the app concept itself — the mode, the button and the lone-app probe alike.* The body is the neutral hint `Select a file to preview.` (the `.pane-hint` the empty pane already had). **There is NO PER-ROW mode picker**, and therefore no row mode: the self target never builds a row mode list, resolves no default, and issues no stat — there is no row to resolve templates for. The pane's **own** pill (FS-10) is in the header here exactly as in every other state — minus its Preview row (D284), so what it offers is what the pane can be: the two companions, disabled with their reasons or spinning while their probes are out. It is the control this state used to lack. *What was removed was the per-row picker: the `/` key's peers are heavyweight opt-ins (D235/D237 put the chat on every folder), so in this state that picker offered a chat on the folder from a header that otherwise said "select something" — a `Choose view` chip pointing at a view nobody came for. Claude-on-the-folder is a named mode of the PANE now, so it is offered plainly instead of through a picker with nothing else in it.* The folder's own modes remain one click away on the **left** half (the browse chip / the folder's own view), and every entry in the folder previews on selection. **This is the state EVERY freshly opened folder is in** (FS-16, D278): a folder opens with nothing selected, so **the chat about that folder is the first thing its pane shows** (D284 — the hint was, until this state stopped claiming to preview a folder), and the state persists until the user picks a row. *It was briefly the rare case instead — while opening a folder auto-selected a row for it (D263, D240) it was reached essentially only by an empty folder or by a deliberate **Escape**; clicking the listing background still does not deselect (FS-15), so once a row is picked the pane keeps showing it.* *There used to be an elaborate rule here instead — drop `_listing`, offer the peers, but land on no mode unless the folder had a lone app of its own, with a pane-only `_none` entry before that. Hiding the picker deletes the question those were answering.*
 - **FS-12** **Draggable divider** between list and pane. **The split is a FRACTION of the split container, not a pixel width** — state is `{ on, frac }`, rendered as a percentage `flex-basis`, defaulting to **`PANE_DEFAULT_FRAC = 0.3`, which is the file view's sidebar share imported by name** (`COMPANION_FRAC`, `lib/side-width.ts`): after D280/D281 a folder's pane holds the same companion the file view's sidebar holds, so **one number serves both** and neither surface spells it (D282 — the owner's "they are the same concept now"). Two literals are how they came to differ. A proportion is what the user actually chose ("about a third of the window to the list"), and it is the only form of the answer that stays right when the window resizes: the previous model resolved a measured half into pixels at mount and then never rescaled, so a pane sized on a wide monitor became the whole view on a laptop. A percentage also needs **no measurement** — it is correct before the first paint, whatever the container turns out to be — so the measuring layout effect and its unmeasurable-container fallback (`PANE_FALLBACK_W = 420`) are both gone. **The pixel floors remain, and they are where the pixels live now:** the drag runs the cursor's distance from the container's right edge through `clampPaneWidth` (pane ≥ 220 px, list ≥ 60 px, the pane's floor applied last so a container too small for both keeps the pane and scrolls the list) and stores `clamped ÷ container width`. **A container too narrow to hold both floors (< 280 px) expresses no split at all** — the clamp returns the pane's floor whatever the cursor does, so the fraction would describe the container rather than a choice (exactly `1.0` at 220 px), and one drag in a narrow pane would leave the list at its 60 px sliver on every window thereafter. There the drag moves nothing and records nothing (dragging to the edge no longer closes the pane — FS-10); above 280 px the ceiling is `(W − 60) ÷ W`, so a real drag can never reach 1. `.listing-pane-slot` and `.listing-main` carry the same two floors as CSS `min-width`, which is what holds them when the *window* — not the divider — is what changed. Only a **dragged** fraction is recorded at all (FS-13); the default is never recorded. **UNDRAGGED, THE FRACTION IS ONE STEP: 30 %, or 50 % in a container of 1000 px or less** (`companionFrac`, `lib/side-width.ts` — the same function the file view's sidebar calls, so the two companion columns cannot drift apart; 1000 itself counts as small, matching CSS `(max-width: 1000px)`, and an unmeasured container is not small). *D283 restored that step after D282 deleted it, and the argument D282 deleted it on was **wrong**: it claimed the 280 px column floor already reached the same answer, but 280 of 720 is 39 %, not 50 % — a floor stops a column being unreadable, it does not give a cramped layout the half it needs. The owner reported the gap from the case that shows it, a small browser window. **One step is not the ladder**: the 30/50/70 % tiers, their two breakpoint constants and the 700 px visibility gate all stay deleted, and this changes the pane's share and never whether it exists.* **Moving the boundary to 1000 px CLOSED the flex-basis/`min-width` disagreement it briefly had** and opened no new one: at 720 the pane is now on the 50 % side (360 px, well clear of the 220 px floor), and just above the new boundary 30 % of 1001 is 300 px, clear of it too. The two only disagree below ~440 px, where they always did and where both shares are floored alike. *It used to STEP with the container's width through a `defaultPaneFrac`: 30 % of a container that only just had room for two panes, 50 % at a normal window (`PANE_MID_W` 1000), 70 % once it was wide (`PANE_WIDE_W` 1440), with a `220 px ÷ container` floor folded in so the flex-basis could not disagree with the CSS `min-width`. The argument for it was that a single fraction is wrong at both ends — half of 720 px being a preview too narrow to read, half of 1920 px being 960 px of file names — and the steps were the answer. **D282 deletes all three tiers and the measurement they needed**, on the owner's instruction to remove the breakpoint logic: the companion is a companion at any size, the pixel floors below still stop a 30 % pane from being unusably narrow, and a user who wants a different proportion drags the divider. Both breakpoint constants and the `ResizeObserver` are gone rather than left computing something nothing reads.*
 - **FS-13** **NOTHING ABOUT THE PANE IS STORED — not in view state, not in `localStorage`, not in `sessionStorage`. Whether there is a pane follows from the surface; what the user chose is `_side` on the URL; the dragged width lives in memory for the session and nowhere else.**
   - **Whether there is a pane → not persisted at all**, because it is not a choice (FS-9/FS-10). It is three flags about which `Listing` this is, evaluated on every render, so there is nothing to write, nothing to restore, and nothing that can disagree with what is on screen. *This sub-clause used to say "recomputed from the container on every measurement"; D282 deleted the measurement, and the property it describes is stronger without it.* **The user's half — which of the three modes, or that the pane is shut — is `_side` on the folder URL and nowhere else** (FS-10): it belongs in the URL for the reason SB-2 gives, that a bookmark captures what the right side currently shows, and `_side=off` is spelled as a word rather than as a deleted param because an absent one already means something different here (open at `preview`). Reopening keeps the mode the pane was shut on, and only "shut" is written down: the open-at-default state gets the clean URL, per PT-9's rule that selecting the default deletes the param. *This replaces **`?preview=true` on the shell URL** (that literal spelling) plus a `pane` view-state key, with the URL authoritative on mount, the view state consulted in its absence, and the param carried by `navigate()` onto directory targets so folder-to-folder movement never silently opened or closed the pane. All of it is deleted: the param, its stickiness, the reflect-into-the-URL effect, and the `pane` key. **A stale `?preview=true` in an old bookmark is inert** — no reader remains — which also retires the D72 ancestor-climb caveat that kept the param off file targets. SB-2 still captures the URL verbatim; there is simply no pane state in it.*
   - **Width → a module-level variable, for the lifetime of the DOCUMENT** (`listing/pane-store.ts`), never the URL and **never storage of any kind**. One fraction, shared by every folder and every file. It survives everything the shell does, since the shell navigates by `history.pushState` and never reloads: folder → folder, folder → file, Back and Forward all keep the width. A **refresh clears it** and the pane returns to the flat 30 % (FS-12), and that reset is the *feature* — once dragged, a pane keeps that proportion for the whole session, and the way back has to be something a user can find without being told about a gesture. Reloading a page is that. `sessionStorage` would survive the refresh and `localStorage` the browser, so neither is an option, and there is deliberately no double-click-to-reset gesture. Only a **dragged** fraction is recorded (FS-12), at three decimals — a tenth of a percent of the container, well under a pixel on any window.
-  - ***Width used to be PER FOLDER, and that was the bug.*** *It lived as a `panew` key in the per-path view state (`lib/viewstate.ts`), alongside the folder's sort, on the reasoning that two sibling folders should keep independent splits. In use that reasoning does not hold: a width is a statement about this window and this pair of panes, not about whichever folder was open when the divider moved. The result was that the divider **jumped on ordinary navigation** — out of a folder you had dragged, into a sibling you had not — snapping between your width and the breakpoint default on every hop. The file preview's own `_side` sidebar had always used a single global width and never had this problem. **Every stored `panew` is purged**, once, at `listing/pane.ts` module init (`purgeViewStateParams`, which also clears the older `pane` key); nothing is translated forward, because a width chosen for one folder is not a statement about the session, so every user starts on the adaptive default until their next drag. **The sort stays per folder** — that one really is a fact about the folder — which is why the purge names its params instead of clearing the map. The `parsePaneFrac` reader went with the key, and with it the rule that **legacy pixel values are ignored, not translated** (anything `>= 1` in `panew` predated the fraction model and was measured against a container this window may not have): there is nothing stored to validate on the way in any more.*
+  - ***Width used to be PER FOLDER, and that was the bug.*** *It lived as a `panew` key in the per-path view state (`lib/viewstate.ts`), alongside the folder's sort, on the reasoning that two sibling folders should keep independent splits. In use that reasoning does not hold: a width is a statement about this window and this pair of panes, not about whichever folder was open when the divider moved. The result was that the divider **jumped on ordinary navigation** — out of a folder you had dragged, into a sibling you had not — snapping between your width and the breakpoint default on every hop. The file preview's own `_side` sidebar had always used a single global width and never had this problem — *though not for the whole session: its width was mount-local `useState`, and since `StatView` is keyed by path the column remounted on every file→file hop and the divider sprang back to the share. D326 gives it a store of its own (`apps/explorer/lib/side-store.ts`) on exactly the policy below, PIXELS where this one holds a fraction, so the two surfaces now behave identically under navigation and share only the default share.* **Every stored `panew` is purged**, once, at `listing/pane.ts` module init (`purgeViewStateParams`, which also clears the older `pane` key); nothing is translated forward, because a width chosen for one folder is not a statement about the session, so every user starts on the adaptive default until their next drag. **The sort stays per folder** — that one really is a fact about the folder — which is why the purge names its params instead of clearing the map. The `parsePaneFrac` reader went with the key, and with it the rule that **legacy pixel values are ignored, not translated** (anything `>= 1` in `panew` predated the fraction model and was measured against a container this window may not have): there is nothing stored to validate on the way in any more.*
 
-  **`navigate()` carries exactly one piece of pane state, `_side`, and only across DIRECTORY hops** — a folder hop keeps the pane as the user left it, open on the same companion or shut, which is the same stickiness the deleted `?preview` param had and for the same reason. It is a reserved (`_`-prefixed) name, so unlike `preview` it cannot shadow a template's own param through D72's ancestor-climb, and it is withheld from **file** targets for that era's other reason: a file view hosts a template iframe that reads every shell-URL param. The width gate is re-measured at the destination (FS-9) and the dragged width is already global for the session (FS-13), so both are simply right on arrival. **A top-bar (breadcrumb) directory hop still always lands on the plain listing:** it drops `_mode` rather than carrying the current folder's view onto the target — hopping out of a full-screen moded folder (`claude`, `graph`) into another folder that offers the same mode looked like nothing had happened, and the breadcrumb is how a user leaves a mode. *A sticky `?preview` param used to ride this rule: carried onto **directory** targets so folder-to-folder movement never silently opened or closed the pane, and deliberately withheld from **file** targets, because `preview` is an *unreserved* param name and the runtime's ancestor-climb (D72) exposes shell-URL params to a template iframe as global fallbacks, so a file URL carrying it would shadow a user template's own param of that name. The param is gone (FS-13), and with it that whole hazard — including the residual caveat this clause used to state rather than fix, that a template rendered **inside the pane** (FS-11) saw `preview` through the same climb while the listing URL carried it. `_side` is ONE param name on two surfaces — the file preview's companion sidebar and this pane — read differently on each (absent = closed on a file, absent = open at `preview` on a folder; `listing/pane-side.ts` states both), which is why an unknown value carried between them falls back rather than erroring. The `_panelMode` that used to ride beside `_mode` here — the pane's per-row template switcher — is retired with that switcher (FS-11): nothing writes one, so there is nothing to carry or to drop.*
+  **`navigate()` carries exactly one piece of pane state, `_side`, and only from ONE FOLDER TO ANOTHER** — such a hop keeps the pane as the user left it, open on the same companion or shut, which is the same stickiness the deleted `?preview` param had and for the same reason. **Both ends are checked, and the SOURCE end is D326's addition:** the destination must be a directory (it always had to be), and the page the hop is made FROM must be one too, judged by the `{ fsDir }` hint the navigation that landed there stashed (`navHintIsDir`). Once a shut sidebar started saying `_side=off` instead of deleting the param, the missing source check meant closing a FILE's sidebar and taking the breadcrumb up landed on a folder with its pane shut — a folder that was open when the user went into the file — while **Back** restored that folder's own url and its pane with it. Two exits disagreeing about what the folder looks like is the defect; the coupling on its own would have been arguable. **Unknown provenance carries nothing** (a fresh load, a typed url, a caller that passed no hint): the two ways to be wrong are not symmetric — guessing "carry" shuts a pane the user never shut, guessing "drop" reopens one at its documented default, since an absent `_side` means open — so the fallback takes the harmless one. *The stated cost: shut a folder's pane, hard-RELOAD, then hop to a sibling folder, and the pane comes back open.* It is a reserved (`_`-prefixed) name, so unlike `preview` it cannot shadow a template's own param through D72's ancestor-climb, and it is withheld from **file** targets for that era's other reason: a file view hosts a template iframe that reads every shell-URL param. The width gate is re-measured at the destination (FS-9) and the dragged width is already global for the session (FS-13), so both are simply right on arrival. **A top-bar (breadcrumb) directory hop still always lands on the plain listing:** it drops `_mode` rather than carrying the current folder's view onto the target — hopping out of a full-screen moded folder (`claude`, `graph`) into another folder that offers the same mode looked like nothing had happened, and the breadcrumb is how a user leaves a mode. *A sticky `?preview` param used to ride this rule: carried onto **directory** targets so folder-to-folder movement never silently opened or closed the pane, and deliberately withheld from **file** targets, because `preview` is an *unreserved* param name and the runtime's ancestor-climb (D72) exposes shell-URL params to a template iframe as global fallbacks, so a file URL carrying it would shadow a user template's own param of that name. The param is gone (FS-13), and with it that whole hazard — including the residual caveat this clause used to state rather than fix, that a template rendered **inside the pane** (FS-11) saw `preview` through the same climb while the listing URL carried it. `_side` is ONE param name on two surfaces — the file preview's companion sidebar and this pane — and **read the SAME way on both since D326**: absent = open at the first thing on offer, `off` = the user shut it, an unknown value falling back silently rather than erroring (which is what makes a value carried between the two safe). *It used to be read differently on each — absent = closed on a file, absent = open on a folder — and the file half is what moved; `listing/pane-side.ts` and `lib/preview-side.ts` state the rule and why it changed.* The `_panelMode` that used to ride beside `_mode` here — the pane's per-row template switcher — is retired with that switcher (FS-11): nothing writes one, so there is nothing to carry or to drop.*
 
   View state stays best-effort `localStorage`, silent on failure, same posture as the rest of viewstate and AP-1.
 - **FS-14** **Skeleton shimmer** while the pane's content loads (the iframe's first paint, an embedded listing's own fetch) — the pane occupies real width the moment it opens, so an empty rectangle would read as "this folder has no preview" rather than "loading". The list never blocks on the pane: a slow or failing pane leaves the listing fully interactive.
@@ -143,6 +145,28 @@ The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket n
 
 **An unmatched chord is left completely alone** — no `preventDefault`, no state change — so whatever else owns it still works. A matched chord with nothing to act on (an empty selection, an empty clipboard) is likewise left alone rather than swallowed. The only chord that *wants* a secondary modifier is ⌘/Ctrl+Shift+N (new folder), and it takes Shift and nothing else. The table is pure and tested (`listing/shortcut-chord.ts`); the hook around it only wires it to the document and asks whether there is anything to act on.
 
+### Undo/redo covers the ops that are a rename both ways (D330, D335)
+
+- **FS-17** **`⌘/Ctrl+Z` (and `⇧⌘/Ctrl+Z`) undo the explorer's RELOCATIONS — a drag-move, a cut-paste, a rename, and the TRASH delete where the bin's destination is one the server named — and nothing else.** All of them are one primitive at the filesystem: they rename a path, their inverse is another rename, it destroys nothing, and applying the inverse twice is the original op, so undo, redo and undo-again all run the same code (`lib/fs-undo`: an op is a list of `{from, to}` absolute-path pairs, never a closure; `UNDO_CAP` = 50 ops; a module-level in-flight guard, because a move can navigate mid-gesture and a guard living in a component would remount to `false`).
+  **The trash delete is in the list because it IS a rename, not because the rule was relaxed.** On macOS `_move_to_macos_trash` renames into `~/.Trash/<deduped name>`; on Linux `_move_to_xdg_trash` renames into `$XDG_DATA_HOME/Trash/files/<name>` (defaulting to `~/.local/share`). In both the SERVER picks the destination, so it can report it as **`trashed_to`** on `/api/fs/delete`; the listing records the batch as one `delete` op, so a single `⌘Z` moves the whole selection back out of the bin and `⇧⌘Z` moves it back in. The restore asks for the **exact recorded path with overwrite off**, so a name retaken since the delete is a 409 the toast says out loud rather than a silent restore as "… copy"; an emptied bin is a 404 per pair, reported the same way; a systemic refusal (a read-only destination) stops the batch and leaves the untried pairs undoable.
+  **RECOVERABLE IS NOT THE SAME PROMISE AS UNDOABLE, and the two are decided by one question: did WE name the destination?** Every desktop platform has an OS-level bin and each has a backend, so a Delete is recoverable everywhere the bin is reachable. It is *undoable* only where the move was a rename to a path the server chose — which is what makes it invertible by another rename. Six cases, and the spec states them rather than letting a reader generalise from macOS:
+
+  | Case | Backend | Recoverable | Undoable (⌘Z) |
+  |---|---|---|---|
+  | macOS, local FS | `os.rename` → `~/.Trash` | ✓ | **✓** |
+  | macOS, cross-device | `osascript` → Finder | ✓ (in Finder) | ✗ |
+  | Linux, same device | XDG trash (`files/` + `info/` sidecar) | ✓ | **✓** |
+  | Linux, cross-device (`EXDEV`) | none — **501**, confirm-then-hard-delete | ✗ | ✗ |
+  | Windows | Recycle Bin (`SHFileOperationW`, `FOF_ALLOWUNDO`) | ✓ (in Explorer) | ✗ |
+  | Remote mount-backed file, any platform | none — **501**, confirm-then-hard-delete | ✗ | ✗ |
+
+  **The two ✗-but-recoverable rows are not exceptions; they are the same rule.** The macOS Finder fallback and the Windows Recycle Bin both let the OS choose where the entry goes — the bin stores an item as `$R…` beside a `$I…` metadata file under `C:\$Recycle.Bin\<SID>\` and restores it through the shell, not by a path rename — so there is no destination to record, and **a destination we cannot name is never recorded as an undo pair**. Guessing one would aim an undo at a path nothing is at.
+  **The 501 rows really are irreversible, and keep the confirm dialog that says so.** A remote mount is refused because lifting the file off the mount would read the whole thing through the kernel; a Linux cross-device delete is refused for the same reason inverted — we will **not** copy the bytes across the boundary (no `shutil.move` fallback, and no per-volume `.Trash-$uid` directories), because a delete must not become the most expensive operation in the app. Both answer the same **501 `trash unsupported`** the client already routes into its confirm-then-hard-delete flow; the Linux one is raised *after* an attempt that moved nothing, so the file is still in place when the dialog appears. Since every desktop now has a backend, that dialog has stopped being the ordinary Windows/Linux delete and is what it always claimed to be: the irreversible case.
+  **`FOF_ALLOWUNDO` still erases permanently in cases nobody can detect up front** — UNC/network shares, most removable and FAT-formatted volumes, and items over the bin's quota. The delete succeeds and is reported `trashed: true` regardless, because the shell did perform the recoverable delete it was asked for and the app cannot promise what the volume does with it. Stated here rather than papered over.
+  **Undo/redo of a delete goes through ONE endpoint, `POST /api/fs/trash-move {from, to}`, not through `/api/fs/rename`.** It delegates to the rename handler — the same X-Fused guard, absolute-path, snapshot, mount, readonly, 404 and 409 contract, overwrite always off — and adds the only part of a trash that is *not* symmetric: the XDG **`.trashinfo` sidecar**, written when an entry moves into `Trash/files` and removed when it moves back out (both, for a move within the trash). That is server-side bookkeeping, so it lives on the server side of the wire: `applyFsOp` branches on `op.kind` to pick the primitive (`trashMove` for `"delete"`, `renameEntry` otherwise) **and that is its only branch** — the pairs stay plain absolute paths and `invertFsOp`, the reversal semantics, the epoch, the in-flight guard and `UNDO_CAP` know nothing about trash. Restoring with a plain rename would leave the sidecar behind and the bin still claiming to hold an entry that had gone home. **The sidecar branch is a security boundary**: it fires only for a path whose *parent* resolves (`realpath`) to the server-computed trash `files` directory, with the info name taken as a `basename`, so no caller-supplied text can steer the endpoint into unlinking an arbitrary file.
+  **Undoability is additionally session-scoped**: the stack is in memory, so a reload — or an eviction past `UNDO_CAP` — leaves the entry sitting in the bin for the user to drag out through the OS. On macOS the rename also writes none of Finder's own put-back record (Finder keeps that in the Trash's private `.DS_Store`, not on the item), so Finder's "Put Back" is not a second way home for what this app trashed. Recents loses the entry in every case (`notePathDeleted`) and the undo does not re-note it: the file returns to the filesystem, its place in the recents list does not.
+  **The HARD delete is NOT undoable and its dialog keeps saying so** ("This can't be undone"): its inverse is not a rename, it is the bytes back. Same exclusion, same reason, for the explorer's other asymmetric ops — **copy-paste, duplicate, new file/folder, compress**, whose inverse would be a delete: undo would destroy data on the user's behalf and no redo could reproduce what was lost. A stack whose every entry is one primitive is the reason this can be trusted, not a limitation waiting to be grown out of.
+
 ### Server FS API (shape, not final contract)
 
 | Endpoint | Purpose |
@@ -150,6 +174,7 @@ The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket n
 | `GET /api/fs/list?path=` | entries with metadata |
 | `GET /api/fs/stat?path=` | single-entry metadata |
 | `GET /api/fs/raw?path=` | streamed bytes, `Range` support (video/audio seek), correct `Content-Type` |
+| `POST /api/fs/trash-move` | `{from, to}` — the reversible half of a trash delete: a rename under `/api/fs/rename`'s guards that also writes or removes the XDG `.trashinfo` sidecar as the entry enters or leaves the trash (FS-17, D335) |
 
 ---
 
@@ -947,9 +972,12 @@ nothing. Full detail: `docs/EXPORT.md`.
   runtime resolves the computed path to that key; a call `fused.rawUrl("data/" + name)`
   is a string *prefix* + expression, so it is counted here as computed, **not**
   mis-collected as a literal `data/` target). This warning is **suppressed when a
-  `manifest`-source asset (EX-6/EX-8) survives into the final bundle** — a `bundle`
-  provenance pill in §19's list (DP-2a) that shows the user what backs the call, so the
-  nag would be redundant. It keys on the *surviving* asset, evaluated after dedup and
+  `manifest`-source asset (EX-6/EX-8) survives into the final bundle** — once the file
+  backs the call it no longer reads as an unresolved manifest entry, so the nag would be
+  redundant. *(Before §19 was removed, surviving this way also drove a `bundle`
+  provenance pill in the Deploy modal's preview list, DP-2a, naming what backed the call
+  to the user; that consumer is gone, so today this state only affects suppression.)* It
+  keys on the *surviving* asset, evaluated after dedup and
   exclude, **not** the raw manifest globs: a manifest entry that is also a literal
   reference is deduped to a `reference` asset, and any manifest file can be dropped by
   `exclude` — in both cases no `bundle` row remains and the warning still fires. A
@@ -962,7 +990,7 @@ nothing. Full detail: `docs/EXPORT.md`.
   `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
   duplicate stems — so the map is always valid and injective.
 - **EX-6** The auto-detected set can be adjusted by an optional selection on
-  `/api/export` (and the Deploy modal, §19): `include` — extra page-relative files
+  `/api/export`: `include` — extra page-relative files
   bundled as assets beyond the literal scan (for a computed-path target or data a
   bundled `.py` reads at runtime), each validated like a scanned asset and deduped by
   key; and `exclude` — files dropped from the final set by literal path or bundle
@@ -970,10 +998,13 @@ nothing. Full detail: `docs/EXPORT.md`.
   `reference` (a literal `rawUrl`/`readFile` the scan resolved), `manifest`
   (declared in the page's EX-8 manifest), or `include` (added out-of-band via the
   selection) — attributed to the strongest claim in that order when a file is
-  reachable more than one way, and surfaced on `/api/deploy/preview` so §19's list
-  can label how each file is exposed (DP-2a). It is an in-process/preview
-  classification only: `manifest.json` (EX-2) does not carry it — the hosting
-  layer treats every asset the same.
+  reachable more than one way. It is an in-process
+  classification only: `manifest.json` (EX-2) does not carry it, and no endpoint
+  returns it — the hosting layer treats every asset the same. *(Before §19 was
+  removed, this also fed `GET /api/deploy/preview` so the Deploy modal's list could
+  label how each file was exposed to the user, DP-2a; that endpoint and its consumer
+  are gone — `POST /api/export`'s own response reports `path`/`name` per asset, not
+  `source`, so the classification is pure bookkeeping now.)*
 - **EX-7** First-party **modules** a bundled entrypoint imports are discovered by a
   static AST scan of the entrypoint sources (transitively) and shipped as `resources`,
   so a served entrypoint's `import helpers` resolves without hand-listing. Only an
@@ -1000,511 +1031,125 @@ nothing. Full detail: `docs/EXPORT.md`.
   before the dependency scan**, so its JSON body can never be misread as a `fused.*`
   call. `exclude` is **not** honored in the manifest (it would publish the withheld file
   names in the served page source) — it is warned about; drop files via EX-6 `exclude`
-  (kept on the deployment record, off the artifact). This is what collapses a
+  instead (a per-`/api/export`-call selection, kept off the artifact — *formerly also
+  kept on the now-removed per-page deployment record, DP-12, before §19 was removed*).
+  This is what collapses a
   hand-maintained `RAW_URLS`-style table (or a fake `_bundle*()` scanner-bait function)
   down to `fused.rawUrl("data/" + name)` against a `data/*.json` glob.
 - **EX-9** `manifest.json` carries a top-level **`cache_max_age`** (`"0s"` off by
   default; a duration like `"5m"`/`"1h"` — the same format the fused repo's
-  `openfused.caching.parse_cache_max_age` accepts) — the Deploy modal's caching
-  choice (DP-17), written fresh on every export so a redeploy always re-asserts
-  the current setting. The hosting layer's `build_html_artifact` applies it
+  `openfused.caching.parse_cache_max_age` accepts) — a caller's choice, set directly
+  in `/api/export`'s request body *(formerly also the Deploy modal's caching control,
+  DP-17, before §19 was removed)*, written fresh on every export so a re-export always
+  re-asserts the current setting. The hosting layer's `build_html_artifact` applies it
   **page-wide** — to every route uniformly (the shell, each `runPython` route,
   and the asset route), matching the managed backend's mount-wide caching; see
   the fused repo's spec/serve/fused-render.md § Caching. A bundle exported before
   this field existed omits it, which the hosting layer reads as off.
 
-## 19. Deploy — Hosted Publish through the fused CLI (M11)
+## 19. Deploy — Hosted Publish through the fused CLI — **REMOVED**
 
-Goal: close the gap between §18's bundle and a working URL, from the shell. The
-local-only invariant (§1) is unchanged in kind: fused-render still binds
-127.0.0.1, hosts nothing, and mints no URLs — **deploying is an explicit user
-action that delegates to the `fused` CLI** (bundled in the packaged app, a pip extra otherwise; `fused share`,
-the fused repo's one URL-minting operation — its spec/serve/share-links.md and
-spec/serve/fused-render.md; the same shell-out pattern the flow app uses for
-project deploys). The server orchestrates the child process; nothing else in
-the product gains network access.
+**This flow is deleted and the section is kept only as a tombstone, so the
+`DP-*` ids other sections still cite resolve to an explanation rather than to
+nothing.** §19 used to describe an in-app **Deploy** flow: any `.html`/`.htm`
+preview showed a header **Deploy** button (gated behind the opt-in
+`deploy_enabled` preference, formerly §20.4/PF-8), which opened a
+**DeployModal** driving `fused_render/deploy.py`. That module owned CLI
+resolution/on-demand install (DP-3/DP-3a/DP-4/DP-16), a hosted-environment
+picker sourced from the fused CLI's own `~/.openfused/envs.json`
+(DP-5/DP-6/DP-7), a live "Will publish" preview with per-asset provenance
+pills driven by export.py's `source` field (DP-2a/DP-2c, EX-6), a choosable
+link name (DP-9a), a caching control (DP-17), a "Let viewers clone this app"
+toggle (DP-19 — the publisher half of app cloning, feeding `share create
+--allow-clone`; the viewer half was §35's Clone flow, itself separately
+removed — see its tombstone), Deploy/Redeploy/Revoke/Clear-cache actions (DP-8/DP-9/DP-10/
+DP-11/DP-15/DP-18/DP-20), and sign-in prompts wired into §27's account panel
+(DP-2b). All of it is gone — the button, the modal, `deploy.py`, its
+`/api/deploy/*` endpoints (DP-14), the per-page pointer store it kept at
+`~/.fused-render/deployments.json` (DP-12/DP-12a/DP-12b), the env-wide
+deployments list (DP-13, later folded into §27's AC-11), and the
+`deploy_enabled` preference — along with their tests.
 
-### 19.1 Surface
+**Nothing in-app replaced it.** Publishing a page to a hosted URL is now a
+manual, two-step terminal workflow: export a bundle with `POST /api/export`
+(§18, unchanged — `docs/EXPORT.md`), then hand it to the `fused` CLI directly
+— `fused share create --public`, optionally `--token <name>`,
+`--cache-max-age <duration>`, `--allow-clone` (the same knobs DP-9a/DP-17/
+DP-19 used to expose as form controls). Redeploying (`share repoint`),
+checking a mount's status or errors (`share list`/`share errors`), clearing
+its cache (`share cache-clear`), and revoking it (`share revoke`) are
+likewise plain CLI invocations the user runs themselves now — fused-render
+keeps no record of what is deployed, shows no status dot, and spawns no
+`fused` subprocess for any of this. The fused CLI's own env/credentials model
+(`~/.openfused/envs.json`, `~/.openfused/fused-cloud-credentials.json`) is
+unaffected by the removal — only fused-render's in-app orchestration of it is
+gone.
 
-- **DP-1** Any file preview whose mode list carries the `_render` sentinel
-  **and** whose filename is `.html`/`.htm` shows a **Deploy** header action —
-  both conditions, because that is exactly the set `/api/export` accepts: a
-  registry rebind can put `_render` on any type (D73), but the exporter is
-  extension-gated, and the button must never open a modal that cannot deploy.
-  Additionally gated on the opt-in `deploy_enabled` pref (PF-8): Deploy is off
-  by default, so the button is hidden entirely until enabled from Preferences
-  → Deploy to Fused account (re-read on focus/visibility, so a toggle shows through
-  without a remount).
-  A green dot marks a page whose stored deployment reads active (a local
-  pointer read — opening a preview never spawns the CLI; re-read on tab
-  focus/visibility regain, so an out-of-band revoke — e.g. the Preferences
-  page in another tab — shows through without a remount). Directories never
-  show it. The action opens the Deploy modal.
-- **DP-2** The modal handles its states in order: the fused CLI missing → an
-  install panel; no hosted env configured → guidance (`fused env create` /
-  `fused cloud setup`, naming the envs file); else the form — env picker,
-  current-deployment card (status chip, URL with copy/open), a **"Will
-  publish" preview** (DP-2a), a collapsible **Link** section (DP-9a), a
-  collapsible **Caching** section (DP-17), an owner-only collapsible **Recent
-  errors** diagnostics section (the deployed mount's captured failures via
-  `fused share errors`; rendered for an undeployed page too, but **disabled**
-  with a hint, so the chrome is consistent rather than popping in on first
-  deploy), Deploy/Redeploy, and Revoke. The modal is scoped
-  to the current page; the **env-wide** deployment list (DP-13) lives on the
-  Fused account tab's Deployments section (AC-11, moved from Preferences
-  when the account surface landed), not in the modal.
-- **DP-2a** Before the click, the modal shows exactly what a deploy would
-  publish (`POST /api/deploy/preview` → `preview_deploy`, the same pure
-  `plan_export` scan the real export runs, resolved fresh with the current
-  selection, no files written): the page plus each `runPython` target (and its
-  served route name) and each asset. Every asset row carries a **provenance
-  pill** driven by the preview's per-asset `source` (EX-6) so the list *mentions
-  how a bundled file is exposed*: `rawUrl` — a scanned literal
-  `fused.rawUrl()`/`readFile()` reference (the page fetches it via
-  rawUrl/readFile); `bundle` — a file declared in the page's fused-bundle
-  manifest (EX-8), which auto-shows here to back a computed rawUrl/readFile path;
-  `added` — a hand-added include. All three are served read-only on the hosted
-  `_asset` route (the pill's tooltip says so). Export
-  blockers (EX-4) come back in the same response and **disable Deploy** with the
-  full list — an unexportable page reads as "fix these" up front, never as a
-  failed deploy; warnings (EX-4a) show alongside but never block. A preview
-  *fetch* failure (unexportable type, file deleted since the header rendered)
-  degrades to a blocker entry the same way — the dialog still renders its form; it
-  never dead-ends on the preview call. (Preview is `POST`, not `GET`: it carries
-  the include/exclude selection, which doesn't fit a query string; it stays
-  read-only and unguarded.)
-- **DP-2c** The "will publish" list is **editable** — the user layers a file
-  selection (EX-6) on the auto-detected set: remove a listed file (× → `exclude`),
-  restore an excluded one, add extra files via a picker over the page's folder
-  (`walkDir`, gitignore-aware), "Add all in folder", or "Reset to default"
-  (clear both lists). The selection is sent on Deploy and **persisted on the
-  deployment record** (`include`/`exclude`, beside `entrypoints` — no separate
-  sidecar), so a reopened modal reloads exactly what was last published. This is
-  how a page whose data is fetched by a computed path deploys at all (EX-4a): the
-  author bundles those files explicitly.
-- **DP-2b** Login state, before and after the click (amended by §27/M18: the
-  warning is now an *action*, not guidance).
-  `GET /api/deploy/config` carries `fused_logged_in` — presence of the fused
-  CLI's own control-plane credentials file
-  (`~/.openfused/fused-cloud-credentials.json`,
-  `OPENFUSED_FUSED_CLOUD_CREDENTIALS` honored). Presence-only by design: an
-  expired-but-refreshable token still works (the CLI refreshes silently), so
-  the CLI stays the authority at action time. With a managed `fused` env
-  selected and no credentials on disk, the modal warns **before** the click
-  and offers a working **Sign in to Fused** button — the AC-3/AC-4 in-app
-  flow via the shared client hook, with a background config reload flipping
-  the warning away on completion (AC-9). Likewise the no-envs state signs in
-  in place or routes to the account tab's setup panel; no modal state
-  instructs a terminal command for the managed path anymore. After a failed
-  action, CLI errors that name `fused cloud login` are still suffixed with
-  the packaged app's real wrapper path (fusedcli.py's `cli_error` +
-  `setup_cli_hint`) — plain `fused` doesn't resolve inside the .app, and the
-  CLI's error text must stay runnable as printed even though the app now
-  offers the in-app path first.
+The ids other sections still cite: **DP-2a** — the modal's per-asset
+provenance pill (§18 EX-6's `source` classification is now in-process
+bookkeeping only, with no consumer). **DP-5** — hosted environments were
+exclusively deploy targets, never execution targets (§20.2 still makes this
+point about the fused CLI's env store generally). **DP-12** — the per-page
+deployment pointer this app kept at `~/.fused-render/deployments.json`,
+cited by §18 EX-8 as where a per-deployment `exclude` used to live. **DP-17**
+— the modal's cache-duration control; the same choice is now just
+`/api/export`'s `cache_max_age` field, set by hand on each call (§18 EX-9).
+**DP-19** — the "Let viewers clone this app" toggle; publishing with
+`--allow-clone` directly on the `fused` CLI is its only form now. The viewer
+that consumed such a link (§35) is also removed, so there is no in-app way to
+act on the flag either way any more. **DP-20** — the modal passed `--name
+<page stem>` automatically on every deploy; a publisher now names their own
+app explicitly when they run `share create` (or accepts the CLI's own default
+from whatever directory they hand it) — see §35's tombstone (CL-1) for the
+folder-naming rule this fed on the (now also removed) viewer side.
 
-### 19.2 The fused CLI seam
+## 35. Open a Deployed App — Clone a Page Back from its URL (D196) — **REMOVED**
 
-- **DP-3** CLI resolution (`deploy.fused_cli`) has **exactly two sources —
-  one explicit, one autodetected — and nothing else**: (1)
-  `FUSED_RENDER_FUSED_BIN` (verbatim, whitespace-split — compound commands
-  work, and it is the test seam); (2) the `fused` package **importable in the
-  server's own interpreter**, run as `[sys.executable,
-  fused_render/_fused_cli.py]` — a shim that sets `argv[0] = "fused"` and
-  calls `fused._cli.main()`, behaviorally identical to the console script.
-  There is deliberately **no venv-bin scan, no PATH lookup, and no
-  well-known-location guessing**: a CLI the server didn't get from its own
-  interpreter runs only because the user explicitly configured it. (The old
-  venv-bin step is subsumed — a venv whose bin/ has the script always has the
-  package importable.)
-- **DP-3a** Child-env hygiene: an **external** CLI (the override) is spawned
-  with `PYTHONHOME`/`PYTHONPATH` scrubbed — inside the packaged app those are
-  bundle-scoped and would break any other Python (the las template's
-  external-spawn precedent); the in-interpreter shim keeps them (they are
-  what make `sys.executable` work in the bundle). `OPENFUSED_ENV` targeting
-  (DP-7) is unchanged for both.
-- **DP-4** When the CLI is missing and installing is possible (Python ≥ 3.11
-  per the wheel's marker, and the interpreter has pip), `POST
-  /api/deploy/install` pip-installs **the wheel pinned by
-  `deploy.PINNED_FUSED_REQUIREMENT`** into the server's interpreter — which
-  makes the package importable there, i.e. lands in DP-3's autodetected
-  source (finder caches are invalidated after the install so the probe sees
-  it without a restart). The constant is the in-code source of the pin;
-  pyproject.toml's `[fused]` extra must reference the same wheel and a test
-  pins the two together. Reading the pin from installed dist-info metadata is
-  rejected: metadata is absent on source-tree runs and stripped app bundles,
-  and goes stale on an editable install that predates the extra — all of
-  which disabled the button exactly when it mattered, while the constant
-  ships in the same file as the code using it. When installing is impossible,
-  the modal states why — old Python, or a pip-less embedded interpreter
-  (point `FUSED_RENDER_FUSED_BIN` at a fused installed with another Python) —
-  plus the manual `pip install "fused-render[fused]"` hint.
-- **DP-16** The packaged macOS app **ships the CLI**: `build_dmg.sh` installs
-  the `[fused]` extra into the bundle (py2app force-copies `fused` + its
-  data-bearing deps — `setup_py2app.py`), so DP-3's autodetected source is
-  always present and the install panel never appears in the .app (its sealed,
-  notarized bundle could not be pip-installed into anyway). The build also
-  ships a terminal wrapper, `Contents/Resources/bin/fused` (bundled python +
-  the DP-3 shim), and smoke-tests real CLI verbs through the shim before
-  signing, so a py2app packaging gap fails the build rather than the user's
-  first deploy. Since §27/M18 the wrapper is a **power-user escape hatch**,
-  not the setup path: sign-in and managed-env setup happen in-app (AC-3/AC-6),
-  and the wrapper remains for what stays terminal-scoped — self-hosted AWS
-  provisioning (`fused env create` / `fused infra serve`) and ad-hoc CLI use.
-  The wrapper lives under `Resources`, not `MacOS`: everything in a bundle's
-  `MacOS/` is nested code to codesign, and a shell script there cannot carry
-  a code signature — the bundle seal fails ("code object is not signed at
-  all"); a script under `Resources` is sealed by the resource rules instead.
-  `GET /api/deploy/config` carries `setup_cli` — the wrapper's absolute path
-  when frozen (`sys.frozen == "macosx_app"`), else `"fused"` — and CLI error
-  suffixes plus the remaining AWS guidance name it.
+**This flow is deleted and the section is kept only as a tombstone, so the
+`CL-*` ids other sections still cite resolve to an explanation rather than to
+nothing.** (These are §35's own `CL-*` ids — a different, unrelated numbering
+from the Call Log section's `CL-*` ids further below; the two were never the
+same namespace.) §35 used to describe the viewer half of app cloning: paste a
+deployed page's URL into the path bar, or use the **Open deployed app** entry
+on the Apps page, and — if the publisher had allowed cloning (`--allow-clone`
+on `share create`/`repoint`) — a two-step confirm flow (`GET
+/api/clone-app/info` preview, `POST /api/clone-app` commit) downloaded the
+page's export bundle and unpacked it into `~/Documents/Fused` as an ordinary
+local page, landing in a fresh folder named after the link's token or the
+publisher's app name (never overwriting or merging into an existing one —
+CL-2). The implementation (`fused_render/app_clone.py`, `CloneModal.tsx`,
+`CloneAppHost.tsx`, `cloneApp.ts`) enforced its own boundary hardening
+independent of anything §19/§27 did: HTTPS-only with no credentials sent
+(CL-3), the archive treated as hostile with a version/digest-checked fetch
+against SSRF-hardened address validation (CL-4), the same hardened unpacker
+`§23`'s template import uses (CL-5, `zip_import.py` — entry validation,
+symlink/path-escape refusal, decompressed-size caps, staging-then-move), and
+public-pages-only gating with ambiguous 404s so the serve layer never
+confirms a mount's existence or clone posture to an unauthorized caller
+(CL-6). None of that hardening depended on the in-app Deploy flow (§19) or
+account panel (§27) — cloning was always a *consumer* of pages published by
+the `fused` CLI directly (`fused share create --allow-clone`, run by the
+publisher in a terminal), never a producer, so its removal is independent of
+those two: the owner's call was simply that the whole viewer-side surface is
+gone too, along with its tests.
 
-### 19.3 Environments
+**Nothing in-app replaced it.** A page shared as a `share create
+--allow-clone` link can no longer be imported back into a local workspace
+through this app — the CLI's own hosted artifact is still fetchable by hand
+(the same `spec/serve/clone-protocol.md` contract this viewer used to read),
+but there is no UI or endpoint here that does it. Pasting an `https://` URL
+into the path bar now falls through to the same "can't open `https://` URLs
+in the explorer" refusal every other unhandled scheme gets (Breadcrumb.tsx);
+the Apps page no longer offers an "Open deployed app" entry at all. A
+`fused-render://open?app=<page URL>` deep link (CL-7's deferred idea) was
+never built, so there is nothing pending on that front either.
 
-- **DP-5** Eligible deploy targets are the **hosted** environments in the fused
-  CLI's own store (`~/.openfused/envs.json`, `OPENFUSED_ENVS_FILE` override):
-  backends `fused` (managed) and `aws` (self-provisioned serving plane) —
-  never `local`, which has no serving plane. The store is read directly, so the
-  picker renders even before the CLI is installed.
-- **DP-6** Default pick: `OPENFUSED_ENV` when it names an eligible env, else
-  the first `fused`-backend env (preferring the store default when it is one),
-  else the store default, else the first eligible.
-- **DP-7** The chosen env is targeted by setting `OPENFUSED_ENV` on the child —
-  the CLI's own override channel; no config file is edited.
-
-### 19.4 Deploy semantics
-
-- **DP-8** Each deploy re-exports the page (§18) into a fresh temp directory
-  and hands that bundle to the CLI; the bundle is deleted afterwards. An export
-  error blocks the deploy (400, all problems at once — nothing is uploaded).
-- **DP-9** Deploys are **public share links** (`share create --public`): an
-  opaque, unguessable capability URL by default. Rationale for staying public
-  (not authed): authed mounts cannot serve a hosted page's browser asset GETs
-  yet (fused repo, spec/serve/fused-render.md § Limitations); gate pickers
-  become an option when that lands.
-- **DP-9a** The token is choosable through a **collapsible "Link" section**
-  (like Caching, DP-17) whose one-line summary shows the current setting
-  (`unguessable` / `custom: <name>`). It has two body modes:
-  - **Picking** — a **random-vs-named radio**: **Unguessable link** (default)
-    keeps the crypto-random opaque token; **Custom name** reveals a name input
-    whose value rides through to `deploy_page`'s `custom_token`, appended as
-    `--token <name>` on that `share create --public` call (the fused CLI's own
-    allowed combination — a public mount with a chosen name is a **deliberately
-    guessable** URL, never produced by an omitted field, only an explicit
-    choice, so it is a two-way toggle rather than a "blank = random" field).
-    Shown when the next Deploy would mint a FRESH mount (no deployment yet, a
-    different env, or the recorded mount absent from `share list`), and in the
-    Change-link flow below. Client-side the name is checked against the CLI's
-    own token shape (`^[a-z0-9][a-z0-9_-]*$`); a malformed name (red error) and
-    a missing one (Custom name chosen, field empty — a quiet prompt) both
-    disable Deploy. An already-taken name is a `share create` rejection the CLI
-    itself reports (surfaced verbatim, DP-15).
-  - **Read-only summary** — once the mount's liveness is CONFIRMED
-    (active/revoked) on the same env, the picker is replaced by a summary of the
-    current link (custom name vs unguessable, read from the record's `named`
-    provenance) plus a **Change link** action. A plain redeploy keeps the token
-    (`repoint`/`recreate --same-token` take no `--token`, DP-10), so changing
-    the URL needs `force_new`: Change link re-reveals the picker and the next
-    Deploy takes the `force_new` path (mint a new token, best-effort revoke the
-    old — DP-10). An *unconfirmed* same-env status (env unreachable at open)
-    shows the picker, not the summary, since the next click may still fall
-    through to a fresh create.
-  The record persists a **`named`** boolean (whether the token is a chosen name
-  vs the opaque default), set at the fresh create that minted it and carried
-  forward unchanged on every token-reuse redeploy — the summary reads it rather
-  than re-deriving named-ness from the token string. The always-public,
-  **no-auth** posture (which the guessable/unguessable choice does not itself
-  state) is a note kept directly beneath the Link section, always visible.
-- **DP-10** Redeploy keeps the URL. Same-env pointer + mount active per
-  `share list` → `share repoint <token>` (stable URL); revoked tombstone →
-  `share recreate --same-token` then repoint (a failed repoint best-effort
-  re-revokes, so a deliberately taken-down link never comes back silently live
-  with old content; the pointer is then persisted to the TRUE resulting state
-  and the raised error names it — compensation succeeded → the link is down →
-  pointer `revoked`; compensation ALSO failed → the mount is live with its old
-  content → pointer `active` (so the dot matches reality) and the error names
-  the token for a manual `fused share revoke`); token absent from the list
-  entirely (e.g. after an
-  `infra teardown`) → fresh `create`. Deploying to a **different** env always
-  creates fresh there and repoints the pointer — the old env's mount stays
-  live, and the modal says so inline.
-- **DP-20** The deployed app is **named after the page**, stated explicitly as
-  `--name` on create *and* repoint (`deploy.app_name_for`: the page's stem, or its
-  folder's name when the stem names nothing by itself like `index.html`, sanitized
-  to the same conservative set a clone folder is; empty after that leaves the CLI's
-  own default). `share create`/`repoint` otherwise derive the name from the source
-  directory they are handed, and what this module hands them is a throwaway
-  `tempfile.mkdtemp(prefix="fused-render-deploy-")` — so pages published as
-  `fused-render-deploy-pabxq903`, which is the name the deployments list shows, the
-  name the clone inventory reports, and therefore the folder name a viewer's clone
-  inherits (§35 CL-1). Repoint restates it because repoint re-derives it too;
-  deriving from the page path keeps it stable across redeploys.
-- **DP-11** CLI output is parsed defensively (`token`/`id`/`url`/`status`
-  only): the managed backend returns the URL on create/repoint/recreate; an
-  AWS env prints token+path only, so `url` may stay null — the last-known URL
-  is kept, never regressed to null by a URL-less repoint.
-- **DP-15** Version dependency, surfaced not hidden: whether a *bundle* deploy
-  succeeds on a given backend is the installed fused CLI's contract, not ours —
-  the fused repo's spec/serve/fused-render.md publishes bundles via
-  `share create` on AWS envs and classifies them for inline upload
-  (`kind="html"`) on the managed backend, both as of fused 2.9.3.post6 (the
-  wheel this package pins as of that decision; the pin has since advanced —
-  see the `[fused]` extra in pyproject.toml); a control plane running an
-  older fused rejects the upload server-side. fused-render passes the CLI's
-  own error through verbatim rather than second-guessing the installed
-  version.
-- **DP-17** The modal carries a **caching control**: a checkbox ("Cache page
-  results") plus a duration select (1m/5m/15m/1h/6h/1d/7d/14d presets, default
-  **1h**, plus the current value verbatim when it isn't one of them — e.g. set by a
-  direct `share create --cache-max-age` outside this dialog). 30 days is the true
-  ceiling (the `results/` cache-bucket lifecycle GC backstop both backends fix at
-  30 days — `RESULTS_CACHE_LIFECYCLE_DAYS` for a managed environment,
-  `openfused-gc-results` for self-hosted AWS; a managed environment's
-  `_build_cache_settings` rejects anything beyond it), but 30d itself is
-  deliberately not offered as a preset — it would leave no margin against that
-  backstop, whereas 14d keeps a comfortable half-window of slack. Seeded on open
-  from the stored deployment record like `include`/`exclude` (DP-2c) and
-  re-sent as `cache_max_age` on every Deploy — there is no "leave it as it
-  was". It reaches the two backends **differently**, because they model
-  caching differently (fused repo's spec/serve/fused-render.md § Caching /
-  spec/serve/share-links.md §8): it travels in the export bundle's manifest
-  (EX-9) for an AWS environment (read by `build_html_artifact`, so a later
-  `repoint`/redeploy can change it too); for a managed `fused` environment the
-  manifest field is not read at all — only the explicit `--cache-max-age` flag
-  is, as the mount's own `cache_settings` (a control-plane concept independent
-  of the bundle, defined by the managed Fused service, amended). `deploy_page`
-  now sends `--cache-max-age` on every path — `create`, `repoint`, and the
-  follow-up `repoint` after a revoked-token `recreate --same-token` — so a
-  redeploy on either backend applies whatever the dialog's checkbox/duration
-  currently says, same token/URL, no "Deploy as new URL" workaround needed. A
-  `force_new=True` `deploy_page` call still exists as a general "mint an
-  entirely fresh URL and take the old one down" action (skip token reuse,
-  `share create` at a new token, repoint the page pointer to it, then
-  **best-effort revoke the superseded mount** last so a create failure never
-  takes the page down) — the modal just no longer needs to surface it as a
-  caching-change escape hatch.
-- **DP-18** **Clear cache** (`POST /api/deploy/clear-cache {"page"}` →
-  `clear_cache_deployment` → `fused share cache-clear <token>`) forces every
-  cached result for the deployment's mount to be recomputed on the next
-  request, without touching its status, URL, or caching setting — for "the
-  underlying data changed, not the code" (a redeploy dedupes to the same
-  content address and would otherwise keep serving the old cached result until
-  `cache_max_age` expires). Shown in the caching row (next to the duration
-  control) whenever the deployment is active; its result (`{deleted, scope}`)
-  renders as a one-line status ("Cleared N cached results…" / "Nothing was
-  cached…").
-
-### 19.5 State & truth
-
-- **DP-12** A thin per-page pointer at `~/.fused-render/deployments.json`
-  (shell/storage; keyed by absolute page path — env, backend, token, url,
-  status, entrypoints, `cache_max_age` (DP-17), updated_at) lets the shell mark
-  deployed files, re-show
-  the URL (`create` returns it exactly once; `share list` never carries one),
-  and redeploy to the same token. **`share list` on the env stays the
-  authority**: the modal reconciles status against it on open (`--all`, so an
-  AWS caller-identity change can't fake a revoke); an unreachable env returns
-  the last-known pointer with `reconciled: false` instead of failing the
-  dialog. A reconciled response also carries `live` (`active | revoked |
-  absent`): absent persists as pointer-status `revoked` (the link *is* down)
-  but the modal must not promise a same-URL restore for it — an absent mount
-  redeploys as a fresh create with a new link (DP-10), and the stored URL is
-  likewise never carried onto a *different* token (DP-11's fallback applies
-  only while the token is unchanged). The action label's URL promises
-  ("same URL" / "restore URL") render only from a **verified** `live`
-  classification: when the reconcile never ran (unreachable env, `live`
-  null) the button reads a plain "Redeploy" that promises nothing.
-- **DP-12a** Store integrity: the pointer file is rewritten whole on every
-  mutation, so two writers must not race and a corrupt file must not be
-  clobbered. Writes serialize through one process lock (`_update_store`) —
-  closing the lost-update window against the reconcile writer (a focus
-  refresh) — and load via `_load_store_for_write`, which raises rather than
-  overwrite a file that exists but doesn't parse (overwriting would drop every
-  other page's pointer, orphaning live mounts). `deploy_page` validates the
-  store before the CLI so a corrupt store fails fast instead of minting a
-  mount it then can't record. Reads (`get_deployment`, the status/dot) stay
-  lenient — a corrupt store shows as not-deployed rather than erroring a
-  preview.
-- **DP-12b** The open modal re-reconciles on tab focus/visibility regain (like
-  the header dot, DP-1), so a page revoked out-of-band — e.g. from the
-  Preferences tab — updates the open dialog instead of contradicting the dot.
-  That focus refresh is a **background** load: it updates in place, never
-  clearing the form to "Loading…" or replacing it with an error on a failed
-  re-fetch (only the initial mount load does that). 
-  It preselects the deployment's env only when that env is still configured
-  (else falls back to the default and states the old env is gone), so a
-  removed env never leaves Deploy silently disabled. The dialog is always
-  closeable — even mid-action (the action continues server-side and the dot
-  stays correct via `onChange`), so a slow CLI child can't trap the user.
-- **DP-13** `GET /api/deploy/shares?env=…` is the "what's deployed on this
-  env" view: every mount from `share list --all`, joined back to the local
-  page that deployed it via the pointer store (`page: null`, rendered "not
-  from this app"), local pages first, live before revoked. Its consumer is the
-  **Fused account tab's Deployments section** (AC-11; formerly Preferences'
-  PF-6) — a single env-wide list with Revoke — not the per-page Deploy modal. `share list` returns no URLs on
-  either backend; each mount's URL is the pointer's recorded one, else
-  **derived from the env's base URL**: every mount on one env serves as
-  `<base>/<token>` (share-links.md §6), so any recorded absolute URL whose path
-  ends in its own token reveals the base for all the rest (`_serve_base_url`).
-  With no recorded link to derive from (e.g. only AWS deploys so far), URLs
-  stay null and the cell says why on hover.
-- **DP-19** *Source code* (§35): a collapsible section beside Caching and Link, headed
-  **Source code** — the heading names what is at stake ("is my Python readable?") to a
-  publisher who has never used the viewer-side flow, where "Cloning" named our mechanism and
-  gave them no reason to open it. Its "Let viewers clone this app" toggle rides
-  `POST /api/deploy` as `allow_clone` and becomes `--allow-clone` on `share create` /
-  `--allow-clone`/`--no-allow-clone` on `share repoint`. Persisted on the pointer record
-  like `cache_max_age`, but the MOUNT is the authority: `GET /api/deploy/status?reconcile=1`
-  refreshes it from `share list` on the same read that reconciles `status`, so a posture
-  changed from a terminal shows through instead of being re-sent stale. Repoint states it
-  explicitly in both directions — the CLI preserves an omitted flag, which is right for a
-  CLI and wrong for a dialog whose toggle is always a definite statement.
-  The posture is only ever read from **deployment metadata** — the mount record, or our pointer
-  record as its cache — and never inferred from what happens to be on disk or from which route
-  the user came in through. That is what makes create / repoint / recreate predictable: the
-  decision is carried, not recomputed, so the same source published twice cannot flip it.
-- **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
-  shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
-  `GET /api/deploy/preview`, `GET /api/deploy/shares`, `POST /api/deploy`,
-  `POST /api/deploy/revoke`, `POST /api/deploy/clear-cache` (DP-18),
-  `POST /api/deploy/install`; the POSTs carry the
-  `X-Fused` guard (D36). CLI failures surface their last stderr line verbatim
-  (click's `Error: ` prefix stripped) — the fused CLI's messages already name
-  the fix (`fused cloud login`, `fused infra serve`, …).
-
-## 35. Open a Deployed App — Clone a Page Back from its URL (D196)
-
-The viewer half of app cloning; the publisher half is the Deploy dialog's toggle (DP-19).
-Paste a deployed page's URL, and if its publisher allowed cloning, download its export
-bundle and unpack it into `~/Documents/Fused` as an ordinary local page.
-
-**Our side of a three-party boundary.** The contract is `fused`'s
-`spec/serve/clone-protocol.md`: *a deployed app may expose an authorized, versioned clone
-artifact; importing it is deterministic and does not require reconstructing deployment state.*
-`fused` owns the artifact — its layout, path rules, byte assembly, size limits, and the
-`protocol` version that states compatibility. The host serving it owns **authorization** only.
-**This repo owns safe local import**, and nothing else: fetch, verify, unpack, atomically claim
-a destination. So we read the protocol fields, use the advisory hints to place files and to
-describe the download, and treat the archive's interior as opaque — a second copy of the bundle
-schema on this side of the boundary would only drift from the one that defines it. What we do
-*not* delegate is validating the two manifest path fields we consume (CL-5): they arrive over
-the network and become paths on the user's machine, so checking them here is the trust boundary
-working, not a second opinion about the format.
-
-- **CL-1** Two steps, mirroring §26's confirm page: `GET /api/clone-app/info` previews
-  (read-only — the file list, the size, and the exact destination folder, all of it advisory
-  metadata the host may omit, in which case the confirm step simply shows less) and
-  `POST /api/clone-app` performs it. The preview names the folder the clone actually uses:
-  the client passes that folder back on the second call and the clone honours it while it is
-  free, so a page appearing in the workspace in between can't invalidate what the user was
-  shown. Carry-through rather than a lock — reserving the name would mean creating a
-  directory during a preview the user has not confirmed — so in the race the clone's own
-  response names where it landed, which is what the success view shows. The commit **claims
-  the name by renaming** (`zip_import.move_into_new_dir`), never `shutil.move`: move onto an
-  existing directory moves the payload *inside* it, which would report success with the page
-  a level below where `view` points, so a taken destination fails the rename and the next
-  name is tried. Running out of names is a stated refusal at both steps, not a 500.
-  The preview's file list names the paths the clone will
-  **create**, not the archive's member names: a v2 archive holds `manifest.json` plus
-  `<root>/<key>`, while the clone makes the payload dir *become* the page folder and keeps
-  nothing else — so echoing the inventory verbatim listed `files/sine.py` and `manifest.json`,
-  neither of which ever appears, under copy promising otherwise. The bundle's `manifest.json`
-  is read during the import (for `root`/`page`) and then **dropped with staging**: an earlier
-  build kept it in the page folder as a dotfile "so a re-export could reproduce the bundle",
-  but nothing read it back — `export_page` recomputes the manifest from the page's own files —
-  so it was write-only clutter, one more path the confirm step had to predict, and a second
-  move on the commit path that needed its own rollback. The commit is now a single rename.
-  The folder is named after the **link**, falling back to the **app name**: a deployed page's
-  URL ends in its token, which is either a name the publisher chose (`share create --token
-  my-solar-map`) or a random opaque one, and a chosen name is the best name available — it is
-  what the link the user followed says, what the publisher calls the deployment, and it is
-  stable across redeploys (a repoint keeps the token). An opaque token (lowercased base32, 26+
-  chars — `app_clone._OPAQUE_TOKEN`, mirroring fused's `mounts.is_opaque_token`; a shape check
-  used for naming only, never as a gate) names nothing, so the app name wins there — which is
-  why the publisher side states `--name` explicitly (DP-20) instead of letting the export's
-  temp directory name the app. Both are reduced to a conservative allow-list before becoming a
-  path, since both arrive from outside. The app name still heads the confirm step; only the
-  folder prefers the link. The same order applies on the commit path, which may run with no
-  preview at all. The confirm button says
-  **Clone to local**, not "Clone to <folder>": the body above it already names the
-  destination, and a generated folder name in a button label is noise. The modal is
-  **undismissable during the write** (`Modal`'s `busy`, so Esc / backdrop / ✕ are all
-  shut off, not just the Cancel button): the request keeps running, so an exit taken
-  mid-clone lands files in the workspace while dropping the only delivery of the
-  result — no success state, no navigation, and a folder the user has to find for
-  themselves. The preview step stays dismissable, since it writes nothing. Opposite
-  call from DeployModal, which stays closeable because its action completes
-  server-side and the dialog reports on it afterwards.
-  **Two triggers, one flow** (`CloneAppHost` at the shell, `CloneModal.tsx`): pasting an
-  `https://` link into the **path bar**, which previously answered "can't open https:// URLs
-  in the explorer" — true and useless — and hands the link to the confirm step rather than
-  pre-judging it; and an **Open deployed app** entry on the **Apps page**, shown only while
-  the PF-8 Deploy-apps toggle is on, since with deploying off the surface that produces
-  these links is hidden and an import entry would advertise a feature the user has turned
-  away from. The path-bar route is deliberately NOT gated: refusing a URL the user
-  explicitly pasted is a worse failure than one extra button. It is mounted at the shell
-  rather than in the sidebar — where it briefly lived — because Home and Apps render without
-  a sidebar, so an entry there is unreachable from the page that should host it. The modal
-  navigates to the cloned page on success.
-- **CL-2** **Not §26's git flow, and deliberately not folded into it.** That flow relies on
-  `.git` for identity, which is what lets it safely *update* an existing clone. An archive
-  carries no provenance we can verify, so there is no update branch here: every clone lands
-  in a fresh folder (`zip_import.unique_dir` → `name`, `name-2`, …) and can never overwrite
-  or merge into an existing one. `fused_render/app_clone.py` — a separate module and
-  separate routes (`/api/clone-app*`, not §26's `/api/clone`).
-- **CL-3** **URL contract.** HTTPS only (`http://` refused, never upgraded — silently
-  "fixing" it would hide that the user's link was insecure). The `_clone` URL is rebuilt
-  from parsed components, accepting the shapes a page is served at (`…/<token>`, `/`,
-  `_shell`, `_clone`) while dropping query and fragment; userinfo is **refused**, not
-  stripped, since quietly removing it would clone from a different origin than the URL
-  appears to name. No credentials are ever sent (CL-6).
-- **CL-4** **The archive is hostile, and the fetch is boundary-hardened.** Two separate
-  things, in order of importance. The *archive* is untrusted regardless of where it came from
-  (CL-5), and the download is verified. Compatibility is checked **twice, from one table**
-  (`_PROTOCOL_BUNDLE_VERSION`): the inventory's `protocol` gives an early refusal before
-  megabytes move, and the archive's own declared bundle version is the **enforcing** gate — a
-  bare `POST /api/clone-app` fetches no inventory, so a check that lived only there would be no
-  gate at all. The bytes are then checked against the digest the host published as the
-  download's **quoted** `ETag` (`"sha256:<hex>"`, RFC 9110 §8.8.3) — parsed, not string-matched,
-  because matching the bare form against a compliant quoted value reads as "no digest" and skips
-  the check silently; an unparseable tag (a proxy's opaque rewrite) means *cannot verify* rather
-  than *failed*, so it does not block valid clones — bytes that arrive complete but wrong are the one failure a length check
-  cannot see, and this makes "importing is deterministic" something we confirm instead of
-  assume. An absent or unrecognised digest is a weaker guarantee, not an error. Separately, the
-  *fetch* gets modest hardening because only a URL the user pasted is ever fetched and this
-  process sits inside the user's LAN beside `169.254.169.254`: one seam
-  (`_validated_address` + `_get`) resolves the host, refuses it unless **every** answer is
-  public, dials the validated address while keeping the hostname for `Host`/SNI (so the check
-  cannot be undone by re-resolution), follows no redirects, and caps on bytes actually
-  received rather than on `Content-Length`. Deliberately centralized and small — it is a
-  boundary control on a local app, not the architecture of this feature.
-- **CL-5** **One unpacker, shared with §23's template import** (`fused_render/zip_import.py`).
-  Shared *within this repo* — `fused`'s own validators cannot be reused here because the viewer
-  must work with no `fused` installed at all (the deploy feature installs it as a pinned wheel
-  into a separate environment and drives it as a CLI, so there is nothing importable in
-  process). What crosses the boundary is therefore the **format contract**, not the code:
-  entry validation before any write, symlink refusal, path-escape refusal, per-entry and
-  total caps enforced on bytes actually decompressed (the declared sizes are attacker
-  controlled), staging-then-move. A second extractor "just for clones" is how a hardened
-  path and an unhardened one end up side by side. The manifest's own `root`/`page` get the
-  same containment check the entries do — the entries can all be safe while a manifest field
-  points outside the bundle, and `root` is what gets moved.
-- **CL-6** **Public pages only, for now.** A gated page needs a token whose audience
-  satisfies that mount's gate, and neither a query string nor a deep link is an acceptable
-  place to carry one (both leak through history and logs). A `401`/`403` says so plainly. A
-  `404` is deliberately ambiguous at the source — the serve gate must not confirm whether a
-  mount exists or whether cloning is on — so the message names both possibilities rather
-  than guessing one. Every refusal is **shown verbatim in the modal**, so it reads as a
-  sentence: `app_clone._error` capitalizes at that one boundary rather than at each of the two
-  dozen raise sites, because most of those messages are f-strings or `zip_import` refusals
-  passed straight through — a per-raise fix covers the literals and misses the rest. A first
-  word that is a URL or a path is left alone: those are verbatim tokens the user is meant to
-  recognise, and "Https://…" would look like our mistake.
-- **CL-7** **A `fused-render://open?app=<page URL>` deep link is DEFERRED to its own change.**
-  §26's `?app=` sibling is the natural entry (`deeplink.py` already reserves new payload
-  *params* on the same `open` action as the extension point), but it needs its own confirm
-  surface and supervisor dispatch, and nothing routes one today. `CloneModal` takes an
-  `initialSrc` and auto-previews it, which is the seam that entry will use — it is not
-  evidence the link works.
+The one id another section still cites: **CL-1** — DP-20 (§19's tombstone)
+points here for why a publisher now names their own app explicitly on
+`share create`/`repoint` (`--name`) rather than the modal doing it
+automatically; that explanation stands as history even though the reader
+(this section) is gone too — both the automatic naming (DP-20) and the thing
+that consumed a chosen name (CL-1's folder-naming rule) no longer run.
 
 ## 20. Preferences — Shell Settings Page (M12)
 
@@ -1519,14 +1164,16 @@ never imports server).
 ### 20.1 Store & endpoints
 
 - **PF-1** `GET /api/prefs` → `{engine: {selected, effective, forced_by,
-  fused_available}, deploy: {enabled}, reader: {enabled}, model: {default,
+  fused_available}, reader: {enabled}, model: {default,
   choices}, calls: {…}}` — and no
-  `log` block (PF-5). `PUT /api/prefs`
-  (X-Fused) applies a **partial** update — any of `engine`, `deploy_enabled`,
+  `log` block (PF-5), and no `deploy` block. *(A `deploy: {enabled}` block —
+  the `deploy_enabled` pref, formerly §20.4/PF-8 — was removed along with §19;
+  see that section's tombstone.)* `PUT /api/prefs`
+  (X-Fused) applies a **partial** update — any of `engine`,
   `reader_enabled`, `default_model`, `calls_enabled`, `calls_params` or
   `calls_retention_days` present, so each control PUTs only its own field — and
-  returns the same shape. An unknown engine value, a non-boolean
-  `deploy_enabled`, or a body naming no known preference → 400; the file merges
+  returns the same shape. An unknown engine value,
+  or a body naming no known preference → 400; the file merges
   (future prefs are new keys, not new files).
 - **PF-1b** `default_model` is the user's preferred Claude model as a **short
   name** — `""` (unset), `fable`, `opus`, `sonnet` or `haiku`, the claude
@@ -1543,19 +1190,22 @@ never imports server).
   a plain `GET /api/prefs`, like its other `/api/…` reads. Read per request, so
   a change applies without a restart.
 - **PF-1a** The page renders its sections in this order: **Appearance**,
-  **Default model**, **Call log**, **Deploy to Fused account**,
+  **Default model**, **Call log**,
   **Accessibility**, and last
   **Execution engine** — last because it is the setting a user is least likely
   to have come here to change (builtin suits almost everyone, and an env var
   pins it where it matters). There is **no Tour button**: the tour still runs
   itself on a first visit (`maybeAutoStartTour`), because it is onboarding
   rather than a preference. (The spec subsection numbering below is
-  organizational, not the visual order.)
+  organizational, not the visual order.) *(A **Deploy to Fused account**
+  section used to sit between Call log and Accessibility — §20.4/PF-8; it is
+  removed along with §19.)*
 - **PF-2** The page is a thin client over existing backends everywhere else:
-  deployments via `GET /api/deploy/config` + `GET /api/deploy/shares`,
-  revocation via `POST /api/deploy/revoke`, registry via `GET
+  registry via `GET
   /api/templates/registry`, the call store's in-app browse via ordinary
-  navigation.
+  navigation. *(It used to also front deployments — `GET /api/deploy/config` +
+  `GET /api/deploy/shares` — and revocation, `POST /api/deploy/revoke`; those
+  backends are gone along with §19.)*
 
 ### 20.2 Execution engine switch
 
@@ -1588,7 +1238,9 @@ never imports server).
   `<home_dir()>/venvs`, ours not the backend's store, PY-16), never resolving a
   named environment; `envs.json`,
   the default env, and `OPENFUSED_ENV` play no part in page execution. Fused
-  *environments* are exclusively deploy targets (DP-5) — a separate axis,
+  *environments* are exclusively deploy targets for the `fused` CLI, run
+  directly by the user *(formerly documented as DP-5, before §19 was
+  removed)* — a separate axis,
   and the page's copy states this so "Fused engine" is never read as "runs
   on my Fused env".
 - **PF-4** `FUSED_RENDER_ENGINE` remains the **process-level override**: when
@@ -1612,33 +1264,27 @@ never imports server).
   log's own settings. The durable log a user has settings for is the call log
   (§31); the disposable one belongs to the process, not to preferences.
 
-### 20.4 Deploy to Fused account
+### 20.4 Deploy to Fused account — **REMOVED**
 
-- **PF-8** The section leads with an **opt-in toggle** for the Deploy
-  affordance: the persisted `deploy_enabled` pref (default **off**), PUT via
-  `{deploy_enabled}`. Deploy publishes a page to a public hosted URL through
-  the fused CLI, so it is opt-in — the preview-header **Deploy** button (§19,
-  DP-1) and its modal stay hidden until this is turned on. The gate is a UI
-  affordance only, not a security control (the `/api/deploy*` endpoints keep
-  their X-Fused guard); the preview re-reads the pref on focus/visibility so a
-  toggle shows through without a reload. Any non-`true` stored value reads as
-  off.
-- **PF-6** *(moved by M18/§27 — see AC-11)* The per-env share list lived
-  here before the account surface existed; Preferences keeps only the PF-8
-  Deploy-button toggle plus a link to the Fused account tab, where the list
-  now renders beside the environments table.
+**PF-8** (the opt-in `deploy_enabled` toggle that showed/hid the preview-header
+Deploy button) and **PF-6** (the env-wide share list this section pointed at,
+later moved to §27's AC-11) are both gone: this whole section shipped nothing
+but UI for the now-removed §19 Deploy flow, so it was deleted rather than
+tombstoned in place — no id from here is cited by any section that remains.
+The Preferences page renders no "Deploy to Fused account" section at all now
+(§20.1's PF-1a); publishing is a terminal-only `fused` CLI action with no
+in-app affordance to gate.
 
 ### 20.5 Tabs (D125)
 
-- **PF-9** The page is split into two tabs, active tab in the URL
-  (`?tab=account`, default clean-URL tab is **Render preferences** —
-  Logs/Execution engine/Deploy to Fused account/Tour, unchanged): **Render preferences**
-  and **Fused account** (§27's account panel, folded in here since it stopped
-  being its own sidebar-footer entry). The **Fused account** tab button is
-  offered only while the PF-8 Deploy toggle is on; requesting `?tab=account`
-  while it's off falls back to Render preferences rather than showing a tab
-  with nothing pointing at it. This is also where the sidebar footer's
-  signed-in dot now points — see AC-1.
+- **PF-9** The page is split into tabs, active tab in the URL
+  (default clean-URL tab is **Render preferences** —
+  Logs/Execution engine/Tour, unchanged). *(A second **Fused account** tab —
+  §27's account panel, `?tab=account`, offered only while the PF-8 Deploy
+  toggle was on — used to sit alongside Render preferences here, and the
+  sidebar footer's signed-in dot pointed at it (formerly AC-1). Both the tab
+  and the dot are gone along with §19/§27; neither PF-8 nor AC-1 is cited by
+  anything that remains.)*
 
 ### 20.6 Template registry view
 
@@ -1664,42 +1310,64 @@ never imports server).
 
 ---
 
-## 21. Session Restore — Per-File Last Params (D84)
+## 21. Session Restore — Per-File Last Params (D84) — **REMOVED (D329)**
 
-Goal: opening a file the way most opens happen — a listing click, a Finder/DMG
-double-click, the root redirect — should not lose whatever params you last had
-on it. A **file** (never a directory, never an embed-mode pane) remembers its
-last shell query in the same `.html.json` sidecar the `claude` chat template
-(§7) and bookmark history (SB-7) already use.
+**The per-file session sidecar is gone and the section is kept only as a
+tombstone, so the LSN-* ids other sections still cite resolve to an explanation
+rather than to nothing.** A viewed **file** used to remember its last shell query
+as a `lastSession: {search, updated_at}` key in the same sidecar the `claude`
+chat template (§7) and bookmark history (SB-7) use, so that opening it the way
+most opens happen — a listing click, a Finder/DMG double-click, the root redirect
+— replayed the params you last had on it. `GET`/`PUT /api/session`
+(`server/session.py`) read and wrote it; the frontend (`platform/lib/session.ts`,
+wired into `App.tsx`'s `StatView`) restored via `history.replaceState` before the
+preview mounted and held the preview until that decision was made, then tracked
+qualifying param changes back with a 400 ms debounced fire-and-forget `PUT`.
+Directories and embed panes never took part (**LSN-6** — the posture RC-9 still
+cites for its own confirmed-file gate), a bare open replayed while a non-empty
+query won outright (**LSN-4**/**LSN-5**), a `_mode`-only query never *started* a
+session but updated one (**LSN-3**), and dropping params back to empty left the
+stored query in place for a later bare open to re-apply (**LSN-11**, an accepted
+quirk).
 
-- **LSN-1** A viewed file's last URL params are stored as `lastSession` in its
-  `<file>.json` sidecar, sibling to the claude template's `claudeSessions` key
-  and SB-7's `bookmarkHistory`.
-- **LSN-2** `lastSession = {search, updated_at}` — `search` is the shell query
-  string verbatim, no leading `?` (same literal-URL posture as bookmarks, SB-2).
-- **LSN-3** Tracking upserts when the shell query has a param **other than
-  `_mode`**, or when a `lastSession` already exists for the file (so once a
-  session is going, a later `_mode`-only change is remembered too); a query that
-  is empty, or `_mode`-only with no prior session, never starts one.
-- **LSN-4** Opening a file with an **empty** shell query restores `lastSession`
-  (if present) via `history.replaceState` before the preview mounts.
-- **LSN-5** Opening a file with a **non-empty** query (bookmark, hand-typed,
-  refresh) — those params win, no restore — and, if qualifying (LSN-3), become
-  the new `lastSession`.
-- **LSN-6** Directories and embed-mode panes (panel/tab, D72) neither track
-  nor restore — layout mode already owns pane params.
-- **LSN-7** Persistence is `GET`/`PUT /api/session` (`fused_render/server.py`);
-  `PUT` carries the `X-Fused` guard (D36), `GET` is unguarded (read-only).
-- **LSN-8** Sidecar writes read-merge-write the whole dict, so `claudeSessions`,
-  `bookmarkHistory`, and `lastSession` never clobber one another (last-write-wins
-  on a true simultaneous write — D3).
-- **LSN-9** The preview is held (a brief loading state) until the restore
-  decision resolves — no flash of default params before the restored ones apply.
-- **LSN-10** Tracking writes are debounced (400 ms) and fire-and-forget; a
-  sidecar read/write failure never blocks the view — it just renders bare.
-- **LSN-11** Dropping params back to empty/`_mode`-only leaves the stored
-  `lastSession` untouched — a later bare open re-applies it. Accepted quirk,
-  not a bug.
+**What was removed with it:** `server/session.py` entirely (its
+`_is_file_mount_safe` mount-safety helper moved to `server/common.py`, where
+`/render` — now its only caller — reads it), both routes, `platform/lib/session.ts`,
+`getSession`/`putSession`/`LastSession` in `platform/lib/api.ts`, the `writable`
+gate and the `ready` preview hold in `StatView`, and `restoredSearch` in
+`platform/lib/session-params.ts`. **No migration:** a `lastSession` key already on
+disk is simply never read or written again, and sits inert beside the sidecar's
+live keys (`claudeSessions`, `bookmarkHistory`, `comments`, `revertStash`,
+`slides`, `docs`, `excel`, `latex`, `usd`), which are untouched by this — the
+sidecar file itself is not going anywhere.
+
+**ONE RULE SURVIVES AND IS STILL BINDING — LSN-12's never-persisted params, now
+owned by RECENTS.**
+
+- **LSN-12** **SOME PARAMS MAY NEVER BE PERSISTED, and `_side` is the first**
+  (D326). The companion sidebar — whether it is up and which companion it shows —
+  is **session-only by policy**: it opens at its default on every page load and a
+  refresh is the way back from any change to it (FS-13's posture, stated for the
+  file surface too). The rule was written because a sidecar that recorded `_side`
+  broke exactly that — **a refresh is WHEN a sidecar is replayed**, so one file
+  opened with a sidebar forever while its neighbour never did, with no way back a
+  user could find. With the sidecar gone, the surviving consumer is the **RECENTS
+  store** (§29): it captures `currentUrl()` verbatim on every url change and lands
+  on disk, so without the strip every close of the sidebar was persisted and every
+  later open from the Recents list came up shut — the preference simply moved
+  house. A recents row must hold what the FILE was, not what the chrome around it
+  was doing. **BOOKMARKS deliberately do NOT strip**: SB-2 says a bookmark captures
+  the URL verbatim and it is an explicit "save this view" gesture, which is how
+  `_mode`, sort and a chosen `_side` companion all end up in one. Same param,
+  opposite answer, because one capture is chosen and the other is a side effect.
+  The strip is **textual**, never `parse_qsl` + `urlencode`, because a recorded
+  query is the shell's verbatim and a round trip would rewrite what it keeps
+  (`q=a+b%2Cc`, `stretch=2,1471`). It now has **one implementation**
+  (`platform/lib/session-params.ts`'s `stripSessionParams`) rather than two halves
+  that had to agree: the server's `_strip_side` went with `server/session.py`, and
+  `recents.py` stores what it is given. *The stripped-on-write-AND-ignored-on-read
+  pairing this clause used to specify, and the self-healing it bought for sidecars
+  already on disk, went with the sidecar — there is no longer a read side.*
 
 ## 22. Explorer Search — Streamed Recursive Walk (M14)
 
@@ -1869,7 +1537,7 @@ this view ships (§20.5); the endpoint it used is now consumed here instead.
 
 New endpoints live in `fused_render/templates_api.py` (a `templates_router`,
 mirroring `shell/bookmarks.py`/`shell/prefs.py`), included from `server.py`
-alongside the existing bookmarks/prefs/deploy routers. Mutating routes carry
+alongside the existing bookmarks/prefs routers. Mutating routes carry
 the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
 
 - **TV-3** `GET /api/templates/inventory` — the template pool across sources:
@@ -2066,7 +1734,7 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   when `disabled`, broken-name chips (`exists:false`) in a warning style.
   Filters: All / Modified only / by source; a search box over key and
   template name. `+ Add extension` opens the row editor in create mode.
-- **TV-15** **Row editor modal (D91)** (DeployModal-style: backdrop +
+- **TV-15** **Row editor modal (D91)** (`Modal`-style: backdrop +
   dialog, Escape to close): in **create** mode, a key **pattern builder**
   covering all four CT-3 shapes — simple `.ext`, compound `.a.b`, wildcard
   `.*.json`, directory `.ext/` — via a segmented control with a
@@ -2221,7 +1889,7 @@ A shareable link that lands a GitHub repository subdirectory in fused-render:
 — the original GitHub tree URL, verbatim, as the `git` query param (a link
 author copies the GitHub URL and prefixes it). Clicking it launches (or
 reuses) the app, shows a confirm page, sparse-clones the subdirectory into
-`~/Documents/Fused/<subpath basename>`, and opens the folder's `index.html`
+`~/Fused/<subpath basename>`, and opens the folder's `index.html`
 when one exists, else the folder itself.
 
 - **DL-1** Link shape: `fused-render://open?git=<github URL>`. The action
@@ -2259,7 +1927,8 @@ when one exists, else the folder itself.
   route): `git clone --filter=blob:none --sparse` + `sparse-checkout set
   <subpath>` (plain filtered clone for repo-root links) using the user's own
   git — public repos clone anonymously, private repos ride the user's
-  existing credentials. Destination is `~/Documents/Fused/<subpath basename>`
+  existing credentials. Destination is `~/Fused/<subpath basename>` (the workspace, moved
+  out of the iCloud-synced `~/Documents` by D337)
   (repo name for root links); the repo root, `.git` included, lives at the
   destination, so the opened view is the nested `<dest>/<subpath>` path. A
   failed clone removes the partial destination (retryable). Git runs
@@ -2290,216 +1959,36 @@ when one exists, else the folder itself.
 
 ---
 
-## 27. Fused Account — In-App Login & Setup (M18)
+## 27. Fused Account — In-App Login & Setup — **REMOVED**
 
-Goal: remove §19's remaining copy-a-terminal-command dead ends. Sign-in
-(`fused cloud login`), first-time managed-environment setup
-(`fused cloud setup`), and day-two env management happen in the app; the
-§1 non-goals stand — this surface manages the **fused CLI's own** credentials
-on the user's machine for deploy targets, and every mutation is a
-`fused cloud …` / `fused env …` child process through the DP-3 seam
-(fusedcli.py). The mechanics port the flow app's connect-fused surface (flow
-repo, `spec/app/connect-fused.md`); the design rationale is in DECISIONS.md
-(D111/D112). Scope line (deliberate, same as flow's): the
-in-app path covers the **managed `fused` backend** only — self-hosted AWS
-provisioning stays a documented terminal flow.
+**This surface is deleted and the section is kept only as a tombstone, so the
+`AC-*` ids other sections still cite resolve to an explanation rather than to
+nothing.** §27 used to describe an in-app **Fused account** tab on the
+Preferences page (`?tab=account`, offered only while §19's Deploy toggle was
+on) that ran `fused cloud login`/`fused cloud setup`/`fused env …` through
+`fusedcli.py` as background child processes: sign-in (AC-3/AC-4/AC-5), a
+CONNECT-or-create managed-environment setup wizard (AC-6/AC-6a), env
+default/delete management (AC-7), an org/role summary with a re-sign-in
+remedy for a stale-but-present credential (AC-8/AC-8b), the env-wide
+Deployments section later folded in here (AC-11, `/api/deploy/shares`), and a
+signed-in dot that rode the sidebar's Preferences icon (AC-1). It read and
+ran only the **fused CLI's own** credentials (`~/.openfused/`) and never
+persisted anything of its own (AC-10) — that boundary is unaffected by the
+removal. All of it — the tab, `fused_render/account.py`, its `/api/account/*`
+endpoints, the signed-in dot, and the setup-job tracking — is gone, along
+with its tests.
 
-### 27.1 Surface
+**Nothing in-app replaced it.** Signing in (`fused cloud login`), setting up
+or managing a hosted environment (`fused cloud setup`, `fused env …`), and
+everything else this section covered are now plain commands the user runs
+themselves in a terminal — the CLI is exactly as capable as it always was,
+fused-render just no longer wraps it in a UI or spawns it on the user's
+behalf. There is no signed-in indicator anywhere in the app any more.
 
-- **AC-1** *(amended by D125)* The account panel is the **Fused account** tab
-  on the `/view/_prefs` Preferences page, alongside a **Render preferences**
-  tab (Logs/Engine/Deploy to Fused account/Tour — SPEC §20), selected via `?tab=account`
-  (bookmarkable, same pattern as Templates' bindings/library tabs). The
-  account tab is offered only once the Deploy toggle (§20) is on — that's the
-  only reason this app cares about a Fused account. There is no longer a
-  standalone sidebar-footer entry for it: the green **signed-in dot** (the
-  deploy-dot affordance — the presence-only `logged_in` signal, re-read on
-  focus/visibility regain, errors keeping the last-known value) now rides the
-  **Preferences** entry's icon instead, shown only when Deploy is enabled
-  *and* signed in — the dot is not its own click target (too small to hit
-  reliably), so clicking it just opens Preferences like the rest of the
-  button. The old `/view/_account` sentinel still resolves: App.tsx redirects
-  it (render-time `history.replaceState`, same technique as the `/` → start-dir
-  redirect) to `/view/_prefs?tab=account`, so existing bookmarks and the
-  Deploy modal's "Set up hosted environment" link keep working.
-- **AC-2** `GET /api/account/status` composes: `cli` (DP-4's `cli_status`
-  shape), `logged_in` (DP-2b's presence signal), `login_in_flight` (a login
-  child is live), `creds_stamp` (the credentials file's mtime, or null — a
-  cheap fingerprint the client uses to invalidate its cached probe across a
-  credential change, see AC-8), `envs_file`, `store` (the RAW env store: every backend,
-  each entry flagged `hosted`, plus the store's own `default` pointer —
-  distinct from DP-6's derivation; the deploy picker's derived view stays on
-  `GET /api/deploy/config`), and `probe` (null unless requested). The plain
-  read is an open GET like deploy's config; `?probe=1` EXECUTES (it spawns a
-  control-plane child) and therefore carries the D36 X-Fused guard — a
-  foreign page must not be able to trigger subprocess/network work with
-  blind cross-origin GETs. `?probe=1` — only when logged in and a CLI
-  exists — shells
-  `fused cloud orgs` (the authoritative check: it exercises/refreshes the
-  token): `{ok, admitted, orgs: [{org, env, provision_state, role}], error}`;
-  a probe failure degrades to `ok: false` with the CLI's message via the
-  DP-2b error mapping, never an HTTP error (the page renders from the
-  presence signal first and fills the probe in).
-
-### 27.2 Login
-
-- **AC-3** `POST /api/account/login {return_url}` spawns
-  `fused cloud login --no-browser` and returns `{authorize_url}` — the first
-  `http(s)://` URL captured from the child's output; **opening it is the
-  client's job** (`window.open`; the server never drives a browser). Child
-  env carries `PYTHONUNBUFFERED=1` (Python block-buffers piped stdout — the
-  URL line would otherwise sit past the capture window) and
-  `OPENFUSED_LOGIN_RETURN_URL=<return_url>` so the CLI's post-login callback
-  302s the browser back into the app. `return_url` must be an http(s) URL on
-  a loopback host (400 otherwise — mirrors the CLI's own rule; this server is
-  loopback-only, D2/D3). **Single-flight**: a concurrent POST joins the live
-  child (same URL back; its return_url is ignored) — never a second callback
-  server. The capture window is 30s (a COLD external CLI compiles bytecode on
-  first run; observed >15s); a child that exits **without** a URL fails the
-  request immediately (an exit watcher wakes waiters — no burning the
-  window), 502 carrying the CLI's last line via the DP-2b mapping. Every
-  kill path confirms death (SIGTERM → SIGKILL escalation, inline or on a
-  daemon thread): a merely-SIGTERM'd child could keep its callback server
-  alive and complete a late round-trip against a retried login.
-- **AC-4** Completion is **polled, not pushed**: the client polls status
-  (~2s) until `logged_in` flips; the CLI child owns the OAuth round-trip
-  (localhost callback, self-terminating after ~5min). A child that exits
-  signed-out (abandoned browser tab, timeout) surfaces as a retryable
-  message, detected as `login_in_flight` dropping without `logged_in`.
-- **AC-5** `POST /api/account/login/cancel` terminates the child.
-  `POST /api/account/logout` terminates **and waits out** (SIGTERM →
-  SIGKILL escalation) any in-flight login BEFORE running
-  `fused cloud logout --no-browser` — a login child outliving the credential
-  delete could complete its callback later and silently re-write the JWT.
-  Optional `{env}` forwards `--env NAME` (also drops that env's stored
-  data-plane key — the CLI's full-signout semantics). A RUNNING setup job is
-  canceled too (account-scoped work; its record reports "canceled by signing
-  out" and frees the single job slot) — no wait needed there, a setup child
-  can't resurrect the JWT. Returns fresh status.
-
-### 27.3 Environment setup & management
-
-- **AC-6** `POST /api/account/setup {org?, env?, env_name?}` runs
-  `fused cloud setup --no-browser [--org O --env E] --env-name NAME` as
-  **the one tracked background job**: 202 `{job_id, env_name}`; 409 when a
-  job is already running, and 409 when signed out — the interactive login
-  flow lives in ONE place (AC-3); a setup child silently waiting on a
-  sign-in URL nobody sees would just burn its timeout. Presence isn't
-  proof: before spawning, the sign-in is VERIFIED with one `cloud orgs`
-  probe, so an expired credential with a dead refresh token gets an
-  immediate actionable 409 instead of ~5 minutes of doomed spinner. `org`/`env` go
-  together (both or neither — omitting them lets the CLI discover the
-  account's workspace, self-creating a personal org for an admitted org-less
-  account); `env_name` is validated as a single safe token and defaults to
-  flow's convention (`fused` for the default managed env, `fused-<env>`
-  otherwise). The child's stdout+stderr are merged into one pipe (progress
-  goes to stderr, the final line to stdout — one pipe keeps terminal order)
-  and pumped into a bounded tail; `PYTHONUNBUFFERED=1` again; a 900s
-  backstop kills a wedged child. The CLI does everything real: waits for
-  provisioning, mints the data-plane key into the local secrets store,
-  writes the env into `envs.json` — the app never touches a secret.
-- **AC-6a** `GET /api/account/setup` reports
-  `{state: idle|running|done|failed, job_id, env_name, detail}` — `detail`
-  is the CLI's own lines (mapped error when failed; keyring-less Linux
-  hosts get the CLI's error naming the `fused[local]` remedy verbatim). The
-  client polls (~1.5s), **matches job_id** (a stale job's terminal state
-  must not complete a newer attempt), and **adopts** a running job on mount
-  (the page reopened mid-setup shows live progress; one-job-at-a-time makes
-  it unambiguous).
-- **AC-7** `POST /api/account/envs/default {name}` →
-  `fused env default NAME`; `POST /api/account/envs/delete {name}` →
-  `fused env delete NAME --yes` — the CLI's **local-pointer-only** delete
-  (no cloud teardown, no key revocation), stated in the confirm dialog and
-  the table copy. Names are rejected when flag-shaped (leading `-`): the
-  name lands in argv, where `--help` would be parsed as a click option that
-  exits 0 — a silent no-op the endpoint would report as success. Both
-  return fresh status so the client updates in one round-trip; the client
-  merges it over its cached probe (env actions don't change org
-  membership), so the signed-in summary never flickers away.
-
-### 27.4 Tab & Deploy-modal behavior
-
-- **AC-8** The account tab's states, in checking order (the DP-2 pattern):
-  CLI missing → the DP-4 install panel (same one-click/manual split);
-  signed out → sign-in (waiting + Cancel while connecting; a sign-in
-  started elsewhere — Deploy modal, another tab — is adopted read-only with
-  its own Cancel); signed in → account summary (probe orgs/roles table,
-  not-admitted note, and — when the probe FAILED — a **Sign in again** action
-  inside that note, because `logged_in` is presence-only: stored credentials the
-  identity provider no longer accepts (an expired, revoked or rotated refresh
-  token, surfaced as the CLI's own `403 … invalid refresh token`) leave a state
-  that *looks* signed in and cannot be retried out of, so the remedy has to be
-  reachable from where the error appears rather than only from the CLI. It reuses
-  the one sign-in path — see AC-8b for why completion is not presence), the environments management table (default marker,
-  with make-default and forget-with-confirm behind a per-row overflow
-  ("⋯") menu — one quiet control per row instead of a button pair), and
-  the setup panel — presented
-  as CONNECT when the account already has a workspace (`cloud setup
-  --org --env` connects the existing environment; nothing is created) and
-  as create-your-workspace when it has none: workspace picker when >1
-  org/env, the single workspace shown read-only when exactly one (the
-  user must see WHICH environment will be connected). The CONNECT path is
-  a one-click import of the discovered environment — the primary button
-  names it ("Connect <org> / <env>") and the local env name (a nickname
-  for this machine's store, prefilled by convention) is demoted behind an
-  "Edit name" reveal so the common path needs no typing; the create path
-  (no workspace) shows the editable name up front, since naming is the
-  point there. Live progress log; prominent while no managed env exists, else collapsed
-  behind an "Add managed environment" toggle. The deep probe is CACHED:
-  focus/visibility refreshes re-read only the cheap presence status and
-  keep the orgs view they have, re-probing only when it is missing (initial
-  load, right after a sign-in), forced (setup completion — self-serve may
-  have created the workspace), or when `creds_stamp` changed since the cached
-  probe (a re-login as a different account that never flipped `logged_in`
-  false in this tab — the cache must not show the prior account's orgs). All
-  return-to-tab refreshes ride the shared `useRefreshOnReturn` hook
-  (lib/hooks.ts), which coalesces the double focus+visibilitychange firing.
-- **AC-8b** **A sign-in completes on FRESH CREDENTIALS, not on their presence.**
-  `useFusedLogin` captures `creds_stamp` before spawning the child and finishes
-  only once the poll reports `logged_in` **and** a stamp different from that
-  baseline. Presence alone is the wrong signal for a **re**-authentication: the
-  credentials file already exists, so `logged_in` is already true and the first
-  poll tick would declare success before the browser round-trip had happened —
-  reporting a fixed account while the probe still fails. For a signed-out start
-  the baseline is null and the condition collapses to the original presence
-  check, so that path is byte-for-byte unchanged. If the pre-flight read of the
-  baseline fails the hook degrades to presence — eager for a re-auth, correct for
-  a fresh sign-in — rather than refusing to complete at all.
-  **Cancel's reconcile applies the same test** (one shared `isFreshLogin`, not two
-  copies of the rule). Cancel re-reads the status because the sign-in may have landed
-  in the gap before the cancel took effect, and that read must ask the same question
-  the poll asks: testing presence there meant that on the re-auth path — credentials
-  present, merely rejected — pressing Cancel announced a completed sign-in that never
-  happened and dismissed the note that had asked the user to sign in again.
-- **AC-11** The page also hosts the **Deployments** section — the env-wide
-  `fused share list` view with per-mount Revoke that PF-6 previously placed
-  on Preferences (semantics unchanged: `/api/deploy/shares` joined to local
-  pages, revoke by env+token via `deploy.revoke_mount`). Each row's actions
-  (Open ↗ / Copy link, and the destructive Revoke behind a separator) live in
-  the same per-row overflow ("⋯") menu as the environments table, so the
-  section shows one control per row rather than an Open link + Revoke button
-  pair; a row with no link and nothing to revoke shows a muted "—". Environments and
-  Deployments render in BOTH auth states: the env store and an AWS env's
-  share list need the CLI, not a managed-Fused sign-in — an AWS-only user
-  must not pass through an irrelevant sign-in to revoke a link. Only the
-  account summary and the setup panel gate on `logged_in`.
-- **AC-9** The Deploy modal never dead-ends into a terminal for the managed
-  path: its signed-out warning carries the working sign-in button (DP-2b as
-  amended), and its no-envs state signs in in place or routes to the account
-  page's setup panel. AWS env creation keeps naming
-  `<setup_cli> env create` — out of scope by the §27 scope line — and that
-  hint renders in BOTH branches: an AWS-only user who is signed out must
-  not be funneled into an irrelevant managed-cloud sign-in to learn it.
-
-### 27.5 Trust & credentials
-
-- **AC-10** No credential ever touches fused-render: the CLI owns the JWT
-  (`~/.openfused/fused-cloud-credentials.json`) and the data-plane keys
-  (the CLI's local secrets store); this surface reads *presence/status* and
-  runs the CLI, and persists nothing of its own under `~/.fused-render`.
-  All mutating endpoints carry the D36 X-Fused guard; `return_url` is
-  loopback-constrained (AC-3). The D3 stance is unchanged — this is not
-  authentication *of* fused-render, and the §1 non-goal stands as annotated.
+The one id another section still cites: **AC-1** — the signed-in dot on the
+Preferences sidebar entry; §37/38's resident-model dot analogy and §20.5's
+tab description both carry their own note now that the precedent it pointed
+to no longer exists.
 ## 28. Canvas View — Conditional Layout Viewer for `canvas.toml` (D114)
 
 A `canvas` view template renders a Fused **canvas definition** (`canvas.toml`,
@@ -2622,8 +2111,9 @@ lists the last files opened in the app, each carrying the params it last had.
   otherwise (`recorded: false`) — the client stays dumb about the target's
   kind.
 - **RC-9** Recording is fire-and-forget (a recents failure never affects the
-  view being opened); the recording hook rides the StatView seam beside
-  session tracking (same confirmed-file gate, LSN-6 posture).
+  view being opened); the recording hook rides the StatView seam it used to
+  share with session tracking, and keeps that hook's confirmed-file gate (LSN-6
+  posture, the surviving half of a §21 that is now a tombstone).
 - **RC-10** The section is hidden entirely while there are no entries.
 - **RC-11** **Data is MRU, display is stable slots.** The store stays strict
   MRU (RC-6), but the visible top-3 must never move under the user's own
@@ -2885,7 +2375,7 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   "last file by name" as "newest records" — not the store walk (CL-12), and not
   any bounded newest-first probe a future gate does (CL-11), which must order by
   **mtime**: on reverse name order its whole window can be stale same-day files. Not the `<file>.json`
-  sidecar (§21, D82–D84): every writer there does a whole-file
+  sidecar (SB-7, §7, D82–D84): every writer there does a whole-file
   read-merge-write, which at call volume is O(n²) plus a lost-update race —
   the sidecar is right for low-frequency history, wrong for a firehose. Not
   the app log (`logs.py`): that file is disposable by design (D68) and
@@ -6030,7 +5520,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   supervisor. The port is **ephemeral and published by the child** — anything the
   parent reserved could be taken between its bind and the exec — and every
   request carries a per-worker token in a header, so a foreign page that guessed
-  the port still cannot drive the model.
+  the port still cannot drive the model. A text runner's terminal `done` frame
+  reports **both** counts — `tokens` for what it generated and `input_tokens`
+  for the prompt it read — because the worker is the only process holding the
+  tokenizer that decides the second one, and anything upstream could only
+  estimate it and then disagree with the model. Counted before the first token,
+  so a CANCELLED generation reports it too, and fail-soft: a tokenizer that
+  cannot answer costs the count (`null` — not reported) and never the
+  completion.
 - **AI-4** **One resident model per capability, auto-evicting.** Loading a second
   text model stops the first BEFORE the new one loads. Arithmetic, not taste: two
   8GB models on a 16GB machine is a swap storm, and a swap storm reads to the user
@@ -6312,8 +5809,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   loads when you only give it text; the image half goes unused until a runner
   wants it.) A **dot on the sidebar
   entry** whenever anything is resident, naming it on hover: gigabytes held by
-  something you have forgotten about is exactly what an indicator is for, and it
-  is the same treatment being signed in already gets (AC-1).
+  something you have forgotten about is exactly what an indicator is for. *(The
+  Preferences entry once carried an analogous signed-in dot, AC-1, before §27
+  was removed; that precedent is gone, but the pattern it modeled stands on its
+  own here.)*
 - **AI-7c** **The tab is URL state, and the cache path and the Hub host are
   links.** The two tabs are **Local** and **Discover** — "cached" names the
   mechanism (a Hugging Face cache directory) where "local" names the thing, and
@@ -6487,6 +5986,62 @@ an AI Models page that could say what was on disk but not what was *running*.
   `overwrite=True`, because mflux's default resolves a collision by writing
   somewhere else, and the server has already told the caller where the image
   will be.
+- **AI-9e** **A render shows the picture while it is being made, and it is one
+  file rewritten in place.** A FLUX render is minutes long and everything a page
+  could show was a step counter — a progress bar for a process whose whole
+  output is visual. So the worker writes `<out>.preview.png` beside the image
+  the request already named: a ~32x32, ~3KB thumbnail, **overwritten every
+  step**, advertised by the route as `previewPath` and handed to the page by
+  `fused.ai.image` as a `previewUrl` on every `onProgress` tick — cache-busted
+  by the step, because one path rewritten in place is one image as far as a
+  browser is concerned. **The frame is written before the tick that announces
+  it**, in both runners: `done` is what becomes `&step=N`, and a tick published
+  first can hand a page a URL whose file is still being written — which does not
+  merely 404, it caches the PREVIOUS frame's bytes under a URL that is never
+  requested again, so that step shows a stale picture for its whole duration.
+  The cost is that the ✕ is learned one frame-write later, still on the same
+  callback. `previewUrl` is **null on the terminal tick and on the resolved
+  object**, because the file is discarded as the render unwinds and a page that
+  followed the last `previewUrl` would end every render on a 404 exactly where
+  the finished picture belongs. Blurring and upscaling it is the page's taste, not this
+  API's. **Always on, no flag**: measured at 68ms/step (1.25% of a 512²/16-step
+  render) and dominated by the device sync and the PNG encode rather than the
+  matmul, so it stays roughly flat as resolution grows — a one-percent feature
+  behind an opt-in is a feature most pages never get. **A filmstrip was the
+  other option and is refused**: 100 steps would leave 100 files in a directory
+  the user browses, and the page's `<img>` would have to know which is current.
+  The frame is not the raw latent. FLUX.2 klein is step-wise distilled and its
+  sigma is still ≥ 0.5 at step 14 of 16, so what the callback holds projects to
+  static for almost the whole render; what IS legible from step 2 of 16 is the
+  model's own DENOISED ESTIMATE, recovered from two consecutive latents and
+  their two sigmas. The first step has no predecessor and therefore no preview,
+  which is correct rather than a gap. The latent→RGB map is a 128→3 affine
+  constant fitted once against the VAE's own encodes (R² 0.911/0.912/0.891) —
+  written down rather than derived, because deriving it needs the weights and a
+  preview must not wait for those. **One implementation for both engines**, at
+  the runners root (AI-10c): `runners/preview.py` owns the path rule, the
+  arithmetic, the atomic write and the lifecycle, keyed by the VAE's class name,
+  which the torch runner reads off `pipe.vae` and the MLX one off its variant
+  recipe. A model with no fitted projection renders exactly as it did before —
+  no file, no branch in either denoising loop, and no device sync (the latents
+  reach the sink as a closure, so a no-op never pulls them off the GPU). Frames
+  land by `os.replace` from a temp beside the target, because the page is
+  reading the file through `/api/fs/raw` while the worker rewrites it — and
+  **nothing escapes the sink**, because it is called from the one interruption
+  point in a render that runs for minutes: a full disk, or a Windows lock held
+  by the page's own `<img>` over the destination, must cost the thumbnail and
+  never the picture. A sink that fails three times in a row switches itself off
+  rather than paying a device sync and a doomed syscall per remaining step. And
+  it is removed on success, on cancel AND **on error** — the one place this diverges
+  from the progressive transcript (AI-10a), whose file is kept on a failure
+  because 80 minutes of words is salvage; a half-denoised 32x32 blur of a
+  picture that will never exist is not. **A kill has no unwind**, so a worker
+  ended by `_terminate` / `_kill_tree` (unload, shutdown, a wedge) leaves its
+  last frame behind — and the next render sweeps `<home>/ai/images` of any
+  preview nothing has touched for an hour. Wired to the request rather than to a
+  timer: the directory grows only when renders happen, the caller is about to
+  wait minutes anyway, and a live preview is rewritten every step so its age is
+  what tells the two apart. The image itself is never swept at any age.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
   honest number rather than two that need reconciling. What the supervisor knows
@@ -6854,6 +6409,51 @@ an AI Models page that could say what was on disk but not what was *running*.
   copies are now one, which is the actual fix; joining rather than picking is
   the answer because there is no rule for choosing between two reasons that is
   not a guess about which the reader meant.
+- **AI-11e** **A model the user DOWNLOADED is in `catalog()` too, and it cannot
+  become the default** (D323). The curation is a shortlist, not a whitelist: the
+  Discover tab's Hub search downloads any repo the user chooses, and until now the
+  bytes landed in the cache and the model then appeared in **no page's picker at
+  all** — every page reads `fused.ai.models.catalog()`, which was the curation and
+  nothing else, and `fused.ai.models.list()` reports only resident workers and
+  in-flight fetches, so no merged view existed anywhere. `/api/ai/catalog` now
+  unions each capability's curated list with the cached repos whose inferred
+  capability matches, and every entry carries `source` (`"curated"`/`"cached"`),
+  `downloaded` and `loaded` beside the `{id, label, size_gb, note}` a picker
+  already reads — so three shipped apps gained the models with no change to any of
+  them, which is why the union is in the payload rather than in each page.
+  **The cached half is per RUNNER, exactly like the curated half.** A capability is
+  not enough to put a repo in a list — AI-11a's whole point is that one capability's
+  backends read mutually unloadable formats — so a cached repo is injected only when
+  the runner the row resolved is among the ones that would accept its snapshot
+  (`CachedModel.loaders`, straight from `ai/runners/formats.py`). That drops
+  `openai/whisper-large-v3`, a speech model neither shipping speech runner reads, and
+  an MLX conversion on a Mac switched to Transformers; injecting on capability alone
+  put both into pickers whose load then refused them by name. **Dropped, not flagged
+  `available: false`**: `models[]` has no availability field and every consumer reads
+  it as "things I may offer", so a flag would leave existing pages offering the repo
+  until each learned a new key. It is not hidden — the Local tab lists it with the
+  actionable engine reason, which a dropdown option cannot carry.
+  **Appended, never merged into the ordering.** `entry.default`,
+  `catalog.default_for()` and `catalog.for_capability()` still answer over the
+  curated list alone, because `default_for()` is what a bare `fused.ai.image()` or
+  `fused.ai.transcribe()` loads and AI-11a's smallest-first rule would otherwise
+  let a 3KB folder off the disk decide it. The cached tail is sorted by that same
+  rule so the halves read as one list. Wherever anything is curated, index 0 is
+  curated and agrees with `default`; **the one case a cached entry leads is a runner
+  with no `SUGGESTIONS` key at all**, where `default` is null because there is
+  nothing to recommend — so the contract is read `default`, never `models[0]`, and
+  `source` is on every entry so a consumer inventing a fallback can refuse an
+  uncurated one. The capability inference is `ai_models`' own — the very reading the
+  Load button is drawn from — because a picker offering a model and a `load()`
+  refusing it must not be able to disagree (D321); repos with no inferable
+  capability, component repos and datasets are therefore not injected anywhere,
+  since inventing a capability is the bug D321 closed. The scan is memoised on
+  MTIMES — the cache directory's entries plus each repo's own four directory mtimes,
+  four stats where the alternative is a recursive walk of every blob — with a
+  minutes-long TTL as a backstop for the only change no directory mtime can see, a
+  listed file still growing. The mtime half is not optional: a memo that outlived a
+  completed download would hide the model the user just fetched, which is precisely
+  the bug being fixed.
 - **AI-11d** **Reasoning is OFF by default, because it is invisible and the CPU
   path cannot afford it.** Qwen3's chat template defaults `enable_thinking` to
   true and three of the four curated models are Qwen3, so an ordinary question
@@ -6901,6 +6501,104 @@ an AI Models page that could say what was on disk but not what was *running*.
   not claims about measured filesystem usage (D295). A first real load is the
   outstanding verification.
 
+- **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
+  graph** (D327). `fused.ai` is the only thing in this app that spends model
+  time, and it spent it invisibly: a page re-asking the model on every
+  keystroke, a render loop calling `fused.ai()` per frame, and an idle machine
+  were the same picture — as were a working chat box and one whose every call
+  timed out. `server/ai_metrics.py` keeps a fixed ring of 10-second buckets
+  covering one hour, plus since-start totals, and `/ai-models?tab=usage` draws
+  it. FOUR counters, because volume answers only the first question anybody
+  has: **tokens and completions** (the graph), **failures by kind** (a page
+  whose calls all fail has generated zero tokens, which is the same empty graph
+  as a page nobody opened), **seconds spent generating** and the tokens/second
+  that falls out of them (the number somebody choosing between two local models
+  wants, and the explanation when a model that landed on the CPU (AI-11b) feels
+  broken), and **which tier** — Claude or local, on the `/`-in-the-id seam AI-1
+  already dispatches on, because this page's subject is the local half and a
+  merged total answers neither question. **Local only, in every sense of the
+  word**: nothing is written to disk, nothing leaves the machine, and the
+  numbers start again at every launch — which is why every payload carries
+  `since` and the tab states the window under the figures. It is a diagnostic,
+  not a ledger: a usage bill is Claude Code's own to report, and a counter that
+  looked like one would be wrong the first time a user restarted the app
+  mid-morning. The graph is bars, never a line — the series is a count per
+  interval, and a line between two spikes draws a slope through minutes in
+  which nothing ran.
+- **AI-12a** **The counter is fed the caller's OWN `usage`, at the terminal
+  frame, on both tiers and in both shapes.** `record(model, usage, seconds)`
+  takes the very dict the relay is about to put on the wire (AI-1b), at all
+  four exits — Claude streaming and not, local streaming and not — so the graph
+  and the response can never disagree about what a completion generated.
+  Nothing here tokenizes anything: a count derived from the text would be a
+  different number wearing the same label. The duration rides BESIDE the usage
+  rather than inside it, because the Claude payload's `usage` is contractually
+  exactly two token keys (`_ai_usage`, RH-11) and a page parses it.
+  Consequences, stated rather than papered over: a Claude completion is counted
+  under its RESOLVED id (`opus` and `claude-opus-5` are one row, not two); a
+  CANCELLED local generation IS counted, because the worker reports the tokens
+  it emitted and this machine generated them — but its tokens do not divide
+  into any speed, since it reported no duration; a completion whose client went
+  away mid-stream is counted NOWHERE, because only the terminal frame carries a
+  count and there is nothing honest to add; and input tokens are counted only
+  where a tier reports them — both tiers do (AI-3), so `null` is reserved for a
+  runner that genuinely could not count, and is never a zero that would read as
+  a model having been sent an empty prompt. Sessions Claude Code runs elsewhere in the app (the
+  `claude` template, the task runner) are not this endpoint's traffic and are
+  not counted.
+- **AI-12b** **A failure is counted BY KIND, is never a completion, and is
+  never shown as one total.** Every exit that reached a model for text and got
+  none — `timeout`, `ai_unavailable` (including a missing `claude` binary) and
+  `ai_error` — increments a failure against its model, its tier and its bucket,
+  so a period of failures MARKS the timeline that would otherwise draw it as
+  quiet. Three things are deliberately NOT counted, each for the same reason —
+  a number has to mean one thing:
+  * a **completion**, which must stay the count of calls that answered;
+  * a body refused as **malformed** (400), which asked no model anything, and
+    would make "the AI is not working" also mean "somebody sent a bad request";
+  * a **409 from a model that is still loading**, which did exactly what AI-5
+    designed it to do — start the download and hand back the job id to watch.
+    Counting it is how "3 failed" comes to mean "one model is downloading".
+
+  The kind is kept because "3 failed" and "3 timed out" send a reader to
+  different places, and it is safe to keep unbounded: the keys are this
+  server's own vocabulary, never a caller's string. **The kinds are also the
+  only failure figure the tab shows** — no headline count, no tile, no column.
+  One number spanning several unrelated conditions is one a reader cannot act
+  on, while `2 × timeout` names the next step.
+- **AI-12c** **Bounded by construction, unguarded on read, clamped on ask.** The
+  ring is a fixed 360 slots and the breakdown a fixed 32 named models plus one
+  overflow row — which names no TIER, because it holds whatever mixture arrived
+  past the cap, and because a tier read off its placeholder id (no slash, so:
+  Claude) would misattribute every local model past the cap on exactly the path
+  the cap exists for — so the store is the same few kilobytes after a million
+  calls and no prune ever has to run — the same posture CL-9 takes for the call log, minus
+  the disk it does not touch. `record()` cannot raise into the completion it is
+  counting. `GET /api/ai/metrics?minutes=N` is an ordinary READ (no `X-Fused`:
+  D3's guard is for the routes that spend this machine's time) whose `minutes`
+  is CLAMPED to the retention rather than refused, and whose buckets are DENSE
+  and oldest-first — every interval in the window, zeros included, because a
+  chart handed only the intervals that had traffic would draw four prompts an
+  hour apart as four adjacent bars. Nothing is emitted for time before the
+  process started counting: the graph would rather be short — and say so, with
+  a hatched stretch the tab draws for it — than claim an idle hour it was not
+  present for.
+- **AI-12d** **Cost is ESTIMATED, per model, at a rate the user types — and it
+  is the one number here that is not measured.** This app knows what each model
+  generated; it does not know what anybody is charging for it, and a built-in
+  price table would go stale silently and be believed anyway. So each model row
+  carries a `$ per million output tokens for est. cost` box (default **1.00**,
+  output only —
+  input tokens are not priced at all), and the figure beside it is that
+  multiplication and nothing more. Every place it appears says **estimated**,
+  and the note under the table states the arithmetic and what it leaves out, so
+  a reader can tell a real bill from this one at a glance. An emptied or
+  unparseable box prices its row at nothing rather than at zero — a blank is a
+  rate nobody has given, and the subtotal still stands for the rows that have
+  one. The rate lives in the page's own state (not the prefs store, not the
+  server): it is a what-if a reader is doing on numbers in front of them, and
+  persisting it would make a guess look like a setting the app stands behind.
+
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
 Goal: the app could start a Claude Code session on demand — the split-view chat,
@@ -6942,12 +6640,17 @@ world from one the user typed.
     body: it sends things, and every test that builds an app would otherwise
     spawn whatever the developer's store held) and does not sleep before its
     first pass.
-  - **SCH-3b** **A bound on how late is still worth sending**
-    (`FUSED_RENDER_SCHEDULE_MAX_LATE`, default 24h). Unbounded catch-up is its
-    own bug: a message meant for Tuesday's standup, fired unattended on Friday
-    against a repo that has moved on, is worse than one that never fired. Past
-    the bound an entry becomes `missed` — visible, never sent. `GET /api/schedule`
-    reports the bound, because the page cannot explain a `missed` entry without it.
+  - **SCH-3b** **Missed work QUEUES and runs when the app next opens; there is no
+    bound by default.** The earlier design bounded catch-up at 24h on the reasoning
+    that a message meant for Tuesday's standup, fired unattended on Friday, is worse
+    than one that never fired. That reasoning was sound about *unattended* firing and
+    is answered directly now rather than by a timer: the queue is visible before it
+    runs (the Calendar's Queued strip), every entry in it can be cancelled, and a
+    running one carries its own cancel. Given a cancel affordance, a bound only
+    throws work away silently. `FUSED_RENDER_SCHEDULE_MAX_LATE` still reinstates a
+    bound where an operator wants one, and only then does an entry become `missed`.
+    `GET /api/schedule` reports `max_late_seconds: null` when unbounded — the page
+    must read null as "no bound", never as zero.
 - **SCH-4** **The claim is written before the spawn.** An entry becomes `sending`
   *before* the helper is launched, so a process that dies mid-spawn leaves it
   `sending` rather than `pending` and the next boot does not resend it; a sweep
@@ -7228,11 +6931,81 @@ world from one the user typed.
   computed from the latest occurrence ever created (never earlier than now).
   Everything downstream — claim-before-spawn, job rows, the event log, the
   watcher — handles only one-shots, unchanged.
-- **SCH-13** **A missed recurring run is SKIPPED, never caught up.** Occurrences
-  carry `max_late: 120` where one-shots keep the day-long global bound: replaying
-  "daily at 9am" at 2pm is not what the words meant, and the next run is already
-  coming. The two minutes absorb tick jitter only. The missed verdict is worded
-  as "skipped", and the next materialization rolls past every missed slot.
+- **SCH-13** **A recurring backlog COALESCES to its latest run, never replays.**
+  Where a one-shot missed by a week still runs (SCH-3b), a repeat missed five times
+  runs **once** — replaying "daily at 9am" five times into one thread is not what
+  the words meant. `_coalesce` walks the recurrence before `_materialize`, keeps the
+  most recent missed occurrence and counts the rest onto it as `skipped` /
+  `skipped_note`, announced as a single event ("4 earlier runs skipped") rather than
+  four. Occurrences no longer carry `max_late: 120`; a legacy one is cleared by the
+  coalescer. `count`/`until` budgets are spent by skipped runs, following the same
+  rule `create` already applies.
+- **SCH-13a** **A repeating template LEARNS its thread on the first run.** A task is
+  a Claude session, so a repeat appends into one thread and `new_task_each_run` is
+  the opt-out — but that does not fall out for free, and assuming it did was a real
+  bug. A template is created with **no** session, because none exists yet: Claude
+  Code mints the id on the first turn. So when a run reports the session it actually
+  ran in, `_chain_session` writes that id back onto the TEMPLATE's `session_id`, and
+  every later occurrence inherits it. Three guards, each of which is a bug if
+  dropped: write only while the field is empty, so a re-report cannot thrash it and a
+  session the user chose deliberately is never overwritten; never write when the
+  template is set to fork; and fix up any ALREADY-materialized pending occurrence in
+  the same pass, because `tick` materializes the next run before the previous turn
+  reports, so run 2 normally already exists carrying `""`. `_busy_sessions` must also
+  union `session_id` with `claude_session_id`, or run 2 resumes run 1's thread while
+  its turn is still open. The `session_id` (input, "resume this") and
+  `claude_session_id` (answer, "what it ran in") split is preserved throughout: this
+  propagates run 1's ANSWER into run 2's INPUT, and never conflates the two on one
+  entry. The writeback also stamps **`session_learned`** on the entry, because a
+  `session_id` has two possible authors — a chat handoff the user supplied, which a
+  repeat must refuse, and this — and only the moment of writing knows which. It rides
+  with the id everywhere the id goes (`_materialize` copies both; `create` accepts it
+  so an edit, which is cancel + re-create, can re-state it) and is never invented for
+  a supplied id. Absent means NOT learned, which is what every entry stored before it
+  existed is.
+- **SCH-13b** **A rule anchored in the PAST runs once, on its most recent slot.**
+  A past-anchored template used to run nothing until its next future slot, because
+  `_materialize` computes from `base = now` and the anchor only sets the pattern
+  (time of day, weekday, nth-weekday). That is right for "monthly on the second
+  Wednesday" but reads as broken beside a past one-off, which fires immediately.
+  So a rule template with no occurrences yet walks anchor → now and materializes
+  **the latest slot at or before now**, at that slot's own time, marked `catch_up`.
+  The latest, not the anchor: "the oldest thing you missed" is rarely what anyone
+  wants re-run, and this is the rule `_coalesce` already applies to a repeat missed
+  while the app was shut — the same walk, extracted as `_walk_latest` and shared,
+  with `spend=True` for the coalescer (it bills `made` and counts `skipped`) and
+  `spend=False` here. Intervening slots are never materialized and never reported:
+  nothing happened at those times, so nothing is drawn at them either.
+- **SCH-13c** **A due message DEFERS while that conversation has a live turn.**
+  `_busy_sessions` only ever knew about scheduled sends, so a message due while the
+  user was mid-turn in the same session spawned a second `claude --resume` against
+  one transcript. Liveness is now asked of the same rule the session badge uses —
+  extracted to `fused_render/session_liveness.py` rather than duplicated, because it
+  is a 16KB tail read plus a housekeeping filter plus a `turn_duration` end-marker
+  plus two windows, and a scheduler that disagreed with the badge on any one of them
+  would hold a message the page calls safe. **Deferred, never dropped:** nothing is
+  written, so the entry stays `pending` and cannot be swept `missed` (catch-up is
+  unbounded by default). An unreadable or absent transcript answers "not live", so a
+  bad read can never park a message for ever. The user is never blocked from their
+  own chat — the machine waits, not the person.
+- **SCH-13d** **`POST /api/schedule/run-now` sends a pending message early and
+  leaves its `due` alone.** The Board's Upcoming → In Progress drag means "run it
+  now", and the schedule time is a fact about what was asked for, so history keeps
+  it and the row reads as having run early (`at` is scheduled-for, `ran_at` is when
+  it went; see SCH-15). Reuses `_claim`, the single `pending → sending` transition,
+  so claim-before-spawn is unchanged and run-now races a tick exactly as two ticks
+  race each other. Anything not pending is refused 409 with its own sentence.
+  Running one occurrence early leaves its template's rule, `made` and `due` alone.
+  A conversation with a live turn is refused rather than forced — a drag gesture
+  cannot consent to two processes on one transcript (SCH-13c).
+- **SCH-15** **`at` is when a message was scheduled for and never moves; `ran_at`
+  is when it actually went.** They were one field, and matching a run to its
+  transcript prompt overwrote the due time — so a task scheduled two days ago and
+  caught up today jumped to today's column. A calendar places chips by `at`, so the
+  chip stays on the day the work was asked for and the row says it ran late; the
+  Board's run-now case is the same field pair read the other way round. `last_active`
+  maxes over both, so a caught-up task still sorts as today's news while its chip
+  stays put.
 - **SCH-14** **Cron is parsed in-house** (`fused_render/cron.py`): `*`, numbers,
   ranges, lists, `/n` steps, dow 0–7 with both 0 and 7 as Sunday, and the
   standard dom-OR-dow rule; all arithmetic in naive LOCAL time because "daily at
@@ -7258,3 +7031,139 @@ world from one the user typed.
   continuation, not a cliff. Cancelling a template cascades to its pending
   occurrence; cancelling just the occurrence means "skip this one" and the
   schedule continues.
+
+## 42. When Something Around the App Is Broken (D328)
+
+Some of what this app does depends on things it does not contain: Claude Code
+has to be installed and signed in, its own config has to load, a template
+registry has to parse. When one of those is wrong the app is FINE and something
+beside it is not — and the user met a red string naming an endpoint or a CLI, in
+our vocabulary, with nowhere to go. Four failures, one answer.
+
+- **TR-1** **The four cases are the DOWNLOAD PAGE's four cases**, not a taxonomy
+  invented here: `notfound`, `login`, `limit`, `raw` (`lib/trouble.ts`,
+  matching render.fused.io's `data-err` tabs). The page already sorts these,
+  already explains each in plain words, and already accepts a deep link
+  (`#troubleshooting-<kind>`, read by its own `honorHash`), so the app links
+  straight to the answer instead of at a long page. Two vocabularies for one
+  problem is how a user ends up reading about installing something they have.
+- **TR-2** **A signed-out Claude is NOT a missing one**, which is the whole
+  reason classification is ordered and tested. "Not found" appears inside
+  messages whose real cause is named earlier in the same sentence, and telling
+  someone to install what they already installed spends the one minute they
+  needed. `login` and `limit` are therefore matched BEFORE the could-not-find
+  patterns, which are the broadest.
+- **TR-2a** **A failure SHAPE is not a subject**, and this is TR-2 arriving from
+  the other side. `ENOENT`, "no such file", "command not found", "authentication
+  failed" say nothing about *what* was missing, and this app produces them
+  constantly about files, mounts and credentials that have nothing to do with
+  Claude — so `could not write the incident file: [Errno 2] No such file or
+  directory` classified as Claude-missing and answered a disk-path problem with
+  a download link. Patterns are therefore two tiers: ones that NAME Claude or
+  quote the CLI's own vocabulary count anywhere, and ones that describe only a
+  shape count only when the message is about Claude. The same rule demotes a
+  bare "not signed in", which in this app is as likely to be the Fused account,
+  a deploy or an S3 mount.
+- **TR-3** **`raw` is an answer, not a fallback.** The page has a tab for "some
+  other error message", so an unrecognised failure is routed somewhere real
+  rather than shrugged at.
+- **TR-4** **The copyable block is the point of the card.** Everything else
+  nudges the user toward a page; the copied text is what they can paste into
+  their own AI or an issue and get an actual answer from. It carries **what the
+  app was doing before it carries what went wrong** (a paste that opens with a
+  traceback makes the reader work out the question first), and it carries **the
+  installation** — the fact every diagnosis needs and the one nobody can look up
+  for themselves. Paths, a version, an OS string and the error; nothing read
+  from the user's files.
+- **TR-5** **The error is verbatim, always.** Rewording it makes it
+  unsearchable, and searching it is the first thing anyone does.
+- **TR-6** **It is WARNING-toned, not error-toned.** Nothing here is a crash:
+  the app is running and something beside it is not. A red card would say "this
+  is broken" about the wrong subject, and the subject is the whole point of
+  every clause above.
+- **TR-7** **One component, two sizes, and a size is chosen by the surface
+  rather than by the failure.** The boot failure takes the full card on an
+  otherwise empty page; the builder's hero takes the full card under the
+  composer, because the app folder was created and only the session failed, so
+  there is something to say beyond the error. The compact size (title, clamped
+  error, copy, link) exists for surfaces that are notifications rather than
+  pages — a wall of explanation in a 340px popup is not read. A registry that
+  will not parse takes neither: see TR-9.
+- **TR-8** **The boot failure cannot describe itself, and degrades rather than
+  printing empty labels.** `/api/config` is what failed, so there is no version,
+  install path or platform to report — the block falls back to the error and the
+  help link. It still beats one red line naming an endpoint, because the person
+  reading it has an unusable app and no idea whether to reinstall, restart, or
+  ask someone.
+- **TR-9** **A broken template registry is surfaced where it is FELT, and the
+  failure to design around is the PARTIAL one.** The server has always reported
+  it (`template_error`, PT-8) and nothing ever read it, so a `~/.fused-render`
+  registry that would not parse presented as "this file has no preview" — for
+  every file at once, with the reason sitting unread in the payload.
+  **A file with NO view is no longer this feature's case**: #585's
+  `RegistryFixNotice` answers it in the fallback card and answers it better,
+  because it carries a *Repair Template Registry* button beside the same error.
+  A copyable report is the right shape when nobody present can act; here
+  somebody can, so the one-click fix wins and the card that used to sit there
+  is gone (a second card restating the error above a button that fixes it is
+  worse than either alone).
+  What remains is the case that notice cannot reach, and it is the reported one:
+  the built-in registry still matches, so **the file previews normally and only
+  the user's own bindings quietly stop applying** — "apps aren't rendering
+  properly", with no fallback card rendered anywhere to hang an answer on. That
+  is announced as a toast, ONCE per distinct registry error
+  (`shouldAnnounceTemplateError`), because the error rides every stat and a card
+  per file would be a card per click for as long as the registry stays broken;
+  its action COPIES the report rather than navigating, because the error is
+  longer than a toast line and what a user does with it is paste it — and the
+  block it copies is the same one every other surface here hands over.
+  **The toast is GATED on this file having a view** — the same boundary from
+  the other side. Ungated it fired on the no-view file too, putting a second
+  description of one fault beside the notice that fixes it, and saying "your
+  own bindings are not applying" about a file whose preview was gone
+  altogether. **And it comes down when the error clears.** It is sticky
+  (`ttlMs: 0`) because it describes a state rather than an event, so the id is
+  kept and dismissed on the next stat that parses; discarded, a successful
+  Repair left a permanent "could not be read" sitting beside that notice's own
+  "Fixed". The remembered message is dropped at the same moment, so the
+  identical fault arriving again is announced again instead of reading as a
+  repair that held.
+- **TR-10** **The install command is pinned by a test**, because it is shown as
+  a thing to copy into a terminal and a wrong one there is worse than none.
+- **TR-11** **The agent brief always says WHERE, and when it cannot state the
+  path it says how to find it.** TR-8's degradation is right for the report — a
+  person reading a paste does not need labels with nothing after them — but it
+  is not enough for the instructions, because those are handed to something that
+  has to go and look. "Something around Fused Render is broken, please fix it"
+  with no directory is a brief an agent answers by guessing or by asking. So the
+  location is a FACT when the snapshot carries it (`- The installed app: …`) and
+  a TASK when it does not — and the order is the order
+  people actually install this. `/Applications/FusedRender.app` first, because
+  the DMG is the install; then the same bundle one level in
+  (`Contents/Resources/lib/python3.*/fused_render`), which is the code a fix
+  session edits and not something anyone would guess from the .app; then `brew
+  list --cask`, which answers a DIFFERENT question — the cask's `app` artifact
+  puts the bundle in the same place, so it finds no new path, but it says who
+  MANAGES that path, and that is what decides whether the repair ends in `brew
+  reinstall --cask` or in dragging a DMG over the top (`reinstall_advice` splits
+  on exactly this); then the Windows install dir. **No `python3 -c "import
+  fused_render"` and no `pip show`**: neither is a supported way to install
+  this, and both mislead, because a bare `python3` on PATH is not the
+  interpreter inside the bundle — it either fails or finds an unrelated copy,
+  and an agent handed that path goes and edits a copy the app does not run. Three more things ride along with it, because an agent that
+  knows only the install root still cannot see the two places that most often
+  hold the fault: `~/.fused-render` (settings, the template registry, the staged
+  core templates) is named as a DIFFERENT place, since a reinstall replaces one
+  and never touches the other; the per-pid log is named as a glob (it lives in
+  the system temp dir, `fused_render/logs.py`); and the `raw` steps now say to
+  check whether the server is running before concluding the app is broken —
+  "Failed to fetch" at boot is far more often a dead process than a broken app.
+  Pinned across both copies by `tests/test_trouble_parity.py`: a find command in
+  one copy only means the chat and the shell send agents looking in different
+  places. **The unknown branch states no CAUSE**, only the fact. It first read
+  *"the failure above is what would have told me"*, which is true of the boot
+  failure and of nothing else: the builder's hero has no path for a duller
+  reason (it renders from config alone and never asks for one), and the chat
+  template never knows, being a page rendered inside the app. An agent that catches the app deducing wrong about
+  its own state has reason to discount the rest of the brief, so the line says
+  only what holds everywhere.

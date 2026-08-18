@@ -43,11 +43,14 @@ from fused_render.ai import catalog, registry, supervisor
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
 # rule here costs nothing.
-from fused_render.ai.runners import diarize, engine_options, partial
+from fused_render.ai.runners import diarize, engine_options, partial, preview
 from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
-# re-derived: see `_inferred_capability`. It imports nothing from here.
-from fused_render.server.routers.ai_models import cached_capability
+# re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
+# nothing from here.
+from fused_render.server.routers.ai_models import (
+    CachedModel, cached_capability, cached_models,
+)
 
 router = APIRouter()
 
@@ -83,6 +86,60 @@ def _images_dir() -> str:
     directory = os.path.join(home_dir(), "ai", "images")
     os.makedirs(directory, exist_ok=True)
     return directory
+
+
+#: How long a preview frame has to sit untouched before a sweep takes it.
+#:
+#: An hour, which is far longer than it needs to be and deliberately so. A LIVE
+#: preview is rewritten every denoising step, so its mtime is always seconds
+#: old — the threshold is not really a timeout, it is the line between "nobody
+#: is writing this" and "somebody is", and it is what lets the sweep run without
+#: knowing which renders are in flight. Erring long costs an orphan an extra
+#: hour on disk; erring short would delete the picture a user is watching.
+_PREVIEW_TTL = 3600
+
+
+def _sweep_previews(directory: str) -> None:
+    """Remove preview frames that no render is writing any more.
+
+    `preview.Sink.discard` runs on the way out of a render and takes the
+    thumbnail with it — but only on a normal unwind, and a worker does not
+    always get one. `supervisor._terminate` / `_kill_tree` end the process
+    outright when a model is unloaded, the app shuts down, or a worker wedges,
+    and what survives is a `<stem>.preview.png` (plus, if the kill landed
+    between the save and the replace, a `.<pid>.tmp` beside it) in
+    `<home>/ai/images` — a directory the user browses, holding a file with no
+    job row to explain it and nothing that would ever remove it.
+
+    Swept HERE, on the way into a render, rather than by a background timer: it
+    is the moment this is free (the caller is about to wait minutes) and the
+    only moment it is needed (the directory grows only when renders happen), and
+    a timer would be a lifecycle to own for a few kilobytes.
+
+    Matched by `preview.SUFFIX` appearing anywhere in the name, which covers the
+    frame and its temp in one test and cannot match a render's own
+    `<timestamp>-<uid>.png`. **The image itself is never touched at any age** —
+    it is the artefact the whole feature exists to produce.
+
+    Best-effort throughout, for the reason `discard` is: this runs at the front
+    of a request that is about to work, and an untidy folder is worth more than
+    a refused render. A directory that cannot be listed and a file that cannot
+    be removed are both simply left.
+    """
+    cutoff = time.time() - _PREVIEW_TTL
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return
+    for name in names:
+        if preview.SUFFIX not in name:
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+        except OSError:
+            pass
 
 
 def _transcripts_dir() -> str:
@@ -185,15 +242,149 @@ def api_ai_runtime():
     return supervisor.describe()
 
 
+def _cached_size_gb(size: int) -> float | None:
+    """A measured footprint as `size_gb` means it: decimal GB, one decimal.
+
+    The same unit and precision the curated entries use, because the field is read
+    by the same line of the same page. `None` when there is nothing to measure —
+    the no-guess rule the rest of this payload follows.
+    """
+    if size <= 0:
+        return None
+    return round(size / 1e9, 1)
+
+
+def _cached_label(repo_id: str) -> str:
+    """A cached repo's display name: the repo's own name, without the owner.
+
+    Not a hand-written label — nobody wrote one, and inventing prose from a repo id
+    would read as curation that isn't. The apps render `label || id`, so this only
+    has to be the shorter true thing: "Qwen3-8B-MLX-4bit" rather than
+    "mlx-community/Qwen3-8B-MLX-4bit" in a dropdown that is already narrow.
+    """
+    return repo_id.rsplit("/", 1)[-1] or repo_id
+
+
+def _cached_order(model: CachedModel):
+    """catalog.py's ordering rule, applied to the cached tail: SMALLEST FIRST, and
+    a repo with NOTHING MEASURABLE sorts LAST rather than into the smallest slot.
+
+    Over raw BYTES rather than the rounded `size_gb`: a 40MB repo and a 900MB one
+    both round to 0.0 at one decimal, and a display precision must not be what
+    decides an order.
+    """
+    return (model.size <= 0, model.size, model.repo_id)
+
+
+def _catalog_with_downloads() -> list[dict]:
+    """`catalog.describe()`, plus the models this disk actually has.
+
+    **The bug this closes (D323).** A user searches the Hub on the Discover tab,
+    presses Download, and the bytes land in the cache — and the model then appears
+    in NO page's picker, because every page reads `fused.ai.models.catalog()` and
+    that was the curation and nothing else. Three shipped apps read this one payload
+    the same way (find the capability, map `models[]` for `{id, label, size_gb,
+    note}`, select `default`), so putting the downloaded repos INTO `models[]` fixes
+    all three with no change to any of them.
+
+    **The union lives here, not in `catalog.py`.** That module is curation — "Curated,
+    not fetched" is its first heading — and it has no filesystem awareness at all;
+    teaching it to scan the hub cache would put a disk walk under `default_for()`,
+    which is called on the hot path of a bare `fused.ai.image()`. This router already
+    imports the cache reading for `_inferred_capability`, so the join costs it one
+    more import and costs `catalog.py` nothing.
+
+    **Every list here is per RUNNER, and the cached half obeys that too.** A
+    capability is NOT enough to put a repo in a list: `catalog.SUGGESTIONS` is keyed
+    by runner precisely because one capability's backends read mutually unloadable
+    formats (AI-11a), and a cached repo injected on its capability alone would break
+    that invariant inside the very same array. `openai/whisper-large-v3` is a speech
+    model that neither shipping speech runner reads; `mlx-community/Qwen3-8B-MLX-4bit`
+    is a text model that Transformers cannot open, so on a Mac switched to
+    Transformers it is an unusable download. So the test is the FORMAT's own answer —
+    is the runner this row resolved among the ones that would accept this snapshot
+    (`CachedModel.loaders`)? — and anything else is left out of `models[]` entirely.
+
+    **Left out, not flagged.** `models[]` has no `available`/`reason` field and every
+    consumer reads it as "things I may offer"; adding one would mean every existing
+    picker keeps offering the unloadable repo until it learns a new key, which is the
+    failure being fixed rather than a fix. The repo is not hidden — the AI Models
+    page's Local tab is the surface for "what is on my disk", it lists the repo, and
+    it already prints WHICH engine reads it and what stands in the way ("text
+    generation is set to Transformers, which does not read this format — switch it on
+    the Engines tab"). A picker cannot say that; a card can.
+
+    **Cached entries are APPENDED.** `entry.default`, `catalog.default_for()` and
+    `catalog.for_capability()` keep answering over the curated list alone — read
+    catalog.py's docstring on why smallest-first with the default at position 0 is
+    deliberate. A bare `fused.ai.transcribe()` therefore still loads a vetted model
+    rather than whatever 20GB experiment is on the disk, and the tail is sorted by the
+    same rule so the two halves read as one list. **The one case where a cached entry
+    reaches index 0 is a runner with no `SUGGESTIONS` key at all**, where there is
+    nothing curated to put in front of it; `default` is then None, which is the
+    honest answer, and `source` is on every entry so that a consumer inventing a
+    `models[0]` fallback can refuse an uncurated one. Read `default`, never `models[0]`.
+
+    Two additive fields make the states tellable apart without a second request:
+    `source` ("curated" | "cached") says which half an entry came from, and
+    `downloaded` says whether it is on this disk — so a curated entry can be marked
+    downloaded and is not duplicated as a cached one. `loaded` is read live from the
+    supervisor rather than from the memoised scan, because residency changes on a
+    second's notice and the disk inventory does not.
+    """
+    rows = catalog.describe()
+    cached = cached_models()
+    on_disk = {model.repo_id for model in cached}
+    resident = supervisor.resident_models()
+    by_capability: dict[str, list] = {}
+    for model in cached:
+        if model.capability is None:
+            # No capability could be inferred, and inventing one is how a load came
+            # to send a diffusion repo to mlx-lm (D321). The repo is still visible
+            # on the AI Models page, which is the surface for "what is on my disk".
+            continue
+        by_capability.setdefault(model.capability, []).append(model)
+    for row in rows:
+        curated = [
+            dict(entry, source="curated", downloaded=entry["id"] in on_disk,
+                 loaded=entry["id"] in resident)
+            for entry in row["models"]
+        ]
+        curated_ids = {entry["id"] for entry in curated}
+        extra = [
+            {
+                "id": model.repo_id,
+                "label": _cached_label(model.repo_id),
+                "size_gb": _cached_size_gb(model.size),
+                # No note, and not an invented one: a note in this payload is a
+                # person's frank sentence about a trade-off, and null says "no such
+                # sentence exists" where prose generated from a repo id would
+                # claim one does.
+                "note": None,
+                "source": "cached",
+                "downloaded": True,
+                "loaded": model.repo_id in resident,
+            }
+            for model in sorted(by_capability.get(row["capability"], ()), key=_cached_order)
+            if model.repo_id not in curated_ids
+            # The per-runner invariant, enforced: this row's list belongs to the
+            # runner `describe()` resolved, and a repo whose format that runner does
+            # not read has no business in it. See the docstring for both real repos
+            # this drops and why they are dropped rather than flagged.
+            and row["runner"] in model.loaders
+        ]
+        row["models"] = curated + extra
+    return rows
+
+
 @router.get("/api/ai/catalog")
 def api_ai_catalog():
-    """Suggested models per capability, with what this machine can run.
+    """Suggested models per capability, plus what is on this disk.
 
-    The AI Models page joins these against the cache to draw a checkmark, so the
-    reply is deliberately just the curation — whether a model is on disk is the
-    cache's question and is answered by the endpoint that scans it.
+    Sync `def`: `cached_models()` walks the hub cache (memoised, see there), so it
+    belongs in the threadpool rather than on the event loop.
     """
-    return {"capabilities": catalog.describe()}
+    return {"capabilities": _catalog_with_downloads()}
 
 
 @router.post("/api/ai/runtime/load")
@@ -327,9 +518,14 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
 
     uid = secrets.token_hex(6)
     job = supervisor.image_job_id(uid)
+    images = _images_dir()
+    # Before the render, not after: a preview orphaned by a killed worker has no
+    # unwind coming that would clean it up, so the next request is the only
+    # thing that will ever look. See `_sweep_previews`.
+    _sweep_previews(images)
     # Time-ordered and unique: the folder sorts chronologically in the explorer,
     # and two renders in the same second still land on different files.
-    path = os.path.join(_images_dir(), f"{time.strftime('%Y%m%d-%H%M%S')}-{uid}.png")
+    path = os.path.join(images, f"{time.strftime('%Y%m%d-%H%M%S')}-{uid}.png")
 
     request = {
         "prompt": prompt.strip(),
@@ -339,6 +535,20 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         "guidance": guidance,
         "seed": seed,
         "out": path,
+        # …and where the picture-in-progress goes while it denoises, so a page
+        # has something to show through a render that takes minutes. Derived
+        # through `preview.preview_path` rather than spelled here, for the
+        # reason `outPartial` is: the worker that writes this file and the reply
+        # that advertises it must name the same one, and a second spelling of
+        # the suffix is how they come to disagree. A sibling of the image for
+        # the same reason the transcript's three are siblings — the server owns
+        # where user files go.
+        #
+        # Sent unconditionally. Whether a preview HAPPENS is the worker's answer
+        # (it needs a fitted projection for the model's latent space), and a
+        # route that tried to predict it would need this process to know what a
+        # runner venv it cannot import has a matrix for.
+        "outPreview": preview.preview_path(path),
     }
     try:
         supervisor.start_image(model, request, job)
@@ -353,6 +563,13 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     return {
         "jobId": job,
         "path": path,
+        # Canonical, because this goes back to a page that will put it in a
+        # `/api/fs/raw` URL — a Windows path that reached it backslashed would
+        # not match what the shell stored for the same file. It is a promise
+        # about a PATH, not about a file: a model with no fitted projection
+        # writes nothing there, and `fused.ai.image` treats a missing preview
+        # as the ordinary case rather than as an error.
+        "previewPath": canonical_fs_path(request["outPreview"]),
         "model": model,
         "prompt": request["prompt"],
         "width": request["width"],

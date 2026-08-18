@@ -22,8 +22,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import calls as shell_calls
-from fused_render.account import router as account_router
-from fused_render.deploy import router as deploy_router
+from fused_render.canvases import router as canvases_router
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.recents import router as recents_router
@@ -61,8 +60,8 @@ from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
-from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
+from fused_render.server.routers.tasks import router as tasks_router
 from fused_render.server.routers.update import router as update_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
 # (tests repoint it at a staged copy before calling create_app, and
@@ -128,6 +127,13 @@ def export_app_env() -> None:
     # ran `claude --help`, and blocking here blocks the socket bind, which the
     # desktop supervisor reads as a server that failed to start.
     skill_plugin.export_skill_plugin_env()
+    # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
+    # script under home_dir()/fused-bin goes on PATH and its dir is published
+    # as one more FUSED_RENDER_* var, so a Claude session can `fused workbench
+    # canvas push` against the same environment the canvases iframe shows.
+    # Filesystem-only, like the skill plugin export above.
+    from fused_render import fusedcli
+    fusedcli.export_fused_cli_env()
     _export_bundled_uv_path()
 
 
@@ -362,6 +368,11 @@ def create_app(start_dir: str) -> FastAPI:
     # POSTs that add to and cancel from it. The loop that SENDS them is started
     # as a startup event below, not here — see there.
     app.include_router(schedule_router)
+    # Tasks (routers/tasks.py): the sessions above and the schedule above,
+    # joined into one noun — a task IS a Claude session, and its thread is every
+    # message that entered it, typed or scheduled. Reads are unguarded; the one
+    # POST marks a message read, the same weight of change as the triage POST.
+    app.include_router(tasks_router)
     # Community marketplace backend for the /apps hub's Showcase tab and the
     # explorer preview's Clone button (routers/community.py).
     app.include_router(community_router)
@@ -399,25 +410,15 @@ def create_app(start_dir: str) -> FastAPI:
     # probe. Its POSTs mutate, so they carry the D3 X-Fused guard.
     app.include_router(claude_config_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
-    # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
+    # POST /api/clone sparse-clone into ~/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
     from fused_render.deeplink import router as deeplink_router
 
     app.include_router(deeplink_router)
-    # Cloning a DEPLOYED page (app_clone.py) — GET /api/clone-app/info previews a pasted
-    # page URL, POST /api/clone-app downloads + validates + unpacks it into
-    # ~/Documents/Fused. Distinct from deeplink's git clone above: no `.git`, no identity,
-    # no update-in-place — every clone lands in a fresh folder. Like shell/*, it imports no
-    # server module, so the include stays acyclic.
-    from fused_render.app_clone import router as app_clone_router
-
-    app.include_router(app_clone_router)
-    # Deploy (hosted publish through the fused CLI) — export + `fused share`
-    # orchestration and the per-page deployment pointer store (deploy.py).
-    app.include_router(deploy_router)
-    # Fused account (in-app `fused cloud login/logout`, account.py) — the
-    # sign-in the managed-env deploys need, without a terminal.
-    app.include_router(account_router)
+    # Canvases (canvases.py) — local development on legacy-workbench canvases:
+    # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
+    # sync loop, and the access token the workspace iframe is seeded with.
+    app.include_router(canvases_router)
     # Template management (templates_api.py) — the Templates view backend:
     # inventory across sources, registry bindings edit, import/export. It owns
     # GET /api/templates/registry (the extended §2.2 shape). Imported here
@@ -427,12 +428,12 @@ def create_app(start_dir: str) -> FastAPI:
 
     app.include_router(templates_router)
 
-    # Per-file session restore (LSN-*/_server_session.py), the fs read routes
-    # (stat/conditions/list/walk/raw/events/reveal — _server_fs_read.py), the
-    # fs mutation routes (write/mkdir/delete/rename/copy — _server_fs_mutate.py),
-    # /render (_server_render.py), /api/run (_server_run.py), fused.ai
-    # (_server_ai.py), and /api/export (_server_export.py).
-    app.include_router(session_router)
+    # The fs read routes (stat/conditions/list/walk/raw/events/reveal —
+    # _server_fs_read.py), the fs mutation routes
+    # (write/mkdir/delete/rename/copy — _server_fs_mutate.py), /render
+    # (_server_render.py), /api/run (_server_run.py), fused.ai (_server_ai.py),
+    # and /api/export (_server_export.py). GET/PUT /api/session used to lead
+    # this list; the per-file session restore it served is gone (D329).
     app.include_router(fs_read_router)
     app.include_router(search_router)
     app.include_router(fs_mutate_router)

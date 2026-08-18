@@ -87,6 +87,7 @@ if "__file__" not in globals():
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from appenv import fused_cli_dir as _fused_cli_dir
 from appenv import skill_plugin_dir as _skill_plugin_dir
 from appenv import workspace_dir as _workspace_dir
 from private_dir import private_dir as _private_dir_under
@@ -469,6 +470,40 @@ def _plugin_argv() -> list:
     skills listed twice."""
     root = _skill_plugin_dir()
     return ["--plugin-dir", root] if root else []
+
+
+def _fused_cli_note() -> str:
+    """The prompt paragraph disclosing the `fused` CLI, or "" when the server
+    exported no wrapper (D334) — same rule as every other disclosure here: a
+    tool the model is never told about is a tool it never calls, and a prompt
+    promising a command the machine does not have is worse than silence.
+
+    Appended to EVERY target's prompt (file, app folder, ordinary folder)
+    rather than woven into each shape: the CLI is a fact about the machine,
+    not about the target. Three things it must say, each guarding a real
+    failure: run it as a BARE command (the `Bash(fused:*)` pre-allowance is a
+    prefix rule, so `cd x && fused ...` still raises a card — correct, but
+    surprising if unsaid); never run its login flows (they open a browser and
+    a headless session hangs on them); and never hand-push inside a canvas
+    clone (fused-render's own sync manager already pushes those folders, and
+    a second pusher races it)."""
+    if not _fused_cli_dir():
+        return ""
+    return (
+        " The `fused` CLI is on PATH: use it when the user asks to push, "
+        "pull or otherwise work with Fused (canvases, UDFs — e.g. `fused "
+        "workbench canvas push <dir> --canvas <name>`; see `fused --help`). "
+        "Run it as a plain `fused ...` command — that exact form is "
+        "pre-approved, while compound commands (`cd x && fused ...`) ask the "
+        "user first. It uses the user's existing Fused sign-in; NEVER run "
+        "`fused workbench login` or `fused cloud login` (they wait on a "
+        "browser round-trip that cannot complete here) — on an auth error, "
+        "ask the user to sign in from fused-render's Canvases page or a "
+        "terminal instead. Inside a canvas folder under ~/.fused-render/"
+        "canvases, fused-render may already be auto-pushing every edit: "
+        "there, just edit the files and let that sync push, rather than "
+        "running `canvas push` yourself."
+    )
 
 
 def _bad_id(value: str) -> bool:
@@ -1321,8 +1356,92 @@ _APP_STATE_BLOCK = re.compile(
 
 def _strip_app_state(text: str) -> str:
     """`text` without any pushed app-state block. Non-greedy and anchored on
-    the closing tag, so text that merely mentions the tag survives intact."""
+    the closing tag, so text that merely mentions the tag survives intact.
+
+    POSITION-INDEPENDENT, which is what separates it from `_strip_machinery`
+    below: this one removes the block from wherever it sits (meta.json, the
+    restored transcript), because those callers know the block is theirs. The
+    other one only ever peels a LEADING block, because it runs over records
+    nobody here wrote and a tag further in may be something a human typed."""
     return _APP_STATE_BLOCK.sub("", text or "").strip()
+
+
+# ------------------------------------------------ machinery on a user record
+#
+# A MIRROR of `fused_render/tasks_store.py`'s `strip_machinery` — same tag
+# lists, same discipline, same answers — because a template may not import
+# fused_render (SPEC PY-15 / D166) and this file has to read the same
+# `~/.claude/projects` records the server's Tasks list reads. Two copies is the
+# established shape for a rule that straddles that line (D253's model gate and
+# reader, D301's `app_entry`); what keeps them honest is a test that pins the
+# two to identical output over a corpus of real records, plus one that pins the
+# lists themselves — see tests/test_claude_sessions_merged.py.
+#
+# **Change one, change the other.** tasks_store carries the corpus counts that
+# justify the DROP/STRIP split; the short version is that DROP tags are Claude
+# Code writing a `type: user` record on the user's behalf (never any prose after
+# them), while STRIP tags are blocks THIS PAGE prepends to what the user typed
+# (always prose after them). Putting a tag in the wrong list either surfaces
+# machinery as a session's name or deletes the human's words.
+_MACHINERY_DROP = (
+    "task-notification",
+    "command-message", "command-name", "command-args",
+    "local-command-stdout", "local-command-stderr",
+    "bash-input", "bash-stdout", "bash-stderr",
+    "user-prompt-submit-hook", "system-reminder",
+)
+
+# Spelled out rather than built from `APP_STATE_TAG`: the parity test compares
+# this tuple to the server's literal one, and a wire tag renamed on one side of
+# that boundary has to fail loudly rather than drift quietly. (`pane-shot` has no
+# constant on this side at all — only template.html, which writes the block,
+# names it.)
+_MACHINERY_STRIP = ("live-app-state", "pane-shot")
+
+_MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
+_LEADING_MACHINERY = re.compile(
+    r"<(%s)>.*?</\1>\s*" % "|".join(_MACHINERY_TAGS), re.DOTALL)
+_LEADING_MACHINERY_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_TAGS))
+
+# `formatAnnotations`' preamble, which has no tag at all — the inverse of
+# template.html's `stripAnnBlock`, anchored on the json fence for the same
+# reason it is.
+_ANN_PREAMBLE = "The user annotated "
+_ANN_FENCE_OPEN = "\n```json\n"
+_ANN_FENCE_CLOSE = "\n```"
+
+
+def _strip_ann_block(text: str) -> str:
+    if not text.startswith(_ANN_PREAMBLE):
+        return text
+    open_at = text.find(_ANN_FENCE_OPEN)
+    if open_at == -1:
+        return text
+    close_at = text.find(_ANN_FENCE_CLOSE, open_at + len(_ANN_FENCE_OPEN))
+    if close_at == -1:
+        return text
+    return text[close_at + len(_ANN_FENCE_CLOSE):].lstrip("\n")
+
+
+def _strip_machinery(text: str) -> str:
+    """What a human actually typed in one transcript record — every
+    machine-written PREFIX peeled off — or "" if they typed no words at all.
+
+    Loops because one send carries the blocks in combination (`composeOutgoing`
+    fixes the order: state, pictures, notes, words) and peeling one exposes the
+    next. A leading opener still standing at the end has no close in the string
+    (a record caught mid-flush, or a head read cut inside a block), and
+    everything from a machinery opener on is machinery whatever follows it."""
+    out = (text or "").strip()
+    while True:
+        before = out
+        match = _LEADING_MACHINERY.match(out)
+        if match:
+            out = out[match.end():].strip()
+        out = _strip_ann_block(out).strip()
+        if out == before:
+            break
+    return "" if _LEADING_MACHINERY_OPEN.match(out) else out
 
 
 def _app_state_requests(run_dir: str) -> list:
@@ -1509,9 +1628,19 @@ def _start(file: str, message: str, session_id: str, model: str,
            #
            # Narrow by construction: one fully-qualified tool name and one
            # directory, and the prompt bridge stays wired for everything else.
+           #
+           #   Bash(fused:*) — the third pre-allowance, and the only Bash one
+           #     (D334). Present exactly when the server exported a `fused`
+           #     wrapper (appenv.fused_cli_dir), never as a bare guess about
+           #     PATH: the point is "push directly", and carding every push
+           #     would put a prompt on screen for the one command this app
+           #     itself runs on the user's behalf elsewhere (canvases.py). A
+           #     prefix rule, so only a command that IS `fused ...` matches —
+           #     compounds (`cd x && fused ...`) still card.
            "--allowed-tools",
            ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
-                     else []) + [_read_rule(SHOTS)])]
+                     else []) + [_read_rule(SHOTS)]
+                    + (["Bash(fused:*)"] if _fused_cli_dir() else []))]
     cmd += _plugin_argv()
     # BOTH targets get an --append-system-prompt here, and they get different
     # ones. A FILE target gets the scoping prompt. A DIRECTORY target that is an
@@ -1527,9 +1656,12 @@ def _start(file: str, message: str, session_id: str, model: str,
     # the two must NOT share is the DESCRIPTION of that pane: an app folder frames
     # the user's own app, a file frames fused-render's preview of their file. Each
     # prompt says which, so the model never mistakes our UI for the user's code.
+    # The fused CLI note rides every shape (file, app folder, ordinary
+    # folder) because it is a fact about the machine, not the target — and
+    # only when the wrapper actually exists (see _fused_cli_note).
     cmd += ["--append-system-prompt",
-            _split_system_prompt(file, pane) if os.path.isdir(file)
-            else _system_prompt(file)]
+            (_split_system_prompt(file, pane) if os.path.isdir(file)
+             else _system_prompt(file)) + _fused_cli_note()]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id:
@@ -1557,6 +1689,17 @@ def _start(file: str, message: str, session_id: str, model: str,
 
     stdin_path = os.path.join(run_dir, "stdin.jsonl")
     stdin_fh = open(stdin_path, "rb") if message_via_stdin else None
+    # The session must not inherit an ambient FUSED_ENV from the server's own
+    # process: the `fused` wrapper (fusedcli._wrapper_text) only DEFAULTS
+    # FUSED_ENV when unset, so a value already present here — say the server
+    # itself was launched from a shell that exports FUSED_ENV for unrelated
+    # reasons — would look exactly like a deliberate `FUSED_ENV=x fused ...`
+    # from the model and skip the workbench default, silently diverging from
+    # canvases.py's own runs (`_cli_env` always forces FUSED_ENV=WORKBENCH_ENV,
+    # ambient or not). Popping it here is what makes "unset" in the wrapper
+    # mean what the model actually typed on that command line.
+    spawn_env = os.environ.copy()
+    spawn_env.pop("FUSED_ENV", None)
     try:
         with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
              _private_open(os.path.join(run_dir, "err.log")) as err:
@@ -1567,6 +1710,7 @@ def _start(file: str, message: str, session_id: str, model: str,
             proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                     cwd=_workdir(file),
                                     stdin=stdin_fh or subprocess.DEVNULL,
+                                    env=spawn_env,
                                     **_DETACH)
     finally:
         if stdin_fh is not None:
@@ -1623,7 +1767,8 @@ def _commit_turn(file: str, message: str) -> None:
         return subprocess.run(
             [shutil.which("git") or "git", "-C", app_dir, "-c", "user.name=Fused",
              "-c", "user.email=apps@fused.io", *args],
-            capture_output=True, text=True, timeout=30, close_fds=False)
+            capture_output=True, text=True, timeout=30, close_fds=False,
+            encoding="utf-8", errors="replace")
 
     try:
         # Legacy defense (D83-reversal, D205): sidecars now live under
@@ -2542,9 +2687,17 @@ def _cli_preview(path: str, workdir: str) -> str:
 
     Skipped rows: `isMeta` (the local-command caveat Claude Code writes for the
     user), `isSidechain` (a subagent's prompt, which the user never typed), and
-    anything opening with "<" — a slash command's `<command-name>` envelope, or
-    this template's own APP_STATE_TAG block, neither of which the user wrote as
-    prose.
+    any row that is machinery all the way down once `_strip_machinery` has had
+    it — a slash command's envelope, a subagent reporting back, a wordless
+    screenshot send.
+
+    That last test used to be `startswith("<")`, and it was too blunt by exactly
+    one case: the case THIS PAGE causes. `composeOutgoing` prepends the app-state
+    block and the pane shots to what the user typed, so the only message in a
+    session can open with "<" and still be the user's own words — the row went
+    nameless while the words sat right there after the block. The annotation
+    preamble it never caught at all, having no tag to open with, so those rows
+    were titled "The user annotated 1 element in the left previe…".
     """
     try:
         with open(path, "rb") as fh:
@@ -2586,8 +2739,8 @@ def _cli_preview(path: str, workdir: str) -> str:
                                if isinstance(b, dict) and b.get("type") == "text")
         if not isinstance(content, str):
             continue
-        content = content.strip()
-        if not content or content.startswith("<"):
+        content = _strip_machinery(content)
+        if not content:
             continue
         return content[:80] if cwd_seen else ""
     return ""
@@ -3004,7 +3157,14 @@ def _history(file: str, session_id: str) -> dict:
     prose around them. User turns keep just `text`: there is nothing structured
     about a typed message, and the app-state block is stripped from it BEFORE
     anything else reads it (below), which is also why segments cannot become a
-    second route back for the block the user never saw."""
+    second route back for the block the user never saw.
+
+    User turns DO carry `uuid`, the transcript record's own id. It is the one
+    field a restored turn can be addressed by from outside this page: the Tasks
+    list reads the same uuid off the same record (`_prompt`, server/routers/
+    tasks.py) and links a message as `?msg=<uuid>`, so the chat can scroll to the
+    turn a person clicked instead of to the top of the conversation. "" on a
+    record that has none — the template treats the key as optional throughout."""
     if _bad_id(session_id):
         return {"turns": []}
     file = os.path.abspath(file)
@@ -3063,7 +3223,8 @@ def _history(file: str, session_id: str) -> dict:
             text = _strip_app_state(text)
             if text.strip() and not text.startswith(("<local-command", "<command-name")):
                 close_stretch()  # before the user turn, or the segments land on it
-                turns.append({"role": "user", "text": text})
+                turns.append({"role": "user", "text": text,
+                              "uuid": str(row.get("uuid") or "")})
             else:
                 # Everything else on a `user` row belongs to the assistant's
                 # reply: tool_result blocks are what its tool segments are

@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { aiComplete, createApp } from "@platform/lib/api";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { TroubleCard } from "@platform/ui/TroubleCard";
 import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
 import { TextArea } from "@platform/ui/field/fields";
@@ -182,6 +183,8 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
   const [prompt, setPrompt] = useState("");
   const [phase, setPhase] = useState<"idle" | "naming" | "creating">("idle");
   const [error, setError] = useState<string | null>(null);
+  // Claude would not start for an app that WAS created — see the submit path.
+  const [sessionError, setSessionError] = useState<string | null>(null);
   // Which window of three starter chips is showing; shuffle advances it.
   const [sampleOffset, setSampleOffset] = useState(0);
   const alive = useRef(true);
@@ -199,6 +202,7 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
     if (!canSubmit) return;
     const trimmed = prompt.trim();
     setError(null);
+    setSessionError(null);
     setPhase("naming");
     try {
       const name = await suggestAppName(trimmed);
@@ -212,7 +216,11 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
       // success, and a live run means the claude chat is the right landing.
       if (res.session_error) {
         if (alive.current) {
-          setError(`App created, but Claude didn't start: ${res.session_error}`);
+          // The FOLDER exists; only the session failed. Kept as its own state
+          // so the card can say that plainly and still show the spawn error
+          // verbatim — folding the two into one string made the error
+          // unclassifiable (and unsearchable) by prefixing it.
+          setSessionError(res.session_error);
           setPhase("idle");
         }
         return;
@@ -304,6 +312,23 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
         </button>
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
+      {/* THE OTHER PLACE A USER REACHES FOR CLAUDE, and the one where being
+          told to install it matters most: they typed what to build. The app
+          folder is already there, so the card says so rather than reading as a
+          total failure — and the spawn error stays verbatim inside it, which a
+          prefixed string could not do. */}
+      {sessionError && (
+        <TroubleCard
+          what="starting a Claude session to build a new app"
+          error={sessionError}
+          facts={{ page: location.pathname + location.search }}
+          onRetry={() => setSessionError(null)}
+        >
+          <span className="deploy-muted">
+            The app folder was created — only the session failed.
+          </span>
+        </TroubleCard>
+      )}
     </div>
   );
 }

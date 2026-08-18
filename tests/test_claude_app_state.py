@@ -601,7 +601,10 @@ def test_history_hides_the_state_block_from_the_restored_transcript(agent,
              "text": "<live-app-state>\n{\"title\": \"x\"}\n</live-app-state>\n\n"
                      "fix the header"}]}}) + "\n")
     turns = agent._history(str(project), "sid")["turns"]
-    assert turns == [{"role": "user", "text": "fix the header"}]
+    # `uuid` is the transcript record's own id, carried so the chat can scroll
+    # to one turn (`?msg=`, see test_claude_message_anchor.py); "" on a row that
+    # has none, as this fixture does.
+    assert turns == [{"role": "user", "text": "fix the header", "uuid": ""}]
 
 
 def test_the_page_and_the_agent_agree_on_the_block_delimiters(agent, html):
@@ -1129,7 +1132,7 @@ def test_the_two_readers_of_a_wire_message_use_the_same_strip(html):
     stop matching and trim another turn's rows."""
     assert html.count("stripAnnBlock(") == 2, "stripAnnBlock is called outside stripBlocks"
     assert "stripBlocks(probe.message" in html
-    assert "addUser(stripBlocks(t.text))" in html
+    assert "addUser(stripBlocks(t.text), t.uuid)" in html
 
 
 # ------------------------------------------------- the pull channel, on screen

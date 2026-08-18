@@ -10,7 +10,7 @@ Nothing here spawns a real claude — no test lets a message come due.
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import schedule, schedule_wake
+from fused_render import schedule, schedule_wake, tasks_store
 from fused_render.server import create_app
 from fused_render.shell import mounts as mounts_mod
 
@@ -208,6 +208,88 @@ def test_the_loop_is_not_started_by_building_the_app(tmp_path, monkeypatch):
     assert started == [True]
 
 
+# -------------------------------------------------- the form's three fields
+
+def test_the_forms_three_new_fields_survive_the_round_trip(client, target):
+    """The regression this test exists for: `/api/schedule` takes a raw dict, so
+    a field the endpoint does not name is silently dropped — no 400, just gone.
+    All three of the form's newest controls went that way, which made the user's
+    own title never persist, description write-only, and "New task each run" a
+    checkbox that did nothing.
+
+    The form reads them back under these exact names when it opens on an
+    existing task, so the names are part of the contract rather than an internal
+    detail."""
+    created = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "pull news",
+                                "repeats": "0 9 * * *",
+                                "title": "Morning digest",
+                                "description": "Reads the feeds",
+                                "new_task_each_run": True})
+    assert created.status_code == 200
+    entry = created.json()["entry"]
+    assert entry["title"] == "Morning digest"
+    assert entry["description"] == "Reads the feeds"
+    assert entry["new_task_each_run"] is True
+
+    listed = client.get("/api/schedule").json()["entries"]
+    template = next(e for e in listed if e["id"] == entry["id"])
+    assert template["title"] == "Morning digest"
+    # The occurrence carries the words and, because the box is ticked, opens its
+    # own session rather than inheriting the template's thread.
+    occurrence = next(e for e in listed if e.get("template_id") == entry["id"])
+    assert occurrence["title"] == "Morning digest"
+    assert occurrence["description"] == "Reads the feeds"
+    assert occurrence["session_id"] == ""
+
+
+def test_the_three_fields_are_optional_and_never_a_400(client, target):
+    """The form omits them when blank or unticked, and a stray null must still
+    schedule the message — they are labels and a threading preference, not
+    inputs a request can be refused over."""
+    for body in ({}, {"title": None, "description": None,
+                      "new_task_each_run": None}):
+        res = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "hi",
+                                "delay_seconds": 600, **body})
+        assert res.status_code == 200
+        entry = res.json()["entry"]
+        assert entry["title"] == ""
+        assert entry["description"] == ""
+        assert entry["new_task_each_run"] is False
+
+
+def test_session_learned_survives_the_round_trip_and_is_never_invented(
+        client, target):
+    """The same drop, in the one place it costs a thread: an edit is cancel +
+    re-create, so the re-create is where a learned session's provenance has to
+    be re-stated. A router that quietly ignored `session_learned` would make
+    every edit look like a chat handoff, and the next repeat would refuse the
+    task's own thread."""
+    kept = client.post("/api/schedule", headers=WRITE,
+                       json={"target": str(target), "message": "pull news",
+                             "repeats": "0 9 * * *",
+                             "session_id": "sess-learned",
+                             "session_learned": True})
+    assert kept.status_code == 200
+    entry = kept.json()["entry"]
+    assert entry["session_learned"] is True
+    occurrence = next(e for e in client.get("/api/schedule").json()["entries"]
+                      if e.get("template_id") == entry["id"])
+    assert occurrence["session_id"] == "sess-learned"
+    assert occurrence["session_learned"] is True
+
+    # A chat handoff says nothing, so nothing is claimed for it — and a stray
+    # null is a missing opinion, not a 400.
+    for body in ({}, {"session_learned": None}):
+        res = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "hi",
+                                "delay_seconds": 600,
+                                "session_id": "sess-chat", **body})
+        assert res.status_code == 200
+        assert res.json()["entry"]["session_learned"] is False
+
+
 # ----------------------------------------------------------------- recurring
 
 def test_repeats_creates_a_template_and_lists_its_projection(client, target):
@@ -261,3 +343,77 @@ def test_restore_is_guarded_and_unskips_over_http(client, target):
     again = client.post("/api/schedule/restore", headers=WRITE,
                         json={"id": occurrence["id"]})
     assert again.status_code == 404
+
+
+# ------------------------------------------------ the number an edit must keep
+
+@pytest.fixture()
+def task_state(tmp_path, monkeypatch):
+    """`tasks_store`'s own store, redirected at a tmp dir.
+
+    It is NOT under FUSED_RENDER_HOME: task numbers are deliberately global (a
+    session numbered from a worktree keeps that number on main), so the module
+    resolves STATE_DIR at import and the only way to move it is to patch it.
+    """
+    d = tmp_path / "task-state"
+    d.mkdir()
+    monkeypatch.setattr(tasks_store, "STATE_DIR", str(d))
+    return d
+
+
+def _number_for(entry_id):
+    return tasks_store.task_number(tasks_store.pending_key(entry_id))
+
+
+def test_an_edit_carries_its_task_number_onto_the_entry_that_replaces_it(
+        client, target, task_state):
+    """TASK-078 must not become TASK-079 because the user changed the time.
+
+    Editing a scheduled message is cancel + re-create — there is no PATCH — so
+    the entry stops existing and a new one with a new id takes its place. A task
+    that has not run yet is numbered on that entry id, so the listing saw a key
+    it had never seen and allocated the next number in the project; the user
+    watched the row rename itself, with no duplicate to explain it (QA,
+    2026-08-18). `replaces` is how the form says the two are one task.
+    """
+    first = client.post("/api/schedule", headers=WRITE,
+                        json={"target": str(target), "message": "pull the news",
+                              "due": "2030-01-01T09:00:00Z"}).json()["entry"]
+    # The number the user has seen. Allocated the way the listing allocates it.
+    tasks_store.ensure_ids([(tasks_store.pending_key(first["id"]), str(target), 1.0)])
+    seen = _number_for(first["id"])
+    assert seen == "TASK-001"
+
+    second = client.post("/api/schedule", headers=WRITE,
+                         json={"target": str(target), "message": "pull the news",
+                               "due": "2030-01-02T09:00:00Z",
+                               "replaces": first["id"]}).json()["entry"]
+    assert second["id"] != first["id"]
+    # Moved, not copied and not re-minted: the new entry IS TASK-001 and the old
+    # key no longer answers to anything.
+    assert _number_for(second["id"]) == seen
+    assert _number_for(first["id"]) == ""
+
+    # And the number is not spent twice: the next task in this project gets 002,
+    # not 001 — allocate-once survives the move.
+    third = client.post("/api/schedule", headers=WRITE,
+                        json={"target": str(target), "message": "something else",
+                              "due": "2030-01-03T09:00:00Z"}).json()["entry"]
+    tasks_store.ensure_ids([(tasks_store.pending_key(third["id"]), str(target), 2.0)])
+    assert _number_for(third["id"]) == "TASK-002"
+
+
+def test_replaces_is_a_no_op_when_there_is_nothing_to_move(client, target, task_state):
+    """Everything that is not the case above, and none of it may cost a send.
+
+    A `replaces` naming an entry that never had a number — it ran, so its task is
+    keyed on the session id, which an edit does not touch — leaves the new entry
+    to be numbered normally. An absent `replaces` (every new task) does the same.
+    Neither is an error: the message is scheduled either way.
+    """
+    for body in ({"replaces": "no-such-entry"}, {"replaces": ""}, {}):
+        res = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "x",
+                                "due": "2030-02-01T09:00:00Z", **body})
+        assert res.status_code == 200
+        assert _number_for(res.json()["entry"]["id"]) == ""

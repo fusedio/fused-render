@@ -60,7 +60,14 @@ function useStripCount() {
 }
 
 // Section chrome: title row with the "See all" action on the right edge.
-// An <a> so cmd/ctrl-click opens the full page in a new tab like any link.
+// Both title and "See all" are <a>s so cmd/ctrl-click opens the full page in
+// a new tab like any link.
+function softNavigate(e: React.MouseEvent, href: string) {
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  navigateUrl(href);
+}
+
 function Section({
   title,
   seeAllHref,
@@ -73,17 +80,12 @@ function Section({
   return (
     <section className="fh-section home-section">
       <div className="home-sec-head">
-        <h2 className="home-sec-title">{title}</h2>
-        <a
-          className="home-sec-more"
-          href={seeAllHref}
-          onClick={(e) => {
-            if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-              return;
-            e.preventDefault();
-            navigateUrl(seeAllHref);
-          }}
-        >
+        <h2 className="home-sec-title">
+          <a className="home-sec-title-link" href={seeAllHref} onClick={(e) => softNavigate(e, seeAllHref)}>
+            {title}
+          </a>
+        </h2>
+        <a className="home-sec-more" href={seeAllHref} onClick={(e) => softNavigate(e, seeAllHref)}>
           See all
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M9 6l6 6-6 6" />

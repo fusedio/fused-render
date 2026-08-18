@@ -6,7 +6,7 @@ Windows HKCU `fused-render` URL-protocol class), lands the browser on
 `GET /clone?src=…` — a server-served confirm page. Nothing touches disk until
 the user confirms there; the page then calls `POST /api/clone` (X-Fused
 guarded, same D3 posture as every mutating route) which sparse-clones the
-repository's subdirectory into ~/Documents/Fused/<subdir basename> and
+repository's subdirectory into ~/Fused/<subdir basename> and
 answers with the /view URL to open (the subdirectory's index.html when one
 exists, else the directory itself).
 
@@ -158,7 +158,7 @@ def parse_github_url(src: str) -> dict:
       https://github.com/{owner}/{repo}/tree/{ref}/{sub} -> subdirectory at ref
 
     Returns {owner, repo, ref, subpath, name}: `ref`/`subpath` may be None/"";
-    `name` is the destination folder under ~/Documents/Fused — the subpath's
+    `name` is the destination folder under ~/Fused — the subpath's
     last segment, or the repo name for a whole-repo link.
     """
     url = github_url_from(src)
@@ -256,6 +256,8 @@ def _git(args: list[str], timeout: int = 300) -> str:
             stderr=subprocess.PIPE,
             timeout=timeout,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env=_git_env(),
         )
     except FileNotFoundError:
@@ -383,7 +385,7 @@ def _clone_into(spec: dict, remote: str, dest: str) -> None:
 
 
 def clone_or_pull(spec: dict) -> dict:
-    """Materialize the spec under ~/Documents/Fused; return open-target info.
+    """Materialize the spec under ~/Fused; return open-target info.
 
     Fresh destination -> sparse clone (blob:none filter keeps the transfer to
     the checked-out subtree). Existing destination -> must be a clone of the

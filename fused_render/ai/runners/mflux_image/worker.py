@@ -45,6 +45,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import formats  # noqa: E402 - the shared format checks; see formats.py
+import preview  # noqa: E402 - the ONE live-thumbnail writer; see preview.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: The loaded model. One per process.
@@ -160,6 +161,11 @@ def load(model_id, fetched):
     # request out of `_request` instead.
     model.callbacks.register(_StepReporter())
     _loaded["model"] = model
+    # The key the live preview's projection table is keyed by. The torch runner
+    # reads it off `type(pipe.vae).__name__`; there is no such object here, so
+    # it comes out of the recipe — see `formats.MFLUX_VARIANTS` for why an
+    # autoencoder class name is the right thing for an MLX table to carry.
+    _loaded["vae"] = recipe.get("vae")
     # See `worker_base.STATE["device"]`. MLX is Metal or nothing, so unlike the
     # torch runner there is nothing to detect — but the page shows this field to
     # explain a speed, and a user comparing the two engines should be able to
@@ -217,6 +223,44 @@ def _eta(remaining):
 _request = {}
 
 
+def _sigma_after(config, t):
+    """The noise level the schedule has ARRIVED at, after step index `t`.
+
+    `config.scheduler.sigmas` is the whole schedule with a trailing zero, and
+    the latents the callback is handed after step `t` are at `sigmas[t + 1]` —
+    the same indexing `diffusers_image/worker.py` documents against
+    `pipeline.scheduler.sigmas`, because it is the same schedule.
+
+    None when there is no schedule to read, which mflux always has — but a
+    preview must not be able to raise out of the one callback this runner
+    cancels through and lose a render that was going to succeed.
+    """
+    sigmas = getattr(getattr(config, "scheduler", None), "sigmas", None)
+    if sigmas is None or len(sigmas) <= t + 1:
+        return None
+    return float(sigmas[t + 1])
+
+
+def _as_numpy(latents):
+    """The step's latents as numpy, for the preview projection.
+
+    `astype(float32)` first because numpy has no bfloat16 and mflux's loop is
+    free to work in it. Both packed `(B, N, 128)` and unpatchified
+    `(B, 128, h, w)` come through unchanged — `preview` takes either, so the
+    unpack rule is not restated here.
+
+    **This costs the render nothing.** Touching the array forces the same
+    `mx.eval` the generation loop performs immediately after the callback
+    returns, and it happens ON that thread — so there is no unevaluated graph
+    crossing a thread boundary and no `_pin_stream` concern (see `load`'s
+    docstring for the failure mode that would be).
+    """
+    import mlx.core as mx
+    import numpy
+
+    return numpy.asarray(latents.astype(mx.float32))
+
+
 class _StepReporter:
     """mflux's in-loop callback, and this runner's only interruption point.
 
@@ -244,6 +288,23 @@ class _StepReporter:
         done = t + 1
         average = sum(started) / len(started) if started else None
         remaining = (steps - done) * average if average else None
+        # The live thumbnail, from the SAME hook and for the same reason the
+        # progress tick is here: this is the only place in a minutes-long
+        # `generate_image()` where anything can be seen. A CLOSURE, not the
+        # array — a sink that is not writing must not be charged for the
+        # conversion, which is what keeps the branch out of this loop and the
+        # two runners' callbacks the same shape.
+        #
+        # **BEFORE the tick, and the order is load-bearing** — the diffusers
+        # runner's `on_step_end` says why at length, and it is the same reason
+        # here because it is the same page reading the same URL: `done` becomes
+        # the cache-busted `&step=N`, and a tick published ahead of its frame can
+        # get the previous frame's bytes cached under this step's URL for the
+        # step's whole duration. It costs the ✕ one frame-write of latency.
+        sigma = _sigma_after(config, t)
+        if sigma is not None:
+            request["preview"].add(lambda: _as_numpy(latents), sigma=sigma,
+                                   grid=request["grid"])
         # `report_or_cancel`, not `report`: this callback is the ONLY point in a
         # minutes-long `generate_image()` where a stop can be honoured, and the
         # reply to this tick is how the ✕ gets here. Same sentence, same fields
@@ -283,29 +344,40 @@ def generate(body):
         raise ValueError("'out' must be the path to write the image to")
 
     started = time.time()
+    # The live thumbnail. A no-op when the request named no preview file or when
+    # nothing has been fitted for this model's latent space — see `preview.sink`.
+    frames = preview.sink(body.get("outPreview"), _loaded.get("vae"))
     # Published before the call and cleared after it, so the registered reporter
     # is reporting about THIS request and no other.
     _request.clear()
-    _request.update({"job": job, "steps": steps, "step_times": [], "last": started})
+    _request.update({"job": job, "steps": steps, "step_times": [], "last": started,
+                     "preview": frames, "grid": preview.token_grid(width, height)})
+    # Step 0 is the one tick with no frame behind it, and that is not the
+    # ordering rule the reporter documents: a frame needs two latents, so
+    # nothing exists to write until the second step.
     worker_base.report(job=job, state="running", kind="task", unit="",
                        done=0, total=steps, detail="Denoising — step 0/%d" % steps)
-    try:
-        image = model.generate_image(
-            seed=seed, prompt=prompt, num_inference_steps=steps,
-            height=height, width=width, guidance=guidance)
-    finally:
-        # Even on the cancel path: a reporter left pointing at a finished
-        # request would tick a row that is closed.
-        _request.clear()
+    # The sink wraps the SAVE as well as the render: its exit is the lifecycle,
+    # and a clean one means the real PNG has landed and the preview is now
+    # duplicate bytes. A cancel or a failure discards it too (`preview.Sink`).
+    with frames:
+        try:
+            image = model.generate_image(
+                seed=seed, prompt=prompt, num_inference_steps=steps,
+                height=height, width=width, guidance=guidance)
+        finally:
+            # Even on the cancel path: a reporter left pointing at a finished
+            # request would tick a row that is closed.
+            _request.clear()
 
-    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    # `overwrite=True` is NOT optional. mflux's default resolves a colliding
-    # path by writing somewhere ELSE (`ImageUtil.resolve_output_path`), and the
-    # server has already told the caller where this image will be — so the
-    # default would answer a request with a file at a path nobody was given,
-    # while `out` stayed empty or stale. The server owns the location; this
-    # process owns the pixels.
-    image.save(out, overwrite=True)
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        # `overwrite=True` is NOT optional. mflux's default resolves a colliding
+        # path by writing somewhere ELSE (`ImageUtil.resolve_output_path`), and
+        # the server has already told the caller where this image will be — so
+        # the default would answer a request with a file at a path nobody was
+        # given, while `out` stayed empty or stale. The server owns the
+        # location; this process owns the pixels.
+        image.save(out, overwrite=True)
     return {
         "path": out,
         "seconds": round(time.time() - started, 2),

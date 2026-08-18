@@ -166,12 +166,33 @@ export function nextSearchSelection(
   rows: string[],
   byPath: ReadonlyMap<string, unknown>,
   sel: Selection,
-): { state: SearchSelectState; select: string | null } {
+  rowsAnswerQuery: boolean,
+): { state: SearchSelectState; select: string | null; clear: boolean } {
+  // Rows that answer an OLDER query are display-only.
+  //
+  // The ranked box never blanks the list, so the previous query's hits stay on
+  // screen while the next answer is in flight. That is deliberate — and it is
+  // a hazard the walk never had, because a query change emptied its rows for a
+  // commit (lib/search-hold is query-tagged), which is what used to stop
+  // auto-select and Enter from reaching them.
+  //
+  // Selecting such a row arms every default action on a file the user is no
+  // longer looking for: Enter opens it, and Cmd+Backspace trashes it. So
+  // nothing is placed while the rows are stale, and a placement THIS made is
+  // withdrawn — but a selection the USER made is left exactly where it is,
+  // which is the older rule (their choice outlives a query change) and is
+  // still right: they pointed at a row they can see.
+  if (!rowsAnswerQuery) {
+    const ours = state.autoPlaced !== null && !state.userClaimed &&
+      sel.lead === state.autoPlaced;
+    if (!ours) return { state, select: null, clear: false };
+    return { state: { autoPlaced: null, userClaimed: false }, select: null, clear: true };
+  }
   // A query change empties the results for a commit and the listing reconcile
   // clears the selection with them. Neither is a user gesture, so the empty
   // commit gets no judgment at all — deciding there read the reconcile's clear
   // as Escape and permanently blocked auto-select after the first refine.
-  if (firstEntryPath(rows, byPath) === null) return { state, select: null };
+  if (firstEntryPath(rows, byPath) === null) return { state, select: null, clear: false };
   // A lead that is not where this decision left it was moved by the user —
   // including moved to nothing, which is Escape and is equally theirs. Only
   // meaningful once something HAS been placed: before that, an empty selection
@@ -185,10 +206,12 @@ export function nextSearchSelection(
   const anchorPresent = anchor !== null && byPath.has(anchor) && rows.includes(anchor);
   if (claimed && sel.lead === null && !anchorPresent) claimed = false;
   const select = searchAutoSelectPath(rows, byPath, sel, claimed);
-  if (select === null) return { state: { ...state, userClaimed: claimed }, select };
+  if (select === null) {
+    return { state: { ...state, userClaimed: claimed }, select, clear: false };
+  }
   // Writing a selection makes it ours again: a claim only ever ends because
   // the row it was on stopped being a result.
-  return { state: { autoPlaced: select, userClaimed: false }, select };
+  return { state: { autoPlaced: select, userClaimed: false }, select, clear: false };
 }
 
 // --- the `?sel=` URL param ---------------------------------------------------

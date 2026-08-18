@@ -117,10 +117,17 @@ def test_the_composer_no_longer_offers_to_send_later(code):
         assert gone not in code, f"{gone} outlived the pill"
     # no date field anywhere in the composer any more
     assert "datetime-local" not in code
-    # ONE writer for the schedule store, and it is not this template: the only
-    # request it makes is the watcher's read (see pollScheduledRuns)
-    assert code.count("/api/schedule") == 1
+    # The composer still CREATES nothing: no POST that schedules anything, so a
+    # send is a send and a schedule is the hop to the Schedule page.
+    #
+    # TWO requests now, not one (Akshil, 2026-08-17): the watcher's read, and the
+    # block banner's cancel. The cancel is a write, and it is allowed here for a
+    # reason the pill never had — it schedules nothing, it withdraws the message
+    # holding this composer shut, so the control that explains the block and the
+    # control that lifts it are the same one. See test_claude_composer_block.py.
+    assert code.count("/api/schedule") == 2
     assert 'fetch("/api/schedule")' in code
+    assert '"/api/schedule/cancel"' in code
 
 
 def test_the_kebab_no_longer_carries_a_schedule_item(code):
@@ -149,6 +156,35 @@ def test_the_click_confirms_before_it_navigates(code):
     go = code[code.index('document.getElementById("schedpop-go").addEventListener'):]
     go = go[:go.index("\n});")]
     assert "openScheduler(" in go
+
+
+def test_no_route_through_this_button_survives_a_blocked_composer(code):
+    """"When we have a blocked panel we don't allow to type… we should not allow to
+    schedule the task as well" (Akshil, 2026-08-17). A session already holding a
+    pending scheduled message takes no further input, and a task queued from here
+    lands in that message's context exactly as a typed reply would.
+
+    What this suite owns is the ROUTE COUNT: the handoff is two clicks and one
+    Continue, and the block has to reach all three — the `disabled` attribute plus
+    the click guard for the buttons, and a guard on Continue because the 15s poll
+    can shut the chat while the confirm is still on screen. The state itself, both
+    directions and the wording live in tests/test_claude_composer_block.py; there
+    is exactly ONE of them and this reads the same one."""
+    state = code[code.index("function applyComposerBlockState("):]
+    state = state[:state.index("\n}")]
+    assert "schedBtn.disabled = blocked" in state
+    assert "const blocked = schedBlocked();" in state
+    clicks = code[code.index('document.querySelectorAll(".schedbtn")'):]
+    clicks = clicks[:clicks.index("\n});")]
+    assert "if (schedBlocked()) return;" in clicks
+    go = code[code.index('document.getElementById("schedpop-go").addEventListener'):]
+    go = go[:go.index("\n});")]
+    assert "if (schedBlocked()) return;" in go
+    assert go.index("schedBlocked()") < go.index("openScheduler(")
+    # and there is no fourth way in for it to have missed: no shortcut key, no
+    # kebab item (deleted 2026-08-16, above), and only these two callers
+    assert code.count("openSchedConfirm(") == 2
+    assert code.count("openScheduler(") == 2
 
 
 def test_the_confirm_says_what_travels(source):
@@ -265,7 +301,7 @@ def test_the_page_reads_the_params_the_template_writes(code, page):
     """The contract, spelled in two files. A rename on either side leaves the
     button navigating to a Schedule page that simply ignores it — no error, no
     modal, nothing to debug from."""
-    assert 'SCHEDULE_URL = "/scheduled"' in code
+    assert 'SCHEDULE_URL = "/tasks"' in code
     assert 'q.get("new") !== "1"' in page
     for param in ("target", "message", "session_id", "back"):
         assert f'q.get("{param}")' in page, f"the page ignores {param}"
@@ -276,7 +312,12 @@ def test_the_link_opens_the_form_immediately(page):
     read as two."""
     effect = page[page.index('q.get("new")'):]
     effect = effect[:effect.index("}, []);")]
-    assert "setCreating(new Date(" in effect
+    # `openForm` rather than `setCreating` since 2026-08-18: every opening of the
+    # form goes through one door, and that door is what bumps the modal's React
+    # key so a fresh card cannot inherit the previous one's answers. The deep link
+    # is an opening like any other, and what this test cares about is unchanged —
+    # it opens on arrival, prefilled, with no button left to press.
+    assert "openForm(new Date(" in effect
     assert "setNewTarget(" in effect
 
 
@@ -318,8 +359,8 @@ def test_the_deep_linked_values_do_not_outlive_their_own_modal(page):
 
 def test_the_link_beats_the_guess_and_an_edit_beats_the_link(modal):
     """Three sources for one field, in order: a stored target (Edit), the folder
-    a link named, and only then DEFAULT_TARGET_SUFFIX — which is a guess, and a
-    guess is what you offer when nobody said."""
+    a link named, and only then defaultTargetOf() — the server's resolved
+    workspace, which is what you offer when nobody said."""
     assert modal.count('editing?.target ?? initialTarget ?? ""') == 2, \
         "the state and the dirty baseline must be the same expression"
     # the async default only fills a still-EMPTY field, which is what keeps it

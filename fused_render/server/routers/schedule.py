@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render import recur, schedule
+from fused_render import recur, schedule, tasks_store
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -34,7 +34,11 @@ def api_schedule():
     `max_late_seconds` rides along because the UI cannot explain a `missed`
     entry without it — the bound is configurable (FUSED_RENDER_SCHEDULE_MAX_LATE),
     so the number has to come from the server rather than be restated in the
-    page."""
+    page. **It is now null by default**: catch-up is unbounded, missed work
+    queues instead of expiring, and only an install that sets the env var can
+    produce a `missed` one-off at all. Null rather than a sentinel number, so a
+    page that shows the bound has to decide what to say when there is none
+    rather than printing a made-up one."""
     entries = schedule.list_entries()
     for entry in entries:
         # Server-side recurrence math, so the calendar can draw a recurring
@@ -167,15 +171,124 @@ def api_schedule_create(body: dict = Body(...),
             return _error("delay_seconds: must be positive", status=400)
         due = datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
+    # `title`, `description`, `new_task_each_run` and `session_learned` are
+    # passed straight through and normalised by the model (`_text`/`_flag`),
+    # not here. Deliberately NOT
+    # validated into a 400: the form omits them when they are blank or unticked,
+    # so "absent" and "empty" have to mean the same thing, and a request that
+    # carries a stray null for one of them should still schedule the message
+    # rather than be refused over a label. What this layer must not do is DROP
+    # them — a body-dict endpoint silently ignores what it does not name, which
+    # is how they went missing in the first place.
     try:
         entry = schedule.create(
             resolved, body.get("message"), due,
             session_id=str(body.get("session_id") or ""),
             permission_mode=str(body.get("permission_mode") or ""),
-            repeats=repeats, rule=rule)
+            repeats=repeats, rule=rule,
+            title=body.get("title"), description=body.get("description"),
+            new_task_each_run=body.get("new_task_each_run"),
+            session_learned=body.get("session_learned"))
     except ValueError as exc:
         return _error(str(exc), status=400)
+
+    # THE TASK NUMBER SURVIVES AN EDIT. Editing a scheduled message is cancel +
+    # re-create — there is no PATCH — so the entry the user was looking at stops
+    # existing and this one, with a brand new id, takes its place. A task that
+    # has not run yet is numbered on that entry id (`pending:<entry-id>`, §5 of
+    # the design), so the listing saw a key it had never seen, allocated the next
+    # number in the project, and the user watched TASK-078 become TASK-079 for a
+    # task whose only change was its time — with no duplicate row to explain it.
+    # `allocate once, never renumber` is the rule that broke.
+    #
+    # `rekey` is the same move a first run already makes when a pending key
+    # becomes a session id, with the same guarantees: it MOVES a number rather
+    # than minting one, refuses to overwrite a number the new key somehow already
+    # has, and never releases one (so the project's high-water mark stands and no
+    # number is ever handed out twice).
+    #
+    # A no-op in every case but the one it is for: an entry with no number (it
+    # ran, so its task is keyed on the session id, which an edit does not touch),
+    # a `replaces` naming nothing, or a caller that is not the edit form.
+    #
+    # Failure here is not the caller's problem — the message IS scheduled, and a
+    # read-only state dir must not turn that into a 500. The row keeps the number
+    # it would have got anyway.
+    replaces = str(body.get("replaces") or "").strip()
+    if replaces:
+        try:
+            tasks_store.rekey(tasks_store.pending_key(replaces),
+                              tasks_store.pending_key(str(entry.get("id") or "")))
+        except OSError:
+            pass
     return {"entry": entry}
+
+
+@router.get("/api/schedule/queue")
+def api_schedule_queue():
+    """What is past due and waiting, and what is mid-flight.
+
+    A separate endpoint from the listing rather than a field on it, and for the
+    reason that shapes both: the listing is the whole schedule (everything ever
+    created, with a recurrence projection computed per template), while this is
+    the handful of rows the queue popover draws on app open. Folding it in would
+    make a poll for "is anything waiting?" pay for the page's payload; splitting
+    it out also lets the popover ask again after a cancel without redrawing the
+    calendar.
+
+    Unguarded like the other reads, and side-effect-free on purpose — the tick
+    owns every state change, so opening the popover cannot change what runs.
+
+    **`live` is the third list**, added for the queue dock (Akshil, 2026-08-17):
+    the entries whose TURN is still going. `schedule.queue()` deliberately stops
+    at `sending` — a spawned run has its own cancel in the job registry — but the
+    registry's row knows only a title and a status line, so a run parked on a
+    permission prompt was visible and still unreachable: nothing on screen said
+    where to go and answer it. These entries carry the target and the session the
+    turn landed in, which is exactly what an "Open in Explorer" link needs, and
+    the dock joins them onto its job rows by id (`sys:schedule:<entry id>`).
+
+    Live is `sent` with an EMPTY `turn` — the same rule the client's `isLive`
+    applies, and it is a rule about the pair: `state` says the message was sent,
+    `turn` is written once when the turn ends, so an unwritten turn is one still
+    in flight. Typically nought to two rows; a historical `sent` entry has a turn
+    and does not appear."""
+    result = schedule.queue()
+    result["live"] = [e for e in schedule.list_entries()
+                      if e.get("state") == schedule.SENT and not e.get("turn")]
+    return result
+
+
+@router.post("/api/schedule/queue/cancel")
+def api_schedule_queue_cancel(body: dict = Body(...),
+                              x_fused: str | None = Header(default=None)):
+    """Cancel queued messages: `{"entry_ids": [...]}` or `{"all": true}`.
+
+    Guarded like the other writes — it stops unattended agent turns, which is
+    exactly the pair (schedule / unschedule) D3's header guard covers.
+
+    **Partial success is the normal outcome, not an error**, which is why this
+    answers 200 with two lists rather than a status code. Cancelling races the
+    claim: an entry already taken for sending is refused rather than corrupted
+    (see `schedule.cancel_queued`), and it comes back in `refused` with a reason
+    so the popover can say "already running" instead of silently dropping a row
+    the user thought they had stopped. A request naming ten entries where one
+    got away is nine cancellations and one honest report."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    all_queued = bool(body.get("all"))
+    entry_ids = body.get("entry_ids")
+    if not all_queued:
+        if not isinstance(entry_ids, list) or not entry_ids:
+            return _error("expected `entry_ids` (a non-empty list of ids) or "
+                          "`all: true`", status=400)
+        if not all(isinstance(i, str) and i for i in entry_ids):
+            return _error("entry_ids: expected a list of entry id strings",
+                          status=400)
+    result = schedule.cancel_queued(entry_ids=entry_ids, all_queued=all_queued)
+    return {"ok": True, **result}
 
 
 @router.post("/api/schedule/restore")
@@ -198,6 +311,94 @@ def api_schedule_restore(body: dict = Body(...),
             "run of a still-active schedule, before its time, can be unskipped",
             status=404)
     return {"entry": entry}
+
+
+@router.post("/api/schedule/run-now")
+def api_schedule_run_now(body: dict = Body(...),
+                         x_fused: str | None = Header(default=None)):
+    """Send a pending message NOW: `{"entry_id": "..."}` -> `{"ok", "entry"}`.
+
+    The Board's Upcoming -> In Progress drag. Guarded like every other write
+    here, and more obviously than most: this one starts an unattended agent turn
+    on the spot, which is the exact thing D3's header guard keeps a foreign page
+    from doing.
+
+    **It does not move `due`.** The schedule time is a fact about what was asked
+    for, so the row reads as having run early rather than as having been
+    scheduled for now — see `schedule.run_now`, which is where every rule about
+    this lives. This layer only maps the model's honest refusal onto a status
+    code: 404 when there is no such entry, 409 when there is one and it cannot
+    run (already sent, already sending, cancelled, or its conversation is
+    mid-turn). Both carry the model's sentence, because "it didn't run" without
+    a reason is what makes a dragged card feel broken."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    entry_id = body.get("entry_id")
+    if not isinstance(entry_id, str) or not entry_id.strip():
+        return _error("entry_id: required", status=400)
+    result = schedule.run_now(entry_id.strip())
+    if not result["ok"]:
+        return _error(result["reason"],
+                      status=404 if not result["found"] else 409)
+    return {"ok": True, "entry": result["entry"]}
+
+
+@router.post("/api/schedule/resend")
+def api_schedule_resend(body: dict = Body(...),
+                        x_fused: str | None = Header(default=None)):
+    """Ask again: `{"entry_id": "..."}` -> `{"ok", "entry", "note"}`.
+
+    The Re-run button on a task whose run already went and broke. Run-now cannot
+    serve that case — it claims a PENDING entry, and the run that failed spent
+    itself — so this is the other half of the same affordance: a task is a
+    thread, and asking for the work again is a NEW message in it. The original
+    entry is left exactly as it is; `entry` in the response is the new one.
+
+    Guarded like run-now, and for the identical reason: it starts an unattended
+    agent turn on the spot.
+
+    Same three status codes and the same sentences underneath them — 404 for no
+    such id, 409 for an entry that cannot be re-sent (still pending, still
+    sending, cancelled, missed, or a template), 400 for a body without an id or
+    a target that has since been deleted. `note` rides along on SUCCESS: the new
+    message may be queued rather than away (its conversation can be mid-turn),
+    and that is a sentence to show, not an error to raise.
+
+    **The mount refusal is re-checked**, not inherited from the original's
+    creation. It passed the gate whenever it was scheduled, and a path can
+    become mount-backed after that; spawning against the stored target without
+    asking again would route around the gate the whole check exists to be."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    entry_id = body.get("entry_id")
+    if not isinstance(entry_id, str) or not entry_id.strip():
+        return _error("entry_id: required", status=400)
+    entry_id = entry_id.strip()
+
+    original = next((e for e in schedule.list_entries()
+                     if str(e.get("id") or "") == entry_id), None)
+    if original is None:
+        return _error(f"no scheduled message with id {entry_id!r}", status=404)
+
+    from fused_render.shell.mounts import is_mount_backed
+
+    if is_mount_backed(str(original.get("target") or "")):
+        return _error(
+            "target: refused — a scheduled session must not run against a "
+            "remote mount", status=400)
+
+    try:
+        result = schedule.resend(entry_id)
+    except ValueError as exc:
+        return _error(str(exc), status=400)
+    if not result["ok"]:
+        return _error(result["reason"],
+                      status=404 if not result["found"] else 409)
+    return {"ok": True, "entry": result["entry"], "note": result["reason"]}
 
 
 @router.post("/api/schedule/cancel")

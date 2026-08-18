@@ -27,15 +27,24 @@ const { navigate, rewriteLegacyUrl, withPreviewFlag } = await import("./router")
 // The url navigate() pushed, with the page sitting on `search` when it ran.
 // navigate reads location.search live (the framing flag is carried FORWARD, not
 // re-read from a boot-time constant), so the shim's search is the whole input.
-function pushedFrom(search: string, run: () => void): string {
+//
+// `fromDir` is the PROVENANCE of the page the hop is made from — the `{ fsDir }`
+// hint the navigation that landed here stashed (navHintIsDir). It decides whether
+// `_side` is the current page's to hand on, so a test that carries pane state has
+// to say which kind of page it is standing on; `undefined` is the honest shape of a
+// fresh load or a typed url, where nothing stashed a hint.
+function pushedFrom(search: string, run: () => void, fromDir?: boolean): string {
   const loc = globalThis.location as { search: string };
   const hist = globalThis.history as {
     pushState: (state: unknown, title: string, url: string) => void;
+    state: unknown;
   };
   const prevSearch = loc.search;
   const prevPush = hist.pushState;
+  const prevState = hist.state;
   let pushed = "";
   loc.search = search;
+  hist.state = typeof fromDir === "boolean" ? { fsDir: fromDir } : null;
   hist.pushState = (_state, _title, url) => {
     pushed = url;
   };
@@ -43,6 +52,7 @@ function pushedFrom(search: string, run: () => void): string {
     run();
   } finally {
     hist.pushState = prevPush;
+    hist.state = prevState;
     loc.search = prevSearch;
   }
   return pushed;
@@ -68,8 +78,10 @@ describe("navigate carries the frozen-tree framing", () => {
   });
 
   test("it rides alongside the sticky pane state and an explicit mode", () => {
-    const url = pushedFrom("?snapshot=1&_side=git&sort=size", () =>
-      navigate("/w/snap/docs", { isDir: true, mode: "claude" }),
+    const url = pushedFrom(
+      "?snapshot=1&_side=git&sort=size",
+      () => navigate("/w/snap/docs", { isDir: true, mode: "claude" }),
+      true, // standing on a FOLDER, so the pane state is this page's to hand on
     );
     expect(url).toContain("snapshot=1");
     expect(url).toContain("_side=git");
@@ -79,16 +91,53 @@ describe("navigate carries the frozen-tree framing", () => {
   });
 
   // `_side` is the PANE's state, and the pane only exists over a folder — so a
-  // folder hop carries it and opening a file does not. The file view has a `_side`
-  // of its own (Preview's companion sidebar) whose absent value means CLOSED, and
-  // handing it the folder's `off`/`preview` would be handing it a mode it has no
-  // entry for; each surface seeds its own from its own URL.
+  // FOLDER-TO-FOLDER hop carries it and opening a file does not. The file view has a
+  // `_side` of its own (Preview's companion sidebar), read the same way since D326
+  // but describing a different column; each surface seeds its own from its own URL.
   test("the sticky pane state is folder-only", () => {
-    expect(pushedFrom("?_side=git", () => navigate("/w/docs", { isDir: true }))).toBe(
+    expect(pushedFrom("?_side=git", () => navigate("/w/docs", { isDir: true }), true)).toBe(
       "/explorer/view/w/docs?_side=git",
     );
-    expect(pushedFrom("?_side=git", () => navigate("/w/a.md", { isDir: false }))).toBe(
+    expect(pushedFrom("?_side=git", () => navigate("/w/a.md", { isDir: false }), true)).toBe(
       "/explorer/view/w/a.md",
+    );
+  });
+
+  // A FILE'S `_side` IS NOT THE FOLDER'S (D326). Both surfaces read the param the
+  // same way now, and a closed sidebar is a value (`_side=off`) rather than an
+  // absent param — so without a provenance check, closing a file's sidebar and then
+  // taking the breadcrumb up landed on a folder with its pane SHUT, for a folder
+  // that was open when you entered the file. The tell that this is a defect and not
+  // just coupling: Back restores the folder's own url and its pane comes back, so
+  // the two ways out of a file disagreed about what the folder looks like.
+  test("a hop out of a FILE hands the folder nothing", () => {
+    expect(pushedFrom("?_side=off", () => navigate("/w/docs", { isDir: true }), false)).toBe(
+      "/explorer/view/w/docs",
+    );
+    // Not just the shut value — a companion named on a file is equally not the
+    // pane's business.
+    expect(pushedFrom("?_side=claude", () => navigate("/w/docs", { isDir: true }), false)).toBe(
+      "/explorer/view/w/docs",
+    );
+  });
+
+  test("a folder-to-folder hop still keeps the pane as the user left it", () => {
+    // The whole point of the carry (FS-13): walking the tree does not silently
+    // reopen or shut the pane.
+    expect(pushedFrom("?_side=off", () => navigate("/w/docs", { isDir: true }), true)).toBe(
+      "/explorer/view/w/docs?_side=off",
+    );
+  });
+
+  test("unknown provenance hands nothing on", () => {
+    // A fresh load, a typed url, or a caller that passed no hint: nothing stashed
+    // `{ fsDir }`, so this page cannot claim the param is its own. Guessing wrong
+    // in THIS direction reopens a pane at its documented default (an absent `_side`
+    // means open); guessing the other way shuts a pane the user never shut, which
+    // is the bug above. The cost is narrow and stated: shut the pane, hard-RELOAD,
+    // then hop to a sibling folder, and the pane comes back open.
+    expect(pushedFrom("?_side=off", () => navigate("/w/docs", { isDir: true }))).toBe(
+      "/explorer/view/w/docs",
     );
   });
 
@@ -115,14 +164,16 @@ test("legacy view/embed prefixes gain the /explorer namespace", () => {
 test("legacy settings sentinels map to their plain routes", () => {
   expect(rewriteLegacyUrl("/view/_home")).toBe("/apps");
   expect(rewriteLegacyUrl("/view/_prefs")).toBe("/preferences");
-  expect(rewriteLegacyUrl("/view/_account")).toBe("/preferences?tab=account");
+  // The Fused account tab is gone (with the Deploy feature it existed for) —
+  // an old bookmark just lands on Preferences' default tab now.
+  expect(rewriteLegacyUrl("/view/_account")).toBe("/preferences");
 });
 
 // The Inference engines tab moved from Preferences to /ai-models, so this is a
 // tab that no longer exists on the page the url names. Left alone, Preferences
 // silently falls back to its default tab — which looks like the setting was
-// removed rather than moved, and is exactly the dead end the /view/_account
-// rewrite above exists to prevent.
+// removed rather than moved, and is exactly the dead end this rewrite exists
+// to prevent.
 test("the engines tab is redirected to the page that owns it now", () => {
   expect(rewriteLegacyUrl("/preferences?tab=engines")).toBe("/ai-models?tab=engines");
   // Through the OLDER shape too: a bookmark from before the sentinel rename

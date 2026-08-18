@@ -33,9 +33,13 @@
  *     ready-made /api/fs/raw url to point an <img> at, plus the seed that was
  *     used — invented server-side when you don't pass one, so a render is
  *     always repeatable. Minutes long: onProgress fires per denoising step with
- *     the download-manager record, and that row's ✕ really stops it. Rejects
- *     with .type "cancelled" | "ai_error" | "unavailable" (no image runner on
- *     this machine — the reason is in the message).
+ *     the download-manager record, and that row's ✕ really stops it. Each tick
+ *     also carries previewUrl — a ~32x32 thumbnail of the image so far, ready
+ *     for an <img> src — so there is a picture to watch rather than a counter.
+ *     It can 404 early (the first step writes no frame), so hide it on error;
+ *     it is null on the last tick and on resolve, because the preview file is
+ *     deleted then — end on url. Rejects with .type "cancelled" | "ai_error" |
+ *     "unavailable" (no image runner on this machine — reason in the message).
  *   fused.ai.transcribe({path, model, language, task, diarize, speakers,
  *                        onProgress, onSegment})
  *                  -> Promise<{output, url, text, segments, language, ...}>
@@ -132,6 +136,7 @@
  *     earlier reply landing last. LOCAL ONLY — a hosted page has no index.
  *   fused.params.get(key) / getAll() / onChange(cb) -> unsubscribe
  *   fused.params.set(key, value, opts?)   opts: { history: "replace", default: d }
+ *                                         value === null REMOVES the key
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
  *                page can branch on where it runs and gate any local-only behaviour
@@ -566,7 +571,15 @@
     if (!delta || delta.size === 0) return search;
     const { layoutSpan, rest } = splitSearch(search);
     const params = new URLSearchParams(rest);
-    for (const [key, value] of delta) params.set(key, value);
+    // `null` is the delta's spelling for "this key is gone" — see set(). It has
+    // to travel THROUGH the pending map rather than being applied eagerly,
+    // because a queued removal and a queued write are the same kind of thing to
+    // everything downstream (the overlay, the flush, the staleness check) and
+    // the one that arrives last must win.
+    for (const [key, value] of delta) {
+      if (value === null) params.delete(key);
+      else params.set(key, value);
+    }
     // Rebuild with the raw `_layout=(...)` span untouched and LAST (D51): the
     // layout stays readable (no URLSearchParams.toString() percent-soup) and
     // the global/local boundary stays visually stable.
@@ -758,13 +771,29 @@
   // Composed, `{ history: "replace", default: d }` is the load-time write that
   // may or may not change anything: drop it when the URL already means the
   // value, and when it does change something, change it without an entry.
+  //
+  // A `null` VALUE is the third thing, and it is not one of those knobs: it
+  // REMOVES the key. `set(k, "")` cannot express this — it writes `k=`, which
+  // is a URL that says the param is present and empty, and for the keys that
+  // spell "none" as an absence (`msg`, `session_id`, `run` — identifiers and
+  // in-flight bookkeeping, none of them a value anyone chose) that is a dangling
+  // fragment on every link the reader copies. `{default: ""}` does not reach it
+  // either: it can only DROP a write that would have changed nothing, so it
+  // covers the already-absent case and leaves the present one writing `k=`.
+  //
+  // Deliberately a null value rather than a fourth option or a `remove()` of its
+  // own: removal is a WRITE of the same key that has to coalesce, queue and
+  // survive a traversal exactly like every other write (see applyDelta), and
+  // every path that already does that work takes a key and a value. It is also
+  // free of any existing caller — a non-string value threw until now.
   function set(key, value, options) {
     if (isReserved(key)) {
       throw new Error(`fused.params.set: '${key}' is a reserved param name and cannot be set`);
     }
-    if (typeof value !== "string") {
+    const removing = value === null;
+    if (!removing && typeof value !== "string") {
       throw new Error(
-        `fused.params.set: value for '${key}' must be a string, got ${typeof value}`
+        `fused.params.set: value for '${key}' must be a string or null, got ${typeof value}`
       );
     }
     const opts = options || {};
@@ -779,6 +808,15 @@
     if (opts.default !== undefined && typeof opts.default !== "string") {
       throw new Error(
         `fused.params.set: options.default for '${key}' must be a string, got ${typeof opts.default}`
+      );
+    }
+    // Same loudness as the history knob above, for the same reason: `default`
+    // says what an ABSENCE means, and a removal is how you produce one — asking
+    // for both is a caller who thinks one of the two does something it does not,
+    // and the silent version of that is a param that quietly stays behind.
+    if (removing && opts.default !== undefined) {
+      throw new Error(
+        `fused.params.set: options.default is meaningless when removing '${key}'`
       );
     }
     // `get()` rather than a raw params lookup, so a hand-typed global (D72)
@@ -2574,7 +2612,7 @@
     return data;
   }
 
-  // fused.ai.image({prompt, ...}) -> Promise<{path, url, seed, ...}>
+  // fused.ai.image({prompt, ...}) -> Promise<{path, url, previewUrl, seed, ...}>
   //
   // The one call in this bridge that RESOLVES WITH A FILE. Text streams, so
   // fused.ai hands back words; an image is an artefact, so this hands back
@@ -2588,6 +2626,31 @@
   //
   // The seed comes back whether or not one was passed, so "make that one again"
   // is always a call away.
+  //
+  // And there is something to LOOK at while it runs: `previewUrl` on every
+  // onProgress tick points at a ~32x32 thumbnail of the image-in-progress that
+  // the worker rewrites each denoising step. A page sets it as an <img> src and
+  // gets a picture emerging out of noise instead of a number going up; blur it
+  // and scale it up with CSS, that part is the page's taste, not this API's.
+  //
+  // The URL is built HERE, cache-busted by step, for the same reason `url` is:
+  // otherwise every page that wants this writes the same two lines, and the one
+  // that forgets the cache-buster gets a browser showing frame 2 for a minute.
+  // It is null when this render has no preview file at all, and null again on
+  // the LAST tick and on the resolved object — the preview is deleted as the
+  // render finishes, so a URL there would be a guaranteed 404 and a blank flash
+  // exactly where the finished picture belongs. The resolved `url` is what the
+  // <img> should end on.
+  //
+  // In between, when it is a URL, the file behind it may still be MISSING: the
+  // first step writes no frame (two latents are needed to estimate a picture),
+  // and a model whose latent space has no fitted projection never writes one.
+  // So an <img> pointed here can 404 early, which is ordinary rather than an
+  // error: give it an onerror that hides it, or start it hidden and show it on
+  // load. Predicting THAT here would mean this bridge carrying its own copy of
+  // a rule that lives in `runners/preview.py`, and being wrong about it on some
+  // future model — whereas "the file is gone once the row is terminal" is this
+  // bridge's own fact, and it is the one that would be seen every render.
   function aiImage(opts) {
     opts = opts || {};
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
@@ -2602,8 +2665,32 @@
     }
     return aiPost("/api/ai/image", body).then((started) => {
       const watcher = watchJob(started.jobId);
-      const done = () => ({ ...started, url: rawUrl(started.path) });
-      return watcher.watch(onProgress).then((record) => {
+      // `step` is the cache-buster and nothing more: the preview file is ONE
+      // path overwritten in place, so a browser handed the same URL twice shows
+      // the first frame forever. Keyed on the step rather than on Date.now() so
+      // two ticks of the same step are one image and not two requests.
+      //
+      // NULL once the row is terminal, and that is not tidiness. `watch` calls
+      // back with the terminal record too, and by then the preview file is
+      // ALREADY GONE — the worker's sink discards it as the render unwinds,
+      // which happens before the row can be marked done. A page that keeps its
+      // <img> on the latest previewUrl would therefore end every render on a
+      // guaranteed 404: a blank flash exactly where the finished picture
+      // belongs. `state !== "running"` is `watch`'s own terminal test.
+      const previewUrl = (job) =>
+        started.previewPath && job && job.state === "running"
+          ? rawUrl(started.previewPath) + "&step=" + (job.done || 0)
+          : null;
+      // Same fact on the resolved object: it names the real PNG through `url`,
+      // and `previewUrl` is null because the file it would name is deleted.
+      const done = () => ({ ...started, url: rawUrl(started.path), previewUrl: null });
+      // The record is COPIED rather than annotated: it is the same object the
+      // job manager is drawing from, and a field written onto it here would
+      // travel to every other watcher of that row.
+      const tick = onProgress
+        ? (job) => onProgress({ ...job, previewUrl: previewUrl(job) })
+        : null;
+      return watcher.watch(tick).then((record) => {
         if (!record) {
           // The row aged out from under us — a backgrounded tab can sleep past
           // its retention on a render this long. The FILE is the other witness,

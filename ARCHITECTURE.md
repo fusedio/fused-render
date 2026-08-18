@@ -48,7 +48,6 @@ fused-render/
 │   │   ├── watch.py            # /api/fs/events (WS) filesystem watch/poll registry
 │   │   ├── proxy.py            # /api/fs/raw upstream proxy + response hardening
 │   │   ├── fs_mutate.py        # fs mutation helpers + trash, router: /api/fs/write|mkdir|delete|rename|copy
-│   │   ├── session.py          # per-file sidecar helpers, router: /api/session GET/PUT
 │   │   ├── ai.py               # fused.ai: Claude CLI binary resolution, _AiSession, router: /api/ai
 │   │   └── routers/            # route-wiring-only modules (no standalone reusable logic)
 │   │       ├── shell.py        # "/", "/apps...", "/explorer...", settings pages + legacy "/view","/embed" (serves the built React shell)
@@ -279,10 +278,18 @@ loaded:[{model,capability,runner,state,residentBytes,loadedAt,jobId}],
 downloading:[{model,capability,jobId,startedAt}], totalResidentBytes}`.
 `downloading` is weights landing on disk — no memory, no eviction, no worker row —
 and it is in this reply rather than only in the job list because it is what tells
-a page whether to read job rows at all (AI-5a). `GET /api/ai/catalog` → the curated
-suggestions per capability, and nothing about what is on this disk: the cache is
-the AI-models listing's question, joined by the page so both its tabs mean one
-thing by it. `POST /api/ai/runtime/load|unload|download` — `X-Fused` guarded, since
+a page whether to read job rows at all (AI-5a). `GET /api/ai/catalog` → per capability,
+the curated suggestions **and the models this disk already holds** (D323), each
+entry carrying `source: "curated"|"cached"`, `downloaded` and `loaded` beside
+`{id,label,size_gb,note}`. The cached half comes from `ai_models.cached_models()` —
+the AI-models listing's own scan, its own capability inference and the FORMAT's own
+`loaders` reading, memoised there on directory mtimes, imported here rather than
+re-derived. A cached repo joins a row only when that row's resolved runner is among
+its `loaders`, so the list stays per-RUNNER (AI-11a) and never offers a repo the
+serving engine would refuse. It is APPENDED, so `default`, `catalog.default_for()`
+and `catalog.for_capability()` keep resolving over the curated list alone and a bare
+`fused.ai.image()` cannot load an arbitrary repo off the disk; consumers read
+`default`, never `models[0]`. `POST /api/ai/runtime/load|unload|download` — `X-Fused` guarded, since
 they start processes and write gigabytes; `load` and `download` return a `{jobId}`
 into the download manager rather than blocking.
 
@@ -387,7 +394,7 @@ Top-level `path` handling in shell URL vs iframe URL:
 
 ## 6. Shell (`frontend/` → `static/shell-dist/`)
 
-SPA, React 18 + Vite (D52/D53; TypeScript, strict). `src/` is layered into four aliased areas — the super-app structure: **`@platform`** (shared foundations: `platform/lib/` non-React modules ported ~verbatim from the vanilla shell — router/api/format/bookmarks/layout-codec, same contracts as before — plus `platform/ui/` shared components and `platform/cloud/` deploy/clone UI used by more than one app), **`@apps/explorer`** (Listing/Preview/Panel/Tabs/Breadcrumb + fs-actions/fs-clipboard), **`@apps/builder`** (Apps hub, NewAppPanel, AppPreviewCard), **`@apps/learn`** (the doorway into the mounted learn content — the experience itself is html+py rendered by the engine), and **`@shell`** (App, Home, Sidebar, Preferences/Account/Mounts/Templates — the chrome that composes the apps). Import direction is enforced by `frontend/scripts/check-boundaries.mjs` (runs first in `npm run build`): platform imports only platform; an app imports only platform and itself — never shell, never another app; shell may import anything. Within that: the router never imports UI (it dispatches a `fused:navigate` event; `platform/lib/hooks.ts` turns it plus `popstate` into a **nav epoch** that keys — i.e. remounts — the active view, the React equivalent of the vanilla per-route DOM rebuild), and the bookmark store never touches the DOM (mutations signal via `notifyBookmarksChanged()`). `Breadcrumb.tsx` may import `Panel.tsx` (`panelUrl`) — both explorer — and shell's `Sidebar.tsx` may import `@apps/explorer/Tabs` (`composeFolderTabsUrl`), since no view imports back — no cycles. The history replaceState/pushState wrapping (→ `fused:urlchange`) lives in `main.tsx` and is load-bearing for the iframe runtimes (D46), not just for the shell's own re-renders; chrome (bookmark buttons, active highlight) re-renders on a **url version** signal that also counts `fused:urlchange`, without remounting views. Layout-mode iframes freeze their `src` at mount — React never rewrites it (a src write reloads an iframe); pane crumb clicks write it imperatively via a ref, and tab frames render as a flat keyed list that only appends/removes (never re-parents/reorders). Routing from `location.pathname`:
+SPA, React 18 + Vite (D52/D53; TypeScript, strict). `src/` is layered into four aliased areas — the super-app structure: **`@platform`** (shared foundations: `platform/lib/` non-React modules ported ~verbatim from the vanilla shell — router/api/format/bookmarks/layout-codec, same contracts as before — plus `platform/ui/` shared components used by more than one app — `platform/cloud/` (app-cloning's `CloneModal`/`CloneAppHost` and the sibling `Deploy*` components) is gone entirely, SPEC §19/§35), **`@apps/explorer`** (Listing/Preview/Panel/Tabs/Breadcrumb + fs-actions/fs-clipboard), **`@apps/builder`** (Apps hub, NewAppPanel, AppPreviewCard), **`@apps/learn`** (the doorway into the mounted learn content — the experience itself is html+py rendered by the engine), and **`@shell`** (App, Home, Sidebar, Preferences/Mounts/Templates — the chrome that composes the apps; the sibling `Account` panel that used to live here is removed, SPEC §27). Import direction is enforced by `frontend/scripts/check-boundaries.mjs` (runs first in `npm run build`): platform imports only platform; an app imports only platform and itself — never shell, never another app; shell may import anything. Within that: the router never imports UI (it dispatches a `fused:navigate` event; `platform/lib/hooks.ts` turns it plus `popstate` into a **nav epoch** that keys — i.e. remounts — the active view, the React equivalent of the vanilla per-route DOM rebuild), and the bookmark store never touches the DOM (mutations signal via `notifyBookmarksChanged()`). `Breadcrumb.tsx` may import `Panel.tsx` (`panelUrl`) — both explorer — and shell's `Sidebar.tsx` may import `@apps/explorer/Tabs` (`composeFolderTabsUrl`), since no view imports back — no cycles. The history replaceState/pushState wrapping (→ `fused:urlchange`) lives in `main.tsx` and is load-bearing for the iframe runtimes (D46), not just for the shell's own re-renders; chrome (bookmark buttons, active highlight) re-renders on a **url version** signal that also counts `fused:urlchange`, without remounting views. Layout-mode iframes freeze their `src` at mount — React never rewrites it (a src write reloads an iframe); pane crumb clicks write it imperatively via a ref, and tab frames render as a flat keyed list that only appends/removes (never re-parents/reorders). Routing from `location.pathname`:
 - `/` → redirect (replaceState) to `/apps` (the app home; super-app step 2) (start dir from `GET /api/config` → `{"start_dir": "/Users/you", "home": …}` — `source_template` was dropped with the html sentinel modes (D62); the code-view path arrives via `stat.templates` like everything else, and the shell `Config` type dropped it too).
 - `/view/<path>` → `stat` it:
   - a target with a non-empty `stat.templates` → preview view — **including a directory** (every directory resolves at least the universal `/` key → `["_listing"]`, SPEC PT-13/D81; the built-in listing is the `_listing` sentinel mode)
@@ -437,7 +444,8 @@ directories and `_`-sentinels no-op), `PUT /api/recents/collapsed` persists the
 fold with the data (D44 posture). Frontend `lib/recents.ts` mirrors
 `bookmarks.ts` (sync cache, serial queue, `notifyRecentsChanged` signal); its
 `useRecentsTracking(fsPath, isDir, title)` is mounted in `App.tsx`'s StatView
-beside the session hooks — records the open once the stat confirms a file,
+(the seam it used to share with the per-file session hooks, removed in D329) —
+records the open once the stat confirms a file,
 then re-records the current url (and the page's own `<title>`, once known)
 on every `fused:urlchange`/`popstate` (500 ms debounce) or title change, so
 the entry tracks live param and title changes. Display order is

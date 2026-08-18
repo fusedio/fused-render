@@ -16,18 +16,17 @@
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { IS_EMBED, fsPathFromLocation, isPanelPath, navHintIsDir } from "@platform/lib/router";
-import { useSessionRestore, useSessionTracking } from "@platform/lib/session";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
-import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady, useSessionsMountReady } from "@platform/lib/hooks";
+import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady } from "@platform/lib/hooks";
 import { useMountHealth } from "@platform/lib/mountHealth";
 import { useScheduleEvents } from "@platform/lib/scheduleEvents";
 import { basename } from "@platform/lib/format";
 import { maybeAutoStartTour } from "@platform/lib/tour";
 import { useThemeSync } from "@platform/lib/theme";
 import GlobalSidebar from "@shell/GlobalSidebar";
-import CloneAppHost from "@platform/cloud/CloneAppHost";
 import NotificationHost from "@platform/ui/NotificationHost";
+import QueueDock from "@shell/QueueDock";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
@@ -42,7 +41,6 @@ import Tabs from "@apps/explorer/Tabs";
 import FilesHome from "@apps/explorer/FilesHome";
 import Home from "@shell/Home";
 import { learnEntryPath } from "@apps/learn";
-import { sessionsEntryPath } from "@apps/sessions";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 
 // Route-gated surfaces, lazy-loaded: none of these render on the front door
@@ -61,6 +59,14 @@ const ClaudeConfig = lazy(() =>
   import("@apps/claude_config").then((m) => ({ default: m.ClaudeConfig })),
 );
 const BookmarkOpen = lazy(() => import("@apps/explorer/BookmarkOpen"));
+// Canvases (legacy-workbench local development): the listing and the
+// per-canvas workspace with the embedded live workbench.
+const Canvases = lazy(() =>
+  import("@apps/canvases").then((m) => ({ default: m.Canvases })),
+);
+const CanvasWorkspace = lazy(() =>
+  import("@apps/canvases").then((m) => ({ default: m.CanvasWorkspace })),
+);
 
 type StatState =
   | { status: "loading" }
@@ -274,20 +280,10 @@ function StatView({
   // if some future caller forgets to preserve it).
   const [navIsDir] = useState<boolean | null>(() => navHintIsDir());
   const stat = useStat(fsPath, epoch, reloadKey);
-  // null until the stat resolves — the session hooks opt out for anything that
-  // is not a confirmed file, so a directory never gets a restore/track before
-  // its kind is known.
+  // null until the stat resolves — recents tracking opts out for anything that
+  // is not a confirmed file, so a directory never gets recorded before its kind
+  // is known.
   const isDir = stat.status === "ok" ? stat.stat.is_dir : null;
-  // null until stat resolves. A non-writable file (read-only mount) can't hold
-  // a session sidecar, so the session hooks skip it — crucially, restore does
-  // NOT block the template on a cold, guaranteed-null /api/session read there.
-  const writable = stat.status === "ok" ? stat.stat.writable ?? null : null;
-  // Per-file session restore (LSN-*): replay the file's last URL query on a
-  // bare open, and track qualifying param changes back into the sidecar.
-  // `ready` gates the preview so the iframe mounts with the restored params
-  // already on the shell URL (no param flash from defaults -> restored).
-  const ready = useSessionRestore(fsPath, isDir, writable);
-  useSessionTracking(fsPath, isDir, writable);
   // A "_render" preview (the file's own HTML, no template) reports its
   // authored <title> here (Preview -> TemplatePreview); everything else
   // (templates, listings, fallback cards) has no better name than the
@@ -296,8 +292,8 @@ function StatView({
   // not on a `_mode` switch within the same file — TemplatePreview owns that.
   const [renderedTitle, setRenderedTitle] = useState<string | null>(null);
   useDocumentTitle(fsPath === "/" ? null : renderedTitle || basename(fsPath));
-  // Recents: the explorer's own store, gated on a confirmed FILE (same gate as
-  // session tracking), so learn and embed panes never write there. The app
+  // Recents: the explorer's own store, gated on a confirmed FILE, so learn and
+  // embed panes never write there. The app
   // builder's parallel (tag, name) store went with its route — nothing displays
   // it now that the builder sidebar is gone.
   useRecentsTracking(fsPath, variant === "explorer" ? isDir : null, renderedTitle);
@@ -325,14 +321,6 @@ function StatView({
     const s = stat.stat;
     if (s.is_dir && s.templates.length === 0) {
       content = <Listing fsPath={fsPath} barChrome={variant === "explorer"} />;
-    } else if (!ready) {
-      // Brief; only for files opened with an empty query while the sidecar
-      // read resolves. Directories and param/bookmark opens are ready
-      // synchronously (useSessionRestore), so no flash on those paths. Paint
-      // the same file scaffold as the stat-loading branch (header + spinner in
-      // the file's chrome) rather than a bare centered "Loading…" — on a cold
-      // mount this wait is ~2s and must never read as a blank/black screen.
-      content = <LoadingScaffold fsPath={fsPath} isDir={false} headerless={variant === "explorer"} />;
     } else {
       content = (
         <Preview
@@ -341,6 +329,7 @@ function StatView({
           onRenderedTitle={setRenderedTitle}
           hideHeader={variant === "learn"}
           actionsInTopbar={variant === "explorer"}
+          onReload={() => setReloadKey((k) => k + 1)}
         />
       );
     }
@@ -398,28 +387,8 @@ function LearnView({ config, epoch }: { config: Config; epoch: number }) {
   return <StatView key={epoch + ":" + entry} fsPath={entry} epoch={epoch} home="" variant="learn" />;
 }
 
-// /sessions: the bundled Claude Sessions inbox, same chrome-free treatment as
-// learn (variant "learn" — no breadcrumb, no preview header, no recents).
-// Waits on the sessions mount record before statting the entry, so a
-// boot-race never shows a dead 404.
-function SessionsView({ config, epoch }: { config: Config; epoch: number }) {
-  const ready = useSessionsMountReady(config.sessions_mount_ready);
-  const entry = sessionsEntryPath(config);
-  if (!ready || !entry) {
-    return (
-      <div id="content">
-        <div className="preview-resolving">
-          <span className="mode-icon-spinner" />
-          Preparing sessions content…
-        </div>
-      </div>
-    );
-  }
-  return <StatView key={epoch + ":" + entry} fsPath={entry} epoch={epoch} home="" variant="learn" />;
-}
-
 // /claude-config: the native Claude Config panel. Chrome-free like
-// learn/sessions, but native React — no mount, no StatView; the availability
+// learn, but native React — no mount, no StatView; the availability
 // gate mirrors the sidebar entry's, so a direct URL hit while ~/.claude is
 // absent shows an honest empty state instead of a dead panel.
 function ClaudeConfigView() {
@@ -446,7 +415,7 @@ export default function App({ config }: { config: Config }) {
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
   useMountHealth();
 
-  // The same shape, for scheduled messages: nobody is looking at /scheduled when
+  // The same shape, for scheduled messages: nobody is looking at /tasks when
   // one fires, so "it ran" / "it failed" / "it was missed" has to arrive on its
   // own rather than wait to be discovered.
   useScheduleEvents();
@@ -558,7 +527,7 @@ export default function App({ config }: { config: Config }) {
   const isMounts = pathname === "/mounts";
   // Scheduled Claude messages (shell/Scheduled.tsx) — same chrome-free settings
   // pattern as Mounts.
-  const isScheduled = pathname === "/scheduled";
+  const isTasks = pathname === "/tasks";
   // What the Hugging Face cache holds on this machine (shell/AiModels.tsx).
   const isAiModels = pathname === "/ai-models";
   // Apps hub = the app home: all detected apps with search + tag filters.
@@ -568,8 +537,12 @@ export default function App({ config }: { config: Config }) {
   // The app's front door: search hero + the three recency strips.
   const isHome = pathname === "/home";
   const isLearn = pathname === "/learn";
-  const isSessions = pathname === "/sessions";
   const isClaudeConfig = pathname === "/claude-config";
+  // Canvases: the listing plus the parameterized workspace route. The name is
+  // constrained to the CLI's own canvas-name alphabet, so the match below is
+  // also the validation.
+  const isCanvases = pathname === "/canvases";
+  const canvasWorkspaceName = /^\/canvases\/([A-Za-z0-9_]+)$/.exec(pathname)?.[1] ?? null;
   const isBookmark = pathname === "/explorer/view/_bookmark";
   // `/apps/<tag>/<name>` used to resolve HERE, to the app folder under the
   // workspace (a pure fused_dir codec) or — for the virtual "linked" tag, whose
@@ -579,7 +552,7 @@ export default function App({ config }: { config: Config }) {
   // carries with no lookup at all. Anything under /apps that isn't the hub falls
   // through to the "Unrecognized URL" branch below, deliberately unredirected.
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isScheduled || isAiModels || isApps || isExplorerHome || isHome || isLearn || isSessions || isClaudeConfig || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isTasks || isAiModels || isApps || isExplorerHome || isHome || isLearn || isClaudeConfig || isCanvases || canvasWorkspaceName !== null || isBookmark;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -597,8 +570,8 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isMounts
               ? "Mounts"
-              : isScheduled
-                ? "Scheduled messages"
+              : isTasks
+                ? "Tasks"
               : isAiModels
                 ? "AI Models"
                 : isApps
@@ -609,10 +582,12 @@ export default function App({ config }: { config: Config }) {
                   ? "File Explorer"
                   : isLearn
                     ? "Learn"
-                    : isSessions
-                      ? "Sessions"
-                      : isClaudeConfig
+                    : isClaudeConfig
                       ? "Claude Config"
+                      : isCanvases
+                      ? "Canvases"
+                      : canvasWorkspaceName
+                      ? `Canvas: ${canvasWorkspaceName}`
                       : isBookmark || bookmarkFile
                       ? "Bookmark"
                       : fsPath
@@ -699,7 +674,7 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
-  } else if (isScheduled) {
+  } else if (isTasks) {
     // Scheduled Claude messages — the durable list plus the form that adds to
     // it. Keyed on `epoch` like its neighbours: the page has no URL-held view
     // state of its own, so a remount per navigation is just a fresh read.
@@ -707,6 +682,26 @@ export default function App({ config }: { config: Config }) {
       <div id="content" key={epoch}>
         <Suspense fallback={<RouteFallback />}>
           <Scheduled key={epoch} />
+        </Suspense>
+      </div>
+    );
+  } else if (isCanvases) {
+    // Canvases listing — same chrome-free settings pattern as Scheduled.
+    main = (
+      <div id="content" key={epoch}>
+        <Suspense fallback={<RouteFallback />}>
+          <Canvases key={epoch} />
+        </Suspense>
+      </div>
+    );
+  } else if (canvasWorkspaceName !== null) {
+    // Canvas workspace: the embedded workbench + sync strip. Keyed on the
+    // canvas name (not epoch): the page holds a live iframe and a token
+    // handshake, and its only same-route churn is its own sync poll.
+    main = (
+      <div id="content">
+        <Suspense fallback={<RouteFallback />}>
+          <CanvasWorkspace key={canvasWorkspaceName} name={canvasWorkspaceName} />
         </Suspense>
       </div>
     );
@@ -767,9 +762,6 @@ export default function App({ config }: { config: Config }) {
     // Learn content, chrome-free (LearnView renders a StatView that carries
     // its own #content).
     main = <LearnView key={epoch} config={config} epoch={epoch} />;
-  } else if (isSessions) {
-    // Claude Sessions inbox, same chrome-free treatment as learn.
-    main = <SessionsView key={epoch} config={config} epoch={epoch} />;
   } else if (isClaudeConfig) {
     // Claude Config panel — native, no mount (see ClaudeConfigView).
     main = <ClaudeConfigView key={epoch} />;
@@ -815,10 +807,11 @@ export default function App({ config }: { config: Config }) {
     <div id="app">
       {!IS_EMBED && sidebar}
       <div id="main">{main}</div>
-      <NotificationHost />
-      {/* Opening a deployed app is requested from the path bar (a pasted https:// link) and
-          from the Apps page; the modal is mounted HERE so both reach one flow (SPEC §35 CL-1). */}
-      {!IS_EMBED && <CloneAppHost />}
+      {/* ONE work-in-progress card in the notification column, not two: QueueDock
+          is the shell's wrapper around the platform activity card (it fills that
+          card's queue slot), handed in from here rather than imported there
+          because it speaks explorerUrl, which lives in this layer. */}
+      <NotificationHost activity={<QueueDock />} />
       {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
     </div>
   );

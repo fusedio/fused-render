@@ -6,7 +6,7 @@ import type { IndexQueryOutcome } from "@platform/lib/index-query";
 export interface Config {
   start_dir: string;
   home: string;
-  // The Fused workspace dir (~/Documents/Fused) — the sidebar's "Fused" entry.
+  // The Fused workspace dir (~/Fused) — the sidebar's "Fused" entry.
   fused_dir: string;
   version: string;
   // Version installed on disk (bundle Info.plist), null when unpackaged.
@@ -97,10 +97,12 @@ export interface StatResult {
   // the template iframe as _remote=1 so pages can prefer ranged HTTP reads.
   remote?: boolean;
   // False for a file on a read-only mount (or any path the user can't write).
-  // Session restore keys off this: a non-writable file can never have had a
-  // sidecar written, so its restore is skipped rather than blocking on a cold,
-  // guaranteed-null GET /api/session (see useSessionRestore).
   writable?: boolean;
+  // /api/fs/write only: whether that write ADDED this path rather than
+  // replacing one. The index stores names, so it is only re-scanned for the
+  // first kind, and the search box's "indexing…" caption follows the same
+  // rule rather than guessing (lib/index-freshness).
+  created?: boolean;
   templates: TemplateEntry[];
   template_error?: string;
 }
@@ -138,7 +140,7 @@ export async function getJson<T>(
 
 // One mutating-request helper for both PUT and POST — they differ only in the
 // method. X-Fused forces a CORS preflight so a foreign page can't write blind
-// (the D3 guard the reveal/write/deploy endpoints require).
+// (the D3 guard the reveal/write/clone endpoints require).
 async function mutateJson<T>(method: "PUT" | "POST", url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
@@ -321,64 +323,84 @@ export async function walkDirStream(
   return end;
 }
 
-// GET /api/index/search — the in-folder corpus answered from the persistent
-// file index instead of a live walk. `entries` are WalkEntry-shaped on purpose
-// so the search pipeline is indifferent to which source produced them.
+// GET /api/index/search (`fmt=columns`) has no client here any more.
 //
-// `covered` (the index visited this exact folder) is the whole decision; a
-// miss is a normal 200 with covered:false, because "no index yet", "not
-// covered" and "a scan is running" all mean the same thing here — use the
-// live walk instead. `fresh` (younger than FRESH_MAX_AGE_S) is reported but
-// NOT a gate: see index-corpus.ts for why age alone does not disqualify a
-// corpus, and lib/index-freshness.ts for the case that does — a folder this
-// app itself changed since the last scan.
-export interface IndexSearchResult {
+// It served the in-folder search's whole-folder corpus, which the browser then
+// ranked; the box asks `/api/index/rank` per query now, and the only corpus
+// left in the app is the live walk's, for the folders no scan can cover. The
+// SERVER route stays regardless: it is the `fused.fileIndex.search` bridge
+// contract that user pages are written against.
+
+// GET /api/index/rank — the home search: the server filters AND ranks, and
+// answers with the top ~200 rows.
+//
+// The corpus route above is the other shape of the same index, and the
+// difference is the whole point: `indexSearch` hands the browser every entry
+// under the root (19.8 MB on a 164k-entry home, capped so most of a big home
+// was unfindable) and ranks locally; this is a few KB per query and can see
+// the whole index. The in-folder search keeps the corpus, because it also has
+// a live walk to rank and only a browser-side ranker can rank a stream.
+//
+// `positions` are NOT on the wire: the caller re-runs `fuzzyMatch(q, rel)`
+// over the rows it got back, so platform/lib/fuzzy.ts stays the single source
+// of truth for what highlights (and the server's port of it, index/rank.py,
+// stays free to change its internals). A miss is a normal 200 with
+// covered:false, same as the corpus.
+export interface IndexRankHit {
+  rel: string;
+  is_dir: boolean;
+  size: number | null;
+  mtime: number | null;
+  // The ranking that produced this order. Carried for debugging and for
+  // callers that want to group by tier; the ORDER is the contract.
+  score: number;
+  longest_run: number;
+  tier: number;
+  depth: number;
+}
+
+// Why a ranked answer is what it is. `""` is a real answer; the rest are the
+// four ways the index cannot give one, and they are NOT interchangeable —
+// `uncovered` is fixed by scanning the folder, `scanning` by waiting, and the
+// other two never (see listing/index-source, which is the only place that
+// switches on this).
+export type RankReason =
+  | ""
+  | "mount"
+  | "package"
+  | "ignored"
+  | "uncovered"
+  | "scanning";
+
+export interface IndexRankResult {
   covered: boolean;
   fresh: boolean;
+  // WHY this answer is what it is — "" when the index answered outright, else
+  // "mount" | "package" | "ignored" | "uncovered" | "scanning". The in-folder
+  // search picks its source from this (listing/index-source); the client
+  // deliberately holds no copy of the rules behind it, because the mount
+  // policy is MountGuard's and the ignore list is the scan config's.
+  reason: RankReason;
   root: string;
-  entries: WalkEntry[];
+  hits: IndexRankHit[];
+  // More matched than were returned — either more than `limit` survived
+  // ranking, or the server's candidate cap bit.
   truncated: boolean;
   total: number;
   updated: number | null;
   age_s: number | null;
 }
 
-// The same corpus as parallel arrays — what `fmt=columns` answers with. Every
-// entry carries the same four keys, so the object-per-entry shape spends a
-// third of its bytes spelling those keys out again: 25.7 MB on a 164k-entry
-// home, fetched in one shot on the user's first keystroke.
-//
-// The decode back to WalkEntry[] happens HERE, at the API-client boundary, so
-// the corpus consumers (listing/index-corpus.ts, FilesHome, useWalkSearch)
-// never learn about the wire format. `is_dir` travels as 0/1; `size` and
-// `mtime` stay nullable — a directory legitimately has neither.
-interface IndexSearchColumns extends Omit<IndexSearchResult, "entries"> {
-  fmt: "columns";
-  rels: string[];
-  dirs: number[];
-  sizes: (number | null)[];
-  mtimes: (number | null)[];
-}
-
-export async function indexSearch(
+export function indexRank(
   fsPath: string,
-  opts: { signal?: AbortSignal } = {},
-): Promise<IndexSearchResult> {
-  const body = await getJson<IndexSearchColumns>(
-    "/api/index/search?fmt=columns&root=" + encodeURIComponent(fsPath),
-    { signal: opts.signal },
-  );
-  const { fmt, rels, dirs, sizes, mtimes, ...rest } = body;
-  const entries: WalkEntry[] = new Array(rels.length);
-  for (let i = 0; i < rels.length; i++) {
-    entries[i] = {
-      rel: rels[i],
-      is_dir: dirs[i] === 1,
-      size: sizes[i],
-      mtime: mtimes[i],
-    };
-  }
-  return { ...rest, entries };
+  query: string,
+  opts: { signal?: AbortSignal; limit?: number } = {},
+): Promise<IndexRankResult> {
+  const params = new URLSearchParams({ root: fsPath, q: query });
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  return getJson<IndexRankResult>("/api/index/rank?" + params.toString(), {
+    signal: opts.signal,
+  });
 }
 
 // GET /api/index/status with no run id — the state of the most recent scan,
@@ -439,6 +461,25 @@ export function startIndexScan(opts: { root?: string; full?: boolean } = {}): Pr
   runs: { run_id: string; root: string }[];
 }> {
   return mutateJson("POST", "/api/index/scan", opts);
+}
+
+// POST /api/index/scan-folder — "cover this folder, someone is searching it".
+//
+// The in-folder search's answer to a folder the index has never visited, which
+// used to be answered by a live streamed walk. Never an error and every "no"
+// is durable (`why`: refused / debounced), because the caller is a search box:
+// a refusal it could read as transient would be retried at keystroke rate.
+export interface FolderScanRequest {
+  started: boolean;
+  why: "started" | "joined" | "debounced" | "refused";
+  run_id: string | null;
+  root: string;
+}
+
+// Deliberately not abortable: aborting the FETCH would not stop the scan it
+// asked for, so a caller that dropped the reply would only lose the `why`.
+export function requestFolderScan(fsPath: string): Promise<FolderScanRequest> {
+  return mutateJson("POST", "/api/index/scan-folder", { path: fsPath });
 }
 
 // POST /api/index/query and /api/index/ask — read-only SQL over the index, and
@@ -624,21 +665,6 @@ export function getBookmarkFile(path: string): Promise<BookmarkFileResult> {
   return getJson<BookmarkFileResult>("/api/bookmark-file?path=" + encodeURIComponent(path));
 }
 
-// Per-file session restore (LSN-*). `search` is the shell query without the
-// leading "?", stored verbatim in the target file's .html.json sidecar.
-export interface LastSession {
-  search: string;
-  updated_at: number;
-}
-
-export function getSession(fsPath: string): Promise<{ lastSession: LastSession | null }> {
-  return getJson("/api/session?path=" + encodeURIComponent(fsPath));
-}
-
-export function putSession(fsPath: string, search: string): Promise<void> {
-  return putJson<unknown>("/api/session", { path: fsPath, search }).then(() => undefined);
-}
-
 // Recently opened files (fused_render/shell/recents.py). `url` is the shell
 // /view/ url verbatim including its query string (D20 posture); entries whose
 // file has since been deleted are already filtered out server-side.
@@ -672,464 +698,6 @@ export function putRecentsCollapsed(collapsed: boolean): Promise<void> {
   return putJson<unknown>("/api/recents/collapsed", { collapsed }).then(() => undefined);
 }
 
-// -- Deploy (hosted publish through the fused CLI; fused_render/deploy.py) ----
-
-// Availability of the fused CLI in the server's environment, and whether the
-// server can pip-install it (the pinned [fused] extra) on request.
-export interface DeployCli {
-  found: boolean;
-  command: string | null;
-  installable: boolean;
-  reason: string | null;
-  install_hint: string;
-}
-
-// A hosted environment from the fused CLI's own store (~/.openfused/envs.json):
-// backend "fused" (managed) or "aws" (self-provisioned serving plane).
-export interface DeployEnv {
-  name: string;
-  backend: string;
-}
-
-export interface DeployConfig {
-  cli: DeployCli;
-  envs: DeployEnv[];
-  default_env: string | null;
-  envs_file: string;
-  // What to type in a terminal for one-time CLI setup (`… env create`,
-  // `… cloud setup`): plain "fused" normally; inside the packaged macOS app,
-  // the absolute path of the bundle's own CLI wrapper.
-  setup_cli: string;
-  // Whether the fused CLI's control-plane credentials exist on disk (a
-  // `fused cloud login` has happened). Presence-only — the CLI stays the
-  // authority at action time; this powers the before-the-click warning when
-  // a managed env is targeted with no login at all.
-  fused_logged_in: boolean;
-}
-
-// The thin per-page deployment pointer (~/.fused-render/deployments.json).
-// url is null when the backend never returned one (AWS prints token+path only).
-export interface Deployment {
-  page: string;
-  env: string;
-  backend: string;
-  token: string;
-  url: string | null;
-  status: "active" | "revoked";
-  entrypoints: string[];
-  // The file selection this deployment was published with (persisted on the
-  // record, not a sidecar): extra files bundled beyond the auto-scan, and files
-  // dropped from it. Reopening the modal reloads these so the selection sticks.
-  // Optional — records written before this feature omit them (read as []).
-  include?: string[];
-  exclude?: string[];
-  // Whether viewers may download this page's source bundle. Persisted like the
-  // caching choice, but the MOUNT is the authority — reopening the modal
-  // reconciles this against `share list` (ShareMount.allow_clone) so a posture
-  // changed elsewhere isn't masked by a stale local value. Optional: records
-  // written before the feature omit it and read as false (fail closed — a page's
-  // source must never look downloadable because a field was missing).
-  allow_clone?: boolean;
-  // The caching choice this deployment was published with — "0s" (off) or a
-  // duration like "5m"/"1h" (fused/agent_core/caching.py's cache_max_age format).
-  // Reopening the modal reloads it, same as include/exclude. Optional — records
-  // written before this feature omit it (read as "0s").
-  cache_max_age?: string;
-  // Whether this mount's token is a user-chosen name (a deliberately guessable
-  // public URL) vs the default crypto-random opaque one — so the modal shows
-  // "custom name" vs "unguessable" without re-deriving it from the token string.
-  // Optional — records written before this feature omit it (read as false).
-  named?: boolean;
-  updated_at: string;
-}
-
-// `POST /api/deploy/clear-cache`'s result — the fused CLI's `share cache-clear`
-// output verbatim (see deploy.py's clear_cache_deployment).
-export interface CacheClearResult {
-  token: string;
-  deleted: number;
-  scope: string;
-  prefix?: string;
-}
-
-export interface DeployStatusResult {
-  deployment: Deployment | null;
-  // false when the pointer was NOT checked against `share list` (reconcile not
-  // requested, or the deploy env was unreachable) — last-known state only.
-  reconciled: boolean;
-  // The mount's raw `share list` classification when reconciled, else null.
-  // "absent" (gone from the list entirely, e.g. after an infra teardown) is
-  // persisted as status "revoked" but redeploys as a FRESH create with a new
-  // URL — the modal's action label branches on this.
-  live: "active" | "revoked" | "absent" | null;
-}
-
-// One mount from `fused share list` on an env, joined back to the local page
-// that deployed it (null for mounts this app doesn't track). `share list`
-// itself carries no URLs; url is the pointer's recorded link, else derived
-// from the env's base URL when a recorded link reveals it, else null.
-export interface ShareMount {
-  token: string;
-  status: string;
-  type: string | null;
-  url: string | null;
-  // The mount's LIVE clone posture — what the Deploy modal reconciles against.
-  allow_clone: boolean;
-  page: string | null;
-}
-
-// How a bundled asset is exposed / why it's in the bundle (export.Asset.source):
-//   reference — a literal fused.rawUrl()/readFile() the HTML scan resolved (the
-//               page fetches it via rawUrl/readFile)
-//   manifest  — declared in the page's <script type="application/fused-bundle">
-//               include, the reproducible way to back a *computed* rawUrl/readFile path
-//   include   — added by hand via the modal's include ("Add all in folder")
-// Every asset is served read-only on the hosted `_asset` route regardless; the
-// distinction drives the row's label so the list mentions rawUrl/readFile exposure.
-export type AssetSource = "reference" | "manifest" | "include";
-
-// What deploying a page would publish, resolved fresh from on-disk state —
-// shown BEFORE the Deploy click. Non-empty `errors` means the page cannot be
-// exported as-is (Deploy would fail with exactly these).
-export interface DeployPreview {
-  page: string;
-  entrypoints: { path: string; name: string }[];
-  assets: { path: string; name: string; source: AssetSource }[];
-  // The auto-detected default set (literal runPython/rawUrl/readFile paths, before
-  // include/exclude). Lets the modal distinguish an auto file (removing → exclude,
-  // shown under "Excluded" with restore) from a manual include (removing → just drop).
-  auto: string[];
-  errors: string[];
-  // Advisory, non-blocking: a computed rawUrl/readFile path (bundle its target
-  // via include), or an exclude that drops a file the page references. Distinct
-  // from `errors`, which disable Deploy.
-  warnings: string[];
-}
-
-export interface SharesResult {
-  env: string;
-  mounts: ShareMount[];
-}
-
-export function getDeployConfig(): Promise<DeployConfig> {
-  return getJson<DeployConfig>("/api/deploy/config");
-}
-
-export function getDeployStatus(fsPath: string, reconcile: boolean): Promise<DeployStatusResult> {
-  const url =
-    "/api/deploy/status?path=" + encodeURIComponent(fsPath) + (reconcile ? "&reconcile=1" : "");
-  return getJson<DeployStatusResult>(url);
-}
-
-export function getDeployPreview(
-  fsPath: string,
-  include: string[],
-  exclude: string[],
-): Promise<DeployPreview> {
-  // POST (not GET) so the include/exclude selection travels in the body — arrays
-  // don't fit a query string cleanly. Read-only server-side (no files written).
-  return postJson<DeployPreview>("/api/deploy/preview", { path: fsPath, include, exclude });
-}
-
-export function deployPage(
-  fsPath: string,
-  env: string,
-  include: string[],
-  exclude: string[],
-  cacheMaxAge: string,
-  // May viewers download this page's source bundle? Always sent explicitly (the
-  // server states it to the CLI either way), because the toggle in the dialog is
-  // a definite statement — omitting it on a redeploy would silently preserve
-  // whatever the mount had, so unticking the box would not turn it off.
-  allowClone: boolean,
-  forceNew?: boolean,
-  // A chosen link name for a FRESH `share create` (see deploy.py's
-  // deploy_page) — omit for the default auto-generated opaque token. Ignored
-  // server-side on a redeploy that reuses an existing token (repoint/recreate).
-  token?: string,
-): Promise<Deployment> {
-  return postJson<Deployment>("/api/deploy", {
-    page: fsPath,
-    env,
-    include,
-    exclude,
-    cache_max_age: cacheMaxAge,
-    allow_clone: allowClone,
-    force_new: forceNew ?? false,
-    ...(token ? { token } : {}),
-  });
-}
-
-export function revokeDeployment(fsPath: string): Promise<Deployment> {
-  return postJson<Deployment>("/api/deploy/revoke", { page: fsPath });
-}
-
-// Clears every cached result for the page's deployed mount (`fused share
-// cache-clear <token>`) — forces the next request to recompute instead of
-// waiting out cache_max_age. Doesn't change the deployment's status/URL/caching
-// setting.
-export function clearCacheDeployment(fsPath: string): Promise<CacheClearResult> {
-  return postJson<CacheClearResult>("/api/deploy/clear-cache", { page: fsPath });
-}
-
-// -- cloning a DEPLOYED page (app_clone.py) ---------------------------------
-// Distinct from the GitHub deep-link clone (deeplink.py): no git, no identity, no
-// update-in-place — every clone lands in a fresh folder under ~/Documents/Fused.
-
-export interface ClonePreviewFile {
-  path: string;
-  bytes: number | null;
-}
-
-export interface ClonePreview {
-  // The canonical `…/<token>/_clone` URL derived from what the user pasted.
-  url: string;
-  name: string;
-  files: ClonePreviewFile[];
-  // Uncompressed total across the archive's members.
-  bytes: number | null;
-  // What the download actually costs (base64 of the compressed archive). Null on
-  // an older serve path that doesn't report it — show nothing rather than a guess.
-  download_bytes: number | null;
-  dest: string;
-  folder: string;
-  // True when `folder` had to be suffixed because something already occupies the
-  // page's own name — surfaced so the confirm step can say so up front.
-  renamed: boolean;
-}
-
-export interface CloneResult {
-  dest: string;
-  folder: string;
-  page: string;
-  // The /view path to open the cloned page at.
-  view: string;
-  files: number;
-}
-
-export function cloneAppInfo(src: string): Promise<ClonePreview> {
-  return getJson<ClonePreview>(`/api/clone-app/info?src=${encodeURIComponent(src)}`);
-}
-
-// `folder` is the destination the preview showed, passed back so the clone lands where the
-// user was told it would. Omitted, the backend derives it — the response is authoritative
-// either way.
-export function cloneApp(src: string, folder?: string): Promise<CloneResult> {
-  return postJson<CloneResult>("/api/clone-app", { src, folder });
-}
-
-export function installFused(): Promise<void> {
-  return postJson<unknown>("/api/deploy/install", {}).then(() => undefined);
-}
-
-export function listShares(env: string): Promise<SharesResult> {
-  return getJson<SharesResult>("/api/deploy/shares?env=" + encodeURIComponent(env));
-}
-
-// Revoke a mount by env+token (the Preferences page's share list — covers
-// mounts with no local pointer too; the CLI's owner-binding still applies).
-export function revokeMount(env: string, token: string): Promise<void> {
-  return postJson<unknown>("/api/deploy/revoke", { env, token }).then(() => undefined);
-}
-
-// -- Deployed error viewing (`fused share errors`; the fused repo's -----------
-// error-reporting.md). Owner-only diagnostics behind a deployed mount's opaque
-// 500s — the page's own viewers never see any of this.
-
-// One row of the newest-first list: identity plus the first line of the error.
-// `error` is a single line here; the full traceback lives on the record fetched
-// by `getDeployErrorDetail`.
-export interface DeployErrorSummary {
-  err_id: string;
-  occurred_at: string;
-  token: string;
-  entrypoint: string | null;
-  kind: string; // "user-code" | "bad-result" | "invoke-failure"
-  error: string;
-  truncated: boolean;
-}
-
-// The full captured record — the traceback (`error`), output tails, and the
-// params that triggered it. Free-text fields are size-capped at capture and
-// `truncated` marks a record that was cut. Fields beyond the summary are
-// optional: an `invoke-failure` carries no streams, `bad-result` no traceback.
-export interface DeployErrorRecord {
-  version: number;
-  err_id: string;
-  occurred_at: string;
-  env: string;
-  token: string;
-  app?: string | null;
-  entrypoint?: string | null;
-  entrypoint_kind?: string | null;
-  kind: string;
-  http_method?: string;
-  duration_ms?: number | null;
-  error?: string;
-  stdout_tail?: string;
-  stderr_tail?: string;
-  params?: unknown;
-  params_preview?: string;
-  params_truncated?: boolean;
-  truncated: boolean;
-}
-
-export interface DeployErrorsResult {
-  env: string;
-  token: string;
-  errors: DeployErrorSummary[];
-}
-
-export interface DeployErrorDetailResult {
-  env: string;
-  token: string;
-  record: DeployErrorRecord;
-}
-
-export interface DeployErrorFilters {
-  limit?: number;
-  since?: string;
-  until?: string;
-  kind?: string;
-  entrypoint?: string;
-}
-
-export function listDeployErrors(
-  env: string,
-  token: string,
-  filters: DeployErrorFilters = {},
-): Promise<DeployErrorsResult> {
-  const q = new URLSearchParams({ env, token });
-  if (filters.limit != null) q.set("limit", String(filters.limit));
-  if (filters.since) q.set("since", filters.since);
-  if (filters.until) q.set("until", filters.until);
-  if (filters.kind) q.set("kind", filters.kind);
-  if (filters.entrypoint) q.set("entrypoint", filters.entrypoint);
-  return getJson<DeployErrorsResult>("/api/deploy/errors?" + q.toString());
-}
-
-export function getDeployErrorDetail(
-  env: string,
-  token: string,
-  errId: string,
-): Promise<DeployErrorDetailResult> {
-  const q = new URLSearchParams({ env, token, err_id: errId });
-  return getJson<DeployErrorDetailResult>("/api/deploy/error?" + q.toString());
-}
-
-// -- Fused account (account.py; SPEC §27) -------------------------------------
-
-// One org/env the signed-in account can target (`fused cloud orgs`).
-export interface AccountOrg {
-  org: string | null;
-  env: string | null;
-  provision_state: string | null;
-  role: string | null;
-}
-
-// The deeper signed-in check (`fused cloud orgs`), run only with ?probe=1:
-// unlike the presence-only logged_in flag it exercises the token, so a stale
-// credential shows up here as ok=false with the CLI's own message.
-export interface AccountProbe {
-  ok: boolean;
-  admitted: boolean | null;
-  orgs: AccountOrg[];
-  error: string | null;
-}
-
-// One env from the raw store view (any backend; `hosted` = can be a deploy
-// target). Distinct from DeployEnv, which is the hosted-only picker list.
-export interface StoreEnv {
-  name: string;
-  backend: string;
-  hosted: boolean;
-}
-
-export interface AccountStatus {
-  cli: DeployCli;
-  // Presence of the CLI's credentials file — cheap and optimistic (the CLI
-  // refreshes an expired token itself); `probe` is the authoritative check.
-  logged_in: boolean;
-  // A `fused cloud login` child is currently waiting on its browser round-trip.
-  login_in_flight: boolean;
-  // Fingerprint of the credentials file (mtime, or null when absent). The
-  // account page drops its cached orgs probe when this changes — a re-login
-  // as a different account that never flips logged_in false in this tab.
-  creds_stamp: number | null;
-  envs_file: string;
-  // The raw env store for the management table: every backend, plus the
-  // store's own default pointer. (The deploy picker's derived view lives on
-  // DeployConfig, not here.)
-  store: { envs: StoreEnv[]; default: string | null };
-  probe: AccountProbe | null;
-}
-
-// The one tracked `fused cloud setup` job (account.py). `detail` carries the
-// CLI's own progress lines while running, its final line when done, and the
-// mapped error message when failed.
-export interface AccountSetupStatus {
-  state: "idle" | "running" | "done" | "failed";
-  job_id: string | null;
-  env_name: string | null;
-  detail: string | null;
-}
-
-export function getAccountStatus(probe = false): Promise<AccountStatus> {
-  // probe=1 EXECUTES server-side (spawns a `fused cloud orgs` control-plane
-  // call), so unlike the plain status read it carries the D36 guard header.
-  return probe
-    ? getJson<AccountStatus>("/api/account/status?probe=1", {
-        headers: { "X-Fused": "1" },
-      })
-    : getJson<AccountStatus>("/api/account/status");
-}
-
-// Start (or join — one login at a time) the CLI's browser sign-in and return
-// the authorize URL; OPENING it is the caller's job (window.open — the server
-// never drives a browser). returnUrl must be a loopback URL (normally
-// location.href): the post-login callback 302s the browser back to it.
-export function startAccountLogin(returnUrl: string): Promise<{ authorize_url: string }> {
-  return postJson<{ authorize_url: string }>("/api/account/login", { return_url: returnUrl });
-}
-
-export function cancelAccountLogin(): Promise<void> {
-  return postJson<unknown>("/api/account/login/cancel", {}).then(() => undefined);
-}
-
-// Sign out (killing any in-flight sign-in first, server-side) and return the
-// fresh status.
-export function accountLogout(): Promise<AccountStatus> {
-  return postJson<AccountStatus>("/api/account/logout", {});
-}
-
-// Start the one-shot managed-env setup (`fused cloud setup`) as a tracked
-// background job — 202 with the job to poll via getAccountSetup. org/env go
-// together (a specific workspace); omitting both lets the CLI discover the
-// account's org (or self-create a personal one). env_name defaults
-// server-side to flow's convention (`fused` / `fused-<env>`).
-export function startAccountSetup(opts: {
-  org?: string;
-  env?: string;
-  env_name?: string;
-}): Promise<{ job_id: string; env_name: string }> {
-  return postJson<{ job_id: string; env_name: string }>("/api/account/setup", opts);
-}
-
-export function getAccountSetup(): Promise<AccountSetupStatus> {
-  return getJson<AccountSetupStatus>("/api/account/setup");
-}
-
-// `fused env default NAME` — the store's global default pointer.
-export function setDefaultEnv(name: string): Promise<AccountStatus> {
-  return postJson<AccountStatus>("/api/account/envs/default", { name });
-}
-
-// `fused env delete NAME --yes` — forgets the LOCAL pointer only; cloud
-// resources and stored keys are untouched (the CLI's semantics).
-export function deleteStoreEnv(name: string): Promise<AccountStatus> {
-  return postJson<AccountStatus>("/api/account/envs/delete", { name });
-}
-
 // -- Preferences (shell/prefs.py; SPEC §20) -----------------------------------
 
 export interface EnginePrefs {
@@ -1143,8 +711,6 @@ export interface EnginePrefs {
 
 export interface Prefs {
   engine: EnginePrefs;
-  // Whether the preview-header Deploy button is shown (opt-in, default off).
-  deploy: { enabled: boolean };
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
   reader: { enabled: boolean };
@@ -1254,10 +820,6 @@ export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { engine });
 }
 
-export function putDeployEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { deploy_enabled: enabled });
-}
-
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
 }
@@ -1312,11 +874,20 @@ export function revealPath(fsPath: string): Promise<void> {
 //
 // This is the one choke point for the mutations in this module — going through
 // it is what stops a NEW wrapper from silently skipping either bookkeeping.
-function noteAfter<T>(paths: string | string[], p: Promise<T>): Promise<T> {
+// `rescans` is asked of the RESULT, because whether the index will be
+// rebuilt for a mutation is the server's decision and not always predictable
+// from the request: a write creates a file or replaces one, and only the
+// server knows which (see `created` in the /api/fs/write response).
+function noteAfter<T>(
+  paths: string | string[],
+  p: Promise<T>,
+  rescans: (out: T) => boolean = () => true,
+): Promise<T> {
   return p.then((out) => {
     clearListPrefetch();
+    const indexed = rescans(out);
     for (const path of Array.isArray(paths) ? paths : [paths]) {
-      if (path) noteFsMutation(path);
+      if (path) noteFsMutation(path, { rescans: indexed });
     }
     return out;
   });
@@ -1327,7 +898,14 @@ function noteAfter<T>(paths: string | string[], p: Promise<T>): Promise<T> {
 // With create=true the write refuses (409 "conflict") when the path already
 // exists, so "New File" can't silently clobber an existing file.
 export function writeFile(path: string, content = "", create = false): Promise<StatResult> {
-  return noteAfter(path, postJson<StatResult>("/api/fs/write", { path, content, create }));
+  return noteAfter(
+    path,
+    postJson<StatResult>("/api/fs/write", { path, content, create }),
+    // An overwrite is not re-indexed (the index stores names), so the box must
+    // not claim it is. An older server that does not answer `created` is
+    // treated as having created something, which errs toward the caption.
+    (out) => out.created !== false,
+  );
 }
 
 // Create a single directory (no mkdir -p — a missing parent is a 400).
@@ -1337,17 +915,25 @@ export function mkdir(path: string): Promise<StatResult> {
 
 // Remove a file or directory. A non-empty directory needs recursive=true (the
 // context menu passes it only after the confirm dialog spells that out).
-// With trash=true the entry is moved to the user's Trash instead (macOS only);
-// where that's unsupported the server replies 501 "trash unsupported" and the
-// caller falls back to a hard delete.
+// With trash=true the entry is moved to the OS bin instead — ~/.Trash on macOS,
+// the freedesktop XDG trash on Linux, the Recycle Bin on Windows. Where THIS PATH
+// cannot use the bin (a Linux cross-device move, a remote mount, a platform with
+// no backend) the server replies 501 "trash unsupported" and the caller falls
+// back to the irreversible hard delete.
+//
+// `trashed_to` is WHERE a trash move landed — present only when the server
+// chose that path itself (its own os.rename into ~/.Trash), absent when Finder
+// did the move and therefore picked the location. It is what makes a trash
+// delete undoable: with it the delete is a rename pair like any other
+// relocation (explorer/lib/fs-undo). Never present on a hard delete.
 export function deleteEntry(
   path: string,
   recursive = false,
   trash = false
-): Promise<{ deleted: string; trashed?: boolean }> {
+): Promise<{ deleted: string; trashed?: boolean; trashed_to?: string }> {
   return noteAfter(
     path,
-    postJson<{ deleted: string; trashed?: boolean }>("/api/fs/delete", {
+    postJson<{ deleted: string; trashed?: boolean; trashed_to?: string }>("/api/fs/delete", {
       path,
       recursive,
       trash,
@@ -1359,6 +945,20 @@ export function deleteEntry(
 // 409 unless overwrite=true.
 export function renameEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {
   return noteAfter([src, dst], postJson<StatResult>("/api/fs/rename", { src, dst, overwrite }));
+}
+
+// Move an entry INTO or OUT OF the OS bin. Same guards and same error contract
+// as renameEntry (it delegates to the very same handler server-side), plus one
+// thing a plain rename cannot do: it keeps the bin's own bookkeeping straight —
+// on Linux the freedesktop `.trashinfo` sidecar is written when the entry moves
+// into the trash and removed when it moves back out.
+//
+// This is the primitive undo/redo uses for a `"delete"` op, and the only reason
+// it is separate from renameEntry: the sidecar is server-side knowledge, so the
+// undo stack stays a list of plain path pairs and picks a primitive by kind
+// (explorer/lib/fs-undo's applyFsOp) rather than learning what a trash is.
+export function trashMove(from: string, to: string): Promise<StatResult> {
+  return noteAfter([from, to], postJson<StatResult>("/api/fs/trash-move", { from, to }));
 }
 
 // Copy src -> dst (paste-of-a-copy, and Duplicate). Same 409-on-existing-dst
@@ -1629,7 +1229,7 @@ export function createDetectedRemote(id: string): Promise<{ ok: boolean; name: s
 // The server spawns `rclone authorize "<backend>"`, which runs its own loopback
 // callback server and opens the SYSTEM browser itself — unlike the Fused
 // login there is no URL for us to window.open. So the client's whole job is
-// to start it, poll, and report; the same shape as lib/account.ts otherwise.
+// to start it, poll, and report.
 //
 // The provider keys and their labels live in lib/oauth.ts; this module only
 // moves the request and the status.
@@ -1782,6 +1382,37 @@ export interface RegistryRemoved {
 
 export function resetRegistryBinding(key: string): Promise<RegistryEntry | RegistryRemoved> {
   return postJson<RegistryEntry | RegistryRemoved>("/api/templates/registry/reset", { key });
+}
+
+// Which registry key (if any) governs previews for one path — the seam
+// FallbackPreview uses to offer "restore default previews" instead of sending
+// someone off to hand-edit registry.json. `{key: null}` means neither registry
+// has a matching key at all (nothing to fix from here). Either error field can
+// be set even alongside a resolved `key`: a registry FILE that fails to parse
+// can hide a key that would otherwise have matched — a distinct problem from
+// one key's own `error`. The two error fields are NEVER merged: `registryError`
+// (the user's registry.json) is the one `repairTemplateRegistry` can act on;
+// `coreRegistryError` (the packaged core registry) has no in-app fix — it's
+// immutable package data, healed only by the app's own startup check — so a
+// caller must not offer the repair action for it.
+type RegistryFileErrors = { registryError?: string | null; coreRegistryError?: string | null };
+export type RegistryEntryForPath = (RegistryEntry & RegistryFileErrors) | ({ key: null } & RegistryFileErrors);
+
+export function getRegistryEntryForPath(path: string, isDir: boolean): Promise<RegistryEntryForPath> {
+  const params = new URLSearchParams({ path, is_dir: isDir ? "true" : "false" });
+  return getJson<RegistryEntryForPath>("/api/templates/registry/for-path?" + params.toString());
+}
+
+// Repair a USER registry.json that fails to parse: the unreadable file is
+// backed up alongside itself (never deleted) and replaced with a fresh empty
+// one. A no-op (`repaired: false`) when the file already parses or is absent.
+export interface RegistryRepairResult {
+  repaired: boolean;
+  backupPath?: string;
+}
+
+export function repairTemplateRegistry(): Promise<RegistryRepairResult> {
+  return postJson<RegistryRepairResult>("/api/templates/registry/repair", {});
 }
 
 // -- Export / import ---------------------------------------------------------
@@ -2030,6 +1661,264 @@ export interface ClaudeSessionFolder {
 
 export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolder[] }> {
   return getJson<{ folders: ClaudeSessionFolder[] }>("/api/claude-sessions");
+}
+
+// -- Claude sessions, one row each (GET /api/claude-sessions/summaries) --------
+// Every Claude Code session on this machine, for the Schedule page's task views
+// (shell/ScheduleTaskViews.tsx). A scheduled task and a chat are the same kind
+// of thing — work Claude did in a folder — so the tree and the board show both,
+// and this is the chat half.
+//
+// `status` is the session collapsed into the board's own vocabulary
+// (in_progress / done / archived), decided server-side so the client never
+// re-derives it. `running` is a separate fact and cannot be folded into it: a
+// session is `in_progress` whether or not a turn is in flight right now, and it
+// is the in-flight one the live pulse draws.
+export interface ClaudeSessionSummary {
+  session_id: string;
+  name: string;
+  cwd: string;
+  started_at: string;
+  last_active: string;
+  running: boolean;
+  status: "in_progress" | "done" | "archived";
+}
+
+export function getClaudeSessionSummaries(): Promise<{ sessions: ClaudeSessionSummary[] }> {
+  return getJson<{ sessions: ClaudeSessionSummary[] }>("/api/claude-sessions/summaries");
+}
+
+// The Board's drag: a chat card moved between In Progress / Done / Archive
+// writes the SAME triage.json the sessions Inbox owns (the server merges, so
+// the record's note/tags/read survive). Tasks never go through this — their
+// column moves are the scheduler's own cancel/restore calls.
+export function setSessionTriage(
+  sessionId: string,
+  status: "in_progress" | "done" | "archived",
+): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/claude-sessions/triage", {
+    session_id: sessionId,
+    status,
+  });
+}
+
+// -- Tasks (GET /api/tasks) ---------------------------------------------------
+// One row per TASK, where a task IS a Claude session: same thing, one name. A
+// task owns a THREAD, and the thread's MESSAGES are every prompt sent into it —
+// typed in a chat, typed in the template's chat, or fired by the scheduler. The
+// three sources differ only in how the message arrived; the thread does not
+// care.
+//
+// `key` is the join everything else uses. A task that has run has a session id
+// and uses it; a task that is only a future schedule entry has no session yet
+// (Claude Code mints the id on the first turn) and uses `pending:<entry-id>`
+// until it runs. The server rekeys it in place at that point, so `task_id`
+// survives the transition — which is the whole reason ids are allocated at
+// creation rather than derived from the session.
+export interface TaskMessage {
+  message_id: string; // MSG-001, per task, oldest first
+  kind: "scheduled" | "chat";
+  body: string;
+  // TWO times, because a scheduled message has two and they are not the same
+  // fact. Both are epoch seconds.
+  //
+  //   at     — what it was SCHEDULED FOR. The time the user picked, and the
+  //            only thing the calendar places a chip by. It never moves.
+  //   ran_at — when it ACTUALLY RAN: the transcript's own timestamp for the
+  //            prompt, falling back to when the scheduler claimed it. 0 for a
+  //            message that has not run (pending, cancelled, missed).
+  //
+  // They differ whenever the app was not open at the due minute. Catch-up is
+  // unbounded, so a message scheduled for Thursday and caught up on Saturday is
+  // ordinary, not exotic — `at` is Thursday and `ran_at` is Saturday. Placing
+  // it by `ran_at` was the original bug: the chip left the day that was asked
+  // for and appeared on the day the app happened to reopen.
+  //
+  // For a chat message the two are equal: a typed message was scheduled for the
+  // moment it was typed.
+  at: number;
+  ran_at: number;
+  state:
+    | "pending"
+    | "sending"
+    | "sent"
+    | "error"
+    | "missed"
+    | "cancelled"
+    | "skipped";
+  unread: boolean;
+  entry_id: string; // schedule entry; "" for a chat message
+  template_id: string; // the recurring message this is an occurrence of
+  turn: "done" | "idle" | "unknown" | "";
+  anchor: string; // transcript record uuid, for scroll-to; "" if unknown
+}
+
+export interface Task {
+  key: string;
+  task_id: string; // TASK-003 — numbered per project, allocated once, never reused
+  project: string; // the FOLDER: a task on ~/x/foo.py belongs to project ~/x
+  target: string; // what the task actually points at (may be that file)
+  session_id: string; // "" until the first run
+  title: string;
+  // Which source won: the user's own title, Claude Code's own `ai-title`
+  // record, the first line of the session's own first prompt (`message`), or —
+  // with no readable transcript to take that from — the first line of a message
+  // merely SCHEDULED at the session (`entry`). The last two are named apart
+  // because only `entry` can be the message a form is composing right now; see
+  // sessionTitleOf and tasks.py `_title`.
+  title_source: "user" | "ai" | "message" | "entry";
+  description: string;
+  // Decided by the SERVER, once, for every view — List, Board and Calendar all
+  // read this rather than each deriving a column from the newest message.
+  //
+  // `failed` is a status of its own and not a kind of `done`: a run that
+  // started and broke is news, and filing it under done meant a view had to
+  // remember to read the boolean below to say so — which is how a failed task
+  // could simply not be shown.
+  //
+  // A SKIPPED occurrence is `archived`, not `failed`. It was filed away and
+  // never attempted (the coalescer dropped it, or the user cancelled it), which
+  // is a different thing from a run that tried and broke; only something that
+  // actually ran can fail.
+  status: "upcoming" | "in_progress" | "done" | "failed" | "archived";
+  // Did the newest message's run break? `status` is the authority on which
+  // column a task belongs in; this is the raw fact underneath it, and the two
+  // disagree in exactly one direction — a task triaged to `done`, or one whose
+  // session is live again, reads a different status while this stays true.
+  // Anything asking "which column" should read `status`.
+  failed: boolean;
+  live: boolean;
+  unread: number;
+  last_active: number;
+  message_count: number;
+  // WHEN THIS NEXT RUNS, and WHICH schedule entry that run is: `min(at)` over
+  // every PENDING entry the task has, epoch seconds, decided by the server
+  // (tasks.py `_next_run`) over the whole set rather than over the three
+  // messages below. 0 / "" when nothing is pending.
+  //
+  // They exist because the three-message window cannot answer the question. The
+  // Board orders Upcoming by soonest-next-run, and `messages` is the three
+  // newest by `at` — so an OVERDUE pending (ordinary here: past scheduling is
+  // allowed and catch-up is unbounded) can be pushed out of it by two runs plus
+  // next month's occurrence, leaving the lane to sort by a LATER time and bury
+  // the work that should go first.
+  //
+  // `next_run_entry` is what makes the BUTTON agree with that order: run-now
+  // sends an entry id, so a card promoted on a run the row could not name would
+  // fire a different message than the one its place in the lane promised. The
+  // two widen together or not at all.
+  //
+  // OPTIONAL because an older server does not send them. tasks-lib.nextRunAt and
+  // tasks-lib.runNowTarget both fall back to reading the window, which is the
+  // same (bounded) answer they gave before these existed.
+  next_run?: number;
+  next_run_entry?: string;
+  // The three most recent, newest first. The rest need the endpoint below —
+  // this list is built by a tail parse because it runs for every row, and a
+  // full transcript parse per task would not survive a few hundred of them.
+  messages: TaskMessage[];
+}
+
+export function getTasks(): Promise<{ tasks: Task[] }> {
+  return getJson<{ tasks: Task[] }>("/api/tasks");
+}
+
+// "Show more": the whole thread, newest first. Deliberately a separate call —
+// this one is allowed to parse the full transcript because it is one task, on
+// demand, and never on the listing path.
+export function getTaskMessages(key: string): Promise<{ messages: TaskMessage[] }> {
+  return getJson<{ messages: TaskMessage[] }>(
+    `/api/tasks/${encodeURIComponent(key)}/messages`,
+  );
+}
+
+// Unread means "I have not seen the response to this message", so it is tracked
+// per message, not per task, and clicking through to the transcript is what
+// clears it. Marking one message read must leave older unread ones alone.
+export function markTaskMessageRead(
+  key: string,
+  messageId: string,
+): Promise<{ ok: boolean; unread: number }> {
+  return postJson<{ ok: boolean; unread: number }>("/api/tasks/read", {
+    key,
+    message_id: messageId,
+  });
+}
+
+// The whole task, in ONE request. Per-message is the right MODEL and stays the
+// default (see above), but it was also the only way to clear a task, so "I have
+// seen all of this" cost one click per row — 89 of them on the longest real
+// thread. Same endpoint, wider object: the server enumerates the thread, marks
+// the messages that are actually unread (a pending one is left alone, so it
+// cannot fire already-read) and answers with what is left, which is 0 unless
+// something arrived while the request was in flight.
+export function markWholeTaskRead(
+  key: string,
+): Promise<{ ok: boolean; unread: number }> {
+  return postJson<{ ok: boolean; unread: number }>("/api/tasks/read", {
+    key,
+    all: true,
+  });
+}
+
+// Every scheduled message in a time window, which is the one question the
+// listing above cannot answer: `Task.messages` holds only the three most recent,
+// and a calendar draws a week. Without this the grid under-draws — a task whose
+// runs fall outside its last three messages simply has no chips on those days.
+//
+// Separate from the listing rather than a parameter on it, deliberately: the
+// window changes on every arrow press and the listing's poll does not, so
+// folding them together would drag a 200-task tail parse behind each step.
+// `from` inclusive, `to` exclusive, epoch seconds — local midnights, because the
+// grid's columns are local days.
+export function getTasksScheduled(
+  from: number,
+  to: number,
+): Promise<{ items: { task_key: string; message: TaskMessage }[] }> {
+  return getJson<{ items: { task_key: string; message: TaskMessage }[] }>(
+    `/api/tasks/scheduled?from=${Math.floor(from)}&to=${Math.floor(to)}`,
+  );
+}
+
+// -- The queue (GET /api/schedule/queue) --------------------------------------
+// Nothing fires while the app is not running, and catch-up for a one-off is now
+// unbounded — so opening the app after a week away can find real work waiting.
+// Three lists, narrowing: `queued` is past due and not yet claimed, in the order
+// it will run; `running` is claimed and spawning; `live` is a turn actually in
+// flight — sent, with no verdict yet.
+//
+// `live` is the one a person needs most and the one nothing used to report. A
+// run parked on a permission prompt looks identical to a slow one from outside,
+// so until the dock could name it there was no way to find the prompt and
+// answer it — the run just sat there.
+//
+// Nothing scheduled for LATER appears in any of them. "Queued" means about to
+// run; a list that also held next Tuesday would be answering a different
+// question, and the calendar already answers that one. The dock, bottom right,
+// is where all three are drawn and cancelled.
+export function getScheduleQueue(): Promise<{
+  queued: ScheduledMessage[];
+  running: ScheduledMessage[];
+  live?: ScheduledMessage[];
+}> {
+  return getJson<{
+    queued: ScheduledMessage[];
+    running: ScheduledMessage[];
+    live?: ScheduledMessage[];
+  }>("/api/schedule/queue");
+}
+
+// Cancelling races the claim, and the server resolves it honestly: an entry
+// already claimed for sending is refused rather than corrupted, and comes back
+// in `refused` so the UI can say why instead of silently dropping it.
+export function cancelQueued(
+  entryIds: string[] | "all",
+): Promise<{ ok: boolean; cancelled: string[]; refused: string[] }> {
+  const body = entryIds === "all" ? { all: true } : { entry_ids: entryIds };
+  return postJson<{ ok: boolean; cancelled: string[]; refused: string[] }>(
+    "/api/schedule/queue/cancel",
+    body,
+  );
 }
 
 // -- AI Models (GET /api/ai-models) -------------------------------------
@@ -2356,7 +2245,25 @@ export interface AiCatalogModel {
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;
-  note: string;
+  /** Why you would or would not pick this one. Null on a CACHED entry: nobody
+   *  wrote a note for a repo the user found themselves, and null says so where
+   *  prose generated from a repo id would claim otherwise. */
+  note: string | null;
+  /** Which half of the payload this came from (D323). "curated" is the
+   *  hand-maintained shortlist; "cached" is a repo found on this disk that the
+   *  curation has never heard of — downloaded from the Discover tab's Hub
+   *  search, and previously invisible to every picker in the app.
+   *
+   *  The Discover tab's "Suggested models" grid renders the CURATED half only:
+   *  the Local tab is already the answer to "what is on my disk", and the same
+   *  repo in both grids would read as two different things. */
+  source: "curated" | "cached";
+  /** Whether it is on this disk. Always true for a cached entry; on a curated
+   *  one it is what the checkmark means. */
+  downloaded: boolean;
+  /** Whether a worker is holding it RIGHT NOW — read live from the supervisor,
+   *  unlike `downloaded`, which comes from a memoised disk scan. */
+  loaded: boolean;
 }
 
 export interface AiCatalogCapability {
@@ -2401,6 +2308,91 @@ export function downloadAiModel(model: string, capability?: string): Promise<AiL
 
 export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boolean }> {
   return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model });
+}
+
+// -- AI usage (GET /api/ai/metrics, SPEC AI-12) -------------------------------
+// What `/api/ai` has generated in THIS server process: both tiers, in memory,
+// gone on restart. `since` is what keeps that honest — every number here is
+// "since the server started", never "today".
+
+/** The counters, wherever they are counted: a bucket, the window, a model's
+ *  row, a tier, or the whole process. */
+export interface AiUsageCounts {
+  /** Completions that reached a terminal frame. A cancelled local generation
+   *  counts (it produced tokens); a call that failed or was abandoned
+   *  mid-stream does not (nothing ever said how many tokens it made). */
+  completions: number;
+  /** Null means NOT REPORTED, never zero: a local worker counts what it
+   *  generated and says nothing about the prompt it read (SPEC AI-3), so a row
+   *  showing "0 read" for a local model would be inventing a fact. */
+  input_tokens: number | null;
+  output_tokens: number;
+  /** Calls that reached for a model and got nothing back. NOT completions —
+   *  and not malformed requests either, which never reached a model. */
+  failures: number;
+  /** Seconds the models spent generating, as the tiers themselves reported.
+   *  Null when nothing in this row was timed. */
+  seconds: number | null;
+  /** `seconds` divided into the tokens that were TIMED — not into every token,
+   *  since a cancelled generation reports tokens and no duration. Null when
+   *  nothing was timed. */
+  tokens_per_second: number | null;
+}
+
+/** One `bucket_seconds`-wide column of the graph. `t` is the bucket's START, in
+ *  epoch SECONDS (not ms — it comes straight from the server's clock). */
+export interface AiUsageBucket extends AiUsageCounts {
+  t: number;
+}
+
+export interface AiUsageModel extends AiUsageCounts {
+  /** The RESOLVED model id — "claude-opus-5", not the "opus" alias a caller may
+   *  have sent — or "other models", the overflow row past the server's cap. */
+  model: string;
+  /** Which half served it — null on the "other models" overflow row, which is a
+   *  mixture by construction and cannot claim either. */
+  tier: AiUsageTier | null;
+}
+
+/** Which half of `/api/ai` served it, on the `/`-in-the-id seam AI-1 dispatches
+ *  on — the server's own answer, not a guess made from the string here. */
+export type AiUsageTier = "claude" | "local";
+
+export interface AiUsage {
+  /** When this process started counting, epoch seconds. */
+  since: number;
+  /** The server's clock when it answered — the right end of the axis. Used
+   *  instead of Date.now() so a bucket never plots into the future. */
+  now: number;
+  bucket_seconds: number;
+  /** The window actually served, after the server clamped what was asked. */
+  window_minutes: number;
+  /** How far back the store can ever answer, whatever `minutes` asks for. */
+  retention_minutes: number;
+  /** When the last completion landed, epoch seconds — null if none ever has.
+   *  What tells "quiet for a while" from "never used". */
+  last_completion_at: number | null;
+  /** Since `since`. */
+  totals: AiUsageCounts;
+  /** The `window_minutes` the buckets cover. */
+  window: AiUsageCounts;
+  /** Since `since`, split by tier. Both keys are always present. */
+  tiers: Record<AiUsageTier, AiUsageCounts>;
+  /** Failures since `since`, by kind ("timeout", "ai_unavailable",
+   *  "ai_error", "model_loading"), commonest first. "3 failed" and "3 timed
+   *  out" send a user to different places. */
+  failure_types: { type: string; count: number }[];
+  /** Biggest generator first. */
+  models: AiUsageModel[];
+  /** Dense and oldest-first: every bucket in the window, zeros included, so a
+   *  gap in traffic draws as a gap. Short of the full window only while the
+   *  process is younger than it — nothing is emitted for time before counting
+   *  began. */
+  buckets: AiUsageBucket[];
+}
+
+export function getAiUsage(minutes: number, opts?: { signal?: AbortSignal }): Promise<AiUsage> {
+  return getJson<AiUsage>("/api/ai/metrics?minutes=" + encodeURIComponent(String(minutes)), opts);
 }
 
 // -- Git repos (GET /api/git-repos) -------------------------------------------
@@ -2478,7 +2470,7 @@ export type ScheduledState =
 // the entry's `due`: the first run, and the date every derived part (weekday,
 // day-of-month, nth) is read from.
 export interface RecurrenceRule {
-  freq: "day" | "week" | "month" | "year";
+  freq: "hour" | "day" | "week" | "month" | "year";
   interval?: number; // 1..99, default 1
   byday?: number[]; // week only; 0=Sunday
   monthly?: "day" | "nth-weekday"; // month only, default "day"
@@ -2492,6 +2484,13 @@ export interface ScheduledMessage {
   message: string;
   due: string;
   session_id: string;
+  // WHERE `session_id` came from: true only when the server LEARNED it (a
+  // repeating template's first run reported the session it opened, and that id
+  // was written back). Absent or false means the user supplied it — a chat
+  // handoff — which is the reading an entry stored before this field existed
+  // gets, and the safe one: a repeat continues a learned thread but must never
+  // continue the chat it was scheduled from.
+  session_learned?: boolean;
   permission_mode: string;
   state: ScheduledState;
   created: string;
@@ -2520,17 +2519,42 @@ export interface ScheduledMessage {
   made?: number;
   // On an occurrence: the template it was materialized from.
   template_id?: string;
+  // On an occurrence: this is the ONE catch-up run of a rule whose anchor was
+  // already in the past when it was created. Its `due` is the LATEST slot at or
+  // before the moment it was made (the anchor sets the pattern; the run that
+  // goes is this morning's, not last Saturday's), so it is overdue the instant
+  // it exists and goes on the next tick — the same thing a past-dated one-off
+  // does. The slots it collapsed past are never materialized and never run.
+  catch_up?: boolean;
   // On a `recurring` template in GET /api/schedule only: projected occurrence
   // times (UTC ISO) over the next two weeks — server-side cron math, so the
   // calendar can draw future runs without a client cron parser. Not stored.
   upcoming?: string[];
+  // The user's own one-liner for the task this message belongs to. Optional and
+  // usually absent: left blank, the tasks endpoint falls back to Claude Code's
+  // own `ai-title` record and then to the first line of the message, so a task
+  // is named whether or not anyone named it. An explicit title beats both.
+  title?: string;
+  // Free text the user added when scheduling. Never auto-filled — Claude Code
+  // writes a title into its transcripts but no summary, so there is nothing
+  // honest to prefill this from.
+  description?: string;
+  // On a `recurring` template: mint a FRESH task for every run instead of
+  // appending to one thread. The default (absent/false) is to append, which is
+  // what a task being a session already means — the template's `session_id`
+  // copies to each occurrence, so every run resumes the same conversation.
+  // Ticking this copies "" instead, so each run starts its own.
+  new_task_each_run?: boolean;
 }
 
 export interface ScheduleResult {
   entries: ScheduledMessage[];
   // The catch-up bound, in seconds (FUSED_RENDER_SCHEDULE_MAX_LATE server-side).
-  // Configurable, so the page cannot explain a `missed` entry without asking.
-  max_late_seconds: number;
+  // **null is the default now**: a missed one-off queues and runs however old,
+  // so there is no bound to report. A number means an operator set the env var
+  // and chose to reinstate one — which is the only case where a `missed` entry
+  // needs explaining, and the only case where this is worth printing.
+  max_late_seconds: number | null;
   permission_modes: string[];
 }
 
@@ -2552,7 +2576,30 @@ export function scheduleMessage(body: {
   // with `repeats` and `delay_seconds`.
   rule?: RecurrenceRule;
   session_id?: string;
+  // Only ever sent alongside a `session_id` the entry being re-created had
+  // LEARNED (an edit is cancel + re-create, so the marker has to be re-stated
+  // or it dies with the old entry). Never sent for a chat handoff: the server
+  // does not invent this, and a false claim here would let a repeating task
+  // resume the conversation it was scheduled from.
+  session_learned?: boolean;
   permission_mode?: string;
+  // All three are omitted rather than sent empty: blank means "no opinion", and
+  // for `title` that is a meaningful answer — the server names the task itself.
+  title?: string;
+  description?: string;
+  // Only meaningful alongside `rule` or `repeats`; a one-off has no runs to
+  // split apart.
+  new_task_each_run?: boolean;
+  // The id of the entry this one REPLACES — set only by an edit, which is
+  // cancel + re-create and therefore mints a brand new entry id. A task that has
+  // not run yet is NUMBERED on that entry id (`pending:<entry-id>`), so without
+  // this the server allocated a second number and the task was renamed under the
+  // user: TASK-078 became TASK-079 on a time change, with no duplicate left
+  // behind to explain it. Sent so the number MOVES onto the new id instead.
+  //
+  // A no-op where there is nothing to move — a task whose session exists is
+  // numbered on the session id, and that key is untouched by an edit.
+  replaces?: string;
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }
@@ -2562,6 +2609,51 @@ export function scheduleMessage(body: {
 // not passed — a skip is the one cancel that can honestly be walked back.
 export function restoreScheduledMessage(id: string): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule/restore", { id });
+}
+
+// Send a pending message NOW — what dragging a card from Upcoming to In
+// Progress means on the Board.
+//
+// It does NOT move the entry's `due`. The schedule time is a fact about what
+// was asked for, so the row reads as having run early (due then, fired now)
+// rather than as having been scheduled for this minute — which is also what
+// keeps its calendar chip on the day the user picked.
+//
+// Rejects rather than silently doing nothing: 404 when there is no such entry,
+// 409 with a reason when there is one that cannot run — already sent, already
+// sending, cancelled, or its conversation has a turn open right now (two
+// `claude --resume` processes on one transcript is the one thing this must
+// never do). The reason is written to be shown.
+export function runScheduledNow(entryId: string): Promise<{ ok: boolean; entry: ScheduledMessage }> {
+  return postJson<{ ok: boolean; entry: ScheduledMessage }>(
+    "/api/schedule/run-now",
+    { entry_id: entryId },
+  );
+}
+
+// Ask again — the other half of Re-run, for the case run-now cannot serve.
+//
+// A run that already went and broke leaves NO pending entry to claim, so
+// runScheduledNow has nothing to fire. This sends the same message as a NEW
+// one: an ordinary one-off due now, resuming the session the original actually
+// ran in, so the re-ask lands in the same thread. The original entry is left
+// exactly as it was — its state, its due time and its error all stand, because
+// that run really did happen and really did break.
+//
+// `entry` is the NEW message, not the original. `note` is a sentence to show
+// beside a SUCCESS: the message may be queued rather than away (its
+// conversation can be mid-turn), which is news but not a failure.
+//
+// Rejects with the server's own sentence: 404 for no such entry, 409 for one
+// that cannot be re-sent — still pending or sending (use run-now, or wait),
+// cancelled or missed (it never went, so there is nothing to send again).
+export function resendScheduledMessage(
+  entryId: string,
+): Promise<{ ok: boolean; entry: ScheduledMessage; note?: string }> {
+  return postJson<{ ok: boolean; entry: ScheduledMessage; note?: string }>(
+    "/api/schedule/resend",
+    { entry_id: entryId },
+  );
 }
 
 // Rejects with the server's 404 message when the entry is no longer pending —

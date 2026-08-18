@@ -27,10 +27,9 @@ export const THEME_KEY = "fused-render:theme";
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 
-// Cross-component "theme changed" signal, the notifyAccountChanged /
-// notifyPrefsChanged pattern (lib/account.ts, lib/prefs.ts): the menu that
-// writes the preference and any other component reading it are mounted at once,
-// and a localStorage write raises no event in its OWN window.
+// Cross-component "theme changed" signal: the menu that writes the
+// preference and any other component reading it are mounted at once, and a
+// localStorage write raises no event in its OWN window.
 const THEME_EVENT = "fused:themechange";
 
 export type ThemePref = "system" | "light" | "dark";

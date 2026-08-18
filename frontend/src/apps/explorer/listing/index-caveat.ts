@@ -25,10 +25,25 @@ export interface IndexCaveat {
 // behind). That trade is only defensible if it is stated, which is what this
 // says. A running scan outranks it: "indexing…" already implies the same
 // caveat and names the reason.
+// `rescanPending` is the third input and the one with no poll behind it: this
+// app just changed a file, the server has been told to rescan that folder
+// (server/index_touch.py), and until a status poll catches the run, `scanning`
+// is still false while the rows on screen are the ones that are wrong. It
+// reads as the same "indexing…" because it is the same claim — results come
+// from an index that is being put right — and it outranks `behind`, which says
+// nothing is coming.
 export function indexCaveat(
   status: IndexStatus | null | undefined,
   behind = false,
+  rescanPending = false,
 ): IndexCaveat | null {
+  if (rescanPending && !(status && status.scanning)) {
+    return {
+      note: "indexing…",
+      title:
+        "This folder was just changed here, so it is being re-indexed. Results may still show it as it was a moment ago.",
+    };
+  }
   if (status && status.scanning) {
     if (status.has_index) {
       return {
@@ -59,4 +74,26 @@ export function indexCaveat(
 export function withCaveat(count: string | null, caveat: IndexCaveat | null): string | null {
   if (!caveat) return count;
   return count ? `${count} · ${caveat.note}` : caveat.note;
+}
+
+/**
+ * The caveat for a box that asks the server per query.
+ *
+ * Both search boxes assemble the same three inputs, and the assembly is where
+ * they got it wrong rather than in `indexCaveat` itself — which is why it is a
+ * function now instead of an expression repeated at two call sites with a
+ * test grepping for the word `pending`.
+ *
+ * `behind` — "these rows answer a different query, or an older generation of
+ * the tree" — is two situations wearing one name. While a request is in
+ * flight the next answer is ~40 ms away, and captioning that "not refreshed…
+ * clear the search and run it again" is corpus-staleness language for a round
+ * trip, printed exactly where the 200 ms rule withholds a spinner. Only rows
+ * that are STUCK are stale.
+ */
+export function searchCaveat(
+  status: IndexStatus | null | undefined,
+  state: { behind: boolean; pending: boolean; rescanPending: boolean },
+): IndexCaveat | null {
+  return indexCaveat(status, state.behind && !state.pending, state.rescanPending);
 }

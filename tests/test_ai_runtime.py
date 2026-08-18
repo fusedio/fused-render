@@ -18,6 +18,7 @@ import sys
 import textwrap
 import threading
 import time
+import types
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,6 +27,8 @@ from fused_render import jobs
 from fused_render.ai import catalog, registry, supervisor
 from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
+from fused_render.server.routers import ai_models, ai_runtime
+from fused_render.server.routers.ai_models import CachedModel
 
 #: The real `_ensure_venv`, captured at import — before any fixture replaces it.
 #: The runner fixtures stub it (nothing is ever built in these tests), so a test
@@ -1706,6 +1709,161 @@ def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner
     assert open(started["path"], "rb").read(8) == b"\x89PNG\r\n\x1a\n"
 
 
+def test_the_reply_says_where_the_LIVE_PREVIEW_will_be(client, fake_image_runner):
+    """The third path this API hands out, and it is decided here for the same
+    reason the other two are: the server owns where user files go. Derived
+    through `preview.preview_path`, never string-munged out of `path` — the
+    worker that writes this file and the reply that advertises it have to name
+    the same one, and a second spelling of the suffix is how they disagree."""
+    from fused_render.ai.runners import preview
+
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert started["previewPath"] == preview.preview_path(started["path"])
+    assert os.path.dirname(started["previewPath"]) == os.path.dirname(started["path"])
+    _wait_job(started["jobId"])
+
+
+def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner,
+                                                       monkeypatch):
+    """The advertised path and the requested one are the same string, because
+    they come from the same call rather than from two agreeing spellings."""
+    captured = {}
+    real_start = supervisor.start_image
+
+    def spy(model, request, job):
+        captured.update(request)
+        return real_start(model, request, job)
+
+    monkeypatch.setattr(supervisor, "start_image", spy)
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert captured["outPreview"] == started["previewPath"]
+    _wait_job(started["jobId"])
+
+
+def _skill_section(title):
+    """The body of one `## ` section of `skills/fused-render-ai/SKILL.md`.
+
+    That file is what a page author actually reads — the bridge's own comments
+    are for whoever maintains the bridge — so it is the copy of this API that
+    can be wrong without anything noticing.
+    """
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "skills", "fused-render-ai", "SKILL.md")
+    source = open(path, encoding="utf-8").read()
+    start = source.index("## " + title)
+    end = source.find("\n## ", start + 1)
+    return source[start:end if end != -1 else len(source)]
+
+
+def test_the_SKILL_names_every_field_an_image_resolves_with(client, fake_image_runner):
+    """Read off the ENDPOINT rather than listed here, because a hand-written
+    list in a test is a third copy that can drift with the other two. This is
+    the check that would have caught `previewPath` and `previewUrl` shipping
+    with the skill still describing the API without them: the route grew two
+    fields and the document a page author reads did not.
+
+    `url` and `previewUrl` are added because they are the bridge's own, built
+    on top of the reply rather than returned by it.
+    """
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    fields = set(started) | {"url", "previewUrl"}
+    section = _skill_section("Images: `fused.ai.image({prompt, ...})`")
+    assert sorted(field for field in fields if field not in section) == []
+    _wait_job(started["jobId"])
+
+
+def test_a_runner_that_writes_no_preview_leaves_NOTHING_behind(client,
+                                                               fake_image_runner):
+    """The preview is a promise about a path, not about a file. A model with no
+    fitted projection — and every worker built before this existed — renders
+    exactly as it did, and the advertised path simply never appears."""
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "done", row
+    assert os.path.isfile(started["path"])
+    assert not os.path.exists(started["previewPath"])
+
+
+def _age(path, seconds):
+    """Backdate a file, so a sweep sees it as something nobody is writing."""
+    old = time.time() - seconds
+    os.utime(path, (old, old))
+
+
+def test_a_preview_ORPHANED_BY_A_KILL_is_swept_up(tmp_path):
+    """`Sink.discard` runs on a normal unwind, and a worker does not always get
+    one: `supervisor._terminate` / `_kill_tree` end it outright on an unload, an
+    app shutdown or a wedge. What is left is `<stem>.preview.png` — and possibly
+    a `.tmp` beside it — in `~/ai/images`, a directory the user browses, with no
+    job row to explain it and nothing that would ever remove it.
+
+    So the directory is swept when the next render asks for it: the one moment
+    this is free, since the caller is about to wait minutes anyway.
+    """
+    from fused_render.server.routers import ai_runtime
+
+    room = tmp_path / "images"
+    room.mkdir()
+    orphan = room / "20260101-120000-abc.preview.png"
+    temp = room / "20260101-120000-abc.preview.png.9999.tmp"
+    kept = room / "20260101-120000-abc.png"
+    for path in (orphan, temp, kept):
+        path.write_bytes(b"x")
+        _age(path, ai_runtime._PREVIEW_TTL + 60)
+
+    ai_runtime._sweep_previews(str(room))
+    # The render itself is the artefact and is never touched, however old.
+    assert sorted(p.name for p in room.iterdir()) == ["20260101-120000-abc.png"]
+
+
+def test_a_preview_a_RENDER_IS_STILL_WRITING_survives_the_sweep(tmp_path):
+    """The one thing this must not do. A live preview is rewritten every
+    denoising step, so its mtime is always seconds old — the age threshold is
+    what separates "nobody is writing this" from "somebody is", and it is why
+    the sweep does not need to know which renders are in flight."""
+    from fused_render.server.routers import ai_runtime
+
+    room = tmp_path / "images"
+    room.mkdir()
+    live = room / "20260101-120000-def.preview.png"
+    live.write_bytes(b"x")
+
+    ai_runtime._sweep_previews(str(room))
+    assert live.exists()
+
+
+def test_the_sweep_never_breaks_a_render(tmp_path):
+    """It runs on the way in to a request that is about to work. A directory
+    that cannot be listed, or a file that cannot be removed, is worth an untidy
+    folder and never a refused render."""
+    from fused_render.server.routers import ai_runtime
+
+    ai_runtime._sweep_previews(str(tmp_path / "nothing-here"))
+
+
+def test_a_render_SWEEPS_before_it_starts(client, fake_image_runner, monkeypatch,
+                                          tmp_path):
+    """Wired to the request rather than to a timer: there is no background
+    sweeper to own, and the directory only grows when renders happen."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    from fused_render.server.routers import ai_runtime
+
+    room = tmp_path / "ai" / "images"
+    room.mkdir(parents=True)
+    orphan = room / "20250101-000000-old.preview.png"
+    orphan.write_bytes(b"x")
+    _age(orphan, ai_runtime._PREVIEW_TTL + 60)
+
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert not orphan.exists()
+    _wait_job(started["jobId"])
+
+
 def test_the_reply_carries_the_seed_even_when_none_was_asked_for(client, fake_image_runner):
     """A seed invented inside the worker and never surfaced would make every
     unseeded image unrepeatable — "make that one again" has to be possible."""
@@ -2909,6 +3067,122 @@ def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
     assert value["url"] == "/api/fs/raw?path=/t/out.json"
 
 
+def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.png"'):
+    """Run `aiImage` out of runtime.js under node, against stubs.
+
+    `_run_ai_transcribe`'s harness for the other half of the same API: the
+    function is lifted out and driven with its closure stubbed, because what
+    matters is the object it hands the page rather than the DOM it built it in.
+
+    `ticks` is a JS array of job records the fake watcher replays through
+    `onProgress`, and they are echoed back untouched so a test can prove the
+    bridge annotated a COPY rather than the row the manager is drawing.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own image glue")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    start = source.index("  function aiImage(opts)")
+    end = source.index("\n  }\n", start) + 4
+    fn = source[start:end]
+
+    prelude = """
+      const started = {jobId: "sys:ai-image:x", path: "/t/a.png", seed: 7,
+                       steps: 4, previewPath: PREVIEW};
+      const window = {location: {search: "?path=/pages/p.html"}};
+      const aiPost = () => Promise.resolve(started);
+      const rawUrl = (p) => "/api/fs/raw?path=" + p;
+      const stat = () => Promise.reject(new Error("no stat"));
+      const rows = TICKS;
+      const watchJob = () => ({
+        watch: (cb) => {
+          for (const row of rows) if (cb) cb(row);
+          return Promise.resolve(RECORD);
+        },
+        get: () => Promise.resolve(RECORD),
+        stop() {}, cancel: () => Promise.resolve(true),
+      });
+      const progress = [];
+    """.replace("PREVIEW", preview).replace("TICKS", ticks).replace("RECORD", record)
+    call = """
+      aiImage({prompt: "a fox", onProgress: (job) => progress.push(job)}).then(
+        (value) => console.log(JSON.stringify({ok: true, value, progress, rows})),
+        (err) => console.log(JSON.stringify(
+          {ok: false, message: err.message, type: err.type, progress, rows})),
+      );
+    """
+    out = subprocess.run(["node", "-e", prelude + fn + call],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+RUNNING = '{state: "running", done: %d, total: 4}'
+
+
+def test_every_progress_tick_carries_a_READY_TO_USE_preview_url():
+    """A page sets this as an `<img>` src and gets a picture emerging out of
+    noise. Built here rather than by every caller, for the same reason `url`
+    is — and CACHE-BUSTED BY STEP, because the preview is one path overwritten
+    in place and a browser handed the same URL twice shows frame 2 forever."""
+    settled = _run_ai_image(ticks="[%s, %s]" % (RUNNING % 1, RUNNING % 2))
+    assert settled["ok"] is True, settled
+    assert [tick["previewUrl"] for tick in settled["progress"]] == [
+        "/api/fs/raw?path=/t/a.preview.png&step=1",
+        "/api/fs/raw?path=/t/a.preview.png&step=2",
+    ]
+
+
+def test_the_tick_a_page_sees_is_a_COPY_of_the_row_the_manager_is_drawing():
+    """The record belongs to the job manager and every other watcher of that
+    row sees the same object — a field written onto it here would travel."""
+    settled = _run_ai_image(ticks="[%s]" % (RUNNING % 1))
+    assert settled["rows"] == [{"state": "running", "done": 1, "total": 4}]
+    assert settled["progress"][0]["done"] == 1
+
+
+@pytest.mark.parametrize("state", ["done", "error", "cancelled"])
+def test_the_LAST_tick_has_no_preview_because_the_file_is_already_gone(state):
+    """`watch` calls back with the TERMINAL record too, and by the time a row
+    reaches one the worker's sink has discarded the preview — `Sink.__exit__`
+    runs before `generate()` returns, which is before the row can be marked.
+
+    So a page that keeps its `<img>` pointed at the latest `previewUrl` would
+    end every render on a guaranteed 404: a blank flash exactly where the
+    finished picture should appear. Null is the honest answer, and it is the
+    same answer on a cancel and an error — there is no frame there either."""
+    settled = _run_ai_image(record='{state: "%s"}' % state,
+                            ticks="[%s, {state: '%s', done: 4, total: 4}]"
+                                  % (RUNNING % 3, state))
+    ticks = settled["progress"]
+    assert ticks[0]["previewUrl"] == "/api/fs/raw?path=/t/a.preview.png&step=3"
+    assert ticks[1]["previewUrl"] is None, ticks[1]
+
+
+def test_the_resolved_image_carries_the_url_and_a_NULL_preview():
+    """Same fact from the other side: the resolved object names the real PNG,
+    and `previewUrl` is null because the file it would name has been deleted.
+    A URL to a file that is gone is worse than no URL — a page can test null."""
+    settled = _run_ai_image()
+    assert settled["ok"] is True, settled
+    assert settled["value"]["url"] == "/api/fs/raw?path=/t/a.png"
+    assert settled["value"]["previewUrl"] is None
+
+
+def test_a_render_with_no_preview_hands_the_page_NULL_rather_than_a_dead_url():
+    """A model whose latent space has no fitted projection writes no frames, and
+    a URL pointing at a file that will never exist is worse than nothing: a page
+    can test `previewUrl` but cannot test an `<img>` that 404s."""
+    settled = _run_ai_image(ticks="[%s]" % (RUNNING % 1), preview="undefined")
+    assert settled["ok"] is True, settled
+    assert settled["progress"][0]["previewUrl"] is None
+    assert settled["value"]["previewUrl"] is None
+
+
 @pytest.mark.parametrize("opts", [
     '{path: "a.m4a", diarize: true, speakers: 0}',
     '{path: "a.m4a", diarize: true, speakers: -2}',
@@ -3943,3 +4217,486 @@ def test_download_refuses_an_unreadable_cached_repo_too(client, hub, dispatched)
     assert response.status_code == 400
     assert "org/gguf-only" in response.json()["error"]
     assert dispatched == []
+
+
+# -- a downloaded model joins the catalog's picker (D323) -----------------------
+# The reported bug: a user finds a model on the Discover tab's Hub search, presses
+# Download, the bytes land in the hub cache — and the model then appears in NO
+# page's picker, because every page reads `fused.ai.models.catalog()` and that was
+# the curation and nothing else. The cache scan the AI Models page already does is
+# now joined onto the catalog, so a downloaded repo shows up beside the suggested
+# ones with the same `{id, label, size_gb, note}` keys the apps read.
+#
+# The rule the union must not break is `catalog.py`'s: SMALLEST FIRST, AND THE
+# DEFAULT FOLLOWS POSITION 0, over the CURATED list only. `default_for()` is what
+# a bare `fused.ai.image()` loads, so an arbitrary repo off the disk reaching
+# position 0 would make a no-model call load unvetted weights.
+
+
+def _catalog(client):
+    response = client.get("/api/ai/catalog")
+    assert response.status_code == 200
+    return {row["capability"]: row for row in response.json()["capabilities"]}
+
+
+def _entry(client, capability, repo_id):
+    """The one entry for `repo_id` under `capability`, or None if it is not offered."""
+    return next((m for m in _catalog(client)[capability]["models"] if m["id"] == repo_id), None)
+
+
+def _offered(client, capability, repo_id):
+    """…and the same, for a test whose point is what the entry SAYS rather than
+    whether it exists — so a missing entry fails on the row that looked for it."""
+    entry = _entry(client, capability, repo_id)
+    assert entry is not None, f"{repo_id} is not offered under {capability}"
+    return entry
+
+
+def _text_repo(hub, repo_id, *, size=0):
+    """A cached repo whose config says text generation beyond doubt, sized."""
+    repo = _cached_repo(hub, repo_id, files=("model.safetensors",),
+                        config={"architectures": ["LlamaForCausalLM"]})
+    (repo / "snapshots" / "c0ffee" / "model.safetensors").write_bytes(b"x" * size)
+    return repo
+
+
+def test_a_downloaded_repo_the_curation_never_heard_of_joins_its_capability(client, hub):
+    """The bug, end to end: a repo the SUGGESTIONS dict has never contained is on
+    the disk, and the payload three real apps read now offers it."""
+    repo_id = "some-org/a-model-nobody-curated"
+    # The fixture defends itself: the whole point is a repo the curation does not
+    # know, so a future SUGGESTIONS edit that happened to add this id must fail
+    # here rather than turn the test into a tautology about a curated entry.
+    assert repo_id not in catalog.all_suggested_ids()
+    _text_repo(hub, repo_id, size=2048)
+    entry = _offered(client, registry.TEXT_GENERATION, repo_id)
+    assert entry["downloaded"] is True
+    assert entry["source"] == "cached"
+    # Every key the three apps read, present and the right type on a cached entry
+    # too — they render `m.label || m.id` and `m.size_gb`, so a missing label or a
+    # string where a number belongs is a broken picker, not a cosmetic slip.
+    assert isinstance(entry["label"], str) and entry["label"]
+    assert isinstance(entry["size_gb"], float)
+    assert entry["note"] is None
+
+
+def test_a_cached_entrys_size_is_its_real_measured_footprint(client, hub):
+    """Measured, not guessed: the field means "every byte on the disk", the same
+    thing it means for a curated entry (see catalog.py's docstring)."""
+    _text_repo(hub, "some-org/three-gb", size=3_000_000_000)
+    entry = _offered(client, registry.TEXT_GENERATION, "some-org/three-gb")
+    assert entry["size_gb"] == 3.0
+
+
+def test_an_uncurated_repo_on_disk_cannot_take_position_0_or_the_default(client, hub):
+    """The regression guard for catalog.py's ordering rule.
+
+    A NEARLY EMPTY repo is the dangerous case, not a huge one: the list is sorted
+    smallest first and position 0 is the default, so a naive merge would promote a
+    3KB folder off the disk to "what a bare `fused.ai()` call loads".
+    """
+    before_default = catalog.default_for(registry.TEXT_GENERATION)
+    before_curated = [m["id"] for m in catalog.for_capability(registry.TEXT_GENERATION)]
+    assert before_default and before_curated
+    _text_repo(hub, "some-org/tiny-but-uncurated", size=3_000)
+    _text_repo(hub, "some-org/enormous-and-uncurated", size=9_000_000)
+    row = _catalog(client)[registry.TEXT_GENERATION]
+    # The three answers a bare call goes through, all untouched.
+    assert row["default"] == before_default
+    assert catalog.default_for(registry.TEXT_GENERATION) == before_default
+    assert [m["id"] for m in catalog.for_capability(registry.TEXT_GENERATION)] == before_curated
+    # …and the payload's own ordering: every curated entry, in its curated order,
+    # before anything that came off the disk.
+    ids = [m["id"] for m in row["models"]]
+    assert ids[:len(before_curated)] == before_curated
+    assert set(ids[len(before_curated):]) == {
+        "some-org/tiny-but-uncurated", "some-org/enormous-and-uncurated"}
+
+
+def test_the_cached_tail_is_smallest_first_with_unknown_sizes_last(client, hub):
+    """catalog.py's ordering rule, applied to the tail as well as the head."""
+    _text_repo(hub, "some-org/big", size=9_000_000)
+    _text_repo(hub, "some-org/small", size=2_000)
+    curated = len(catalog.for_capability(registry.TEXT_GENERATION))
+    ids = [m["id"] for m in _catalog(client)[registry.TEXT_GENERATION]["models"]]
+    assert ids[curated:] == ["some-org/small", "some-org/big"]
+
+
+def test_an_unmeasured_cached_entry_sorts_last_rather_than_first():
+    """The defensive half of the same rule, on the sort key itself: nothing
+    measurable means "nobody knows how big this is", and catalog.py is explicit that
+    an unknown download must never be promoted into the smallest slot. Not reachable
+    from a real scan today — a cache repo always has at least its `refs/main` on
+    disk — which is exactly why it is pinned here rather than left to be noticed
+    once something makes it reachable."""
+    models = [CachedModel("c", registry.TEXT_GENERATION, 0),
+              CachedModel("b", registry.TEXT_GENERATION, 5_000),
+              CachedModel("a", registry.TEXT_GENERATION, 1_000)]
+    ordered = sorted(models, key=ai_runtime._cached_order)
+    assert [m.repo_id for m in ordered] == ["a", "b", "c"]
+
+
+def test_a_curated_repo_that_is_also_on_disk_appears_once_marked_downloaded(client, hub):
+    """Deduplicated, and it is the CURATED entry that survives — the hand-written
+    label and note are the point of curating it."""
+    repo_id = catalog.default_for(registry.TEXT_GENERATION)
+    curated = next(m for m in catalog.for_capability(registry.TEXT_GENERATION)
+                   if m["id"] == repo_id)
+    _text_repo(hub, repo_id, size=2048)
+    matches = [m for m in _catalog(client)[registry.TEXT_GENERATION]["models"]
+               if m["id"] == repo_id]
+    assert len(matches) == 1
+    assert matches[0]["downloaded"] is True
+    assert matches[0]["source"] == "curated"
+    assert matches[0]["label"] == curated["label"]
+    assert matches[0]["note"] == curated["note"]
+    assert matches[0]["size_gb"] == curated["size_gb"]
+
+
+def test_a_curated_repo_that_is_not_on_disk_says_so(client, hub):
+    """The other side of the flag, and what makes it worth a field: an empty cache
+    means every curated entry reads `downloaded: false` rather than nothing."""
+    row = _catalog(client)[registry.TEXT_GENERATION]
+    assert row["models"]
+    assert all(m["downloaded"] is False for m in row["models"])
+    assert all(m["source"] == "curated" for m in row["models"])
+
+
+def test_a_component_repo_an_engine_fetched_is_never_offered_as_a_model(client, hub):
+    """The Local tab files these under "Fetched by engines" and disables their
+    Load; a picker must not offer one either. `formats.COMPONENT_REPOS` is the one
+    list of them, asked rather than restated."""
+    repo_id = next(iter(formats.COMPONENT_REPOS))
+    _text_repo(hub, repo_id, size=2048)
+    rows = _catalog(client)
+    assert not any(m["id"] == repo_id for row in rows.values() for m in row["models"])
+
+
+def test_a_repo_no_engine_can_read_joins_no_capability(client, hub):
+    """A GGUF-only folder has no inferable capability, and inventing one for it is
+    how `load()` came to send a diffusion repo to mlx-lm (D321)."""
+    _cached_repo(hub, "some-org/gguf-only", files=("model.gguf", "README.md"))
+    rows = _catalog(client)
+    assert not any(m["id"] == "some-org/gguf-only"
+                   for row in rows.values() for m in row["models"])
+
+
+def test_a_dataset_in_the_cache_joins_no_capability(client, hub):
+    """Nothing loads a dataset into a runner, whatever its config.json says."""
+    repo = hub / "datasets--some-org--corpus"
+    snapshot = repo / "snapshots" / "c0ffee"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text(json.dumps({"architectures": ["LlamaForCausalLM"]}))
+    (repo / "refs").mkdir(parents=True)
+    (repo / "refs" / "main").write_text("c0ffee")
+    rows = _catalog(client)
+    assert not any(m["id"] == "some-org/corpus" for row in rows.values() for m in row["models"])
+
+
+def test_a_model_downloaded_after_a_read_appears_on_the_very_next_one(client, hub):
+    """The cache-staleness trap, pinned. The scan is memoised because a page polls
+    this route, and a memo that outlived a completed download would reproduce
+    exactly the bug this change fixes — the model the user just fetched missing
+    from the picker."""
+    repo_id = "some-org/arrived-late"
+    assert _entry(client, registry.TEXT_GENERATION, repo_id) is None
+    _text_repo(hub, repo_id, size=2048)
+    assert _entry(client, registry.TEXT_GENERATION, repo_id) is not None
+
+
+def test_a_resident_model_is_marked_loaded(client, hub, monkeypatch):
+    """The third state a picker wants: on the disk is not the same as held in
+    memory, and a page showing "loaded" beside one entry should not have to join
+    two endpoints to know which.
+
+    Read LIVE from the supervisor rather than through the memoised scan — residency
+    changes on a second's notice and the disk inventory does not, so a stale
+    "loaded" would be a worse lie than a stale size.
+    """
+    repo_id = "some-org/resident"
+    _text_repo(hub, repo_id, size=2048)
+    assert _offered(client, registry.TEXT_GENERATION, repo_id)["loaded"] is False
+    monkeypatch.setattr(supervisor, "resident_models", lambda: {repo_id})
+    assert _offered(client, registry.TEXT_GENERATION, repo_id)["loaded"] is True
+
+
+def test_resident_models_reports_a_held_worker_without_probing_it(client, fake_runner):
+    """The other half of that flag, against a real worker. `resident_models()` is a
+    dict read under the lock — no health request per worker, which is what makes it
+    affordable on a route a page polls, and what `describe()` cannot offer."""
+    assert supervisor.resident_models() == set()
+    client.post("/api/ai/runtime/load",
+                json={"model": "org/chat", "capability": registry.TEXT_GENERATION},
+                headers={"X-Fused": "1"})
+    _wait_ready("org/chat")
+    assert supervisor.resident_models() == {"org/chat"}
+
+
+def test_the_cache_walk_is_not_repeated_on_every_poll(client, hub, monkeypatch):
+    """`cached_models()` is a full tree walk on a route the chatbot page hits on
+    every `refreshRuntime()`, so it is memoised — pinned here because a memo that
+    nothing measures is a memo somebody deletes as an over-optimisation."""
+    _text_repo(hub, "some-org/polled", size=2048)
+    walks = []
+    real = ai_models._scan_repo
+    monkeypatch.setattr(ai_models, "_scan_repo",
+                        lambda root: walks.append(root) or real(root))
+    _catalog(client)
+    after_first = len(walks)
+    assert after_first > 0
+    _catalog(client)
+    assert len(walks) == after_first
+
+
+def test_the_memo_is_dropped_when_a_repo_lands_rather_than_when_a_timer_says_so(
+        client, hub, monkeypatch):
+    """The TTL is a BACKSTOP, not the mechanism. A read is invalidated by the cache
+    directory's own signature, so a finished download is visible immediately even
+    with the clock frozen — a memo that could only expire on time would hide the
+    model the user just fetched, which is the bug this whole change fixes.
+
+    `ai_models._now`, never `ai_models.time.time`: `ai_models.time` IS the stdlib
+    module, so patching an attribute on it freezes the clock for the whole PROCESS —
+    and `jobs.py` stamps five fields off `time.time()`, the supervisor two more, from
+    daemon threads that keep running right through this test.
+    """
+    frozen = time.time()
+    monkeypatch.setattr(ai_models, "_now", lambda: frozen)
+    assert _entry(client, registry.TEXT_GENERATION, "some-org/just-landed") is None
+    _text_repo(hub, "some-org/just-landed", size=2048)
+    assert _entry(client, registry.TEXT_GENERATION, "some-org/just-landed") is not None
+
+
+# -- and only models the SERVING engine can load ---------------------------------
+# The catalog's lists are per RUNNER, not per capability (AI-11a), because one
+# capability's backends read mutually unloadable formats. A cached repo injected on
+# its capability alone breaks that invariant inside the same array — and both
+# examples below are repos a real user really has on a real disk.
+
+
+#: The two speech resolutions that ship, forced for the same reason as
+#: `_TEXT_PLATFORMS`: `mlx-whisper` serves an M-series Mac and `faster-whisper`
+#: serves everywhere else, and they read completely different files.
+_SPEECH_PLATFORMS = [
+    pytest.param("Darwin", "arm64", "mlx-whisper", id="apple-silicon"),
+    pytest.param("Linux", "x86_64", "faster-whisper", id="linux"),
+]
+
+
+@pytest.mark.parametrize("system, machine, expected_runner", _SPEECH_PLATFORMS)
+def test_a_speech_model_NEITHER_speech_engine_reads_is_not_offered(
+        client, hub, monkeypatch, system, machine, expected_runner):
+    """`openai/whisper-large-v3` — the repo everyone reaches for, in transformers
+    format, which no shipping speech runner opens. Its capability is beyond doubt
+    (`pipeline_tag: automatic-speech-recognition`), so a capability-only union puts
+    it straight into every page's speech picker and the load is then refused by
+    name. This is the exact trap the SKILL.md pitfall warns page authors about; the
+    payload must not be the thing that sets it.
+
+    Run under BOTH speech resolutions, because "neither engine reads it" is a claim
+    about two different engines and inheriting the dev machine's answer would only
+    ever test one of them.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: system)
+    monkeypatch.setattr(registry.platform, "machine", lambda: machine)
+    repo_id = "openai/whisper-large-v3"
+    assert repo_id not in catalog.all_suggested_ids()
+    repo = _cached_repo(hub, repo_id, files=("model.safetensors",),
+                        config={"architectures": ["WhisperForConditionalGeneration"]})
+    (repo / "snapshots" / "c0ffee" / "README.md").write_text(
+        "---\npipeline_tag: automatic-speech-recognition\n---\n")
+    # The fixture defends itself twice over: if the capability stopped being
+    # inferred, or if the serving engine ever learned to read this format, the
+    # conclusion below would pass for a reason that is not the one under test.
+    cached = next(m for m in ai_models.cached_models() if m.repo_id == repo_id)
+    assert cached.capability == registry.SPEECH_TO_TEXT
+    serving = catalog._runner_for(registry.SPEECH_TO_TEXT)
+    assert serving is not None and serving.code == expected_runner
+    assert serving.code not in cached.loaders
+    assert _entry(client, registry.SPEECH_TO_TEXT, repo_id) is None
+
+
+def test_a_text_model_the_CHOSEN_engine_cannot_open_is_not_offered(
+        client, hub, monkeypatch):
+    """The second half, and the one a preference can create out of nothing. An MLX
+    conversion is a perfectly good text model that the Transformers runner cannot
+    read — so on a Mac switched to Transformers on the Engines tab it is an unusable
+    download, and D293's whole point is that the list moves when the preference
+    does. It must move for the cached half too."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    repo_id = "mlx-community/Qwen3-8B-MLX-4bit"
+    assert repo_id not in catalog.all_suggested_ids()
+    # A REAL MLX conversion: the `quantization` block with a `group_size` is what
+    # `formats.py` reads as "mlx-lm packed this", and it is what makes the repo
+    # unreadable to Transformers rather than merely differently named.
+    _cached_repo(hub, repo_id, files=("model.safetensors",),
+                 config={"architectures": ["Qwen3ForCausalLM"],
+                         "quantization": {"bits": 4, "group_size": 64}})
+    assert next(m for m in ai_models.cached_models()
+                if m.repo_id == repo_id).loaders == ("mlx-text",)
+    # With MLX serving text generation this repo IS loadable, and is offered…
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "mlx-text"
+    assert _entry(client, registry.TEXT_GENERATION, repo_id) is not None
+    # …and the moment the user picks the engine that cannot read it, it is not.
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "transformers-text")
+    ai_models._CACHED_MODELS.clear()
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "transformers-text"
+    assert _entry(client, registry.TEXT_GENERATION, repo_id) is None
+
+
+def test_a_repo_no_runner_reads_at_all_is_not_offered_either(client, hub):
+    """The empty-`loaders` case, distinct from the wrong-engine one: a GGUF folder
+    with a pipeline_tag has a capability and nothing that opens it."""
+    repo = _cached_repo(hub, "some-org/gguf-with-a-tag", files=("model.gguf",))
+    (repo / "snapshots" / "c0ffee" / "README.md").write_text(
+        "---\npipeline_tag: text-generation\n---\n")
+    cached = next(m for m in ai_models.cached_models()
+                  if m.repo_id == "some-org/gguf-with-a-tag")
+    assert cached.loaders == ()
+    assert _entry(client, registry.TEXT_GENERATION, "some-org/gguf-with-a-tag") is None
+
+
+# -- `loaded` means loaded ---------------------------------------------------------
+
+
+def _park(model, state, alive=True):
+    """A worker in `_workers` at `state`, with a process that is or is not running.
+
+    The table is reached directly because the question is about a state the
+    supervisor passes THROUGH: a real bring-up spends its `venv` phase in a
+    multi-minute `uv sync`, which is not something a test can hold open.
+    """
+    worker = supervisor.Worker(model=model, capability=registry.TEXT_GENERATION,
+                              runner_code="fake-text", state=state)
+    worker.proc = types.SimpleNamespace(poll=lambda: None if alive else 1)
+    with supervisor._lock:
+        supervisor._workers[registry.TEXT_GENERATION] = worker
+    return worker
+
+
+@pytest.mark.parametrize("state", ["starting", "venv", "downloading", "loading", "error"])
+def test_a_worker_that_is_not_READY_is_not_reported_as_loaded(state):
+    """A Worker enters the table at `starting` and passes through a multi-minute
+    `uv sync` and a multi-GB fetch before any weights exist. Reporting every row
+    would light a picker's "loaded" mark the instant Load was pressed and hold it
+    lit through the whole download — the opposite of what the mark promises."""
+    _park("org/slow", state)
+    assert supervisor.resident_models() == set()
+    _park("org/slow", "ready")
+    assert supervisor.resident_models() == {"org/slow"}
+    supervisor.reset()
+
+
+def test_a_worker_that_DIED_after_reaching_ready_is_not_reported_as_loaded():
+    """`state` alone is a claim the worker made before it crashed. `refresh_memory`
+    reaps on exactly this check, and skipping its health PROBE is not a licence to
+    skip the liveness too — otherwise this one path reports a dead model as held
+    forever."""
+    _park("org/crashed", "ready", alive=False)
+    assert supervisor.resident_models() == set()
+    supervisor.reset()
+
+
+# -- what holds when a runner has no curated list at all --------------------------
+
+
+#: The two text-generation resolutions that ship, forced rather than inherited.
+#: `_apple_silicon()` reads `platform` at CALL time precisely so a test can decide
+#: this, and every assertion about a per-runner list has to: `mlx-text` serves text
+#: generation on an M-series Mac and `transformers-text` serves it everywhere else,
+#: their `SUGGESTIONS` lists are completely different, and a test that took whichever
+#: one the dev machine happened to answer is a test that passes at home and fails in
+#: CI on the other three platforms.
+_TEXT_PLATFORMS = [
+    pytest.param("Darwin", "arm64", "mlx-text", id="apple-silicon"),
+    pytest.param("Linux", "x86_64", "transformers-text", id="linux"),
+]
+
+
+@pytest.mark.parametrize("system, machine, expected_runner", _TEXT_PLATFORMS)
+def test_a_runner_with_no_suggestions_offers_the_disk_and_recommends_nothing(
+        client, hub, monkeypatch, system, machine, expected_runner):
+    """The one case a cached entry reaches index 0, pinned rather than left to be
+    discovered. A runner with no `SUGGESTIONS` key has nothing curated to put in
+    front of the disk — and `default` is then None, which is the honest answer
+    rather than a promotion.
+
+    This is why `source` is on every entry and why the documented contract is "read
+    `default`, never `models[0]`": a consumer that invents a `models[0]` fallback can
+    see that what it found is uncurated and refuse it.
+
+    **The no-suggestions condition is CONSTRUCTED, and the construction is asserted.**
+    The first version of this test emptied `SUGGESTIONS["mlx-text"]` by name, which
+    is the runner a Mac resolves — so on Linux it emptied a list nobody was reading,
+    `transformers-text` answered with `Qwen/Qwen3-1.7B` at position 0, and the test
+    failed on its conclusion for a premise that was never true. Both resolutions now
+    run, the list emptied is the one the row actually resolved, and the premise is
+    checked before the conclusion so a future change to resolution fails loudly on
+    the setup instead of mysteriously on the assertion.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: system)
+    monkeypatch.setattr(registry.platform, "machine", lambda: machine)
+    runner = catalog._runner_for(registry.TEXT_GENERATION)
+    assert runner is not None and runner.code == expected_runner
+    monkeypatch.setitem(catalog.SUGGESTIONS, runner.code, [])
+    # The premise, before anything is concluded from it.
+    assert catalog.for_capability(registry.TEXT_GENERATION) == []
+    _text_repo(hub, "some-org/only-thing-here", size=2048)
+    row = _catalog(client)[registry.TEXT_GENERATION]
+    assert row["runner"] == expected_runner
+    assert row["default"] is None
+    assert [m["id"] for m in row["models"]] == ["some-org/only-thing-here"]
+    assert row["models"][0]["source"] == "cached"
+
+
+def test_a_cached_entry_never_leads_a_list_that_has_a_curated_one(client, hub):
+    """The invariant that does hold unconditionally, stated as itself: wherever a
+    curated entry exists, index 0 is curated — so `models[0]` and `default` agree
+    and a bare call cannot reach an unvetted repo."""
+    _text_repo(hub, "some-org/aaa-alphabetically-first", size=1)
+    for row in _catalog(client).values():
+        if any(m["source"] == "curated" for m in row["models"]):
+            assert row["models"][0]["source"] == "curated"
+            assert row["models"][0]["id"] == row["default"]
+
+
+def test_a_second_revision_landing_in_an_EXISTING_repo_updates_its_size(
+        client, hub, monkeypatch):
+    """The staleness hole the first version of this memo had, and the reason the TTL
+    is no longer what invalidates it.
+
+    A repo folder's own mtime does not move when a blob renames into its `blobs/`,
+    so a signature built from the cache directory's entries alone would have held a
+    stale size for the whole TTL — and with the TTL lengthened to bound the cost of
+    the walk, that meant five minutes of a download the user watched finish not
+    changing the number beside it. The signature now includes each repo's own
+    subdirectory mtimes, so this is caught with the clock frozen.
+    """
+    frozen = time.time()
+    monkeypatch.setattr(ai_models, "_now", lambda: frozen)
+    repo = _text_repo(hub, "some-org/grows", size=1_000_000_000)
+    assert _offered(client, registry.TEXT_GENERATION, "some-org/grows")["size_gb"] == 1.0
+    blobs = repo / "blobs"
+    blobs.mkdir(parents=True, exist_ok=True)
+    (blobs / "second-revision").write_bytes(b"x" * 2_000_000_000)
+    assert _offered(client, registry.TEXT_GENERATION, "some-org/grows")["size_gb"] == 3.0
+
+
+def test_the_size_walk_is_not_repeated_while_a_repo_sits_still(client, hub, monkeypatch):
+    """The other half of the same trade: the signature is four stats per repo, and
+    the recursive walk it guards runs only when one of them moves. A poll of an
+    unchanged cache must cost no walk at all — that is the whole point of paying for
+    the stats."""
+    _text_repo(hub, "some-org/settled", size=2048)
+    walks = []
+    real = ai_models._scan_repo
+    monkeypatch.setattr(ai_models, "_scan_repo",
+                        lambda root: walks.append(root) or real(root))
+    _catalog(client)
+    assert len(walks) == 1  # the first read pays for it once
+    ai_models._CACHED_MODELS.clear()  # force the OUTER memo to miss…
+    _catalog(client)
+    # …and the size cache still answers, because nothing about the repo moved. This
+    # is the assertion that would fail if the walk were keyed on time.
+    assert len(walks) == 1

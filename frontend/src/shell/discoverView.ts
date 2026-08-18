@@ -1,14 +1,12 @@
 // What the Discover tab is showing, decided in one place.
 //
 // The tab has two mutually exclusive faces — a curated shortlist and a grid of
-// Hub search results — and five pieces of chrome that have to agree about
-// which one is on screen: the grid itself, the heading that NAMES it, the note
-// under that heading, the "searching huggingface.co" caption that discloses the
-// outbound request, and the control that goes BACK. Written inline they were
-// separate `&&`s over the same two strings, which is one chance per condition
-// to leave one behind: a preamble reading "picked to run on this machine"
-// standing over a grid of search results is the page describing cards that are
-// not there any more, and a missing way back is a page with no exit.
+// Hub search results — and four pieces of chrome that have to agree about
+// which one is on screen: the grid itself, the heading that NAMES it, the
+// "searching huggingface.co" caption that discloses the outbound request, and
+// the control that goes BACK. Written inline they were separate `&&`s over the
+// same two strings, which is one chance per condition to leave one behind: a
+// missing way back is a page with no exit.
 //
 // The heading is the newest of the four and the one the others hang off. The
 // faces used to differ only by whether a paragraph of prose was present, which
@@ -38,9 +36,6 @@ export interface DiscoverChrome {
    *  in the same slot with the same treatment, and this field is why exactly
    *  one of them can exist: they are one string, not two `&&`s. */
   heading: string;
-  /** The line that says the sections below are a curated pick rather than
-   *  everything installable. Only over the sections it describes. */
-  showsPreamble: boolean;
   /** The disclosure that this is the one place in the app asking a third party
    *  a question. Only while there is a question. */
   showsSearchNote: boolean;
@@ -76,9 +71,6 @@ export function discoverChrome(q: string, task: string): DiscoverChrome {
   return {
     view: asked ? "results" : "suggested",
     heading: asked ? "Search results" : "Suggested models",
-    // The two captions are exclusive by construction rather than by two
-    // conditions that happen to be opposites today.
-    showsPreamble: !asked,
     showsSearchNote: asked,
     // Asked a question, so there is a way back from the answer. Never in the
     // curated state, where the control would undo nothing and a permanent

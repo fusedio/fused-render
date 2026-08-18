@@ -11,6 +11,7 @@ import { useEffect, useRef } from "react";
 import { getRecents, postRecentOpen, putRecentsCollapsed } from "@platform/lib/api";
 import type { RecentEntry, RecentsResult } from "@platform/lib/api";
 import { useEventCounter } from "@platform/lib/hooks";
+import { stripSessionParams } from "@platform/lib/session-params";
 import { IS_EMBED, VIEW_PREFIX, currentUrl, fsPathFromLocation, rootedFsPath } from "@platform/lib/router";
 
 export type { RecentEntry };
@@ -175,6 +176,25 @@ export function hydrateRecents(): Promise<void> {
   );
 }
 
+// SESSION-ONLY PARAMS ARE STRIPPED FIRST (LSN-12, D326). Recents is an AUTOMATIC
+// capture that lands on disk: this hook fires on every `fused:urlchange`, so
+// without this a click that CLOSES the file preview's companion sidebar
+// (`?_side=off`) is recorded, and every later open from the Recents list comes up
+// shut — the sidebar's state persisted for good, by a write the user never asked
+// for, which is the exact thing D326 exists to stop. The URL a recent replays must
+// hold what the file WAS, not what the chrome around it was doing.
+//
+// Deliberately NOT applied to BOOKMARKS: a bookmark is an explicit "save this
+// view" gesture and SB-2 says it captures the URL verbatim, which is how `_mode`,
+// sort and a chosen `_side` companion all end up in one. Same param, opposite
+// answer, because one capture is chosen and the other is a side effect.
+function stripRecordedParams(url: string): string {
+  const q = url.indexOf("?");
+  if (q < 0) return url;
+  const kept = stripSessionParams(url.slice(q + 1));
+  return kept === "" ? url.slice(0, q) : url.slice(0, q + 1) + kept;
+}
+
 // Record an open (or a live param update) of the current file view. The
 // server dedupes by target fs path — a re-record of an already-listed file
 // moves it to the top and replaces its url — and no-ops for anything that is
@@ -185,7 +205,7 @@ export function hydrateRecents(): Promise<void> {
 export function recordRecentOpen(url: string, title?: string | null): Promise<void> {
   return enqueue(async () => {
     try {
-      await postRecentOpen(url, title);
+      await postRecentOpen(stripRecordedParams(url), title);
       await refresh();
     } catch (e) {
       console.error("[fused] failed to record recent open:", e);
@@ -229,13 +249,14 @@ export function setRecentsCollapsed(collapsed: boolean): Promise<void> {
   });
 }
 
-// Track-on-open + live param updates. Mounted by StatView beside
-// useSessionTracking (the same seam, lib/session.ts): records once when the
-// stat confirms a file, then re-records the current url on every param write
-// (fused:urlchange — the iframe runtime's replaceState is wrapped in main.tsx)
-// with a 500 ms debounce against slider-style param churn. Embed panes,
-// directories, and not-yet-stat'd opens (isDir null) opt out, mirroring
-// session tracking; the server rejects non-file urls anyway.
+// Track-on-open + live param updates. Mounted by StatView: records once when
+// the stat confirms a file, then re-records the current url on every param
+// write (fused:urlchange — the iframe runtime's replaceState is wrapped in
+// main.tsx) with a 500 ms debounce against slider-style param churn. Embed
+// panes, directories, and not-yet-stat'd opens (isDir null) opt out; the server
+// rejects non-file urls anyway. This confirmed-file gate is the last survivor
+// of the seam it used to share with the per-file session restore's tracking
+// hook (lib/session.ts, removed in D329).
 // `title` is the previewed page's own <title>, when known — it arrives async
 // (after the iframe loads), so it is also a dependency: once it resolves, the
 // effect re-runs and re-records the current url with the now-known title,
@@ -274,8 +295,8 @@ export function useRecentsTracking(fsPath: string, isDir: boolean | null, title:
       // param state — flush the captured url instead of dropping it.
       flush();
     };
-    // fsPath + isDir identify the open, like useSessionTracking; title is
-    // included so its late arrival triggers a re-record.
+    // fsPath + isDir identify the open; title is included so its late arrival
+    // triggers a re-record.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath, isDir, title]);
 }

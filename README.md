@@ -69,30 +69,6 @@ picking "fused-render" from Open With, reuses a running server or starts one
 detached, then opens the file. `fused-render-open --unregister`
 removes the associations.
 
-## Deploy to a hosted URL
-
-A renderable page's preview header has a **Deploy** button: it exports the page
-to a self-contained bundle and publishes it as a public URL through the `fused`
-CLI. fused-render itself hosts nothing and mints no URLs — it runs the CLI on
-your behalf. The link is public and needs no sign-in to view — an unguessable
-random token by default, or a custom name you pick for a memorable URL.
-Redeploying the same page keeps the **same URL**; a **Change link** action mints
-a new one (taking the old down), and revoking takes it down.
-
-Signing in and first-time setup happen in the app, no terminal required: sign in
-to Fused once, then set up a **managed hosted environment** in one click — the
-default deploy target. From the same account view you can list the pages you've
-deployed, revoke any of them, and inspect the recent errors behind a hosted
-page's failures — the traceback and output the local error overlay shows you here.
-
-The packaged macOS app ships the `fused` CLI built in, so there's nothing to
-install. On a `pip` install, add it with the extra:
-`pip install "fused-render[fused]"`. Self-hosted AWS environments work as a
-deploy target too, provisioned through the `fused` CLI in a terminal. Deploying
-stays off until you enable it in **Preferences** (see
-[Preferences](docs/usage.md#preferences)). For scripting the export yourself,
-see [Export for hosted serving](docs/usage.md#export-for-hosted-serving).
-
 ## Authoring model
 
 Any `.py` file is a runnable target as long as it defines a `main()`
@@ -144,8 +120,10 @@ Any `.html` file can call it and bind the result to the URL:
 - `fused.ai.image({prompt, ...})` — text to image, locally; resolves with the
   PNG's path, a ready-made URL to point an `<img>` at, and the seed used (one is
   chosen for you if you don't pass one, so a render is always repeatable). It
-  runs for minutes, so `onProgress` fires per denoising step and the download
-  manager's ✕ really stops it.
+  runs for minutes, so `onProgress` fires per denoising step — each tick with a
+  `previewUrl` for a thumbnail of the image so far, so there is a picture
+  emerging rather than a number going up — and the download manager's ✕ really
+  stops it.
 - `fused.ai.transcribe({path, ...})` — speech to text, locally: point it at an
   audio or video file on this machine and it resolves with the words plus the
   `{start, end, text}` segments that carry their timestamps. `task` picks
@@ -197,9 +175,9 @@ Runtime features and settings live in [docs/usage.md](docs/usage.md):
   the Hub that says which results you already have, beside a short list of
   suggested models you can download.
 - [Preferences](docs/usage.md#preferences) — the in-app settings panel
-  (execution engine, deploy toggle, logs, template registry).
+  (execution engine, logs, template registry).
 - [Export for hosted serving](docs/usage.md#export-for-hosted-serving) — the
-  programmatic `POST /api/export` bundle format behind the Deploy button.
+  programmatic `POST /api/export` bundle format for publishing a page yourself.
 
 ## Claude Code plugin
 

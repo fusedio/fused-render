@@ -13,7 +13,6 @@
 
   .listing-search-spinner,
   .fh-index-spinner,
-  .deploy-spinner,
   .mode-icon-spinner {
     animation: none !important;
     opacity: 0.6;

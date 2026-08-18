@@ -79,6 +79,7 @@ import os
 import re
 import shutil
 import stat
+import time
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -1062,6 +1063,174 @@ def _article(word: str) -> str:
     """"a" or "an". A label this reads wrong ("a image to image model") is a
     sentence a page author is meant to act on, so it is worth the four lines."""
     return "an" if word[:1].lower() in "aeiou" else "a"
+
+
+class CachedModel(NamedTuple):
+    """One MODEL repo on this disk, as a caller building a picker needs it.
+
+    `capability` is what a load of it would be, or None when nothing here can
+    tell. `size` is every byte the repo occupies, measured — the same number this
+    page's own row reports.
+
+    **`loaders` is not decoration, and a caller that ignores it will offer models
+    that cannot be loaded.** A capability is not enough: in this app a repo belongs
+    to a BACKEND, and the capability's two or three backends read mutually
+    unloadable formats. `openai/whisper-large-v3` is a speech model that NEITHER
+    shipping speech runner reads; `mlx-community/Qwen3-8B-MLX-4bit` is a text model
+    that the Transformers runner cannot open, so on a Mac switched to Transformers
+    it is an unusable download. Both have a perfectly good `capability`. The
+    format's own answer — which runner codes would accept this snapshot, straight
+    from `ai/runners/formats.py`, the same evidence each worker checks before it
+    imports anything — is the half that settles it, so it travels with the row.
+    """
+
+    repo_id: str
+    capability: str | None
+    size: int
+    loaders: tuple[str, ...] = ()
+
+
+#: `cached_models()`'s memo: cache dir -> (read time, signature, answer). See the
+#: function for why there are two invalidation conditions rather than one.
+_CACHED_MODELS: dict[str, tuple[float, tuple, list[CachedModel]]] = {}
+
+#: How long a `cached_models()` answer may stand when neither the cache dir's own
+#: signature nor any repo's has moved. A BACKSTOP, not the mechanism — the
+#: signatures are what make a finished download visible immediately, so this only
+#: has to bound the one case they cannot see (bytes growing inside a blob that is
+#: already listed), and it is minutes rather than seconds because every second
+#: shaved off it buys another full recursive stat-walk of the whole cache.
+_CACHED_MODELS_TTL = 300.0
+
+#: `_repo_size()`'s memo: repo dir -> (signature, bytes). Unbounded like
+#: `_META_CACHE`, and for the same reason: one small tuple per repo the user has
+#: ever had cached, on a machine where each of those repos is gigabytes.
+_SIZE_CACHE: dict[str, tuple[tuple, int]] = {}
+
+#: The clock, through a module-local name so a test can freeze it WITHOUT freezing
+#: `time.time` for every other thread in the process. `ai_models.time` IS the stdlib
+#: module, so patching an attribute on it is process-wide: `jobs.py` stamps five
+#: fields off `time.time()` and the supervisor stamps `started_at`/`loaded_at`, all
+#: from daemon threads that keep running during a test.
+_now = time.time
+
+
+def _repo_signature(repo_dir: str) -> tuple:
+    """The four directory mtimes that decide what a repo folder currently holds.
+
+    A blob arriving renames into `blobs/`; a new revision creates a directory under
+    `snapshots/`; a revision going away moves `refs/`; the folder itself moves when
+    any of those subdirectories is created or removed. Each bumps the mtime of the
+    parent stat-ed here, so four stats answer "has anything about this repo changed"
+    — against the tens of thousands of syscalls `_scan_repo` spends to answer "how
+    big is it", which is the same question one level too precise.
+
+    The one change no directory mtime can see is a file ALREADY THERE growing:
+    writes do not touch a directory's mtime. That is a download in flight, whose
+    bytes the job row reports live and far better than a cache walk ever could, and
+    `_CACHED_MODELS_TTL` is what bounds it.
+    """
+    out = []
+    for name in ("", "blobs", "snapshots", "refs"):
+        try:
+            out.append(os.stat(os.path.join(repo_dir, name)).st_mtime_ns)
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+def _repo_size(repo_dir: str, signature: tuple) -> int:
+    """A repo's measured footprint, cached on `_repo_signature`.
+
+    Keyed the way `_META_CACHE` keys its own reading, and for the same reason: the
+    walk behind it is recursive and `cached_models()` wants the result only to round
+    it to one decimal GB.
+    """
+    hit = _SIZE_CACHE.get(repo_dir)
+    if hit is not None and hit[0] == signature:
+        return hit[1]
+    size = _scan_repo(repo_dir).size
+    _SIZE_CACHE[repo_dir] = (signature, size)
+    return size
+
+
+def cached_models() -> list[CachedModel]:
+    """Every model repo on this disk that something could load, with its capability.
+
+    **Exported, and read by `/api/ai/catalog`** (D323). A model the user downloaded
+    from the Discover tab's Hub search used to appear in no page's picker at all:
+    pages read the curated catalog, the curation cannot know what somebody fetched,
+    and this scan — the only thing that does know — was reachable only from the AI
+    Models page's own endpoint. So the join happens over THIS function, and the
+    capability every entry carries is the same reading `_repo` draws its Load button
+    from rather than a second copy of the inference.
+
+    Datasets, Spaces and component repos are dropped: `kind` and
+    `formats.COMPONENT_REPOS` already say those are nobody's `load()` target, and a
+    picker offering one is a Load that fails. A repo whose capability cannot be
+    inferred is KEPT with `capability=None` — "is this on the disk" is still a
+    question worth answering about it, and the caller decides whether an
+    uncategorised repo belongs in a categorised list. So is one whose format no
+    runner reads: `loaders` is empty and the caller must check it (see `CachedModel`).
+
+    **Memoised on MTIMES, not on a timer, because a page polls this route and the
+    walk behind it is recursive.** The signature is every candidate repo folder's
+    name plus its `_repo_signature` — four stats each, so ~120 syscalls for a
+    thirty-repo cache against the tens of thousands `_scan_repo` spends across it.
+    Anything that changes what the cache HOLDS moves that signature: a new repo
+    folder appearing, a blob renaming into an existing `blobs/`, a revision arriving
+    or going away. So a completed download is visible on the very next read and never
+    waits out a timer — that is the bug this whole change exists to fix, and a TTL
+    alone would have reintroduced it.
+
+    `_CACHED_MODELS_TTL` is then the backstop for the one change no directory mtime
+    can see (see `_repo_signature`), which is why it is minutes rather than seconds:
+    the signature is doing the work, and every second shaved off the timer would buy
+    another recursive stat-walk of the whole cache for nothing.
+    """
+    cache_dir = hub_cache_dir()
+    try:
+        entries = list(os.scandir(cache_dir))
+    except OSError:
+        entries = []
+    # Symlinked-in repo folders are followed, exactly as `_listing` follows them:
+    # moving a 40GB model off the boot volume does not stop it being a cached repo.
+    # Datasets, Spaces, `.locks/` and in-flight tmp dirs drop out on the prefix.
+    repos = [
+        (entry.name, os.path.join(cache_dir, entry.name))
+        for entry in entries
+        if entry.name.startswith("models--") and _entry_is_dir(entry)
+    ]
+    signature = tuple(sorted(
+        (name, _repo_signature(repo_dir)) for name, repo_dir in repos
+    ))
+    hit = _CACHED_MODELS.get(cache_dir)
+    if hit is not None:
+        read_at, seen, answer = hit
+        if seen == signature and _now() - read_at < _CACHED_MODELS_TTL:
+            return answer
+
+    by_dir = dict(signature)
+    models: list[CachedModel] = []
+    for name, repo_dir in repos:
+        repo_id = _repo_id_of(name)
+        if formats.component(repo_id) is not None:
+            continue
+        # The load route's own inference, asked rather than re-derived: a picker
+        # that offers a model and a `load()` that then refuses it must not be able
+        # to disagree. `cached=False` is an interrupted download's leftover folder.
+        reading = cached_capability(repo_id)
+        if not reading.cached:
+            continue
+        # The FORMAT's own reading, carried so the caller can ask the question a
+        # capability cannot answer: would the backend serving that capability here
+        # actually open this repo? `_repo_meta` is memoised on the snapshot mtime,
+        # and `cached_capability` above has already paid for it.
+        loaders = _repo_meta(repo_dir).loaders
+        size = _repo_size(repo_dir, by_dir[name])
+        models.append(CachedModel(repo_id, reading.capability, size, loaders))
+    _CACHED_MODELS[cache_dir] = (_now(), signature, models)
+    return models
 
 
 def _repo(cache_dir: str, dirname: str, kind: str) -> dict:

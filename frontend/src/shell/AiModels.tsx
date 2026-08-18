@@ -30,6 +30,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import AiModelsDiscover from "./AiModelsDiscover";
 import AiModelsEngines from "./AiModelsEngines";
+import AiModelsUsage from "./AiModelsUsage";
 import { ModelProgress } from "./AiProgress";
 import { groupRepos, loadRefusal, noEngineReason } from "@shell/aiModelGroups";
 import { isBusy, publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
@@ -78,14 +79,23 @@ type Load =
 // question it answers ("why can't I load this?") is asked with the unloadable
 // card on screen. `/preferences?tab=engines` is rewritten to it
 // (`rewriteLegacyUrl`), so nobody's bookmark lands on a tab that is gone.
-export type AiModelsTab = "local" | "discover" | "engines";
+//
+// Usage is the fourth, and the only one that is not about models at rest: it is
+// what this process has GENERATED (SPEC AI-12). It lives here because every
+// other answer about running a model locally is on this page — which model is
+// loaded, on which engine, costing what memory — and "is anything actually
+// generating right now" is the same question one tab over. It also covers the
+// Claude tier, which no other tab mentions, because `fused.ai` is one door
+// (AI-1) and a graph that counted only half of it would be the wrong number
+// under the right label.
+export type AiModelsTab = "local" | "discover" | "engines" | "usage";
 
 /** The tab the URL asks for. An unknown value falls back to the default
  *  silently, the same forgiving posture the shell takes for an unknown `_mode`
  *  (PT-9): a stale link should open the page, not an error. */
 function tabFromUrl(): AiModelsTab {
   const asked = new URLSearchParams(location.search).get("tab");
-  return asked === "discover" || asked === "engines" ? asked : "local";
+  return asked === "discover" || asked === "engines" || asked === "usage" ? asked : "local";
 }
 
 // What the confirmation is about. Every destructive action becomes one of these
@@ -1013,7 +1023,13 @@ export default function AiModels() {
         <div className="cc-page-head">
           <div>
             <h2 className="cc-heading">AI Models</h2>
-            <div className="cc-caption cc-mono">
+            {/* Monospace only for the cache PATH below — the Discover and
+                Engines captions are plain sentences, and the Engines tab's own
+                note (`.am-engines-note`) sits right under this one in the same
+                proportional font. Applying `.cc-mono` to every branch made
+                that one sentence look like a filesystem fact next to the other
+                that does not. */}
+            <div className={"cc-caption" + (tab === "local" && data ? " cc-mono" : "")}>
               {tab === "discover" ? (
                 // What the tab is FOR, and the constraint in the same breath.
                 // It said "Models on the Hugging Face Hub", which was true of a
@@ -1021,6 +1037,10 @@ export default function AiModels() {
                 // and the whole point of D313 is that this tab now only shows
                 // what this machine could actually download and run.
                 "Models on the Hugging Face Hub this app can run"
+              ) : tab === "usage" ? (
+                // The window, stated in the chrome, because every figure on the
+                // tab is bounded by it and none of them is a lifetime total.
+                "Tokens, speed and failures through fused.ai since this server started"
               ) : tab === "engines" ? (
                 // Not the cache path: this tab is not about the disk, and a
                 // caption naming a directory over a panel of engine pickers is
@@ -1106,6 +1126,16 @@ export default function AiModels() {
               >
                 Engines
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "usage"}
+                className={"am-tab" + (tab === "usage" ? " active" : "")}
+                onClick={() => setTab("usage")}
+                title="Tokens this app has generated since the server started"
+              >
+                Usage
+              </button>
             </div>
           </div>
         </div>
@@ -1122,6 +1152,10 @@ export default function AiModels() {
           />
         )}
         {tab === "engines" && <AiModelsEngines onSwitched={onEnginesSwitched} />}
+        {/* Mounted only while selected, like the other two: the tab polls, and
+            a poll running behind the Local tab would be a request every five
+            seconds for a graph nobody is looking at. */}
+        {tab === "usage" && <AiModelsUsage />}
         {tab === "local" && load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
         {tab === "local" && runtimeError && <ErrorBanner>{runtimeError}</ErrorBanner>}
         {tab === "local" && failures.length > 0 && (
@@ -1176,8 +1210,8 @@ export default function AiModels() {
                       on every card already answer — what only prose can carry
                       is that deleting one is safe, and that is what is left. */}
                   <p className="am-group-note">
-                    Nobody chose these — a runner fetched them to do its job, and deleting one
-                    only means the next run that needs it fetches it again.
+                    Automatically downloaded by a runner. If deleted, it will be downloaded
+                    again on next run.
                   </p>
                   <div className="cc-mdgrid am-grid">{grouped.components.repos.map(card)}</div>
                 </section>
