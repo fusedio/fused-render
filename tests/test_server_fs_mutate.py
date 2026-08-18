@@ -329,6 +329,35 @@ def test_xdg_trash_writes_the_spec_sidecar(tmp_path, monkeypatch):
     assert len(date) == 19
 
 
+
+def test_xdg_trash_dirs_are_private(tmp_path, monkeypatch):
+    # The bin holds what the user threw away. At the default 0755 every local
+    # account on a shared host can list and read it, so all three directories we
+    # create are 0700 — what glib/gvfs create the home trash as. Trash/ needs its
+    # own assertion because pathlib's mkdir(parents=True) applies `mode` to the
+    # leaf only and would have left the root world-readable.
+    trash = _xdg_home(monkeypatch, tmp_path)
+    f = tmp_path / "f.txt"
+    f.write_text("private")
+    _data(DELETE({"path": str(f), "trash": True}, x_fused="1"))
+    for d in (trash, trash / "files", trash / "info"):
+        assert stat.S_IMODE(d.stat().st_mode) == 0o700, d
+
+
+def test_xdg_trash_leaves_an_existing_trash_dir_permissions_alone(tmp_path, monkeypatch):
+    # A trash the user (or their desktop) already made is theirs. exist_ok does not
+    # chmod, and quietly re-permissioning someone's directory is not this
+    # function's business — asserted so a later "just chmod it" cannot slip in.
+    trash = _xdg_home(monkeypatch, tmp_path)
+    (trash / "files").mkdir(parents=True)
+    (trash / "info").mkdir(parents=True)
+    os.chmod(trash / "files", 0o755)
+    f = tmp_path / "f.txt"
+    f.write_text("x")
+    _data(DELETE({"path": str(f), "trash": True}, x_fused="1"))
+    assert stat.S_IMODE((trash / "files").stat().st_mode) == 0o755
+
+
 def test_xdg_trash_name_is_unique_across_info_as_well_as_files(tmp_path, monkeypatch):
     # The info file is the lock, so an EXISTING info file must push the new entry
     # onto the next name even though files/ is free.

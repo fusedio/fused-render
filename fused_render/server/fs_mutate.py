@@ -758,8 +758,22 @@ def _move_to_xdg_trash(path: str) -> str | None:
     # UNGUARDED ON PURPOSE: a trash root we cannot create or write is a failure,
     # not an "unsupported", and the difference is whether the user is then invited
     # to erase the file permanently. Let the OSError out.
-    files_dir.mkdir(parents=True, exist_ok=True)
-    info_dir.mkdir(parents=True, exist_ok=True)
+    #
+    # 0700, because the bin holds things the user has thrown away and a default
+    # 0755 lets every local account on a shared host enumerate and read them —
+    # what glib/gvfs create the home trash as. THREE CALLS rather than one:
+    # `mkdir(parents=True)` applies `mode` to the leaf only and creates missing
+    # parents with the default (a documented pathlib behaviour, mirroring
+    # `mkdir -p`), so a one-liner would have left `Trash/` itself world-readable.
+    # The chain ABOVE Trash/ (~/.local, ~/.local/share) keeps the default: those
+    # are ordinary XDG dirs and not ours to tighten.
+    #
+    # An EXISTING trash dir is left exactly as the user (or their desktop) made
+    # it — exist_ok does not chmod, and silently re-permissioning a directory we
+    # did not create is not this function's business.
+    trash.mkdir(parents=True, exist_ok=True, mode=0o700)
+    files_dir.mkdir(exist_ok=True, mode=0o700)
+    info_dir.mkdir(exist_ok=True, mode=0o700)
 
     counter = 1
     while True:
