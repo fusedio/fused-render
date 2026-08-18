@@ -39,7 +39,6 @@ let ASK_PLACEHOLDER: typeof import("./NewJobModal").ASK_PLACEHOLDER;
 let composeTaskMessage: typeof import("./NewJobModal").composeTaskMessage;
 let withoutTitleHeading: typeof import("./NewJobModal").withoutTitleHeading;
 let splitDraft: typeof import("./NewJobModal").splitDraft;
-let DRAFT_TITLE_MAX: typeof import("./NewJobModal").DRAFT_TITLE_MAX;
 let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
 let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
@@ -67,7 +66,6 @@ beforeAll(async () => {
   composeTaskMessage = mod.composeTaskMessage;
   withoutTitleHeading = mod.withoutTitleHeading;
   splitDraft = mod.splitDraft;
-  DRAFT_TITLE_MAX = mod.DRAFT_TITLE_MAX;
   pastNoteFor = mod.pastNoteFor;
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
   PAST_NOTE_CATCH_UP = mod.PAST_NOTE_CATCH_UP;
@@ -606,14 +604,20 @@ describe("the first message the task sends", () => {
       expect(splitDraft("   \n\n  ")).toEqual({ title: "", description: "" });
     });
 
-    test("a first line too long to be a name is clamped, and the body keeps it whole", () => {
-      const long = "x".repeat(DRAFT_TITLE_MAX + 40) + "\ntail";
-      const split = splitDraft(long);
-      expect(split.title.length).toBeLessThanOrEqual(DRAFT_TITLE_MAX);
-      // The draft is kept ENTIRE in that case: there is no line break to cut on,
-      // and half a clause is not a description. The redundancy is visible in the
-      // card, where it can be edited, rather than silently dropped.
-      expect(split.description).toBe(long);
+    test("a long first line is kept WHOLE — the line break is the only cut", () => {
+      // No clamp (Akshil, 2026-08-18). The field asks what Claude should do, and
+      // two thirds of a sentence is not an answer to that; the user can shorten
+      // their own line, and the one before this rule could not lengthen a clamped
+      // one without retyping it.
+      const head = "port the parquet reader and work out why the path handling "
+        + "drops the drive letter on windows before anything else happens";
+      expect(head.length).toBeGreaterThan(80);
+      expect(splitDraft(head + "\nstart with the tests")).toEqual({
+        title: head,
+        description: "start with the tests",
+      });
+      // And it is still a PARTITION: the long line is in one field, not in both.
+      expect(splitDraft(head + "\nstart with the tests").description).not.toContain(head);
     });
 
     test("the draft's name fills the field, and outranks the session lookup", () => {
@@ -1140,22 +1144,23 @@ describe("naming the task", () => {
     expect(initialTitleOf(entry({ title: "   " }))).toBe("");
   });
 
-  // THE regression, stated as plainly as it can be: a whole scheduled message
-  // does not become the task's name, however the form was opened. A chat draft's
-  // first line does fill the title now (splitDraft), and that is a different
-  // thing — it is clamped to a NAME, and what it takes is taken out of the
-  // description rather than copied out of it.
-  test("a long scheduled message never becomes the title", () => {
+  // THE regression, and what is left of it. The bug was DUPLICATION: the message
+  // being scheduled filled the description AND was copied into the title, so a
+  // long message arrived twice and the task was named after its own body. A chat
+  // draft's first line does fill the primary field now (splitDraft) — and that is
+  // the opposite operation, a partition: what the first field takes, the second
+  // one loses. What must still never happen is a title DERIVED from a message
+  // nobody put there, which is every path below.
+  test("a long scheduled message is never COPIED into the title", () => {
     expect(LONG.length).toBeGreaterThan(150);
 
-    // From a chat, a draft with no line break: the title takes a clamped name…
+    // A one-line draft is one answer to one question, and it goes in the field
+    // that asks it — whole, because the line break is the only cut.
     const split = splitDraft(LONG);
-    expect(split.title.length).toBeLessThanOrEqual(DRAFT_TITLE_MAX);
-    expect(split.title).not.toBe(LONG);
-    // …and the draft itself is kept ENTIRE, because there is no line break to
-    // cut on and half a clause is not a description.
-    expect(split.description).toBe(LONG);
-    expect(initialAskOf(null, LONG)).toBe(LONG);
+    expect(split.title).toBe(LONG);
+    // The duplication is what is refused: it is in one field, not in both.
+    expect(split.description).toBe("");
+    expect(initialAskOf(null, LONG)).toBe("");
     // Nothing synchronous puts a message in a title on any other path.
     expect(initialTitleOf(null)).toBe("");
 

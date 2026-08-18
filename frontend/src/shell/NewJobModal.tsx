@@ -1271,18 +1271,19 @@ export function shortTitle(text: string, max = TITLE_MAX): string {
 // This is NOT the bug of 2026-08-17 coming back. That one prefilled Title with
 // `firstLine(ask)` while the SAME text also filled the description — the message
 // arrived duplicated into both fields, and the task ended up named after its own
-// body. Here the two fields PARTITION the draft: what goes in the title is
-// removed from the description, and composeTaskMessage puts it back together on
-// Save, so nothing is said twice and nothing is lost.
+// body. Here the two fields PARTITION the draft: what goes in the first field is
+// removed from the second, and composeTaskMessage puts it back together on Save,
+// so nothing is said twice and nothing is lost.
 //
-// The one case that cannot partition cleanly is a first line longer than a name:
-// there is no line break to cut on, and cutting mid-sentence would leave the
-// description opening on half a clause. So the title takes a clamped copy and
-// the description keeps the draft ENTIRE — the user's words are never the thing
-// that gets sacrificed, and the redundant opening is visible in the card, where
-// it can be edited, rather than silently dropped.
-export const DRAFT_TITLE_MAX = 80;
-
+// THE LINE BREAK IS THE ONLY CUT (Akshil, 2026-08-18). A long first line is kept
+// whole rather than clamped to a name: the field asks "What should Claude do?",
+// and a clamp answers that question with two thirds of a sentence. The clamp
+// that was here also had to keep the draft ENTIRE in the description to avoid
+// losing the tail, so a long draft arrived with its opening said twice — worse
+// than the long value it was avoiding. TITLE_MAX still governs a name DERIVED
+// from a session's first message (shortTitle), which is a different job: that is
+// the app naming a thread nobody named, where a clamp is all there is. Here the
+// user wrote the line, and the field is theirs to shorten.
 export function splitDraft(draft?: string | null): {
   title: string;
   description: string;
@@ -1290,10 +1291,10 @@ export function splitDraft(draft?: string | null): {
   const text = (draft ?? "").trim();
   if (!text) return { title: "", description: "" };
   const brk = text.indexOf("\n");
-  const head = (brk < 0 ? text : text.slice(0, brk)).trim();
-  const rest = brk < 0 ? "" : text.slice(brk + 1).trim();
-  if (head.length <= DRAFT_TITLE_MAX) return { title: head, description: rest };
-  return { title: shortTitle(head, DRAFT_TITLE_MAX), description: text };
+  return {
+    title: (brk < 0 ? text : text.slice(0, brk)).trim(),
+    description: brk < 0 ? "" : text.slice(brk + 1).trim(),
+  };
 }
 
 // A prefill this field must refuse, whichever source produced it: a transcript
