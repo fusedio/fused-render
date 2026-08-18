@@ -7529,8 +7529,15 @@ go. Four failures, one answer.
   the previous message is stale by definition. Pushing without dismissing left
   two sticky toasts and only ever took down the newer, so the older outlived the
   repair. All three transitions live in `syncRegistryToast` rather than in the
-  effect that calls it — both bugs this has had were transitions rather than
+  effect that calls it — every bug this has had was a transition rather than
   anything rendered, and a component effect is not a place a test can reach.
+  **The state is ONE value — what the screen is currently saying — and not a set
+  of messages already seen.** A set answers "have we ever mentioned this?", and
+  that is the wrong question: a registry that failed with A, was edited to fail
+  with B, then edited back to A left the toast describing B, because A counted
+  as already announced. What has to stay true as the registry moves between
+  states is "is the screen already saying exactly this?", so that is what is
+  recorded.
 - **TR-10** **The install command is pinned by a test**, because it is shown as
   a thing to copy into a terminal and a wrong one there is worse than none.
 - **TR-11** **The agent brief always says WHERE, and when it cannot state the
