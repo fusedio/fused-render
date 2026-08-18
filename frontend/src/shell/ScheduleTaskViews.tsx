@@ -23,7 +23,14 @@
 // one page. Those live in styles/schedule.css; everything this file adds (the
 // accordion, the thread rows, the id chips, the unread dot) is in
 // styles/tasks.css.
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { DragEvent as ReactDragEvent } from "react";
 import {
   cancelScheduledMessage,
@@ -40,6 +47,9 @@ import { BOARD_COLUMNS } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
+  EMPTY_LIST_MEMORY,
+  LANE_CHOICE_KEY,
+  LIST_MEMORY_KEY,
   UNREAD_LABEL,
   archiveIntent,
   basename,
@@ -55,6 +65,7 @@ import {
   isExpandable,
   isFailedTask,
   isUpcomingTask,
+  laneCollapsed,
   laneUnread,
   markAllRead,
   markRead,
@@ -66,6 +77,8 @@ import {
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
+  parseLaneChoices,
+  parseListMemory,
   projectOptions,
   relativeWhen,
   settleMarkAllRead,
@@ -85,6 +98,8 @@ import {
 } from "./tasks-lib";
 import type {
   ArchiveStatus,
+  LaneChoices,
+  ListMemory,
   OpenThreadIntent,
   TaskFilters,
   TaskRunIntent,
@@ -776,6 +791,33 @@ function performOpen(
 
 // ---- List view: one accordion per task ---------------------------------------
 
+/** How long the list keeps trying to reach the offset it was left at. Rows grow
+ * as their threads land, so the target is unreachable for the first few frames;
+ * past this it is a list that simply cannot be that tall any more. */
+const RESTORE_WINDOW_MS = 3000;
+/** Scroll fires per frame; the store is written once the reader pauses. */
+const WRITE_DEBOUNCE_MS = 150;
+
+/** Per-TAB, per-sitting (sessionStorage): "where I was a moment ago" is not a
+ * preference, and a week-old offset restored into a list of different rows is a
+ * surprise rather than a memory. A blocked store costs the memory, never the
+ * page — the read runs during first render. */
+function readListMemory(): ListMemory {
+  try {
+    return parseListMemory(sessionStorage.getItem(LIST_MEMORY_KEY));
+  } catch {
+    return EMPTY_LIST_MEMORY;
+  }
+}
+
+function writeListMemory(memory: ListMemory): void {
+  try {
+    sessionStorage.setItem(LIST_MEMORY_KEY, JSON.stringify(memory));
+  } catch {
+    // best-effort; a full or blocked store never breaks the list
+  }
+}
+
 export function TaskList({
   tasks,
   home = "",
@@ -804,8 +846,16 @@ export function TaskList({
 }) {
   // Collapsed by default (§8), so the set holds what is OPEN — an empty set is
   // the resting state and needs no seeding from a list that changes on every
-  // poll.
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  // poll. Seeded from THIS TAB's memory, though: opening a task's chat leaves the
+  // page, and coming back to a collapsed list scrolled to the top made reading
+  // three threads out of ninety three trips through the same scrollbar.
+  //
+  // Read once, into a ref, because both halves of the memory are initial state:
+  // re-reading it later would fight the writes below.
+  const memory = useRef<ListMemory>(readListMemory());
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set(memory.current.expanded),
+  );
   // Full threads fetched by Show more, keyed by task. They REPLACE the three
   // the listing carried rather than appending to them, so no message is ever
   // drawn twice.
@@ -898,12 +948,147 @@ export function TaskList({
     }
   };
 
-  if (tasks.length === 0) {
+  // A row restored from memory was never TOGGLED, so nothing went and got the
+  // rest of its thread — it would sit there showing the listing's three messages
+  // with no button left to ask for the other twenty-three. Same trip the chevron
+  // makes, made once, the first time a task list arrives.
+  const restoredThreads = useRef(false);
+  useEffect(() => {
+    if (restoredThreads.current || tasks.length === 0) return;
+    restoredThreads.current = true;
+    for (const key of memory.current.expanded) {
+      const task = tasks.find((t) => t.key === key);
+      if (task && threadView(task).more) void showMore(task);
+    }
+    // Runs on every poll and does something exactly once — the guard above is
+    // what makes it a restore rather than a refetch loop.
+  }, [tasks]);
+
+  // ---- where the list stood ---------------------------------------------------
+  // `.tasks-list` is its own scroller (styles/tasks.css), so this is one element's
+  // scrollTop and not the window's — which is also why restoring it cannot fight
+  // the explorer's msg-anchor scroll: that happens on a different page entirely.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // The offset still owed to the reader, or null once it has been paid (or given
+  // up on). Rows grow as their fetched threads land, so the wanted offset is
+  // often past the end of the list for the first few frames; it is re-applied
+  // every render until the content is tall enough to honour it.
+  const owed = useRef<number | null>(memory.current.scroll || null);
+  // The last offset THIS code set, so a scroll event can be told apart from the
+  // reader's own — theirs cancels the restore, and nothing else does.
+  const settled = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (owed.current === null || !el) return;
+    const top = Math.min(owed.current, Math.max(el.scrollHeight - el.clientHeight, 0));
+    if (Math.abs(el.scrollTop - top) > 1) el.scrollTop = top;
+    settled.current = el.scrollTop;
+    if (top >= owed.current - 1) owed.current = null;
+  });
+
+  // The restore window closes on its own. Without this, a list that can never
+  // grow tall enough (rows deleted since the visit) would keep pinning itself to
+  // the bottom on every poll.
+  //
+  // IT OPENS ON THE FIRST ROWS, NOT ON MOUNT (bugbot, 2026-08-18). Tasks arrive
+  // from a fetch, so this component mounts against an empty list and stays that
+  // way for as long as the request takes; a deadline started at mount was
+  // therefore spending most of itself — sometimes all of it, on a cold server or
+  // a slow disk — waiting for the rows it was meant to be measuring. The window
+  // is supposed to be "a few seconds of settling once there is something to
+  // settle", so `hasRows` is what starts the clock. It goes false→true once, so
+  // this arms once too, and a filter that empties the list later cannot rewind
+  // it (by then the restore is long since paid or given up on).
+  const hasRows = tasks.length > 0;
+  useEffect(() => {
+    if (!hasRows) return;
+    const t = setTimeout(() => {
+      owed.current = null;
+    }, RESTORE_WINDOW_MS);
+    return () => clearTimeout(t);
+  }, [hasRows]);
+
+  // One writer for both halves, so the stored row is always whole. Debounced,
+  // because the scroll half fires per frame and this leaves the page by pushState
+  // (an unmount that a dropped write would silently lose is not worth the risk of
+  // relying on).
+  const writeTimer = useRef<number | null>(null);
+  const remember = (next: ListMemory) => {
+    memory.current = next;
+    if (writeTimer.current !== null) clearTimeout(writeTimer.current);
+    writeTimer.current = window.setTimeout(() => {
+      writeTimer.current = null;
+      writeListMemory(memory.current);
+    }, WRITE_DEBOUNCE_MS);
+  };
+  useEffect(
+    () => () => {
+      if (writeTimer.current !== null) {
+        clearTimeout(writeTimer.current);
+        writeListMemory(memory.current);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    remember({ ...memory.current, expanded: [...expanded] });
+  }, [expanded]);
+
+  const onScroll = () => {
+    const el = listRef.current;
+    if (!el) return;
+    // Whose scroll was this? The layout effect above records every offset IT
+    // sets in `settled`, so an event landing on that exact offset is the echo of
+    // this code's own write and an event landing anywhere else is the reader.
+    const mine = settled.current !== null && Math.abs(el.scrollTop - settled.current) <= 1;
+    settled.current = el.scrollTop;
+    // A RESTORE IN PROGRESS WRITES NOTHING (bugbot, 2026-08-18). The restore is
+    // paid in instalments — the wanted offset is past the end of a list whose
+    // rows are still growing as their threads land, so the layout effect gets
+    // partway there, and partway again, until the content is tall enough. Every
+    // one of those partial offsets used to be saved over the real one, so a
+    // reader who left at 1200px and came back to a list that momentarily only
+    // reached 300 had their position quietly rewritten to 300 — the memory
+    // destroyed by the act of restoring it. Only the reader's own scroll is a
+    // statement about where they want to be, so only the reader's own is stored.
+    if (mine) return;
+    // And their scroll means they have chosen where to be: the owed offset stops
+    // being owed.
+    owed.current = null;
+    remember({ ...memory.current, scroll: el.scrollTop });
+  };
+
+  // AN EMPTY LIST IS A POSITION TOO, and it is the top (bugbot, 2026-08-18).
+  // Typing in the search box until nothing matches unmounts the scroller, and the
+  // scroller is the only thing that reports scrolling — so the last offset from
+  // before the filter narrowed just sat in the store, describing a list that is
+  // no longer on screen. Clearing the search then restored it, and the reader who
+  // had scrolled to the top to start typing was thrown back down the list by a
+  // number they had stopped meaning several keystrokes ago. There is nothing
+  // below an empty state to be scrolled to, so the honest memory is zero, and
+  // nothing is owed either: whatever restore was pending has nowhere to land.
+  //
+  // ONLY FOR A LIST THAT EMPTIED, never for one that has not filled yet: this
+  // component mounts against an empty `tasks` while the fetch is out, and zeroing
+  // the memory there would erase the very offset this whole section exists to pay
+  // back, before the rows it belongs to have even arrived.
+  const hadRows = useRef(false);
+  if (hasRows) hadRows.current = true;
+  useEffect(() => {
+    if (hasRows || !hadRows.current) return;
+    owed.current = null;
+    settled.current = null;
+    remember({ ...memory.current, scroll: 0 });
+  }, [hasRows]);
+
+  if (!hasRows) {
     return <p className="schedule-tv-empty">{emptyLabel}</p>;
   }
 
   return (
-    <div className="tasks-list">
+    <div className="tasks-list" ref={listRef} onScroll={onScroll}>
       {tasks.map((task) => (
         <TaskNode
           key={task.key}
@@ -1831,25 +2016,23 @@ function TaskNode({
 
 // ---- Board view: columns of tasks --------------------------------------------
 
-const LANE_INITIAL_VISIBLE = 10;
-const LANE_REVEAL = 10;
+// A lane opens on twenty cards and reveals twenty at a time. Ten was two presses
+// to read a busy column (Akshil, 2026-08-18) and the lane scrolls anyway, so the
+// window is about how much is rendered, not about how much fits.
+const LANE_INITIAL_VISIBLE = 20;
+const LANE_REVEAL = 20;
 
-// Which lanes are rolled up into the 52px rail, remembered across visits —
-// Archive is closed by default because it is the one lane nobody opens the page
-// to read.
-const COLLAPSED_KEY = "fused-render:scheduled-board-collapsed";
-
-function readCollapsed(): Set<BoardColumn> {
+// Which lanes are rolled up into the 52px rail. The RULE lives in
+// tasks-lib.laneCollapsed (empty ⇒ rolled up, otherwise open) and only the
+// reader's own toggles are stored, so a lane nobody has touched keeps following
+// the rule as it fills and empties.
+function readLaneChoices(): LaneChoices {
   try {
-    const raw = localStorage.getItem(COLLAPSED_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return new Set(parsed as BoardColumn[]);
-    }
+    return parseLaneChoices(localStorage.getItem(LANE_CHOICE_KEY));
   } catch {
     // A blocked/private store costs the memory, never the board.
+    return {};
   }
-  return new Set<BoardColumn>(["archived"]);
 }
 
 export function TaskBoard({
@@ -1865,7 +2048,7 @@ export function TaskBoard({
   /** Re-read the list after a drop lands (or fails). */
   onReload: () => void;
 }) {
-  const [collapsed, setCollapsed] = useState<Set<BoardColumn>>(readCollapsed);
+  const [choices, setChoices] = useState<LaneChoices>(readLaneChoices);
   const [visible, setVisible] = useState<Record<string, number>>({});
   // The card in flight and the lane under it. Native HTML5 drag — a column
   // move needs nothing fancier than the platform's own.
@@ -1988,8 +2171,9 @@ export function TaskBoard({
     performOpen(task, intent, { clearAll, restoreAll, settleAll }, heldMessages(task));
   };
 
-  // Shared by expanded lane bodies AND collapsed rails, so Archive — collapsed
-  // by default — still catches the drop most cards are allowed.
+  // Shared by expanded lane bodies AND collapsed rails, so a rolled-up lane —
+  // an empty one, or one the reader closed — still catches the drop most cards
+  // are allowed.
   const dropProps = (lane: BoardColumn) => ({
     onDragOver: (ev: ReactDragEvent) => {
       if (!dragging || !allowed.has(lane)) return;
@@ -2006,13 +2190,15 @@ export function TaskBoard({
     },
   });
 
-  const toggleLane = (key: BoardColumn) => {
-    setCollapsed((cur) => {
-      const next = new Set(cur);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+  // `nowCollapsed` is what the reader is looking at — the rule's answer or their
+  // own earlier one — so the press always means "the other one of these two".
+  // Recording the RESULT rather than a flip is what makes the store a record of
+  // choices instead of a snapshot of the board.
+  const toggleLane = (key: BoardColumn, nowCollapsed: boolean) => {
+    setChoices((cur) => {
+      const next = { ...cur, [key]: !nowCollapsed };
       try {
-        localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+        localStorage.setItem(LANE_CHOICE_KEY, JSON.stringify(next));
       } catch {
         // best-effort; a full or blocked store never breaks the board
       }
@@ -2036,7 +2222,8 @@ export function TaskBoard({
           // rather than messages (tasks-lib.laneUnread) because the header stands
           // over cards.
           const news = laneUnread(lane, read);
-          if (collapsed.has(col.key)) {
+          const rolled = laneCollapsed(col.key, lane.length, choices);
+          if (rolled) {
             return (
               <button
                 type="button"
@@ -2052,7 +2239,7 @@ export function TaskBoard({
                     ? "Run the next scheduled message now"
                     : `${col.label}: ${lane.length}`
                 }
-                onClick={() => toggleLane(col.key)}
+                onClick={() => toggleLane(col.key, true)}
                 {...dropProps(col.key)}
               >
                 <StatusIcon status={col.key} unread={news > 0} count={news} />
@@ -2070,7 +2257,7 @@ export function TaskBoard({
                 type="button"
                 className="schedule-tv-lane-head"
                 title={`Collapse ${col.label}`}
-                onClick={() => toggleLane(col.key)}
+                onClick={() => toggleLane(col.key, false)}
               >
                 {/* The group header's own unread mark, the same ring the cards
                     under it wear — filled while any of them holds something

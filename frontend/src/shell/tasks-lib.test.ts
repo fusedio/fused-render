@@ -37,6 +37,7 @@ import {
   isPastDue,
   isUnread,
   isUpcomingTask,
+  laneCollapsed,
   laneUnread,
   laneTime,
   lastRunAt,
@@ -54,6 +55,8 @@ import {
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
+  parseLaneChoices,
+  parseListMemory,
   projectOptions,
   relativeWhen,
   ranOffSchedule,
@@ -4904,5 +4907,178 @@ describe("opensElsewhere", () => {
     expect(opensElsewhere({})).toBe(false);
     expect(opensElsewhere({ button: 0 })).toBe(false);
     expect(opensElsewhere({ metaKey: false, ctrlKey: false, button: 0 })).toBe(false);
+  });
+});
+
+// ---- what the two views remember ---------------------------------------------
+// Three complaints, one shape (Akshil, 2026-08-18): a lane that opens ten cards
+// at a time, an Archive lane nailed shut, and a List that forgets everything the
+// moment you open one of its threads. The RULES are here; the source assertions
+// beside them check the views ask these functions rather than keeping a second
+// copy of the answer.
+
+/** The Board, ending where the card it draws begins. */
+const LANES = VIEWS.slice(
+  VIEWS.indexOf("export function TaskBoard("),
+  VIEWS.indexOf("function TaskCard("),
+);
+/** The List, ending where the row it draws begins. */
+const LIST = VIEWS.slice(
+  VIEWS.indexOf("export function TaskList("),
+  VIEWS.indexOf("function TaskNode("),
+);
+
+describe("a board lane's page size", () => {
+  it("opens on twenty cards and reveals twenty more", () => {
+    expect(VIEWS).toContain("const LANE_INITIAL_VISIBLE = 20;");
+    expect(VIEWS).toContain("const LANE_REVEAL = 20;");
+    // The button's label is arithmetic over the same constant, so it cannot say
+    // ten while twenty arrive.
+    expect(LANES).toContain("Show {Math.min(LANE_REVEAL, hidden)} more");
+  });
+});
+
+describe("which board lanes are rolled up", () => {
+  it("rolls up an empty lane and opens every other one, Archive included", () => {
+    // Archive was hard-coded closed. It is a lane like the others now: cards ⇒
+    // open, none ⇒ rolled up.
+    expect(laneCollapsed("archived", 3, {})).toBe(false);
+    expect(laneCollapsed("archived", 0, {})).toBe(true);
+    expect(laneCollapsed("upcoming", 0, {})).toBe(true);
+    expect(laneCollapsed("in_progress", 1, {})).toBe(false);
+  });
+
+  it("lets the reader's own choice outrank the rule, in both directions", () => {
+    expect(laneCollapsed("upcoming", 12, { upcoming: true })).toBe(true);
+    expect(laneCollapsed("archived", 0, { archived: false })).toBe(false);
+    // And a choice about ONE lane says nothing about its neighbours.
+    expect(laneCollapsed("done", 0, { upcoming: true })).toBe(true);
+  });
+
+  it("reads back only booleans it recognises, and never throws on junk", () => {
+    // What is in the store is a string written by someone else — an older build
+    // that wrote an ARRAY there, or a hand-edited devtools row.
+    expect(parseLaneChoices(null)).toEqual({});
+    expect(parseLaneChoices("not json")).toEqual({});
+    expect(parseLaneChoices('["archived"]')).toEqual({});
+    expect(parseLaneChoices('{"archived":true,"nonsense":true,"done":"yes"}')).toEqual({
+      archived: true,
+    });
+    expect(parseLaneChoices('{"upcoming":false}')).toEqual({ upcoming: false });
+  });
+
+  it("stores choices, not the board — an untouched lane keeps following the rule", () => {
+    // The distinction the old array-shaped key could not make: it recorded what
+    // was collapsed RIGHT NOW, defaults included, so the first visit froze every
+    // lane's state forever. Round-tripping a choice map keeps the absence of a
+    // choice absent.
+    const choices = parseLaneChoices(JSON.stringify({ archived: false }));
+    expect("upcoming" in choices).toBe(false);
+    expect(laneCollapsed("upcoming", 0, choices)).toBe(true);
+    expect(laneCollapsed("upcoming", 4, choices)).toBe(false);
+  });
+
+  it("is decided by laneCollapsed on the board, which stores only the toggle", () => {
+    expect(LANES).toContain("laneCollapsed(col.key, lane.length, choices)");
+    // The old snapshot key and its hard-coded Archive are gone.
+    expect(VIEWS).not.toContain("scheduled-board-collapsed");
+    expect(VIEWS).not.toContain('new Set<BoardColumn>(["archived"])');
+    // What is written is the RESULT of the press, for that one lane.
+    expect(LANES).toContain("const next = { ...cur, [key]: !nowCollapsed };");
+    expect(LANES).toContain("localStorage.setItem(LANE_CHOICE_KEY");
+  });
+});
+
+describe("what the List remembers between visits", () => {
+  it("remembers nothing at all when there is nothing stored", () => {
+    expect(parseListMemory(null)).toEqual({ expanded: [], scroll: 0 });
+    expect(parseListMemory("")).toEqual({ expanded: [], scroll: 0 });
+    expect(parseListMemory("{oops")).toEqual({ expanded: [], scroll: 0 });
+    expect(parseListMemory("[1,2]")).toEqual({ expanded: [], scroll: 0 });
+  });
+
+  it("keeps the task keys and the offset, and drops everything else", () => {
+    expect(
+      parseListMemory('{"expanded":["TASK-1",7,"TASK-2"],"scroll":420.5,"x":1}'),
+    ).toEqual({ expanded: ["TASK-1", "TASK-2"], scroll: 420.5 });
+    // A negative, infinite or non-numeric offset is not a place on a scrollbar.
+    expect(parseListMemory('{"scroll":-3}').scroll).toBe(0);
+    expect(parseListMemory('{"scroll":"120"}').scroll).toBe(0);
+    expect(parseListMemory('{"expanded":"TASK-1"}').expanded).toEqual([]);
+  });
+
+  it("restores the open rows and the scroll from THIS tab only", () => {
+    // sessionStorage: "where I was a moment ago" is true for this sitting, and a
+    // week-old offset restored into different rows is a surprise, not a memory.
+    expect(VIEWS).toContain("sessionStorage.getItem(LIST_MEMORY_KEY)");
+    expect(VIEWS).toContain("sessionStorage.setItem(LIST_MEMORY_KEY");
+    expect(VIEWS).not.toContain("localStorage.getItem(LIST_MEMORY_KEY)");
+    expect(LIST).toContain("new Set(memory.current.expanded)");
+    // The list's own scroller, not the window's — which is also why this cannot
+    // fight the chat's msg-anchor scroll on the other page.
+    expect(LIST).toContain(
+      '<div className="tasks-list" ref={listRef} onScroll={onScroll}>',
+    );
+    expect(LIST).toContain("el.scrollTop = top;");
+    // A row restored from memory was never toggled, so nothing fetched the rest
+    // of its thread; the restore makes that trip itself, once.
+    expect(LIST).toContain("if (task && threadView(task).more) void showMore(task);");
+  });
+
+  it("does not let the restore overwrite the offset it is restoring", () => {
+    // The restore is paid in instalments: rows grow as their threads land, so the
+    // layout effect reaches part of the wanted offset, then more of it. Those
+    // partial positions used to be written straight back into the memory, so a
+    // reader who left at 1200 and came back to a list that momentarily only
+    // reached 300 had 300 saved over it — the memory destroyed by restoring it.
+    //
+    // `settled` is how the two are told apart: the layout effect records every
+    // offset it sets, so an event on that offset is this code's own echo.
+    expect(LIST).toContain(
+      "const mine = settled.current !== null && Math.abs(el.scrollTop - settled.current) <= 1;",
+    );
+    // And a programmatic scroll leaves BEFORE the write — it neither stores an
+    // offset nor cancels what is still owed.
+    const scroll = LIST.slice(LIST.indexOf("const onScroll = () => {"));
+    const body = scroll.slice(0, scroll.indexOf("\n  };"));
+    expect(body).toContain("if (mine) return;");
+    expect(body.indexOf("if (mine) return;")).toBeLessThan(
+      body.indexOf("remember({ ...memory.current, scroll: el.scrollTop });"),
+    );
+    expect(body.indexOf("if (mine) return;")).toBeLessThan(body.indexOf("owed.current = null;"));
+  });
+
+  it("starts the restore deadline when rows arrive, not when the page mounts", () => {
+    // Tasks come from a fetch, so the component mounts against an empty list. A
+    // deadline armed at mount spent itself waiting for the rows it was meant to
+    // be measuring, and on a slow load the window was gone before the first row
+    // existed — the restore silently never happened.
+    expect(LIST).toContain("const hasRows = tasks.length > 0;");
+    const deadline = LIST.slice(LIST.indexOf("const t = setTimeout(() => {"));
+    expect(deadline.slice(0, deadline.indexOf("}, ["))).toContain("RESTORE_WINDOW_MS");
+    expect(LIST).toContain("if (!hasRows) return;");
+    // Armed off `hasRows`, which flips once, so the window opens once.
+    expect(LIST).toMatch(/return \(\) => clearTimeout\(t\);\s*\}, \[hasRows\]\);/);
+  });
+
+  it("forgets the offset when a filter empties the list, but not before it fills", () => {
+    // The empty state unmounts the scroller, and the scroller is the only thing
+    // that reports scrolling — so the offset from before the search narrowed sat
+    // there describing a list nobody can see, and clearing the search threw the
+    // reader back down to it.
+    expect(LIST).toContain("remember({ ...memory.current, scroll: 0 });");
+    // Nothing is owed either: a pending restore has nowhere to land.
+    const empty = LIST.slice(LIST.indexOf("if (hasRows || !hadRows.current) return;"));
+    const body = empty.slice(0, empty.indexOf("}, [hasRows]);"));
+    expect(body).toContain("owed.current = null;");
+    expect(body).toContain("settled.current = null;");
+    // ONLY for a list that emptied. On the first paint `tasks` is empty because
+    // the fetch is still out, and zeroing there would erase the very offset the
+    // restore exists to pay back.
+    expect(LIST).toContain("const hadRows = useRef(false);");
+    expect(LIST).toContain("if (hasRows) hadRows.current = true;");
+    // The empty state is asked the same question as everything else above it.
+    expect(LIST).toContain("if (!hasRows) {");
+    expect(LIST).not.toContain("if (tasks.length === 0) {");
   });
 });

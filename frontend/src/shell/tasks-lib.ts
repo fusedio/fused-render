@@ -994,6 +994,57 @@ export function opensElsewhere(e: {
   );
 }
 
+// ---- what the List remembers between visits ----------------------------------
+// Opening a task's chat LEAVES the Tasks page, and coming back used to hand the
+// reader a fully collapsed list scrolled to the top — so reading three threads
+// out of ninety meant re-finding the same row three times (Akshil, 2026-08-18).
+// The page now remembers which rows were open and where the list stood.
+//
+// sessionStorage, not localStorage: this is "where I was a moment ago", which is
+// true for this tab and this sitting only. A week-old scroll offset restored into
+// a list whose rows have all changed is not a memory, it is a surprise.
+
+/** The key the List's per-tab memory lives under. */
+export const LIST_MEMORY_KEY = "fused-render:tasks-list-memory";
+
+export type ListMemory = {
+  /** Task keys the reader had open. Keys that no longer exist simply never match
+   * a row, so a stale entry costs nothing and needs no pruning. */
+  expanded: string[];
+  /** scrollTop of the list's own scroller, in px. */
+  scroll: number;
+};
+
+export const EMPTY_LIST_MEMORY: ListMemory = { expanded: [], scroll: 0 };
+
+/**
+ * What came out of the store is a STRING WRITTEN BY SOMEONE ELSE — an older
+ * build, a hand-edited devtools row — so every field is checked and anything
+ * unrecognisable degrades to "remember nothing" rather than throwing during a
+ * render.
+ */
+export function parseListMemory(raw: string | null): ListMemory {
+  if (!raw) return EMPTY_LIST_MEMORY;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return EMPTY_LIST_MEMORY;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return EMPTY_LIST_MEMORY;
+  }
+  const row = parsed as { expanded?: unknown; scroll?: unknown };
+  const expanded = Array.isArray(row.expanded)
+    ? row.expanded.filter((k): k is string => typeof k === "string")
+    : [];
+  const scroll =
+    typeof row.scroll === "number" && Number.isFinite(row.scroll) && row.scroll > 0
+      ? row.scroll
+      : 0;
+  return { expanded, scroll };
+}
+
 // ---- where a click goes ------------------------------------------------------
 // schedule-lib.explorerUrl is the app's one answer to "open this session in the
 // explorer, with the Claude pane on it". A message adds one thing: WHICH turn
@@ -2159,4 +2210,57 @@ export function groupByColumn(
     map.set(col.key, sortLane(map.get(col.key)!, col.key, now));
   }
   return map;
+}
+
+// ---- which lanes are rolled up -----------------------------------------------
+// A lane is either an open column or a 52px rail. Two things decide which, in
+// this order:
+//
+//   1. What the reader last chose for THAT lane. Explicit choices are the only
+//      thing stored, so a lane nobody has ever touched keeps following the rule
+//      below forever rather than being frozen at whatever it looked like the
+//      first time the page was opened.
+//   2. Otherwise: EMPTY lanes start rolled up, everything else starts open.
+//
+// Archive used to be hard-coded closed. It is not special any more (Akshil,
+// 2026-08-18) — an Archive with cards in it is a column like the others, and an
+// Archive with none rolls up under rule 2 like the others.
+
+/** The key the board's lane choices live under. Distinct from the array-shaped
+ * key an earlier build wrote: that one recorded "collapsed now", defaults
+ * included, which cannot be told apart from "the reader chose this". */
+export const LANE_CHOICE_KEY = "fused-render:scheduled-board-lanes";
+
+/** Lane → the reader's own answer to "collapsed?". Absent ⇒ never chosen. */
+export type LaneChoices = Partial<Record<BoardColumn, boolean>>;
+
+/** Same contract as parseListMemory: a stored string is untrusted input, and an
+ * unreadable one means "no choices yet", never a thrown render. */
+export function parseLaneChoices(raw: string | null): LaneChoices {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const row = parsed as Record<string, unknown>;
+  const out: LaneChoices = {};
+  for (const col of BOARD_COLUMNS) {
+    const v = row[col.key];
+    if (typeof v === "boolean") out[col.key] = v;
+  }
+  return out;
+}
+
+/** Rule 1 then rule 2, for one lane. `count` is how many cards it holds. */
+export function laneCollapsed(
+  lane: BoardColumn,
+  count: number,
+  choices: LaneChoices,
+): boolean {
+  const chosen = choices[lane];
+  if (chosen !== undefined) return chosen;
+  return count === 0;
 }
