@@ -960,8 +960,12 @@ describe("taskColumn", () => {
     for (const col of BOARD_COLUMNS) {
       expect(taskColumn({ ...task(), status: col.key as Task["status"] })).toBe(col.key);
     }
+    // Lane order, left to right. Failed sits BEFORE Done (Akshil, 2026-08-18): a
+    // lane that wants a person's hands comes before one that wants only their
+    // eyes. The List reads the SAME sequence — LIST_ORDER's own test holds the two
+    // arrays equal.
     expect(BOARD_COLUMNS.map((c) => c.key)).toEqual([
-      "upcoming", "in_progress", "done", "failed", "archived",
+      "upcoming", "in_progress", "failed", "done", "archived",
     ]);
   });
 });
@@ -3397,10 +3401,20 @@ describe("the archive action", () => {
     expect(TASKS_CSS.slice(head, TASKS_CSS.indexOf("}", head))).toContain("opacity: 0;");
     // ...and both a pointer and a keyboard bring it back, on the row...
     expect(TASKS_CSS).toContain(".tasks-row:hover .tasks-act");
-    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-act");
+    expect(TASKS_CSS).toContain(".tasks-row:has(.tasks-act:focus-visible) .tasks-act");
     // ...and on a board card, which is not a row and needs its own pair.
     expect(TASKS_CSS).toContain(".tasks-card-wrap:hover .tasks-card-act");
-    expect(TASKS_CSS).toContain(".tasks-card-wrap:focus-within .tasks-card-act");
+    expect(TASKS_CSS).toContain(
+      ".tasks-card-wrap:has(.tasks-card-act:focus-visible) .tasks-card-act",
+    );
+    // AND NEVER `:focus-within` ON THE CONTAINER (Akshil, 2026-08-18 — the stuck
+    // Archive). A row contains the chevron and the stretched rowlink, and a card
+    // wrap contains the card, all of them focusable by a plain click: `:focus-within`
+    // kept the reveal alive on a row the pointer had already left. Mouse-out must
+    // undo mouse-in.
+    expect(TASKS_CSS).not.toContain(":focus-within .tasks-act");
+    expect(TASKS_CSS).not.toContain(":focus-within .tasks-card-act");
+    expect(TASKS_CSS).not.toContain(":focus-within .tasks-rowmark");
     // Reachable with a visible ring either way.
     expect(TASKS_CSS).toContain(".tasks-act:focus-visible");
     // House rule: never the property that animates layout and skin together.
@@ -3486,10 +3500,14 @@ describe("the archive action", () => {
     );
     expect(fade).toContain("opacity: 0");
     expect(fade).toContain("pointer-events: none");
-    // Keyboard reachability is why `:focus-within` is in the trigger list — a tab
-    // onto the button reveals it, and the ring in front of it must get out of the
-    // way (the same rule the strip has always obeyed).
-    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-rowmark .schedule-ring");
+    // Keyboard reachability is why there is a second arm — a tab onto the button
+    // reveals it, and the ring in front of it must get out of the way (the same rule
+    // the strip has always obeyed). It asks for THAT BUTTON's `:focus-visible`, not
+    // the row's `:focus-within`, or a chevron click would fade the ring of a row
+    // nobody is pointing at any more.
+    expect(TASKS_CSS).toContain(
+      ".tasks-row .tasks-rowmark:has(.tasks-act--archive:focus-visible) .schedule-ring",
+    );
     expect(TASKS_CSS).toContain(".tasks-act:focus-visible");
     // A row with nothing to file keeps its ring under the pointer: a blank slot
     // where the row's status was is worse than no swap at all.
@@ -3511,6 +3529,44 @@ describe("the archive action", () => {
     expect(TASKS_CSS).toMatch(
       /\.tasks-act:focus-visible \{\n\s*opacity: 1;\n\s*pointer-events: auto;/,
     );
+  });
+
+  it("is bigger to aim at than it is to look at", () => {
+    // 22px was a small target for a control the pointer arrives at sideways, so the
+    // ZONE grows and the SKIN does not (Akshil, 2026-08-18). A pseudo-element and
+    // not padding: the button is out of flow and centred by a transform on its own
+    // box, so padding would move the centre and, worse, grow the box the hover fill
+    // paints.
+    const zone = block(TASKS_CSS, ".tasks-rowmark .tasks-act--archive::after");
+    expect(zone).toContain("position: absolute");
+    // The painted box is untouched — still the 22px every `.tasks-act` is.
+    const button = block(TASKS_CSS, ".tasks-rowmark .tasks-act--archive");
+    expect(button).not.toContain("padding");
+    expect(button).not.toContain("width");
+
+    // EVERY INSET IS DERIVED, NOT TYPED, and the reason is a bug a typed number
+    // caused: a `-10px` right reach lapped 3px OVER the id chip, so a press aimed
+    // at the id fired Archive (Bugbot, MEDIUM, 2026-08-18). The button already
+    // hangs `--tasks-archive-overhang` past its 16px slot before it grows at all,
+    // so the free space on a side is that side's spacing token LESS the overhang —
+    // and a typed number is the same mistake waiting for the next retune.
+    expect(zone).toContain("--tasks-archive-overhang: calc((22px - var(--tasks-rail-w)) / 2)");
+    expect(zone).toContain("var(--tasks-archive-overhang) - var(--tasks-row-pad-y)");
+    expect(zone).toContain("var(--tasks-archive-overhang) - var(--tasks-row-gap)");
+    // No literal length survives in the inset itself.
+    const insets = (zone.match(/inset: ([^;]+);/s) ?? ["", ""])[1].trim().split(/\s+/);
+    expect(insets).toHaveLength(4);
+    expect(insets.join(" ")).not.toMatch(/-?\d+px/);
+    // Top and bottom are the one vertical reach — the row's full height, never past
+    // it, or this button covers the NEIGHBOURING row's link.
+    expect(insets[0]).toBe("var(--tasks-archive-reach-y)");
+    expect(insets[2]).toBe("var(--tasks-archive-reach-y)");
+    // Right stops on the id chip's edge; left stops on the caret's enlarged zone,
+    // which sits at the same `z-index: 2` earlier in the DOM and would lose the
+    // overlap. Left is half a gap shorter than right, which is what keeps them apart.
+    expect(insets[1]).toBe("var(--tasks-archive-reach-r)");
+    expect(insets[3]).toBe("var(--tasks-archive-reach-l)");
+    expect(zone).toContain("var(--tasks-archive-reach-r) + var(--tasks-row-gap) / 2");
   });
 
   it("leaves the board card's archive exactly where it was", () => {
@@ -3727,7 +3783,7 @@ describe("the hidden row actions", () => {
     // The reveal rules are untouched — they are what the actions come back to, and
     // the stylesheet says so rather than being tidied away.
     expect(TASKS_CSS).toContain(".tasks-msg:hover .tasks-act");
-    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-act");
+    expect(TASKS_CSS).toContain(".tasks-row:has(.tasks-act:focus-visible) .tasks-act");
     // Edit and Cancel are still WRITTEN, just not rendered: the user's second pass
     // covered them too ("hide the hover actions for now, that's what I said", said
     // of the pencil on a message row), so they are behind the same flag.
@@ -5742,7 +5798,17 @@ describe("sortByLane", () => {
       "done",
       "archived",
     ]);
-    // Same set as the Board's — a sixth lane cannot be silently unsortable.
+    // ONE ORDER FOR BOTH VIEWS (Akshil, 2026-08-18, the final ruling). The two
+    // briefly disagreed about Failed and Done — the List ranking work owed, the
+    // Board running a pipeline — and a reader moving between them carries one
+    // mental picture of where a status sits, so the disagreement was wrong in
+    // whichever view they were not looking at. The SEQUENCE is asserted identical,
+    // not merely the same set: that is what a drift would break.
+    // The literal above already pins Failed before Done, so this equality is the
+    // whole of the second view's order too — no separate per-array check, which
+    // would only be able to fail if this line had already failed.
+    expect(LIST_ORDER).toEqual(BOARD_COLUMNS.map((c) => c.key));
+    // Same set, so a sixth lane cannot be silently unsortable.
     expect([...LIST_ORDER].sort()).toEqual(
       BOARD_COLUMNS.map((c) => c.key).slice().sort(),
     );

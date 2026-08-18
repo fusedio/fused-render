@@ -1558,6 +1558,13 @@ export function firstRuleSlot(rule: RecurrenceRule, anchor: Date): Date | null {
   return first;
 }
 
+// Midnight-safe start of the minute `d` falls in, as epoch ms. Field arithmetic
+// rather than `- (seconds * 1000)`, for the reason schedule-lib's day helpers give:
+// a constructed local date cannot be knocked into the wrong hour by a DST edge.
+const startOfMinute = (d: Date) =>
+  new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes())
+    .getTime();
+
 // The note the when-row prints, or null for silence. Silence is the answer for
 // a future time, and also for the two repeats with no anchor to catch up FROM:
 // a legacy cron template (`create` computes its first run from now by
@@ -1572,13 +1579,18 @@ export function pastNoteFor(
   now: Date,
 ): string | null {
   if (!picked || Number.isNaN(picked.getTime())) return null;
-  if (picked.getTime() > now.getTime()) return null;
+  // COMPARED AT THE FIELD'S OWN PRECISION (2026-08-18). The picker is
+  // minute-precision, so the current minute is not a time that has "passed" — it
+  // is the only way this form can say "now", and it is what the card now opens on.
+  // Comparing against `now` to the millisecond made that default print a warning
+  // about itself for the 59 seconds after the minute turned. Seconds the reader
+  // cannot see cannot be the thing that decides.
+  const cutoff = startOfMinute(now);
+  if (picked.getTime() >= cutoff) return null;
   if (!repeatOn) return PAST_NOTE_ONE_OFF;
   if (!rule) return null;
   const first = firstRuleSlot(rule, picked);
-  return first !== null && first.getTime() <= now.getTime()
-    ? PAST_NOTE_CATCH_UP
-    : null;
+  return first !== null && first.getTime() < cutoff ? PAST_NOTE_CATCH_UP : null;
 }
 
 // ---- The first message ---------------------------------------------------
@@ -1907,11 +1919,21 @@ export default function NewJobModal({
   const [target, setTarget] = useState(editing?.target ?? initialTarget ?? "");
   // ONE date-time drives everything: a one-off runs at it, and every derived
   // repeat choice reads its parts (minute, time, weekday) — Google's model.
+  //
+  // THE DEFAULT IS NOW, NOT AN HOUR FROM NOW (Akshil, 2026-08-18). It used to open
+  // on now + 1h, a time nobody had asked for: a task typed into this card is
+  // overwhelmingly one to RUN, so the commonest case was a two-step — wind the
+  // time back, then save. Now is also the value that needs no reading, because it
+  // matches the clock on the wall: a reader who does not care about the when-row
+  // can ignore it, and one who does is editing from the moment they are standing
+  // in rather than undoing an offset. Scheduling for later stays one edit away,
+  // which is what the row is for.
+  //
+  // The field is minute-precision, so this lands on the current minute with the
+  // seconds dropped — and `pastNoteFor` compares at that same precision, so the
+  // form cannot open printing a warning about its own default.
   const [when, setWhen] = useState(() =>
-    toLocalInput(
-      editing?.due ? new Date(editing.due)
-        : (initialTime ?? new Date(Date.now() + 3600_000)),
-    ),
+    toLocalInput(editing?.due ? new Date(editing.due) : (initialTime ?? new Date())),
   );
   // The repeat CHOICE (a key into repeatChoicesFor) plus the one choice that
   // carries its own data: a custom rule from the recurrence dialog. Legacy
