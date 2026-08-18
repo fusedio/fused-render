@@ -1221,8 +1221,15 @@
 
 /* The native disclosure marker is the platform's, not ours: a black WebKit
    triangle sat outdented beside an accent text-button and read as debris
-   (audit 2026-08-16). Hidden, and replaced by our own ▸/▾ in the accent, so
-   the row is one object that rotates. */
+   (audit 2026-08-16). Hidden, and replaced by the app's own chevron mark
+   (ICON_CHEVRON, the one the task list opens its threads with), so the row is
+   one object that rotates.
+
+   QUIET, not accent (Akshil, 2026-08-18). This is the least-used control on the
+   card and it was the loudest thing on it — the accent is Save's, and a yellow
+   text-button beside a muted form read as an alert. Muted text that comes
+   forward on hover says "there is more here" without competing with the fields
+   above it. */
 .schedule-form-more summary {
   display: flex;
   align-items: center;
@@ -1238,19 +1245,37 @@
   display: none;
 }
 
-.schedule-form-more summary::before {
-  content: "▸";
-  font-size: 10px;
-  line-height: 1;
+/* A BOX, not a glyph on the baseline. The old ▸ was text: it sat on the
+   baseline while the label sat on its x-height, and its optical centre moved as
+   it rotated. A fixed square with the mark centred in it keeps the chevron on
+   the label's centre line in both states, and gives the rotation something
+   square to turn inside. */
+.schedule-form-more-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  flex: none;
+  /* transform alone: the summary's colour transitions on hover, and one rule
+     owning both smears the mark. */
   transition: transform 0.12s ease-out;
 }
 
-.schedule-form-more[open] summary::before {
+.schedule-form-more[open] .schedule-form-more-caret {
   transform: rotate(90deg);
 }
 
 .schedule-form-more summary:hover {
   color: var(--fg);
+}
+
+/* Keyboard focus has to be visible on a row with no chrome of its own — the
+   summary is the control, and Tab must land somewhere the eye can find. */
+.schedule-form-more summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .schedule-form-more[open] summary {
@@ -1270,11 +1295,10 @@
   border-color: var(--accent);
 }
 
-/* "More options" as the reference card's text-button: accent, no chrome. */
-.schedule-form-more summary {
-  color: var(--accent);
-  font-weight: 500;
-}
+/* The accent override that used to sit here is GONE (2026-08-18). "More
+   options" was styled as the reference card's accent text-button, and on this
+   card that made the one control the user rarely needs the brightest mark in
+   the panel. Its whole treatment is the muted disclosure block above. */
 
 /* The Inbox-style row list this section once styled is gone — the List view is
    now the flow-app tree (see "-- Task views" below). Only the calendar
@@ -1526,15 +1550,32 @@ input.schedule-when-field {
   width: 100%;
 }
 
+/* The label takes the slack and gives it back: `min-width: 0` is what lets a
+   long choice ellipsis INSIDE the chip. Without it a flex item refuses to
+   shrink below its text, so the label pushed the caret against — and past — the
+   chip's right edge, where the chip's own `overflow: hidden` clipped it. */
 .schedule-select-label {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* A SQUARE the mark is centred in, not a run of text. The caret used to be a
+   10px "▾" and a flex row can only centre that glyph's LINE BOX — where the
+   triangle's ink sits inside it is up to the font, and in the UI stack it rides
+   high, so the caret hung near the top-right corner of a 32px chip instead of on
+   the label's centre line (Akshil, 2026-08-18). The SVG (ICON_CHEVRON_DOWN) has
+   no baseline to drift on, and a fixed box gives it the same optical centre in
+   every theme. */
 .schedule-select-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
   flex: none;
-  font-size: 10px;
   color: var(--fg-muted);
 }
 
@@ -1572,11 +1613,20 @@ input.schedule-when-field {
 /* The menus mirror the TIME LIST exactly (Akshil, 2026-08-16): hover wash
    follows the pointer; the selection is lit when nothing is hovered and
    yields while something is. The keyboard cursor resets on mouse-leave in
-   the component, so the two sources never light two rows. */
+   the component, so the two sources never light two rows.
+
+   THE WASH IS NEUTRAL (Akshil, 2026-08-18). It was the accent at 14%, and the
+   accent is a yellow: over the popover's surface it came out olive, so the row
+   under the pointer read as a WARNING about that option rather than as "this is
+   the one you are on". Hovering a list is the most ordinary thing on the card
+   and it was the most coloured. `rgba(var(--tint), 0.08)` is the wash every
+   other menu in the app uses (context-menu.css) and it flips with the theme —
+   white over dark, black over light. The accent still belongs to what is
+   COMMITTED: the Save button, a focused field's border, the selected date. */
 .schedule-menu-item:hover:not(:disabled),
 .deploy-body .schedule-menu-item:hover:not(:disabled),
 .prefs-section .schedule-menu-item:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: rgba(var(--tint), 0.08);
   border-color: transparent;
 }
 
@@ -1589,7 +1639,10 @@ input.schedule-when-field {
 .schedule-menu-item.is-selected,
 .deploy-body .schedule-menu-item.is-selected,
 .prefs-section .schedule-menu-item.is-selected {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  /* Quieter than the hover wash above, and under it in the same neutral: what
+     is CHOSEN is said mostly by weight, and the faint plate is only there so the
+     current choice can be found in a long list without reading every row. */
+  background: rgba(var(--tint), 0.05);
   font-weight: 600;
 }
 
@@ -1609,7 +1662,10 @@ input.schedule-when-field {
 .schedule-menu-item.is-active,
 .deploy-body .schedule-menu-item.is-active,
 .prefs-section .schedule-menu-item.is-active {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  /* The SAME wash the pointer paints, deliberately: arrowing to a row and
+     hovering it are one state to the user, and two different colours for it
+     would be two answers to "where am I". */
+  background: rgba(var(--tint), 0.08);
   color: var(--fg);
 }
 
@@ -1756,17 +1812,21 @@ input.schedule-when-field {
   width: 100%;
 }
 
+/* The time list and the menus are ONE pattern — rows of text in a floating
+   panel, picked with the pointer or the arrow keys — and the rule above says so
+   out loud. So the neutral wash lands here too: two option lists in one card,
+   one grey and one olive, would be the inconsistency this change is fixing. */
 .schedule-time-slot:hover:not(:disabled),
 .deploy-body .schedule-time-slot:hover:not(:disabled),
 .prefs-section .schedule-time-slot:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: rgba(var(--tint), 0.08);
   border-color: transparent;
 }
 
 .schedule-time-slot.is-selected,
 .deploy-body .schedule-time-slot.is-selected,
 .prefs-section .schedule-time-slot.is-selected {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: rgba(var(--tint), 0.05);
   font-weight: 600;
 }
 
@@ -2174,9 +2234,13 @@ input.schedule-when-field {
   cursor: pointer;
 }
 
+/* Browse's folder rows are the third list in this card, and they take the same
+   neutral wash for the same reason. (The month grid below keeps the accent: a
+   DATE disc is a mark, not a row — hover there previews the accent-filled
+   selection it is about to become, alongside is-today.) */
 .schedule-form .schedule-picker-row:hover,
 .deploy-body .schedule-form .schedule-picker-row:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: rgba(var(--tint), 0.08);
   border-color: transparent;
 }
 
