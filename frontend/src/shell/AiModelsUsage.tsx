@@ -67,7 +67,11 @@ const fmt = (n: number) => n.toLocaleString();
 // $ per MILLION output tokens. One rate, on output only: input tokens are not
 // counted here at all, so a row's estimate is a single multiplication a reader
 // can check in their head against the Generated column.
-const DEFAULT_RATE = 1;
+//
+// A STRING, and two decimals of it: the box holds text (a half-typed "1." is a
+// state a number would erase), and "1.00" says the field takes cents where a
+// bare "1" invites the reader to wonder whether it does.
+const DEFAULT_RATE = "1.00";
 const PER = 1_000_000;
 
 /** `output_tokens` at `rate` per million, as dollars — or null when the rate
@@ -243,7 +247,7 @@ function UsageModels({
   rates: Record<string, string>;
   onRate: (model: string, rate: string) => void;
 }) {
-  const rateFor = (model: string) => rates[model] ?? String(DEFAULT_RATE);
+  const rateFor = (model: string) => rates[model] ?? DEFAULT_RATE;
   // Rows whose rate box is empty or unparseable contribute nothing rather than
   // a zero, and the total says so by going blank itself only when NO row could
   // be priced — a half-priced table still has a real subtotal.
@@ -264,8 +268,11 @@ function UsageModels({
           <th>Failed</th>
           {/* The unit is in the header, not in the box: a placeholder inside an
               input disappears the moment somebody types, and this is the one
-              thing a reader has to know to trust the column beside it. */}
-          <th>$/M output</th>
+              thing a reader has to know to trust the column beside it. It also
+              names what the number is FOR — the estimate in the next column —
+              so the two headers read as one pair rather than as a rate the
+              page might be charging. */}
+          <th>$/M output for est. cost</th>
           <th>Est. cost</th>
         </tr>
       </thead>

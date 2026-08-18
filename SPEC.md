@@ -7136,7 +7136,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   is the one number here that is not measured.** This app knows what each model
   generated; it does not know what anybody is charging for it, and a built-in
   price table would go stale silently and be believed anyway. So each model row
-  carries a `$ per million output tokens` box (default **1**, output only —
+  carries a `$ per million output tokens for est. cost` box (default **1.00**,
+  output only —
   input tokens are not priced at all), and the figure beside it is that
   multiplication and nothing more. Every place it appears says **estimated**,
   and the note under the table states the arithmetic and what it leaves out, so
