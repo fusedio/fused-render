@@ -48,6 +48,16 @@ export interface SyncStatus {
    *  instant one spawns, cleared only by that run's own completion (never a
    *  transcript-activity guess), so it's safe to gate a second spawn on. */
   fix_active: boolean;
+  /** A Claude session is editing this clone right now — the signal the
+   *  left-pane lock runs off. PID-based (a live claude process), never a
+   *  transcript-activity guess: a slow tool call mid-edit would read as
+   *  "finished" and unlock the workbench under a session still writing.
+   *
+   *  NOT the same as `fix_active`, which only knows about fix sessions the
+   *  server spawned — this also covers a chat the user started themselves in
+   *  the right pane. False whenever nothing is syncing, so a dropped watcher
+   *  can never leave the pane locked with nothing to release it. */
+  agent_active: boolean;
 }
 
 export const getCanvasesStatus = () => getJson<CanvasesStatus>("/api/canvases/status");
