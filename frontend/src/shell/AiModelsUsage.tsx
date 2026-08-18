@@ -14,10 +14,14 @@
 // footer states when counting began rather than letting a number that resets at
 // every app launch pass for a daily total.
 //
-// Numbers are OUTPUT tokens unless a line says otherwise: "generated" is the
-// question, and it is also the only figure both tiers report — a local worker
-// counts what it emitted and never sees a prompt token (SPEC AI-3), so input
-// tokens are shown where they exist and left as "—" where nobody reported one.
+// The page says INPUT TOKENS and OUTPUT TOKENS, in those words, everywhere —
+// tiles, table headers, tier lines, tooltips. They are the names the API's own
+// `usage` uses (RH-11) and the names a provider's pricing page uses, and a page
+// that called them "read" and "generated" made a reader translate twice: once
+// into the wire's vocabulary to check a number, once into a price list's to
+// check a cost. Output is the figure the graph draws, because it is the one
+// both tiers always report; input is shown where a tier reports it and left as
+// "—" where nobody did (SPEC AI-3).
 //
 // Volume is not the whole question, so three more counters share the tab, each
 // answering something the token count alone cannot:
@@ -128,8 +132,8 @@ function barTitle(bucket: AiUsageBucket, seconds: number): string {
   const when = `${clock(bucket.t)}–${clock(bucket.t + seconds)}`;
   const parts: string[] = [];
   if (bucket.completions) {
-    parts.push(`${fmt(bucket.output_tokens)} generated`);
-    if (bucket.input_tokens !== null) parts.push(`${fmt(bucket.input_tokens)} read`);
+    parts.push(`${fmt(bucket.output_tokens)} output`);
+    if (bucket.input_tokens !== null) parts.push(`${fmt(bucket.input_tokens)} input`);
     parts.push(
       bucket.completions === 1 ? "1 completion" : `${bucket.completions} completions`,
     );
@@ -175,7 +179,7 @@ function UsageChart({ usage }: { usage: AiUsage }) {
         className="am-usage-bars"
         style={style}
         role="img"
-        aria-label={`${fmt(usage.window.output_tokens)} tokens generated in the last ${usage.window_minutes} minutes`}
+        aria-label={`${fmt(usage.window.output_tokens)} output tokens in the last ${usage.window_minutes} minutes`}
       >
         {missing > 0 && (
           <div
@@ -268,8 +272,8 @@ function UsageModels({
         <tr>
           <th>Model</th>
           <th>Completions</th>
-          <th>Read</th>
-          <th>Generated</th>
+          <th>Input</th>
+          <th>Output</th>
           <th>Speed</th>
           {/* The unit is in the header, not in the box: a placeholder inside an
               input disappears the moment somebody types, and this is the one
@@ -343,10 +347,18 @@ function TierLine({ tier, counts }: { tier: AiUsageTier; counts: AiUsageCounts }
     <div className="am-usage-tier-line">
       <b>{tier === "claude" ? "Claude" : "Local models"}</b>{" "}
       {counts.completions === 0 ? (
-        <span className="am-usage-muted">nothing yet</span>
+        // TWO ways to have generated nothing, and they are not the same news.
+        // "nothing yet" means this tier was never asked; a tier whose calls all
+        // failed WAS asked and came back empty, and saying "nothing yet" there
+        // contradicts the kinds line right below it ("3 × timeout") and hides
+        // the one thing somebody opened this tab to find. No count either way —
+        // the number belongs to the kinds, not to a tier's summary line.
+        <span className="am-usage-muted">
+          {counts.failures > 0 ? "no completions" : "nothing yet"}
+        </span>
       ) : (
         <>
-          {fmt(counts.output_tokens)} generated · {fmt(counts.completions)}{" "}
+          {fmt(counts.output_tokens)} output tokens · {fmt(counts.completions)}{" "}
           {counts.completions === 1 ? "completion" : "completions"}
           {counts.tokens_per_second !== null && ` · ${counts.tokens_per_second}/s`}
         </>
@@ -411,7 +423,7 @@ export default function AiModelsUsage() {
           <div className="cc-mdcard am-usage-card">
             <div className="am-usage-head">
               <div className="am-usage-headline">
-                <b>{fmt(usage.window.output_tokens)}</b> tokens generated
+                <b>{fmt(usage.window.output_tokens)}</b> output tokens
                 <span className="am-usage-sub">
                   {" "}
                   in the last {usage.window_minutes} min ·{" "}
@@ -451,7 +463,7 @@ export default function AiModelsUsage() {
             // sentence has to say what would make a bar appear — otherwise an
             // empty graph reads as a broken one.
             <div className="cc-empty am-usage-empty">
-              <p>Nothing generated yet.</p>
+              <p>No output tokens yet.</p>
               <p>
                 Every <code>fused.ai()</code> call a page makes — and the app&apos;s own AI
                 features — is counted here while the server runs.
@@ -463,13 +475,13 @@ export default function AiModelsUsage() {
               <div className="am-usage-tiles">
                 <div className="cc-mdcard am-usage-tile">
                   <div className="am-usage-tile-value">{fmt(usage.totals.output_tokens)}</div>
-                  <div className="am-usage-tile-label">tokens generated</div>
+                  <div className="am-usage-tile-label">output tokens</div>
                 </div>
                 <div className="cc-mdcard am-usage-tile">
                   <div className="am-usage-tile-value">
                     {usage.totals.input_tokens === null ? "—" : fmt(usage.totals.input_tokens)}
                   </div>
-                  <div className="am-usage-tile-label">tokens read</div>
+                  <div className="am-usage-tile-label">input tokens</div>
                 </div>
                 <div className="cc-mdcard am-usage-tile">
                   <div className="am-usage-tile-value">{fmt(usage.totals.completions)}</div>
@@ -511,7 +523,7 @@ export default function AiModelsUsage() {
                   figure is worth having anyway — as long as the page says which
                   arithmetic it did. */}
               <p className="am-usage-note">
-                Estimated cost only: tokens generated × the rate you set, per model. Input
+                Estimated cost only: output tokens × the rate you set, per model. Input
                 tokens are not counted, and nothing here is a bill — set each rate to what
                 your provider charges to make the estimate yours.
               </p>
