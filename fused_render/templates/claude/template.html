@@ -8856,9 +8856,10 @@ const TROUBLE_STEPS = {
 // lib/trouble.ts. This page never knows where the app is installed — it is a
 // template rendered inside it — so the brief always has to say how to find it.
 const TROUBLE_FIND_INSTALL = [
-  'python3 -c "import fused_render, os; print(os.path.dirname(fused_render.__file__))"',
-  "pip show fused-render        # also try: pip3, uv pip show, pipx list",
-  "ls -d /Applications/FusedRender.app/Contents/Resources/lib/python3.*/fused_render",
+  "ls -d /Applications/FusedRender.app ~/Applications/FusedRender.app",
+  "ls -d /Applications/FusedRender.app/Contents/Resources/lib/python3.*/fused_render   # the code a fix edits",
+  "brew list --cask fused-render   # if this answers, Homebrew manages that copy",
+  'dir "%LOCALAPPDATA%\\Programs\\FusedRenderPy"   # Windows',
 ];
 const TROUBLE_USER_DATA_DIR = "~/.fused-render";
 const TROUBLE_LOG_LIST = 'ls -t "${TMPDIR:-/tmp}"/fused-render-*.log | head -3';

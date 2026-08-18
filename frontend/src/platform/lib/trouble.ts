@@ -156,16 +156,30 @@ export function troubleReport(ctx: TroubleContext): string {
  * to look for an app it has no way to locate; it will guess, or ask, and both
  * cost the user the minutes this button exists to save.
  *
- * So the path is a FACT when we have it and a TASK when we do not. These are
- * ordered by how likely they are to answer: the import is definitive if the
- * interpreter is the one the app runs on, the package metadata covers the pip
- * and uv installs, and the bundle glob covers the DMG, which is the one install
- * where nothing on PATH points at the app at all.
+ * So the path is a FACT when we have it and a TASK when we do not, and the
+ * order is the order people actually install this: the DMG drops
+ * `FusedRender.app` into Applications, and that is where to look first. The
+ * second line is the same bundle one level in — the Python the app runs, which
+ * is what a fix session edits, and not something anyone would guess from the
+ * .app alone.
+ *
+ * `brew` is here for a different question. The cask's `app` artifact moves the
+ * bundle to the same place, so it does not find a NEW path; it answers who
+ * MANAGES that path, which is what decides whether the fix ends in
+ * `brew reinstall --cask` or in dragging a DMG over the top (`reinstall_advice`
+ * splits on exactly this).
+ *
+ * DELIBERATELY NO `python3 -c "import fused_render"` OR `pip show`. Neither is
+ * a supported way to install this, and both mislead: a bare `python3` on PATH
+ * is not the interpreter inside the bundle, so it either fails or finds an
+ * unrelated copy — and an agent handed that path goes and edits a copy the app
+ * does not run.
  */
 export const FIND_INSTALL_COMMANDS: string[] = [
-  'python3 -c "import fused_render, os; print(os.path.dirname(fused_render.__file__))"',
-  "pip show fused-render        # also try: pip3, uv pip show, pipx list",
-  "ls -d /Applications/FusedRender.app/Contents/Resources/lib/python3.*/fused_render",
+  "ls -d /Applications/FusedRender.app ~/Applications/FusedRender.app",
+  "ls -d /Applications/FusedRender.app/Contents/Resources/lib/python3.*/fused_render   # the code a fix edits",
+  "brew list --cask fused-render   # if this answers, Homebrew manages that copy",
+  'dir "%LOCALAPPDATA%\\Programs\\FusedRenderPy"   # Windows',
 ];
 
 /** User data — NOT the installation, and the distinction is load-bearing: a

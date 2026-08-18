@@ -104,9 +104,13 @@ def test_both_tell_an_agent_where_to_find_the_installation():
     the shell send agents looking in different places."""
     shell, template = _shell(), _template()
     for command in (
-        'import fused_render, os; print(os.path.dirname(fused_render.__file__))',
-        "pip show fused-render",
+        # /Applications first: the DMG is how this is actually installed, and a
+        # probe that answers with some other python's site-packages sends an
+        # agent to edit a copy the app does not run.
+        "ls -d /Applications/FusedRender.app ~/Applications/FusedRender.app",
         "/Applications/FusedRender.app/Contents/Resources/lib/python3.*/fused_render",
+        "brew list --cask fused-render",
+        "FusedRenderPy",
     ):
         assert command in shell, f"missing from the shell: {command[:50]!r}"
         assert command in template, f"missing from the chat template: {command[:50]!r}"
@@ -114,6 +118,11 @@ def test_both_tell_an_agent_where_to_find_the_installation():
     # says so in both — a reinstall replaces one and never touches the other.
     for text in ("~/.fused-render", 'fused-render-*.log'):
         assert text in shell and text in template
+    # And NEITHER may reintroduce the probes that name an unsupported install
+    # method — a bare `python3` on PATH is not the bundle's interpreter.
+    for banned in ("pip show fused-render", "import fused_render, os"):
+        assert banned not in shell, f"unsupported install probe is back: {banned!r}"
+        assert banned not in template, f"unsupported install probe is back: {banned!r}"
 
 
 def test_both_gate_the_shapes_on_the_message_being_about_claude():

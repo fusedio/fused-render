@@ -7403,10 +7403,20 @@ go. Four failures, one answer.
   has to go and look. "Something around Fused Render is broken, please fix it"
   with no directory is a brief an agent answers by guessing or by asking. So the
   location is a FACT when the snapshot carries it (`- The installed app: …`) and
-  a TASK when it does not: the import that is
-  definitive on the app's own interpreter, the package metadata that covers pip
-  and uv, and the bundle glob that covers the DMG, where nothing on PATH points
-  at the app at all. Three more things ride along with it, because an agent that
+  a TASK when it does not — and the order is the order
+  people actually install this. `/Applications/FusedRender.app` first, because
+  the DMG is the install; then the same bundle one level in
+  (`Contents/Resources/lib/python3.*/fused_render`), which is the code a fix
+  session edits and not something anyone would guess from the .app; then `brew
+  list --cask`, which answers a DIFFERENT question — the cask's `app` artifact
+  puts the bundle in the same place, so it finds no new path, but it says who
+  MANAGES that path, and that is what decides whether the repair ends in `brew
+  reinstall --cask` or in dragging a DMG over the top (`reinstall_advice` splits
+  on exactly this); then the Windows install dir. **No `python3 -c "import
+  fused_render"` and no `pip show`**: neither is a supported way to install
+  this, and both mislead, because a bare `python3` on PATH is not the
+  interpreter inside the bundle — it either fails or finds an unrelated copy,
+  and an agent handed that path goes and edits a copy the app does not run. Three more things ride along with it, because an agent that
   knows only the install root still cannot see the two places that most often
   hold the fault: `~/.fused-render` (settings, the template registry, the staged
   core templates) is named as a DIFFERENT place, since a reinstall replaces one

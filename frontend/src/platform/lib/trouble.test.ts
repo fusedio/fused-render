@@ -206,9 +206,19 @@ test("with no install path the brief says how to FIND the app", () => {
     what: "loading the app's configuration at startup (GET /api/config)",
     error: "Failed to fetch",
   });
-  expect(text).toContain("import fused_render");
-  expect(text).toContain("pip show fused-render");
+  // /Applications first: the DMG is how people actually have this, and the
+  // second line is the same bundle one level in — the Python a fix edits.
   expect(text).toContain("/Applications/FusedRender.app");
+  expect(text.indexOf("/Applications/FusedRender.app")).toBeLessThan(
+    text.indexOf("brew list --cask")
+  );
+  // brew answers a different question: not where, but who manages it.
+  expect(text).toContain("brew list --cask fused-render");
+  // Neither of the probes that name an unsupported install method: a bare
+  // python3 is not the bundle's interpreter, and an agent handed its answer
+  // edits a copy the app does not run.
+  expect(text).not.toContain("pip show");
+  expect(text).not.toContain("import fused_render");
   // ...and it must not invent one, or print an empty label where one goes.
   expect(text).not.toContain("undefined");
   expect(text).not.toContain("Fused Render is installed at:");
@@ -223,7 +233,7 @@ test("with an install path the brief states it instead of hunting for it", () =>
     install_root: "/opt/fused_render",
   });
   expect(text).toContain("The installed app: /opt/fused_render");
-  expect(text).not.toContain("pip show fused-render");
+  expect(text).not.toContain("brew list --cask");
 });
 
 test("the brief separates the installation from the user's own data", () => {
