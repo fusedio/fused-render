@@ -999,9 +999,33 @@ def test_claude_bin_falls_back_to_install_dirs(monkeypatch, tmp_path):
 
 
 def test_posix_candidates_are_the_documented_install_locations():
-    assert _server_ai._CLAUDE_POSIX_CANDIDATES == (
+    """The three canonical locations, canonical-first — and nothing hand-written.
+
+    This used to pin the tuple exactly, which is what let the list here drift
+    from the three OTHER lists the app kept (claude_config/lib.py,
+    core_apps/learn/check_env.py, core_apps/sessions/analyze.py): each was
+    correct against its own test and none agreed with the others, so a CLI in
+    `~/.bun/bin` was found by the Claude-config tab and not by fused.ai. The
+    union lives in claude_health now; the identity assertion is what keeps this
+    module from growing a fourth copy.
+    """
+    from fused_render import claude_health
+
+    assert _server_ai._CLAUDE_POSIX_CANDIDATES is claude_health.POSIX_CANDIDATES
+    assert _server_ai._CLAUDE_WINDOWS_CANDIDATES is claude_health.WINDOWS_CANDIDATES
+    # The canonical three still lead, in order: an install found in two places
+    # must resolve to the one Claude Code's own installer writes.
+    assert _server_ai._CLAUDE_POSIX_CANDIDATES[:3] == (
         "~/.local/bin/claude", "/opt/homebrew/bin/claude",
         "/usr/local/bin/claude")
+    # The dirs the other resolvers knew about and this one did not.
+    for late in ("~/.claude/local/claude", "~/.bun/bin/claude",
+                 "~/Library/pnpm/claude", "~/.npm-global/bin/claude"):
+        assert late in _server_ai._CLAUDE_POSIX_CANDIDATES
+    # Every entry is absolute or ~-rooted — never a bare relative path that
+    # would resolve against the server's cwd (the Windows list is checked for
+    # the same property below).
+    assert all(c.startswith(("~", "/")) for c in _server_ai._CLAUDE_POSIX_CANDIDATES)
 
 
 def test_windows_candidates_cover_the_windows_install_locations():

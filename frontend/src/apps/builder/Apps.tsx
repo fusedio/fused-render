@@ -21,6 +21,7 @@ import { useNavEpoch } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { HomeHero } from "./HomeHero";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
 
@@ -176,6 +177,14 @@ export default function Apps({ config }: { config: Config }) {
         {/* Same hero as Home: prompt composer that names, scaffolds, and lands
             in the new app's claude chat. Creating from here refreshes the grid. */}
         <HomeHero onCreated={() => setNonce((n) => n + 1)} />
+
+        {/* The hero's composer needs Claude Code, so the heads-up belongs
+            wherever the hero does — this page is the other front door, not a
+            second-class copy of Home. BELOW the hero here rather than above it:
+            the wordmark is this page's masthead, and pushing it down the page
+            would make a dismissible notice look like the app's own chrome.
+            Renders nothing when there is nothing to say. */}
+        <ClaudeHealthStrip />
 
         <div className="apps-toolbar">
           {/* Facet selector: which chip set filters the grid. Switching facets

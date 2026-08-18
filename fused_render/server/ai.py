@@ -16,6 +16,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
+from fused_render import claude_health
 from fused_render.server import ai_metrics
 from fused_render.server.common import _require_fused
 from fused_render.shell.prefs import default_model
@@ -89,7 +90,10 @@ _AI_TIMEOUT_S = 600.0
 # A reconfiguration step (/clear, set_model, effort) is local work; one that
 # takes longer than this means a wedged process — kill and respawn.
 _AI_CTRL_TIMEOUT_S = 10.0
-_AI_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
+# The explicit override's name, owned by claude_health so the error text below,
+# the resolver, and the health endpoint cannot come to disagree about what the
+# user is being told to set.
+_AI_BIN_ENV = claude_health.BIN_ENV
 # Model ids/aliases are a closed charset. This is a SECURITY boundary, not
 # just validation: on the Windows .cmd-shim path argv is re-parsed by cmd.exe
 # (whose quoting cannot be escaped reliably), so every argv element must be a
@@ -150,28 +154,24 @@ def _claude_seconds(data: dict) -> float | None:
 # so an install that appended to the *user* PATH afterwards stays invisible
 # until the next sign-in.
 #
-# The claude chat template (templates/claude/agent.py) resolves the CLI the
-# same way and this list looks much like its own. That is deliberate
-# duplication, not a missing import: a template is standalone user-forkable
-# code, and the only thing the server and a template share is the fused api.
-# Neither side is authoritative for the other, so neither is held to the
-# other's list.
+# IMPORTED, not written here. These used to be two literal tuples, and the app
+# held four such lists across this module, claude_config/lib.py,
+# core_apps/learn/check_env.py and core_apps/sessions/analyze.py. Any directory
+# only some of them knew about was a directory where the app disagreed with
+# itself: a CLI in `~/.bun/bin` gave a working Preferences → Claude config tab
+# and an `ai_unavailable` from `fused.ai()` on the same machine. claude_health
+# owns the union now, and this name stays as the module-local alias every
+# function and test below already reads.
+#
+# The claude chat template (templates/claude/agent.py) still keeps its own copy.
+# That is deliberate duplication, not a missing import: a template is standalone
+# user-forkable code and may not import the app (D166). It is pinned to this
+# list by tests/test_claude_health.py rather than left to drift.
 #
 # Ordered most-canonical first, `.exe` ahead of any `.cmd` shim: a shim has to
 # be run through cmd.exe, which re-parses the command line (see _popen_argv).
-_CLAUDE_WINDOWS_CANDIDATES = (
-    # native installer (irm https://claude.ai/install.ps1 | iex) — recommended
-    r"%USERPROFILE%\.local\bin\claude.exe",
-    # winget install Anthropic.ClaudeCode, via winget's own shim dir
-    r"%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe",
-    # npm install -g @anthropic-ai/claude-code, in npm's global prefix
-    r"%APPDATA%\npm\claude.exe",
-    r"%APPDATA%\npm\claude.cmd",
-    # legacy local npm install, written by older Claude Code versions
-    r"%USERPROFILE%\.claude\local\claude.exe",
-)
-_CLAUDE_POSIX_CANDIDATES = ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
-                            "/usr/local/bin/claude")
+_CLAUDE_WINDOWS_CANDIDATES = claude_health.WINDOWS_CANDIDATES
+_CLAUDE_POSIX_CANDIDATES = claude_health.POSIX_CANDIDATES
 
 
 def _claude_bin() -> str | None:

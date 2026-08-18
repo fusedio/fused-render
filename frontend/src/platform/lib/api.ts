@@ -154,6 +154,48 @@ export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }
 
+// -- Is Claude Code usable (fused_render/claude_health.py) -------------------
+//
+// The proactive counterpart to the TroubleCard's reactive classification: these
+// are the facts a first run can be TOLD, before a prompt has been spent finding
+// them out. NOT on Config — /api/config is read on every page load, and each
+// field here is backed by a process spawn behind a disk cache.
+
+export interface ClaudeHealth {
+  /** Whether the resolved binary is one we could actually run. A stale
+      FUSED_RENDER_CLAUDE_BIN reports a `path` and `found: false`. */
+  found: boolean;
+  path: string | null;
+  /** How it was found, and the reason this field exists rather than just a
+      boolean. "path" means the app can see it unaided — nothing to say. "shell"
+      means ONLY the user's login shell can, so the app's own PATH is the
+      problem and the fix is the override, not another install. */
+  source: "override" | "path" | "candidate" | "shell" | null;
+  /** What `claude --version` said, or null when it would not tell us. */
+  version: string | null;
+  /** The lowest version this app's spawn line is known to work with. */
+  min_version: string;
+  /** Only ever true for a version we actually READ and that is below the
+      floor — an unreadable version is never reported as outdated. */
+  outdated: boolean;
+  /** true / false / null-for-unknown. null is macOS, whose credential lives in
+      the login Keychain: absence of a file proves nothing there, so the UI must
+      only offer a sign-in fix on an explicit `false`. */
+  signed_in: boolean | null;
+  config_dir: string;
+  checked_at: number;
+}
+
+export function getClaudeHealth(): Promise<ClaudeHealth> {
+  return getJson<ClaudeHealth>("/api/claude/health");
+}
+
+/** Re-probe, ignoring the cache — what "Check again" means after the user has
+    gone and installed or signed into something. */
+export function refreshClaudeHealth(): Promise<ClaudeHealth> {
+  return postJson<ClaudeHealth>("/api/claude/health/refresh", {});
+}
+
 // -- Self-update (fused_render/server/routers/update.py) ---------------------
 
 export interface UpdateStatus {
