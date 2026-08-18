@@ -568,6 +568,62 @@ describe("the first message the task sends", () => {
     expect(withoutTitleHeading("pull today's news", "")).toBe("pull today's news");
   });
 
+  // THE TITLE-ONLY TASK, which is the ordinary case now that the second field is
+  // optional: the composer appends nothing, so there is no `\n\n` prefix for the
+  // inverse to spot. It used to hand the whole message back as the additional
+  // instructions, and the next Save composed `title\n\ntitle` — one more copy of
+  // the name per edit, for ever (Bugbot, PR #595).
+  test("a task that is ALL title inverts to no additional instructions", () => {
+    expect(withoutTitleHeading("Update the changelog", "Update the changelog")).toBe("");
+    // Whitespace the wire may have picked up does not make it look like prose.
+    expect(withoutTitleHeading("  Update the changelog\n", "Update the changelog")).toBe("");
+    expect(withoutTitleHeading("Update the changelog", "  Update the changelog  ")).toBe("");
+  });
+
+  test("compose → peel is a true inverse, in all three shapes", () => {
+    for (const [title, additional] of [
+      ["Update the changelog", ""],
+      ["Morning news", "pull today's news"],
+      ["", "pull today's news"],
+    ]) {
+      const composed = composeTaskMessage(title, additional);
+      expect(withoutTitleHeading(composed, title)).toBe(additional);
+    }
+  });
+
+  test("editing a title-only task leaves the second field empty, edit after edit", () => {
+    // End to end, through the values the ?edit= flow actually passes: the entry
+    // the page found goes to the modal whole, and these two functions are the
+    // only readers of its prose.
+    const saved = buildSchedulePayload(form({ title: "Update the changelog", message: "" }));
+    expect(saved.message).toBe("Update the changelog");
+    expect(saved.description).toBeUndefined();
+
+    // The server has no `description` to store, so the Edit falls back to the
+    // message — which is the case the bug lived in.
+    let stored = entry({
+      title: saved.title,
+      message: saved.message,
+      description: undefined,
+    });
+    // Three round trips, because the bug COMPOUNDED: one copy of the name per
+    // save, and nothing on the card said where it came from.
+    for (let i = 0; i < 3; i += 1) {
+      expect(initialAskOf(stored)).toBe("");
+      expect(initialTitleOf(stored)).toBe("Update the changelog");
+      const again = buildSchedulePayload(
+        form({ title: initialTitleOf(stored), message: initialAskOf(stored) }),
+      );
+      expect(again.message).toBe("Update the changelog");
+      expect(again.description).toBeUndefined();
+      stored = entry({
+        title: again.title,
+        message: again.message,
+        description: undefined,
+      });
+    }
+  });
+
   // The chat composer's Schedule button hands over one block of prose
   // (`?new=1&message=…`) and the card has two fields to put it in. It is
   // PARTITIONED, not copied: what the title takes, the description loses.

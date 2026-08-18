@@ -1057,14 +1057,28 @@ export function initialAskOf(
   return splitDraft(chatDraft).description;
 }
 
-// The inverse of composeTaskMessage's join, for the one reader that needs it:
-// an Edit falling back to a stored `message`. Deliberately exact — the heading
-// is removed only when the message really does open with this task's title
-// followed by the blank line the composer writes. Anything else is prose that
-// happens to start the same way and is left alone.
+// The inverse of composeTaskMessage, for the one reader that needs it: an Edit
+// falling back to a stored `message`. It has to invert BOTH shapes the composer
+// can produce, because the composer has two:
+//
+//   * `title\n\nbody` — the two-field task. The heading and its blank line come
+//     off and the body is what is left;
+//   * `title` alone — the TITLE-ONLY task, which is the ordinary case now that
+//     the second field is optional. Nothing was appended, so there is no prefix
+//     to spot, and treating it as unrecognised prose is the bug it was: the
+//     whole message came back as the additional instructions, the next Save
+//     composed `title\n\ntitle`, and every further edit stacked another copy
+//     (Bugbot, PR #595). It inverts to "" — there were no additional
+//     instructions, which is exactly what the field should open on.
+//
+// Still deliberately exact about what it will peel: an opening that merely
+// begins with the same words is prose and is left alone. The equality check is
+// on the trimmed message, so trailing whitespace the wire may have picked up
+// does not make a title-only task look like something else.
 export function withoutTitleHeading(message: string, title: string): string {
   const name = title.trim();
   if (!name) return message;
+  if (message.trim() === name) return "";
   const head = `${name}\n\n`;
   return message.startsWith(head) ? message.slice(head.length) : message;
 }
