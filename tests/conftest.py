@@ -369,6 +369,17 @@ def _no_startup_index_scan(monkeypatch):
     # `freshness.note_folder_opened` directly with their own config
     # (tests/test_index_api.py, tests/test_index_freshness.py).
     monkeypatch.setattr(index_routes, "note_folder_opened", lambda path: False)
+    # ...and by a third: every /api/fs mutation tells the index which folder it
+    # changed (server/index_touch.py), which arms a timer thread that calls
+    # runner.start. A test that renames a file anywhere would therefore spawn a
+    # detached scan of that folder a second and a half later — after the test
+    # has finished and its tmp home has gone.
+    #
+    # The tests that are ABOUT it drive `RescanQueue` directly with injected
+    # deps (tests/test_index_touch.py).
+    from fused_render.server import fs_mutate
+
+    monkeypatch.setattr(fs_mutate, "note_index_mutation", lambda *paths: None)
 
 
 @pytest.fixture(autouse=True)
