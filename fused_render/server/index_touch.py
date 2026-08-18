@@ -62,6 +62,23 @@ COALESCE_S = 1.5
 # circling for the lifetime of the process.
 DEFER_DEADLINE_S = 120.0
 
+# How long a folder must have been left alone before it is rescanned again.
+#
+# Every scan ends in a COMPACTION, and a compaction re-sorts and rewrites every
+# partition in the store plus dirs.parquet — keeping the rows outside the scan
+# root is a query predicate, not an incremental write (index/store.py). The
+# cost of a rescan is therefore a function of the whole index rather than of
+# the folder, and without a floor a caller that mutates on a timer rewrites a
+# 571k-row store on that timer.
+#
+# A folder inside the floor is DEFERRED, never dropped, which is the whole
+# difference between this and the scheduler's `SCAN_DEBOUNCE_S`: that one
+# refuses a scan outright, and refusing here would leave a renamed file
+# unfindable until something else happened to scan the folder — the exact
+# failure this module exists to prevent. Twenty seconds rather than fifteen
+# minutes for the same reason: the deferral is a delay the user waits out.
+MUTATION_SCAN_FLOOR_S = 20.0
+
 # Folders scanned per burst. A mutation batch spans one or two folders in
 # practice; a hundred distinct ones is a pathological caller, and starting a
 # hundred detached workers would be a worse answer to it than logging.
@@ -89,16 +106,19 @@ class RescanQueue:
     """The coalescing queue. Deps are injected so the policy is testable
     without spawning a worker or waiting on a real timer."""
 
-    def __init__(self, start, live_run_covers, blocked, schedule, now,
+    def __init__(self, start, live_run_covers, blocked, last_scan, schedule, now,
                  coalesce_s: float = COALESCE_S,
-                 deadline_s: float = DEFER_DEADLINE_S):
+                 deadline_s: float = DEFER_DEADLINE_S,
+                 floor_s: float = MUTATION_SCAN_FLOOR_S):
         self._start = start
         self._live = live_run_covers
         self._blocked = blocked
+        self._last_scan = last_scan
         self._schedule = schedule
         self._now = now
         self.coalesce_s = coalesce_s
         self.deadline_s = deadline_s
+        self.floor_s = floor_s
         self._lock = threading.Lock()
         # folder -> the time it was first noted, for the deferral ceiling.
         self._pending: dict = {}
@@ -140,12 +160,21 @@ class RescanQueue:
         defer = {}
         for folder in self._outermost(pending):
             if self._blocked(folder):
-                logger.info("index: not rescanning %s (mount-backed)", folder)
+                logger.info("index: not rescanning %s (nothing may scan it)",
+                            folder)
                 continue
+            waited = now - pending[folder]
             # A run over this tree is already going to rewrite these rows —
             # unless it has walked past them, which is exactly why the folder
-            # is kept rather than dropped.
-            if self._live(folder) and (now - pending[folder]) < self.deadline_s:
+            # is kept rather than dropped. Same for a folder scanned moments
+            # ago: the rescan is delayed, never skipped. The deadline is the
+            # escape from both, so neither can hold a folder for ever.
+            live = self._live(folder)
+            recent = False
+            if not live:
+                last = self._last_scan(folder)
+                recent = last is not None and (now - last) < self.floor_s
+            if (live or recent) and waited < self.deadline_s:
                 defer[folder] = pending[folder]
                 continue
             try:
@@ -189,14 +218,70 @@ def _real_live(root: str) -> bool:
     return _scan_in_flight(load_config(), root)
 
 
-def _real_blocked(root: str) -> bool:
+def _real_last_scan(root: str):
     from fused_render.index import runner
-    from fused_render.index.ignore import MountGuard
+    from fused_render.index.config import load_config
 
-    # `blocks`, not `blocks_root`: this is pure string work against the mount
-    # records, and the realpath `blocks_root` adds is a syscall on a path we
-    # have no reason to trust yet. `runner.start` pays it authoritatively.
-    return MountGuard(mounts_dir=runner._mounts_dir()).blocks(root)
+    return runner.last_scan(load_config(), root)
+
+
+def _real_blocked(root: str) -> bool:
+    """Whether nothing may scan `root`, for any of the three reasons.
+
+    One question, three answers, and the caller does not care which:
+
+      * mount-backed — `blocks`, not `blocks_root`: this is pure string work
+        against the mount records, and the realpath `blocks_root` adds is a
+        syscall on a path we have no reason to trust yet. `runner.start` pays
+        it authoritatively.
+      * excluded by the ignore rules — a save inside a `node_modules` would
+        otherwise spawn a worker that walks it, indexes nothing, and rewrites
+        the whole store to say so. It is the same reason the ranked route
+        answers `ignored` rather than asking for a scan.
+      * on another filesystem — see `foreign_device`.
+    """
+    from fused_render.index import runner
+    from fused_render.index.config import load_config
+    from fused_render.index.ignore import MountGuard, ignored_for_index
+
+    if MountGuard(mounts_dir=runner._mounts_dir()).blocks(root):
+        return True
+    if ignored_for_index(load_config().rules, root, tree=True):
+        return True
+    return foreign_device(root)
+
+
+def foreign_device(path: str) -> bool:
+    """Whether `path` lives on a different filesystem than the user's home.
+
+    Refused as a scan ROOT, and this is the one rule here that is new policy
+    rather than a bug fix, so it is worth stating plainly.
+
+    Before this phase every scan root came from the configured roots — the
+    user's home, in practice. An on-demand scan takes an arbitrary folder, and
+    `MountGuard` only knows about fused-render's OWN mounts dir: a user's SMB
+    or NFS volume at /Volumes/share is not mount-backed as far as it is
+    concerned. `scan.scan_dir_once`'s `root_dev` guard is what normally stops a
+    crawl leaving the home filesystem, and it is defeated by construction when
+    the root ITSELF is the network volume — the whole subtree is then fair game
+    for a detached worker nobody is watching.
+
+    The old live walk did crawl such paths, so this is not a new capability
+    being taken away for nothing. But the walk was abortable, entry-capped and
+    tied to a search box somebody had open; a scan is none of those, and this
+    repo's history has a kernel walk permanently wedging a mount in it more
+    than once. A refused folder falls back to the live walk exactly as it did
+    before phase 2, which is the honest cost and a small one.
+
+    Paid AFTER the mount guard, so a wedged fused mount is never stat'd here,
+    and never raising: a path we cannot stat is one we should not scan.
+    """
+    import os
+
+    try:
+        return os.stat(path).st_dev != os.stat(os.path.expanduser("~")).st_dev
+    except OSError:
+        return True
 
 
 def _real_schedule(delay: float, fn) -> None:
@@ -207,8 +292,8 @@ def _real_schedule(delay: float, fn) -> None:
 
 
 _queue = RescanQueue(start=_real_start, live_run_covers=_real_live,
-                     blocked=_real_blocked, schedule=_real_schedule,
-                     now=__import__("time").time)
+                     blocked=_real_blocked, last_scan=_real_last_scan,
+                     schedule=_real_schedule, now=__import__("time").time)
 
 
 def note_index_mutation(*paths: str | None) -> None:

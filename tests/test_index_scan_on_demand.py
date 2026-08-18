@@ -95,6 +95,32 @@ def test_a_folder_that_is_gone_is_refused_not_an_error(client, tmp_path):
     assert body["why"] == "refused"
 
 
+def test_a_folder_on_another_filesystem_is_refused(client, tmp_path, monkeypatch):
+    """The scan root used to come from the configured roots — the user's home.
+    An arbitrary folder can be a mounted SMB/NFS volume, which MountGuard knows
+    nothing about (it guards fused-render's OWN mounts dir), and `root_dev` is
+    defeated when the root IS the volume: the whole subtree gets crawled by a
+    detached worker. The live walk answers it instead, as it did before."""
+    from fused_render.server import index_touch
+
+    calls = _started(monkeypatch)
+    folder = tmp_path / "elsewhere"
+    folder.mkdir()
+    monkeypatch.setattr(index_touch, "foreign_device", lambda p: True)
+    body = _ask(client, folder)
+    assert body["ok"] is True and body["started"] is False
+    assert body["why"] == "refused" and "filesystem" in body["error"]
+    assert calls == []
+
+
+def test_a_folder_on_the_home_filesystem_is_scanned(client, tmp_path, monkeypatch):
+    calls = _started(monkeypatch)
+    folder = tmp_path / "elsewhere"
+    folder.mkdir()
+    assert _ask(client, folder)["started"] is True
+    assert calls == [runner.canonical_root(str(folder))]
+
+
 def test_the_route_is_guarded(client, tmp_path):
     resp = client.post("/api/index/scan-folder", json={"path": str(tmp_path)})
     assert resp.status_code == 403

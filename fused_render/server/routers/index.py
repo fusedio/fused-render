@@ -51,6 +51,7 @@ from fused_render.index.store import (
     save_applied_ignore,
 )
 from fused_render.server import ai as _server_ai
+from fused_render.server import index_touch
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.index_gitignore import filter_corpus
 
@@ -569,6 +570,15 @@ def api_index_scan_folder(body: dict = Body(default={}),
 
     cfg = load_config()
     root = runner.canonical_root(path)
+    # A scan ROOT on another filesystem is refused — see index_touch.
+    # foreign_device for the argument. Checked here as well as there because
+    # these are the two doors an arbitrary folder can arrive through, and the
+    # refusal has to be the same at both.
+    if index_touch.foreign_device(root):
+        return {"ok": True, "started": False, "why": "refused",
+                "error": f"{root} is on a different filesystem than your home; "
+                         "indexing it is not supported",
+                "run_id": None, "root": root}
     last = runner.last_scan(cfg, root)
     if last is not None and (time.time() - last) < SCAN_DEBOUNCE_S:
         return {"ok": True, "started": False, "why": "debounced",

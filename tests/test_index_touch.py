@@ -20,12 +20,13 @@ from fused_render.server.index_touch import RescanQueue
 class Fake:
     """Deps for the queue: a clock, a scheduler, and the recorded effects."""
 
-    def __init__(self, live=(), blocked=()):
+    def __init__(self, live=(), blocked=(), last_scan=None):
         self.t = 1000.0
         self.started = []
         self.armed = []
         self.live = list(live)
         self.blocked = set(blocked)
+        self.scans = dict(last_scan or {})
 
     # -- injected deps
     def now(self):
@@ -43,13 +44,18 @@ class Fake:
                    for r in self.live)
 
     def blocks(self, root):
-        return root in self.blocked
+        # Tree-wise, like the real dep: the mount guard and the ignore rules
+        # both answer for everything under a blocked path, not just for it.
+        return any(root == b or root.startswith(b + "/") for b in self.blocked)
+
+    def last_scan(self, root):
+        return self.scans.get(root)
 
     # -- driving
     def queue(self, **kw):
         return RescanQueue(start=self.start, live_run_covers=self.live_run_covers,
-                           blocked=self.blocks, schedule=self.schedule,
-                           now=self.now, **kw)
+                           blocked=self.blocks, last_scan=self.last_scan,
+                           schedule=self.schedule, now=self.now, **kw)
 
     def fire(self):
         self._fn()
@@ -164,7 +170,8 @@ def test_a_start_that_fails_does_not_strand_the_rest():
             raise ValueError("not a directory")
 
     q = RescanQueue(start=start, live_run_covers=f.live_run_covers,
-                    blocked=f.blocks, schedule=f.schedule, now=f.now)
+                    blocked=f.blocks, last_scan=f.last_scan,
+                    schedule=f.schedule, now=f.now)
     q.note("/home/me/bad/x.txt", "/home/me/good/y.txt")
     f.fire()
     assert sorted(f.started) == ["/home/me/bad", "/home/me/good"]
@@ -182,3 +189,82 @@ def test_every_mutating_route_reports_what_it_changed(route):
 
     fn = getattr(fs_mutate, "api_fs_" + route)
     assert "note_index_mutation" in inspect.getsource(fn)
+
+
+# ---------------------------------------------------------------- the floor
+#
+# Every scan of a folder ends in a COMPACTION, and a compaction re-sorts and
+# rewrites every partition in the store plus dirs.parquet — "keep the rows
+# outside this root" is a query predicate, not an incremental write. So the
+# cost of a rescan is a function of the whole index, not of the folder, and a
+# mechanism that fires on every write is a mechanism that rewrites a 571k-row
+# store on a cadence set by whoever is typing.
+
+def test_a_folder_scanned_moments_ago_waits_rather_than_rescanning():
+    f = Fake(last_scan={"/home/me/proj": 995.0})  # 5s ago
+    q = f.queue()
+    q.note("/home/me/proj/a.txt")
+    f.fire()
+    assert f.started == []
+    assert f.armed == [q.coalesce_s, q.coalesce_s]  # deferred, still pending
+
+
+def test_the_deferred_rescan_is_not_lost():
+    """DEFERRED, never dropped. A rename whose rescan is skipped outright is a
+    file the search cannot find until something else happens to scan — which is
+    the exact failure this whole mechanism exists to prevent."""
+    f = Fake(last_scan={"/home/me/proj": 995.0})
+    q = f.queue()
+    q.note("/home/me/proj/a.txt")
+    f.fire()
+    f.t += q.floor_s
+    f.fire()
+    assert f.started == ["/home/me/proj"]
+
+
+def test_the_floor_cannot_hold_a_folder_past_the_deadline():
+    f = Fake(last_scan={"/home/me/proj": 995.0})
+    q = f.queue()
+    q.note("/home/me/proj/a.txt")
+    f.fire()
+    f.scans["/home/me/proj"] = f.t  # something keeps rescanning it
+    f.t += q.deadline_s + 1
+    f.fire()
+    assert f.started == ["/home/me/proj"]
+
+
+def test_a_folder_never_scanned_has_no_floor_to_clear():
+    f = Fake()
+    q = f.queue()
+    q.note("/home/me/proj/a.txt")
+    f.fire()
+    assert f.started == ["/home/me/proj"]
+
+
+def test_a_folder_the_scan_rules_exclude_is_never_rescanned():
+    """A save inside node_modules would otherwise spawn a worker that walks it,
+    indexes nothing, and rewrites the whole store to say so."""
+    f = Fake(blocked=["/home/me/proj/node_modules"])
+    q = f.queue()
+    q.note("/home/me/proj/node_modules/pkg/index.js")
+    f.fire()
+    assert f.started == []
+
+
+# ------------------------------------------------- what a write is worth
+#
+# The route half of the same argument.
+
+def test_a_plain_write_does_not_schedule_a_rescan():
+    """The index stores NAMES. Overwriting a file changes its bytes, not the
+    name set, and the markdown editor autosaves every 2 seconds — so reporting
+    every write means rewriting the entire store for as long as somebody is
+    typing a note."""
+    import inspect
+
+    from fused_render.server import fs_mutate
+
+    src = inspect.getsource(fs_mutate.api_fs_write)
+    assert "_note_index_mutation" in src
+    # ...but only for a write that can add a path.
+    assert "create" in src.split("_note_index_mutation")[1].split("\n")[0]

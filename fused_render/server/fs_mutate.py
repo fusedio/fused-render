@@ -1460,7 +1460,16 @@ def api_fs_write(request: Request, body: dict = Body(...),
                  x_fused: str | None = Header(default=None)):
     result = _fs_write(body, x_fused)
     _invalidate_stat_cache(body.get("path"))
-    _note_index_mutation(result, body.get("path"))
+    # Only a write that can ADD a path is news to the index, which stores
+    # names: overwriting a file changes its bytes, and the size and mtime
+    # stored beside the name are not what search ranks on. This matters
+    # because the markdown editor autosaves every 2 seconds (AUTOSAVE_MS) and
+    # a rescan ends in a full compaction — reporting every write means
+    # rewriting the whole store for as long as somebody is typing a note.
+    # A create=false write to a path that does not exist yet is missed, and
+    # keeps the guarantee it had before this mechanism existed: the next scan,
+    # or the freshness check when its folder is opened.
+    _note_index_mutation(result, body.get("path") if body.get("create") else None)
     # What the app wrote and how big — never the content (calls.py).
     # `_fs_write` returns a stat payload on success and a JSONResponse on
     # every refusal, so the status has to come off the response object.
