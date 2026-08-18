@@ -181,9 +181,48 @@ def test_delete_trash_moves_into_home_trash(tmp_path, monkeypatch):
     f = tmp_path / "f.txt"
     f.write_text("keep")
     out = _data(DELETE({"path": str(f), "trash": True}, x_fused="1"))
-    assert out == {"deleted": str(f), "trashed": True}
+    assert out == {"deleted": str(f), "trashed": True,
+                   "trashed_to": str(trash / "f.txt")}
     assert not f.exists()  # moved out of its folder
     assert (trash / "f.txt").read_text() == "keep"  # landed in the Trash
+
+
+def test_delete_trash_reports_where_it_landed(tmp_path, monkeypatch):
+    # `trashed_to` is what makes a trash delete UNDOABLE: the move is an
+    # os.rename we chose the destination for, so naming it back lets the client
+    # record the delete as the symmetric rename pair it actually is.
+    trash = _fake_home(monkeypatch, tmp_path)
+    trash.mkdir(parents=True)
+    (trash / "f.txt").write_text("old")  # force the dedupe suffix
+    f = tmp_path / "f.txt"
+    f.write_text("new")
+    out = _data(DELETE({"path": str(f), "trash": True}, x_fused="1"))
+    assert out == {
+        "deleted": str(f),
+        "trashed": True,
+        "trashed_to": str(trash / "f 2.txt"),
+    }
+
+
+def test_delete_trash_finder_fallback_names_no_destination(tmp_path, monkeypatch):
+    # The osascript/Finder fallback: FINDER picks the location, so we cannot
+    # name it — and an unnamed destination must not be reported, or the client
+    # would record an undo pair pointing at a path that is not there.
+    _fake_home(monkeypatch, tmp_path)
+    f = tmp_path / "f.txt"
+    f.write_text("x")
+    monkeypatch.setattr(_server_fs_mutate, "_move_to_trash", lambda path: None)
+    out = _data(DELETE({"path": str(f), "trash": True}, x_fused="1"))
+    assert out == {"deleted": str(f), "trashed": True}
+    assert "trashed_to" not in out
+
+
+def test_delete_hard_reports_no_trash_destination(tmp_path):
+    # A hard delete has no destination at all — nothing to undo, nothing to say.
+    f = tmp_path / "f.txt"
+    f.write_text("x")
+    out = _data(DELETE({"path": str(f)}, x_fused="1"))
+    assert out == {"deleted": str(f), "trashed": False}
 
 
 def test_delete_trash_dedupe_suffix(tmp_path, monkeypatch):

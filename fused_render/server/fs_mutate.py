@@ -621,13 +621,21 @@ def _trash_dest_name(name: str, counter: int) -> str:
     return f"{name} {counter}"
 
 
-def _move_to_trash(path: str) -> None:
+def _move_to_trash(path: str) -> str | None:
     # Move `path` into the user's ~/.Trash (macOS). A plain os.rename into
     # ~/.Trash is the fast path, with a " N" dedupe suffix when a name is
     # already there. A rename ACROSS devices (or any other OSError) can't be
     # done by rename, so it falls back to Finder via osascript, which copies +
     # removes itself. Raises on total failure so the caller reports it and the
     # frontend can fall back to a hard delete.
+    #
+    # RETURNS THE DESTINATION IT RENAMED TO, or None when Finder did the move.
+    # The destination is what makes a trash delete undoable: on the rename path
+    # WE chose it, so it is a path the caller can rename the entry back out of
+    # — the same symmetric pair a move records. In the cross-device fallback
+    # FINDER chooses the location, so we cannot name it, and an unnamed
+    # destination must not be recorded as an undoable pair (a guess would put
+    # an undo request on a path nothing is at).
     trash = Path.home() / ".Trash"
     name = os.path.basename(path.rstrip("/"))
     try:
@@ -638,6 +646,7 @@ def _move_to_trash(path: str) -> None:
             counter += 1
             dest = trash / _trash_dest_name(name, counter)
         os.rename(path, dest)
+        return str(dest)
     except OSError:
         subprocess.run(
             [
@@ -648,6 +657,7 @@ def _move_to_trash(path: str) -> None:
             check=True,
             capture_output=True,
         )
+        return None
 
 
 def _fs_delete(body: dict, x_fused: str | None):
@@ -714,14 +724,22 @@ def _fs_delete(body: dict, x_fused: str | None):
         if not _trash_supported():
             return JSONResponse({"error": "trash unsupported"}, status_code=501)
         try:
-            _move_to_trash(path)
+            dest = _move_to_trash(path)
         except Exception as e:  # noqa: BLE001 — rename OSError or osascript failure
             # A FAILED trash on a supported platform is a plain error, not the
             # 501 "unsupported" signal — that one routes the client into the
             # irreversible hard-delete fallback, which must never be the
             # response to a recoverable-delete attempt that merely failed.
             return _error(f"cannot move to Trash: {e}", status=500)
-        return {"deleted": path, "trashed": True}
+        # `trashed_to` is reported ONLY when we named the destination ourselves
+        # (the os.rename path). It is what lets the client record the delete as
+        # an undoable rename pair — see _move_to_trash. Omitted after the Finder
+        # fallback, where the destination is unknown, and never present on a
+        # hard delete, whose inverse would be data destruction.
+        out: dict = {"deleted": path, "trashed": True}
+        if dest is not None:
+            out["trashed_to"] = dest
+        return out
 
     try:
         # A symlink is removed as the link itself, never followed: rmtree on a
