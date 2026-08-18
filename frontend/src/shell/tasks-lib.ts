@@ -1055,9 +1055,27 @@ export type ListMemory = {
   expanded: string[];
   /** scrollTop of the list's own scroller, in px. */
   scroll: number;
+  /**
+   * The task whose conversation the reader last opened FROM this list, or "".
+   *
+   * The third thing coming back to the page has to answer. Which rows were open
+   * and where the list stood put the reader back in the right part of the list;
+   * this puts them back on the right ROW. A list of ninety near-identical
+   * three-line rows gives no clue which one you just came out of, so "let me
+   * look at the next one" meant re-finding the last one first — the same
+   * complaint the scroll memory was for, one level finer (Akshil, 2026-08-18).
+   *
+   * A key, not an index: rows re-sort on every poll (last_active), and an index
+   * would highlight whichever row happened to land in that slot.
+   *
+   * One task, not a set. This is "where I just was", and a page that lit up
+   * every row visited this sitting would be a highlight that means nothing by
+   * the fourth one.
+   */
+  selected: string;
 };
 
-export const EMPTY_LIST_MEMORY: ListMemory = { expanded: [], scroll: 0 };
+export const EMPTY_LIST_MEMORY: ListMemory = { expanded: [], scroll: 0, selected: "" };
 
 /**
  * What came out of the store is a STRING WRITTEN BY SOMEONE ELSE — an older
@@ -1076,7 +1094,7 @@ export function parseListMemory(raw: string | null): ListMemory {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return EMPTY_LIST_MEMORY;
   }
-  const row = parsed as { expanded?: unknown; scroll?: unknown };
+  const row = parsed as { expanded?: unknown; scroll?: unknown; selected?: unknown };
   const expanded = Array.isArray(row.expanded)
     ? row.expanded.filter((k): k is string => typeof k === "string")
     : [];
@@ -1084,7 +1102,11 @@ export function parseListMemory(raw: string | null): ListMemory {
     typeof row.scroll === "number" && Number.isFinite(row.scroll) && row.scroll > 0
       ? row.scroll
       : 0;
-  return { expanded, scroll };
+  // Absent on anything written before 2026-08-18, and on any hand-edited row:
+  // "" is the same answer as "nothing selected", so an older memory upgrades
+  // silently rather than being thrown away for the two fields it does have.
+  const selected = typeof row.selected === "string" ? row.selected : "";
+  return { expanded, scroll, selected };
 }
 
 // ---- where a click goes ------------------------------------------------------

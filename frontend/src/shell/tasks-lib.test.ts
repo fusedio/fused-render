@@ -5161,21 +5161,73 @@ describe("which board lanes are rolled up", () => {
 });
 
 describe("what the List remembers between visits", () => {
+  const NOTHING = { expanded: [], scroll: 0, selected: "" };
+
   it("remembers nothing at all when there is nothing stored", () => {
-    expect(parseListMemory(null)).toEqual({ expanded: [], scroll: 0 });
-    expect(parseListMemory("")).toEqual({ expanded: [], scroll: 0 });
-    expect(parseListMemory("{oops")).toEqual({ expanded: [], scroll: 0 });
-    expect(parseListMemory("[1,2]")).toEqual({ expanded: [], scroll: 0 });
+    expect(parseListMemory(null)).toEqual(NOTHING);
+    expect(parseListMemory("")).toEqual(NOTHING);
+    expect(parseListMemory("{oops")).toEqual(NOTHING);
+    expect(parseListMemory("[1,2]")).toEqual(NOTHING);
   });
 
-  it("keeps the task keys and the offset, and drops everything else", () => {
+  it("keeps the task keys, the offset and the row, and drops everything else", () => {
     expect(
-      parseListMemory('{"expanded":["TASK-1",7,"TASK-2"],"scroll":420.5,"x":1}'),
-    ).toEqual({ expanded: ["TASK-1", "TASK-2"], scroll: 420.5 });
+      parseListMemory(
+        '{"expanded":["TASK-1",7,"TASK-2"],"scroll":420.5,"selected":"TASK-2","x":1}',
+      ),
+    ).toEqual({ expanded: ["TASK-1", "TASK-2"], scroll: 420.5, selected: "TASK-2" });
     // A negative, infinite or non-numeric offset is not a place on a scrollbar.
     expect(parseListMemory('{"scroll":-3}').scroll).toBe(0);
     expect(parseListMemory('{"scroll":"120"}').scroll).toBe(0);
     expect(parseListMemory('{"expanded":"TASK-1"}').expanded).toEqual([]);
+    // A key is a string or it is nothing; "nothing selected" is the empty one.
+    expect(parseListMemory('{"selected":7}').selected).toBe("");
+  });
+
+  it("upgrades a memory written before the row was remembered", () => {
+    // The two fields that existed on 2026-08-18 are still honoured in full — a
+    // stored row missing `selected` means "no row", not "throw the sitting away".
+    expect(parseListMemory('{"expanded":["TASK-1"],"scroll":90}')).toEqual({
+      expanded: ["TASK-1"],
+      scroll: 90,
+      selected: "",
+    });
+  });
+
+  it("lights the row the reader last opened a conversation from", () => {
+    // Ninety near-identical three-line rows give no clue which one you came back
+    // out of, so "now the next one" meant re-finding the last one first.
+    expect(LIST).toContain("const [selected, setSelected] = useState(() => memory.current.selected);");
+    expect(LIST).toContain("remember({ ...memory.current, selected: key });");
+    expect(LIST).toContain("selected={selected === task.key}");
+    expect(VIEWS).toContain('+ (selected ? " is-selected" : "")');
+    // ONE row, and only the gestures that LEAVE the page mark it. `openChat` is
+    // where it is marked and NOT `activate`, deliberately: activate's second arm
+    // opens the edit form, a modal over this very page, and lighting a row for a
+    // trip the reader never took would make the highlight mean nothing. Every
+    // way into the conversation — the row's press, the Open chat button — goes
+    // through that one function, so every one of them marks.
+    const chatFn = VIEWS.slice(VIEWS.indexOf("const openChat = (intent: OpenThreadIntent) => {"));
+    const body = chatFn.slice(0, chatFn.indexOf("\n  };"));
+    expect(body).toContain("onSelect();");
+    expect(body.indexOf("onSelect();")).toBeLessThan(body.indexOf("performOpen("));
+    expect(ACTIVATE).not.toContain("onSelect()");
+    // A message row leaves too, and it belongs to this task's row.
+    const open = VIEWS.slice(VIEWS.indexOf("const openMessage = (m: TaskMessage) => {"));
+    expect(open.slice(0, open.indexOf("\n  };"))).toContain("onSelect();");
+    // Stored beside the scroll and the open rows, in the same sessionStorage
+    // row, so all three are restored by the one read on mount.
+    expect(LIST).toContain("const memory = useRef<ListMemory>(readListMemory());");
+    // Painted in the app's own selection colour — the explorer listing and the
+    // sidebar both use it — with an accent rule hover does not have, so the two
+    // washes stay tellable apart, and after the hover rule so a hovered
+    // selected row still reads as selected.
+    const sel = block(TASKS_CSS, ".tasks-row.is-selected");
+    expect(sel).toContain("background: var(--row-bg-active)");
+    expect(sel).toContain("box-shadow: inset 2px 0 0 var(--accent)");
+    expect(TASKS_CSS.indexOf(".tasks-row:hover"))
+      .toBeLessThan(TASKS_CSS.indexOf(".tasks-row.is-selected"));
+    expect(TASKS_CSS).toContain(".tasks-row.is-selected:hover");
   });
 
   it("restores the open rows and the scroll from THIS tab only", () => {

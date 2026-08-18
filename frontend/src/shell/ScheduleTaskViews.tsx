@@ -864,6 +864,18 @@ export function TaskList({
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set(memory.current.expanded),
   );
+  // WHERE THE READER JUST WAS. Seeded from the same memory as the two above and
+  // restored with them: a list of ninety near-identical rows gives no clue which
+  // one you came back out of, so "now the next one" meant re-finding the last
+  // one first (Akshil, 2026-08-18). Held in state as well as in the memory ref
+  // because it is also LIVE — the row lights the moment it is pressed, so the
+  // highlight is the page acknowledging the press rather than something that
+  // only appears after a round trip.
+  const [selected, setSelected] = useState(() => memory.current.selected);
+  const select = (key: string) => {
+    setSelected(key);
+    remember({ ...memory.current, selected: key });
+  };
   // Full threads fetched by Show more, keyed by task. They REPLACE the three
   // the listing carried rather than appending to them, so no message is ever
   // drawn twice.
@@ -1147,6 +1159,8 @@ export function TaskList({
           home={home}
           showProject={showProject}
           open={expanded.has(task.key)}
+          selected={selected === task.key}
+          onSelect={() => select(task.key)}
           onToggle={() => toggle(task)}
           onRetry={() => void showMore(task)}
           loaded={loaded[task.key]}
@@ -1170,6 +1184,8 @@ function TaskNode({
   home,
   showProject,
   open: requested,
+  selected,
+  onSelect,
   onToggle,
   loaded,
   loading,
@@ -1191,6 +1207,14 @@ function TaskNode({
   /** What the List's expanded set says about this row. Whether it is honoured is
    * this component's decision — see `expandable` below. */
   open: boolean;
+  /** Is this the row the reader last opened a conversation from? The List owns
+   * the answer (one row at a time, remembered across the trip to the chat); the
+   * row only wears it. */
+  selected: boolean;
+  /** Say that this row is now that one. Spent by every gesture that LEAVES the
+   * page — the row's press and a message row's — and by nothing else: expanding
+   * a task is reading it in place, not going anywhere. */
+  onSelect: () => void;
   onToggle: () => void;
   loaded?: TaskMessage[];
   loading: boolean;
@@ -1411,7 +1435,12 @@ function TaskNode({
   const openMessage = (m: TaskMessage) => {
     onRead(task.key, m);
     const to = messageHref(task, m);
-    if (to) navigateUrl(to);
+    if (!to) return;
+    // Leaving the page, so this is the row to come back to — the thread row
+    // belongs to this task, and the task's row is what is still on screen when
+    // the reader returns.
+    onSelect();
+    navigateUrl(to);
   };
 
   /**
@@ -1452,6 +1481,13 @@ function TaskNode({
   // Declared ABOVE `activate` because `activate` now calls it — a hoisted
   // reference into a `const` below would work at runtime and read as a bug.
   const openChat = (intent: OpenThreadIntent) => {
+    // This is the row LEAVING the page, so it is also the row to come back to.
+    // Marked here rather than in `activate` because `activate` has a second arm
+    // — the edit form, a modal over this very page — and lighting a row for a
+    // trip the reader never took would make the highlight mean nothing. Every
+    // way of opening this task's conversation goes through this one function
+    // (the row's press, the Open chat button), so every one of them marks.
+    onSelect();
     performOpen(
       task,
       intent,
@@ -1562,7 +1598,8 @@ function TaskNode({
   return (
     <div className="tasks-node">
       <div
-        className={"tasks-row" + (open ? " is-open" : "") + (pressable ? "" : " is-inert")}
+        className={"tasks-row" + (open ? " is-open" : "")
+          + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")}
         // The row is a CONTAINER now, not a control: when it has somewhere to go
         // the stretched `<a>` below is the button, the tab stop and the
         // accessible name, and hanging a second role and a second tab stop on

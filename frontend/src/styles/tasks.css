@@ -117,6 +117,31 @@
   background: var(--row-bg-hover);
 }
 
+/* WHERE THE READER JUST WAS. The row whose conversation was last opened from
+   this list keeps a mark while the page is away and wears it again on the way
+   back (ScheduleTaskViews `selected`, stored in the List's sessionStorage memory
+   beside the scroll offset and the open rows).
+
+   `--row-bg-active` is the app's existing answer to "this row is the current
+   one" — the explorer's listing and the sidebar both paint selection with it, so
+   a reader who has learned it once reads it here without being taught
+   (design-principles §1). The accent rule on the left is what keeps it legible
+   as SELECTION rather than as hover: the two fills are close by design (both are
+   a wash over the same ground), and a bar the hover state does not have is the
+   difference that survives the pointer being somewhere else on the row.
+
+   It sits after the hover rule so a selected row that is also hovered still
+   reads as selected: hover is where the pointer is, selection is where the
+   reader has been, and losing the second to the first is losing the only one
+   that outlives the gesture. The bar is drawn with `box-shadow: inset` rather
+   than a border so it costs no layout — a row that grew 2px on selection would
+   move every row under it. */
+.tasks-row.is-selected,
+.tasks-row.is-selected:hover {
+  background: var(--row-bg-active);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 /* A row whose press does nothing does not look pressed-able either: a task that
    has never run has no session to open and no thread to expand (ScheduleTaskViews
    `pressable`), and a pointer cursor over a lit background is a promise it cannot
