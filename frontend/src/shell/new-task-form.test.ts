@@ -352,18 +352,24 @@ describe("what Save refuses", () => {
       expect(saveBlockedReason(gate())).toBe(null);
     });
 
-    test("an empty description has nothing to say — it is not a refusal", () => {
-      // The sentence that used to live here ("Say what Claude should do…") is
-      // gone with the requirement: there is no field to name, because nothing is
-      // missing.
+    test("an empty second field has nothing to say — it is not a refusal", () => {
+      // Nothing is missing: the additional instructions are optional, and the
+      // sentence about a task with no instructions has moved to the field that
+      // now asks for them (below).
       expect(saveBlockedReason(gate({ message: "" }))).toBe(null);
       expect(saveBlockedReason(gate({ message: "\n\n  \t" }))).toBe(null);
     });
 
     test("every refusal names a field, and the sentence is a thing to DO", () => {
+      // The one missing-prose refusal there is, and it asks for the TASK: the
+      // field says "What should Claude do?", so a banner saying "give the task a
+      // name" would send the user looking for a label to invent instead of the
+      // instruction that is actually absent. It still focuses the primary field,
+      // which is where that answer goes.
       const noTitle = saveBlockedReason(gate({ title: "   " }));
       expect(noTitle?.field).toBe("title");
-      expect(noTitle?.text).toContain("name");
+      expect(noTitle?.text).toContain("Say what Claude should do");
+      expect(noTitle?.text).not.toContain("name");
 
       expect(saveBlockedReason(gate({ target: "" }))?.field).toBe("target");
       // A path that failed its existence check already wrote a sentence for a
@@ -929,14 +935,19 @@ describe("naming the task", () => {
     + "that has already learned a session id stops resuming that thread after "
     + "an edit, then fix it and add a regression test for it";
 
-  test("the placeholder is a field label now, and says nothing about optional", () => {
-    expect(TITLE_PLACEHOLDER).toBe("Title");
+  test("the placeholder asks for the TASK, not for a label", () => {
+    // It said "Title" — what the value is used for, not what the user is being
+    // asked to write — and people answered it with a label ("News") and put the
+    // real instruction in the field underneath. The question is the same one the
+    // chat composer asks, because the answer is the same text.
+    expect(TITLE_PLACEHOLDER).toBe("What should Claude do?");
     expect(TITLE_PLACEHOLDER).not.toContain("optional");
   });
 
-  test("…and the description's placeholder says the opposite, because it IS optional", () => {
-    // It used to read "What should Claude do?", which invites the user to write
-    // the task a second time under the title that already says it.
+  test("…and the second field is the OVERFLOW of that question, and says it is optional", () => {
+    // Never the same question twice: the field above asks what the task is, so
+    // this one asks only for what that answer left out.
+    expect(ASK_PLACEHOLDER).toBe("Additional instructions (optional)");
     expect(ASK_PLACEHOLDER).toContain("optional");
     expect(ASK_PLACEHOLDER).not.toContain("What should Claude do");
   });

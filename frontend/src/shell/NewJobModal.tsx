@@ -1186,20 +1186,26 @@ export function deleteFailureText(err: unknown, series: boolean): string {
 // blank required field costs the user one line of typing, while a field
 // prefilled with a guess costs them a task named after its own description.
 //
-// The placeholder is left with only the job a placeholder can honestly do —
-// saying which field this is. It used to say "optional, filled in
-// automatically", and it used to double as a PREVIEW of the chat's own name;
-// both went with the requirement. A previewed name that Save then refuses to
-// accept is the worst of the three states.
-export const TITLE_PLACEHOLDER = "Title";
+// The placeholder ASKS FOR THE TASK (Akshil, 2026-08-18), because that is what
+// this field now collects. It said "Title", which is what the value is USED for
+// — the row's name in the list — and not what the user is being asked to write;
+// people answered it with a label ("News") and then wrote the actual instruction
+// underneath, which is the split this whole pass exists to close. The question is
+// the same one the composer asks, and the answer to it is both the task's name
+// and the first line of what Claude is sent.
+//
+// (Two earlier wordings are gone for the same class of reason: "optional, filled
+// in automatically" outlived the requirement, and a PREVIEW of the chat's own
+// name is worse than a question when Save then refuses the preview.)
+export const TITLE_PLACEHOLDER = "What should Claude do?";
 
-// The description's placeholder, and it has one job the title's does not: say
-// that this field is OPTIONAL. It used to ask "What should Claude do?", which
-// was true when the description was the whole message and is a trap now — it
-// invites the user to write the task a second time, under the title that already
-// says it. "Add detail" is what is actually wanted here: the part the name left
-// out.
-export const ASK_PLACEHOLDER = "Add detail (optional)";
+// And the second field is the OVERFLOW of that question — the constraints, the
+// context, the "start with the parquet path" — never the task again. Both jobs a
+// placeholder can honestly do are in it: which field this is, and that it can be
+// left alone. It read "What should Claude do?" while it was the whole message,
+// and leaving that question here while the field above asks it too would put the
+// user in front of the same question twice.
+export const ASK_PLACEHOLDER = "Additional instructions (optional)";
 
 // One line of a block of prose, trimmed. Used to reduce a multi-line value to
 // something an <input> can hold — it would strip the newlines anyway. It also
@@ -1733,7 +1739,16 @@ export function saveBlockedReason(f: Parameters<typeof saveEnabled>[0]): {
     };
   }
   if (f.title.trim() === "") {
-    return { text: "Give the task a name, so you can find it in the list.", field: "title" };
+    // The sentence asks for the TASK, not for a name, because that is what the
+    // field asks for now ("What should Claude do?"). "Give the task a name" sent
+    // the user looking for a label to invent, when what is missing is the
+    // instruction itself — and this empty field means there is no message to
+    // send at all. The caret lands in the same place either way: the primary
+    // field is where the answer goes.
+    return {
+      text: "Say what Claude should do — a task with no instructions has nothing to run.",
+      field: "title",
+    };
   }
   if (f.target.trim() === "") {
     return { text: "Pick the folder or file this task runs against.", field: "target" };
@@ -2525,7 +2540,7 @@ export default function NewJobModal({
             ref={titleRef}
             type="text"
             className="new-task-field new-task-title"
-            aria-label="Title"
+            aria-label="What should Claude do?"
             aria-required="true"
             placeholder={TITLE_PLACEHOLDER}
             value={title}
@@ -2533,14 +2548,17 @@ export default function NewJobModal({
             autoFocus
           />
 
-          {/* …and the description SECOND: the rest of what Claude is sent. The
-              two fields are ONE message — the title is its first line and this
-              is the body under it (composeTaskMessage) — which is what makes
-              this field OPTIONAL as of 2026-08-18. "Update the changelog" is a
-              complete instruction, and the form used to make the user type it
-              twice: once to name the task and once to say it. So no
-              aria-required here, and Save no longer refuses an empty one; the
-              placeholder asks for detail rather than for the task.
+          {/* …and the ADDITIONAL INSTRUCTIONS second: the rest of what Claude
+              is sent. The two fields are ONE message — the answer above is its
+              first line and this is the body under it (composeTaskMessage) —
+              which is what makes this field OPTIONAL as of 2026-08-18. "Update
+              the changelog" is a complete instruction, and the form used to make
+              the user type it twice: once to name the task and once to say it.
+              So no aria-required here, and Save no longer refuses an empty one.
+
+              It is named for what it ADDS rather than as a "description",
+              because the field above is now the one that asks the question: what
+              belongs here is the part that answer left out.
 
               Quieter and smaller than the title, and it keeps the growth Title
               deliberately does not have: multi-line, autogrowing with the text
@@ -2550,7 +2568,7 @@ export default function NewJobModal({
             ref={askRef}
             className="new-task-field new-task-ask"
             rows={2}
-            aria-label="Description"
+            aria-label="Additional instructions"
             placeholder={ASK_PLACEHOLDER}
             value={message}
             onChange={(e) => setMessage(e.target.value)}
