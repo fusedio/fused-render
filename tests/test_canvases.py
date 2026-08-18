@@ -643,6 +643,38 @@ def test_fix_endpoint_spawns_a_primed_claude_session(harness, monkeypatch):
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
+def test_sync_status_reports_fix_run_liveness(harness, monkeypatch):
+    # fix_run_running only appears when the caller passes run_id, and mirrors
+    # session_liveness verbatim — the status endpoint doesn't invent its own
+    # notion of "still working", it asks the one module that reads transcripts.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    assert "fix_run_running" not in status
+
+    seen = {}
+
+    def _running_true(run_id, now, projects_dir=None):
+        seen["run_id"] = run_id
+        return True
+
+    monkeypatch.setattr(canvases_mod, "session_running", _running_true)
+    status = harness.client.get(
+        "/api/canvases/sync/status?name=alpha&run_id=run-77").json()
+    assert status["fix_run_running"] is True
+    assert seen["run_id"] == "run-77"
+
+    monkeypatch.setattr(
+        canvases_mod, "session_running",
+        lambda run_id, now, projects_dir=None: False)
+    status = harness.client.get(
+        "/api/canvases/sync/status?name=alpha&run_id=run-77").json()
+    assert status["fix_run_running"] is False
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
 def test_token_external_cli_reads_store(harness):
     # FUSED_RENDER_FUSED_BIN is an external override in this harness, so the
     # token endpoint falls back to the raw on-disk store.

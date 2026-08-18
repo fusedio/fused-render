@@ -45,6 +45,7 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
+from fused_render.session_liveness import session_running
 
 router = APIRouter()
 
@@ -1028,12 +1029,20 @@ def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(defaul
 
 
 @router.get("/api/canvases/sync/status")
-def api_canvases_sync_status(name: str = ""):
+def api_canvases_sync_status(name: str = "", run_id: str = ""):
     if not _NAME_RE.fullmatch(name or ""):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
     manager = _sync_manager(name, create=False)
     if manager is None:
-        return {"name": name, "watching": False, "push_state": "idle", "push_seq": 0,
-                "last_push_at": None, "pull_seq": 0, "last_pull_at": None,
-                "error": None, "error_detail": [], "dir": _canvas_dir(name)}
-    return manager.status()
+        result = {"name": name, "watching": False, "push_state": "idle", "push_seq": 0,
+                  "last_push_at": None, "pull_seq": 0, "last_pull_at": None,
+                  "error": None, "error_detail": [], "dir": _canvas_dir(name)}
+    else:
+        result = manager.status()
+    # Whether a "Fix with Claude" run the caller is attached to is still mid-
+    # turn (session_liveness's transcript read, D330 follow-up): push_state
+    # alone can't tell a fix that is still working from one that finished and
+    # failed again, and only the caller knows which run_id it's watching.
+    if run_id:
+        result["fix_run_running"] = session_running(run_id, time.time())
+    return result

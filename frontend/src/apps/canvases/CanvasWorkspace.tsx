@@ -58,6 +58,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // than pointing at the finished run forever. The iframe stays attached
   // to the old run until a new fix replaces it.
   const [fixStale, setFixStale] = useState(false);
+  // Guards fix_run_running's one blind spot: right after spawn, the run's
+  // transcript file may not exist yet, so a poll landing in that gap reads
+  // "not running" indistinguishable from "already finished". Only trust a
+  // "not running" reading once this run has been OBSERVED running at least
+  // once — reset per fixRunId in onFix.
+  const sawFixRunningRef = useRef(false);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const baseOriginRef = useRef<string | null>(null);
 
@@ -119,23 +125,28 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // Sync status poll for the status strip; re-arms the watcher if it drops.
   useEffect(() => {
     const id = window.setInterval(() => {
-      void getSyncStatus(name)
+      void getSyncStatus(name, fixRunId ?? undefined)
         .then((s) => {
           setSync(s);
           setDir((d) => d ?? s.dir);
-          // "idle" is the only state that means the push actually recovered —
-          // "pending"/"pushing" are mid-flight and may still land on "error",
-          // and marking stale there would re-enable the button (letting a
-          // second click spawn a concurrent fixer) while the first fix's own
-          // push is still in flight.
-          if (s.push_state === "idle") setFixStale(true);
+          // A push recovering ("idle") always means the button should offer a
+          // fresh fix for any later failure. Otherwise, while a run_id is
+          // attached, fix_run_running is the actual signal: push_state alone
+          // can't distinguish a fix still working (which must stay disabled,
+          // or a second click races it on the same clone) from one that
+          // finished and failed again (which must re-enable, or a bad fix
+          // leaves the button stuck on "Claude is on it" forever).
+          if (fixRunId && s.fix_run_running) sawFixRunningRef.current = true;
+          const fixRunDone =
+            fixRunId && s.fix_run_running === false && sawFixRunningRef.current;
+          if (s.push_state === "idle" || fixRunDone) setFixStale(true);
           // Self-heal: a server restart drops the watcher; re-arm it.
           if (!s.watching) void startSync(name).catch(() => undefined);
         })
         .catch(() => undefined);
     }, SYNC_POLL_MS);
     return () => window.clearInterval(id);
-  }, [name]);
+  }, [name, fixRunId]);
 
   // Splitter drag: track the pointer over the whole window so the drag
   // survives entering the iframes (which would otherwise swallow mousemove —
@@ -175,6 +186,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     setFixError(null);
     try {
       const { run_id } = await fixWithClaude(name);
+      sawFixRunningRef.current = false;
       setFixRunId(run_id);
       setFixStale(false);
     } catch (e) {

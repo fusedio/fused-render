@@ -44,6 +44,9 @@ export interface SyncStatus {
   /** Full per-line CLI output of the failing push (e.g. one validation
    *  error per line); empty when the last push succeeded. */
   error_detail: string[];
+  /** Only present when the caller passed a run_id: whether that "Fix with
+   *  Claude" session is still mid-turn right now. */
+  fix_run_running?: boolean;
 }
 
 export const getCanvasesStatus = () => getJson<CanvasesStatus>("/api/canvases/status");
@@ -73,8 +76,11 @@ export const startSync = (name: string) =>
 export const stopSync = (name: string) =>
   postJson<{ ok: boolean }>("/api/canvases/sync/stop", { name });
 
-export const getSyncStatus = (name: string) =>
-  getJson<SyncStatus>(`/api/canvases/sync/status?name=${encodeURIComponent(name)}`);
+export const getSyncStatus = (name: string, runId?: string) =>
+  getJson<SyncStatus>(
+    `/api/canvases/sync/status?name=${encodeURIComponent(name)}` +
+      (runId ? `&run_id=${encodeURIComponent(runId)}` : ""),
+  );
 
 /** Spawn a Claude session on the canvas clone primed with the failing
  *  push's errors; attach the chat iframe with the returned run_id. */
