@@ -302,7 +302,7 @@
 }
 
 .home-sec-title-link:hover {
-  text-decoration: underline;
+  color: var(--accent);
 }
 
 .home-sec-more {
