@@ -664,6 +664,38 @@ button.tasks-caret,
   transform: translate(-50%, -50%);
 }
 
+/* BIGGER TO AIM AT THAN IT LOOKS (Akshil, 2026-08-18). 22px was still a small
+   target for a control the pointer arrives at sideways, travelling in from the
+   row it just hovered — the press missed and opened the conversation instead,
+   which is the one outcome archiving is not.
+
+   Grown by a transparent pseudo-element rather than by padding-and-negative-
+   margin (the caret's trick, `button.tasks-caret`): that pair works because the
+   caret is a FLEX CHILD, where padding grows the box and the margin takes the
+   growth back out of the layout. This button is out of flow and centred by
+   `translate(-50%, -50%)` on its own box, so padding would grow the box the
+   transform is measured from — and, worse, the box the hover skin paints. The
+   fill and border must stay 22px on a 16px ring; only the zone grows.
+
+   THE INSETS ARE WHAT THE ROW ACTUALLY HAS SPARE, not one round number:
+   - left 2px only. The caret's own enlarged zone (same `z-index: 2`, earlier in
+     the DOM, so this would win the overlap and quietly shrink the disclosure
+     gutter) ends half a `--tasks-row-gap` right of its glyph — 2px short of this
+     button's left edge. That 2px is the whole clearance there is.
+   - right 6px, into the gap before the next rail slot, which holds nothing.
+   - 5px top and bottom, well inside the row's own `--tasks-row-pad-y`: growth
+     past the row's edge would cover the NEIGHBOURING row's link.
+
+   `pointer-events` is inherited, so this zone is `none` at rest and `auto` with
+   the reveal exactly like the button it belongs to — an invisible control does
+   not get an invisible hit area either. */
+.tasks-rowmark .tasks-act--archive::after {
+  content: "";
+  position: absolute;
+  inset: -5px -6px -5px -2px;
+  border-radius: 8px;
+}
+
 /* The handover. The ring fades as the button arrives — the same `opacity` swap,
    on the same triggers, that the bookmarks sidebar's folder count uses to hand
    its slot to the row's actions (`.folder-count`, sidebar.css), and for the same

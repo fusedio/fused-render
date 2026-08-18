@@ -3513,6 +3513,28 @@ describe("the archive action", () => {
     );
   });
 
+  it("is bigger to aim at than it is to look at", () => {
+    // 22px was a small target for a control the pointer arrives at sideways, so the
+    // ZONE grows and the SKIN does not (Akshil, 2026-08-18). A pseudo-element and
+    // not padding: the button is out of flow and centred by a transform on its own
+    // box, so padding would move the centre and, worse, grow the box the hover fill
+    // paints.
+    const zone = block(TASKS_CSS, ".tasks-rowmark .tasks-act--archive::after");
+    expect(zone).toContain("position: absolute");
+    expect(zone).toMatch(/inset: -\d+px/);
+    // The painted box is untouched — still the 22px every `.tasks-act` is.
+    const button = block(TASKS_CSS, ".tasks-rowmark .tasks-act--archive");
+    expect(button).not.toContain("padding");
+    expect(button).not.toContain("width");
+    // And the growth stops short of the chevron's own enlarged gutter, which sits at
+    // the same `z-index: 2` earlier in the DOM and would lose the overlap: the left
+    // inset is the smallest of the four on purpose.
+    const insets = (zone.match(/inset: ([^;]+);/) ?? ["", ""])[1].trim().split(/\s+/);
+    expect(insets).toHaveLength(4);
+    const px = (v: string) => Math.abs(parseFloat(v));
+    expect(px(insets[3])).toBeLessThan(px(insets[1]));
+  });
+
   it("leaves the board card's archive exactly where it was", () => {
     // The swap is the LIST's, and only the List's. A card's ring is not in a rail
     // and its head has an empty right end the strip was measured against
