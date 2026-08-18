@@ -1544,6 +1544,7 @@ def api_fs_trash_move(body: dict = Body(...), x_fused: str | None = Header(defau
     result = _fs_trash_move(body, x_fused)
     # Both ends change, exactly as a rename does.
     _invalidate_stat_cache(body.get("from"), body.get("to"))
+    _note_index_mutation(result, body.get("from"), body.get("to"))
     return result
 
 @router.post("/api/fs/rename")

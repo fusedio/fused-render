@@ -171,7 +171,7 @@ def test_a_start_that_fails_does_not_strand_the_rest():
 
 
 @pytest.mark.parametrize("route", ["write", "mkdir", "delete", "rename", "copy",
-                                   "compress", "upload"])
+                                   "compress", "upload", "trash_move"])
 def test_every_mutating_route_reports_what_it_changed(route):
     """Source guard. The point of this module is that the index learns about
     EVERY change the app makes; a route added without the call is a folder the
