@@ -2889,9 +2889,14 @@ export default function NewJobModal({
               needs no flag. This is the opt-OUT: tick it and each occurrence
               mints a fresh task, with a session and a TASK-nnn of its own
               (design §6).
- */}
+
+              "FRESH", not "New" (Akshil, 2026-08-18): the card's own button says
+              New task, so "New task each run" read as a second thing the form
+              could create rather than as what this run's thread does. The flag,
+              the wire (`new_task_each_run`) and the behaviour are untouched —
+              this is the word the user reads. */}
           <CheckField
-            label="New task each run"
+            label="Fresh task each run"
             checked={newTaskEachRun}
             onChange={setNewTaskEachRun}
             describedBy={threadHintId}

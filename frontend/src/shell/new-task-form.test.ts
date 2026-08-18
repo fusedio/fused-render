@@ -819,7 +819,7 @@ describe("which session an edit carries", () => {
   });
 
   test("but a template that forks every run carries no thread at all", () => {
-    // "New task each run" means a fresh session per occurrence; an id on that
+    // "Fresh task each run" means a fresh session per occurrence; an id on that
     // template is a thread it must NOT resume.
     expect(
       buildSchedulePayload(
