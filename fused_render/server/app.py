@@ -60,7 +60,6 @@ from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
-from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.tasks import router as tasks_router
 from fused_render.server.routers.update import router as update_router
@@ -422,12 +421,12 @@ def create_app(start_dir: str) -> FastAPI:
 
     app.include_router(templates_router)
 
-    # Per-file session restore (LSN-*/_server_session.py), the fs read routes
-    # (stat/conditions/list/walk/raw/events/reveal — _server_fs_read.py), the
-    # fs mutation routes (write/mkdir/delete/rename/copy — _server_fs_mutate.py),
-    # /render (_server_render.py), /api/run (_server_run.py), fused.ai
-    # (_server_ai.py), and /api/export (_server_export.py).
-    app.include_router(session_router)
+    # The fs read routes (stat/conditions/list/walk/raw/events/reveal —
+    # _server_fs_read.py), the fs mutation routes
+    # (write/mkdir/delete/rename/copy — _server_fs_mutate.py), /render
+    # (_server_render.py), /api/run (_server_run.py), fused.ai (_server_ai.py),
+    # and /api/export (_server_export.py). GET/PUT /api/session used to lead
+    # this list; the per-file session restore it served is gone (D329).
     app.include_router(fs_read_router)
     app.include_router(search_router)
     app.include_router(fs_mutate_router)

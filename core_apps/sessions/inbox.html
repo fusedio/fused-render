@@ -266,13 +266,14 @@ const curTag = () => fused.params.get("tag") || "";
 // ---------- layout (list | board), remembered across visits ----------
 // The URL param stays the authority: a link with ?layout=board MEANS board, and
 // every other filter on this page works that way too. What the param cannot do
-// is survive a fresh visit. The shell's per-file session restore (LSN-*) is what
-// replays a file's last query, and it is skipped for this page BY DESIGN — the
-// sessions app is mounted read-only (ensure_builtin_mounts sets read_only), and
-// useSessionRestore/useSessionTracking both opt out of non-writable paths
-// because their sidecar write is server-refused there. So someone who only ever
-// works the board got snapped back to the list on every single open of
-// /sessions. localStorage is the one store this page owns.
+// is survive a fresh visit: NOTHING replays a page's last query, so a fresh open
+// of /sessions arrives with no `layout` at all and someone who only ever works
+// the board gets snapped back to the list every single time. (The shell once did
+// replay it — per-file session restore, LSN-* — but this page was skipped BY
+// DESIGN even then: the sessions app is mounted read-only,
+// ensure_builtin_mounts sets read_only, and both halves of that restore opted
+// out of non-writable paths. D329 removed the machinery outright.) localStorage
+// is the one store this page owns.
 const LAYOUT_KEY = "fused.sessions.layout";
 const LAYOUTS = ["list", "board"];
 

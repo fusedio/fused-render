@@ -97,9 +97,6 @@ export interface StatResult {
   // the template iframe as _remote=1 so pages can prefer ranged HTTP reads.
   remote?: boolean;
   // False for a file on a read-only mount (or any path the user can't write).
-  // Session restore keys off this: a non-writable file can never have had a
-  // sidecar written, so its restore is skipped rather than blocking on a cold,
-  // guaranteed-null GET /api/session (see useSessionRestore).
   writable?: boolean;
   templates: TemplateEntry[];
   template_error?: string;
@@ -622,21 +619,6 @@ export interface BookmarkFileResult {
 
 export function getBookmarkFile(path: string): Promise<BookmarkFileResult> {
   return getJson<BookmarkFileResult>("/api/bookmark-file?path=" + encodeURIComponent(path));
-}
-
-// Per-file session restore (LSN-*). `search` is the shell query without the
-// leading "?", stored verbatim in the target file's .html.json sidecar.
-export interface LastSession {
-  search: string;
-  updated_at: number;
-}
-
-export function getSession(fsPath: string): Promise<{ lastSession: LastSession | null }> {
-  return getJson("/api/session?path=" + encodeURIComponent(fsPath));
-}
-
-export function putSession(fsPath: string, search: string): Promise<void> {
-  return putJson<unknown>("/api/session", { path: fsPath, search }).then(() => undefined);
 }
 
 // Recently opened files (fused_render/shell/recents.py). `url` is the shell
