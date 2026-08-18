@@ -1999,16 +1999,23 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
         return _error("'name' must be a canvas name (letters, digits, underscore)")
     manager = _sync_manager(name, create=False)
     if manager is None:
-        # Deliberately not create=True: a fresh manager has no merge base and
-        # no remote manifest, so its first push would be the unguarded
-        # wholesale replace this endpoint exists to prevent. The workspace
-        # starts the watcher when it opens the canvas.
+        # Deliberately not create=True: constructing one here just to push
+        # once would also start its background thread as a side effect of a
+        # single request, and a manager built without ever having watched
+        # this open (no probe, no in-flight remote manifest) is not a
+        # meaningfully more guarded push than the raw CLI's — even though
+        # `_load_base()` may load a real merge base from a PRIOR sync
+        # session's `.sync/<name>.json`. The workspace starts the real
+        # watcher when it opens the canvas; that is the supported way back in.
         #
-        # `code` is for _canvas_push.py: with no watcher there is no merge base
-        # to protect, so the CLI interception falls through to the real CLI
-        # instead of turning a legitimate push into an error. It needs to tell
-        # that apart from a refusal it must report, and matching on prose would
-        # break the moment this wording changes.
+        # `code` is for _canvas_push.py: since D350's finding-3 correction, a
+        # positively-identified clone target REFUSES on this code rather than
+        # falling through — a merge base from a prior session, or a remote
+        # move via the hosted workbench, can both be invisible right here and
+        # the raw push is never provably inert for a clone. `code` still lets
+        # the CLI interception tell this apart from a genuine push failure it
+        # must report verbatim, and matching on prose would break the moment
+        # this wording changes.
         return JSONResponse(
             {"error": f"canvas {name!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)

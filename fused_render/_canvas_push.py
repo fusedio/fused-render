@@ -35,10 +35,16 @@ Design rules, all of them load-bearing:
     Standard library only — no FastAPI, no server state, no `canvases`. The
     canvases-root rule is duplicated here for that reason, the same trade
     ``templates/shared/appenv.py`` makes.
-  * FALLING THROUGH IS ALWAYS SAFE. No origin, target outside the canvases
-    root, no watcher running, or a request that cannot connect: in each of those
-    the manifest-based two-way sync is not running for that folder, so there is
-    no merge base to protect and the real CLI is exactly right.
+  * FALLING THROUGH IS SAFE ONLY WHEN IT IS INERT. No origin, a target outside
+    the canvases root, or a request that cannot connect at all: sync was never
+    engaged for that folder, so there is genuinely no merge base to protect and
+    the real CLI is exactly right. But a positively-identified clone
+    (`_clone_name` matched) is a different case even when the endpoint reports
+    "no watcher" (409 `no_watcher`) or a timeout: a merge base from a prior
+    sync session can still be sitting on disk, and the remote can have moved
+    through the hosted workbench with nothing watching to notice — so those
+    two refuse instead of falling through. "When unsure, fall through" only
+    holds while the fall-through is a no-op; for a clone target it never is.
 """
 import json
 import os
@@ -175,8 +181,24 @@ def parse_push(args: list[str]) -> dict | None:
             "unsupported": unsupported}
 
 
+_TIMED_OUT = -1  # sentinel status: connected, but no response within _HTTP_TIMEOUT_S
+
+
 def _post_push(origin: str, name: str) -> tuple[int | None, dict]:
-    """POST the push. `(status, body)`; status None = could not connect."""
+    """POST the push. `(status, body)`.
+
+    status None        -> could not connect at all (server not around) — safe
+                           to fall through to the real CLI.
+    status _TIMED_OUT   -> the request timed out. NOT safe to fall through: on
+                           localhost a bare connect() either succeeds almost
+                           instantly or fails immediately with a connection
+                           error (a distinct, non-timeout OSError) — so a
+                           `socket.timeout`/`TimeoutError` surfacing after the
+                           full `_HTTP_TIMEOUT_S` window means the connection
+                           was made and the server's own guarded push may
+                           still be running. Falling through here would start
+                           a second, unguarded push racing the first.
+    """
     import urllib.error
     import urllib.request
 
@@ -196,6 +218,10 @@ def _post_push(origin: str, name: str) -> tuple[int | None, dict]:
             return exc.code, _decode(exc.read())
         except OSError:
             return exc.code, {}
+    except TimeoutError:
+        # socket.timeout is TimeoutError since Python 3.10; caught ahead of
+        # the general OSError branch below on purpose — see the docstring.
+        return _TIMED_OUT, {}
     except (urllib.error.URLError, OSError, ValueError):
         return None, {}
 
@@ -246,9 +272,46 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
     status, body = _post_push(origin, name)
     if status is None:
         return None  # server unreachable — the real CLI is the honest fallback
+    if status == _TIMED_OUT:
+        # We connected — the server IS running a guarded push for this canvas,
+        # possibly still in flight. Falling through would run the raw,
+        # unguarded push concurrently with it. Refuse instead of guessing.
+        err.write(
+            "fused-render: the canvas push request timed out waiting for a "
+            "response from fused-render.\n"
+            "The push may still be running inside fused-render's own sync "
+            "manager. Do not retry with a different push command — check the "
+            "canvas's sync status in the workspace, and try again once it "
+            "settles.\n")
+        return 1
     if status == 409 and body.get("code") == "no_watcher":
-        # Nothing is syncing this folder, so there is no merge base to protect.
-        return None
+        # No LIVE manager for this folder right now — but the target was
+        # already positively identified as a canvas clone (_clone_name
+        # matched), and a merge base from a PRIOR sync session may still be
+        # sitting on disk at .sync/<name>.json, invisible to this process (no
+        # heavy imports here) and to the endpoint's `create=False` check
+        # alike. The remote can also have moved since then, through the
+        # hosted workbench, with nothing watching to notice. Falling through
+        # here is exactly the wholesale-replace clobber this whole module
+        # exists to prevent — it is not the "definitely no merge base, so
+        # falling through is inert" case the other fall-throughs are (no
+        # origin, outside the canvases root, server unreachable): those mean
+        # sync was never engaged for this folder at all, this one means sync
+        # merely isn't running RIGHT NOW. So a clone target refuses here
+        # instead of falling through — "when unsure, fall through" is only
+        # safe when falling through is inert, and for a positively-identified
+        # clone it never is. Recorded as part of D350's contract (see
+        # DECISIONS.md).
+        err.write(
+            "fused-render: %s\n"
+            "This folder is a canvas clone, so it is meant to be two-way "
+            "synced, but nothing is watching it right now (the sync manager "
+            "isn't running — often just because the canvas workspace tab "
+            "isn't open). Open this canvas in fused-render to start sync, "
+            "then push again; that also protects against the remote having "
+            "moved in the hosted workbench while nothing was watching.\n"
+            % (body.get("error") or "the canvas is not being synced"))
+        return 1
     if status == 409 and body.get("code") == "busy":
         # Someone else holds the folder this instant (the watcher's own leg,
         # another session, a pause). Benign and retryable — say so in those
