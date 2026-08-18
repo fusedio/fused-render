@@ -14,6 +14,15 @@
 # inside this file. That is the property the runner-folder design exists to
 # preserve, and it is why `worker.py` never calls `subprocess`.
 #
+# **The engine lines carry CEILINGS**, for the reason
+# `mflux_image/pyproject.toml` states at length: no lockfile is committed beside
+# these manifests and `uv sync` runs bare, so an unbounded requirement is
+# re-resolved from PyPI on every new venv key and a major bump lands on users
+# with no commit behind it. `sherpa-onnx-core` stays unbounded on purpose —
+# sherpa-onnx's own wheels declare `Requires-Dist: sherpa-onnx-core==<its own
+# version>`, so the bound on the primary already governs the companion and a
+# second range could only ever contradict it.
+#
 # What each earns:
 #   faster-whisper  the model, the decoder and the VAD. Pulls in ctranslate2
 #                   (which builds wheels for macOS on both architectures, Linux
@@ -56,10 +65,10 @@ name = "fused-render-runner-faster-whisper"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "faster-whisper",
+    "faster-whisper>=1.2,<2",
     "huggingface_hub",
     "psutil",
-    "sherpa-onnx",
+    "sherpa-onnx>=1.13,<2",
     # The other half of sherpa-onnx, which its own metadata cannot get into the
     # lock. See the comment above before removing this as a duplicate.
     "sherpa-onnx-core",
