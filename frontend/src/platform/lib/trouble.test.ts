@@ -273,3 +273,16 @@ test("the unknown-path line states no cause, because there are several", () => {
     expect(text).not.toContain("would have told me");
   }
 });
+
+test("a registry that is fixed and breaks again is announced again", () => {
+  // The recovery path Preview relies on. The sticky toast is taken down when
+  // `template_error` clears, and the message is forgotten at the same moment —
+  // otherwise the identical fault arriving again (a repair that did not hold, a
+  // second bad edit) would stay silent, which reads as the fix having worked.
+  resetAnnouncedTemplateErrors();
+  const err = "cannot read registry.json: Expecting property name (char 2)";
+  expect(shouldAnnounceTemplateError(err)).toBe(true);
+  expect(shouldAnnounceTemplateError(err)).toBe(false);
+  resetAnnouncedTemplateErrors(); // what the recovery does
+  expect(shouldAnnounceTemplateError(err)).toBe(true);
+});
