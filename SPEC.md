@@ -7632,17 +7632,32 @@ the installation, and the mark that says so.
   expired. Those stay POST-HOC, classified from the failure by §42's two-tier
   rules, which is the right shape for them: a fact you can only learn by trying
   is a fact you report after trying. The line is not "cheap versus expensive", it
-  is **stable versus perishable** — a binary that is absent stays absent until
-  someone installs it; a session that is signed in can be signed out mid-fix.
-  When the pre-check fires, the surfaces answer with `CLAUDE_MISSING_ERROR` —
-  byte-identical to what `spawn_helper` returns for a genuinely missing CLI, and
-  pinned to it (`test_trouble_parity.py`) — rather than spending a spawn everyone
-  already knows the outcome of. Identical sentence, identical `notfound` card,
-  whether the user got there by being told or by finding out; two accounts of one
-  fact read as two different problems. The row's verb becomes **Set up Claude
-  Code** and Preferences says the same in a sentence: naming the precondition,
-  not the failed download, because that is the thing standing between the user
-  and a session.
+  is **knowable versus unknowable without spending a session** — a binary either
+  is on this machine or is not, and one `which` says which; being signed in is a
+  property of a service that only the CLI can ask about. Note what this line is
+  NOT: it is not "stable versus changing". `claude_missing` changes the moment
+  the user installs Claude Code — which this feature explicitly asks them to do —
+  and that is exactly why the answer may be cached for a LABEL and never for a
+  DECISION (below).
+  **The pre-check WORDS the button; it never DECIDES the click.** That split is
+  the correction to a trap this feature dug for itself. The obvious reading of
+  "we already know the answer" is to short-circuit — answer from the cached value
+  and skip a spawn whose outcome is known — and it is wrong here for a reason
+  specific to this precondition: **the button exists to tell the user to go and
+  install Claude Code**, so the one state it caches is the one state it is
+  actively asking them to change. A user who did exactly what it said and clicked
+  again in the same tab was told the binary was still missing, until they thought
+  to reload. That is worse than never pre-checking at all, because before the
+  pre-check the second click started a session. So every click asks the server —
+  the only thing that knows the current answer — and the cached value only picks
+  the verb, with `recheck` re-reading afterwards so the wording catches up on the
+  same interaction rather than at the next page load.
+  It also means there is exactly ONE copy of the missing-CLI sentence, in
+  `claude_spawn.CLAUDE_MISSING_ERROR`: a shell-side copy existed to serve the
+  short-circuit, and went with it rather than being kept honest by a parity test
+  nothing needed. The row's verb becomes **Set up Claude Code** and Preferences
+  says the same in a sentence: naming the precondition, not the failed download,
+  because that is the thing standing between the user and a session.
 - **SF-13e** **WRITERS take the first records home that will have them; READERS
   look in all of them** (`record_homes`). `writable()` is `os.access` on the
   install root — a PREDICTION, and one that answers only for the real uid's

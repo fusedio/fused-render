@@ -12,7 +12,14 @@
 // (the injected runtime writes params through the parent's history object,
 // which fires no native event) — that wrapping is load-bearing for the
 // layout modes and the update-bookmark flow, not just for these hooks.
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { NAV_EVENT } from "@platform/lib/router";
 import { createCloseDeferrer } from "@platform/lib/exit-animation";
 import { getConfig } from "@platform/lib/api";
@@ -237,6 +244,12 @@ export interface SelfFixReadiness {
   claudeMissing: boolean;
 }
 
+/** The hook's return: the two facts, plus a way to ask again. */
+export interface SelfFixReadinessState extends SelfFixReadiness {
+  /** Re-read after a start attempt — the user may have just installed Claude. */
+  recheck: () => void;
+}
+
 // The two preconditions a surface can check before it offers a self-fix session
 // (SPEC §43, SF-13f), read together off /api/config because they are read
 // together and neither is worth its own request. Preferences learns the
@@ -257,10 +270,23 @@ export interface SelfFixReadiness {
 // directory. The PROMISE is what's cached rather than the answer, so three
 // simultaneous mounts share one request instead of racing three.
 //
-// Cached for the whole session, and that is sound in a way the learn-mount poll
-// above is not: file permissions on the install root are a property of how the
-// app was installed, and a copy that changes owner mid-session has bigger
-// problems than a stale button label.
+// THE LABEL IS CACHED; THE DECISION NEVER IS. That split is the correction to a
+// real trap: `claudeMissing` was cached for the page like `readOnly`, and both
+// surfaces then answered the click from the cache without asking the server. But
+// this feature EXISTS to tell the user to go and install Claude Code — so the
+// one state it caches is the one state it is actively asking the user to change,
+// and a user who did what the button said, then clicked it again in the same
+// tab, was told the binary was still missing until they reloaded. That is worse
+// than not pre-checking at all: before the pre-check, the second click started a
+// session. So the cached value only ever WORDS the button; every click asks the
+// server, which is the only thing that knows the current answer. `recheck` then
+// re-reads so the wording catches up on the same interaction rather than at the
+// next page load.
+//
+// `readOnly` really is stable — file permissions on the install root are a
+// property of how the app was installed, and a copy that changes owner
+// mid-session has bigger problems than a stale label — but it is read through
+// the same path, because one request answering both is the point.
 //
 // Absence answers FALSE on both — the label falls back to promising an ordinary
 // fix. Deliberate: nearly every installation is one the user owns with Claude
@@ -291,23 +317,43 @@ function probeReadiness(): Promise<SelfFixReadiness> {
   return readinessProbe;
 }
 
+// Every mounted hook, so a re-read reaches all of them. The cache is SHARED —
+// three failed rows ask once — so its invalidation has to be shared too, or the
+// row whose button was clicked would update its verb while the rows beside it
+// went on saying the opposite about the same machine.
+const readinessListeners = new Set<(value: SelfFixReadiness) => void>();
+
+function refreshReadiness(): void {
+  readinessProbe = null;
+  probeReadiness().then((value) => {
+    for (const notify of [...readinessListeners]) notify(value);
+  });
+}
+
 /** Test seam: forget the cached probe so a case can serve a different config. */
 export function resetSelfFixReadiness(): void {
   readinessProbe = null;
 }
 
-export function useSelfFixReadiness(): SelfFixReadiness {
+export function useSelfFixReadiness(): SelfFixReadinessState {
   const [ready, setReady] = useState(NOT_READY);
   useEffect(() => {
     let cancelled = false;
-    probeReadiness().then((value) => {
+    const apply = (value: SelfFixReadiness) => {
       if (!cancelled) setReady(value);
-    });
+    };
+    readinessListeners.add(apply);
+    probeReadiness().then(apply);
     return () => {
       cancelled = true;
+      readinessListeners.delete(apply);
     };
   }, []);
-  return ready;
+  // Called after a start attempt resolves: the attempt is the moment the user
+  // may have just changed the answer — installed Claude Code, because this
+  // button told them to. One re-read, delivered to every mounted row.
+  const recheck = useCallback(refreshReadiness, []);
+  return { ...ready, recheck };
 }
 
 // Live sidebar chrome state (platform/lib/sidebarstate) — collapsed flag and
