@@ -780,7 +780,7 @@ def _move_to_xdg_trash(path: str) -> str | None:
     return str(dest)
 
 
-def _unlink_quietly(path) -> None:
+def _unlink_quietly(path: str | Path) -> None:
     # For paths WE created and no longer want. A failure here cannot be reported
     # to anyone usefully (the operation it belonged to has already been decided)
     # and must not mask it.
