@@ -119,8 +119,12 @@ def _pin_stream():
     lazy, where a list of two attribute names would not.
 
     The invariant this protects, and the one to test any sibling runner against:
-    **nothing lazy may survive the loading thread.** `mflux_image/worker.py`
-    documents why it satisfies that already and needs no pin.
+    **nothing lazy may survive the loading thread.** `mflux_image/worker.py` used
+    to document why it satisfied that already and needed no pin; it does not, and
+    now pins too. Read its `load` before trusting a "same shape, but fine"
+    argument here — it also records the part this function does NOT cover: the
+    default stream is per (thread, DEVICE), so `make(mx.default_device())` below
+    pins the GPU only and leaves this thread's CPU default alone.
 
     `new_thread_unsafe_stream` is mlx's own answer: a stream not owned by the
     thread that made it. "Unsafe" means it must not be driven by two threads AT

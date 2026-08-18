@@ -24,6 +24,7 @@ from fastapi.responses import (
 from fused_render import calls as shell_calls
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.gitignore import _is_repo_root
+from fused_render.server.index_touch import note_index_mutation
 from fused_render.server.mount import _invalidate_stat_cache, _is_under_snapshot_root, _mount_probe, _mount_stat_payload, _mutation_result_payload, _probe_path, _stat_payload, _writable
 from fused_render.server.walk import _mount_list_error_response
 from fused_render.shell import storage as shell_storage
@@ -82,6 +83,24 @@ def _snapshot_refusal(*paths: str | None):
 
 
 def _fs_write(body: dict, x_fused: str | None):
+    """Write `content` to `path`.
+
+    The success payload carries `created` — whether this write ADDED a path
+    rather than replacing one. The file index needs it (it stores names, so a
+    create is news and an overwrite is not) and cannot work it out afterwards,
+    since the file exists either way; and it must not be approximated by the
+    `create` flag, which means "409 rather than clobber", so the documented
+    page pattern `fused.writeFile("out.csv", data)` creates a file with it
+    unset. Only the two branches below know, each having asked the question in
+    the way that is safe for its kind of path.
+
+    IN THE PAYLOAD, not through an out-parameter, and that is not a style
+    choice: an extra argument at the CALL SITE breaks every existing
+    monkeypatch of this helper (`tests/test_stat_cache.py` replaces it with a
+    two-argument lambda), which a default value hides at definition time and
+    does not fix at all. A caller that stubs this out simply returns no
+    `created` key, and the route reads that as "nothing to report".
+    """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -123,6 +142,7 @@ def _fs_write(body: dict, x_fused: str | None):
             return _error(f"path is a directory: {path}")
         if not pr.parent_is_dir:
             return _error(f"parent directory does not exist: {parent}", status=404)
+        created = not pr.exists
         if create and pr.exists:
             return JSONResponse({"error": "conflict"}, status_code=409)
         if expected_mtime is not None:
@@ -172,7 +192,7 @@ def _fs_write(body: dict, x_fused: str | None):
             after = None
         size = after.size if after and after.exists else len(content.encode("utf-8"))
         mtime = after.mtime if after and after.exists else None
-        return _mount_stat_payload(path, False, size, mtime)
+        return {**_mount_stat_payload(path, False, size, mtime), "created": created}
 
     if os.path.isdir(path):
         return _error(f"path is a directory: {path}")
@@ -194,6 +214,7 @@ def _fs_write(body: dict, x_fused: str | None):
     # clobber someone else's write. Compare against the raw st_mtime float
     # that /api/fs/stat returns, with a tolerance for float round-tripping.
     exists = os.path.exists(path)
+    created = not exists
     if create and exists:
         return JSONResponse({"error": "conflict"}, status_code=409)
     if expected_mtime is not None:
@@ -225,7 +246,7 @@ def _fs_write(body: dict, x_fused: str | None):
             pass
         return _error(f"cannot write {path}: {e}", status=400)
 
-    return _stat_payload(path, False)
+    return {**_stat_payload(path, False), "created": created}
 
 
 def _fs_upload(path: str | None, data: bytes, x_fused: str | None):
@@ -1425,6 +1446,23 @@ def _fs_copy(body: dict, x_fused: str | None):
     return _stat_payload(dst, os.path.isdir(dst))
 
 
+def _note_index_mutation(result, *paths: str | None) -> None:
+    """Tell the file index which folders this app just changed.
+
+    The index has no filesystem watcher, so without this a rename made in the
+    explorer leaves search offering the old name until the next scheduled scan
+    — which the in-folder search used to route around by walking the folder
+    live instead (server/index_touch.py carries the reasoning).
+
+    ON SUCCESS ONLY, unlike the stat-cache invalidation above. That one is a
+    no-op when nothing changed; this one schedules a real (small) rescan, and
+    a 403 or a 409 changed nothing to rescan.
+    """
+    if getattr(result, "status_code", 200) != 200:
+        return
+    note_index_mutation(*paths)
+
+
 # Every mutation endpoint invalidates the /api/fs/stat cache for the paths it
 # touches (and their parents, via _invalidate_stat_cache) so the editor's
 # immediate post-mutation stat re-reads fresh metadata. Invalidation runs
@@ -1442,6 +1480,25 @@ def api_fs_write(request: Request, body: dict = Body(...),
                  x_fused: str | None = Header(default=None)):
     result = _fs_write(body, x_fused)
     _invalidate_stat_cache(body.get("path"))
+    # Only a write that ADDED a path is news to the index, which stores names:
+    # overwriting a file changes its bytes, and the size and mtime stored
+    # beside the name are not what search ranks on. This matters because the
+    # markdown editor autosaves every 2 seconds (AUTOSAVE_MS) and a rescan ends
+    # in a full compaction — reporting every write would rewrite the whole
+    # store for as long as somebody is typing a note.
+    #
+    # The payload's own `created`, never the `create` flag: that one means "409
+    # rather than clobber", and the documented page pattern
+    # `fused.writeFile("out.csv", data)` leaves it unset while creating a file.
+    # The same key reaches the CLIENT, whose "indexing…" caption is a claim
+    # about a rescan the server may or may not have scheduled — without it the
+    # box guessed, and every overwrite claimed a rescan for a minute while
+    # suppressing the "not refreshed" caveat that was the true one.
+    #
+    # A stubbed-out `_fs_write` (tests do that) returns no such key, which
+    # reads as "nothing to report" — the safe direction.
+    if isinstance(result, dict) and result.get("created"):
+        _note_index_mutation(result, body.get("path"))
     # What the app wrote and how big — never the content (calls.py).
     # `_fs_write` returns a stat payload on success and a JSONResponse on
     # every refusal, so the status has to come off the response object.
@@ -1468,6 +1525,7 @@ async def api_fs_upload(request: Request, file: UploadFile = File(...),
     data = await file.read()
     result = _fs_upload(path, data, x_fused)
     _invalidate_stat_cache(path)
+    _note_index_mutation(result, path)
     # A binary write is a write: it belongs in the call log for the same reason
     # /api/fs/write does — "what did my page put on disk" is a real question,
     # and a pasted screenshot would otherwise be the one mutation that leaves
@@ -1488,6 +1546,7 @@ async def api_fs_upload(request: Request, file: UploadFile = File(...),
 def api_fs_mkdir(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     result = _fs_mkdir(body, x_fused)
     _invalidate_stat_cache(body.get("path"))
+    _note_index_mutation(result, body.get("path"))
     return result
 
 @router.post("/api/fs/compress")
@@ -1496,6 +1555,7 @@ def api_fs_compress(body: dict = Body(...), x_fused: str | None = Header(default
     # Only the archive appears; the folder it was made from is untouched, so
     # (like copy) its cached stat stays valid.
     _invalidate_stat_cache(_compress_dest(body))
+    _note_index_mutation(result, _compress_dest(body))
     return result
 
 def _compress_dest(body: dict) -> str | None:
@@ -1514,6 +1574,7 @@ def _compress_dest(body: dict) -> str | None:
 def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     result = _fs_delete(body, x_fused)
     _invalidate_stat_cache(body.get("path"))
+    _note_index_mutation(result, body.get("path"))
     return result
 
 @router.post("/api/fs/trash-move")
@@ -1521,6 +1582,7 @@ def api_fs_trash_move(body: dict = Body(...), x_fused: str | None = Header(defau
     result = _fs_trash_move(body, x_fused)
     # Both ends change, exactly as a rename does.
     _invalidate_stat_cache(body.get("from"), body.get("to"))
+    _note_index_mutation(result, body.get("from"), body.get("to"))
     return result
 
 @router.post("/api/fs/rename")
@@ -1528,6 +1590,7 @@ def api_fs_rename(body: dict = Body(...), x_fused: str | None = Header(default=N
     result = _fs_rename(body, x_fused)
     # A move changes both ends: src disappears, dst appears.
     _invalidate_stat_cache(body.get("src"), body.get("dst"))
+    _note_index_mutation(result, body.get("src"), body.get("dst"))
     return result
 
 @router.post("/api/fs/copy")
@@ -1535,4 +1598,5 @@ def api_fs_copy(body: dict = Body(...), x_fused: str | None = Header(default=Non
     result = _fs_copy(body, x_fused)
     # A copy only writes dst; src is untouched, so its cached stat stays valid.
     _invalidate_stat_cache(body.get("dst"))
+    _note_index_mutation(result, body.get("dst"))
     return result

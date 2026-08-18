@@ -23,6 +23,14 @@
 # "FFmpeg is not installed or not in your PATH" without one. So `worker.py`
 # decodes with `av` and hands the waveform over in place of the path.
 #
+# **The engine lines carry CEILINGS**, for the reason
+# `mflux_image/pyproject.toml` states at length: no lockfile is committed beside
+# these manifests and `uv sync` runs bare, so an unbounded requirement is
+# re-resolved from PyPI on every new venv key — which is exactly how an `mlx`
+# minor bump reached users' machines with no commit behind it. `parakeet-mlx` is
+# the line that carries `mlx` and `numpy` pins into this venv, so bounding it is
+# what keeps this folder's resolution from drifting on its own.
+#
 # What each earns:
 #   parakeet-mlx    the model and the transducer decoder, on Metal. Pulls mlx,
 #                   librosa, numpy, dacite and huggingface_hub in itself; the
@@ -56,12 +64,12 @@ name = "fused-render-runner-parakeet-mlx"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "parakeet-mlx",
+    "parakeet-mlx>=0.5,<0.6",
     "huggingface_hub",
     "psutil",
     "av",
-    "onnxruntime",
-    "sherpa-onnx",
+    "onnxruntime>=1.28,<2",
+    "sherpa-onnx>=1.13,<2",
     # The other half of sherpa-onnx, which its own metadata cannot get into the
     # lock. See the comment above before removing this as a duplicate.
     "sherpa-onnx-core",

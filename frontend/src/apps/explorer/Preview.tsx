@@ -987,7 +987,7 @@ function TemplatePreview({
   // `_nofocus=1` rides along on the same condition, not on a second flag of its
   // own: a thumbnail is display-only, so nothing in it may take the keyboard —
   // and focus inside a frame scrolls that frame into view, which propagated out
-  // to the card grid's scroller and jumped the grid to that card (D341,
+  // to the card grid's scroller and jumped the grid to that card (D343,
   // platform/lib/frame-focus.ts). Pairing it with IS_PREVIEW is also what makes
   // it INHERIT: IS_PREVIEW is true for any descendant of a thumbnail shell
   // (router.ancestorIsPreview), so a peeked page that itself embeds an app

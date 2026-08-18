@@ -1,69 +1,108 @@
 import { beforeEach, expect, test } from "bun:test";
 import {
-  indexMayAnswer,
+  RESCAN_PENDING_MAX_MS,
+  fsMutationCount,
+  indexLifecycleCount,
+  indexRescanPending,
   noteFsMutation,
+  noteIndexLifecycle,
   resetFsMutations,
+  subscribeFsMutations,
 } from "@platform/lib/index-freshness";
 
 beforeEach(() => resetFsMutations());
 
-test("an untouched folder is still answered by the index", () => {
-  expect(indexMayAnswer("/home/me/proj")).toBe(true);
-  noteFsMutation("/home/me/other/a.txt");
-  expect(indexMayAnswer("/home/me/proj")).toBe(true);
-});
+// -- the mutation signal itself ------------------------------------------------
 
-test("a mutation makes its own folder walk instead", () => {
-  // The corpus for /home/me/proj was built before this file was renamed into
-  // it, so the index cannot know the new name and still matches the old one.
-  noteFsMutation("/home/me/proj/renamed.txt");
-  expect(indexMayAnswer("/home/me/proj")).toBe(false);
-});
-
-test("a mutation deep in the subtree invalidates the folder above it", () => {
-  // In-folder search is RECURSIVE, so the corpus for /home/me/proj includes
-  // everything below it — a change anywhere under it is a change to it.
-  noteFsMutation("/home/me/proj/src/deep/x.ts");
-  expect(indexMayAnswer("/home/me/proj")).toBe(false);
-});
-
-test("renaming an ANCESTOR invalidates the folder below it", () => {
-  noteFsMutation("/home/me/proj");
-  expect(indexMayAnswer("/home/me/proj/src")).toBe(false);
-});
-
-test("a rename several levels down still pins every folder above it to the walk", () => {
-  // The invariant the gate exists for, and the reason racing the index against
-  // the live walk (listing/source-race) does not weaken it: the index would
-  // WIN that race and answer instantly with the pre-rename name. A race fixes a
-  // slow answer, never a wrong one — so both directions of the check stay, and
-  // "narrow it to the mutated folder itself" is not available.
-  noteFsMutation("/home/me/proj/src/deep/nested/renamed.ts");
-  for (const folder of [
-    "/home/me",
-    "/home/me/proj",
-    "/home/me/proj/src",
-    "/home/me/proj/src/deep",
-    "/home/me/proj/src/deep/nested",
-  ]) {
-    expect(indexMayAnswer(folder)).toBe(false);
-  }
-});
-
-test("a sibling prefix is not a subtree", () => {
-  // /home/me/proj-old must not be read as "inside /home/me/proj".
-  noteFsMutation("/home/me/proj-old/a.txt");
-  expect(indexMayAnswer("/home/me/proj")).toBe(true);
-});
-
-test("trailing slashes do not change the answer", () => {
+test("noting a mutation increments the count and notifies subscribers", () => {
+  const seen: number[] = [];
+  const off = subscribeFsMutations(() => seen.push(fsMutationCount()));
+  expect(fsMutationCount()).toBe(0);
   noteFsMutation("/home/me/proj/a.txt");
-  expect(indexMayAnswer("/home/me/proj/")).toBe(false);
+  noteFsMutation("/home/me/proj/b.txt");
+  expect(seen).toEqual([1, 2]);
+  off();
+  noteFsMutation("/home/me/proj/c.txt");
+  expect(seen).toEqual([1, 2]); // unsubscribed
+  expect(fsMutationCount()).toBe(3); // ...but the count keeps moving
 });
 
-test("the record is bounded, keeping the most recent mutations", () => {
-  for (let i = 0; i < 500; i++) noteFsMutation(`/home/me/f${i}/x.txt`);
-  expect(indexMayAnswer("/home/me/f499")).toBe(false);
-  // ...and the set has not grown without limit
-  expect(indexMayAnswer("/home/me/f0")).toBe(true);
+test("the count is what distinguishes an in-app change from watch churn", () => {
+  // Watch churn does not touch this module at all, which is precisely why it
+  // can be used to tell the two apart.
+  expect(fsMutationCount()).toBe(0);
+  noteFsMutation("/home/me/proj/x.txt");
+  expect(fsMutationCount()).toBe(1);
+});
+
+// -- "the index is being put right" --------------------------------------------
+//
+// This replaces the old `indexMayAnswer` gate. That one answered "may the
+// index answer for this folder?" with a NO that lasted the whole session, and
+// the in-folder search routed around it by walking the folder live. The server
+// now rescans the folder the app changed (server/index_touch.py), so the
+// question is no longer whether to trust the index but whether the fix is
+// still on its way — which is a claim about time, not about a folder.
+
+test("a mutation leaves a rescan pending", () => {
+  expect(indexRescanPending()).toBe(false);
+  noteFsMutation("/home/me/proj/renamed.txt");
+  expect(indexRescanPending()).toBe(true);
+});
+
+test("a completed scan is what clears it", () => {
+  // The scan the mutation triggered has landed: the index now spells the new
+  // name, and there is nothing left to caption.
+  noteFsMutation("/home/me/proj/renamed.txt");
+  noteIndexLifecycle();
+  expect(indexRescanPending()).toBe(false);
+});
+
+test("a mutation after a scan is pending again", () => {
+  noteFsMutation("/home/me/proj/a.txt");
+  noteIndexLifecycle();
+  noteFsMutation("/home/me/proj/b.txt");
+  expect(indexRescanPending()).toBe(true);
+});
+
+test("a rescan nobody ever runs stops being claimed", () => {
+  // The server refuses a rescan it must not run — a mount, "/", an ignored
+  // tree, another filesystem — and it does not report that back: the client
+  // asks for nothing, it only says what it did. So the claim has to expire on
+  // its own, or mutating a file on a mounted bucket shows "indexing…" for the
+  // rest of the session AND suppresses the `behind` caveat that is the true
+  // one there.
+  noteFsMutation("/home/me/proj/a.txt", { now: 0 });
+  expect(indexRescanPending(0)).toBe(true);
+  expect(indexRescanPending(RESCAN_PENDING_MAX_MS - 1)).toBe(true);
+  expect(indexRescanPending(RESCAN_PENDING_MAX_MS + 1)).toBe(false);
+});
+
+test("a later mutation renews the claim", () => {
+  noteFsMutation("/home/me/proj/a.txt", { now: 0 });
+  noteFsMutation("/home/me/proj/b.txt", { now: RESCAN_PENDING_MAX_MS - 1 });
+  expect(indexRescanPending(RESCAN_PENDING_MAX_MS + 1)).toBe(true);
+});
+
+test("a completed scan still clears it outright, whatever the clock says", () => {
+  noteFsMutation("/home/me/proj/a.txt", { now: 0 });
+  noteIndexLifecycle();
+  expect(indexRescanPending(0)).toBe(false);
+});
+
+test("a change the server will not re-index claims no rescan", () => {
+  // Overwriting a file changes bytes, not names, so the server schedules
+  // nothing for it (server/index_touch.py). Claiming "indexing…" anyway left
+  // the caption up for a minute and suppressed the "not refreshed" caveat
+  // that was the honest one.
+  noteFsMutation("/home/me/proj/note.md", { rescans: false, now: 0 });
+  expect(indexRescanPending(0)).toBe(false);
+  // ...but the listing still owes the user their own edit.
+  expect(fsMutationCount()).toBe(1);
+});
+
+test("the lifecycle count still moves for the fetch keys that ride it", () => {
+  expect(indexLifecycleCount()).toBe(0);
+  noteIndexLifecycle();
+  expect(indexLifecycleCount()).toBe(1);
 });

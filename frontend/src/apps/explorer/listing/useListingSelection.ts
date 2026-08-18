@@ -34,6 +34,7 @@ export function useListingSelection({
   fsPath,
   navRows,
   listingLoaded,
+  rowsAnswerQuery,
   searchInputRef,
   rowCtxByPathRef,
   overlayOpenRef,
@@ -46,6 +47,10 @@ export function useListingSelection({
   // Whether navRows reflects a LOADED listing (not a transient empty while the
   // fetch is in flight) — see Listing.tsx, where this is derived.
   listingLoaded: boolean;
+  // Whether the rendered rows are an answer to the query in the box. False
+  // while a ranked search shows the previous query's rows (the list is never
+  // blanked), which is when Enter must not guess at a row — see the handler.
+  rowsAnswerQuery: boolean;
   searchInputRef: React.RefObject<HTMLInputElement>;
   // Path -> RowCtx for the rendered rows, read by the once-registered keydown
   // handler so Enter can pass the row's is_dir as a nav hint.
@@ -96,6 +101,9 @@ export function useListingSelection({
   navRowsRef.current = navRows;
   const selRef = useRef<Selection>(sel);
   selRef.current = sel;
+  // Read from the once-registered keydown handler, like rowCtxByPathRef.
+  const rowsAnswerQueryRef = useRef(rowsAnswerQuery);
+  rowsAnswerQueryRef.current = rowsAnswerQuery;
   // Fast membership test for the row renderer (a Select All can hold thousands).
   const selectedSet = useMemo(() => new Set(sel.paths), [sel.paths]);
   // Mirror the selection into the cross-remount store so it's already there
@@ -167,10 +175,12 @@ export function useListingSelection({
 
   const selectOnly = (path: string) => setSel(oneSelected(path));
 
-  // Escape's gesture, and the only one: clicking the listing background used
-  // to clear too, which with the preview pane on meant a stray click in the
-  // whitespace of a short listing blanked the pane. Not returned — no caller
-  // outside this hook has a reason to drop the selection.
+  // Escape's gesture, and — since the ranked search — one other: the
+  // auto-select effect withdraws a selection IT placed once those rows stop
+  // answering the query in the box (listing/selection's `clear`). Clicking the
+  // listing background is still NOT one; it used to be, and with the preview
+  // pane on a stray click in the whitespace of a short listing blanked the
+  // pane.
   const clearSelection = () => setSel(EMPTY_SELECTION);
 
   // Mod-click: add/remove one row, and make it the anchor a later Shift-range
@@ -342,6 +352,13 @@ export function useListingSelection({
         if (e.defaultPrevented) return;
         if (!navActive) return;
         if (!rows.length) return;
+        // With no selection, Enter opens the FIRST row — which, while the rows
+        // answer an older query, is the previous query's top hit. Row 0 is a
+        // guess this makes on the user's behalf and it must not be made from
+        // rows that answer nothing they typed; an explicit lead still opens,
+        // because that row was pointed at. (Same rule as the home box's
+        // submitRow — lib/home-search.)
+        if (leadIdx === -1 && !rowsAnswerQueryRef.current) return;
         e.preventDefault();
         const target = leadIdx === -1 ? rows[0] : rows[leadIdx];
         navigate(target, { isDir: rowCtxByPathRef.current.get(target)?.isDir });
@@ -467,6 +484,7 @@ export function useListingSelection({
     selectedPath,
     selectedSet,
     selectOnly,
+    clearSelection,
     selectPaths,
     toggleSelected,
     extendTo,

@@ -33,9 +33,15 @@ from fused_render.index import freshness, runner
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
-from fused_render.index.ignore import MountGuard, default_ignore, norm
-from fused_render.index.query import MAX_CORPUS
+from fused_render.index.ignore import (
+    MountGuard,
+    default_ignore,
+    ignored_for_index,
+    norm,
+)
+from fused_render.index.query import MAX_CORPUS, RANK_LIMIT
 from fused_render.index.query import lookup as index_lookup
+from fused_render.index.query import search_ranked as index_rank
 from fused_render.index.query import search_under as index_search
 from fused_render.index.query import stats as index_stats
 from fused_render.index.store import (
@@ -45,6 +51,7 @@ from fused_render.index.store import (
     save_applied_ignore,
 )
 from fused_render.server import ai as _server_ai
+from fused_render.server import index_touch
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.index_gitignore import filter_corpus
 
@@ -222,6 +229,142 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
         time.sleep(WARM_WAIT_POLL_S)
 
 
+# The query the startup warm ranks with, and it is deliberately one that MATCHES
+# NOTHING. A query with hits stops at the cheap substring pass (the ladder in
+# `search_ranked`), leaving the subsequence-regex plan — the expensive half, and
+# the one a mistyped query lands on — cold for the first user who needs it. A
+# no-match query runs both passes, plus the ignore-root discovery behind the
+# gitignore filter, and returns an empty body.
+WARM_RANK_QUERY = "zqxjv"
+
+
+def _ranked(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT) -> dict:
+    """`search_ranked` with the server's gitignore filter wired in.
+
+    The index package cannot import the server, so `search_ranked` takes the
+    filter as a callable — this is the only place that knows both. It is
+    called BEFORE the cut to `limit` (search_ranked does that), and keyed on
+    the enclosing INDEX ROOT rather than the requested folder, for the reason
+    `api_index_search` gives: a pool keyed per browsed folder re-paid a whole
+    check-ignore sweep every time browsing evicted one.
+
+    `oracle_rels` comes from the caller, not from the payload: a ranked answer
+    is ~200 rows with no dot-leading rels among them, so the filter's own
+    discovery would find no `.gitignore`, decide nothing, and drop nothing
+    (index_gitignore.filter_corpus says this at length)."""
+    def drop_ignored(canonical_root: str, hits: list, oracle_rels: list) -> list:
+        index_root = enclosing_root(scan_roots(cfg), canonical_root)
+        return filter_corpus({"covered": True, "root": canonical_root,
+                              "entries": hits}, index_root=index_root,
+                             oracle_rels=oracle_rels)["entries"]
+
+    return index_rank(cfg, root, q=q, limit=limit, gitignore_filter=drop_ignored)
+
+
+def _covers(a: str, b: str) -> bool:
+    """Whether the trees at `a` and `b` overlap (either contains the other)."""
+    a = norm(os.path.abspath(a)).rstrip("/") or "/"
+    b = norm(os.path.abspath(b)).rstrip("/") or "/"
+    return (a == b or a.startswith((b if b == "/" else b + "/"))
+            or b.startswith((a if a == "/" else a + "/")))
+
+
+# How long the folded run listing is reused for. `list_runs` stats every run
+# directory and applies a liveness check to each, and this question is asked on
+# EVERY ranked request — one per keystroke, in two search boxes. Nothing it
+# reports can change usefully inside a beat: the poll that consumes it runs at
+# SCAN_POLL_MS (1.5 s), so a scan starting is noticed within one poll either
+# way. (timestamp, runs), rewritten in place; no eviction to do.
+RUNS_CACHE_S = 1.0
+_runs_cache: tuple = (0.0, None)
+
+
+def _forget_runs() -> None:
+    """Drop the cached listing. Tests only."""
+    global _runs_cache
+    _runs_cache = (0.0, None)
+
+
+def _live_runs(cfg: IndexConfig) -> list:
+    """The folded run listing, at most once per RUNS_CACHE_S."""
+    global _runs_cache
+    import time
+
+    now = time.monotonic()
+    stamp, runs = _runs_cache
+    if runs is not None and (now - stamp) < RUNS_CACHE_S:
+        return runs
+    try:
+        runs = runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]
+    except Exception:  # noqa: BLE001 - a search must not fail over housekeeping
+        logger.exception("could not list index runs")
+        runs = []
+    _runs_cache = (now, runs)
+    return runs
+
+
+def _scan_in_flight(cfg: IndexConfig, root: str) -> bool:
+    """Whether a live run is writing rows that belong to `root`.
+
+    Both directions count. A scan of an ANCESTOR root will rewrite this
+    folder's rows when it compacts; a scan of a DESCENDANT is adding rows
+    underneath it. Either way the answer the search box has is provisional,
+    which is the whole of what the `scanning` reason claims.
+
+    A run already told to stop does NOT count, for the reason
+    `runner.active_run` gives about the same runs: cancelling is asynchronous,
+    so a dying run's log still reads `running` for a couple of hundred
+    directories, and reporting it would start a poll cycle waiting on a scan
+    that is about to produce nothing."""
+    for r in _live_runs(cfg):
+        if not r.get("running") or not r.get("root"):
+            continue
+        if not _covers(root, str(r["root"])):
+            continue
+        rid = r.get("run_id")
+        if rid and os.path.exists(os.path.join(cfg.runs_dir, str(rid), "cancel")):
+            continue
+        return True
+    return False
+
+
+def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
+    """Why the ranked answer is what it is, in the client's vocabulary.
+
+    The client switches the SOURCE on this — `mount` (and `package`) send it to
+    the live walk, `uncovered` makes it ask for a scan, `scanning` makes it
+    poll — so the ordering below is a set of claims about what is fixable:
+
+      * `mount` first, and unconditionally. Indexing a remote mount is refused
+        structurally (MountGuard, index/specs/scan.md), so no scan will ever
+        cover it and no poll will ever end. This is the check the client must
+        NOT carry a copy of: the rule is MountGuard's, it is the same object
+        `runner.start` refuses with, and a second copy in TypeScript would
+        drift from it silently.
+      * `package` next, for the same reason in weaker form: the scan records a
+        `.app` (or a `.photoslibrary`) as one opaque row and never lists it, so
+        a folder inside one is permanently uncoverable however long you wait.
+      * `scanning` over `uncovered`, because it says "ask again", and it is
+        reported even when the answer IS covered: the rows are real, and more
+        of them are on the way.
+
+    The mount check is paid only on a miss — it realpaths — and a covered root
+    cannot be mount-backed anyway, since nothing ever indexed one."""
+    if not out.get("covered"):
+        # BEFORE any kernel syscall of ours on the caller's path: blocks_root
+        # is string work against the mount records plus one realpath, where a
+        # stat under a wedged rclone mount blocks this thread indefinitely.
+        if MountGuard(mounts_dir=runner._mounts_dir()).blocks_root(root):
+            return "mount"
+        if out.get("reason") == "package":
+            return "package"
+        if ignored_for_index(cfg.rules, norm(os.path.abspath(root)), tree=True):
+            return "ignored"
+    if _scan_in_flight(cfg, root):
+        return "scanning"
+    return str(out.get("reason") or "")
+
+
 def run_startup_warm() -> None:
     """Pay the first search's cold cost at idle instead of on a keystroke.
 
@@ -281,6 +424,13 @@ def run_startup_warm() -> None:
         # precisely what the route runs.
         filter_corpus(out, index_root=enclosing_root(scan_roots(cfg),
                                                      out.get("root") or root))
+        # And the path the HOME search now takes, which is a different query
+        # over the same index: /api/index/rank, verbatim, with a query that
+        # matches something on essentially every machine. Same duckdb
+        # connection cost, same gitignore pool, but its own two-stage SQL —
+        # warming only the corpus would leave the home page's first keystroke
+        # paying for the ranked plan.
+        _ranked(cfg, out.get("root") or root, WARM_RANK_QUERY)
     except Exception:  # noqa: BLE001 - a warm must never take the server down
         logger.exception("could not warm the index search path")
 
@@ -423,6 +573,85 @@ def api_index_scan(body: dict = Body(default={}),
     return {"ok": True, **runs[0], "runs": runs}
 
 
+@router.post("/api/index/scan-folder")
+def api_index_scan_folder(body: dict = Body(default={}),
+                          x_fused: str | None = Header(default=None)):
+    """Cover a folder the index has never visited, because someone searched it.
+
+    The in-folder search box used to answer an uncovered folder with a live
+    streamed walk. That walk survives only for the folders no scan can ever
+    reach, so this is what replaces it: the box asks, the scan runs, and the
+    box polls `/api/index/rank` (reason `scanning`) until rows appear.
+
+    THE FOLDER ITSELF is the scan root, not some enclosing configured one: a
+    folder is uncovered precisely because no configured root covers it — or
+    because one does and pruned it, in which case rescanning that root would
+    prune it again. Compaction keeps every row outside the root it is given
+    (index/store.py), so a folder-sized scan merges into the store instead of
+    replacing it.
+
+    Never an error, and every "no" is a durable one — this route is called
+    from a search box, so a refusal it could read as transient becomes a
+    keystroke-rate retry loop:
+
+      * `refused` — `runner.start` said no. Mount-backed (structurally, and
+        BEFORE any kernel syscall on the path) or simply not a directory.
+      * `debounced` — scanned inside `SCAN_DEBOUNCE_S`. The startup
+        scheduler's own floor, deliberately not a second one: a folder that is
+        still uncovered after a scan (the ignore rules exclude it) must not be
+        rescanned on the next keystroke, and the next one after that.
+      * `joined` — a run over this root was already in flight; polling it is
+        the whole of what a second one would have achieved.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = str(body.get("path") or "").strip()
+    if not path:
+        return _error("'path' is required")
+    import time
+
+    cfg = load_config()
+    root = runner.canonical_root(path)
+    # THE MOUNT GUARD FIRST, and the order is the point rather than a
+    # preference: `blocks` is pure string work against the mount records,
+    # while `foreign_device` stats the path — and a stat under a wedged rclone
+    # mount blocks this thread indefinitely, which is the failure mode every
+    # other entry into the scanner is ordered around (`runner.start`,
+    # `index_touch._real_blocked`). Answering "refused" a moment later is
+    # worth nothing if getting there hangs the request.
+    if MountGuard(mounts_dir=runner._mounts_dir()).blocks(root):
+        logger.info("index: not scanning %s on demand (mount-backed)", root)
+        return {"ok": True, "started": False, "why": "refused",
+                "error": f"{root} is mount-backed; indexing remote mounts is "
+                         "not supported",
+                "run_id": None, "root": root}
+    # ...and then the filesystem it lives on — see index_touch.foreign_device
+    # for that argument. Checked here as well as in the queue because these are
+    # the two doors an arbitrary folder arrives through, and the refusal has to
+    # be the same at both.
+    if index_touch.foreign_device(root):
+        return {"ok": True, "started": False, "why": "refused",
+                "error": f"{root} is on a different filesystem than your home; "
+                         "indexing it is not supported",
+                "run_id": None, "root": root}
+    last = runner.last_scan(cfg, root)
+    if last is not None and (time.time() - last) < SCAN_DEBOUNCE_S:
+        return {"ok": True, "started": False, "why": "debounced",
+                "run_id": None, "root": root}
+    try:
+        started = runner.start(cfg, root)
+    except ValueError as e:
+        logger.info("index: not scanning %s on demand (%s)", root, e)
+        return {"ok": True, "started": False, "why": "refused",
+                "error": str(e), "run_id": None, "root": root}
+    logger.info("index: scanning %s on demand (run %s)",
+                root, started.get("run_id"))
+    return {"ok": True, "started": True,
+            "why": "joined" if started.get("already_running") else "started",
+            "run_id": started.get("run_id"), "root": root}
+
+
 @router.post("/api/index/cancel")
 def api_index_cancel(body: dict = Body(default={}),
                      x_fused: str | None = Header(default=None)):
@@ -553,6 +782,46 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     if fmt != COLUMNS_FMT:
         return {"ok": True, **out}
     return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
+
+
+@router.get("/api/index/rank")
+def api_index_rank(root: str = Query(default=""), q: str = Query(default=""),
+                   limit: int = Query(default=RANK_LIMIT)):
+    """The home search: filtered AND ranked here, top `limit` hits returned.
+
+    The corpus route next door hands the client every entry under `root`
+    (19.8 MB on a 164k-entry home, and silently capped so most of a big home
+    could not be found at all) and lets the browser rank it. This answers a
+    few KB — no columnar format and no gzip special-casing, because that
+    machinery exists for the 20 MB corpus and this is not that.
+
+    A miss is `{covered: false, hits: []}` with a 200, exactly as for the
+    corpus: "no index yet", "not covered" and "a scan is running" are one
+    condition to a search box.
+
+    ...one condition, but not one CAUSE, and `reason` names it — `mount`,
+    `package`, `uncovered`, `scanning`, or `""` when the index answered
+    outright. The in-folder search picks its source from that field (see
+    `_rank_reason`): the live streamed walk survives only for the folders no
+    scan will ever cover, an uncovered one is scanned on demand, and a folder
+    with a scan in flight is polled. Deciding it here is the point — the mount
+    policy is `MountGuard`'s, and a second copy of it in the client would
+    drift.
+
+    `positions` are deliberately NOT returned. The client re-runs `fuzzyMatch`
+    over the ~200 rows it gets back to build its highlights, so
+    platform/lib/fuzzy.ts stays the single source of truth for what highlights
+    — and the ranker here stays free to carry positions internally without
+    them becoming a wire contract.
+    """
+    if not root.strip():
+        return _error("'root' is required")
+    cfg = load_config()
+    out = _ranked(cfg, root, q, limit)
+    out["hits"] = [{k: v for k, v in h.items() if k != "positions"}
+                   for h in out["hits"]]
+    out["reason"] = _rank_reason(cfg, root, out)
+    return {"ok": True, **out}
 
 
 def _columnar(out: dict) -> dict:

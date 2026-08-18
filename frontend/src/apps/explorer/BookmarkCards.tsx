@@ -64,7 +64,7 @@ export function LivePreview({ src }: { src: string }) {
   // keyboard, because focusing an element inside a frame scrolls that frame
   // into view and the scroll propagates out to the page's own scroller — a
   // peeked page that focuses an input on boot yanked the card grid down to
-  // itself mid-scroll (D341, platform/lib/frame-focus.ts).
+  // itself mid-scroll (D343, platform/lib/frame-focus.ts).
   src = withNoFocus(withPreviewFlag(src));
   return (
     <span className="fhb-preview" aria-hidden="true">
