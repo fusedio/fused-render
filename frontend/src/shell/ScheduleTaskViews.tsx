@@ -258,6 +258,16 @@ const STATUS_LABELS: Record<BoardColumn, string> = Object.fromEntries(
  *
  * The count never replaces the accessible name, it extends it: a screen reader
  * hears "Done, 3 unread" rather than losing the status it came for.
+ *
+ * THE COUNT'S TOOLTIP IS NOT A `title` (2026-08-18). The browser holds a native
+ * tooltip back for one to two seconds, and for a four-character readout that is
+ * the same as not offering it at all. It goes to `data-tip`, which schedule.css
+ * draws on hover after 300ms. `title=""` rather than no title: an element with no
+ * `title` lets the browser walk up for one, and this sits inside a lane header
+ * that has "Collapse Done" and a row that has the task's full title.
+ *
+ * A leaf keeps its `title` — the status word, no count, and a slow native tooltip
+ * is the right speed for a word nobody is waiting on.
  */
 export function StatusIcon({
   status,
@@ -284,15 +294,30 @@ export function StatusIcon({
         (unread ? " schedule-ring--unread" : "")
       }
       aria-label={many ? `${text}, ${many}` : text}
-      title={many ?? text}
+      data-tip={many ?? ""}
+      title={many ? "" : text}
     />
   );
 }
 
-/** The blue ping on a task whose turn is in flight. */
-export function LivePulse() {
-  return <span className="schedule-tv-pulse" aria-label="Running" title="Running" />;
-}
+/* There is no `LivePulse` any more (2026-08-18). It was a blue `--activity` disc
+   that followed a live task's title on the List row and sat in the Board card's
+   head, and it meant "a turn is in flight right now" — a finer fact than the
+   In Progress lane, which also holds a queued turn that has not started.
+
+   It went because of what it LOOKED like rather than what it said. With the whole
+   unread vocabulary reduced to the status ring, the ping was the last free-
+   standing dot on the page, and a small filled circle after a title is what unread
+   means everywhere else in this app and every other. Akshil, 2026-08-18, on a
+   screenshot of a row reading "…sk workflow analysis ●": that blue dot should not
+   be there. A mark that says "running" in the exact shape the page uses for "you
+   have not read this" is a mark that will be misread every time.
+
+   What still carries "in flight": the In Progress ring's yellow, the queue dock,
+   and the row's own relative time. The `task.live` flag is untouched on the model
+   and in tasks-lib (openThreadIntent and the run intents still read it), so
+   restoring a mark for it later is a rendering decision, not a data one — it just
+   cannot be a filled dot after a title. */
 
 /** The folder a task's work happens in — a plain folder glyph and the folder's
  * own name, with the whole path (with ~ for home) as the tooltip. Deliberately
@@ -1297,7 +1322,9 @@ function TaskNode({
             fading the whole row would say "archived", which is a different fact
             with a lane of its own. */}
         <span className={"tasks-title" + (ahead ? " is-upcoming" : "")}>{label}</span>
-        {task.live && <LivePulse />}
+        {/* Nothing follows the title. The live ping used to (see LivePulse's
+            headstone above): a blue disc in the one position, and the one shape,
+            that means unread everywhere else. */}
 
         {/* Exactly ONE auto margin in this row: flex distributes free space
             equally across every auto margin, so a second one would park the
@@ -1979,14 +2006,6 @@ function TaskCard({
   // flag that repaints a Done ring red). The lane check is what turns that into
   // "disagrees": in the failed lane the two agree and the header has said it.
   const failedOffLane = isFailedTask(task) && lane !== "failed";
-  // The SECOND reason a card's ring earns its place (2026-08-18): unread. The
-  // mark used to be a dot after the title and is now the ring's filled centre, so
-  // a card whose ring is suppressed for being repetitive would be a card with
-  // nowhere left to say "you have not looked at this". Repetition is the thing
-  // the suppression is for and news is not repetition — the lane header says
-  // Done, it does not say unread — so the ring comes back on exactly the cards
-  // that have something to add.
-  const ring = failedOffLane || unread > 0;
   const [busy, setBusy] = useState(false);
   const triage = async (status: ArchiveStatus) => {
     setBusy(true);
@@ -2063,24 +2082,36 @@ function TaskCard({
             and a chip in a day cell have no lane above them, so there the ring is
             the only thing that files them at all.
 
-            And on 2026-08-18 the ring gained the SECOND thing it can say — unread
-            — which is why `ring` above is two conditions rather than one. The
-            mark used to be a dot trailing the title (three arrangements of it are
-            recorded below, all now moot); it is the ring's filled centre on all
-            three views, and a card whose ring stayed suppressed would be the one
-            place on the page unable to say it. Repetition is what the suppression
-            is for, and the lane header saying "Done" does not say "unread". */}
+            UNREAD DOES NOT BRING THE RING BACK. It did for half a day: the ring
+            became the page's unread mark, a quiet Done card has no ring, so the
+            condition was widened to `failedOffLane || unread > 0` and every card
+            with news grew a ring that repeated its lane's word to say something
+            else. Akshil, 2026-08-18: the repetition is the thing being removed, so
+            the card gets a mark of its OWN for unread — a small filled dot in the
+            status hue, leading the head, before the id. Read cards show nothing.
+
+            Same hue as the ring would have been, so the vocabulary is intact; a
+            different SHAPE, because it is a different claim. A ring on this page
+            means "here is the status" and the lane header has already said that;
+            a bare dot means "there is something in here you have not seen", which
+            the header cannot say about any one card. The List and the Calendar
+            keep the ring as their unread mark because their rows carry a ring
+            anyway — nothing is repeated there, and adding a second mark to those
+            rows is exactly what this whole change undid. */}
         <span className="schedule-tv-card-head">
-          {ring && (
-            <StatusIcon
-              status={lane}
-              failed={failedOffLane}
-              unread={unread > 0}
-              count={unread}
+          {unread > 0 && (
+            <span
+              className={
+                `tasks-news tasks-news--${lane}` + (failedOffLane ? " tasks-news--failed" : "")
+              }
+              role="img"
+              aria-label={taskUnreadLabel(unread) ?? ""}
+              data-tip={taskUnreadLabel(unread) ?? ""}
+              title=""
             />
           )}
+          {failedOffLane && <StatusIcon status={lane} failed />}
           <IdChip id={task.task_id} kind="task" />
-          {task.live && <LivePulse />}
         </span>
         {/* Nothing trails the title any more (2026-08-18). Three arrangements of
             an unread mark lived in this slot and each one was a fix for the last:

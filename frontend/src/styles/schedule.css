@@ -2313,10 +2313,16 @@ input.schedule-when-field {
   border-radius: 999px;
 }
 
-.schedule-ring--upcoming { color: var(--status-upcoming); }
-.schedule-ring--in_progress { color: var(--status-progress); }
-.schedule-ring--done { color: var(--status-done); }
-.schedule-ring--archived { color: var(--status-archived); }
+/* The five hues, stated once for every mark that wears them — the ring, and the
+   board card's `.tasks-news` dot. Two lists would be two places to forget. */
+.schedule-ring--upcoming,
+.tasks-news--upcoming { color: var(--status-upcoming); }
+.schedule-ring--in_progress,
+.tasks-news--in_progress { color: var(--status-progress); }
+.schedule-ring--done,
+.tasks-news--done { color: var(--status-done); }
+.schedule-ring--archived,
+.tasks-news--archived { color: var(--status-archived); }
 
 /* Failed is a COLUMN of its own since 2026-08-17, and the red is its hue rather
    than an override. The second selector stays because the override case has not
@@ -2324,6 +2330,7 @@ input.schedule-when-field {
    caller, or a task the server still files under done) must still read red, and
    it has to outrank the done green to do it. */
 .schedule-ring--failed,
+.tasks-news--failed,
 .schedule-ring--failed.schedule-ring--done { color: var(--status-failed); }
 
 /* -- The inner dot: UNREAD, not merely settled ---------------------------------
@@ -2378,62 +2385,124 @@ input.schedule-when-field {
   background: currentColor;
 }
 
+/* -- The count on hover, without the browser's two-second wait -----------------
+   "3 unread" is the one thing the mark does not print, so a reader who wants the
+   number hovers for it — and a native `title` makes them hold still for one to
+   two seconds first, which for a readout this small is the same as not offering
+   it. So the containers that carry a count (a task row over its thread, a lane
+   header over its cards, a board card) hand it to `data-tip` instead of `title`
+   and this draws it.
+
+   `title=""` on those elements, deliberately and not just omitted: an element
+   with no `title` lets the browser walk UP for one, and both places this is worn
+   sit inside something that has its own ("Collapse Done" on a lane header, the
+   task's full title on a List row). An empty one stops the walk, so the fast tip
+   is the only tip.
+
+   THE DELAY IS THE POINT AND IT IS ON THE WAY IN ONLY. 300ms in, none out: a
+   pointer crossing a column of rings on its way somewhere else must not strobe a
+   panel per row, and a reader who moves between two of them should not wait
+   again. `visibility` is animated alongside `opacity` so the panel is not a
+   0-opacity hit target sitting over the row it belongs to.
+
+   Placed BELOW the mark, and `pointer-events: none`: below, because these rings
+   lead their rows and the space under a row is the row itself, where the tip
+   overlaps something it is about, while above the first row of a scroller there
+   is nothing but the scroller's own clipped edge.
+
+   Not a component, because this app has none — no tooltip primitive exists in
+   src/platform/ui, and one built for two call sites would be a portal, a
+   positioner and a state machine to say four characters. If a real one arrives,
+   this is two rules to delete. */
+[data-tip]:not([data-tip=""]) {
+  position: relative;
+}
+
+[data-tip]:not([data-tip=""])::before {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  padding: 3px 7px;
+  font-size: 11px;
+  line-height: 1.3;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--fg);
+  background: var(--bg-popover);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: 0 2px 8px var(--shadow-sm);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.1s ease, visibility 0.1s ease;
+  pointer-events: none;
+}
+
+[data-tip]:not([data-tip=""]):hover::before,
+[data-tip]:not([data-tip=""]):focus-visible::before {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0.3s;
+}
+
 /* The In Progress ring is STATIC yellow. It used to breathe on a 2s loop, and
    that was one blink too many (Akshil, 2026-08-17): the lane is a column of
    them, so a full board flickered, and the ring already says "in progress" by
-   being the only yellow one on the page. The one thing still allowed to move is
-   the live ping below — that is a single mark on the handful of tasks with a turn
-   actually in flight, which is a fact about right now rather than a lane.
+   being the only yellow one on the page. Nothing on this page animates at rest
+   any more — the live ping, the last thing that did, went on 2026-08-18 (below).
    Nothing to undo in styles/reduced-motion.css: that file never named this
    animation (its blanket `animation-duration: 0.01ms` covered it), so removing
    the rule leaves nothing dangling. */
-@keyframes schedule-tv-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
-}
+/* No `.schedule-tv-pulse` any more, and no `@keyframes` for it (2026-08-18).
 
-/* Motion-safe: the ping's halo is decoration, and reduced-motion users get the
-   solid dot alone. */
-@media (prefers-reduced-motion: no-preference) {
-  .schedule-tv-pulse::before {
-    animation: schedule-tv-pulse 1.6s ease-in-out infinite;
-  }
-}
+   It was the live ping: a solid `--activity` dot under a larger translucent one
+   that breathed on a 1.6s loop (flow LivePulse), following a live task's title on
+   the List row and standing in the Board card's head. It said "a turn is in flight
+   right now" — genuinely finer than the In Progress lane, which also holds a
+   queued turn that has not started.
 
-/* The live ping: a solid dot under a larger translucent one (flow LivePulse).
+   It went because of its FORM, not its meaning. On 2026-08-17 the row ended in two
+   filled discs of nearly the same size and the fix chosen was colour: "grey after
+   the title means unread, blue means live". Then the grey one left the row
+   altogether — unread is the status ring's filled centre now — and that left this
+   as the only free-standing dot on the page, in the one position and the one shape
+   that mean unread in this app and every other. Akshil, 2026-08-18, on a
+   screenshot of "…sk workflow analysis ●": the blue dot should not be there.
 
-   It is a DOT and it stays one. On 2026-08-17 it was briefly going to become a
-   hollow ring, because the unread mark had just gone grey and lost its number and
-   the row ended in two filled discs of nearly the same size ("why is there still a
-   blue dot as well", Akshil). The answer he chose instead is the one already in
-   hand: grey after the title means unread, blue means live, and that is the whole
-   distinction — "we don't want that" of the ring. It holds up in a still image
-   because the two are different colours, and in a live one because only this one
-   moves. What the pair still owes the reader is distinct NAMES, which they have:
-   "Running" here, "N unread messages" on the dot. */
-.schedule-tv-pulse {
-  position: relative;
+   Nothing about `task.live` changed; only this rendering of it. The In Progress
+   ring's yellow, the queue dock and the row's own relative time are what carry
+   "happening" now. Nothing in styles/reduced-motion.css named the animation (its
+   blanket `animation-duration: 0.01ms` covered it), so removing it leaves nothing
+   dangling there either. */
+
+/* -- The board card's unread mark ---------------------------------------------
+   A card does NOT wear a status ring: it is read inside the lane it was filed
+   into, and the lane header already carries the ring and the word, so a ring on
+   the card is the column saying its own name twice (Akshil, 2026-08-17 and again
+   2026-08-18). The one exception is a card whose status disagrees with its lane —
+   a failed run triaged to Done — and that ring is information rather than
+   repetition.
+
+   Which leaves unread with nowhere to live on a card, since it is the ring's
+   filled centre everywhere else. So the card gets a mark of its own: a small
+   filled dot leading the head, before the id, in the SAME status hue the ring
+   would have used. Hue keeps the vocabulary; the bare shape is what makes it a
+   different claim — a ring says "here is the status", which the header has
+   covered, and a dot says "there is something in here you have not seen", which
+   it cannot. Nothing at all on a read card.
+
+   `currentColor` off the `--` modifiers below, so the five hues are stated once
+   for the ring and the dot together and cannot drift apart. */
+.tasks-news {
   display: inline-block;
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
-}
-
-.schedule-tv-pulse::before,
-.schedule-tv-pulse::after {
-  content: "";
-  position: absolute;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
   border-radius: 999px;
-  background: var(--activity);
-}
-
-.schedule-tv-pulse::before {
-  inset: -1px;
-  opacity: 0.5;
-}
-
-.schedule-tv-pulse::after {
-  inset: 0;
+  background: currentColor;
 }
 
 /* -- Folder chip: WHERE the row's work happened ------------------------------
