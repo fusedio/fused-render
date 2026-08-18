@@ -7377,23 +7377,38 @@ go. Four failures, one answer.
   modified badge makes (SF-6). Nothing here is a crash: the app is running and
   something beside it is not. A red card would say "this is broken" about the
   wrong subject.
-- **TR-7** **Four surfaces, one component, two sizes.** The Preferences tab and
-  the preview's fallback card take the full card; a failed download row takes
-  the compact one (title, clamped error, copy, link) because that surface is a
-  340px notification and a wall of explanation in a corner popup is not read.
-  The boot failure takes the full card on an otherwise empty page.
+- **TR-7** **Three surfaces, one component, two sizes.** The Preferences tab
+  takes the full card; a failed download row takes the compact one (title,
+  clamped error, copy, link) because that surface is a 340px notification and a
+  wall of explanation in a corner popup is not read. The boot failure takes the
+  full card on an otherwise empty page. It was four: the preview's fallback card
+  had one too, and #585 replaced it — see TR-9.
 - **TR-8** **The boot failure cannot describe itself, and degrades rather than
   printing empty labels.** `/api/config` is what failed, so there is no version,
   install path or platform to report — the block falls back to the error and the
   help link. It still beats one red line naming an endpoint, because the person
   reading it has an unusable app and no idea whether to reinstall, restart, or
   ask someone.
-- **TR-9** **A broken template registry is surfaced where it is FELT.** The
-  server has always reported it (`template_error`, PT-8) and nothing ever read
-  it, so a `~/.fused-render` registry that would not parse presented as "this
-  file has no preview" — for every file at once, with the reason sitting unread
-  in the payload. The fallback preview now says which registry failed and why.
-  That is a minute's fix the user could not previously know they needed.
+- **TR-9** **A broken template registry is surfaced where it is FELT, and the
+  failure to design around is the PARTIAL one.** The server has always reported
+  it (`template_error`, PT-8) and nothing ever read it, so a `~/.fused-render`
+  registry that would not parse presented as "this file has no preview" — for
+  every file at once, with the reason sitting unread in the payload.
+  **A file with NO view is no longer this feature's case**: #585's
+  `RegistryFixNotice` answers it in the fallback card and answers it better,
+  because it carries a *Repair Template Registry* button beside the same error.
+  A copyable report is the right shape when nobody present can act; here
+  somebody can, so the one-click fix wins and the card that used to sit there
+  is gone (a second card restating the error above a button that fixes it is
+  worse than either alone).
+  What remains is the case that notice cannot reach, and it is the reported one:
+  the built-in registry still matches, so **the file previews normally and only
+  the user's own bindings quietly stop applying** — "apps aren't rendering
+  properly", with no fallback card rendered anywhere to hang an answer on. That
+  is announced as a toast, ONCE per distinct registry error
+  (`shouldAnnounceTemplateError`), because the error rides every stat and a card
+  per file would be a card per click for as long as the registry stays broken;
+  its action opens Preferences, which holds the whole error and copies it.
 - **TR-10** **The install command is pinned by a test**, because it is shown as
   a thing to copy into a terminal and a wrong one there is worse than none.
 - **TR-11** **The agent brief always says WHERE, and when it cannot state the
