@@ -287,7 +287,13 @@ def test_the_queue_is_restored_before_the_run_is_re_attached():
     entries restored after it would sit there until some later turn ended."""
     boot = _html()[_html().index("// ── boot:"):]
     assert "restoreQueue(" in boot, "the boot never restores the queue"
-    assert boot.index("restoreQueue(") < boot.index("resumeRun(run_id)")
+    # Still an ORDERING assertion; only the way it locates the re-attach is looser.
+    # The exact `resumeRun(run_id)` form broke the moment the boot passed an opts
+    # argument (`{ retryUnknown: true }`), and `.index()` raising "substring not
+    # found" reads as a broken test rather than the drift it was pinning. The
+    # argument-agnostic `await resumeRun(run_id` still names that one call site.
+    assert "await resumeRun(run_id" in boot, "the boot never re-attaches to the run"
+    assert boot.index("restoreQueue(") < boot.index("await resumeRun(run_id")
     assert boot.index("restoreQueue(") < boot.index("loadHistory(session_id)")
 
 

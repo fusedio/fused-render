@@ -732,7 +732,13 @@ def test_claude_template_boots_into_chat_from_a_bare_run_param():
     the FOLDER, so this was already pinning the wrong page's boot."""
     page = _repo_text("fused_render", "templates", "claude", "template.html")
     assert 'fused.params.get("run")' in page
-    assert "await resumeRun(run_id)" in page
+    # Anchored on the call-site PREFIX, not the whole `resumeRun(run_id)` call: the
+    # boot has since grown an opts argument (`{ retryUnknown: true }`, for the
+    # embedder-navigated frame whose run dir lags its first poll) and will likely grow
+    # more, none of which is this test's business. `await ` keeps it the boot CALL and
+    # not the `async function resumeRun(run_id, opts)` declaration, so deleting the
+    # re-attach still fails here.
+    assert "await resumeRun(run_id" in page
 
 
 def test_run_param_survives_the_shell_runtime():

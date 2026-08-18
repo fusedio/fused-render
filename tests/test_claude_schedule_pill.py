@@ -94,8 +94,16 @@ def test_a_scheduled_turn_that_FINISHED_between_polls_is_appended(code):
     # whatever the reader last said
     assert "if (probeMsg) addUser(probeMsg);" in done
 
-    # and the reload caller keeps the conservative default — passing no opts
-    assert "await resumeRun(run_id);" in code
+    # and the reload caller keeps the conservative default — it never opts into
+    # neverShown. Pinned as "this call does not ask for it" rather than the old
+    # "passing no opts at all" (`await resumeRun(run_id);`): the boot legitimately
+    # grew an unrelated `{ retryUnknown: true }`, and an exact-argument anchor made
+    # every future opt look like this test's regression.
+    assert "await resumeRun(run_id" in code, "the boot never re-attaches to the run"
+    reattach = code[code.index("await resumeRun(run_id"):]
+    reattach = reattach[:reattach.index(";")]
+    assert "neverShown" not in reattach, \
+        "the reload path must repair only what it can prove is missing"
 
 
 def test_never_shown_kills_matching_rather_than_only_adding_a_branch(code):
