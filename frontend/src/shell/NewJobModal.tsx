@@ -24,6 +24,9 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { navigateUrl } from "@platform/lib/router";
 import { describeRepeats, describeRule, repeatChoicesFor } from "./schedule-lib";
 import { ICON_CLOCK, ICON_FOLDER } from "./ScheduleCalendar";
+// The home page's Recent files, read through the very module Home.tsx reads —
+// see `sharedRecentFolders` below for why this form borrows them.
+import { hydrateRecents, loadRecents, recentFsPath } from "@apps/explorer/lib/recents";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
@@ -39,9 +42,12 @@ export const defaultTargetOf = (c: Pick<Config, "home" | "fused_dir">) =>
   normPath(c.fused_dir || c.home);
 
 // ---- Recent paths --------------------------------------------------------
-// The path field's dropdown offers the last folders the user actually used —
-// picked in the browser or saved on a task — newest first, five shown. Stored
-// in localStorage so "the folder I always schedule against" survives reloads.
+// The path field's dropdown offers the last folders the user actually used,
+// newest first, five shown. It draws on two stores — the app-wide one the home
+// page reads (see `sharedRecentFolders` below) and this form's own memory of
+// folders picked in the browser or saved on a task, which is what the rest of
+// this section is. That second half lives in localStorage so "the folder I
+// always schedule against" survives reloads.
 // try/catch throughout: storage can be denied (private mode), and a corrupt
 // value must read as "no recents", never crash the modal (Bugbot, PR #538
 // pattern).
@@ -68,6 +74,46 @@ function rememberRecent(path: string) {
   } catch {
     // Storage denied — recents just don't persist.
   }
+}
+
+// ---- The APP's recents, which are the ones a person means ------------------
+// "Recents" was two different lists until 2026-08-18. The home page's Recent
+// files strip reads the server-backed store at ~/.fused-render/recents.json
+// (apps/explorer/lib/recents, `/api/recents`) — every file this machine has
+// opened, newest first, deduped and cap-managed by the server. This form read
+// a localStorage array only it ever wrote. Both were called recents, and only
+// one of them matched what "recent" means everywhere else in the app: a person
+// who has spent the morning in a repo and then opens New task is thinking of
+// that repo, and the form had never heard of it (design-principles §1 — one
+// noun per concept, and §4 — recognition over recall).
+//
+// So the shared store leads the list now, and the form's own memory follows it.
+// The store holds FILES (the server no-ops on directory urls), and a task wants
+// a place to run, so each entry contributes its containing FOLDER; the MRU
+// order the server produced carries straight through the map, so this is home's
+// list, at folder granularity. Home reads raw MRU too (`loadRecents().entries`)
+// rather than the sidebar's stable-slot view, so the two orderings are the same
+// one.
+//
+// Reads are synchronous off that module's in-memory cache and cannot throw;
+// `hydrateRecents()` is what fills it, and this form calls it on mount for the
+// case where the modal is the first thing opened in a session.
+export function parentFolder(path: string): string {
+  const trimmed = normPath(path).replace(/\/+$/, "");
+  const cut = trimmed.lastIndexOf("/");
+  // "/a" -> "/", "C:/a" -> "C:/", and a bare segment (no separator) has no
+  // parent worth offering.
+  if (cut < 0) return "";
+  return cut === 0 ? "/" : trimmed.slice(0, cut);
+}
+
+function sharedRecentFolders(): string[] {
+  const out: string[] = [];
+  for (const entry of loadRecents().entries) {
+    const folder = parentFolder(recentFsPath(entry.url));
+    if (folder) out.push(folder);
+  }
+  return out;
 }
 
 // ---- Browse: a slide-in explorer panel ---------------------------------------
@@ -2001,21 +2047,40 @@ export default function NewJobModal({
     }
   };
   const [home, setHome] = useState("");
-  // The path field's recents dropdown: what this form remembers being used
-  // (localStorage, first — the user's own picks outrank inference), padded
-  // with the folders existing tasks point at.
+  // The path field's recents dropdown, in three tiers and in this order:
   //
-  // RE-READ every time the list opens, not once per modal: the store changes
-  // through this very modal (Browse writes the folder you pick), so a
-  // read-once state showed the list as it was BEFORE you went browsing —
-  // "I just went through a bunch of folders but recents didn't update"
-  // (Akshil, 2026-08-16). The read is a single localStorage hit on a user
-  // gesture, so doing it per open costs nothing worth saving.
+  //  1. the APP's recents — the same server-backed store the home page's Recent
+  //     files strip reads, one folder per recently-opened file, in its MRU order
+  //     (see `sharedRecentFolders`). First because it is what a person means by
+  //     "recent": the folders they have actually been working in today.
+  //  2. this form's own memory — folders picked through Browse or saved on a
+  //     task (localStorage). Kept, not replaced: a folder deliberately chosen
+  //     here may hold no files anyone has opened, so tier 1 would never learn
+  //     it.
+  //  3. the folders existing tasks point at, as padding on a fresh machine.
+  //
+  // RE-READ every time the list opens, not once per modal: both stores change
+  // while the modal is up (Browse writes the folder you pick), so a read-once
+  // state showed the list as it was BEFORE you went browsing — "I just went
+  // through a bunch of folders but recents didn't update" (Akshil, 2026-08-16).
+  // Both reads are synchronous and local (a localStorage hit and an in-memory
+  // cache), on a user gesture, so doing it per open costs nothing worth saving.
   const [recentsOpen, setRecentsOpen] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
+  // Fill the shared cache for the case where this modal is the first thing
+  // opened in a session (a `/tasks?new=1` deep link). Fire-and-forget, exactly
+  // as Home.tsx does it: a recents fetch that fails costs suggestions, never
+  // the form.
+  useEffect(() => {
+    void hydrateRecents();
+  }, []);
   const readRecentList = useCallback(() => {
     const seen = new Set<string>();
-    return [...readRecents(), ...(recentTargets ?? [])].filter((p) => {
+    return [
+      ...sharedRecentFolders(),
+      ...readRecents(),
+      ...(recentTargets ?? []),
+    ].filter((p) => {
       if (!p || seen.has(p)) return false;
       seen.add(p);
       return true;

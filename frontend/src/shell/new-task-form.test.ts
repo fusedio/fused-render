@@ -8,6 +8,8 @@
 // three exports are plain functions, which is why they were pulled out of the
 // component in the first place.
 import { beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { RecurrenceRule, ScheduledMessage } from "@platform/lib/api";
 
 const g = globalThis as unknown as Record<string, unknown>;
@@ -43,6 +45,7 @@ let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
 let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
 let defaultTargetOf: typeof import("./NewJobModal").defaultTargetOf;
+let parentFolder: typeof import("./NewJobModal").parentFolder;
 
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
@@ -71,6 +74,7 @@ beforeAll(async () => {
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
   PAST_NOTE_CATCH_UP = mod.PAST_NOTE_CATCH_UP;
   defaultTargetOf = mod.defaultTargetOf;
+  parentFolder = mod.parentFolder;
 });
 
 // Only the fields these functions read; the rest of a stored entry is noise
@@ -1443,5 +1447,55 @@ describe("defaultTargetOf", () => {
     expect(
       defaultTargetOf({ home: "C:\\Users\\v", fused_dir: "C:\\Users\\v\\Fused" }),
     ).toBe("C:/Users/v/Fused");
+  });
+});
+
+// ---- "recent" means one thing -------------------------------------------------
+// Until 2026-08-18 the app had two recents. The home page's Recent files strip
+// reads the server-backed store at ~/.fused-render/recents.json
+// (apps/explorer/lib/recents); this form read a localStorage array only it ever
+// wrote, so a person who had spent the morning in a repo opened New task and was
+// offered folders the form happened to remember instead. One noun per concept
+// (design-principles §1), and recents are exactly the "recognition over recall"
+// affordance §4 asks for — so the shared store leads the list now.
+describe("the folder recents come from the app's own recents", () => {
+  test("a recent FILE contributes the folder it lives in", () => {
+    // The shared store holds files (the server no-ops on directory urls) and a
+    // task wants a place to run, so the map from one to the other is the parent.
+    expect(parentFolder("/Users/a/code/app/main.py")).toBe("/Users/a/code/app");
+    // Windows paths arrive with backslashes from /api/config and friends; the
+    // picker's string surgery only understands forward ones.
+    expect(parentFolder("C:\\work\\repo\\main.py")).toBe("C:/work/repo");
+    // Roots degrade sanely rather than to the empty string, which would be
+    // silently dropped from the list.
+    expect(parentFolder("/notes.md")).toBe("/");
+    // A trailing separator is not a level of its own.
+    expect(parentFolder("/Users/a/code/app/")).toBe("/Users/a/code");
+    // Nothing to offer, rather than a bogus "".
+    expect(parentFolder("main.py")).toBe("");
+    expect(parentFolder("")).toBe("");
+  });
+
+  test("the list is built from the shared store first, then the form's own memory", () => {
+    const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+    // The SAME module the home page reads, not a second client for /api/recents.
+    expect(src).toContain('from "@apps/explorer/lib/recents"');
+    expect(src).toContain("loadRecents()");
+    // Raw MRU, which is what Home.tsx renders — not `displayRecents`, the
+    // sidebar's stable-slot view, whose order is deliberately sticky.
+    expect(src).not.toContain("displayRecents");
+    // The cache is filled on mount, for the case where a `/tasks?new=1` deep link
+    // makes this modal the first thing opened in a session.
+    expect(src).toContain("void hydrateRecents();");
+    // Order: the app's recents, then folders picked through Browse or saved on a
+    // task, then existing tasks' targets as padding. The middle tier is KEPT — a
+    // folder deliberately chosen here may hold no files anyone has opened, so the
+    // shared store would never learn it.
+    const list = src.slice(src.indexOf("const readRecentList = useCallback("));
+    const body = list.slice(0, list.indexOf("}, [recentTargets]);"));
+    expect(body.indexOf("sharedRecentFolders()")).toBeLessThan(body.indexOf("readRecents()"));
+    expect(body.indexOf("readRecents()")).toBeLessThan(body.indexOf("recentTargets"));
+    // Deduped, so a folder both stores know is offered once.
+    expect(body).toContain("seen.has(p)");
   });
 });
