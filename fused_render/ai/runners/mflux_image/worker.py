@@ -39,6 +39,7 @@ for.
 
 import os
 import sys
+import threading
 import time
 
 # The base sits one directory up, in `runners/` — see mlx_text/worker.py.
@@ -50,6 +51,74 @@ import worker_base  # noqa: E402 - the path insert above is what makes it import
 
 #: The loaded model. One per process.
 _loaded = {}
+
+#: The MLX streams every thread in this process works on, keyed by device name —
+#: ONE PER DEVICE, which is the whole point. See `_pin_stream`.
+_STREAMS = {}
+_STREAMS_LOCK = threading.Lock()
+
+
+def _pin_stream():
+    """Put this thread's MLX work on the process's shared streams — EVERY device.
+
+    **MLX default streams are per-thread from mlx 0.32 on, and this worker is
+    threaded.** `load` runs on `worker_base.serve`'s bring-up thread, which then
+    exits; `generate` arrives on a `ThreadingTCPServer` request thread. An
+    UNEVALUATED array is a graph pinned to the stream it was built on, and
+    forcing it from another thread throws
+    `std::runtime_error("There is no Stream(cpu, 0) in current thread")` — see
+    `load` for what that costs and `mlx_whisper/worker.py::_pin_stream` for the
+    same mechanism written out at length.
+
+    **`mx.cpu` as well as the default device, which is where a verbatim copy of
+    the whisper runner's version would have been wrong.** The default stream is
+    per (thread, DEVICE): `set_default_stream` is documented to replace the
+    default "for the stream's device", so pinning `default_device()` alone — the
+    GPU — leaves this thread's CPU default exactly where it was. Measured on
+    0.32.1: a gpu-only pin on both threads does not fix this runner, it only
+    moves the index in the abort (`There is no Stream(cpu, 2)`), while the
+    cpu pin alone renders. Both are pinned anyway, because which device holds
+    the next version's lazy graph is not something to re-measure per release.
+
+    Pinning a CPU stream does NOT move the default DEVICE — measured:
+    `mx.default_device()` is still `Device(gpu, 0)` after a render, and the
+    render's own speed is unchanged.
+
+    `new_thread_unsafe_stream` is mlx's own answer: a stream not owned by the
+    thread that made it. **The sharing is the mechanism** — one stream per
+    device for the whole process, so a graph built on any thread is forceable on
+    any other. "Unsafe" means it must not be driven by two threads AT ONCE,
+    which this worker already guarantees: `worker_base.GENERATE_LOCK` serializes
+    renders and the load completes before the server accepts a request.
+
+    A no-op on an mlx too old to have the call, which is the right answer:
+    streams were process-wide there and there was nothing to pin.
+    """
+    import mlx.core as mx
+
+    make = getattr(mx, "new_thread_unsafe_stream", None)
+    pin = getattr(mx, "set_default_stream", None)
+    if make is None or pin is None:
+        return None
+    # `default_device()` rather than `mx.gpu`, and CPU FIRST: on a build with no
+    # Metal the two are the same device and this dedupes to one stream, rather
+    # than naming a device this mlx may not have.
+    devices = [mx.cpu, mx.default_device()]
+    with _STREAMS_LOCK:
+        streams = []
+        for device in devices:
+            key = str(device)
+            # `if key not in`, NOT `setdefault(key, make(device))`: the latter
+            # evaluates `make` on every call and would mint a fresh stream per
+            # thread while keeping the first — the shared stream is the whole
+            # mechanism, so quietly making unshared ones is the bug this guards.
+            if key not in _STREAMS:
+                _STREAMS[key] = make(device)
+            if _STREAMS[key] not in streams:
+                streams.append(_STREAMS[key])
+    for stream in streams:
+        pin(stream)
+    return streams
 
 
 #: Repo id -> the mflux VARIANT class that loads it and the model config that
@@ -125,34 +194,67 @@ def load(model_id, fetched):
     # network — which matters because `download` has already reported those
     # bytes to the job row, and a second fetch inside `load` would be an
     # unreported download the user watches as a stalled "Loading…".
-    # **This runner is threaded exactly like `mlx_whisper/worker.py` and needs
-    # no `_pin_stream`, and here is why — because "same shape, but fine" is the
-    # claim that rots silently when a dependency moves.**
+    # **This runner is threaded exactly like `mlx_whisper/worker.py`, and from
+    # mlx 0.32 it needs the same `_pin_stream` — on BOTH devices.** This comment
+    # used to say the opposite, at length, and it was true: under mlx 0.31.x
+    # streams were process-wide and there was nothing to pin. `mflux` declared no
+    # version bound, so the first venv provisioned after mflux 0.19.0 shipped
+    # re-resolved to it, mflux 0.19 pins `mlx>=0.32,<0.33`, and every render
+    # afterwards died on its first denoising step. The dependency moved; the
+    # claim did not. Hence the bound now in this folder's `pyproject.toml`.
     #
-    # The shape: mlx 0.32 gives every thread its own default stream, `load` runs
-    # on `worker_base`'s bring-up thread (which then exits), and `generate` runs
-    # on a `ThreadingTCPServer` request thread. An UNEVALUATED array is a graph
-    # owned by the stream it was built on, so forcing one from another thread
-    # throws out of `metal::get_command_encoder` — an uncaught C++ exception
-    # that aborts the worker with no Python traceback. That is what took out
-    # every MLX Whisper transcription; the whisper runner's `_pin_stream`
-    # docstring has the mechanism in full.
+    # The shape: mlx 0.32 gives every thread its own default stream PER DEVICE,
+    # `load` runs on `worker_base`'s bring-up thread (which then exits), and
+    # `generate` runs on a `ThreadingTCPServer` request thread. An UNEVALUATED
+    # array is a graph owned by the stream it was built on, so forcing one from
+    # another thread throws an uncaught C++ exception that aborts the worker with
+    # no Python traceback. See `_pin_stream` above, and the whisper runner's for
+    # the mechanism in full.
     #
-    # Why it does not reach here: an EVALUATED array crosses threads freely, and
-    # nothing in this construction stays lazy. Every array in the model arrives
-    # through `WeightLoader` → `mx.load(...)`, which returns materialised
-    # safetensors data rather than a graph, and `WeightApplier` installs it with
-    # `model.update(...)`. On a pre-quantized repo — which is all this runner
-    # loads — `apply_and_quantize` takes the `stored_q is not None` branch, so
-    # `nn.quantize` runs FIRST and the loaded weights then overwrite what it
-    # computed. Nothing is derived-and-kept the way whisper's underscored
-    # `_positional_embedding` and `_mask` are, and those were the whole leak.
+    # **The array that actually kills it, because the old note named the wrong
+    # one.** That note claimed "every array in the model arrives through
+    # `WeightLoader` -> `mx.load(...)`, which returns materialised safetensors
+    # data rather than a graph". `mx.load` does no such thing: it returns a LAZY
+    # graph whose single node is MLX's `Load` primitive, and `Load` is scheduled
+    # on the CPU stream whatever the default device is. mflux 0.19's FLUX.2 path
+    # never forces it — `WeightLoader._try_load_mflux_format` reads the shards,
+    # `WeightApplier.apply_and_quantize` installs them with `model.update(...)`
+    # and `nn.quantize(...)`, and `flux2_initializer.py` has no `mx.eval` at all
+    # (unlike the krea2 and ideogram4 initializers, which do). So the
+    # transformer, text encoder and VAE weights reach the request thread as live
+    # `Load` graphs owned by the BRING-UP thread's cpu stream. Whisper's leak was
+    # two derived tensors `parameters()` could not see; this one is the weights
+    # themselves.
     #
-    # Measured, not reasoned: building this variant on a thread that then exits
-    # and forcing `mx.eval` over all 1558 arrays reachable in the model — every
-    # attribute, underscored ones included — from a second thread evaluates
-    # cleanly; and a real 4-step 256² render through this worker, load thread
-    # gone, returned a PNG. Re-run both if mflux or mlx is bumped.
+    # **Measured, not reasoned (mflux 0.19.0, mlx 0.32.1 — 0.32.0 carries the
+    # same hazard, so treat this as 0.32.x):**
+    #   * Unfixed, this exact code — `load` on a thread that then exits, then
+    #     `generate` on a second thread, 2 steps at 256x256 — dies at mflux's
+    #     per-step `mx.eval(latents)` (`flux2_klein.generate_image`) with
+    #     `There is no Stream(cpu, 0) in current thread`. That is the
+    #     supervisor's dropped connection and the page's "the image process did
+    #     not answer".
+    #   * `mx.default_stream(...)` on 0.32.1 reports `Stream(cpu, 0)` and
+    #     `Stream(gpu, 1)` on the first thread to touch MLX, 2/3 on the next and
+    #     4/5 on the one after — the default stream is per (thread, DEVICE).
+    #   * Pinning `default_device()` alone, on BOTH threads, does not fix it:
+    #     the same run dies with `There is no Stream(cpu, 2)`. Pinning cpu alone
+    #     renders. Both are pinned; see `_pin_stream`.
+    #   * With `_pin_stream` on both threads the same run returns a 256x256 PNG
+    #     in ~8.5s, and `mx.default_device()` is still `Device(gpu, 0)`.
+    #
+    # **Whether the LIVE PREVIEW is on changes only how the failure looks, not
+    # whether it happens.** mflux calls `ctx.in_loop(t, latents)` one line BEFORE
+    # its own `mx.eval(latents)`, so with a preview sink attached `_as_numpy`
+    # forces the graph first, across numpy's `__array__` boundary — which is
+    # `noexcept`, so the process ABORTS (`libc++abi:`) and `preview.Sink.add`'s
+    # `except Exception` cannot see it by construction. With no sink, mflux's own
+    # `mx.eval` forces it and the same fault surfaces as a catchable
+    # `RuntimeError`. The fix is the pin; the preview is not the problem.
+    #
+    # Re-run all of the above if mflux or mlx is bumped — an expired measurement
+    # is exactly what happened last time.
+    _pin_stream()
     model = variant_cls(model_config=model_config, model_path=fetched)
     # ONE registration, at load time. `CallbackRegistry.register` APPENDS, and
     # the registry belongs to the model rather than to a call — so registering
@@ -234,6 +336,12 @@ def _sigma_after(config, t):
     None when there is no schedule to read, which mflux always has — but a
     preview must not be able to raise out of the one callback this runner
     cancels through and lose a render that was going to succeed.
+
+    `float(sigmas[t + 1])` is a second MLX force inside this callback, and it is
+    safe for a different reason than `_as_numpy`: the schedule is built per
+    `generate_image()` call, so it is a graph this very thread made. Worth
+    knowing if the schedule ever becomes something `load` computes once — that
+    would put it on the bring-up thread, where `_pin_stream` is what saves it.
     """
     sigmas = getattr(getattr(config, "scheduler", None), "sigmas", None)
     if sigmas is None or len(sigmas) <= t + 1:
@@ -251,9 +359,12 @@ def _as_numpy(latents):
 
     **This costs the render nothing.** Touching the array forces the same
     `mx.eval` the generation loop performs immediately after the callback
-    returns, and it happens ON that thread — so there is no unevaluated graph
-    crossing a thread boundary and no `_pin_stream` concern (see `load`'s
-    docstring for the failure mode that would be).
+    returns — one line later, in fact, which is why this is where a stream fault
+    surfaces first and as an ABORT rather than an exception: numpy's `__array__`
+    boundary is `noexcept`, so `preview.Sink.add`'s `except Exception` cannot
+    catch one. That is a reason to keep `_pin_stream` correct, not a reason to
+    move this call; the same fault without a preview sink only changes which
+    line reports it. See `load`.
     """
     import mlx.core as mx
     import numpy
@@ -331,6 +442,10 @@ def generate(body):
     model = _loaded.get("model")
     if model is None:
         raise RuntimeError("no model is loaded")
+    # BEFORE anything touches the model: this is a request thread, the weights it
+    # is about to force were built on the bring-up thread, and mlx 0.32's default
+    # streams are per (thread, device). See `_pin_stream`.
+    _pin_stream()
 
     prompt = str(body.get("prompt") or "")
     width = int(body.get("width") or 1024)
