@@ -193,17 +193,77 @@ el.src = img.url;        // ready-made /api/fs/raw url — no need to build it
 el.dataset.seed = img.seed;
 ```
 
-Options: `prompt` (required), `model`, `width`, `height`, `steps`, `guidance`, `seed`, `onProgress`.
+### Options and the reply, with the numbers
 
-Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}` — the render that will actually happen, not the one you asked for (sides are snapped to a multiple of 16 and clamped, steps and guidance clamped).
+`prompt` is the only required one, and it is trimmed. Everything else has a default and a **hard range the server clamps to** — the reply says what was actually used, so a page that echoes the request rather than the reply mislabels its own picture:
+
+| Option | Default | Range | Clamping |
+|---|---|---|---|
+| `prompt` | — | non-empty | trimmed; empty or non-string is `bad_request` **before** a job opens |
+| `model` | the `text-to-image` row's `default` from `catalog()` — i.e. the **smallest** curated repo, not the best | a repo the active engine reads | see below — this is the one that bites |
+| `width` / `height` | `1024` | **256–2048** | clamped, then **snapped DOWN to a multiple of 16** (`1000 → 992`). A non-number silently becomes 1024 rather than a 400 |
+| `steps` | `28` | **1–100** | clamped. Not a number → 400 |
+| `guidance` | `4.0` | **0–20** | clamped. Not a number → 400 |
+| `seed` | random | **0 – 2147483647** | clamped. Not a whole number → 400 |
+| `onProgress(job)` | — | — | per denoising step; see below |
+
+**That is the whole surface.** There is no negative prompt, no image-to-image or inpainting input, no batch count, no scheduler or LoRA choice: one prompt in, one PNG out. Two pictures means two calls.
+
+Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}` — the render that will actually happen, not the one you asked for.
 
 - **`seed` comes back whether or not you passed one** — invented server-side, so "make that one again" is always one call away.
-- **Minutes, not seconds.** `onProgress` fires per denoising step with the download-manager record, and that row's ✕ really stops it (the work is the server's, not the page's).
-- **Watch it being made: `job.previewUrl`.** Every tick carries a ready-made URL for a ~32px thumbnail of the image *so far* — the worker rewrites that one file each denoising step, so a page that keeps an `<img>` on it gets a picture emerging out of noise instead of a number going up. It is tiny on purpose (the whole feature costs about 1% of the render); blur it and scale it up in CSS, which is where that decision belongs. `previewPath` is the same file as a path, if you want to read it yourself.
+- **Where the PNG goes is the server's decision, not yours.** `<home>/ai/images/<YYYYmmdd-HHMMSS>-<uid>.png` — under `~/.fused-render`, never beside the page (which may sit in a read-only folder), time-ordered so the folder sorts chronologically in the explorer. **The file outlives the tab that asked for it**, like a transcript: a page that navigated away mid-render can open `path` afterwards. Nothing cleans these up, so a page that renders in a loop is filling a directory the user browses.
+- **One row and one file per render.** Two concurrent calls get two `jobId`s and two paths; nothing is shared and nothing overwrites.
+### The job row, and how long it can take
+
+- **Minutes, not seconds.** `onProgress` fires per denoising step with the download-manager record, and that row's ✕ really stops it (the work is the server's, not the page's). The row is `kind: "task"`, `cancellable: true`, titled with the **prompt truncated to 80 characters**, and `unit` is `""` — steps are a bare pair (`14 / 28`), not the clock a transcription draws. `detail` reads "Preparing…" while the pipeline warms and `Saved <filename>` at the end.
+- **A render is capped at 900 s (15 min) server-side**, separately from the 600 s the text relay allows. A 2048² 100-step render on a CPU-only machine can genuinely hit it, and what comes back is `ai_error` "the image process did not answer" — so keep steps and sides sane rather than exposing the full clamp range to a slider.
+
+### The cold-model path is NOT `model_loading`
+
+This is the biggest difference from `fused.ai()`, and the one that surprises people coming from the text call. `fused.ai.image` **does not reject when the model is cold** — it loads it inside the job you are already watching, because rendering is minutes of work either way. So there is no `model_loading` to catch here and no retry to write.
+
+What that means for `onProgress`:
+
+- While the weights arrive, your row's `detail` reads `Waiting for <repo> — …` with `done`/`total` **null**. Your progress bar has nothing to divide, so guard it (`job.total ? job.done / job.total : null`) or render an indeterminate bar on a null total. The bold "DENOISING STEPS, not bytes" above is true of your row throughout — it never counts bytes.
+- **The bytes are on a second row**, the model's own bring-up row, which the download manager shows beside yours. It will never appear on the image job. If your page wants a download percentage, take that row's id from `fused.ai.models.list()` — the `loaded[]` entry for the model carries `jobId` while it is still loading — rather than building it by hand: the id is `sys:ai-model:` plus the repo with `/` rewritten to `--`, and that slug is the server's to spell.
+- The wait is bounded at **3600 s**; past that the render fails naming the model's own job id.
+
+### Renders serialize, and the row does not say so
+
+One generation at a time per worker — a laptop has one GPU, and neither pipeline is safe to call from two threads. A second `fused.ai.image()` therefore **waits inside the worker with no queue message on its row** (transcription says "Queued behind another transcription…"; this does not). Two renders fired together read as one stalled bar for however long the first takes. **Disable the button while a render is in flight**, and if your page really does queue, say so in your own UI.
+
+`fused.ai.cancel("text-to-image")` stops the render holding the lock — the bare `fused.ai.cancel()` defaults to text generation and will not touch it.
+
+### If the job row ages out, the file still answers
+
+A render long enough for a backgrounded tab to sleep past job retention loses its row. The bridge handles it: it `stat`s `path`, and if the PNG is there it **resolves normally**. Only when the row is gone *and* no file exists does it reject `ai_error` "the image job is no longer being reported" with `err.jobId`. Nothing extra to write — but do not assume a missing row means a failed render.
+
+### Watch it being made: `job.previewUrl`
+
+- **Every tick carries a ready-made URL for a ~32px thumbnail of the image *so far*** — the worker rewrites that one file each denoising step, so a page that keeps an `<img>` on it gets a picture emerging out of noise instead of a number going up. It is tiny on purpose (the whole feature costs about 1% of the render); blur it and scale it up in CSS, which is where that decision belongs. `previewPath` is the same file as a path, if you want to read it yourself.
 - **It goes null at the end, and that is the cue to swap.** The preview file is deleted the moment the real PNG lands, so `previewUrl` is null on the last tick and on the resolved object — end on `img.url`, which is the full-resolution picture. It is also null throughout for a model with no preview support.
-- **An early tick can 404**, because the first denoising step writes no frame (two steps are needed to guess at a picture). That is ordinary, not an error: give the `<img>` an `onerror` that hides it, as above.
-- Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` (no image runner here — reason in the message).
-- **`model` comes from `catalog()` here too.** The Diffusers and MLX FLUX runners take *different repos for the same model* — `black-forest-labs/FLUX.2-klein-4B` against `mlx-community/FLUX.2-Klein-4B-4bit` — so a hard-coded id becomes an unloadable download the moment the other one is serving.
+- **An early tick can 404**, because the first denoising step writes no frame: step 1 has no predecessor to extrapolate from. That is ordinary, not an error — give the `<img>` an `onerror` that hides it, as above. What you see from step 2 on is the model's *current guess* at the finished image rather than the raw latent, which on this distilled schedule would be grey static until the last frame.
+- **The URL is already cache-busted for you** (`&step=<n>`) — the preview is one path rewritten in place, so adding your own buster is redundant and dropping the given one shows frame 2 forever.
+- **A preview needs a fitted 128→3 projection for the model's latent space**, which today exists for FLUX.2 klein's `AutoencoderKLFlux2` and nothing else. A model without one renders exactly as before and simply writes no frame — `previewUrl` is a promise about a *path*, not about a file. The projection is keyed by the VAE class rather than the repo, so **the preview does not depend on which engine served you**.
+- Orphaned preview frames (from a killed worker) are swept by the next render, not by a timer.
+
+Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` (no image runner here — reason in the message).
+
+### Choosing `model` — the part that actually breaks pages
+
+**`model` comes from `catalog()` here too**, and for images the two engines are stricter than anywhere else:
+
+| Engine serving `text-to-image` | What it loads |
+|---|---|
+| **Diffusers (PyTorch)** — Windows, Linux, and Macs switched to it | `black-forest-labs/FLUX.2-klein-4B` (curated), plus any ordinary diffusers repo with a `model_index.json`, through `AutoPipelineForText2Image` |
+| **MLX FLUX** — the Apple Silicon default | `mlx-community/FLUX.2-Klein-4B-4bit` and **nothing else** |
+
+That second row is not a summary of the catalog, it is a hard limit: mflux has no `AutoPipeline`, so the runner loads only repos it names a variant class for — one, today. Any other MLX diffusion repo is refused with a sentence telling the reader to try that id or switch to Diffusers on the Engines tab. So on a Mac, "let the user paste a Hub id" is a feature with exactly one valid answer, and `catalog()` is the only honest picker.
+
+The same model also **downloads differently per engine**: 4.6GB as one MLX repo, against 10.8GB for the Diffusers recipe — which pulls the base repo's text encoder and VAE *plus* a ~2.6GB Q4_K_M GGUF transformer from a second repo (`unsloth/FLUX.2-klein-4B-GGUF`), deliberately skipping the repo's own ~8GB bf16 transformer, which OOMs 16GB machines. `size_gb` in the catalog is that whole figure, every repo and every file the download touches — not the interesting file. And the GGUF repo shows up in the model cache as a component nobody chose: it is not a model, `catalog()` excludes it, and deleting it to reclaim space breaks the image model.
+
+**Memory is the failure mode to expect on a small Mac.** MLX FLUX reserves far more memory than Diffusers while running and is untested below 32GB; an OOM arrives as `ai_error`, so show `err.message` rather than a generic "render failed" — and the way out is the Engines tab, which your page should name rather than work around.
 
 ## Transcription: `fused.ai.transcribe({path, ...})`
 
@@ -366,6 +426,12 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 - **Loading `openai/whisper-large-v3`** → transformers format, which no shipping runner reads, however willingly the page offers the button. Take the id from `catalog()`.
 - **Rendering only `catalog()`'s curated entries** → the model the user just downloaded from the Hub search is missing from your picker, which is the exact bug the `source`/`downloaded` fields exist to end. Render every entry; mark them.
 - **Carrying a speech repo id between machines or between engines** → CT2, MLX Whisper and Parakeet load different files; a repo that works on one engine is an unusable download on the other, and switching engines on the Engines tab changes which is which.
+- **Waiting for `model_loading` from `fused.ai.image`** → it never comes; the load happens inside the render's own job, with `done`/`total` null and the bytes on a separate `sys:ai-model:<repo>` row. A bar that divides by a null total shows `NaN` for the whole download.
+- **Firing two renders and waiting** → they serialize in the worker and the second row says nothing about queueing. Disable the button.
+- **Echoing your own request as the image's caption** → sides are snapped to a multiple of 16 and everything is clamped (256–2048, steps 1–100, guidance 0–20). Read the reply.
+- **Letting the user paste any Hub diffusion repo on a Mac** → MLX FLUX loads exactly one repo. Offer `catalog()`'s entries, or say to switch engines.
+- **Deleting the "mystery" GGUF repo in the model cache** → it is the Diffusers recipe's transformer; the image model stops loading.
+- **Adding your own cache-buster to `previewUrl`** → it already has one keyed on the step; a second one makes every tick a fresh request.
 - **Reading transcription progress as bytes or steps** → it is `unit: "s"`, seconds of audio.
 - **`fused.ai.cancel()` to stop a transcription** → it defaults to `"text-generation"`; name the capability or use the row's ✕.
 - **Not disabling the submit button** → no stale-cancel; a double-click fires two calls.
