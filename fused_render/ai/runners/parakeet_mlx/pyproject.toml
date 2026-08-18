@@ -62,7 +62,10 @@
 [project]
 name = "fused-render-runner-parakeet-mlx"
 version = "0.1.0"
-requires-python = ">=3.10"
+# 3.11 for the same reason as mlx_whisper (see the comment there): the
+# onnxruntime>=1.28 line below dropped 3.10, and uv's universal resolution
+# refuses the project for a Python version nobody is running.
+requires-python = ">=3.11"
 dependencies = [
     "parakeet-mlx>=0.5,<0.6",
     "huggingface_hub",

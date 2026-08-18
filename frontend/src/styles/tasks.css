@@ -601,17 +601,15 @@ button.tasks-caret,
   border-color: var(--border);
 }
 
-/* Archive / Unarchive. Same group, same size, same silence at rest as Edit,
-   Cancel and Run now — and deliberately NEUTRAL under the pointer, not red.
+/* Archive. Same group, same size, same silence at rest as Edit, Cancel and Run
+   now — and deliberately NEUTRAL under the pointer, not red.
    Filing a task away destroys nothing (a task IS a Claude session and the
    transcript is kept, D306), so borrowing Cancel's red would tell the reader
    this is the destructive one, which is the exact misunderstanding archiving
    exists to correct. The plain `.tasks-act` hover skin already says "this is a
    control"; that is all this one needs to say. */
 .tasks-act--archive:hover:not(:disabled),
-.tasks-act--unarchive:hover:not(:disabled),
-.prefs-section .tasks-act--archive:hover:not(:disabled),
-.prefs-section .tasks-act--unarchive:hover:not(:disabled) {
+.prefs-section .tasks-act--archive:hover:not(:disabled) {
   color: var(--fg);
   background: var(--bg-alt);
   border-color: var(--border);
@@ -1036,4 +1034,22 @@ button.tasks-caret,
 .prefs-section .tasks-retry:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* ---- "and it runs again on Tuesday" ----------------------------------------
+   The run still to come, on a row whose own time is the run that already
+   happened (tasks-lib.nextRunChip) — a recurring task in Done, which is where a
+   finished run with unread output belongs.
+
+   Quieter than the time beside it and marked as a different kind of thing: it
+   is prefixed with the word "next" rather than aligned into the time column, so
+   two times on one row cannot be misread as one time in two places. Same size,
+   same tabular figures, so the pair still reads as one register. */
+.tasks-row-next {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  opacity: 0.85;
 }
