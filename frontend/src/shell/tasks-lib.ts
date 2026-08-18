@@ -2568,3 +2568,129 @@ export function isRunningNow(task: Task, m: TaskMessage): boolean {
   const newest = task.messages?.[0];
   return !!newest && !!m.message_id && m.message_id === newest.message_id;
 }
+
+// ---- the sidebar's two-number summary of this page ----------------------------
+// The Tasks entry in the global sidebar has to say two things without being the
+// page: something is RUNNING, and something FINISHED that nobody has looked at.
+// Both are read off the very rows the page draws (`taskColumn` — the server's
+// status, narrowed, so the sidebar cannot invent a sixth state), never off a
+// second endpoint of their own.
+//
+// WHY "done and unread" IS NOT JUST "unread". Unread exists on rows that are
+// still going and on rows nobody ever expected to read; the signal being asked
+// for here is the completion of work the reader was waiting on, which is exactly
+// `done` + `unread > 0`. `failed` is deliberately NOT counted: it is a status of
+// its own on this page (see taskColumn), and a green "go and look" mark over a
+// run that broke would be the one place in the app where a hue disagreed with
+// the ring the row wears (design-principles §1).
+
+/** Where the sidebar's dismissal lives. Per COMPLETION, not per task — see
+ *  TasksSeen. */
+export const TASKS_SEEN_KEY = "fused-render:tasks-seen";
+
+/**
+ * Which completions the reader has already been shown, as `task key ->
+ * last_active`.
+ *
+ * The value is what makes "the same completions" a checkable claim. A bare set
+ * of keys would dismiss a task FOREVER — the second time it ran and finished,
+ * the mark it earned would be swallowed by the first visit's dismissal. The
+ * task's `last_active` moves with every new message, so a stored stamp that no
+ * longer matches means "this is a different completion" and the mark comes back.
+ *
+ * A stamp rather than a global watermark for the same reason from the other
+ * side: catch-up runs can finish out of order (Scheduled.tsx's docstring — work
+ * that came due while the app was closed runs when it opens), and one
+ * high-water mark would silently swallow every completion stamped before it.
+ */
+export type TasksSeen = Record<string, number>;
+
+/** What came out of localStorage is a string written by SOMEONE ELSE (an older
+ *  build, a hand-edited devtools row): anything unreadable degrades to "nothing
+ *  dismissed" — one extra dot — rather than throwing inside a render. */
+export function parseTasksSeen(raw: string | null): TasksSeen {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: TasksSeen = {};
+  for (const [key, at] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof at === "number" && Number.isFinite(at)) out[key] = at;
+  }
+  return out;
+}
+
+/** Has this task finished work nobody has looked at yet, given what has already
+ *  been dismissed? */
+export function isDoneUnread(task: Task, seen: TasksSeen): boolean {
+  if (taskColumn(task) !== "done") return false;
+  if (!(task.unread > 0)) return false;
+  return seen[task.key] !== task.last_active;
+}
+
+export interface TasksPulse {
+  /** Tasks whose work is in flight — the yellow half. */
+  running: number;
+  /** Tasks that finished and have not been looked at — the green half. */
+  doneUnread: number;
+}
+
+export const EMPTY_TASKS_PULSE: TasksPulse = { running: 0, doneUnread: 0 };
+
+/** The whole sidebar signal, from the rows the page already has. */
+export function tasksPulse(tasks: Task[], seen: TasksSeen): TasksPulse {
+  let running = 0;
+  let doneUnread = 0;
+  for (const t of tasks) {
+    if (taskColumn(t) === "in_progress") running++;
+    else if (isDoneUnread(t, seen)) doneUnread++;
+  }
+  return { running, doneUnread };
+}
+
+export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
+  return a.running === b.running && a.doneUnread === b.doneUnread;
+}
+
+/**
+ * The dismissal a visit to /tasks earns: every DONE task on screen, stamped
+ * with the completion that was on screen.
+ *
+ * Done tasks only, and only the ones in this answer — which is also the pruning
+ * rule, so the row cannot grow without bound as tasks come and go. A running
+ * task is deliberately not stamped: its completion has not happened yet, and
+ * pre-dismissing it is how the one mark this feature exists for would never be
+ * drawn.
+ */
+export function seenAfterVisit(tasks: Task[]): TasksSeen {
+  const next: TasksSeen = {};
+  for (const t of tasks) {
+    if (taskColumn(t) === "done") next[t.key] = t.last_active;
+  }
+  return next;
+}
+
+export function sameSeen(a: TasksSeen, b: TasksSeen): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((k) => a[k] === b[k]);
+}
+
+/** "2 running" — the expanded row's yellow readout. Plural because one is the
+ *  common case and "1 running" is what a person would say out loud. */
+export function runningLabel(n: number): string {
+  return `${n} running`;
+}
+
+/** The collapsed dot's tooltip, and the expanded chip's — the sidebar's ONE
+ *  sentence about the page, so the two modes cannot describe it differently. */
+export function pulseTitle(pulse: TasksPulse): string {
+  const parts: string[] = [];
+  if (pulse.running > 0) parts.push(runningLabel(pulse.running));
+  if (pulse.doneUnread > 0) parts.push(`${pulse.doneUnread} finished, not read`);
+  return parts.join(" · ");
+}
