@@ -1068,6 +1068,25 @@ def test_config_says_read_only_so_a_row_can_word_its_button(client, install,
     assert client.get("/api/config").json()["read_only"] is True
 
 
+def test_config_says_when_claude_is_missing_so_nothing_offers_a_session(
+        client, install, monkeypatch):
+    """The precondition that outranks read-only (SF-13f).
+
+    Without the CLI no session can start — neither a fix nor a diagnosis — so a
+    surface that offers one is offering something that cannot happen. Same
+    "present only when true" convention as `read_only`, and resolved by the SAME
+    function the AI relay spawns with, so the offer and the spawn cannot
+    disagree about what is installed.
+    """
+    from fused_render.server import ai
+
+    monkeypatch.setattr(ai, "_claude_bin", lambda: "/usr/local/bin/claude")
+    assert "claude_missing" not in client.get("/api/config").json()
+
+    monkeypatch.setattr(ai, "_claude_bin", lambda: None)
+    assert client.get("/api/config").json()["claude_missing"] is True
+
+
 def test_clear_endpoint(client, install):
     _pristine()
     (install / "jobs.py").write_text("patched\n")

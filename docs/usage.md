@@ -436,7 +436,8 @@ panel, below.)
 When something the app is doing fails — a model download, a long job, anything
 that shows up in the download manager at the bottom right — the failed row
 carries a **Fix this** button beside its ✕ (*Diagnose this* on an installation
-you cannot write to — see below).
+you cannot write to, *Set up Claude Code* if Claude Code isn't installed — see
+below).
 
 It opens a Claude Code session **on the fused-render installation itself**, with
 what went wrong already written down for it, and drops you into that
@@ -445,6 +446,12 @@ permission requests; nothing happens to your copy of the app unattended.
 
 A few things worth knowing:
 
+- **It needs Claude Code on this machine.** If it isn't installed, nothing
+  offers you a session in the first place: the button reads *Set up Claude Code*
+  and shows you how to get it. Being **signed out** or **over your usage limit**
+  are different — the app can't know either without running Claude, so those you
+  find out when the session starts, and the card that appears tells you which one
+  it was and what to do.
 - **Python changes need a restart.** Quit and reopen fused-render before
   deciding whether the fix worked.
 - **It can only fix some things.** The session is working on installed files:

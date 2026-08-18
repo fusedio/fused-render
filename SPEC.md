@@ -7614,6 +7614,35 @@ the installation, and the mark that says so.
   *writable*, because nearly every install is, and a verb that briefly
   overpromises beats mis-wording the button for everyone whose config fetch was
   merely slow.
+- **SF-13f** **A precondition that can be CHECKED is checked before the session is
+  OFFERED — and only the ones that can.** Two of them can, and both ride
+  `/api/config` beside `modified_install` (present only when true), because a
+  surface has to word a button before anyone clicks it and the `GET /api/selffix`
+  snapshot costs a directory walk and a brew probe:
+  `read_only` (an `os.access`) decides FIX versus DIAGNOSE, and **`claude_missing`
+  decides whether to offer a session at all** — without the CLI neither mode can
+  start, so it outranks the other. It is resolved by the SAME function that
+  spawns the AI relay (`server/ai.claude_cli_path`), so the offer and the spawn
+  cannot disagree about what is installed.
+  **What is deliberately NOT pre-checked is the more interesting half**: whether
+  Claude is SIGNED IN, and whether it is over its usage limit. Neither can be
+  known without running the CLI, both change between one minute and the next, and
+  a check that spawned a process per failed row would cost more than the click it
+  saved — and would still be answering a question whose answer had already
+  expired. Those stay POST-HOC, classified from the failure by §42's two-tier
+  rules, which is the right shape for them: a fact you can only learn by trying
+  is a fact you report after trying. The line is not "cheap versus expensive", it
+  is **stable versus perishable** — a binary that is absent stays absent until
+  someone installs it; a session that is signed in can be signed out mid-fix.
+  When the pre-check fires, the surfaces answer with `CLAUDE_MISSING_ERROR` —
+  byte-identical to what `spawn_helper` returns for a genuinely missing CLI, and
+  pinned to it (`test_trouble_parity.py`) — rather than spending a spawn everyone
+  already knows the outcome of. Identical sentence, identical `notfound` card,
+  whether the user got there by being told or by finding out; two accounts of one
+  fact read as two different problems. The row's verb becomes **Set up Claude
+  Code** and Preferences says the same in a sentence: naming the precondition,
+  not the failed download, because that is the thing standing between the user
+  and a session.
 - **SF-13e** **WRITERS take the first records home that will have them; READERS
   look in all of them** (`record_homes`). `writable()` is `os.access` on the
   install root — a PREDICTION, and one that answers only for the real uid's

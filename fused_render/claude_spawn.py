@@ -121,6 +121,22 @@ print(json.dumps(mod._start(req["file"], req["message"], req["session_id"], "", 
 """
 
 
+# What the user is told when the CLI is not on this machine. A NAMED constant
+# because a second surface says it too: a caller that can check the precondition
+# BEFORE spawning (SPEC §43, SF-13f) answers with this instead of spending a
+# doomed subprocess, and `tests/test_trouble_parity.py` pins the shell's copy to
+# it. One fact, one sentence, wherever the user meets it — and the wording is
+# load-bearing beyond politeness, since "Claude Code isn't installed" is what
+# lib/trouble.ts classifies as `notfound` to put the install command and the
+# troubleshooting link on the card.
+CLAUDE_MISSING_ERROR = (
+    "Claude Code isn't installed (or couldn't be found). "
+    "Install it, check that `claude` runs in a terminal, then "
+    "try again. Help: "
+    "https://render.fused.io/#troubleshooting-notfound"
+)
+
+
 def spawn_helper(target: str, prompt: str, permission_mode: str,
                  session_id: str = "") -> dict:
     """Run `agent._start` in the fork-safe helper; return its result dict.
@@ -157,11 +173,7 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
         # — useless on its own. Recognize it and say the one thing the user
         # can act on instead.
         if "claude CLI not found" in stderr:
-            return {"error":
-                    "Claude Code isn't installed (or couldn't be found). "
-                    "Install it, check that `claude` runs in a terminal, then "
-                    "try again. Help: "
-                    "https://render.fused.io/#troubleshooting-notfound"}
+            return {"error": CLAUDE_MISSING_ERROR}
         tail = stderr.splitlines()
         return {"error": "session helper failed: " + (tail[-1] if tail else "unknown")}
     return json.loads(proc.stdout)

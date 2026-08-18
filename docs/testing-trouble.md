@@ -207,6 +207,29 @@ chmod a-w "$(.venv/bin/python -c 'import fused_render,os; print(os.path.dirname(
   diagnostic wording. Check one ordinary failed row after restoring — a config
   read that fails should fall back to *Fix this*, not to *Diagnose this*.
 
+### 7. Claude Code is missing, before anything is offered
+
+Case 1 above stages the same machine state; this checks the half that happens
+*before* a click. Hide the CLI from the server's PATH and restart it:
+
+```
+FUSED_RENDER_CLAUDE_BIN=/nonexistent PATH=/usr/bin:/bin scripts/dev.sh
+```
+
+- **A failed download row** reads **Set up Claude Code**, not *Fix this*.
+  Clicking it shows the `notfound` card **immediately** — no spinner, because
+  nothing is spawned.
+- **Preferences → Fix this app** says a session runs on Claude Code and it isn't
+  installed; its button reads *Set up Claude Code* and needs no description
+  typed first (there is nothing to describe yet).
+- The card is the **same** one you get from case 1 by letting a spawn fail —
+  same sentence, same install command, same `#troubleshooting-notfound` link.
+  That is pinned by `tests/test_trouble_parity.py`; if the two ever differ, the
+  test is what tells you.
+- **Regression to watch:** being signed out must NOT be pre-checked. Sign out
+  with the CLI present and the row must still read *Fix this* — the app cannot
+  know, and a button that guessed would be wrong the moment you signed back in.
+
 ## Cross-cutting checks
 
 - **Both themes.** The card is drawn from `--warning-rgb`; check light and dark.
