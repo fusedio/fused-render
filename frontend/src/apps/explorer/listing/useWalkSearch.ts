@@ -226,6 +226,34 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   const inflightKey = useRef<string | null>(null);
   const issuedAt = useRef(0);
   const answerSeq = useRef(0);
+  // The generation the ranked answer on screen was fetched under.
+  //
+  // For the walk, "behind" is `pinned !== gen`: its corpus is deliberately
+  // pinned and stays that way until a boundary, and the caption is the deal
+  // that makes that honest. The ranked path is not in that position, and
+  // captioning it the same way was wrong in the one case that matters most —
+  // the scan the box itself asked for. The scan completes, the ranked poll
+  // fetches the compacted index, and the STATUS poll turns the same
+  // completion into a lifecycle bump a beat later: so the freshest answer
+  // that has ever existed for this folder was captioned "not refreshed" the
+  // moment it landed, which is the opposite of the truth and lands exactly
+  // where the user is watching for the scan to finish.
+  //
+  // Two halves. A lifecycle bump — a scan completed, or the index was deleted
+  // — RE-ASKS on the ranked path (it is a few KB and it never blanks the
+  // list, so the argument in listing/revalidate for holding still, which is
+  // about a 20 MB corpus refetch that emptied the rows, does not reach it).
+  // A dir-watch bump still does not: those are frequent and the deferral is
+  // what keeps a churny folder readable. And the answer carries the
+  // generation it was fetched under, so the caption is about THIS answer
+  // rather than about a counter that has since moved.
+  const answerGen = useRef(gen);
+  // ...read from a ref, never from the effect's closure: making `gen` a
+  // dependency of the fetch would re-issue the request on every dir-watch
+  // bump and every completed scan, which is the churn listing/revalidate
+  // exists to refuse.
+  const genRef = useRef(gen);
+  genRef.current = gen;
   useEffect(() => {
     memo.current.clear();
     setAnswer(null);
@@ -318,7 +346,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     // that outlasts SCAN_POLL_MS would otherwise never be allowed to finish,
     // and the loop would outlive the scan it is waiting for. It also drops the
     // duplicate that the `polling` flag flipping used to cost.
-    const key = [fsPath, pinned, retryNonce, q].join("\u0000");
+    const key = [fsPath, pinned, lifecycle, retryNonce, q].join("\u0000");
     if (inflightKey.current === key) return;
     const run = () => {
       inflight.current?.abort();
@@ -335,6 +363,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
           inflightKey.current = null;
           const step = applyStep(res);
           answerSeq.current += 1;
+          answerGen.current = genRef.current;
           const next: RankAnswer = {
             query: q,
             hits: hitsFromRank(res.hits, q),
@@ -372,7 +401,8 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- applyStep is
     // recreated each render; everything it reads is a ref or listed here.
-  }, [fsPath, q, searching, walkMode, pinned, retryNonce, pollTick, polling]);
+  }, [fsPath, q, searching, walkMode, pinned, lifecycle, retryNonce, pollTick,
+      polling]);
 
   // The poll itself: while a scan covering this folder is running, ask again
   // on a modest cadence and repaint. The ordering WILL shift as rows land;
@@ -749,7 +779,10 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // user has already edited past, with nothing in flight to replace them, are
   // the same kind of claim — "no answer is coming, this is it" — so they join
   // it rather than the dim above.
-  const generationBehind = searching && (pinned !== gen || (staleRows && !pending));
+  const generationBehind =
+    searching &&
+    ((walkMode ? pinned !== gen : answerGen.current !== gen) ||
+      (staleRows && !pending));
 
   // No spinner flash: a pending indicator appears only once being pending is
   // information rather than a flicker. The common answer lands well inside

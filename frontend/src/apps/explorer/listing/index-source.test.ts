@@ -159,6 +159,25 @@ describe("useWalkSearch's half of the decision", () => {
     expect(HOOK.split("\n").filter((l) => l.includes("polls.current += 1"))).toHaveLength(1);
   });
 
+  test("a ranked answer is behind only if the index moved AFTER it", () => {
+    // The scan the box asked for completes, the status poll turns that into a
+    // lifecycle bump, `gen` moves — and the answer the poll then fetched is
+    // the freshest that has ever existed for this folder. Measuring "behind"
+    // as `pinned !== gen` captioned it "not refreshed" at the moment it
+    // landed. The walk keeps `pinned`, whose corpus really is pinned.
+    expect(HOOK).toContain("walkMode ? pinned !== gen : answerGen.current !== gen");
+    expect(HOOK).toContain("answerGen.current = genRef.current;");
+    // A completed scan RE-ASKS on the ranked path — it is a few KB and never
+    // blanks the list — so the caption clears by being true rather than by
+    // being suppressed. A dir-watch bump still does not: those are frequent,
+    // and the deferral is what keeps a churny folder readable.
+    const deps = HOOK.slice(HOOK.indexOf("  }, [fsPath, q, searching, walkMode"));
+    const depline = deps.slice(0, deps.indexOf("]"));
+    expect(depline).toContain("lifecycle");
+    expect(depline).not.toContain(" gen,");
+    expect(HOOK).toContain('const key = [fsPath, pinned, lifecycle, retryNonce, q]');
+  });
+
   test("a poll tick never aborts a request that is still out", () => {
     expect(HOOK).toContain("if (inflightKey.current === key) return;");
   });
