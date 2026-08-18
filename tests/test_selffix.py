@@ -17,7 +17,7 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import __version__, selffix
+from fused_render import __version__, claude_spawn, selffix
 from fused_render.server import create_app
 from fused_render.server.routers import selffix as selffix_routes
 
@@ -40,6 +40,22 @@ def install(tmp_path, monkeypatch):
     # in the same worker sees.
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     return root
+
+
+@pytest.fixture(autouse=True)
+def _pin_the_claude_cli(monkeypatch):
+    """Every test starts believing Claude Code is installed.
+
+    The start route refuses before it reads the body when the CLI is absent
+    (SF-13f), so without this pin every session test would pass or fail on
+    whether the machine running the suite happens to have `claude` on its PATH
+    — green on a developer's laptop, 502 on a CI runner that has no Claude.
+    Same reasoning as conftest's `_pin_the_script_interpreter_resolution`: the
+    ordinary case is stated, and the tests that are ABOUT the missing CLI say so
+    themselves.
+    """
+    monkeypatch.setattr(selffix_routes, "_claude_cli_path",
+                        lambda: "/usr/local/bin/claude")
 
 
 @pytest.fixture()
@@ -1066,6 +1082,42 @@ def test_config_says_read_only_so_a_row_can_word_its_button(client, install,
 
     monkeypatch.setattr(selffix, "writable", lambda: False)
     assert client.get("/api/config").json()["read_only"] is True
+
+
+def test_a_machine_with_no_claude_is_refused_BEFORE_the_body_is_validated(
+        client, install, monkeypatch):
+    """The machine's answer outranks the request's (SF-13f).
+
+    Preferences offers "Set up Claude Code" with the description box empty —
+    there is nothing to describe yet, the CLI is the problem — so a route that
+    validated the body first answered that click with "say what is wrong", and
+    the user never saw the install card the button exists to show. Asking
+    someone to describe a problem for a session that cannot start on this
+    computer is a form to fill in for nothing.
+
+    Same message and status as the post-hoc path, because it is the same fact
+    found a moment earlier.
+    """
+    monkeypatch.setattr(selffix_routes, "_claude_cli_path", lambda: None)
+
+    res = post(client, "/api/selffix/start", {})       # the empty describe click
+    assert res.status_code == 502
+    assert res.json()["error"] == claude_spawn.CLAUDE_MISSING_ERROR
+
+    # ...and a described one gets the same answer rather than starting.
+    res = post(client, "/api/selffix/start", {"note": "the dates render wrong"})
+    assert res.status_code == 502
+    assert res.json()["error"] == claude_spawn.CLAUDE_MISSING_ERROR
+
+
+def test_an_empty_start_still_asks_what_is_wrong_when_claude_IS_installed(
+        client, install):
+    """The body check is not gone, only outranked: on a machine that can run a
+    session, a request naming no failure and no description is still the one
+    thing a session cannot work from."""
+    res = post(client, "/api/selffix/start", {})
+    assert res.status_code == 400
+    assert "say what is wrong" in res.json()["error"]
 
 
 def test_config_says_when_claude_is_missing_so_nothing_offers_a_session(

@@ -220,8 +220,10 @@ FUSED_RENDER_CLAUDE_BIN=/nonexistent PATH=/usr/bin:/bin scripts/dev.sh
   Clicking it still asks the server and shows the `notfound` card from the
   server's own answer.
 - **Preferences → Fix this app** says a session runs on Claude Code and it isn't
-  installed; its button reads *Set up Claude Code* and needs no description
-  typed first (there is nothing to describe yet).
+  installed; its button reads *Set up Claude Code* and needs no description typed
+  first (there is nothing to describe yet). Click it with the box **empty**: you
+  must get the install card, never "say what is wrong" — the machine's answer
+  outranks the request's.
 - The card is the **same** one you get from case 1, necessarily: there is one
   copy of that sentence (`claude_spawn.CLAUDE_MISSING_ERROR`) and the click goes
   through it either way.

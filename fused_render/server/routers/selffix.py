@@ -83,6 +83,15 @@ _load_agent = claude_spawn.load_agent
 _record_session_when_ready = claude_spawn.record_session_when_ready
 
 
+def _claude_cli_path():
+    """The CLI this machine would run, or None — re-bound for the tests, like
+    the spawn above. Resolved by the same function /api/config reports from, so
+    the button's wording and this refusal cannot disagree."""
+    from fused_render.server import ai
+
+    return ai.claude_cli_path()
+
+
 def _live_session_in(root: str) -> str:
     """The id of a Claude run still going in `root`, or "" if there is none.
 
@@ -216,6 +225,26 @@ def api_selffix_start(body: dict = Body(default={}),
         return guard
     if not isinstance(body, dict):
         return _error("request body must be a JSON object")
+
+    # THE MACHINE BEFORE THE REQUEST. Whether Claude Code exists here is a fact
+    # about the machine; whether the caller said what is wrong is a fact about
+    # the request — and when both are unsatisfied the machine's answer is the
+    # one that helps. Asking someone to describe a problem for a session that
+    # cannot start on this computer is a form to fill in for nothing.
+    #
+    # It is also the ONLY answer the Preferences button can act on: "Set up
+    # Claude Code" is offered with the description box empty (there is nothing
+    # to describe yet — the CLI is the problem), so validating the body first
+    # answered that click with "say what is wrong" and the user never saw the
+    # install card the button exists to show.
+    #
+    # Same message and same status as the post-hoc path below, because it is the
+    # same fact discovered a moment earlier: `spawn_helper` returns
+    # CLAUDE_MISSING_ERROR when the CLI turns out to be missing, and that is
+    # reported as 502.
+    if _claude_cli_path() is None:
+        return _error(claude_spawn.CLAUDE_MISSING_ERROR, status=502)
+
     # WHICH BRIEF the session gets, and it turns on whether the USER DESCRIBED
     # this — not on whether an error text came with it. A failed job row is
     # allowed to carry an empty `message` (jobs.py leaves it ""; the manager

@@ -7652,6 +7652,16 @@ the installation, and the mark that says so.
   the only thing that knows the current answer — and the cached value only picks
   the verb, with `recheck` re-reading afterwards so the wording catches up on the
   same interaction rather than at the next page load.
+  **The machine's answer outranks the request's**, which is where the pre-check
+  lands server-side: `/api/selffix/start` refuses a missing CLI BEFORE it
+  validates the body. Preferences offers *Set up Claude Code* with the
+  description box empty — there is nothing to describe yet, the CLI is the
+  problem — so validating first answered that click with *say what is wrong*,
+  and the user never reached the install card the button exists to show. Asking
+  someone to describe a problem for a session that cannot start on this computer
+  is a form to fill in for nothing. The body check is not gone, only outranked:
+  on a machine that can run a session, a request naming no failure and no
+  description is still the one thing a session cannot work from.
   It also means there is exactly ONE copy of the missing-CLI sentence, in
   `claude_spawn.CLAUDE_MISSING_ERROR`: a shell-side copy existed to serve the
   short-circuit, and went with it rather than being kept honest by a parity test
