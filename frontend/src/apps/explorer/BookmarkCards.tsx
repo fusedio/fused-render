@@ -19,6 +19,7 @@ import {
   EMBED_PREFIX,
   VIEW_PREFIX,
 } from "@platform/lib/router";
+import { withNoFocus } from "@platform/lib/frame-focus";
 import { listDir, rawUrl, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
@@ -59,7 +60,12 @@ function joinPath(dir: string, name: string): string {
 // records the app open (GET /render records by default, D301) — without it,
 // scrolling a folder card into view reshuffles the /apps hub's recency order.
 export function LivePreview({ src }: { src: string }) {
-  src = withPreviewFlag(src);
+  // `_nofocus=1` beside the thumbnail stamp: a card peek must not take the
+  // keyboard, because focusing an element inside a frame scrolls that frame
+  // into view and the scroll propagates out to the page's own scroller — a
+  // peeked page that focuses an input on boot yanked the card grid down to
+  // itself mid-scroll (D343, platform/lib/frame-focus.ts).
+  src = withNoFocus(withPreviewFlag(src));
   return (
     <span className="fhb-preview" aria-hidden="true">
       <iframe

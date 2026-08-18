@@ -20,6 +20,15 @@
 # decodes with `av` itself and passes the waveform — and `av` is named here
 # rather than left to arrive as somebody else's transitive dependency.
 #
+# **The engine lines carry CEILINGS**, for the reason
+# `mflux_image/pyproject.toml` states at length: no lockfile is committed beside
+# these manifests and `uv sync` runs bare, so an unbounded requirement is
+# re-resolved from PyPI on every new venv key — which is exactly how an `mlx`
+# minor bump reached users' machines with no commit behind it. `mlx-whisper` is
+# the line that pins `mlx` here, so it is the line that matters most. `av` is
+# left open (a decoder, not a runtime) and `sherpa-onnx-core` is left open
+# because sherpa-onnx's wheels pin it to their own version themselves.
+#
 # What each earns:
 #   mlx-whisper     the model and the decoder, on Metal. Pulls mlx and
 #                   huggingface_hub in itself; both are named where they are
@@ -74,12 +83,12 @@ name = "fused-render-runner-mlx-whisper"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "mlx-whisper",
+    "mlx-whisper>=0.4,<0.5",
     "huggingface_hub",
     "psutil",
     "av",
-    "onnxruntime",
-    "sherpa-onnx",
+    "onnxruntime>=1.28,<2",
+    "sherpa-onnx>=1.13,<2",
     # The other half of sherpa-onnx, which its own metadata cannot get into the
     # lock. See the comment above before removing this as a duplicate.
     "sherpa-onnx-core",

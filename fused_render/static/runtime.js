@@ -303,9 +303,9 @@
   // mirrored by the hosted runtime, and this is local-shell plumbing — same
   // reason `_fusedSidecarPath` is a bare global.
   //
-  // The param name is mirrored in frontend/src/apps/explorer/listing/
-  // frame-focus.ts, which is where the contract is written down; the shell-side
-  // guard there is what covers frames this suppression cannot reach.
+  // The param name is mirrored in frontend/src/platform/lib/frame-focus.ts,
+  // which is where the contract is written down; the shell-side guard there is
+  // what covers frames this suppression cannot reach.
   var NO_FOCUS_PARAM = "_nofocus";
 
   function noFocusRequested(search) {
