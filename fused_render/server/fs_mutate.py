@@ -1087,10 +1087,17 @@ def _xdg_trash_entry_info(path: str):
     How the comparison is made safe:
       • the trash root comes from _xdg_trash_dir() ($XDG_DATA_HOME/Trash), not
         from the request;
-      • the path's PARENT is realpath'd and must equal the realpath'd `files`
-        directory, so `…/Trash/files/../../evil` and a symlinked parent both fail
-        (the leaf itself is deliberately not resolved — a trashed symlink is an
-        entry in its own right, and resolving it would test its target instead);
+      • the path's PARENT is resolved through the KERNEL and must equal the
+        realpath'd `files` directory, so `…/Trash/files/../../evil` and a
+        SYMLINKED parent both fail. The order matters and was wrong once:
+        `realpath(dirname(abspath(p)))` normalises `x/..` LEXICALLY first, which
+        collapses `link/..` into nothing and let `…/files/link-to-elsewhere/../y`
+        pass a check that `os.rename` would then apply to the kernel-resolved path.
+        `realpath(dirname(p))` resolves the parent chain as the kernel does
+        instead. It also stops SHORT of the leaf on purpose: a trashed symlink is
+        an entry in its own right, and `dirname(realpath(p))` — resolving the whole
+        path first — would test its TARGET's directory and quietly refuse to clean
+        up the sidecar of every symlink in the bin;
       • the name is `os.path.basename` of that path, which cannot contain a
         separator, and `.`/`..`/empty are refused outright.
     """
@@ -1102,7 +1109,9 @@ def _xdg_trash_entry_info(path: str):
     trash = _xdg_trash_dir()
     try:
         files_real = os.path.realpath(trash / "files")
-        parent_real = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+        # dirname FIRST (lexical, cheap, keeps the leaf unresolved), then realpath
+        # the parent chain. Never abspath/normpath before realpath — see above.
+        parent_real = os.path.realpath(os.path.dirname(path))
     except OSError:
         return None
     if parent_real != files_real:

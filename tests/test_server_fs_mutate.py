@@ -734,6 +734,60 @@ def test_trash_move_refuses_to_touch_an_info_file_for_an_outside_path(tmp_path, 
     assert not (trash / "info" / "outside.txt.trashinfo").exists()
 
 
+
+def test_trash_move_boundary_rejects_a_symlinked_parent(tmp_path, monkeypatch):
+    # The docstring's second claim, now actually tested. A path whose parent is a
+    # SYMLINK out of files/ used to pass the boundary because the check normalised
+    # `link/..` lexically before resolving it — collapsing both components and
+    # leaving `…/Trash/files/y.txt`, which of course looked like a trash entry —
+    # while os.rename acted on the kernel-resolved path somewhere else entirely.
+    trash = _xdg_trash_root(monkeypatch, tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (trash / "files" / "link").symlink_to(outside)
+    victim = trash / "info" / "y.txt.trashinfo"
+    victim.write_text("[Trash Info]\n")
+    # The file must sit where the KERNEL resolves the attack path, or the rename
+    # 404s first and the test passes for the wrong reason (it did, once):
+    # `files/link/..` is the parent of the LINK'S TARGET, i.e. tmp_path — not
+    # `outside`, which is what a lexical reading of `link/..` gives.
+    src = tmp_path / "y.txt"
+    src.write_text("x")
+    sneaky = str(trash / "files" / "link" / ".." / "y.txt")
+    out = _data(TRASH_MOVE({"from": sneaky, "to": str(tmp_path / "moved.txt")}, x_fused="1"))
+    # The move itself is allowed — it is an ordinary rename of a path outside the
+    # trash, and refusing it is not this boundary's job. What must NOT happen is
+    # the sidecar unlink: the boundary has to answer "not a trash entry" for a
+    # parent that only reaches files/ by traversing back out of it.
+    assert out["path"] == str(tmp_path / "moved.txt")
+    assert victim.read_text() == "[Trash Info]\n"  # sidecar untouched
+
+
+def test_trash_move_still_recognises_a_trashed_SYMLINK_as_an_entry(tmp_path, monkeypatch):
+    # The other half of the same fix, and the reason the parent is resolved rather
+    # than the whole path: a trashed symlink is an entry in its own right, so
+    # restoring it must still drop its sidecar. Resolving the leaf would test the
+    # LINK TARGET's directory and silently skip every symlink in the bin.
+    trash = _xdg_trash_root(monkeypatch, tmp_path)
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("payload")
+    entry = trash / "files" / "link.txt"
+    entry.symlink_to(target)
+    info = trash / "info" / "link.txt.trashinfo"
+    info.write_text("[Trash Info]\n")
+    dst = tmp_path / "link.txt"
+    _data(TRASH_MOVE({"from": str(entry), "to": str(dst)}, x_fused="1"))
+    assert dst.is_symlink()   # the LINK came home, not a copy of its target
+    assert os.readlink(dst) == str(target)
+    assert not info.exists()  # and its sidecar went with it
+    assert target.read_text() == "payload"  # the target was never touched
+    # NOTE a DANGLING trashed link cannot be restored this way, and not because of
+    # the boundary above: /api/fs/rename, which this endpoint delegates every guard
+    # to, gates on os.path.exists(src) and so 404s a source that is a broken link.
+    # That is the shared handler's long-standing contract, reported per pair as
+    # "no longer exists"; widening it is not this endpoint's business.
+
+
 def test_trash_move_keeps_renames_guards(tmp_path, monkeypatch):
     # Not a looser contract than /api/fs/rename: the X-Fused guard, absolute
     # paths, 404 for a missing source and 409 for an occupied destination — with
