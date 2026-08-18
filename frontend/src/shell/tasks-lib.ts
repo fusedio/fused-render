@@ -38,7 +38,9 @@ import type { Task, TaskMessage } from "@platform/lib/api";
 import { BOARD_COLUMNS, explorerUrl, isProjected, turnPhase } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 
-// How many messages a collapsed-then-expanded task shows before Show more.
+// How many messages the LISTING carries per task — the server's window, not a
+// display cap: an expanded task draws every message it has (there is no Show more
+// button since 2026-08-18), and this is how many arrive before the fetch does.
 // The server sends exactly this many in `task.messages`; the constant is here
 // so the cap and the "is there more?" test cannot drift apart.
 export const PREVIEW_MESSAGES = 3;
@@ -295,6 +297,48 @@ export function messageTone(m: TaskMessage): MessageTone {
           return { column: "done", failed: false, label: "Ran" };
       }
   }
+}
+
+/**
+ * ARCHIVING A TASK ARCHIVES ITS THREAD — the message tone a row actually wears.
+ *
+ * `messageTone` above answers "what happened to this message", which is a fact
+ * about the message and nothing else. It was also, until 2026-08-18, the only
+ * thing the thread rows asked, and that made archiving look like it had half
+ * worked: the task card moved to Archive and the ten rows underneath it stayed
+ * green, amber and red, still reading as live work. A task is a thread, so
+ * filing the task files the thread — one gesture, one outcome, everywhere
+ * (design-principles §1).
+ *
+ * Archived is a PLACE, not an event, so the cascade changes only where a row is
+ * filed and never what it says happened: the label is left exactly as it was, so
+ * an archived thread can still be read back run by run. The `failed` flag does
+ * go — archiving is the "I have dealt with this" gesture, and a filed task that
+ * still flies a red mark is asking to be dealt with again.
+ *
+ * THE ONE EXCEPTION IS A TURN THAT IS STILL RUNNING. Filing something does not
+ * stop it, and a running turn is the one fact on this page that is about the
+ * present rather than the past — it stops being true on its own, in a minute or
+ * two, and until it does, saying otherwise is a lie the reader can watch. So a
+ * running message keeps its own tone, and the task keeps reading as In Progress
+ * over the archive record until the turn ends (the server's `_status` makes that
+ * half of the promise — see fused_render/server/routers/tasks.py). The archive
+ * is not lost either way: it is still recorded, and the moment the turn is over
+ * the task and its whole thread fall back into Archive.
+ */
+export function threadTone(task: Task, m: TaskMessage): MessageTone {
+  const tone = messageTone(m);
+  if (taskColumn(task) !== "archived") return tone;
+  if (tone.column === "in_progress") return tone;
+  return { ...tone, column: "archived", failed: false };
+}
+
+/** Is any message in this thread mid-turn? The client's half of the running
+ * exception above — `Task.live` is the server's, computed from the transcript's
+ * own tail, and the two are asked in different places rather than merged: this
+ * one is about the rows on screen, that one about the row's status. */
+export function threadRunning(messages: TaskMessage[]): boolean {
+  return messages.some((m) => messageTone(m).column === "in_progress");
 }
 
 /**
@@ -696,28 +740,77 @@ export function taskUnread(
  *     — a readout nobody acts on per unit, where the only decision it feeds is
  *     "is there anything new here?". That is one bit, so it is drawn as one bit,
  *     in the very mark the message rows already use.
+ *   * And then the mark left the title altogether (Akshil, 2026-08-18). A dot
+ *     after the words was a SECOND glyph on a row that already carries one — the
+ *     status ring — and two marks a few characters apart, one saying "this
+ *     finished" and one saying "you have not looked", is a row a reader has to
+ *     decode rather than scan. So read-state moved INTO the ring: the centre dot
+ *     that used to mean "settled" now means "settled AND unread", and a ring gone
+ *     hollow is the whole of "you have seen this". Colour is untouched, so the
+ *     ring still says WHICH terminal state in exactly the hue it always did, and
+ *     the row is back to one mark carrying two orthogonal facts — shape and hue.
  *
- * So there is no pill and no digit: a task with unread wears `.tasks-dot`, the
- * same quiet 7px grey dot as an unread message, immediately after its title.
+ * So there is no pill, no digit and no trailing dot: a task with unread wears a
+ * filled ring (ScheduleTaskViews.StatusIcon, `.schedule-ring--unread`), the same
+ * mark its own unread messages wear one level down, and the same mark the board
+ * lane's header wears one level up.
  *
- * THE COUNT IS NOT LOST, it is only unprinted — this function returns the
- * accessible name, and it names the real number. A reader who cannot see the dot
+ * THE COUNT IS NOT LOST, it is only unprinted — taskUnreadLabel below returns the
+ * accessible name, and it names the real number. A reader who cannot see the ring
  * gets more than the sighted one, which is the right way round for a mark whose
  * whole visual job is to be noticed rather than read.
  */
 
-/** The name a screen reader hears on the dot that trails a TASK's title, or null
- * when there is nothing unread and no dot is drawn at all. That is the difference
- * from unreadMarker: a message row's marker used to hold a LEADING column open
- * and so existed even when empty; a mark after the words holds nothing open, so
- * an empty one would just be a gap between the title and whatever follows it.
+/** The tooltip and accessible name a container wears when something inside it is
+ * unread — a TASK row over its thread, a board LANE over its cards. Null when
+ * there is nothing unread, and then nothing is said at all.
  *
- * Uncapped, and singular at one. The old pill printed "99+" past a cap because a
- * three-digit number does not fit a 16px chip; a dot has no such constraint, and
- * the name it carries is the whole of what the row knows. */
+ * "3 unread", not "3 unread messages" (2026-08-18). A lane's total counts TASKS
+ * and a task's counts MESSAGES, and the mark that carries both is now one glyph
+ * (StatusIcon's centre dot) — so the noun would have to change with the container
+ * while the mark did not, which is two vocabularies for one fact again. The
+ * count is the part a reader acts on; what it counts is whatever they are
+ * hovering.
+ *
+ * Uncapped, and the same shape at one. The old pill printed "99+" past a cap
+ * because a three-digit number does not fit a 16px chip; a tooltip has no such
+ * constraint, and the name it carries is the whole of what the row knows.
+ *
+ * LEAVES DO NOT GET ONE. A single unread message's dot means exactly "unread"
+ * and a hover saying "1 unread" over it is a caption for a symbol that needs
+ * none (Akshil, 2026-08-18); only containers, whose dot stands for a number the
+ * ink does not print, are named. */
 export function taskUnreadLabel(count: number): string | null {
   if (count <= 0) return null;
-  return count === 1 ? "1 unread message" : `${count} unread messages`;
+  return `${count} unread`;
+}
+
+/**
+ * How many of a LANE's tasks have something unread — what a kanban group header
+ * says about the column under it.
+ *
+ * Counted in TASKS, not messages: the header stands over cards, and the question
+ * a reader asks of a collapsed lane is "how many of these do I still have to
+ * look at", which is one per card however long its thread is. (A task's own mark
+ * counts messages, for the same reason at the other scale.)
+ */
+export function laneUnread(tasks: Task[], read: Set<string>): number {
+  return tasks.filter((t) => taskUnread(t, read) > 0).length;
+}
+
+/**
+ * A task whose work is still ahead of it — the List greys such a title, so a
+ * column of rows reads as "these already happened" with the future set behind
+ * them (Akshil, 2026-08-18).
+ *
+ * BOTH halves are required. The lane alone is not enough: an Upcoming task whose
+ * time has already gone by is overdue, and fading it would mute the one row on
+ * the page that most wants reading. And a future time alone is not enough
+ * either — a Done task usually has a next run scheduled too, and its title is
+ * history that HAS happened.
+ */
+export function isUpcomingTask(task: Task, now: number = Date.now()): boolean {
+  return taskColumn(task) === "upcoming" && !isPastDue(nextRunAt(task), now);
 }
 
 // ---- the accordion -----------------------------------------------------------
@@ -725,9 +818,16 @@ export function taskUnreadLabel(count: number): string | null {
 export interface ThreadView {
   /** What the expanded task actually lists, newest first. */
   messages: TaskMessage[];
-  /** Whether Show more is on offer — i.e. the thread has more than we hold. */
+  /** Whether the thread is longer than what we hold — i.e. a fetch is OWED.
+   *
+   * This used to mean "offer the Show more button". There is no button since
+   * 2026-08-18; expanding a task fetches the rest by itself, and this is the
+   * predicate that decides whether the trip is needed at all. Same question, same
+   * answer — only the thing that reads it changed. */
   more: boolean;
-  /** How many are still unlisted, for the button's own wording. */
+  /** How many are still missing. The loading line names it, so a reader looking at
+   * three rows of a twenty-six-message thread can see that the other twenty-three
+   * are on their way rather than absent. */
   hidden: number;
 }
 
@@ -767,11 +867,21 @@ export function heldMessages(task: Task, loaded?: TaskMessage[]): TaskMessage[] 
 /**
  * What an expanded task shows.
  *
- * Before Show more that is `task.messages` — the three newest, already ordered
+ * Until the fetch lands that is `task.messages` — the three newest, already ordered
  * by the server. After it, the full thread REPLACES those three rather than
  * appending to them, so a message can never appear twice: heldMessages merges
  * them by id, taking the listing's fresher copy of anything in both and leading
  * with whatever arrived after the fetch.
+ *
+ * THE THREE ARE A DATA WINDOW, NOT A DISPLAY CAP, and that distinction is the whole
+ * of why this function still slices. The listing endpoint sends three messages per
+ * row because it runs for every task on the page and a full transcript parse per
+ * task would not survive a few hundred of them (server routers/tasks.py `_row`);
+ * the rest are not in the client's hands to draw. Until 2026-08-18 a dashed
+ * "Show N more" button was the press that went and got them, and it is gone —
+ * expanding a task makes that trip by itself (ScheduleTaskViews.TasksList.toggle).
+ * So this still reports a short list for the moment before the reply arrives, and
+ * `more` is what sends for the rest rather than what draws a button.
  *
  * `message_count` is the server's total, and the honest source for "is there
  * more?": the preview list alone cannot tell a thread of exactly three from a
@@ -846,6 +956,157 @@ export function toggleExpanded(expanded: Set<string>, key: string): Set<string> 
 
 export function isExpanded(expanded: Set<string>, key: string): boolean {
   return expanded.has(key);
+}
+
+// ---- which view is up, in the URL --------------------------------------------
+// The List/Board/Calendar choice was localStorage-only, which made it a fact
+// about this browser rather than about this page: a link to the Tasks page
+// opened whatever the recipient last looked at, and there was no way to send
+// somebody the board. It lives in the URL now (`/tasks?view=board`), with the
+// stored preference kept as the fallback for a bare `/tasks`.
+//
+// LIST OMITS THE PARAM, deliberately: it is the default, and `?view=list` is a
+// second spelling of `/tasks` that would show up in every share and every
+// bookmark while saying nothing at all.
+
+/** Which of the page's three views is up. */
+export type TaskView = "list" | "board" | "calendar";
+
+/** The query key that carries it. */
+export const VIEW_PARAM = "view";
+
+/**
+ * The view a URL asks for, or `fallback` when it asks for nothing this page
+ * knows — an unrecognised value is a typo or a stale link, and the page it
+ * should land on is the default one rather than an error.
+ *
+ * `search` is a raw query string, with or without its leading `?`.
+ */
+export function viewFromSearch(search: string, fallback: TaskView = "list"): TaskView {
+  const raw = search.startsWith("?") ? search.slice(1) : search;
+  const v = new URLSearchParams(raw).get(VIEW_PARAM);
+  return v === "list" || v === "board" || v === "calendar" ? v : fallback;
+}
+
+/**
+ * The same URL with the view switched — every OTHER param preserved, because
+ * this page's query also carries the chat's deep-link handoff, and switching
+ * between two views is not a reason to drop it.
+ *
+ * Returns path + query, ready for `history.replaceState`. Replace, not push:
+ * the toggle is a way of READING this page, and a back button that first walked
+ * back through six view switches before leaving would be a worse back button.
+ */
+export function viewUrl(pathname: string, search: string, view: TaskView): string {
+  const raw = search.startsWith("?") ? search.slice(1) : search;
+  const q = new URLSearchParams(raw);
+  if (view === "list") q.delete(VIEW_PARAM);
+  else q.set(VIEW_PARAM, view);
+  const rest = q.toString();
+  return pathname + (rest ? `?${rest}` : "");
+}
+
+// ---- a press that leaves this tab --------------------------------------------
+
+/**
+ * Does this click mean "somewhere else, not here" — a new tab, a new window, a
+ * download — and must therefore be left to the browser?
+ *
+ * Every row on this page is a real `<a href>` so that ⌘-click, middle-click and
+ * the context menu's "Open in new tab" all work without this page implementing
+ * any of them. The one thing its handler must do is GET OUT OF THE WAY: a
+ * modified click is never intercepted, never `preventDefault`ed, and never
+ * marks anything read — the reader is not looking at that thread, they are
+ * stacking it up for later, and a badge cleared for a tab nobody has read yet
+ * is the one thing a background open must not do.
+ *
+ * `button` is the mouse button as React reports it (0 = primary); a middle
+ * click reaches `onAuxClick` rather than `onClick`, and both ask this, so the
+ * rule is written once.
+ */
+export function opensElsewhere(e: {
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
+  button?: number;
+}): boolean {
+  return Boolean(
+    e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || (e.button !== undefined && e.button !== 0),
+  );
+}
+
+// ---- what the List remembers between visits ----------------------------------
+// Opening a task's chat LEAVES the Tasks page, and coming back used to hand the
+// reader a fully collapsed list scrolled to the top — so reading three threads
+// out of ninety meant re-finding the same row three times (Akshil, 2026-08-18).
+// The page now remembers which rows were open and where the list stood.
+//
+// sessionStorage, not localStorage: this is "where I was a moment ago", which is
+// true for this tab and this sitting only. A week-old scroll offset restored into
+// a list whose rows have all changed is not a memory, it is a surprise.
+
+/** The key the List's per-tab memory lives under. */
+export const LIST_MEMORY_KEY = "fused-render:tasks-list-memory";
+
+export type ListMemory = {
+  /** Task keys the reader had open. Keys that no longer exist simply never match
+   * a row, so a stale entry costs nothing and needs no pruning. */
+  expanded: string[];
+  /** scrollTop of the list's own scroller, in px. */
+  scroll: number;
+  /**
+   * The task whose conversation the reader last opened FROM this list, or "".
+   *
+   * The third thing coming back to the page has to answer. Which rows were open
+   * and where the list stood put the reader back in the right part of the list;
+   * this puts them back on the right ROW. A list of ninety near-identical
+   * three-line rows gives no clue which one you just came out of, so "let me
+   * look at the next one" meant re-finding the last one first — the same
+   * complaint the scroll memory was for, one level finer (Akshil, 2026-08-18).
+   *
+   * A key, not an index: rows re-sort on every poll (last_active), and an index
+   * would highlight whichever row happened to land in that slot.
+   *
+   * One task, not a set. This is "where I just was", and a page that lit up
+   * every row visited this sitting would be a highlight that means nothing by
+   * the fourth one.
+   */
+  selected: string;
+};
+
+export const EMPTY_LIST_MEMORY: ListMemory = { expanded: [], scroll: 0, selected: "" };
+
+/**
+ * What came out of the store is a STRING WRITTEN BY SOMEONE ELSE — an older
+ * build, a hand-edited devtools row — so every field is checked and anything
+ * unrecognisable degrades to "remember nothing" rather than throwing during a
+ * render.
+ */
+export function parseListMemory(raw: string | null): ListMemory {
+  if (!raw) return EMPTY_LIST_MEMORY;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return EMPTY_LIST_MEMORY;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return EMPTY_LIST_MEMORY;
+  }
+  const row = parsed as { expanded?: unknown; scroll?: unknown; selected?: unknown };
+  const expanded = Array.isArray(row.expanded)
+    ? row.expanded.filter((k): k is string => typeof k === "string")
+    : [];
+  const scroll =
+    typeof row.scroll === "number" && Number.isFinite(row.scroll) && row.scroll > 0
+      ? row.scroll
+      : 0;
+  // Absent on anything written before 2026-08-18, and on any hand-edited row:
+  // "" is the same answer as "nothing selected", so an older memory upgrades
+  // silently rather than being thrown away for the two fields it does have.
+  const selected = typeof row.selected === "string" ? row.selected : "";
+  return { expanded, scroll, selected };
 }
 
 // ---- where a click goes ------------------------------------------------------
@@ -1820,12 +2081,19 @@ export function laneTime(task: Task, lane: BoardColumn): number | null {
 
 // ---- the time a task ROW prints ----------------------------------------------
 
-export type TaskWhenKind = "next" | "last";
+export type TaskWhenKind = "next" | "last" | "active" | "none";
+
+/** What a row prints when the task has no timestamp of any kind. An em dash and
+ * not a blank: the time is the last cell of every row, so an empty one reads as a
+ * broken row rather than as an absent fact — and the column has to hold its width
+ * or the folder chips beside it stop lining up. */
+export const NO_TIME = "—";
 
 export interface TaskWhen {
-  /** The instant, epoch seconds. */
+  /** The instant, epoch seconds. 0 on `none`, which is the one kind that names no
+   * instant at all — and is why nothing may format this without checking. */
   at: number;
-  /** Which run it is — the row prints the time, the tooltip says which. */
+  /** Which time it is — the row prints it, the tooltip says which. */
   kind: TaskWhenKind;
   /** What the row prints: ONE relative unit ("30m ago", "in 2h"), the same
    * vocabulary a message row's time speaks — relativeWhen. */
@@ -1855,30 +2123,68 @@ export interface TaskWhen {
  * it also gains the word for WHICH run it is — the ink cannot say that in one unit
  * and does not try.
  *
- * The OTHER time is the fallback, not a blank: an Upcoming task whose pending
+ * The OTHER run is the first fallback, not a blank: an Upcoming task whose pending
  * message is outside the window still shows the run it already made, and a Done
- * task that also has a repeat coming still has a time to show. A task with
- * NEITHER — a pending row that has never run and has nothing scheduled we can see
- * — returns null, and the row prints nothing. Not a placeholder and not epoch
- * zero: 0 formats as 1970 and would be a confident wrong answer.
+ * task that also has a repeat coming still has a time to show.
+ *
+ * AND `last_active` IS THE THIRD, which is the bug this now closes. Both run times
+ * are derived from the three-message WINDOW (nextRunAt reads `next_run` or that
+ * window; lastRunAt reads only the window), so a task whose window is EMPTY had
+ * neither and the row printed nothing at all — a hole in the last column of an
+ * otherwise full list (Akshil, 2026-08-18, on TASK-044, a `/clear`).
+ *
+ * An empty window is not an exotic state. A task IS a Claude session, and a session
+ * whose transcript surfaces no prompt — one that holds only a slash command like
+ * `/clear` — is a real row with a real id, a real folder and no messages under it.
+ * The server had the answer the whole time and on the very same row: `last_active`
+ * is the session's own clock (routers/tasks.py — the transcript's activity, or the
+ * newest entry's `created` when nothing has run), which is exactly "when did
+ * anything last happen here". Reading it is one field, and it is the field the
+ * server itself sorts the list by, so the row and its position now agree.
+ *
+ * The word for it is "Active", not "Last run": nothing ran, and saying it did would
+ * be a confident wrong answer of the kind the `at === 0` guard below refuses.
+ *
+ * NOTHING RETURNS NULL any more. A task with no timestamp of any kind — every
+ * source zero — gets `kind: "none"` and prints NO_TIME, because the alternative was
+ * a blank last cell that reads as a broken row. `at` stays 0 there and `title` says
+ * so in words: 0 formats as 1970, so the one thing this must never do is hand a
+ * zero to a formatter, which is why `none` is a KIND rather than a stamp.
  */
-export function taskWhen(task: Task, now: number = Date.now()): TaskWhen | null {
+export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
   const nextFirst = LANE_SORTS[taskColumn(task)].key === "next-run";
   const next = nextRunAt(task);
   const last = lastRunAt(task);
-  const order: [TaskWhenKind, number | null][] = nextFirst
+  const runs: [TaskWhenKind, number | null][] = nextFirst
     ? [["next", next], ["last", last]]
     : [["last", last], ["next", next]];
+  // `|| null` on the third: `last_active` is a float that is 0.0 for "never", and
+  // 0 must fall through to `none` rather than be formatted as 1970.
+  const order: [TaskWhenKind, number | null][] = [
+    ...runs,
+    ["active", task.last_active || null],
+  ];
+  const WORD: Record<TaskWhenKind, string> = {
+    next: "Next run",
+    last: "Last run",
+    active: "Active",
+    none: "",
+  };
   for (const [kind, at] of order) {
     if (at === null) continue;
     return {
       at,
       kind,
       text: relativeWhen(at, now),
-      title: `${kind === "next" ? "Next run" : "Last run"} ${messageStamp(at)}`,
+      title: `${WORD[kind]} ${messageStamp(at)}`,
     };
   }
-  return null;
+  return {
+    at: 0,
+    kind: "none",
+    text: NO_TIME,
+    title: "No recorded activity yet",
+  };
 }
 
 /**
@@ -1968,4 +2274,111 @@ export function groupByColumn(
     map.set(col.key, sortLane(map.get(col.key)!, col.key, now));
   }
   return map;
+}
+
+// ---- which lanes are rolled up -----------------------------------------------
+// A lane is either an open column or a 52px rail. Two things decide which, in
+// this order:
+//
+// AN EMPTY LANE IS ALWAYS ROLLED UP, AND NOTHING ABOUT IT IS REMEMBERED. That is
+// the whole of the empty case, and it is deliberately not a choice the reader
+// can make stick: a column with nothing in it has nothing to show, so opening
+// one is a PEEK — "is there really nothing here?" — and a peek is answered and
+// over. Left persistable, it is the one setting a reader would make once and
+// then be given four empty outlined columns by, for weeks, on a board they use
+// to see what is running.
+//
+// So the two states are stored in two different places, on purpose:
+//
+//   * `choices` — the reader's answer for a lane WITH CARDS IN IT. localStorage,
+//     survives reloads, and is what `laneCollapsed` below reads.
+//   * the peek — a lane opened while empty. Component state in TaskBoard,
+//     survives nothing: not a reload, not a remount, and not the lane filling up
+//     and draining again. `laneRolledUp` is where the two meet.
+//
+// The consequence worth stating, because it is the one a reader will notice: a
+// lane they had OPEN drains, and it rolls up. The expanded choice is not
+// honoured on the way down and it is not deleted either — it is simply not what
+// an empty lane is asked. Cards arrive, and the lane opens again on the choice
+// that was always there.
+//
+// For a lane with cards, two things decide, in this order:
+//
+//   1. What the reader last chose for THAT lane. Explicit choices are the only
+//      thing stored, so a lane nobody has ever touched keeps following the rule
+//      below forever rather than being frozen at whatever it looked like the
+//      first time the page was opened.
+//   2. Otherwise: open.
+//
+// Archive used to be hard-coded closed. It is not special any more (Akshil,
+// 2026-08-18) — an Archive with cards in it is a column like the others, and an
+// Archive with none rolls up like the others.
+
+/** The key the board's lane choices live under. Distinct from the array-shaped
+ * key an earlier build wrote: that one recorded "collapsed now", defaults
+ * included, which cannot be told apart from "the reader chose this". */
+export const LANE_CHOICE_KEY = "fused-render:scheduled-board-lanes";
+
+/** Lane → the reader's own answer to "collapsed?". Absent ⇒ never chosen. */
+export type LaneChoices = Partial<Record<BoardColumn, boolean>>;
+
+/** Same contract as parseListMemory: a stored string is untrusted input, and an
+ * unreadable one means "no choices yet", never a thrown render. */
+export function parseLaneChoices(raw: string | null): LaneChoices {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const row = parsed as Record<string, unknown>;
+  const out: LaneChoices = {};
+  for (const col of BOARD_COLUMNS) {
+    const v = row[col.key];
+    if (typeof v === "boolean") out[col.key] = v;
+  }
+  return out;
+}
+
+/**
+ * The PERSISTENT answer for one lane: what it looks like on a fresh render, with
+ * nothing but the store to go on. `count` is how many cards it holds.
+ *
+ * Empty short-circuits, and that is the whole point — a stored choice is never
+ * consulted for a lane with nothing in it, so nothing a reader does to an empty
+ * lane can outlive the sitting, and a lane that drains reverts here rather than
+ * honouring what it was set to when it still had work in it.
+ */
+export function laneCollapsed(
+  lane: BoardColumn,
+  count: number,
+  choices: LaneChoices,
+): boolean {
+  if (count === 0) return true;
+  const chosen = choices[lane];
+  if (chosen !== undefined) return chosen;
+  return false;
+}
+
+/**
+ * What the board actually draws — `laneCollapsed` plus this sitting's peeks.
+ *
+ * `peeked` is the set of lanes the reader has opened WHILE EMPTY (TaskBoard
+ * holds it in component state and persists none of it). It is consulted only in
+ * the empty case: a peek is an answer to "is there really nothing here?", and it
+ * has nothing to say about a lane that has cards. That is also what keeps a
+ * stale peek from reopening a lane that filled up and drained again — the peek
+ * is ignored for the whole time the lane has cards, and TaskBoard drops it in
+ * that window.
+ */
+export function laneRolledUp(
+  lane: BoardColumn,
+  count: number,
+  choices: LaneChoices,
+  peeked: ReadonlySet<BoardColumn>,
+): boolean {
+  if (count === 0) return !peeked.has(lane);
+  return laneCollapsed(lane, count, choices);
 }

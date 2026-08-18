@@ -594,9 +594,26 @@ def _pin_holds(record: dict, session_id: str, live: bool, busy: set[str],
     has no word for "sent, no verdict, not live" (it says `idle`), so reading it
     would have collapsed the second guard into the first.
     """
-    if live or session_id in busy:
+    if _running_now(session_id, live, busy):
         return True
     return _pin_at(record) > active
+
+
+def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
+    """Is something happening in this conversation RIGHT NOW?
+
+    The two independent halves `_pin_holds` already relies on, minus the third
+    (a pin's own timestamp), because that one is a claim someone made rather
+    than something that is happening: `live` is the transcript mid-turn, `busy`
+    is the scheduler waiting on a send it has not heard back from. Either is
+    enough, and neither is sufficient alone — a turn thinking through a long
+    tool call appends nothing and reads as not-live, and a session a human is
+    typing into has no scheduler entry at all.
+
+    Its own function rather than an inline `or` so the archive exception in
+    `_status` and the pin guard cannot drift apart about what "running" means.
+    """
+    return live or session_id in busy
 
 
 def _status(newest: dict | None, session_id: str, triage: dict, live: bool,
@@ -625,13 +642,29 @@ def _status(newest: dict | None, session_id: str, triage: dict, live: bool,
 
     A LIVE session still reads `in_progress` even over a failed newest message:
     something is running in that conversation right now, which is the more
-    urgent fact and the one that stops being true on its own."""
+    urgent fact and the one that stops being true on its own. Since 2026-08-18
+    that beats an `archived` record too — see `_running_now`."""
     record = triage.get(session_id) if session_id else None
     if isinstance(record, dict):
         status = record.get("status")
         if status in _TRIAGE_STATUSES and (
                 status != "in_progress"
                 or _pin_holds(record, session_id, live, busy, active)):
+            # FILING SOMETHING DOES NOT STOP IT (Akshil, 2026-08-18). Archive is
+            # a timeless decision and it is kept — the record is not touched
+            # here, and the moment the turn ends the task drops back into
+            # Archive on the next poll. But while a turn is genuinely in flight,
+            # a row that says `archived` is a lie the reader can watch: the work
+            # is happening, in that conversation, now. Running is the one fact
+            # on this page about the PRESENT, so for as long as it is true it
+            # outranks a decision about where the task belongs afterwards.
+            #
+            # Only `archived`. A `done` record is the user saying "this run is
+            # over", and if a new turn starts in that conversation the derived
+            # branches below already move the row without help. Archive is the
+            # one that would otherwise hide live work in a lane nobody watches.
+            if status == "archived" and _running_now(session_id, live, busy):
+                return "in_progress"
             return status
     if live and newest is not None:
         return "in_progress"

@@ -17,9 +17,10 @@
 // workbench iframe — the hosted workbench refreshes itself on upstream
 // changes.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { embedUrlForFsPath, navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { embedUrlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
+  fixWithClaude,
   getAccessToken,
   getCanvasesStatus,
   getSyncStatus,
@@ -45,6 +46,13 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const [dragging, setDragging] = useState(false);
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A "Fix with Claude" run in flight: the editor iframe attaches to it via
+  // its ?run= param, so the user watches the fix happen in the chat they
+  // already have. Kept after the push recovers — the session may still be
+  // finishing its final message.
+  const [fixRunId, setFixRunId] = useState<string | null>(null);
+  const [fixBusy, setFixBusy] = useState(false);
+  const [fixError, setFixError] = useState<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const baseOriginRef = useRef<string | null>(null);
 
@@ -104,6 +112,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   }, [seedToken]);
 
   // Sync status poll for the status strip; re-arms the watcher if it drops.
+  // The button's enabled/disabled state reads straight off sync.fix_active —
+  // set server-side the instant a fix spawns, cleared only by that run's own
+  // completion (D336 follow-up), never guessed from transcript activity here.
   useEffect(() => {
     const id = window.setInterval(() => {
       void getSyncStatus(name)
@@ -142,62 +153,89 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // Right pane: the local clone opened in the chrome-free explorer embed with
   // the Claude template — the editing surface over the files the watcher
   // pushes.
-  const editorSrc = dir ? embedUrlForFsPath(dir, "?_mode=claude") : null;
+  const editorSrc = dir
+    ? embedUrlForFsPath(
+        dir,
+        fixRunId
+          ? `?_mode=claude&run=${encodeURIComponent(fixRunId)}`
+          : "?_mode=claude",
+      )
+    : null;
+
+  const onFix = async () => {
+    setFixBusy(true);
+    setFixError(null);
+    try {
+      const { run_id } = await fixWithClaude(name);
+      setFixRunId(run_id);
+      // Don't wait for the next poll (up to SYNC_POLL_MS away) to reflect
+      // that a fix is now running — the gap let a double-click through to a
+      // second POST (a 409, now that the server itself locks, but still a
+      // confusing one to show right after a successful click).
+      setSync((s) => (s ? { ...s, fix_active: true } : s));
+    } catch (e) {
+      setFixError((e as Error).message);
+    } finally {
+      setFixBusy(false);
+    }
+  };
 
   const frameSrc =
     baseUrl && handle
       ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1`
       : null;
 
-  const pushLabel =
-    sync?.push_state === "pushing"
-      ? "Pushing…"
-      : sync?.push_state === "pending"
-        ? "Local changes — push queued"
-        : sync?.push_state === "error"
-          ? "Push failed"
-          : sync?.last_push_at || sync?.last_pull_at
-            ? "Synced"
-            : "Watching";
-
+  // No header strip (owner call): the workspace is the two panes, full
+  // height. What the strip used to carry is either redundant or surfaces
+  // elsewhere — back is the browser's Back button, the canvas name is the
+  // page title/URL, "Open local files" is the chat pane's own affordances
+  // over the same folder, and sync state only matters when it FAILS, which
+  // the error banner below still reports. The poll keeps running for the
+  // banner and the watcher self-heal.
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          padding: "6px 12px",
-          borderBottom: "1px solid rgba(128,128,128,0.25)",
-          fontSize: 13,
-        }}
-      >
-        <button onClick={() => navigateUrl("/canvases")}>← Canvases</button>
-        <strong>{name}</strong>
-        <span
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+      {sync?.push_state === "error" && sync.error && (
+        <div
           style={{
-            padding: "2px 8px",
-            borderRadius: 10,
-            background:
-              sync?.push_state === "error"
-                ? "rgba(220,60,60,0.15)"
-                : "rgba(128,128,128,0.12)",
+            padding: "8px 12px",
+            borderBottom: "1px solid rgba(220,60,60,0.35)",
+            background: "rgba(220,60,60,0.08)",
+            fontSize: 13,
           }}
         >
-          {pushLabel}
-        </span>
-        {sync?.dir && (
-          <button onClick={() => navigateUrl(urlForFsPath(sync.dir))} title={sync.dir}>
-            Open local files
-          </button>
-        )}
-        <span style={{ marginLeft: "auto", opacity: 0.6 }}>
-          Local wins: edits made inside the embedded workbench are overwritten
-          by the next local push.
-        </span>
-      </div>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-      {sync?.push_state === "error" && sync.error && <ErrorBanner>{sync.error}</ErrorBanner>}
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <strong>{sync.error}</strong>
+            <button
+              className="btn btn-primary"
+              disabled={fixBusy || !!sync.fix_active}
+              onClick={() => void onFix()}
+              title="Start a Claude session on the local clone, primed with these errors"
+            >
+              {sync.fix_active
+                ? "Claude is on it — see chat →"
+                : fixBusy
+                  ? "Starting…"
+                  : "Fix with Claude"}
+            </button>
+            {fixError && <span style={{ color: "rgb(200,60,60)" }}>{fixError}</span>}
+          </div>
+          {sync.error_detail?.length > 0 && (
+            <pre
+              style={{
+                margin: "6px 0 0",
+                maxHeight: 140,
+                overflow: "auto",
+                whiteSpace: "pre-wrap",
+                fontSize: 12,
+                opacity: 0.85,
+              }}
+            >
+              {sync.error_detail.join("\n")}
+            </pre>
+          )}
+        </div>
+      )}
       <div
         ref={rowRef}
         style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "row" }}
@@ -243,6 +281,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         >
           {editorSrc ? (
             <iframe
+              // key forces a REMOUNT when a fix run starts: a plain src update
+              // on a mounted iframe can be shadowed by the embed shell's own
+              // history rewrites, leaving the chat pane on its old URL — the
+              // "have to reload the page to see the fix session" bug.
+              key={fixRunId ?? "chat"}
               src={editorSrc}
               title={`Edit: ${name}`}
               style={{ width: "100%", height: "100%", border: 0 }}

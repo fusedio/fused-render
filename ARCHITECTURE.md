@@ -48,7 +48,6 @@ fused-render/
 │   │   ├── watch.py            # /api/fs/events (WS) filesystem watch/poll registry
 │   │   ├── proxy.py            # /api/fs/raw upstream proxy + response hardening
 │   │   ├── fs_mutate.py        # fs mutation helpers + trash, router: /api/fs/write|mkdir|delete|rename|copy
-│   │   ├── session.py          # per-file sidecar helpers, router: /api/session GET/PUT
 │   │   ├── ai.py               # fused.ai: Claude CLI binary resolution, _AiSession, router: /api/ai
 │   │   └── routers/            # route-wiring-only modules (no standalone reusable logic)
 │   │       ├── shell.py        # "/", "/apps...", "/explorer...", settings pages + legacy "/view","/embed" (serves the built React shell)
@@ -58,7 +57,7 @@ fused-render/
 │   │       ├── run.py          # /api/run
 │   │       ├── env.py          # script-venv install loader: /api/env/install|progress|cancel (PY-18/D173)
 │   │       ├── jobs.py         # background-job registry: /api/jobs report|list|cancel|dismiss|clear (SPEC §36/D244)
-│   │       ├── selffix.py      # self-fix: /api/selffix start|read|clear — a Claude session on THIS install (SPEC §43/D329)
+│   │       ├── selffix.py      # self-fix: /api/selffix start|read|clear — a Claude session on THIS install (SPEC §43/D341)
 │   │       └── export.py       # /api/export
 │   ├── executor.py             # runner: in-process for first-party helpers, subprocess for user code (D72)
 │   ├── _child.py               # worker-process entry (subprocess path)
@@ -447,7 +446,8 @@ directories and `_`-sentinels no-op), `PUT /api/recents/collapsed` persists the
 fold with the data (D44 posture). Frontend `lib/recents.ts` mirrors
 `bookmarks.ts` (sync cache, serial queue, `notifyRecentsChanged` signal); its
 `useRecentsTracking(fsPath, isDir, title)` is mounted in `App.tsx`'s StatView
-beside the session hooks — records the open once the stat confirms a file,
+(the seam it used to share with the per-file session hooks, removed in D329) —
+records the open once the stat confirms a file,
 then re-records the current url (and the page's own `<title>`, once known)
 on every `fused:urlchange`/`popstate` (500 ms debounce) or title change, so
 the entry tracks live param and title changes. Display order is

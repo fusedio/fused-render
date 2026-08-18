@@ -818,10 +818,14 @@
     flex: 1;
     min-width: 0;
   }
+  /* TASK-023 (see showSession) — tabular figures for the same reason the
+     composer block's `.sb-id` has them: the same identifier must not shift
+     width as its digits change. */
   #session {
     color: var(--faint);
     font-size: 11px;
     letter-spacing: .3px;
+    font-variant-numeric: tabular-nums;
   }
   #back {
     background: transparent;
@@ -7987,7 +7991,7 @@ document.querySelectorAll(".perm-sel").forEach((el) =>
 // 2026-08-16): it could defer ONE message and nothing else — no title, no
 // description, no repeat rule, no second thought — which meant a row of send-later
 // presets sitting permanently in front of every user to serve the rarest thing
-// they do with a draft. Everything past a bare deferral is the /scheduled page's
+// they do with a draft. Everything past a bare deferral is the /tasks page's
 // form, so the whole job here is the HANDOFF, and the handoff is one button.
 //
 // What travels is what the page cannot know and this template always does: the
@@ -8014,7 +8018,7 @@ document.querySelectorAll(".perm-sel").forEach((el) =>
 // (platform/lib/router.ts navigateUrl does the same two lines); the href
 // assignment underneath is the fallback for a cross-origin or absent parent,
 // where reading `top.location.href` throws.
-const SCHEDULE_URL = "/scheduled";
+const SCHEDULE_URL = "/tasks";
 
 // Where "Back to chat" has to land. The TOP window's path when it is readable,
 // this document's otherwise — the same split every other navigation in this file
@@ -8382,9 +8386,58 @@ fetch("/api/prefs").then((r) => r.json()).then((p) => {
 // because `split` changed.
 fused.params.onChange(() => { applySplit(); applyLeftMode(); applyNarrowView(); renderAnn(); });
 
+// ── the name in the header ──────────────────────────────────────────────────
+//
+// A session IS a task, 1:1 (tasks_store), and the name that task answers to
+// everywhere else in this app — the List row, the calendar chip, the composer
+// block a few hundred lines below — is TASK-nnn. This corner used to print the
+// first eight characters of the session uuid, which names the same object in a
+// vocabulary nothing else on screen speaks: a reader could not carry `a3f91c0d`
+// to the Tasks page, and could not quote it to anyone, because no other surface
+// prints it. TASK-023 is a DESIGNED identifier — allocated once, never reused —
+// and it is what the header shows now.
+//
+// The numbers are allocated per project by tasks_store and only /api/tasks
+// hands them out, so this is a fetch. Cached per session id and never
+// refetched for one: a number does not change once allocated, so a poll would
+// buy nothing. The hash paints first and stays up until the number lands,
+// which also makes the answer to a slow listing "the old label", not a gap.
+//
+// FAILS OPEN to the hash, like everything else that reads this listing: an
+// unreadable /api/tasks, or a session so new the listing has not seen it yet,
+// costs the better name and never the cell. Nothing is cached on that path, so
+// the next showSession tries again.
+const taskIds = new Map();
+let taskIdBusy = "";
+
 function showSession() {
   const id = fused.params.get("session_id");
-  sessionEl.textContent = id ? id.slice(0, 8) : "";
+  sessionEl.textContent = (id && taskIds.get(id)) || (id ? id.slice(0, 8) : "");
+  // The full session id stays reachable for the reader who actually wants it
+  // (a log line, a bug report) without spending header width on it.
+  sessionEl.title = id || "";
+  if (id) loadTaskId(id);
+}
+
+async function loadTaskId(id) {
+  if (taskIds.has(id) || taskIdBusy === id) return;
+  taskIdBusy = id;
+  try {
+    const res = await fetch("/api/tasks");
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    const task = ((data && data.tasks) || []).find((t) => t && t.key === id);
+    const num = task && task.task_id ? String(task.task_id) : "";
+    if (!num) return;
+    taskIds.set(id, num);
+    // The session may have changed while this was in flight; showSession reads
+    // the CURRENT one, so a stale answer paints nothing.
+    showSession();
+  } catch (err) {
+    /* the hash stands */
+  } finally {
+    if (taskIdBusy === id) taskIdBusy = "";
+  }
 }
 showSession();
 
@@ -8586,11 +8639,19 @@ function consumeAnchor() {
   const landed = revealAnchor();
   if (anchorPending) {
     anchorPending = "";
-    // Spent, so it comes off the url — `replace`, because arriving on the
-    // message is not a place anyone navigated to twice, and a Back that
-    // re-fired the flare would be a history entry nobody made. Left behind it
-    // would also re-scroll a reload the reader has since scrolled away from.
-    fused.params.set("msg", "", { history: "replace", default: "" });
+    // Spent, so it comes OFF the url — `null`, not `""`. Absent is the spelling
+    // for "no anchor" (there is no such message as the empty one), and
+    // `set(k, "")` writes `k=`: the reader lands on their message, and the
+    // address bar they then copy from carries a dangling `&msg=` that means
+    // nothing to the page receiving it. `{default: ""}` cannot reach this — it
+    // only drops a write that would have changed nothing, and here the param is
+    // genuinely present, which is the one case it does not cover.
+    //
+    // `replace`, because arriving on the message is not a place anyone
+    // navigated to twice, and a Back that re-fired the flare would be a history
+    // entry nobody made. Left behind it would also re-scroll a reload the
+    // reader has since scrolled away from.
+    fused.params.set("msg", null, { history: "replace" });
   }
   return landed;
 }
@@ -12226,10 +12287,22 @@ async function adoptLiveRun(session_id) {
 
 async function resumeRun(run_id, opts) {
   const neverShown = !!(opts && opts.neverShown);
+  const retryUnknown = !!(opts && opts.retryUnknown);
   if (sending) return;
   sending = true;
   try {
-    const probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+    let probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+    if (probe.error === "unknown run_id" && retryUnknown) {
+      // A frame handed a run id by its EMBEDDER (the canvases workspace's
+      // "Fix with Claude" navigates this iframe with ?run= the moment the
+      // spawn call returns) can boot before the freshly created run dir is
+      // visible to the agent — a race, not a stale bookmark. A few short
+      // retries tell the two apart; only then is the id written off.
+      for (let i = 0; i < 5 && probe.error === "unknown run_id"; i++) {
+        await new Promise((r) => setTimeout(r, 700));
+        probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+      }
+    }
     if (probe.error === "unknown run_id") {
       // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach
       // to, and nothing to hand annotations back to: resolve any stragglers
@@ -13352,7 +13425,7 @@ async function loadSnapshots() {
     // run streams, but a resumed conversation with nothing in flight never
     // reaches that loop — and its pages are no less published for it.
     if (session_id) pollArtifacts();
-    if (run_id) await resumeRun(run_id);
+    if (run_id) await resumeRun(run_id, { retryUnknown: true });
     // No `run` on the URL is not proof that nothing is running: a reload after
     // the param was dropped, a bookmark of the bare chat, or a mode switch all
     // land here with a live turn still streaming server-side. Ask before

@@ -7,18 +7,42 @@
 // renaming again — so undo, redo and undo-again are all the same primitive and
 // each one is reproducible.
 //
+// THE TRASH DELETE IS ONE OF THEM, and it took a corrected premise to see it.
+// This file used to exclude delete outright, on the grounds that "the inverse is
+// a restore we do not own (the OS Trash)". That is true of a hard delete and
+// false of the recoverable one: `_move_to_trash` (server/fs_mutate.py) trashes by
+// `os.rename(path, ~/.Trash/<deduped name>)` — WE compute the destination — so a
+// trash delete is already a rename whose two ends are both named. The server
+// reports that destination as `trashed_to`, undo renames the entry out of the
+// trash and back to where it was, redo renames it in again.
+//
+// It renames through `trashMove` rather than `renameEntry`, and that is the ONE
+// thing the `"delete"` kind changes: WHICH primitive applyFsOp calls. Both are
+// the same rename under the same guards; the trash one additionally keeps the
+// bin's own bookkeeping straight (the freedesktop `.trashinfo` sidecar on Linux),
+// which is knowledge the server has and this module deliberately does not. So
+// there is still no restore API, no branch in invertFsOp, no second notion of
+// what a pair means — a pair is two absolute paths in both directions, and the
+// kind picks the verb that moves between them.
+//
 // Everything else the explorer can do is deliberately NOT here:
 //
 //   copy-paste, duplicate, new file/folder, compress → the inverse is a DELETE.
 //     Undo would destroy data on the user's behalf, and a redo after it cannot
 //     reproduce what was lost.
-//   delete / trash → the inverse is a restore we do not own (the OS Trash), so
-//     "undo" would be a promise this module cannot keep.
+//   hard delete (the confirm dialog) → the inverse really is a restore nobody
+//     owns: the bytes are gone, so "undo" would be a promise this module cannot
+//     keep. Its dialog says "This can't be undone", and that stays true.
+//   a trash the server could not name → the cross-device fallback hands the move
+//     to Finder, which picks the location; a destination we cannot name is not a
+//     pair, and guessing one would aim an undo at a path nothing is at.
 //
-// A stack of two kinds of op is not a limitation to be grown out of; it is the
-// reason this can be trusted at all. Adding an asymmetric op means answering
-// "what does redo mean after an undo that deleted something", and there is no
-// good answer.
+// A stack of ops that are all one primitive is not a limitation to be grown out
+// of; it is the reason this can be trusted at all. Adding an ASYMMETRIC op means
+// answering "what does redo mean after an undo that deleted something", and there
+// is no good answer — which is why the list above is still closed, and why the
+// trash delete joined it by turning out to be symmetric rather than by relaxing
+// the rule.
 //
 // AN ENTRY IS DATA, NOT A CLOSURE. Every pair is a pair of absolute paths, and
 // nothing in here captures React state. A move can navigate and remount the
@@ -26,7 +50,7 @@
 // move would be reading a component that no longer exists — the same reason the
 // clipboard and the in-flight drag are module-level stores (lib/fs-clipboard,
 // listing/drag-drop).
-import { renameEntry } from "@platform/lib/api";
+import { renameEntry, trashMove } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
 import { friendlyFsError } from "@apps/explorer/lib/fs-actions";
 
@@ -36,15 +60,36 @@ export interface FsPair {
 }
 
 export interface FsOp {
-  // Only for the toast's wording ("Undid the move" / "Undid the rename"). The
-  // mechanics are identical — which is exactly why both are here.
-  kind: "move" | "rename";
+  // The toast's wording ("Undid the move" / "Undid the rename" / "Undid the
+  // delete") and, for `"delete"` only, which endpoint applyFsOp renames through
+  // (trashMove instead of renameEntry — see the header). That is the whole of the
+  // difference between the kinds: anything else that needed to branch on this
+  // field would mean the symmetry claim in the header is false.
+  kind: "move" | "rename" | "delete";
   // The pairs that ACTUALLY LANDED, in the order they were written. Recording
   // the intended batch instead would try to un-move entries that never moved:
   // moveEntriesInto stops at its first failure, so an interrupted batch has
   // fewer pairs than it was asked for, and each pair's `to` is the real
   // destination (freePastePath can turn "report.csv" into "report copy.csv").
   pairs: FsPair[];
+}
+
+// The pairs a batch of TRASHED entries yields, in the direction the delete
+// happened: `from` is where the entry was, `to` is where the server put it in
+// ~/.Trash. That direction is the whole of what makes undo work — the stack holds
+// ops as they happened and inverts them on the way out (invertFsOp), so an undo
+// renames ~/.Trash/x back to x and a redo renames it in again.
+//
+// A ROW WITH NO DESTINATION CONTRIBUTES NOTHING. `to` is absent exactly when
+// Finder did the move (fs-actions' TrashOutcome), and a pair needs both ends: a
+// batch that mixed a Finder-trashed row in stays undoable for the rows that CAN
+// be put back, rather than being abandoned wholesale or, worse, undone onto a
+// guessed path.
+//
+// Pure and separate from the hook that calls it, for the same reason
+// relocationToast is: the arithmetic is testable without a renderer.
+export function trashUndoPairs(trashed: { path: string; to?: string }[]): FsPair[] {
+  return trashed.flatMap((t) => (t.to ? [{ from: t.path, to: t.to }] : []));
 }
 
 // How many ops are remembered. Deep enough that undo covers a session's worth
@@ -282,7 +327,9 @@ export function relocationToast(
 // silently restoring "report.csv" as "report copy.csv" would be a second
 // relocation dressed as an undo. So the rename asks for the recorded path with
 // overwrite off, and a name that has since been taken comes back as a 409 for
-// the caller to say out loud.
+// the caller to say out loud. Both endpoints hold that line: /api/fs/trash-move
+// delegates to the rename handler with overwrite off and does not accept the
+// flag at all.
 //
 // IT DOES NOT STOP AT THE FIRST PER-PATH FAILURE, and that is a deliberate
 // departure
@@ -317,10 +364,16 @@ export function relocationToast(
 // be nested in each other, and order is the only thing keeping that sound.
 export async function applyFsOp(op: FsOp): Promise<FsOpReport> {
   const report: FsOpReport = { done: [], failed: [], pending: [] };
+  // THE ONE BRANCH ON `kind`, and it chooses a verb rather than a code path: a
+  // trash delete moves through /api/fs/trash-move, which is the same rename under
+  // the same guards plus the bin's own bookkeeping (see the header). Everything
+  // after this line is identical for every kind — the ordering, the per-path vs
+  // systemic split, the report — because the pairs are the same kind of data.
+  const move = op.kind === "delete" ? trashMove : renameEntry;
   for (let i = 0; i < op.pairs.length; i++) {
     const pair = op.pairs[i];
     try {
-      await renameEntry(pair.from, pair.to);
+      await move(pair.from, pair.to);
       report.done.push(pair);
     } catch (error) {
       report.failed.push({ pair, error });

@@ -11,20 +11,19 @@ description: Use when a fused-render page needs an AI model — calling fused.ai
 
 | `opts.model` | Where it runs | Credential |
 |---|---|---|
-| Contains a `/` — `"mlx-community/Qwen3-8B-4bit"` | **This machine.** A resident worker process holding the weights. | none |
+| Contains a `/` — a Hugging Face repo id | **This machine.** A resident worker process holding the weights. | none |
 | Anything else — `"sonnet"`, `"claude-haiku-4-5-20251001"`, omitted | The local **`claude` (Claude Code) CLI**. | the user's Claude Code login |
 
-That one rule (`"/" in model`) is the whole seam. A page swapping `model: "opus"` for `model: "mlx-community/Qwen3-8B-4bit"` changes nothing else — same call, same resolved shape.
+That one rule (`"/" in model`) is the whole seam: a page swapping `model: "opus"` for a repo id changes nothing else — same call, same resolved shape.
 
-**The slashed ids in this file illustrate the rule; they are not ids to copy.** `mlx-community/Qwen3-8B-4bit` is MLX-packed, so it is an unusable download on Windows or Linux — and on a Mac switched to Transformers from Preferences, where the suggestions are unquantized safetensors (`Qwen/Qwen3-8B` and friends). A repo belongs to a backend, not to a capability, for every capability here. Take the id from `fused.ai.models.catalog()`, which offers both the curated shortlist for the engine serving this machine and whatever the user has already downloaded.
+**Never hard-code a repo id, and treat the ones in this file as illustrations.** A repo belongs to a *backend*, not to a capability: an MLX-packed repo is an unusable download on Windows, Linux, or a Mac switched to Transformers. Always take ids from `fused.ai.models.catalog()`, which answers for the engine actually serving this machine.
 
-Both destinations are **local-only**: there is no hosted path. An exported page has neither a CLI nor a worker, so the exporter **rejects any page containing the string `fused.ai(`** (SPEC RH-11) — matched textually, so gating at runtime is not enough (see "Surviving export").
+Both destinations are **local-only** — there is no hosted path — so an exported page can call neither. See "Surviving Export".
 
 ## When to Use
 
 - A page asks a model something: text, chat, streaming.
-- A page generates an image locally (`fused.ai.image`).
-- A page turns a recording into text locally (`fused.ai.transcribe`).
+- A page generates an image (`fused.ai.image`) or transcribes a recording (`fused.ai.transcribe`) locally.
 - A page manages what this machine is holding in memory (`fused.ai.models.*`).
 - An AI call rejects and you need to know whose fault it is.
 
@@ -43,7 +42,7 @@ Resolves with **exactly** this — the server normalizes, so no guarding:
 ```
 
 - `model` — the id that **actually ran**; an alias (`"sonnet"`) echoes back resolved.
-- `usage` — `null`, or exactly `{input_tokens, output_tokens}`. **Anthropic names.** There is no `prompt_tokens`/`completion_tokens`; reading those gives `undefined`.
+- `usage` — `null`, or exactly `{input_tokens, output_tokens}`. **Anthropic names**; `prompt_tokens`/`completion_tokens` give `undefined`.
 
 ### Options, and which destination honours them
 
@@ -65,25 +64,23 @@ Defaults: model `claude-haiku-4-5-20251001` (or the user's configured default); 
 
 ### Rejections
 
-Every rejection is an `Error` with `.type`:
+Every rejection is an `Error` with `.type`, and `err.jobId` is set on any rejection that had a row:
 
 | `.type` | Cause | UI response |
 |---|---|---|
-| `model_loading` | **Local model not resident.** The call already **started the load** and `err.jobId` is it. | Not a failure — show the download (see below). |
+| `model_loading` | **Local model not resident.** The call already **started the load**; `err.jobId` is it. | Not a failure — show the download. |
 | `ai_unavailable` | `claude` binary not found (Claude path), or the worker won't start (local). | Friendly unavailable state, not a raw overlay. |
 | `bad_request` | Empty prompt, bad option, or a local-only option on the Claude path. | Your page's bug — read the message. |
 | `ai_error` | Ran but errored (bad model id, upstream failure). | Show `err.message`. |
 | `timeout` | No answer within **600 s** server-side. | Offer retry. |
-| `unavailable` | 409 — a fact about **this machine**, not the request ("needs Apple Silicon", "the runner is not built yet"). From `fused.ai.models.*`, `fused.ai.image` and `fused.ai.transcribe`. | Show the reason; it explains itself. |
-| `cancelled` | The row's ✕ stopped it. From the artefact calls (`fused.ai.image`, `fused.ai.transcribe`). | Not a failure — the user asked. |
-
-The last two only reach you from the calls named; `fused.ai()` itself never produces them. `err.jobId` is set on every rejection that had a row.
+| `unavailable` | 409 — a fact about **this machine** ("needs Apple Silicon", "the runner is not built yet"). Only from `fused.ai.models.*`, `fused.ai.image`, `fused.ai.transcribe`. | Show the reason; it explains itself. |
+| `cancelled` | The row's ✕ stopped it. Only from `fused.ai.image` / `fused.ai.transcribe`. | Not a failure — the user asked. |
 
 **`model_loading` is the one that surprises people.** The first call naming a local model does not fail-and-forget; it returns 409 *having kicked off a multi-GB download*, and hands you the job id so the page can draw it:
 
 ```js
 try {
-  const res = await fused.ai(question, { model: "mlx-community/Qwen3-8B-4bit" });
+  const res = await fused.ai(question, { model: chosenRepoId });
   out.textContent = res.text;
 } catch (err) {
   if (err.type === "model_loading") {
@@ -131,49 +128,46 @@ Generation itself needs **nothing new** — a repo id in `fused.ai({model})` alr
 | `fused.ai.models.unload(idOrCapability)` | `{stopped, ...}` |
 | `fused.ai.cancel(capability?)` | `boolean` — stops generation, **keeps the weights**. |
 
-**Every list `catalog()` returns is ordered smallest download first, and each capability's `default` is simply that list's first entry** — so omitting `model` on an image or transcription call gets the *smallest* model, not the best one. Read the list and pick deliberately whenever quality matters.
+### Reading `catalog()`
 
-**`catalog()` is BOTH the shortlist and the disk.** Each entry in a capability's `models[]` carries three extra booleans/flags beside `{id, label, size_gb, note}`:
+Each capability's `models[]` entry is `{id, label, size_gb, note}` plus three state flags:
 
 | Field | Means |
 |---|---|
-| `source` | `"curated"` — the hand-maintained shortlist for the engine serving this capability. `"cached"` — a repo **found on this disk** that the shortlist has never heard of, because the user downloaded it from the AI Models page's Hub search. |
-| `downloaded` | It is on this disk. Always `true` for a `"cached"` entry; on a curated one this is what a "✓ downloaded" mark means. |
+| `source` | `"curated"` — the shortlist for the engine serving this capability. `"cached"` — a repo **found on this disk** that the shortlist has never heard of (the user downloaded it from the AI Models page's Hub search). |
+| `downloaded` | On this disk. Always `true` for `"cached"`. |
 | `loaded` | A worker is holding the weights **right now**. |
 
-**A picker should render the whole of `models[]`.** That is the point of the fields: a page that filters to `source === "curated"` is a page where a model the user deliberately downloaded is invisible, which is the bug these fields exist to end. Mark the states instead — `loaded` → ready now, `downloaded` → instant load, neither → an `size_gb` download first.
+- **Render the whole of `models[]`.** Filtering to `source === "curated"` hides the model the user deliberately downloaded — the exact bug these flags exist to end. Mark states instead: `loaded` → ready now, `downloaded` → instant load, neither → a `size_gb` download first. (The app's own AI Models page filters, because its Local tab already lists the full cache; your page has no such tab.)
+- **Every entry is one the engine serving that capability can actually load** — a cached repo in a format that backend does not read is left out, so the list moves when the user switches engines.
+- **Lists are ordered smallest download first, `default` is the first CURATED entry.** So omitting `model` gets the *smallest* model, not the best one. **Read `default`, never `models[0]`**: cached entries are appended after the curated ones, and an engine with no shortlist reports `default: null` — "no recommended model" is an answer to respect.
+- `note` is `null` on a cached entry and `size_gb` is its measured on-disk footprint. Render `label || id`.
 
-*The one legitimate exception is a surface that already answers "what is on my disk" some other way, right beside itself.* The app's own AI Models page filters to `source === "curated"` for its "Suggested models" grid, because its Local tab is drawn from the full cache listing — every repo, including the datasets and unloadable formats `catalog()` leaves out — and one repo drawn in both grids would read as two models. **A page you are writing has no such tab and no cache endpoint, so this exception is not yours.** Render every entry.
+### Loading, unloading, cancelling
 
-`note` is `null` on a cached entry (nobody wrote one) and `size_gb` is its real measured footprint on disk rather than a published figure. Render `label || id` as always.
+`load`/`download` hand back a **job, not a result** — a cold load is multi-GB and nothing waits on it. Watch with `fused.watchJob(jobId)`.
 
-**Every entry is one the ENGINE SERVING that capability can actually load.** A cached repo whose format that backend does not read is left out — `openai/whisper-large-v3` on any machine, an MLX conversion on a Mac switched to Transformers — so the list moves when the user changes engines, for the downloaded half as much as the curated one. The repo is still on the AI Models page's Local tab, with the engine reason a dropdown option could not carry.
-
-**The `default` and the ordering are over the CURATED entries only.** Cached entries are appended after them, so a 20GB experiment sitting in the cache can never become what a bare `fused.ai.image()` loads. **Read `default`, never `models[0]`** — the two agree wherever anything is curated, but a capability whose engine has no shortlist yet reports `default: null` with cached entries in the list, and "no recommended model" is an answer to respect rather than to route around.
-
-`load`/`download` hand back a **job, not a result**: a cold load is multi-GB and nothing waits on it. Watch with `fused.watchJob(jobId)`.
-
-**Pass `{capability}` to `load`/`download` whenever you know it, and you almost always do.** `capability` says which runner gets the repo — one of the three strings below. Left out, the server *infers* it: from the repo's cached files if they are on disk, then from `catalog()`'s curation, and only then falls back to `"text-generation"` for an id it has never seen. That fallback is the trap this argument avoids — a whisper or diffusion repo that is not downloaded yet has nothing to read, so an omitted capability sends it to the text runner, and what comes back is the *library's* complaint about a missing `config.json` or missing safetensors, which reads as a corrupt model rather than as a wrong-runner dispatch:
+**Pass `{capability}` whenever you know it, and you almost always do.** Omitted, the server infers it from the repo's cached files, then from curation, then falls back to `"text-generation"`. That fallback is the trap: an *undownloaded* whisper or diffusion repo has no files to read, so it goes to the text runner and fails inside mlx-lm with a complaint about a missing `config.json` — which reads as a corrupt model, not a wrong-runner dispatch.
 
 ```js
-fused.ai.models.load("mlx-community/FLUX.2-Klein-4B-4bit", { capability: "text-to-image" });
-fused.ai.models.load("mlx-community/whisper-large-v3-turbo", { capability: "automatic-speech-recognition" });
+fused.ai.models.load(imageRepoId,  { capability: "text-to-image" });
+fused.ai.models.load(speechRepoId, { capability: "automatic-speech-recognition" });
 ```
 
 A repo that *is* cached and that no engine here reads is refused with a sentence naming the repo, what it looks like, and what to pass — never a library traceback.
 
-**Unload by capability, not by id.** A page's Unload button means "release whatever is resident", and the page does **not** reliably know what that is — another page or the AI Models tab may have loaded something else. Passing your dropdown's id unloads nothing and leaves the real model in memory:
+**Unload by capability, not by id.** A page's Unload button means "release whatever is resident", and the page does not reliably know what that is — another page or the AI Models tab may have loaded something else:
 
 ```js
 fused.ai.models.unload({ capability: "text-generation" });   // honest
 fused.ai.models.unload(selectedId);                          // often a no-op
 ```
 
-**Both `unload({capability})` and `cancel(capability)` take one of three strings** — `"text-generation"`, `"text-to-image"`, `"automatic-speech-recognition"` — and one model is resident per capability, which is what lets a chat model and a Whisper model be loaded at once without evicting each other. An unrecognised capability is a 400, not a no-op.
+`unload({capability})` and `cancel(capability)` take one of three strings — `"text-generation"`, `"text-to-image"`, `"automatic-speech-recognition"`. One model is resident per capability, which is what lets a chat model and a Whisper model be loaded at once. An unrecognised capability is a 400, not a no-op.
 
-`fused.ai.cancel()` **defaults to `"text-generation"`**, so it stops a chat and nothing else. To stop an image or a transcription, either name the capability or press the ✕ on that job's row — the row is the route the artefact calls are built around, and it is what `onProgress` hands you. Resolving `false` is **not an error**: a Stop pressed as the last token lands is a no-op.
+`fused.ai.cancel()` **defaults to `"text-generation"`**, so it stops a chat and nothing else; to stop an image or transcription, name the capability or press the ✕ on that job's row. Resolving `false` is **not an error** — a Stop pressed as the last token lands is a no-op.
 
-Runtime calls reject with `.type` `"unavailable"` (409 — a fact about this machine, e.g. "needs Apple Silicon") or `"bad_request"`.
+Runtime calls reject `"unavailable"` (409, a fact about this machine) or `"bad_request"`.
 
 ## Images: `fused.ai.image({prompt, ...})`
 
@@ -185,7 +179,7 @@ el.onerror = () => el.hidden = true;    // an early tick has no frame yet — se
 const img = await fused.ai.image({
   prompt: "a topographic map of an island, engraved",
   onProgress: (job) => {
-    bar.value = job.done / job.total;   // DENOISING STEPS, not bytes
+    if (job.total) bar.value = job.done / job.total;   // DENOISING STEPS, not bytes
     if (job.previewUrl) { el.src = job.previewUrl; el.hidden = false; }
   },
 });
@@ -193,17 +187,68 @@ el.src = img.url;        // ready-made /api/fs/raw url — no need to build it
 el.dataset.seed = img.seed;
 ```
 
-Options: `prompt` (required), `model`, `width`, `height`, `steps`, `guidance`, `seed`, `onProgress`.
+### Options and the reply
 
-Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}` — the render that will actually happen, not the one you asked for (sides are snapped to a multiple of 16 and clamped, steps and guidance clamped).
+`prompt` is the only required one. Everything else has a default and a **hard range the server clamps to**, so read the reply rather than echoing your request:
 
-- **`seed` comes back whether or not you passed one** — invented server-side, so "make that one again" is always one call away.
-- **Minutes, not seconds.** `onProgress` fires per denoising step with the download-manager record, and that row's ✕ really stops it (the work is the server's, not the page's).
-- **Watch it being made: `job.previewUrl`.** Every tick carries a ready-made URL for a ~32px thumbnail of the image *so far* — the worker rewrites that one file each denoising step, so a page that keeps an `<img>` on it gets a picture emerging out of noise instead of a number going up. It is tiny on purpose (the whole feature costs about 1% of the render); blur it and scale it up in CSS, which is where that decision belongs. `previewPath` is the same file as a path, if you want to read it yourself.
-- **It goes null at the end, and that is the cue to swap.** The preview file is deleted the moment the real PNG lands, so `previewUrl` is null on the last tick and on the resolved object — end on `img.url`, which is the full-resolution picture. It is also null throughout for a model with no preview support.
-- **An early tick can 404**, because the first denoising step writes no frame (two steps are needed to guess at a picture). That is ordinary, not an error: give the `<img>` an `onerror` that hides it, as above.
-- Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` (no image runner here — reason in the message).
-- **`model` comes from `catalog()` here too.** The Diffusers and MLX FLUX runners take *different repos for the same model* — `black-forest-labs/FLUX.2-klein-4B` against `mlx-community/FLUX.2-Klein-4B-4bit` — so a hard-coded id becomes an unloadable download the moment the other one is serving.
+| Option | Default | Range | Notes |
+|---|---|---|---|
+| `prompt` | — | non-empty | trimmed; empty or non-string is `bad_request` **before** a job opens |
+| `model` | the `text-to-image` row's `default` (the *smallest* curated repo) | a repo the active engine reads | see "Choosing `model`" — this is the one that bites |
+| `width` / `height` | `1024` | **256–2048** | clamped, then **snapped DOWN to a multiple of 16** (`1000 → 992`). A non-number becomes 1024 rather than a 400 |
+| `steps` | `28` | **1–100** | clamped; not a number → 400 |
+| `guidance` | `4.0` | **0–20** | clamped; not a number → 400 |
+| `seed` | random | **0 – 2147483647** | clamped; not a whole number → 400 |
+| `onProgress(job)` | — | — | per denoising step |
+
+**That is the whole surface**: no negative prompt, no image-to-image or inpainting, no batch count, no scheduler or LoRA. One prompt in, one PNG out; two pictures means two calls.
+
+Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}` — the render that will actually happen, not the one you asked for.
+
+- **`seed` comes back whether or not you passed one**, so "make that one again" is always one call away.
+- **The server owns where the PNG goes**: `<home>/ai/images/<YYYYmmdd-HHMMSS>-<uid>.png` under `~/.fused-render`, never beside the page (which may be read-only), time-ordered so the folder sorts chronologically. **It outlives the tab** — a page that navigated away mid-render can still open `path`. Nothing cleans these up, so a page that renders in a loop fills a directory the user browses.
+- **One row and one file per render.** Two calls get two `jobId`s and two paths; nothing overwrites.
+
+### Choosing `model`
+
+Take it from `catalog()`. For images the engines are stricter than anywhere else:
+
+| Engine serving `text-to-image` | What it loads |
+|---|---|
+| **Diffusers (PyTorch)** — Windows, Linux, Macs switched to it | the curated FLUX.2 klein repo, plus any ordinary diffusers repo (a `model_index.json`), via `AutoPipelineForText2Image` |
+| **MLX FLUX** — the Apple Silicon default | the one MLX repo it names a variant class for, and **nothing else** |
+
+That second row is a hard limit, not a summary of the catalog: mflux has no `AutoPipeline`, so any other MLX diffusion repo is refused with a sentence pointing at the working id or at the Engines tab. **On a Mac, "let the user paste a Hub id" has exactly one valid answer** — `catalog()` is the only honest picker.
+
+The same model also downloads differently per engine: ~4.6GB as one MLX repo against ~10.8GB for the Diffusers recipe, which assembles a quantized transformer from a second repo. So `size_gb` is **every byte the download fetches across every repo it touches**, and the extra repo appears in the model cache as a component nobody chose — not a model, excluded from `catalog()`, and load-bearing.
+
+**Memory is the failure mode to expect on a small Mac.** MLX FLUX reserves far more memory than Diffusers and is untested below 32GB; an OOM arrives as `ai_error`, so show `err.message` and name the Engines tab rather than working around it.
+
+### Progress: the row, and the cold start
+
+`onProgress` fires per denoising step with the download-manager record, and that row's ✕ really stops the render (the work is the server's, not the page's). `unit` is `""`, so steps read as a bare pair (`14 / 28`), not the clock a transcription draws; `detail` goes from "Preparing…" to `Saved <filename>`, and the row is titled with the prompt truncated to 80 characters.
+
+**The cold-model path is NOT `model_loading`** — the biggest difference from `fused.ai()`. `fused.ai.image` does not reject when the model is cold; it loads it inside the job you are already watching, so there is no retry to write. But:
+
+- While the weights arrive, `detail` reads `Waiting for <repo> — …` and **`done`/`total` are null**. Guard the division (`if (job.total)`) or draw an indeterminate bar — a bar that divides straight through shows `NaN` for the whole download.
+- **The bytes are on the model's own row**, never on the image job. For a download percentage, take that row's id from `fused.ai.models.list()` (the `loaded[]` entry carries `jobId` while it is still loading) rather than spelling it yourself.
+- The wait is bounded at **3600 s**; past that the render fails naming the model's job id.
+
+### Watch it being made: `job.previewUrl`
+
+Every tick carries a ready-made URL for a **~32px thumbnail of the image so far** — the worker rewrites that one file each denoising step, so an `<img>` kept on it shows a picture emerging out of noise instead of a number going up. It costs about 1% of the render; blur and upscale it in CSS. `previewPath` is the same file as a path.
+
+- **It is a promise about a path, not a file.** An early tick can 404 (the first step writes no frame), and a model whose latent space has no fitted projection never writes one — so keep the `onerror` that hides the `<img>`. From step 2 on you see the model's *current guess* at the finished image, not the raw latent.
+- **It goes null at the end, and that is the cue to swap.** The preview file is deleted the moment the real PNG lands, so `previewUrl` is null on the last tick and on the resolved object — end on `img.url`.
+- **The URL is already cache-busted** (`&step=<n>`). Adding your own is redundant; dropping the given one shows frame 2 forever.
+- Which engine served you makes no difference: the projection is keyed by the model's latent space, not the repo.
+
+### Slow and failed renders
+
+- **Minutes, not seconds — and capped at 900 s (15 min)** server-side, separately from the 600 s the text relay allows. A 2048² 100-step render on a CPU-only machine can hit it and comes back `ai_error` "the image process did not answer", so don't hand a slider the full clamp range.
+- **Renders serialize.** One generation at a time per worker (one GPU, and neither pipeline is thread-safe), and a second call **waits with no queue message on its row** — unlike transcription, which says so. Two renders fired together read as one stalled bar. Disable the button; if your page queues, say so in your own UI.
+- **An aged-out row still answers off the file.** A backgrounded tab can sleep past job retention; the bridge then `stat`s `path` and **resolves normally** if the PNG is there. Only a missing row *and* no file rejects `ai_error` "the image job is no longer being reported". A missing row is not a failed render.
+- Rejects `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` (no image runner here — reason in the message). `fused.ai.cancel("text-to-image")` stops the render; the bare `fused.ai.cancel()` will not.
 
 ## Transcription: `fused.ai.transcribe({path, ...})`
 
@@ -222,22 +267,22 @@ Options: `path` (required), `model`, `language`, `task`, `initialPrompt`, `vad`,
 
 Resolves with `{jobId, path, output, outputText, outputPartial, model, task, url, text, segments, language, duration, speakers, estimatedSpeakers}`.
 
-**The result is read off DISK, not returned by the job** — this is the part that is not obvious. The worker writes `~/.fused-render/ai/transcripts/<time>-<name>-<uid>.json` plus a `.txt` beside it, and when the row reaches `done` the bridge does `readFile(output)` → `JSON.parse` and hands you the parsed fields. So:
+**The result is read off DISK, not returned by the job** — the part that is not obvious. The worker writes `~/.fused-render/ai/transcripts/<time>-<name>-<uid>.json` plus a `.txt` beside it; when the row reaches `done` the bridge does `readFile(output)` → `JSON.parse` and hands you the parsed fields. So:
 
-- `output` is that JSON path, `outputText` the plain-text one, `outputPartial` the segments-as-they-decode one (see `onSegment` below), and `url` a ready-made `/api/fs/raw` address for `output`.
-- A transcription **outlives the tab that asked for it**. The file is the result; the row only says when to read it. A page that navigated away mid-run can still open `output`.
-- If the transcript cannot be read (deleted, truncated), the rejection is typed `ai_error` with `err.jobId` — not a bare `SyntaxError`.
+- `output` is that JSON path, `outputText` the plain-text one, `outputPartial` the segments-as-they-decode one, and `url` a ready-made `/api/fs/raw` address for `output`.
+- A transcription **outlives the tab that asked for it** — the file is the result, the row only says when to read it.
+- If the transcript cannot be read (deleted, truncated), the rejection is typed `ai_error` with `err.jobId`, not a bare `SyntaxError`.
 
 Everything else worth knowing:
 
-- **`path` is page-relative when relative**, exactly like `readFile`/`rawUrl`: `"meeting.m4a"` means beside this page. An absolute path is used verbatim. **Nothing is uploaded** — the worker is a process on this machine and opens the file itself.
-- **Progress is `unit: "s"` — seconds of audio.** Not bytes (that is a download) and not steps (that is an image). `job.done` is the last decoded segment's end timestamp, `job.total` the audio duration, and the manager renders the pair as a clock (`12:00 / 1:30:00`).
+- **`path` is page-relative when relative**, exactly like `readFile`/`rawUrl`; an absolute path is used verbatim. **Nothing is uploaded** — the worker opens the file itself.
+- **Progress is `unit: "s"` — seconds of audio.** Not bytes (a download) and not steps (an image). `job.done` is the last decoded segment's end timestamp, `job.total` the duration, and the manager draws them as a clock (`12:00 / 1:30:00`).
 - `task`: `"transcribe"` (same language) or `"translate"` (into English). Anything else is a **400 naming both**, never a silent default.
-- `language` omitted means **auto-detect**, which is Whisper's own default. Pass one only if you know it.
-- **`model` omitted loads the SMALLEST model the active engine offers** — `Systran/faster-whisper-small` or `mlx-community/whisper-small-mlx`, not the turbo one. That is deliberate: the catalog is ordered smallest-first and the default is simply its first entry, so a bare call is the cheapest download rather than the most accurate transcript. If accuracy matters, **pass a `model`** from `catalog()`; the turbo entries are the ones to reach for.
-- `vad` (default `true`) runs a Silero speech detector and skips the silence — the same filter on both engines. Because it does, `job.done` legitimately finishes short of `job.total` on a recording that trails off quietly — that is not an off-by-one to work around. Timestamps are always positions in the original file, never in the filtered audio.
+- `language` omitted means **auto-detect**. Pass one only if you know it.
+- **`model` omitted loads the SMALLEST model the active engine offers**, not the turbo one — the catalog is smallest-first and `default` is its first entry. If accuracy matters, pass a `model` from `catalog()`; the turbo entries are the ones to reach for.
+- `vad` (default `true`) runs a Silero speech detector and skips silence, the same filter on both engines. Because it does, `job.done` legitimately finishes short of `job.total` on a recording that trails off quietly — not an off-by-one to work around. Timestamps are always positions in the original file.
 - **Hours, not minutes.** One transcription runs at a time; a second call **queues**, says so on its row, and its ✕ works while it waits.
-- Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` | `"bad_request"` (a missing path, a path that is not a file, an unknown `task`, or a `speakers` that is present and unusable).
+- Rejects `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` | `"bad_request"` (missing path, not a file, unknown `task`, or an unusable `speakers`).
 
 ### As it decodes: `onSegment`
 
@@ -250,21 +295,13 @@ const rec = await fused.ai.transcribe({
 // …and `rec.segments` is the same list, whole, when it resolves.
 ```
 
-- **Every segment, in order, exactly once** — including the ones that were already decoded before your first callback, and including the last ones. Append on each call and you have the transcript; you never have to de-duplicate or re-sort.
-- **It costs one extra request per poll, and only if you pass it.** There is no second loop and no new connection: the tail rides the tick `onProgress` was already paying for. A call without `onSegment` makes exactly the requests it always did.
-- **The segment is the same shape `rec.segments` carries** — `{start, end, text}`, plus `speaker` when diarizing. One rendering path for both, which is the point.
-- **Resolution is the engine's, not the callback's.** faster-whisper produces a segment at a time; the MLX runner finishes a whole decoded window (up to 30s of audio) and then emits its segments together — so callbacks arrive in the same bursts `job.done` jumps in.
-- **A transcription still outlives the tab.** `onSegment` is a live view, not the delivery mechanism; the file is. A page that navigated away and came back reads `output` and has everything.
+- **Every segment, in order, exactly once** — including ones decoded before your first callback, and the last ones. Append on each call and you have the transcript; never de-duplicate or re-sort.
+- **Same shape as `rec.segments`** — `{start, end, text}`, plus `speaker` when diarizing. One rendering path for both.
+- **It costs one extra request per poll, and only if you pass it** — the tail rides the tick `onProgress` was already paying for.
+- **Resolution is the engine's, not the callback's.** faster-whisper emits a segment at a time; the MLX runner finishes a whole decoded window (up to 30s) and emits its segments together — so callbacks arrive in the same bursts `job.done` jumps in.
+- `onSegment` is a live view, not the delivery mechanism: the file is. It stops when the promise does, and the last reads in flight are delivered *before* the rejection, so a `catch` that clears the transcript pane keeps it clear.
 
-**Underneath, and worth knowing because it is the salvage path:** the worker appends each finished segment to **`outputPartial`** — `<output minus .json>.partial.jsonl`, one JSON object per line, flushed per segment. The reply names it so you never derive it yourself. Its lifecycle is:
-
-| The run | `outputPartial` afterwards |
-|---|---|
-| finished | **gone** — `output` is the answer and the partial file would be a duplicate of it |
-| cancelled with the ✕ | **gone** — you asked for it to stop |
-| **failed** | **left on disk**, holding every segment that decoded before it died |
-
-That last row is the reason to know the path exists. A 90-minute recording that fails at minute 80 writes no `.json` at all, and the `.partial.jsonl` is the only place those 80 minutes survive. The rejection carries it, since a failed call never resolves with anything:
+**The salvage path.** The worker appends each finished segment to **`outputPartial`** (`<output minus .json>.partial.jsonl`, one JSON object per line, flushed per segment). It is **gone** after a finished or cancelled run — `output` is the answer — and **left on disk after a failure**, holding every segment that decoded before it died. A 90-minute recording that fails at minute 80 writes no `.json` at all, so this is the only place those 80 minutes survive:
 
 ```js
 try {
@@ -277,9 +314,7 @@ try {
 }
 ```
 
-`err.output` and `err.outputPartial` are on `cancelled` rejections too, where the file is already gone — one shape for both, so you check the read rather than the rejection type. They are also on the "job is no longer being reported" rejection, which is what a run long enough to salvage most often hits: its job row is dropped after retention while the tab sleeps, and the transcript is not there either. Nothing cleans a salvaged file up for you: delete it once the page has what it needs.
-
-`onSegment` stops when the promise does — the last reads in flight are delivered *before* the rejection, never after it, so a `catch` that clears the transcript pane keeps it clear.
+`err.output` and `err.outputPartial` ride every rejection that had a run — including `cancelled` and "job is no longer being reported", where the file is already gone — so check the read, not the rejection type. Nothing cleans a salvaged file up for you.
 
 ### Who said it: `diarize` + `speakers`
 
@@ -294,50 +329,48 @@ rec.segments[0].speaker;            // "Speaker 1"  (or null — see below)
 rec.estimatedSpeakers;              // 3 — only on a run that had to work it out
 ```
 
-- **`speakers` is an optional hint.** Give it (a whole number 1–100) and the clustering is fixed to exactly that many voices. Leave it out — `undefined`, `null` or `""` — and the count is **estimated** from the recording by cosine distance, and the reply carries `estimatedSpeakers` saying what it decided. Passing a count that is present and unusable (`0`, `2.5`, `"3"`, `true`, over 100) still rejects `bad_request` **before a job opens**: that is a typo, not a request to estimate.
-- **An estimate can be wrong**, in either direction — one person across two microphones can split, two similar voices can merge — so pass the count whenever you actually know it. `estimatedSpeakers` is how a page can show what was assumed and let someone re-run with a correction.
-- `estimatedSpeakers` counts the voices the **segmenter** heard, which can be more than `speakers.length`: someone who spoke where Whisper transcribed no words is counted in the first and absent from the second.
-- Every segment gains **`speaker`**, and the reply gains **`speakers`** — the list of labels that actually landed on a segment, ready to build a colour map from without walking thousands of segments.
-- **`speaker` is `null` where Whisper heard words but the segmenter heard nobody.** Handle it; do not assume a label.
-- **Both engines run the same two models through the same code**, so the labels do not depend on which one served you.
-- **Default `false`, and additive**: a call without it is unchanged in every byte, and a transcript written without it has no `speaker` and no `speakers` at all.
-- **It does not change what progress means.** `job.done`/`job.total` stay seconds of audio of the *transcript*; diarization is a fast pre-pass that shows up as its own line on the row ("Finding speakers…") with an indeterminate bar.
-- **First use on a machine downloads ~33MB** (a speaker segmenter and a voice-embedding model). It needs the network that once; after that it works offline. Unlike the VAD these are *not* pre-fetched by a model Download, because most callers never ask for them.
+- **`speakers` is an optional hint.** A whole number 1–100 fixes the clustering to exactly that many voices; omitted (`undefined`, `null`, `""`) the count is **estimated** and `estimatedSpeakers` says what it decided. A value that is present and unusable (`0`, `2.5`, `"3"`, `true`, over 100) rejects `bad_request` **before a job opens** — that is a typo, not a request to estimate.
+- **An estimate can be wrong** either way (one person across two mics can split; similar voices can merge), so pass the count when you know it. `estimatedSpeakers` is how a page shows what was assumed and offers a re-run.
+- `estimatedSpeakers` counts voices the **segmenter** heard, which can exceed `speakers.length`: someone who spoke where Whisper transcribed no words is in the first and not the second.
+- Every segment gains **`speaker`** and the reply gains **`speakers`** — the labels that actually landed, ready for a colour map without walking thousands of segments. **`speaker` is `null` where Whisper heard words but the segmenter heard nobody.**
+- **Default `false` and additive**: a call without it is unchanged, and a transcript written without it has no `speaker` and no `speakers` at all. Both engines run the same two models, so labels don't depend on which served you.
+- **It does not change what progress means.** `job.done`/`job.total` stay seconds of audio; diarization is a fast pre-pass with its own line on the row ("Finding speakers…") and an indeterminate bar.
+- **First use on a machine downloads ~33MB** (a speaker segmenter and a voice-embedding model), once, then works offline. Unlike the VAD these are *not* pre-fetched by a model Download.
 
-**Take the model from `fused.ai.models.catalog()`, never from memory.** Speech repos come in four mutually unloadable formats — CTranslate2 (`model.bin`), MLX Whisper (`weights.npz`), NeMo/Parakeet (`model.safetensors` beside a config naming a `nemo.collections.asr.models.…` class) and plain transformers (`model.safetensors`) — and which one loads depends on the engine serving this machine, not on the model being "the good one". `openai/whisper-large-v3` is the repo everyone reaches for and loads under **none** of the runners that ship, and because the format is not in the task label the AI Models page offers a Load button anyway. The load error names the format you have, the format that runner needs, and a repo that works. `catalog()` already answers per engine, so it is the only source that cannot be wrong: on Apple Silicon it offers `mlx-community/whisper-large-v3-turbo` and friends, `mlx-community/parakeet-tdt-0.6b-v3` and friends if the user picked Parakeet, and elsewhere `deepdml/faster-whisper-large-v3-turbo-ct2`.
+### Three engines, one of them not Whisper
 
-**Three engines serve this capability and one of them is not Whisper**, so two things about the call are engine-dependent:
+**Take the model from `catalog()`, never from memory.** Speech repos come in four mutually unloadable formats — CTranslate2 (`model.bin`), MLX Whisper (`weights.npz`), NeMo/Parakeet (`model.safetensors` beside a NeMo ASR config) and plain transformers — and which loads depends on the engine serving this machine, not on the model being "the good one". `openai/whisper-large-v3` is the repo everyone reaches for and **no shipping runner reads it**.
 
-- **Progress resolution.** The MLX Whisper runner reports once per decoded window (up to 30s of audio) and Parakeet once per 60s chunk, rather than per segment, so `job.done` can sit still and then jump. It is always a real position in the recording, never ahead of one.
-- **Parakeet refuses three options rather than ignoring them**: `task: "translate"` (it only transcribes), `language` (it detects among its 25 European languages and cannot be pinned) and `initialPrompt` (a transducer has no text to condition on). Each rejects `bad_request` **before a job opens**, with a sentence naming the engine and telling the reader to drop the option or switch engines — so you find out immediately rather than after a download. If your page needs any of the three, say so in the UI or check `active` in `fused.ai.models.list()` — the user chose that engine, your page did not.
+Two things about the call are therefore engine-dependent:
+
+- **Progress resolution.** MLX Whisper reports once per decoded window (up to 30s), Parakeet once per 60s chunk, so `job.done` can sit still and then jump. It is always a real position in the recording.
+- **Parakeet refuses three options rather than ignoring them**: `task: "translate"`, `language` (it detects among its 25 European languages and cannot be pinned) and `initialPrompt`. Each rejects `bad_request` **before a job opens**, naming the engine. If your page needs any of the three, check `active` in `fused.ai.models.list()` and say so in the UI — the user chose that engine, your page did not.
 
 Everything else — the result shape, the two files, `onSegment`, the speaker labels, `vad` — is identical whichever one served you.
 
 ## What Actually Runs Locally Today
 
-Seven runners ship, serving three capabilities. All take **Hugging Face repo ids**, and each needs its own machine support:
+Seven runners, three capabilities, all taking **Hugging Face repo ids**:
 
 | Capability | Runners (default first) | Reality |
 |---|---|---|
 | `text-generation` | MLX, then Transformers (PyTorch) | **Everywhere.** MLX on Apple Silicon; torch on Windows, Linux, and as the Apple Silicon fallback. A CPU-only machine answers slowly but answers. |
-| `text-to-image` | MLX FLUX, then Diffusers (PyTorch) | **Everywhere.** MLX FLUX takes Apple Silicon — quicker to load and a smaller download, though it reserves much more memory, which is why Diffusers stays one Preferences switch away; Diffusers serves Windows and Linux. |
-| `automatic-speech-recognition` | MLX Whisper, then Parakeet TDT, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (on the GPU) is the Apple Silicon default; Parakeet TDT is an Apple-Silicon opt-in — quicker again and more accurate in English, but 25 European languages only, which is why it is not the default; CTranslate2 serves macOS on both architectures, Linux and Windows, where CPU is fine. |
+| `text-to-image` | MLX FLUX, then Diffusers (PyTorch) | **Everywhere.** MLX FLUX takes Apple Silicon (quicker, smaller download, much more memory); Diffusers serves Windows and Linux, and is one Preferences switch away on a Mac. |
+| `automatic-speech-recognition` | MLX Whisper, then Parakeet TDT, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (GPU) is the Apple Silicon default; Parakeet TDT is an Apple-Silicon opt-in — quicker and more accurate in English, but 25 European languages only; CTranslate2 serves both Mac architectures, Linux and Windows. |
 
-Those three strings are the capability vocabulary — they are what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
+Those three strings are the capability vocabulary — what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
 
-**Which runner serves you is not purely a hardware fact.** Where a capability has more than one, the machine picks the default — and the user can override that from the AI Models page's Engines tab, so a Mac may deliberately be running the CTranslate2 path. Each row in `fused.ai.models.list()`'s `runners` therefore carries **both** `available` (can this backend run here at all) and `active` (is this the one serving the capability right now). Read `active` when you want to say what is running; read `available` when you want to say what this machine could do. Never hard-code either — and let `unavailable` messages reach the user, since they explain *why*.
+**Which runner serves you is not purely a hardware fact.** The user can override the default per capability from the AI Models page's Engines tab, so a Mac may deliberately be running the CTranslate2 path. Each row in `fused.ai.models.list()`'s `runners` therefore carries **both** `available` (can this backend run here at all) and `active` (is it serving the capability right now). Read `active` to say what is running, `available` to say what this machine could do. Never hard-code either, and let `unavailable` messages reach the user.
 
-**And a switch EVICTS.** A model resident under the outgoing engine is unloaded as the preference is written — it belongs to the backend that loaded it, so leaving it would spend gigabytes nothing will route to again. A page holding that model therefore gets `model_loading` on its next `fused.ai()` call — the cold-start path it already handles, not a new failure to code for. The artefact calls reload inside their own job and just take longer.
+**And a switch EVICTS.** A model resident under the outgoing engine is unloaded as the preference is written — it belongs to the backend that loaded it. A page holding it gets `model_loading` on its next `fused.ai()` call (the cold-start path it already handles); the artefact calls reload inside their own job and just take longer.
 
 ## Surviving Export
 
-The exporter matches the **string** `fused.ai(`, not the executed path — so wrapping the call in `if (fused.env === "local")` does **not** make a page exportable. The guard is deliberate: an exported page has no CLI and no worker, so the call could only fail at the reader.
+The exporter **rejects any page containing the string `fused.ai(`** (SPEC RH-11) — matched textually, so `if (fused.env === "local")` does **not** make a page exportable, and aliasing the call to dodge the match only trades a clear refusal for a page that ships broken. An exported page has no CLI and no worker; the call could only fail at the reader.
 
-Don't try to smuggle the call past the textual match by aliasing it — that trades a clear export-time refusal for a page that ships broken. If a view must export, **keep AI out of it** and gate the feature at the page level (a local-only companion view, or a UI that hides the AI panel when `fused.env !== "local"` with no `fused.ai(` in the file at all).
+If a view must export, **keep AI out of it** and gate the feature at the page level — a local-only companion view, or a UI that hides the AI panel when `fused.env !== "local"` with no `fused.ai(` in the file at all. `fused.trackJob` exports fine (it no-ops hosted); `fused.ai` never will.
 
-`fused.trackJob` exports fine — it no-ops on a hosted page. `fused.ai` never will.
-
-**The DOTTED calls are a trap, and in the opposite direction.** The check matches `fused.ai(` specifically, so `fused.ai.image(`, `fused.ai.transcribe(` and `fused.ai.models.*` slip past it: a page using only those **exports cleanly and then fails at the reader**, since a hosted page has no worker, no `<home>/ai/images/` or `<home>/ai/transcripts/`, and no `/api/fs/raw` — so every `url`, `previewUrl` and `output` those calls hand back is a dead address there too. Gate them on `fused.env === "local"` yourself — nothing will stop you at export time. (Whether that gap should be closed is an open question, recorded in `docs/EXPORT.md`; today it is the behaviour.)
+**The DOTTED calls are a trap in the opposite direction.** The check matches `fused.ai(` specifically, so `fused.ai.image(`, `fused.ai.transcribe(` and `fused.ai.models.*` slip past it — and then fail at the reader, since a hosted page has no worker, no `<home>/ai/` directories and no `/api/fs/raw`, making every `url`, `previewUrl` and `output` a dead address. Gate them on `fused.env === "local"` yourself; nothing will stop you at export time. (Recorded as an open question in `docs/EXPORT.md`.)
 
 ## Debugging
 
@@ -355,20 +388,40 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 
 ## Common Mistakes
 
+**Text**
+
 - **Treating `model_loading` as a failure** → it started a download and gave you `err.jobId`; show it and retry.
 - **Reading `usage.prompt_tokens`** → `undefined`. Anthropic names only.
-- **Sending `temperature`/`history`/`raw` to the Claude path** → 400, by design. Branch on the destination, or only set them for a slashed model.
-- **`unload(selectedId)`** → often unloads nothing; use `{capability}`.
-- **Awaiting `models.load()` as if it returned a model** → it returns `{jobId}`.
-- **Omitting `{capability}` on `load`/`download` for a repo that is not a chat model** → inference has nothing to read before the download lands, so an uncached whisper or diffusion repo still falls back to text generation and fails inside mlx-lm. Name it.
-- **Assuming a capability's runner from the platform** → every capability has more than one runner (transcription has three), and a user preference can pick any of them. Ask `fused.ai.models.list()` and read `active`.
-- **Expecting `transcribe` to hand back the words from the job** → the row only says when; the text is read off `output` from disk. For words *during* the run, pass `onSegment` — not a bigger `detail` on the row.
-- **Loading `openai/whisper-large-v3`** → transformers format, which no shipping runner reads, however willingly the page offers the button. Take the id from `catalog()`.
-- **Rendering only `catalog()`'s curated entries** → the model the user just downloaded from the Hub search is missing from your picker, which is the exact bug the `source`/`downloaded` fields exist to end. Render every entry; mark them.
-- **Carrying a speech repo id between machines or between engines** → CT2, MLX Whisper and Parakeet load different files; a repo that works on one engine is an unusable download on the other, and switching engines on the Engines tab changes which is which.
-- **Reading transcription progress as bytes or steps** → it is `unit: "s"`, seconds of audio.
-- **`fused.ai.cancel()` to stop a transcription** → it defaults to `"text-generation"`; name the capability or use the row's ✕.
+- **Sending `temperature`/`history`/`raw` to the Claude path** → 400, by design. Set them only for a slashed model.
 - **Not disabling the submit button** → no stale-cancel; a double-click fires two calls.
 - **Dumping a full dataset into a prompt** → token blowout, worse answer.
-- **Gating `fused.ai` on `fused.env` and expecting export to pass** → the match is textual.
 - **Expecting 120 s** → the relay allows **600 s**; keep loading states honest.
+
+**Models**
+
+- **Awaiting `models.load()` as if it returned a model** → it returns `{jobId}`.
+- **Omitting `{capability}` on `load`/`download` for a repo that is not a chat model** → an uncached whisper or diffusion repo falls back to the text runner and fails inside mlx-lm. Name it.
+- **`unload(selectedId)`** → often unloads nothing; use `{capability}`.
+- **Rendering only `catalog()`'s curated entries** → the model the user just downloaded is missing from your picker. Render every entry; mark them.
+- **Assuming a capability's runner from the platform** → every capability has more than one and a user preference can pick any. Read `active` from `fused.ai.models.list()`.
+- **Hard-coding a repo id, or carrying one between engines** → formats are backend-specific; a repo that works on one engine is an unusable download on the other.
+
+**Images**
+
+- **Waiting for `model_loading` from `fused.ai.image`** → it never comes; the load happens inside the render's own job with `done`/`total` null, and the bytes are on the model's own row. Dividing by a null total shows `NaN` for the whole download.
+- **Firing two renders and waiting** → they serialize and the second row says nothing about queueing. Disable the button.
+- **Echoing your request as the image's caption** → sides snap to a multiple of 16 and everything is clamped. Read the reply.
+- **Letting the user paste any Hub diffusion repo on a Mac** → MLX FLUX loads exactly one. Offer `catalog()`'s entries, or name the Engines tab.
+- **Adding your own cache-buster to `previewUrl`** → it already has one keyed on the step.
+
+**Transcription**
+
+- **Expecting the words from the job** → the row only says when; the text is read off `output`. For words *during* the run, pass `onSegment`.
+- **Reading progress as bytes or steps** → it is `unit: "s"`, seconds of audio.
+- **`fused.ai.cancel()` to stop a transcription** → it defaults to `"text-generation"`; name the capability or use the row's ✕.
+- **Loading `openai/whisper-large-v3`** → transformers format, which no shipping runner reads. Take the id from `catalog()`.
+
+**Export**
+
+- **Gating `fused.ai` on `fused.env` and expecting export to pass** → the match is textual.
+- **Assuming `fused.ai.image`/`.transcribe` are safe to export because they pass the check** → they do, and then fail at the reader. Gate them yourself.
