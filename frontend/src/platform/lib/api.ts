@@ -1784,6 +1784,34 @@ export function resetRegistryBinding(key: string): Promise<RegistryEntry | Regis
   return postJson<RegistryEntry | RegistryRemoved>("/api/templates/registry/reset", { key });
 }
 
+// Which registry key (if any) governs previews for one path — the seam
+// FallbackPreview uses to offer "restore default previews" instead of sending
+// someone off to hand-edit registry.json. `{key: null}` means neither registry
+// has a matching key at all (nothing to fix from here). `registryError` can be
+// set even alongside a resolved `key`: the built-in registry answered fine but
+// the USER registry.json failed to parse, so any override it might have held
+// is invisible right now — a distinct problem from one key's own `error`.
+export type RegistryEntryForPath =
+  | (RegistryEntry & { registryError?: string | null })
+  | { key: null; registryError?: string | null };
+
+export function getRegistryEntryForPath(path: string, isDir: boolean): Promise<RegistryEntryForPath> {
+  const params = new URLSearchParams({ path, is_dir: isDir ? "true" : "false" });
+  return getJson<RegistryEntryForPath>("/api/templates/registry/for-path?" + params.toString());
+}
+
+// Repair a USER registry.json that fails to parse: the unreadable file is
+// backed up alongside itself (never deleted) and replaced with a fresh empty
+// one. A no-op (`repaired: false`) when the file already parses or is absent.
+export interface RegistryRepairResult {
+  repaired: boolean;
+  backupPath?: string;
+}
+
+export function repairTemplateRegistry(): Promise<RegistryRepairResult> {
+  return postJson<RegistryRepairResult>("/api/templates/registry/repair", {});
+}
+
 // -- Export / import ---------------------------------------------------------
 // Export works for ANY template (core or user); import always lands in the user
 // source. Zips are folders only (no registry.json).

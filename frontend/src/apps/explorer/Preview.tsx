@@ -13,8 +13,11 @@ import {
   copyEntry,
   revealPath,
   deleteEntry,
+  getRegistryEntryForPath,
+  resetRegistryBinding,
+  repairTemplateRegistry,
 } from "@platform/lib/api";
-import type { Deployment, StatResult, TemplateEntry } from "@platform/lib/api";
+import type { Deployment, StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { navigate, navigateUrl, urlForFsPath, replaceSearch, IS_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
@@ -1483,7 +1486,115 @@ function TemplatePreview({
   );
 }
 
-function FallbackPreview({ fsPath, stat, actionsInTopbar }: { fsPath: string; stat: StatResult; actionsInTopbar?: boolean }) {
+// The "get me out of this" panel FallbackPreview shows when the reason
+// nothing renders is a fixable Template Registry state — a disabling user
+// override, or a corrupt user registry.json — rather than a genuinely
+// unbound file type (nothing to fix from here, so nothing is shown). Both
+// fixes are one click and stay entirely inside the app: no file to find, no
+// JSON to hand-edit.
+function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir: boolean; onReload?: () => void }) {
+  const [entry, setEntry] = useState<RegistryEntryForPath | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setEntry(null);
+    setActionError(null);
+    getRegistryEntryForPath(fsPath, isDir).then(
+      (r) => alive && setEntry(r),
+      () => alive && setEntry({ key: null })
+    );
+    return () => {
+      alive = false;
+    };
+  }, [fsPath, isDir]);
+
+  if (entry === null) return null; // first paint is instant; this enriches in the background
+
+  // The ONE registry state that truly empties a file's rendered template
+  // list is an explicit null/[] override on the key that would otherwise
+  // govern it — an unresolvable NAME alone self-heals, because
+  // _templates_for falls back to the core list when a user value resolves to
+  // nothing at all, so it never reaches this fallback card in the first
+  // place. Narrowed into its own variable (rather than a boolean flag) so
+  // every field below reads off the checked value, not back off `entry`.
+  const resetTarget = entry.key !== null && entry.overridesCore && entry.disabled ? entry : null;
+  const registryError = entry.registryError;
+  if (!resetTarget && !registryError) return null;
+
+  const run = (action: () => Promise<unknown>) => {
+    setBusy(true);
+    setActionError(null);
+    action().then(
+      () => {
+        setBusy(false);
+        pushToast({ msg: "Fixed — reloading this file's preview…", tone: "info" });
+        onReload?.();
+      },
+      (err: Error) => {
+        setBusy(false);
+        setActionError(err.message || String(err));
+      }
+    );
+  };
+
+  return (
+    <div className="metadata-card registry-fix-notice">
+      {registryError && (
+        <>
+          <p>
+            Your Template Registry file couldn't be read: <code>{registryError}</code>
+          </p>
+          <p className="registry-fix-hint">
+            Any custom preview bindings in it are being ignored until this is fixed.
+          </p>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={() => run(repairTemplateRegistry)}
+          >
+            Repair Template Registry
+          </button>
+        </>
+      )}
+      {resetTarget && (
+        <>
+          <p>
+            Previews for <code>{resetTarget.key}</code> files are turned off in your Template Registry.
+          </p>
+          {resetTarget.coreTemplates && resetTarget.coreTemplates.length > 0 && (
+            <p className="registry-fix-hint">
+              Restoring the default will bring back: {resetTarget.coreTemplates.join(", ")}.
+            </p>
+          )}
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={() => run(() => resetRegistryBinding(resetTarget.key))}
+          >
+            Restore default previews for {resetTarget.key}
+          </button>
+        </>
+      )}
+      {actionError && <p className="registry-fix-error">{actionError}</p>}
+    </div>
+  );
+}
+
+function FallbackPreview({
+  fsPath,
+  stat,
+  actionsInTopbar,
+  onReload,
+}: {
+  fsPath: string;
+  stat: StatResult;
+  actionsInTopbar?: boolean;
+  onReload?: () => void;
+}) {
   // No renderable views back this file (that's why it's the fallback), so Open
   // With resolves to the empty "No views available" list without a re-stat.
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems([], () => {}));
@@ -1492,20 +1603,23 @@ function FallbackPreview({ fsPath, stat, actionsInTopbar }: { fsPath: string; st
     <>
       {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu} />}
       <div className="preview-body">
-        <div className="metadata-card">
-          <dl>
-            <dt>Name</dt>
-            <dd>{stat.name}</dd>
-            <dt>Path</dt>
-            <dd>{fsPath}</dd>
-            <dt>Size</dt>
-            <dd>{formatSize(stat.size)}</dd>
-            <dt>Modified</dt>
-            <dd>{formatMtimeFull(stat.mtime)}</dd>
-          </dl>
-          <a href={rawUrl(fsPath)} download={stat.name}>
-            Download
-          </a>
+        <div className="metadata-stack">
+          <RegistryFixNotice fsPath={fsPath} isDir={stat.is_dir} onReload={onReload} />
+          <div className="metadata-card">
+            <dl>
+              <dt>Name</dt>
+              <dd>{stat.name}</dd>
+              <dt>Path</dt>
+              <dd>{fsPath}</dd>
+              <dt>Size</dt>
+              <dd>{formatSize(stat.size)}</dd>
+              <dt>Modified</dt>
+              <dd>{formatMtimeFull(stat.mtime)}</dd>
+            </dl>
+            <a href={rawUrl(fsPath)} download={stat.name}>
+              Download
+            </a>
+          </div>
         </div>
       </div>
       {fileMenu.overlays}
@@ -1526,9 +1640,16 @@ interface PreviewProps {
   // Explorer variant: no preview header bar; the mode switcher/deploy actions
   // portal into the breadcrumb bar's #topbar-mode-slot instead.
   actionsInTopbar?: boolean;
+  // Bumps StatView's reloadKey to re-fetch /api/fs/stat in place (App.tsx).
+  // FallbackPreview's RegistryFixNotice calls this after a fix succeeds, so a
+  // file that starts rendering again (e.g. "_render" is back) does so without
+  // a manual refresh. Undefined for callers that don't wire up StatView's
+  // reload (e.g. the learn page), where FallbackPreview simply omits the
+  // "reloading…" step.
+  onReload?: () => void;
 }
 
-export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, actionsInTopbar }: PreviewProps) {
+export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, actionsInTopbar, onReload }: PreviewProps) {
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
@@ -1572,5 +1693,5 @@ export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, act
         actionsInTopbar={actionsInTopbar}
       />
     );
-  return <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} />;
+  return <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} onReload={onReload} />;
 }

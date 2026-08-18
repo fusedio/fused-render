@@ -350,6 +350,7 @@ function StatView({
           onRenderedTitle={setRenderedTitle}
           hideHeader={variant === "learn"}
           actionsInTopbar={variant === "explorer"}
+          onReload={() => setReloadKey((k) => k + 1)}
         />
       );
     }

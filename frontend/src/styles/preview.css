@@ -394,6 +394,48 @@
   word-break: break-all;
 }
 
+/* .preview-body is a flex ROW (it also hosts the mode iframe), so the
+   fallback's card(s) need their own flex-COLUMN wrapper to stack vertically
+   instead of sitting side by side. Holds either one card (no registry issue
+   to flag) or two (RegistryFixNotice above the metadata card); the gap only
+   costs space when there's a second card, since flexbox gap doesn't apply
+   around a lone child. */
+.metadata-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* The "get me out of this" panel FallbackPreview shows above the plain
+   metadata card when the reason nothing renders is a fixable Template
+   Registry state (Preview.tsx's RegistryFixNotice) — a disabling user
+   override or a corrupt registry.json. Same card chassis as .metadata-card,
+   own class so it can sit as a sibling above it without doubling the margin. */
+.registry-fix-notice {
+  margin-bottom: 0;
+}
+
+.registry-fix-notice p {
+  margin: 0 0 10px 0;
+}
+
+.registry-fix-notice code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.registry-fix-hint {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.registry-fix-error {
+  color: var(--error);
+  font-size: 12px;
+}
+
 .status-message {
   padding: 24px;
   color: var(--fg-muted);

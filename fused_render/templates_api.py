@@ -426,6 +426,68 @@ def api_put_registry(body: dict = Body(...), x_fused: str | None = Header(defaul
     return _single_entry(key)
 
 
+@router.get("/api/templates/registry/for-path")
+def api_registry_for_path(path: str, is_dir: bool = False):
+    """Which registry key governs previews for `path`, if any — the seam
+    FallbackPreview uses to offer a one-click "reset to default" when a user
+    override is why nothing renders, instead of sending someone off to
+    hand-edit registry.json. Resolves the basename with the SAME precedence
+    `_templates_for` uses (user overrides core, both read through the one
+    shared `_match_registry`) and returns that key's full entry — same shape
+    as a `GET /api/templates/registry` row — so the caller can tell
+    `overridesCore` (is there a user binding to reset at all) and read
+    `coreTemplates` (what a reset would restore). `{"key": None}` when
+    neither registry has a matching key — a genuinely unbound file type,
+    nothing to reset. `registryError` carries a registry FILE that failed to
+    parse (distinct from a per-key `error`, which is a value-shape problem on
+    an otherwise-readable file) — set even when `key` is null, since a
+    corrupt user registry can hide a key that would otherwise have matched.
+    """
+    basename = os.path.basename(os.path.normpath(path))
+    builtin_reg, user_reg, builtin_err, user_err = _load_registries()
+    builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
+    user_by_lower = {str(k).lower(): k for k in user_reg}
+
+    matched = _server_templates._match_registry(user_reg, basename, is_dir)
+    if matched is None:
+        matched = _server_templates._match_registry(builtin_reg, basename, is_dir)
+
+    result = (
+        _compute_entry(matched[0], builtin_reg, user_reg, builtin_by_lower, user_by_lower)
+        if matched is not None
+        else {"key": None}
+    )
+    registry_error = user_err or builtin_err
+    if registry_error:
+        result["registryError"] = registry_error
+    return result
+
+
+@router.post("/api/templates/registry/repair")
+def api_repair_registry(x_fused: str | None = Header(default=None)):
+    """Recover from a USER registry.json that fails to parse. Every other
+    write route here correctly REFUSES to touch a file it can't read — a
+    blind overwrite would silently drop whatever bindings it still holds —
+    which otherwise leaves "move the dotfile aside yourself" as the only way
+    out. This does that FOR the user: the unreadable file is renamed aside
+    with a timestamp (nothing is deleted, nothing is guessed at) and a fresh
+    empty registry takes its place. A no-op (`repaired: false`) if the file
+    currently parses fine or doesn't exist — this is a repair action for a
+    broken file, not an unconditional reset of a working one."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    _, err = _server_templates._load_registry(_server_templates.USER_REGISTRY, "registry.json")
+    if err is None:
+        return {"repaired": False}
+
+    backup = f"{_server_templates.USER_REGISTRY}.corrupted.{int(time.time())}"
+    os.replace(_server_templates.USER_REGISTRY, backup)
+    storage.write_json(_server_templates.USER_REGISTRY, {})
+    return {"repaired": True, "backupPath": backup}
+
+
 @router.post("/api/templates/registry/reset")
 def api_reset_registry(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     # SPEC §2.4: remove the user override for a key (revert to core).

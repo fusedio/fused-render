@@ -388,6 +388,138 @@ def test_reset_requires_fused_header(ctx):
     assert resp.status_code == 403
 
 
+# ------------------------------------------------------- registry for-path
+
+
+def test_for_path_reports_user_override(ctx):
+    # A user override that drops "_render" — the FallbackPreview "reset to
+    # default" trigger: overridesCore is true and coreTemplates shows what a
+    # reset would restore.
+    ctx.registry({".html": ["code"]})
+    resp = ctx.client.get(
+        "/api/templates/registry/for-path", params={"path": "/x/app/index.html"}
+    )
+    assert resp.status_code == 200
+    entry = resp.json()
+    assert entry["key"] == ".html"
+    assert entry["overridesCore"] is True
+    assert _names(entry) == ["code"]
+    assert "_render" in entry["coreTemplates"]
+
+
+def test_for_path_no_user_override_reports_core(ctx):
+    resp = ctx.client.get(
+        "/api/templates/registry/for-path", params={"path": "/x/app/index.html"}
+    )
+    assert resp.status_code == 200
+    entry = resp.json()
+    assert entry["key"] == ".html"
+    assert entry["overridesCore"] is False
+    assert entry["resolvedSource"] == "core"
+
+
+def test_for_path_unmapped_extension_reports_no_key(ctx):
+    resp = ctx.client.get(
+        "/api/templates/registry/for-path", params={"path": "/x/thing.qqzz"}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"key": None}
+
+
+def test_for_path_disabled_override_reports_disabled(ctx):
+    # This — an explicit null/[] override — is the ONLY registry state that
+    # actually empties out an .html app's rendered template list (a dangling
+    # name alone self-heals: _templates_for falls back to the core list when
+    # a user value resolves to nothing at all, so it never reaches
+    # FallbackPreview). This is the one case the frontend's reset button
+    # should react to.
+    ctx.registry({".html": None})
+    resp = ctx.client.get(
+        "/api/templates/registry/for-path", params={"path": "/x/app/index.html"}
+    )
+    entry = resp.json()
+    assert entry["overridesCore"] is True
+    assert entry["disabled"] is True
+    assert entry["templates"] == []
+
+
+def test_for_path_dangling_name_kept_and_marked_not_existing(ctx):
+    # A registry-management-view nuance worth pinning here too: an unresolvable
+    # name is kept (not silently dropped) and reported broken, unlike the
+    # rendering engine's own resolution (_templates_for), which drops it and
+    # falls back to core. So this state alone does NOT explain a FallbackPreview
+    # sighting — it explains a DIFFERENT bug (the wrong template silently wins).
+    ctx.registry({".html": ["nope_no_such_template"]})
+    resp = ctx.client.get(
+        "/api/templates/registry/for-path", params={"path": "/x/app/index.html"}
+    )
+    entry = resp.json()
+    assert entry["overridesCore"] is True
+    assert entry["disabled"] is False
+    assert _names(entry) == ["nope_no_such_template"]
+    assert entry["templates"][0]["exists"] is False
+
+
+def test_for_path_corrupt_user_registry_reports_registry_error(ctx):
+    (ctx.udir / "registry.json").write_text("{not json", encoding="utf-8")
+    resp = ctx.client.get(
+        "/api/templates/registry/for-path", params={"path": "/x/app/index.html"}
+    )
+    entry = resp.json()
+    # The corrupt file can't tell us about a user override, so resolution
+    # falls back to the (still readable) core registry...
+    assert entry["key"] == ".html"
+    # ...but the read failure is still surfaced, not swallowed.
+    assert "registryError" in entry and "registry.json" in entry["registryError"]
+
+
+def test_for_path_directory_matches_directory_key(ctx):
+    ctx.registry({".zarr/": ["zarr"]})
+    resp = ctx.client.get(
+        "/api/templates/registry/for-path",
+        params={"path": "/x/store.zarr", "is_dir": "true"},
+    )
+    entry = resp.json()
+    assert entry["key"] == ".zarr/"
+    assert entry["overridesCore"] is True
+
+
+# --------------------------------------------------------- registry repair
+
+
+def test_repair_noop_when_registry_parses(ctx):
+    ctx.registry({".csv": ["code"]})
+    resp = ctx.client.post("/api/templates/registry/repair", headers=FUSED)
+    assert resp.status_code == 200
+    assert resp.json() == {"repaired": False}
+    assert ctx.read_registry() == {".csv": ["code"]}  # untouched
+
+
+def test_repair_noop_when_registry_missing(ctx):
+    resp = ctx.client.post("/api/templates/registry/repair", headers=FUSED)
+    assert resp.json() == {"repaired": False}
+    assert not (ctx.udir / "registry.json").exists()
+
+
+def test_repair_backs_up_and_replaces_corrupt_registry(ctx):
+    (ctx.udir / "registry.json").write_text("{not json", encoding="utf-8")
+    resp = ctx.client.post("/api/templates/registry/repair", headers=FUSED)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["repaired"] is True
+    backup = body["backupPath"]
+    assert os.path.isfile(backup)
+    assert open(backup, encoding="utf-8").read() == "{not json"  # nothing lost
+    assert ctx.read_registry() == {}  # fresh, empty, valid registry in its place
+
+
+def test_repair_requires_fused_header(ctx):
+    (ctx.udir / "registry.json").write_text("{not json", encoding="utf-8")
+    resp = ctx.client.post("/api/templates/registry/repair")
+    assert resp.status_code == 403
+    assert (ctx.udir / "registry.json").read_text(encoding="utf-8") == "{not json"
+
+
 # --------------------------------------------------------------- export (2.5)
 
 
