@@ -2473,3 +2473,38 @@ export function nextRunChip(task: Task, now: number = Date.now()): NextRunChip |
     title: `Next run ${messageStamp(at)}`,
   };
 }
+
+// ---- what is happening RIGHT NOW ---------------------------------------------
+// The List has the In Progress section and the Board has the In Progress lane;
+// the calendar has neither, because a calendar is ordered by time and not by
+// state. Its chips sat in the grid saying nothing about which of them was
+// running at that moment — the one fact a person glancing at today most wants.
+//
+// So the chip gets the fact, and the RULE lives here rather than in the view:
+// it is the same reading of `state` and `turn` the server's `_message_running`
+// makes, and the same one messageTone collapses into `in_progress`. Three views
+// asking three questions about "is this going?" is how they start disagreeing.
+
+/** Is this message's own run in flight? `sending` is a send the scheduler has
+ * spawned and not heard back from; `sent` with a turn that has not reported an
+ * end is a turn still working (turnPhase — `unknown` is NOT running, it is a
+ * watcher that stopped being able to tell). */
+export function isMessageRunning(m: TaskMessage): boolean {
+  if (m.state === "sending") return true;
+  return m.state === "sent" && turnPhase(m.turn) === "running";
+}
+
+/**
+ * Is THIS message the work this task is doing right now?
+ *
+ * Two ways, and the second is what a live chat turn needs. A message can say so
+ * itself (above), and a LIVE session says it about its newest message — the
+ * transcript is mid-turn, and the newest prompt is the one that turn is
+ * answering. Older messages in a live session are not running: their turns
+ * ended when the next prompt arrived.
+ */
+export function isRunningNow(task: Task, m: TaskMessage): boolean {
+  if (isMessageRunning(m)) return true;
+  const newest = task.messages?.[0];
+  return !!task.live && !!newest && !!m.message_id && m.message_id === newest.message_id;
+}

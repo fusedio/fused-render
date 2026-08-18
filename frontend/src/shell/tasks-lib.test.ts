@@ -34,6 +34,8 @@ import {
   isDraggable,
   isExpandable,
   isFailedTask,
+  isMessageRunning,
+  isRunningNow,
   isPastDue,
   isUnread,
   isUpcomingTask,
@@ -5672,5 +5674,51 @@ describe("nextRunChip", () => {
       next_run_entry: "e2",
     });
     expect(nextRunChip(t, NOW)).toBe(null);
+  });
+});
+
+// ---- what is happening right now ---------------------------------------------
+// The calendar has no In Progress lane, so its chips ask this instead.
+
+describe("isMessageRunning", () => {
+  it("says yes to a send in flight and to a turn still working", () => {
+    expect(isMessageRunning(msg({ state: "sending" }))).toBe(true);
+    // "" is what the server writes while a turn is in flight (_entry_turn).
+    expect(isMessageRunning(msg({ state: "sent", turn: "" }))).toBe(true);
+  });
+
+  it("says no to a turn that ended, and to one nobody can report on", () => {
+    expect(isMessageRunning(msg({ state: "sent", turn: "done" }))).toBe(false);
+    // The watcher stopped being able to tell. Reporting that as running is the
+    // frozen-progress-bar lie.
+    expect(isMessageRunning(msg({ state: "sent", turn: "unknown" }))).toBe(false);
+    expect(isMessageRunning(msg({ state: "idle" as TaskMessage["state"] }))).toBe(false);
+  });
+
+  it("says no to a message that never went out", () => {
+    for (const state of ["pending", "cancelled", "skipped", "error"] as const) {
+      expect(isMessageRunning(msg({ state }))).toBe(false);
+    }
+  });
+});
+
+describe("isRunningNow", () => {
+  it("reads a live session's NEWEST message as the turn that is live", () => {
+    const t = task({ live: true }, 3);
+    expect(isRunningNow(t, t.messages[0])).toBe(true);
+    // The older ones are not: their turns ended when the next prompt arrived.
+    expect(isRunningNow(t, t.messages[1])).toBe(false);
+  });
+
+  it("still reads a message that says so itself, in a session that is not live", () => {
+    const running = msg({ message_id: "MSG-009", state: "sending" });
+    const t = task({ live: false, messages: [msg({ message_id: "MSG-010" }), running] });
+    expect(isRunningNow(t, running)).toBe(true);
+    expect(isRunningNow(t, t.messages[0])).toBe(false);
+  });
+
+  it("says no on a quiet task", () => {
+    const t = task({ live: false }, 2);
+    expect(isRunningNow(t, t.messages[0])).toBe(false);
   });
 });
