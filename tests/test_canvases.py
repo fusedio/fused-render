@@ -1065,6 +1065,53 @@ def test_sync_shim_poll_pulls_clean_via_cli_force(harness, tmp_path, monkeypatch
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
+def test_sync_shim_force_pull_rechecks_before_adopting_clean(harness, tmp_path, monkeypatch):
+    """A3: an edit landing DURING the force pull must not be adopted as clean.
+
+    The legacy leg (_pull_if_remote_changed) re-runs a `--dry-run` after
+    applying and re-arms the dirty flag, precisely because that window cannot be
+    closed with fingerprints — the pull's own writes and a concurrent local edit
+    both just look like "the file changed". The shim leg re-baselined
+    unconditionally instead, so a file an active session wrote mid-pull was
+    overwritten AND recorded as the sync point: a silently lost edit.
+
+    `pull_dry` makes the post-pull recheck report a diff, which is the CLI
+    saying "local is not what I just pulled". Local wins: go dirty and push,
+    rather than clean and silent.
+    """
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    harness.log_in()
+    harness.set_scenario({"pull_files": _BASE_FILES})
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    shims = SyncShims(harness, tmp_path, monkeypatch)
+    shims.set_manifest("t1")
+    shims.set_remote_files(_BASE_FILES)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    time.sleep(0.4)  # first poll adopts the baseline
+    # The remote moved, the clone is clean → the CLI force-pull branch. The
+    # recheck that follows it reports a diff: something moved local away from
+    # what was just pulled.
+    harness.set_scenario({
+        "pull_files": {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"},
+        "pull_dry": "Would write 1 file (local differs from the canvas).",
+    })
+    shims.set_manifest("t2")
+
+    status = _wait_status(harness, lambda s: s["pull_seq"] >= 1)
+    assert status and status["pull_seq"] >= 1, status
+    # The recheck ran at all — without it there is nothing to notice the edit.
+    assert [c for c in harness.calls()
+            if c[:3] == ["workbench", "canvas", "pull"] and "--dry-run" in c], \
+        "no post-pull --dry-run recheck was issued"
+    # Local wins: the clone is dirty and pushes, instead of being adopted clean.
+    pushed = _wait_status(harness, lambda s: s["push_seq"] >= 1)
+    assert pushed and pushed["push_seq"] >= 1, pushed
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
 _UDFS_OLD = {"a": {"hash": "h1", "last_updated": "t0"}}
 _UDFS_NEW = {"a": {"hash": "h2", "last_updated": "t1"}}
 

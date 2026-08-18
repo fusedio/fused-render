@@ -1451,10 +1451,46 @@ class _SyncManager:
         # The CLI's --force removed the seeded Claude helper files (they're
         # not in the bundle) — put them back before rebaselining.
         _seed_clone_claude_files(self.dir, self.name)
+        # Did a local edit land WHILE --force was running? That window cannot
+        # be closed with fingerprints — the pull's own writes and a concurrent
+        # local edit both just look like "the file changed" — so ask the CLI,
+        # exactly as the legacy leg does after its own force pull. Without
+        # this the shim leg re-baselined unconditionally, so a file an active
+        # session wrote mid-pull was overwritten AND adopted as the sync
+        # point: the edit was lost with nothing left to notice it.
+        try:
+            recheck = subprocess.run(
+                [*cli.command, "workbench", "canvas", "pull", self.name,
+                 "-o", self.dir, "--dry-run"],
+                capture_output=True, text=True, timeout=PULL_TIMEOUT,
+                encoding="utf-8", errors="replace",
+                env=_cli_env(cli),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            recheck = None
+        still_diff = recheck is not None and recheck.returncode == 0 and (
+            "already up to date" not in (recheck.stdout or "")
+        )
         self._fingerprint = self._take_fingerprint()
+        # The remote genuinely IS at `probe` — we just pulled it — so rotate
+        # either way; not rotating would make the next poll see the same move
+        # again and re-run this destructive branch.
+        self._rotate_remote(probe)
+        if still_diff:
+            # Local diverged from what was pulled. Local wins: go dirty so the
+            # debounced push re-asserts it, and leave the merge base ALONE.
+            # Hashing the diverged disk here would record the concurrent edit
+            # as "already synced", and the next remote move would then classify
+            # that file as local-untouched and let remote overwrite it — the
+            # same clobber one step later. A stale base errs toward
+            # "local changed", which is the module's tie policy.
+            self._dirty_since = time.time()
+            if self.push_state != "error":
+                self.push_state = "pending"
+            self._save_base()
+            return
         self._dirty_since = None
         self._base_files = self._take_file_hashes()
-        self._rotate_remote(probe)
         self._save_base()
 
     def _push(self) -> None:
