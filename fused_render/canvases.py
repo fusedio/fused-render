@@ -1802,7 +1802,15 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
         # no remote manifest, so its first push would be the unguarded
         # wholesale replace this endpoint exists to prevent. The workspace
         # starts the watcher when it opens the canvas.
-        return _error(f"canvas {name!r} is not being synced (no watcher is running)", 409)
+        #
+        # `code` is for _canvas_push.py: with no watcher there is no merge base
+        # to protect, so the CLI interception falls through to the real CLI
+        # instead of turning a legitimate push into an error. It needs to tell
+        # that apart from a refusal it must report, and matching on prose would
+        # break the moment this wording changes.
+        return JSONResponse(
+            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+             "code": "no_watcher"}, status_code=409)
     if manager.push_state == "pushing":
         return _error("a push is already running for this canvas", 409)
     if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):

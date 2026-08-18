@@ -1421,12 +1421,10 @@ def test_an_out_of_band_cli_push_is_force_pulled_back_by_the_watcher(
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
-    time.sleep(0.3)
-    # A scratch file the agent wrote and never published (a plan, a fixture).
-    (harness.root / "alpha" / "notes.md").write_text("agent scratch\n")
-    _wait_status(harness, lambda s: s["push_state"] in ("pending", "idle"))
-    # Let the watcher settle it, so the clone is CLEAN when the remote moves.
-    _wait_status(harness, lambda s: s["push_seq"] >= 1)
+    # Wait for the first poll to adopt t1 as the baseline, with the clone clean.
+    # A blind sleep here would race: if the out-of-band push lands before that
+    # poll, t9 becomes the FIRST baseline and there is no move to react to.
+    assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t1")
 
     # Now the out-of-band push: the remote moves with content the watcher never
     # produced a sync point for, while the clone is clean.
@@ -1443,8 +1441,10 @@ def test_an_out_of_band_cli_push_is_force_pulled_back_by_the_watcher(
     # downstream pull that no workbench edit caused.
     assert [c for c in harness.calls()
             if c[:3] == ["workbench", "canvas", "pull"] and "--force" in c]
-    # The scratch file's DELETION is the real CLI's behaviour (`pull --force`
-    # removes every in-dir file not in the bundle); the stub only writes
-    # pull_files, so this harness cannot show it. The phantom pull above is the
-    # part that is observable here.
+    assert status["merge_seq"] == 0, "the wholesale branch, not the per-file merge"
+    # Two further consequences are the real CLI's, not reproducible here: that
+    # `pull --force` DELETES every in-dir file not in the bundle (the stub only
+    # writes pull_files), so unpublished agent scratch files are lost; and that
+    # each pass takes a trash snapshot, so ~_TRASH_MAX out-of-band pushes evict
+    # the entire recoverable history.
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
