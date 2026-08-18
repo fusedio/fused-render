@@ -327,6 +327,80 @@ def test_an_engine_that_cannot_answer_is_reported_not_500ed(tmp_path, monkeypatc
     assert str(boom) in resp.json()["error"]
 
 
+# --- /api/env/interpreter: the ground truth for "which python ran this?" ------
+#
+# Exists because a shell probe (`which python3`, a fresh `sys.executable`) run
+# from OUTSIDE this app — a Claude Code session embedded beside a file's
+# preview, say — reports whatever that shell's own PATH resolves first, which
+# has no relationship to the interpreter fused-render itself used.
+
+
+def test_interpreter_endpoint_requires_the_x_fused_header(tmp_path):
+    client = _client(tmp_path)
+    assert client.get("/api/env/interpreter").status_code == 403
+
+
+def test_a_file_with_no_project_reports_this_process_as_the_interpreter(tmp_path):
+    """The common case (every core template, most quick-look files): no
+    `pyproject.toml` anywhere above it, so it ran on the app's own interpreter
+    (SPEC PY-17) — which, under the test suite's pinned `builtin` engine
+    (conftest.py), is simply `sys.executable` of the process answering.
+    """
+    import sys
+
+    client = _client(tmp_path)
+    resp = client.get("/api/env/interpreter", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["engine"] == "builtin"
+    assert body["interpreter"] == sys.executable
+    assert body["packages"]["duckdb"], "duckdb ships with the app; a version must be reported"
+
+
+def test_a_declared_project_reports_its_own_venv_not_this_process(tmp_path):
+    """A file under a project that declares dependencies runs in THAT project's
+    venv (SPEC PY-16), never on this process's own interpreter — so the
+    endpoint must resolve through the same `project_env_for` the run itself
+    uses, not report `sys.executable` for a file that never touches it.
+    """
+    from fused_render import envinstall
+
+    client = _client(tmp_path)
+    _declare(tmp_path, '"pyproj"')
+    target = _py(tmp_path, "declared.py", "def main():\n    return 1\n")
+
+    resp = client.get("/api/env/interpreter", params={"py": str(target)},
+                      headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["interpreter"] == envinstall.venv_python_for(str(tmp_path))
+    assert body["packages"] is None, (
+        "that venv's packages are not this process's — reporting them here "
+        "would be a guess dressed up as an answer"
+    )
+
+
+def test_interpreter_resolves_a_relative_py_against_the_page(tmp_path):
+    """Mirrors /api/env/install's own rule (test_install_resolves_a_relative_py_
+    against_the_page above): the loader and this endpoint must derive the same
+    project from the same `py`+`html` pair, or a caller could get two different
+    answers about the one file."""
+    from fused_render import envinstall
+
+    client = _client(tmp_path)
+    _declare(tmp_path, '"pyproj"')
+    _py(tmp_path, "declared.py", "def main():\n    return 1\n")
+
+    resp = client.get(
+        "/api/env/interpreter",
+        params={"py": "declared.py", "html": str(tmp_path / "p.html")},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["interpreter"] == envinstall.venv_python_for(str(tmp_path))
+
+
 # --- the loader's own JS, executed ---------------------------------------------
 #
 # The structural assertions below cannot see behaviour, and both bugs these two

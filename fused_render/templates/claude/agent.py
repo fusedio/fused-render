@@ -88,6 +88,7 @@ if "__file__" not in globals():
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from appenv import fused_cli_dir as _fused_cli_dir
+from appenv import origin as _origin
 from appenv import skill_plugin_dir as _skill_plugin_dir
 from appenv import workspace_dir as _workspace_dir
 from private_dir import private_dir as _private_dir_under
@@ -542,6 +543,24 @@ def _system_prompt(file: str) -> str:
     """
     name = os.path.basename(file)
     tool = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
+    origin = _origin()
+    # A fact about how the PREVIEW was produced, not about the file's content —
+    # this is what stops "which python env retrieved this?" being answered by
+    # a `which python3` / fresh `sys.executable` probe, which reports whichever
+    # interpreter this shell's own PATH happens to resolve first (some ambient
+    # conda/homebrew env) and has no relationship to the interpreter
+    # fused-render itself used: its built-in duckdb/xlsx/sqlite/structure
+    # readers run in-process on the app's own interpreter (D72), and everything
+    # else runs there too unless the file sits in a project that declares its
+    # own environment (SPEC PY-16/PY-17). `origin` is None only when there is no
+    # server to ask (e.g. a bare test), in which case saying nothing is honest.
+    env_note = (
+        f" If asked which Python interpreter or package versions produced "
+        f"{name}'s preview: `GET {origin}/api/env/interpreter` (header "
+        "`X-Fused: 1`) answers with the real interpreter, engine and "
+        "duckdb/pyarrow/pandas versions fused-render itself used — that is "
+        "the ground truth, not a shell probe of this session's own PATH."
+    ) if origin else ""
     return (
         f"You are embedded in a local file viewer, opened on {file}. "
         f"The user is looking at {name} right now; treat that file as the "
@@ -559,7 +578,7 @@ def _system_prompt(file: str) -> str:
         "reloads itself when the file changes). Anything the user annotates or "
         f"screenshots in that pane is a part of {name}, not of the viewer. A "
         f"<{APP_STATE_TAG}> block on their message is the same reading taken "
-        "at send time, and goes stale as soon as you edit anything."
+        f"at send time, and goes stale as soon as you edit anything.{env_note}"
     )
 
 

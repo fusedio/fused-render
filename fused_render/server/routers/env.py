@@ -11,6 +11,7 @@ and one source for both is the only way that stays true.
 """
 
 import os
+import sys
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
@@ -18,6 +19,13 @@ from fastapi.responses import JSONResponse
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
+
+# The bundled data-stack packages a first-party reader (duckdb/xlsx/sqlite/
+# structure) actually uses. Reported by /api/env/interpreter so a caller (a
+# Claude Code session embedded beside a file preview, in particular) can learn
+# the real versions instead of shelling out to a fresh interpreter that has no
+# relationship to the one that rendered the file.
+_REPORTED_PACKAGES = ("duckdb", "pyarrow", "pandas")
 
 
 def _project_for(body: dict):
@@ -121,6 +129,77 @@ def api_env_progress(key: str, x_fused: str | None = Header(default=None)):
     except (ImportError, RuntimeError) as e:
         return _error(str(e))
     return JSONResponse({"ok": True, "key": key, "progress": prog})
+
+
+@router.get("/api/env/interpreter")
+def api_env_interpreter(py: str | None = None, html: str | None = None,
+                        x_fused: str | None = Header(default=None)):
+    """Which interpreter actually runs *py* — the ground truth PY-16/PY-17
+    otherwise has no way to reach a caller outside this process.
+
+    Without `py` (the common case: a data file with no project of its own —
+    every core template, and most quick-look files) this answers for THE APP'S
+    OWN interpreter, which is what ran it: the built-in duckdb/xlsx/sqlite/
+    structure readers execute in-process (D72), and everything else without a
+    declared project runs as a subprocess of this same interpreter
+    (executor.py's `[sys.executable, CHILD]`) — so this process's own
+    `sys.executable` and its already-installed duckdb/pyarrow/pandas are
+    exactly what a reader used, not a guess.
+
+    This exists because a shell probe (`which python3`, a fresh `sys.
+    executable`) run from outside this app — e.g. a Claude Code session
+    embedded beside a file's preview — reports whatever happens to be first on
+    THAT SHELL'S PATH, which has no relationship to the interpreter
+    fused-render itself used to render the file. That mismatch is silent: the
+    shell probe always succeeds, it just answers a different question.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    project = None
+    if py:
+        resolved = py if os.path.isabs(py) else (
+            os.path.normpath(os.path.join(os.path.dirname(html), py))
+            if html else None)
+        if resolved and os.path.isfile(resolved):
+            from fused_render import projectenv
+            project = projectenv.project_env_for(resolved)
+
+    from fused_render.shell import prefs as shell_prefs
+    engine = shell_prefs.effective_engine()
+
+    packages = None
+    if project:
+        from fused_render import envinstall
+        interpreter = envinstall.venv_python_for(project)
+        source = (f"{projectenv.display_name(project)}'s own project "
+                  "environment (declared in its pyproject.toml)")
+        # Not this process's own packages — that venv is a different
+        # interpreter, and probing it here would cost a subprocess spawn for
+        # an answer most callers (no declared project) never need.
+    else:
+        if engine == "fused":
+            from fused_render import engine as _engine
+            interpreter = _engine.app_interpreter()
+        else:
+            interpreter = sys.executable
+        source = "this app's own interpreter (no project declares one, SPEC PY-17)"
+        packages = {}
+        for name in _REPORTED_PACKAGES:
+            try:
+                packages[name] = getattr(__import__(name), "__version__", None)
+            except ImportError:
+                pass
+
+    return JSONResponse({
+        "ok": True,
+        "engine": engine,
+        "interpreter": interpreter,
+        "source": source,
+        "python_version": sys.version,
+        "packages": packages,
+    })
 
 
 @router.post("/api/env/cancel")
