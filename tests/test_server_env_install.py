@@ -376,6 +376,20 @@ def test_a_py_file_in_a_declared_project_is_custom(tmp_path):
     assert resp.json() == {"ok": True, "custom_env": True}
 
 
+def test_an_uppercase_py_extension_in_a_declared_project_is_custom(tmp_path):
+    """`_match_registry` lowercases basenames before matching, so a `script.PY`
+    must take the SAME direct `project_env_for` path a `script.py` does — not
+    fall through to the registry's `code` template (no pyproject.toml of its
+    own) and report `false` for a file that actually runs on the project's
+    venv (Bugbot on #634)."""
+    _declare(tmp_path, '"pyproj"')
+    target = _py(tmp_path, "DECLARED.PY", "def main():\n    return 1\n")
+    client = _client(tmp_path)
+    resp = client.get("/api/env/custom-env", params={"file": str(target)}, headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "custom_env": True}
+
+
 def test_a_data_file_served_by_a_bare_template_is_not_custom(tmp_path):
     """A `.parquet`'s default template (duckdb, SPEC PT-7 first-wins) declares
     no project of its own, so the app's own interpreter genuinely read it —

@@ -163,7 +163,12 @@ def api_env_custom_env(file: str, x_fused: str | None = Header(default=None)):
     from fused_render import projectenv
 
     is_dir = os.path.isdir(file)
-    if not is_dir and file.endswith(".py"):
+    # Case-INsensitive, matching _match_registry's own basename lowercasing
+    # below: a `script.PY` must take the same direct-project_env_for path a
+    # `script.py` does, or it falls through to the registry's "code" template
+    # (no pyproject.toml of its own) and reports `custom_env: false` for a
+    # file that may actually run on a project's venv.
+    if not is_dir and file.lower().endswith(".py"):
         custom_env = projectenv.project_env_for(file) is not None
         return JSONResponse({"ok": True, "custom_env": custom_env})
 
