@@ -1472,6 +1472,13 @@ export function buildSchedulePayload(form: {
   // instead of the default, which is every run landing in this task's own
   // thread (design §6).
   newTaskEachRun: boolean;
+  // The id of the entry being EDITED, and "" for a new task. An edit is cancel
+  // + re-create, so the entry the user is looking at is about to stop existing
+  // and a new one with a new id take its place — and a task that has not run yet
+  // is NUMBERED on that entry id. Carrying it lets the server move the number
+  // across rather than allocate a second one, which is what renamed TASK-078 to
+  // TASK-079 when only its time had changed.
+  replacesEntryId?: string;
 }): SchedulePayload {
   const repeating = form.rule !== null || form.repeat === "cron";
   const trimmedTitle = form.title.trim();
@@ -1523,6 +1530,10 @@ export function buildSchedulePayload(form: {
     // Only ever sent on a repeating task: on a one-off there is no "each run"
     // for it to mean anything about.
     ...(repeating && form.newTaskEachRun ? { new_task_each_run: true } : {}),
+    // Only on an edit, and only as a non-empty string: a new task replaces
+    // nothing, and the key is left off the wire rather than sent as "" for the
+    // same reason `title` is.
+    ...(form.replacesEntryId ? { replaces: form.replacesEntryId } : {}),
   };
 }
 
@@ -1540,9 +1551,9 @@ export function buildSchedulePayload(form: {
 // after the message it is scheduling.
 //
 // Both use `.trim()`, because a textarea full of newlines is not an instruction
-// and a title of spaces is not a name. Save is `disabled` on a false — nothing
-// here is a submit handler that could be reached another way — and both fields
-// carry `aria-required` so the disabled button is not the only hint.
+// and a title of spaces is not a name. Both fields carry `aria-required`, and
+// pressing Save while one is empty SAYS SO — see `saveBlockedReason`, which is
+// the same set of rules read out loud.
 export function saveEnabled(f: {
   // The ask / description. Required.
   message: string;
@@ -1572,6 +1583,59 @@ export function saveEnabled(f: {
     (f.repeatOn && f.repeat === "custom" ? f.customRule !== null : true) &&
     (f.repeat === "cron" ? f.legacyCron !== "" : f.pickedOk)
   );
+}
+
+// WHICH FIELD, and where the caret should go. The other half of `saveEnabled`:
+// the same rules, in the same order, said as a sentence a person can act on.
+//
+// Save used to be `disabled` on a false `saveEnabled`, and that is a dead
+// control, not a hint. The commonest way to meet it is the commonest thing to
+// forget — open the form, type a name, press Save — and a disabled button
+// answers by doing NOTHING: no error, no focus move, the modal just sits there
+// (QA, 2026-08-18). The requirement itself is right and stays: an empty
+// description is a task with nothing to do, and the server refuses it too
+// (`schedule.create`: "message: cannot be empty"). What was wrong was refusing
+// it in silence.
+//
+// So Save stays pressable and this is what a press finds. `field` is the ref key
+// to focus, because a sentence naming a field the user then has to hunt for is
+// half an answer — `null` for the reasons that are not a field (an already-saved
+// edit, an unreachable path).
+//
+// ORDER IS THE READING ORDER OF THE CARD: title, description, folder, time,
+// repeat. One reason at a time, the topmost — a form that lists everything wrong
+// at once reads as a scolding, and fixing the first often fixes the rest.
+export function saveBlockedReason(f: Parameters<typeof saveEnabled>[0]): {
+  text: string;
+  field: "title" | "message" | "target" | null;
+} | null {
+  if (f.replaced) {
+    return {
+      text: "This task is already saved — close the card and edit it again to change it.",
+      field: null,
+    };
+  }
+  if (f.title.trim() === "") {
+    return { text: "Give the task a name, so you can find it in the list.", field: "title" };
+  }
+  if (f.message.trim() === "") {
+    return { text: "Say what Claude should do — a task with no instructions has nothing to run.", field: "message" };
+  }
+  if (f.target.trim() === "") {
+    return { text: "Pick the folder or file this task runs against.", field: "target" };
+  }
+  // The path check has already written its own sentence into the field; naming
+  // it again in the banner would say the same thing twice.
+  if (f.pathError !== null) {
+    return { text: f.pathError, field: "target" };
+  }
+  if (f.repeatOn && f.repeat === "custom" && f.customRule === null) {
+    return { text: "Finish the custom repeat, or pick one of the presets.", field: null };
+  }
+  if (f.repeat === "cron" ? f.legacyCron === "" : !f.pickedOk) {
+    return { text: "Pick a date and a time for the first run.", field: null };
+  }
+  return null;
 }
 
 export default function NewJobModal({
@@ -1842,6 +1906,11 @@ export default function NewJobModal({
   // measure. Measured on every change because "auto then scrollHeight" is the
   // one reflow-safe way to shrink back when lines are deleted.
   const askRef = useRef<HTMLTextAreaElement>(null);
+  // Title is the third field a refused Save can send the caret to (see
+  // trySubmit); the ask has `askRef` above and the path already has `pathRef`.
+  // Refs rather than a querySelector, because the card is a portal and there can
+  // be a second one mid-exit-animation when a deep link swaps the entry.
+  const titleRef = useRef<HTMLInputElement>(null);
   const pathRef = useRef<HTMLInputElement>(null);
   // Escape-from-a-row hands focus back to the field WITHOUT reopening the
   // list it just dismissed — the input's onFocus otherwise undoes the close
@@ -2148,6 +2217,9 @@ export default function NewJobModal({
           sessionId: (!learnedSession && editing?.session_id) || chatSessionId || "",
           learnedSessionId: learnedSession,
           newTaskEachRun,
+          // The task's NUMBER has to survive the re-create an edit is; see
+          // `replacesEntryId`. Empty on a new task, which replaces nothing.
+          replacesEntryId: editing?.id ?? "",
         }),
       );
       rememberRecent(target);
@@ -2200,7 +2272,7 @@ export default function NewJobModal({
   const pastNote = pastNoteFor(pickedOk ? picked : null, repeatOn, rule, new Date());
 
   // See saveEnabled: both prose fields are required now, Title included.
-  const ready = saveEnabled({
+  const gate = {
     message,
     title,
     target,
@@ -2211,7 +2283,27 @@ export default function NewJobModal({
     legacyCron,
     pickedOk,
     replaced,
-  });
+  };
+  const ready = saveEnabled(gate);
+
+  // What a press does when the form is not ready. Save is NOT disabled on that
+  // any more — see saveBlockedReason for why a dead button was the wrong answer
+  // — so this is the press's whole job: say the first thing that is missing and
+  // put the caret in it. `setError` is the banner the submit failures already
+  // use, so there is one place on the card that says why nothing happened.
+  const trySubmit = () => {
+    const blocked = saveBlockedReason(gate);
+    if (!blocked) {
+      submit();
+      return;
+    }
+    setError(blocked.text);
+    const el = blocked.field === "title" ? titleRef.current
+      : blocked.field === "message" ? askRef.current
+        : blocked.field === "target" ? pathRef.current
+          : null;
+    el?.focus();
+  };
 
   return (
     <Modal
@@ -2251,8 +2343,20 @@ export default function NewJobModal({
               {backConfirm ? "Discard changes?" : "Back to chat"}
             </button>
           )}
+          {/* NOT disabled on `!ready`. A dead button is not a hint: the
+              commonest way to reach it is the commonest thing to forget (type a
+              name, press Save, leave the description empty) and the answer was
+              nothing at all — no message, no focus move, the card just sat there
+              (QA, 2026-08-18). The rules are unchanged; a press on a form that
+              cannot be saved now SAYS which field is missing and puts the caret
+              in it. See trySubmit / saveBlockedReason.
+
+              `aria-disabled` rather than `disabled` so the state is still
+              announced, while the button stays focusable and pressable — which
+              is the whole point. Only `busy` truly disables it: a second press
+              mid-save would schedule the message twice. */}
           <button type="button" className="btn btn-primary schedule-save"
-                  disabled={busy || !ready} onClick={submit}>
+                  disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
             {busy ? "Saving…" : "Save"}
           </button>
         </>
@@ -2296,6 +2400,7 @@ export default function NewJobModal({
             when it does not — see `.new-task-title` in new-task.css. */}
         <div className="new-task-write">
           <input
+            ref={titleRef}
             type="text"
             className="new-task-field new-task-title"
             aria-label="Title"

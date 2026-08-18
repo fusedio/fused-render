@@ -87,6 +87,7 @@ if "__file__" not in globals():
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from appenv import fused_cli_dir as _fused_cli_dir
 from appenv import skill_plugin_dir as _skill_plugin_dir
 from appenv import workspace_dir as _workspace_dir
 from private_dir import private_dir as _private_dir_under
@@ -469,6 +470,40 @@ def _plugin_argv() -> list:
     skills listed twice."""
     root = _skill_plugin_dir()
     return ["--plugin-dir", root] if root else []
+
+
+def _fused_cli_note() -> str:
+    """The prompt paragraph disclosing the `fused` CLI, or "" when the server
+    exported no wrapper (D334) — same rule as every other disclosure here: a
+    tool the model is never told about is a tool it never calls, and a prompt
+    promising a command the machine does not have is worse than silence.
+
+    Appended to EVERY target's prompt (file, app folder, ordinary folder)
+    rather than woven into each shape: the CLI is a fact about the machine,
+    not about the target. Three things it must say, each guarding a real
+    failure: run it as a BARE command (the `Bash(fused:*)` pre-allowance is a
+    prefix rule, so `cd x && fused ...` still raises a card — correct, but
+    surprising if unsaid); never run its login flows (they open a browser and
+    a headless session hangs on them); and never hand-push inside a canvas
+    clone (fused-render's own sync manager already pushes those folders, and
+    a second pusher races it)."""
+    if not _fused_cli_dir():
+        return ""
+    return (
+        " The `fused` CLI is on PATH: use it when the user asks to push, "
+        "pull or otherwise work with Fused (canvases, UDFs — e.g. `fused "
+        "workbench canvas push <dir> --canvas <name>`; see `fused --help`). "
+        "Run it as a plain `fused ...` command — that exact form is "
+        "pre-approved, while compound commands (`cd x && fused ...`) ask the "
+        "user first. It uses the user's existing Fused sign-in; NEVER run "
+        "`fused workbench login` or `fused cloud login` (they wait on a "
+        "browser round-trip that cannot complete here) — on an auth error, "
+        "ask the user to sign in from fused-render's Canvases page or a "
+        "terminal instead. Inside a canvas folder under ~/.fused-render/"
+        "canvases, fused-render may already be auto-pushing every edit: "
+        "there, just edit the files and let that sync push, rather than "
+        "running `canvas push` yourself."
+    )
 
 
 def _bad_id(value: str) -> bool:
@@ -1593,9 +1628,19 @@ def _start(file: str, message: str, session_id: str, model: str,
            #
            # Narrow by construction: one fully-qualified tool name and one
            # directory, and the prompt bridge stays wired for everything else.
+           #
+           #   Bash(fused:*) — the third pre-allowance, and the only Bash one
+           #     (D334). Present exactly when the server exported a `fused`
+           #     wrapper (appenv.fused_cli_dir), never as a bare guess about
+           #     PATH: the point is "push directly", and carding every push
+           #     would put a prompt on screen for the one command this app
+           #     itself runs on the user's behalf elsewhere (canvases.py). A
+           #     prefix rule, so only a command that IS `fused ...` matches —
+           #     compounds (`cd x && fused ...`) still card.
            "--allowed-tools",
            ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
-                     else []) + [_read_rule(SHOTS)])]
+                     else []) + [_read_rule(SHOTS)]
+                    + (["Bash(fused:*)"] if _fused_cli_dir() else []))]
     cmd += _plugin_argv()
     # BOTH targets get an --append-system-prompt here, and they get different
     # ones. A FILE target gets the scoping prompt. A DIRECTORY target that is an
@@ -1611,9 +1656,12 @@ def _start(file: str, message: str, session_id: str, model: str,
     # the two must NOT share is the DESCRIPTION of that pane: an app folder frames
     # the user's own app, a file frames fused-render's preview of their file. Each
     # prompt says which, so the model never mistakes our UI for the user's code.
+    # The fused CLI note rides every shape (file, app folder, ordinary
+    # folder) because it is a fact about the machine, not the target — and
+    # only when the wrapper actually exists (see _fused_cli_note).
     cmd += ["--append-system-prompt",
-            _split_system_prompt(file, pane) if os.path.isdir(file)
-            else _system_prompt(file)]
+            (_split_system_prompt(file, pane) if os.path.isdir(file)
+             else _system_prompt(file)) + _fused_cli_note()]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id:
@@ -1641,6 +1689,17 @@ def _start(file: str, message: str, session_id: str, model: str,
 
     stdin_path = os.path.join(run_dir, "stdin.jsonl")
     stdin_fh = open(stdin_path, "rb") if message_via_stdin else None
+    # The session must not inherit an ambient FUSED_ENV from the server's own
+    # process: the `fused` wrapper (fusedcli._wrapper_text) only DEFAULTS
+    # FUSED_ENV when unset, so a value already present here — say the server
+    # itself was launched from a shell that exports FUSED_ENV for unrelated
+    # reasons — would look exactly like a deliberate `FUSED_ENV=x fused ...`
+    # from the model and skip the workbench default, silently diverging from
+    # canvases.py's own runs (`_cli_env` always forces FUSED_ENV=WORKBENCH_ENV,
+    # ambient or not). Popping it here is what makes "unset" in the wrapper
+    # mean what the model actually typed on that command line.
+    spawn_env = os.environ.copy()
+    spawn_env.pop("FUSED_ENV", None)
     try:
         with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
              _private_open(os.path.join(run_dir, "err.log")) as err:
@@ -1651,6 +1710,7 @@ def _start(file: str, message: str, session_id: str, model: str,
             proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                     cwd=_workdir(file),
                                     stdin=stdin_fh or subprocess.DEVNULL,
+                                    env=spawn_env,
                                     **_DETACH)
     finally:
         if stdin_fh is not None:

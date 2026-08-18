@@ -24,8 +24,11 @@
 // render (`resolveSide`), carried across the shell's pushState navigation because
 // the URL carries it, and gone on a refresh because a bare URL opens at the
 // default again. The width follows the same policy in `lib/side-store.ts`, and
-// `_side` is stripped from the session sidecar at both ends (lib/session,
-// server/session.py) so no old sidecar can put the old behaviour back.
+// `_side` is stripped out of anything that persists a url (lib/session-params,
+// whose only consumer is now the recents store) so nothing can put the old
+// behaviour back. *The session sidecar that used to be the other consumer — and
+// the reason that strip exists at all — is gone with the per-file session restore
+// (D329), server-side `_strip_side` included.*
 //
 // THE TWO SOURCES, and the whole reason this module exists:
 //
@@ -358,10 +361,9 @@ export function resolveSide(req: SideRequest, split: SideSplit): string | null {
 // It exists because URLSearchParams was the writer and a round trip through it
 // RE-ENCODES what it merely passes through: `stretch=2,1471` came back as
 // `stretch=2%2C1471`, `sel=a b` as `sel=a+b`. Whatever this module returns is what
-// goes in the address bar AND what the session sidecar records, and LSN-2 says
-// that string is the shell's query verbatim — the same reason the session strip
-// itself is textual (platform/lib/session-params, server/session.py's
-// `_strip_side`). It used to be nearly unreachable, since the reconcile only fired
+// goes in the address bar AND what the recents store records, and a recorded query
+// is the shell's verbatim — the same reason the strip beside it is textual
+// (platform/lib/session-params). It used to be nearly unreachable, since the reconcile only fired
 // when `_side` disagreed; normalising the default away (`sideParam`) makes it fire
 // on ordinary links that were previously left alone — every `?_side=claude` inbox
 // handoff (shell/schedule-lib), every old bookmark — and on the first close of

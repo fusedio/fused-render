@@ -126,3 +126,19 @@
   margin-right: auto;
 }
 
+/* ARMED ✕ — the next press discards. The hint in the footer says it in words;
+   this says it at the corner the user actually pressed, which is the half that
+   was missing (QA, 2026-08-18: the first press "looked like a dead click").
+
+   Reads as WARM rather than destructive: discarding a draft is not deleting a
+   task, and borrowing the Delete button's filled --error treatment would
+   overstate it. The hover rule is repeated for the same reason it is on
+   `.new-task-delete.is-armed` — moving the mouse must not cool the state back
+   down while it is still live. */
+.deploy-close.is-armed,
+.deploy-close.is-armed:hover:not(:disabled) {
+  background: rgba(var(--warning-rgb), 0.16);
+  color: var(--warning);
+  border-radius: 4px;
+}
+
