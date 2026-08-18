@@ -75,3 +75,25 @@ export function withCaveat(count: string | null, caveat: IndexCaveat | null): st
   if (!caveat) return count;
   return count ? `${count} · ${caveat.note}` : caveat.note;
 }
+
+/**
+ * The caveat for a box that asks the server per query.
+ *
+ * Both search boxes assemble the same three inputs, and the assembly is where
+ * they got it wrong rather than in `indexCaveat` itself — which is why it is a
+ * function now instead of an expression repeated at two call sites with a
+ * test grepping for the word `pending`.
+ *
+ * `behind` — "these rows answer a different query, or an older generation of
+ * the tree" — is two situations wearing one name. While a request is in
+ * flight the next answer is ~40 ms away, and captioning that "not refreshed…
+ * clear the search and run it again" is corpus-staleness language for a round
+ * trip, printed exactly where the 200 ms rule withholds a spinner. Only rows
+ * that are STUCK are stale.
+ */
+export function searchCaveat(
+  status: IndexStatus | null | undefined,
+  state: { behind: boolean; pending: boolean; rescanPending: boolean },
+): IndexCaveat | null {
+  return indexCaveat(status, state.behind && !state.pending, state.rescanPending);
+}

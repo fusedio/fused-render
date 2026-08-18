@@ -1,6 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   HOME_RESULT_CAP,
   activeRow,
@@ -177,28 +175,6 @@ describe("submitRow over a failure with stale rows", () => {
   it("still commits a row the user pointed at", () => {
     const settled = rankingSettled(answer({ query: "read" }), "readme", false, true);
     expect(submitRow(3, 10, settled)).toBe(3);
-  });
-});
-
-describe("the caveat the home box shows", () => {
-  const SRC = readFileSync(join(import.meta.dir, "../FilesHome.tsx"), "utf8");
-
-  it("does not call an in-flight query stale", () => {
-    // `behind` means "the rows answer a different query", which during
-    // ordinary typing is just the next answer being 40ms away — and the
-    // caveat's words for it are about the FOLDER or the INDEX having changed
-    // ("clear the search and run it again"). Saying that on every keystroke
-    // also puts a word on screen exactly where the 200ms rule withholds a
-    // spinner. Only rows that are stuck are stale.
-    const call = SRC.slice(SRC.indexOf("const caveat ="), SRC.indexOf("const current ="));
-    expect(call).toContain("!pending");
-  });
-
-  it("says indexing… while a rescan this app triggered is outstanding", () => {
-    // Same helper, same words as the listing's chip — the two boxes make the
-    // same claim in the same way (listing/index-caveat).
-    const call = SRC.slice(SRC.indexOf("const caveat ="), SRC.indexOf("const current ="));
-    expect(call).toContain("indexRescanPending()");
   });
 });
 

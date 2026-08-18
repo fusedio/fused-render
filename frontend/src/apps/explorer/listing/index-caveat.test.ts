@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { indexCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
+import { indexCaveat, searchCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
 import type { IndexStatus } from "@platform/lib/api";
 
 function status(over: Partial<IndexStatus> = {}): IndexStatus {
@@ -86,5 +86,34 @@ describe("withCaveat", () => {
   it("leaves the count untouched when nothing is scanning", () => {
     expect(withCaveat("62 matches", null)).toBe("62 matches");
     expect(withCaveat(null, null)).toBeNull();
+  });
+});
+
+describe("searchCaveat", () => {
+  const state = (over: Partial<Parameters<typeof searchCaveat>[1]> = {}) => ({
+    behind: false, pending: false, rescanPending: false, ...over,
+  });
+
+  it("says nothing about a query that is merely in flight", () => {
+    // Every keystroke leaves the rows answering the previous query for a
+    // moment. Calling that "not refreshed — clear the search and run it
+    // again" is corpus-staleness language for a 40ms round trip, printed
+    // where the 200ms rule deliberately withholds even a spinner.
+    expect(searchCaveat(status({ scanning: false }), state({ behind: true, pending: true })))
+      .toBeNull();
+  });
+
+  it("says it once the rows are stuck", () => {
+    expect(searchCaveat(status({ scanning: false }), state({ behind: true }))!.note)
+      .toBe("not refreshed");
+  });
+
+  it("says indexing… for a rescan this app triggered", () => {
+    expect(searchCaveat(status({ scanning: false }), state({ rescanPending: true }))!.note)
+      .toBe("indexing…");
+  });
+
+  it("keeps quiet when there is nothing to say", () => {
+    expect(searchCaveat(status({ scanning: false }), state())).toBeNull();
   });
 });

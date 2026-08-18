@@ -330,11 +330,21 @@ keystroke-rate retry loop.
   the root it is given (`index-store.md`), so a folder-sized scan merges into the store.
 - `SCAN_DEBOUNCE_S` — the startup scheduler's own floor, not a second one — stops a
   folder that stays uncovered after a scan from being rescanned on the next keystroke.
-- **Mount-backed is refused first, before any kernel syscall on the path** —
-  `MountGuard.blocks` is string work against the mount records, and a stat
-  under a wedged rclone mount blocks the request thread indefinitely. Answering
-  `refused` a moment later is worth nothing if getting there hangs. The
-  device check below stats, so it is ordered after this one, at both doors.
+- **A path SPELLED under a mount is refused before this route stats it.**
+  `MountGuard.blocks` is a string prefix test against the mount records, and it
+  runs ahead of everything that touches the path, because a stat under a wedged
+  rclone mount blocks the request thread indefinitely — answering `refused` a
+  moment later is worth nothing if getting there hangs. Ordered the same way at
+  both doors (here and `index_touch._real_blocked`).
+
+  What that does NOT cover, stated because the ordering above invites the
+  stronger reading: `blocks` does not resolve symlinks, so a link whose TARGET
+  is inside a mount passes it, and the `foreign_device` stat below then follows
+  the link onto the mount. `blocks_root`'s `realpath` is what catches that case,
+  and it is reached later (inside `runner.start`) — but it is not a cheaper
+  answer either, since resolving the link touches the mount too. The exposure
+  is the same one every caller with a user-supplied path has always had; this
+  route does not add to it, and does not remove it.
 - **A scan root on a different filesystem than the user's home is refused**
   (`index_touch.foreign_device`). `MountGuard` only knows fused-render's own
   mounts dir, so a user's SMB/NFS volume at `/Volumes/share` is not

@@ -8,7 +8,7 @@ import { navigate, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
-import { indexCaveat } from "@apps/explorer/listing/index-caveat";
+import { searchCaveat } from "@apps/explorer/listing/index-caveat";
 import { getClaudeSessionFolders, getGitRepos, indexRank, statPath } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import {
@@ -555,7 +555,7 @@ export function FilesSearch({
   // poll catches the run nothing else would say so.
   const caveat =
     active && !showingAi
-      ? indexCaveat(indexScan, behind && !pending, indexRescanPending())
+      ? searchCaveat(indexScan, { behind, pending, rescanPending: indexRescanPending() })
       : null;
   const current = activeRow(highlight, hits.length, settled);
 

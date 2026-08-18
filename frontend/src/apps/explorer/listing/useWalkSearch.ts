@@ -87,6 +87,16 @@ function currentQuery(): string {
 // query is what lets the box never blank — see the header.
 interface RankAnswer {
   query: string;
+  /**
+   * The generation this answer was FETCHED under.
+   *
+   * It travels with the rows because a remembered answer is a snapshot: served
+   * back from the memo two watch bumps later, it is exactly as stale as the
+   * moment it was taken, and reading the caption off a counter that has since
+   * moved said "current" over rows that were not. The mirror of the case a
+   * completed scan makes, and the same lie in the other direction.
+   */
+  gen: number;
   hits: SearchHit[];
   truncated: boolean;
   total: number;
@@ -286,7 +296,10 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       covered: res.covered,
     });
     if (step === "walk") {
-      polls.current = 0;
+      // No `polls` reset here, deliberately: from this point `walkMode` is
+      // true, so the timer bails and nothing reads the count again — and the
+      // only way back is the [fsPath, pinned] reset, which zeroes it. A line
+      // that cannot change an outcome is a line that cannot be tested.
       setWalkMode(true);
       setPolling(false);
       return step;
@@ -333,6 +346,13 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       inflight.current?.abort();
       inflightKey.current = null;
       setPending(false);
+      // Closing the box ENDS the episode, like every other exit from one.
+      // Without this, escaping out of a search thirty ticks into a scan and
+      // reopening it while that scan still runs handed the next search the
+      // ticks the last one spent: it gave up early and pinned the folder to
+      // the walk (index-source's ceiling is per episode).
+      polls.current = 0;
+      setPolling(false);
       // Leaving search drops the answer. Keeping it would carry one search
       // session's rows into the next one's first frame under a query they
       // have nothing to do with — the never-blank rule is about a query being
@@ -347,6 +367,9 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     if (remembered) {
       inflight.current?.abort();
       inflightKey.current = null;
+      // The rows come back with their own generation, so the caption is about
+      // THESE rows rather than about the last request that happened to run.
+      answerGen.current = remembered.gen;
       setAnswer(remembered);
       setFailure("");
       setPending(false);
@@ -386,6 +409,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
           answerGen.current = genRef.current;
           const next: RankAnswer = {
             query: q,
+            gen: genRef.current,
             hits: hitsFromRank(res.hits, q),
             truncated: res.truncated,
             total: res.total,

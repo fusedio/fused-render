@@ -94,7 +94,7 @@ import { useSettledLead } from "@apps/explorer/listing/useSettledLead";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useIndexStatus } from "@platform/lib/index-status";
-import { indexCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
+import { searchCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
@@ -1531,7 +1531,11 @@ export default function Listing({
   // facts are about the same search, and one line says both. Which message
   // appears is a claim about how far the results can be trusted, so it lives
   // in a pure, tested helper (listing/index-caveat).
-  const caveat = searching ? indexCaveat(indexScan, behind, rescanPending) : null;
+  // `pending` is the listing's `scanPending`: an answer is on its way, which
+  // is not the same claim as the rows being stuck (listing/index-caveat).
+  const caveat = searching
+    ? searchCaveat(indexScan, { behind, pending: scanPending, rescanPending })
+    : null;
   if (caveat) {
     searchCount = withCaveat(searchCount, caveat);
     searchCountFull = caveat.title;

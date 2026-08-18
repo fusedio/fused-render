@@ -234,6 +234,73 @@ describe("running out of patience with a scan", () => {
   });
 });
 
+describe("closing the box mid-scan", () => {
+  test("does not carry spent patience into the next search", async () => {
+    // Escape out of a search partway through a scan, reopen it while the same
+    // scan is still running, and the second search used to inherit the first
+    // one's ticks: it gave up early and pinned an uncovered folder to the
+    // walk. Every other exit from a polling episode resets; this one didn't.
+    const box = await search("widget");
+    await flush(() => rankCalls[0].reply.resolve(
+      answer({ covered: false, reason: "uncovered" })));
+    for (let i = 0; i < 50; i++) {
+      await flush(() => clock.advance(SCAN_POLL_MS));
+      const last = rankCalls[rankCalls.length - 1];
+      await flush(() => last.reply.resolve(answer({ covered: false, reason: "scanning" })));
+    }
+    expect(walkCalls).toEqual([]);
+
+    await flush(() => box.current().setQuery(""));   // Escape
+    await flush(() => box.current().setQuery("widget")); // and back
+    await flush(() => clock.advance(200));
+
+    // A fresh episode: 35 more ticks is nowhere near a ceiling of 80, but it
+    // was past one that started at 50.
+    for (let i = 0; i < 35; i++) {
+      await flush(() => clock.advance(SCAN_POLL_MS));
+      const last = rankCalls[rankCalls.length - 1];
+      await flush(() => last.reply.resolve(answer({ covered: false, reason: "scanning" })));
+    }
+    expect(walkCalls).toEqual([]);
+    box.unmount();
+  });
+});
+
+describe("an answer served from the memo", () => {
+  test("is captioned by the generation it was FETCHED under", async () => {
+    // The mirror of the completed-scan case. A remembered answer is a
+    // snapshot: serving it back without restoring its generation left the
+    // caption saying "current" over rows fetched two watch bumps ago —
+    // suppressing "not refreshed" exactly when it is true.
+    const box = await search("alpha");
+    await flush(() => rankCalls[0].reply.resolve(
+      answer({ hits: [hit("alpha.md")], total: 1 })));
+    expect(box.current().behind).toBe(false);
+
+    // the folder changes under the search; the box deliberately does not
+    // refetch (listing/revalidate) and says so
+    box.rerender("/d", 2);
+    await flush(() => {});
+    expect(box.current().behind).toBe(true);
+
+    // a different query is asked and answered at the NEW generation
+    await flush(() => box.current().setQuery("zeta"));
+    await flush(() => clock.advance(200));
+    await flush(() => rankCalls[rankCalls.length - 1].reply.resolve(
+      answer({ hits: [hit("zeta.md")], total: 1 })));
+    expect(box.current().behind).toBe(false);
+
+    // ...and now back to the memoised one, whose rows are the OLD generation
+    const asked = rankCalls.length;
+    await flush(() => box.current().setQuery("alpha"));
+    await flush(() => clock.advance(200));
+    expect(rankCalls.length).toBe(asked); // answered from memory, as intended
+    expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["alpha.md"]);
+    expect(box.current().behind).toBe(true);
+    box.unmount();
+  });
+});
+
 describe("a completed scan", () => {
   test("re-asks, so the answer on screen is never captioned stale", async () => {
     const box = await search("widget");

@@ -1455,10 +1455,7 @@ def _note_index_mutation(result, *paths: str | None) -> None:
     """
     if getattr(result, "status_code", 200) != 200:
         return
-    named = [p for p in paths if isinstance(p, str) and p]
-    if not named:
-        return
-    note_index_mutation(*named)
+    note_index_mutation(*paths)
 
 
 # Every mutation endpoint invalidates the /api/fs/stat cache for the paths it
@@ -1489,7 +1486,8 @@ def api_fs_write(request: Request, body: dict = Body(...),
     # `wrote["created"]`, never the `create` flag: that one means "409 rather
     # than clobber", and the documented page pattern
     # `fused.writeFile("out.csv", data)` leaves it unset while creating a file.
-    _note_index_mutation(result, body.get("path") if wrote.get("created") else None)
+    if wrote.get("created"):
+        _note_index_mutation(result, body.get("path"))
     # ...and tell the CLIENT the same thing. Its "indexing…" caption is a claim
     # about a rescan the server may or may not have scheduled, and without this
     # it has to guess: every overwrite claimed a rescan for a minute, which
