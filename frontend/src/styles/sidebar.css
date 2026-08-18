@@ -254,6 +254,15 @@ a.sidebar-rail-btn {
 
 .sidebar-item .icon {
   opacity: 0.85;
+  /* Anchors a dot the row wears ON its glyph (NavItem's `extra` — the Tasks
+     pulse dot). Without a positioned ancestor an absolutely-placed dot resolves
+     against the viewport and overflows the page by its own offset, which costs a
+     scrollbar in each axis — the bug account.css records for the Settings dot,
+     and the same reason .sidebar-rail-btn is relative. `inline-flex` so the span
+     is the glyph's own box: as an inline box its line-height would sit the
+     bottom edge below the svg and drop the dot off-centre. */
+  position: relative;
+  display: inline-flex;
 }
 
 /* -- The trailing slot on a nav row -------------------------------------------
@@ -388,16 +397,19 @@ a.sidebar-rail-btn {
   }
 }
 
-/* -- The collapsed rail's dot --------------------------------------------------
-   The rail has no label, so the entry's whole signal is one 7px dot in the
-   icon's top-right corner. Same shape as the Settings row's resident-model dot
-   (.account-signedin-dot, account.css) — a dot on a nav icon means "there is
-   something behind this" everywhere in this sidebar — and the same border-hole
-   trick, so the mark reads as sitting ON the glyph rather than merging with it.
+/* -- The Tasks entry's dot -----------------------------------------------------
+   One 7px dot in the icon's top-right corner, worn in BOTH sidebar modes (the
+   class keeps its `rail` name because that is where it started). Same shape as
+   the Settings row's resident-model dot (.account-signedin-dot, account.css) —
+   a dot on a nav icon means "there is something behind this" everywhere in this
+   sidebar — and the same border-hole trick, so the mark reads as sitting ON the
+   glyph rather than merging with it.
 
-   Positioned against the 28px button, not the 16px glyph: the icon has no box
-   of its own here (the rail renders the owner's svg directly), and 5px in from
-   the button's corner IS the glyph's corner. */
+   The offsets below are the RAIL's: positioned against the 28px button, not the
+   16px glyph, because the icon has no box of its own there (the rail renders the
+   owner's svg directly) and 4px in from the button's corner IS the glyph's
+   corner. The expanded row, whose .icon span IS the glyph's box, re-places it
+   just below. */
 .sidebar-rail-btn {
   position: relative;
 }
@@ -411,6 +423,15 @@ a.sidebar-rail-btn {
   border-radius: 50%;
   border: 1px solid var(--bg);
   box-sizing: content-box;
+}
+
+/* On the expanded row the anchor is the glyph itself, so the same dot needs the
+   Settings dot's offsets — hanging just off the top-right corner rather than
+   inset from a button that is not there. */
+.sidebar-item .icon > .sidebar-rail-dot {
+  top: -2px;
+  right: -3px;
+  border-color: var(--bg-alt);
 }
 
 /* The two states, in the status ring's own hues (schedule.css): yellow while
