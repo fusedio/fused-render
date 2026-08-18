@@ -739,6 +739,14 @@ def test_fix_lock_serializes_concurrent_spawn_attempts(harness, monkeypatch):
     _fail_push_with_validation(harness, monkeypatch)
     entered = threading.Event()
     release = threading.Event()
+    # Held open until after both calls have returned: record_session_when_ready
+    # clears active_fix_run_id with no lock of its own (it doesn't need one —
+    # clearing isn't a compound check-then-act), so a stub that returns
+    # instantly can race the second thread's read of active_fix_run_id and
+    # make THIS TEST flaky, independent of whether fix_lock itself is correct.
+    # A real recorder never returns this fast (it polls every 2s), so holding
+    # it open here just removes a timing accident the stub introduced.
+    recorder_release = threading.Event()
     calls = []
 
     def _slow_spawn(target, prompt, mode, session_id=""):
@@ -749,7 +757,9 @@ def test_fix_lock_serializes_concurrent_spawn_attempts(harness, monkeypatch):
 
     monkeypatch.setattr(claude_spawn, "spawn_helper", _slow_spawn)
     monkeypatch.setattr(claude_spawn, "load_agent", lambda: object())
-    monkeypatch.setattr(claude_spawn, "record_session_when_ready", lambda agent, run_id: None)
+    monkeypatch.setattr(
+        claude_spawn, "record_session_when_ready",
+        lambda agent, run_id: recorder_release.wait(5))
 
     results = {}
 
@@ -771,6 +781,7 @@ def test_fix_lock_serializes_concurrent_spawn_attempts(harness, monkeypatch):
     assert len(calls) == 1, "a second spawn ran before the first released the lock"
     assert isinstance(results["a"], dict) and results["a"]["ok"] is True
     assert results["b"].status_code == 409
+    recorder_release.set()
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
