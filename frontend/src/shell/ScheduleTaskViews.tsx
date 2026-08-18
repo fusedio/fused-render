@@ -63,11 +63,12 @@ import {
   messageHref,
   messageTone,
   messageWhenTitle,
+  openMessageHref,
   openThreadIntent,
+  opensElsewhere,
   projectOptions,
   relativeWhen,
   settleMarkAllRead,
-  soleMessage,
   spansProjects,
   taskColumn,
   taskRunIntent,
@@ -1022,13 +1023,9 @@ function TaskNode({
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
   // (the lane, and whether its next run has already gone by).
   const ahead = isUpcomingTask(task);
-  // The one message a LEAF row is about, and therefore what its click opens —
-  // see `activate` below. Null on a task that has never run, which is the case
-  // that must stay inert. tasks-lib.soleMessage holds both halves of that.
-  const sole = soleMessage(task, held);
-  // The scheduled run a ONE-MESSAGE UPCOMING row's press edits, ahead of opening
-  // that message, because the instruction that has not run yet is the only content
-  // such a row has. tasks-lib.upcomingEditEntry owns all three conditions — the
+  // The scheduled run a ONE-MESSAGE UPCOMING row's press edits when it has no
+  // conversation to open instead, because the instruction that has not run yet is
+  // the only content such a row has. tasks-lib.upcomingEditEntry owns all three conditions — the
   // lane, the one message, and which entry — and it is asked of `held`, the same
   // list `sole` is. Gated on `onEditEntry` here because without it there is no form
   // to open (a thread with no edit affordance is read-only), and then the press
@@ -1233,87 +1230,77 @@ function TaskNode({
 
   /**
    * The task ROW's own gesture — one function, so the mouse and the keyboard
-   * cannot drift apart (Enter and Space run exactly this).
+   * cannot drift apart (Enter and Space, and the stretched link's plain click,
+   * all run exactly this).
    *
-   * Four rows, four meanings, and the split is the row's own shape:
+   * ONE MEANING NOW, AND IT IS "OPEN IT" (Akshil, 2026-08-18): a press anywhere
+   * on the row goes to the conversation, at the END of the chat. The accordion
+   * used to be this function's first arm, which made the commonest row on the
+   * page — a task with a thread — the one row whose click did NOT open the thing
+   * it names; expanding is the chevron's job now, and the chevron's gutter is
+   * wide enough to aim at (see the caret below, and tasks.css).
    *
-   *   * an ACCORDION (more than one message) toggles, and opens nothing. That is
-   *     unchanged and deliberately so: expanding a row shows the reader nothing,
-   *     so a press that also cleared its unread would clear news nobody has seen.
-   *     Opening the conversation stays the explicit Open chat action's job. It is
-   *     FIRST, so a repeating task with past runs keeps its accordion whatever its
-   *     lane — the chevron never has to become a control of its own, and one click
-   *     can never both expand a row and open a form.
-   *   * an UPCOMING LEAF (exactly one message, and it has not run) opens THE EDIT
-   *     FORM on that scheduled run, ahead of opening the message, because the
-   *     instruction is the only content such a row has (Akshil, 2026-08-17: "when i
-   *     click on upcoming tasks i think they should open up the edit modal... only
-   *     for 1 message tasks"). tasks-lib.upcomingEditEntry holds every condition;
-   *     the form is reached through `onEditEntry`, the same callback the thread's
-   *     own Edit button and the calendar popover spend, so there is no second way
-   *     in. Null when the entry cannot be resolved, and then the press falls
-   *     through to the arm below rather than opening a blank form.
-   *   * any other LEAF (exactly one message) opens THAT MESSAGE, through
-   *     openMessage above — the identical call a click on the message row makes.
-   *     The row with nothing to expand IS that message, so "open it" is the only
-   *     thing its press can mean, and it was doing nothing at all until now
-   *     (Akshil, 2026-08-17). The url is not recomputed here; messageHref stays the
-   *     one place a message's address is built.
-   *   * a row with NO message but a SESSION opens the thread, through openChat
-   *     above — the same intent (openThreadIntent) and the same performer the now
-   *     hidden Open chat button spends, so there is still exactly one way to
-   *     address a thread. It is the minority of these rows and it is real: a
-   *     hand-written fixture transcript, or a session whose only user records were
-   *     slash-command envelopes (`/clear`, `/making-a-release`), which still has
-   *     assistant turns worth reading. It fell through both arms above and did
-   *     nothing at all, on a row that looked pressable — the complaint (Akshil,
-   *     2026-08-17: "the (untitled) aren't clickable").
+   * Two arms are left, and the split is what the row HAS:
    *
-   * WHICH MEANS THE LEAF PRESS CLEARS THAT MESSAGE'S UNREAD, and that is the
-   * point rather than an exception to the rule above: the reader is being shown
-   * the message, and it is the same one press on the same message through the same
-   * function, so a dot surviving it would be a dot the click did not honour. What
-   * it does NOT do is mark the whole task — openMessage marks one message, which
-   * on a one-message task happens to be all of it and on nothing else ever will
-   * be.
+   *   * a row with a SESSION opens its thread, through openChat above — the same
+   *     intent (openThreadIntent) and the same performer the Board card spends,
+   *     so there is exactly one way to address a thread and one answer about what
+   *     opening it marks. No `msg=` anchor, deliberately: the row is the whole
+   *     task, so the turn it means is the latest one, which is where a chat opens
+   *     by itself. A MESSAGE row is what addresses one turn, and it still does.
+   *   * a row with NO session opens THE EDIT FORM on its scheduled run, when it
+   *     has one (tasks-lib.upcomingEditEntry — the lane, exactly one message, and
+   *     which entry). Such a row has no conversation to open and its whole content
+   *     is an instruction that has not run yet, so the form is the only thing its
+   *     press could honestly mean (Akshil, 2026-08-17: "when i click on upcoming
+   *     tasks i think they should open up the edit modal... only for 1 message
+   *     tasks"). Reached through `onEditEntry`, the same callback the thread's own
+   *     Edit button and the calendar popover spend.
    *
-   * THE ZERO-MESSAGE PRESS MARKS NOTHING, and not as a special case either: there
-   * is no message to mark, so `unread` is 0 (taskUnread: with the whole thread in
-   * hand — all none of it — the count IS the dots, counted), and the intel it was
-   * asked with therefore carries markRead: false. performOpen's mark is behind
-   * that flag, so this arm navigates and writes nothing.
+   * There is no third arm for the LEAF-with-a-session that used to open its one
+   * message: `chat` covers it, and one message is the whole chat anyway.
    *
-   * A task with no session at all (a `pending:<entry>` that has never run) has no
-   * `sole` AND no `chat`, so the press still does nothing — openThreadIntent's
-   * documented null case, there being no conversation to open. Such a row does not
-   * ADVERTISE a press either: see `pressable` below.
+   * A task with no session AND no resolvable entry (a `pending:<entry>` an older
+   * server sent no next-run fields for) still does nothing, and does not
+   * ADVERTISE a press either — see `pressable` below.
    *
    * NOTHING IS MARKED READ ON THE EDIT ARM: the message it opens the form for has
-   * not gone out, so there is nothing there to have seen.
+   * not gone out, so there is nothing there to have seen. The chat arm's mark is
+   * openThreadIntent's decision, not this function's.
    */
   const activate = () => {
-    if (expandable) onToggle();
+    if (chat) openChat(chat);
     else if (edit) onEditEntry?.(edit);
-    else if (sole) openMessage(sole);
-    else if (chat) openChat(chat);
   };
 
   /**
-   * Does this row's press DO anything — and therefore, may the row claim to be a
-   * button at all?
+   * WHERE the row's press goes, as a URL — or null when the press opens a modal
+   * (the edit arm) and there is nowhere to link to.
    *
-   * The arms of `activate`, so the affordance cannot drift from the behaviour: the
-   * row is a button when it has a disclosure, a message to open, or a thread to
-   * open. The edit arm is deliberately absent, and that is not a gap — it is a
-   * NARROWING of the leaf arm (upcomingEditEntry requires soleMessage), so it can
-   * never make a row pressable that `sole` did not already.
-   *
-   * What is left is the never-run `pending:<entry>` row with nothing in hand, which
-   * carried `role="button"`, a tab stop, a hover tint and a pointer cursor while
-   * doing nothing on press — the same broken promise the zero-message arm above
-   * just fixed, one layer down. So an inert row is inert in what it says too.
+   * This is what makes ⌘-click, middle click and "Open in new tab" work: the row
+   * draws a real `<a href>` stretched over itself (`.tasks-rowlink`) rather than
+   * hanging a click handler on a div, so every one of those gestures is the
+   * browser's own behaviour and none of them is reimplemented here. The plain
+   * click is the only one this page intercepts — see the handler, and
+   * tasks-lib.opensElsewhere for the rule it asks.
    */
-  const pressable = expandable || sole !== null || chat !== null;
+  const href = chat?.href ?? null;
+
+  /**
+   * Does this row's press DO anything — and therefore, may the row claim to be a
+   * control at all?
+   *
+   * The arms of `activate`, so the affordance cannot drift from the behaviour. A
+   * never-run `pending:<entry>` row with no resolvable entry carried
+   * `role="button"`, a tab stop, a hover tint and a pointer cursor while doing
+   * nothing on press; an inert row is inert in what it says too.
+   *
+   * `expandable` is deliberately NOT here any more. A row whose only affordance is
+   * its disclosure gets that affordance from the chevron, which is a real button
+   * with its own tab stop — the row itself stays inert, and pointing at it would
+   * be a promise the row's own press no longer keeps.
+   */
+  const pressable = href !== null || edit !== null;
 
   const cancel = async (m: TaskMessage, entryId: string) => {
     setCancelling(m.message_id);
@@ -1340,34 +1327,28 @@ function TaskNode({
     <div className="tasks-node">
       <div
         className={"tasks-row" + (open ? " is-open" : "") + (pressable ? "" : " is-inert")}
-        // Only a row whose press DOES something says it is a button, takes a tab
-        // stop, or lights up under the pointer (`is-inert` above turns the cursor
-        // and the hover tint off). `undefined` rather than "presentation"/-1: the
-        // row is still a real, readable line of the list — it just is not a
-        // control. See `pressable`.
-        role={pressable ? "button" : undefined}
-        tabIndex={pressable ? 0 : undefined}
-        // Only a row that HAS a disclosure claims one. `undefined` rather than
-        // `false`: false says "collapsed, press to expand", which is a promise a
-        // one-message row cannot keep. It is still the ROW's own, and stays that
-        // way because the accordion is `activate`'s first arm — no lane takes the
-        // toggle off a multi-message row, so the chevron never has to become a
-        // control of its own.
-        aria-expanded={expandable ? open : undefined}
+        // The row is a CONTAINER now, not a control: when it has somewhere to go
+        // the stretched `<a>` below is the button, the tab stop and the
+        // accessible name, and hanging a second role and a second tab stop on
+        // this div would give every row two of each. The EDIT arm has no href —
+        // it opens a modal — so that one row keeps the old role/tabIndex/keydown
+        // treatment, and `pressable` still decides whether anything at all is
+        // claimed (`is-inert` turns the cursor and the hover tint off).
+        role={pressable && !href ? "button" : undefined}
+        tabIndex={pressable && !href ? 0 : undefined}
         title={task.title}
-        // One handler for both ways in, so the keyboard and the pointer cannot
-        // mean different things: `activate` above toggles an accordion, opens an
-        // upcoming leaf's edit form, opens any other leaf's single message, and
-        // opens a message-less row's thread. It still never opens a MULTI-message
-        // task's conversation — that is the Open chat action's job, and the reason
-        // is written where the meanings are decided.
-        onClick={activate}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            activate();
-          }
-        }}
+        onClick={href ? undefined : pressable ? activate : undefined}
+        onKeyDown={
+          href
+            ? undefined
+            : (e) => {
+                if (!pressable) return;
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  activate();
+                }
+              }
+        }
       >
         {/* The disclosure gutter is drawn WHETHER OR NOT there is a chevron in it.
             `--tasks-caret-w` is the first term of `--tasks-rail-x`, which every
@@ -1377,14 +1358,62 @@ function TaskNode({
             neighbours' and turn a column of rings into a zigzag. So the box stays
             and only the glyph goes.
 
-            IT IS DECORATION AND STAYS DECORATION — no role, no tab stop, no handler
-            of its own — because the accordion is `activate`'s FIRST arm: every
-            expandable row toggles on its own press whatever its lane, so a click on
-            the chevron bubbles to the row and toggles exactly once. There is no
-            second press here to double-fire, and nothing to stopPropagation. */}
-        <span className={"tasks-caret" + (open ? " is-open" : "")} aria-hidden>
-          {expandable ? ICON_CHEVRON : null}
-        </span>
+            IT IS THE ONLY WAY TO EXPAND A ROW, since 2026-08-18 — the row's own
+            press opens the conversation now (see `activate`). So it is a real
+            button with a real label, and its HIT ZONE is far bigger than its ink:
+            tasks.css grows it to the row's full height and out to the row's
+            leading edge with padding, and takes the growth back out of the layout
+            with matching negative margins, so nothing moves by a pixel and there
+            is no thin 16px target to aim at. It also sits ABOVE the stretched row
+            link, which is what keeps the two zones apart: gutter expands,
+            everything else opens. `stopPropagation` is belt and braces — the link
+            is a sibling, not an ancestor — and costs nothing.
+
+            The rotation is on the inner glyph, not the button: see tasks.css. */}
+        {expandable ? (
+          <button
+            type="button"
+            className="tasks-caret"
+            aria-expanded={open}
+            aria-label={open ? "Collapse messages" : "Expand messages"}
+            title={open ? "Collapse messages" : "Expand messages"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle();
+            }}
+          >
+            <span className={"tasks-caret-glyph" + (open ? " is-open" : "")} aria-hidden>
+              {ICON_CHEVRON}
+            </span>
+          </button>
+        ) : (
+          <span className="tasks-caret" aria-hidden />
+        )}
+        {/* The row's navigation, as a real link stretched over the whole row
+            (tasks.css `.tasks-rowlink`). Empty on purpose: it carries the href,
+            the tab stop and the accessible name, and the row's own children carry
+            every pixel of ink.
+
+            A MODIFIED press is left entirely alone — no preventDefault, no SPA
+            navigation, and NO READ MARK: ⌘-click means "open that in a tab for
+            later", and clearing the badge for a conversation nobody has looked at
+            yet is exactly the thing a background open must not do. The plain click
+            is the only one intercepted, and it spends `activate` — the same
+            function Enter spends on the edit-arm row above, so no gesture on this
+            page has a private meaning. */}
+        {href && (
+          <a
+            className="tasks-rowlink"
+            href={href}
+            title={task.title}
+            aria-label={label}
+            onClick={(e) => {
+              if (opensElsewhere(e)) return;
+              e.preventDefault();
+              activate();
+            }}
+          />
+        )}
         {/* The ring opens the row, and it stands in the column every task row's
             ring stands in (tasks.css `--tasks-rail-x`), which is also the column
             the thread below is measured from — its own rings hang exactly one ring
@@ -1598,26 +1627,57 @@ function TaskNode({
             // press (pressMessage) and the pencil below, so the quiet action and
             // the whole-row gesture cannot disagree about which rows are editable.
             const fix = onEditEntry ? messageEditEntry(m) : null;
+            // Where this row's press GOES, or null when it opens the edit form
+            // instead (the `fix` arm) or has nowhere to go at all — a projected
+            // occurrence is cron arithmetic and addresses no turn
+            // (tasks-lib.openMessageHref). Non-null is what turns the row into a
+            // real link, and therefore what makes ⌘-click open it in a tab.
+            const to = fix ? null : openMessageHref(task, m);
             const busy = cancelling === m.message_id;
             const why = cancelErrors[m.message_id];
             return (
               <Fragment key={m.message_id}>
                 <div
                   className={"tasks-msg" + (isNew ? " is-unread" : "")}
-                  role="button"
-                  tabIndex={0}
+                  // Same division as the task row above: a row that LINKS puts its
+                  // role, tab stop and name on the stretched `<a>`, and only a row
+                  // that opens a modal keeps them here.
+                  role={to ? undefined : "button"}
+                  tabIndex={to ? undefined : 0}
                   title={m.body}
                   // One handler for both ways in, the same rule the task row obeys:
                   // `pressMessage` opens the form on a message that has not gone out
                   // and the transcript turn on one that has.
-                  onClick={() => pressMessage(m)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      pressMessage(m);
-                    }
-                  }}
+                  onClick={to ? undefined : () => pressMessage(m)}
+                  onKeyDown={
+                    to
+                      ? undefined
+                      : (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            pressMessage(m);
+                          }
+                        }
+                  }
                 >
+                  {/* The message row's own stretched link — its turn in the
+                      transcript, `msg=` anchor and all, so ⌘-click stacks a turn
+                      up in a tab and a plain click scrolls this one open exactly
+                      as it always did. The modified press marks nothing, for the
+                      reason written on the task row's link. */}
+                  {to && (
+                    <a
+                      className="tasks-rowlink"
+                      href={to}
+                      title={m.body}
+                      aria-label={firstLine(m.body) || "(empty)"}
+                      onClick={(e) => {
+                        if (opensElsewhere(e)) return;
+                        e.preventDefault();
+                        pressMessage(m);
+                      }}
+                    />
+                  )}
                   {/* The leaf's ring, and its unread mark: filled centre while
                       this one message is unread, hollow once it has been opened
                       — the same glyph the task row above it wears over the whole

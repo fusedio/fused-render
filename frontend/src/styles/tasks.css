@@ -106,6 +106,11 @@
   font-size: 13px;
   cursor: pointer;
   transition: background-color 0.08s ease;
+  /* What `.tasks-rowlink` below is measured against. The row's navigation is a
+     real <a> stretched over the whole row rather than a click handler on this
+     div, so ⌘-click, middle click and "Open in new tab" are the browser's job
+     and not this page's. */
+  position: relative;
 }
 
 .tasks-row:hover {
@@ -131,21 +136,116 @@
   background: rgba(var(--tint), 0.04);
 }
 
-.tasks-caret {
+/* THE DISCLOSURE, AND ITS HITBOX — which is much bigger than it looks, on
+   purpose (2026-08-18).
+
+   The chevron is the ONLY way to expand a row now (the row's own press opens the
+   conversation), so a 16px glyph became a control a person has to aim at. It
+   still LOOKS like a 16px glyph in exactly the same place: the padding below
+   grows the hit area up to the row's full height and left to the row's own
+   edge, and the negative margins take that growth straight back out of the
+   layout, so the element still contributes exactly `--tasks-caret-w` to the flex
+   row and every rail measured from it (see the geometry block at the top) is
+   untouched. `content-box` is what makes that true — `flex-basis` then sizes the
+   CONTENT box and the padding rides outside it.
+
+   The pair cancels exactly: padding-left `--tasks-row-pad` against margin-left
+   `-(--tasks-row-pad)`, padding-right half a gap against the same negative, and
+   7px of vertical padding against -7px of margin (the row's own vertical
+   padding, so the zone is the row's full height and no taller).
+
+   Written twice, `.prefs-section` scope included, for house rule 2 at the top of
+   this file: `.prefs-section button` (0,1,1) repaints any unarmoured button on
+   this page with a bordered pill and outranks a bare `.tasks-caret` (0,1,0), so
+   the chevron would come up padded, boxed and left-aligned — and would grow a
+   pill on hover — the moment it stopped being a span. Same treatment `.tasks-act`
+   already gets. */
+.tasks-caret,
+.prefs-section .tasks-caret {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  box-sizing: content-box;
   width: var(--tasks-caret-w);
   height: var(--tasks-caret-w);
   flex: 0 0 var(--tasks-caret-w);
+  padding: 7px calc(var(--tasks-row-gap) / 2) 7px var(--tasks-row-pad);
+  margin: -7px calc(var(--tasks-row-gap) / -2) -7px calc(var(--tasks-row-pad) * -1);
   color: var(--fg-muted);
+  background: none;
+  border: 0;
+  /* Above the stretched row link, so the leading gutter EXPANDS and everything
+     else NAVIGATES — two zones, no overlap a person could land in by accident. */
+  position: relative;
+  z-index: 2;
+}
+
+/* Only the expandable row's caret is a real button; the rest is an empty box
+   holding the gutter open (see the note at its call site). */
+button.tasks-caret,
+.prefs-section button.tasks-caret {
+  cursor: pointer;
+  align-self: center;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+/* NO HOVER SKIN. `.prefs-section button:hover` fills and outlines every button on
+   this page, which on a 16px chevron reads as a second control appearing under
+   the pointer — and the row's own hover tint is already the feedback. The zone is
+   felt, not seen: that is the whole design of it. */
+.prefs-section button.tasks-caret:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
+}
+
+/* The rotation is on the GLYPH, not on the button: the button's box is now the
+   whole hit zone, and rotating that would swing the chevron around the zone's
+   centre instead of its own and slide it visibly left. */
+.tasks-caret-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   /* transform, not `all`: the row's background is transitioning too, and one
      rule owning both smears the caret on hover. */
   transition: transform 0.12s ease;
 }
 
-.tasks-caret.is-open {
+.tasks-caret-glyph.is-open {
   transform: rotate(90deg);
+}
+
+/* THE ROW'S NAVIGATION, as a real link stretched over the row.
+
+   Invisible and empty — it carries no ink, only the href, the tab stop and the
+   accessible name — so the row's own children are what a reader sees and this is
+   what a reader presses. It sits UNDER the caret and the hover actions (both
+   `z-index: 2`), which is the whole zoning rule: the leading gutter expands, the
+   action buttons act, and every other pixel of the row opens the conversation.
+
+   `z-index: 1` rather than 0, deliberately: the status ring is itself positioned
+   (it hangs an `::after` centre dot off itself) and comes LATER in the row, so an
+   auto-stacked link would paint under it and leave a 16px hole in the middle of
+   the row where the click did nothing.
+
+   Why a link at all: ⌘-click, middle click, and the context menu's "Open in new
+   tab" are then the browser's behaviour rather than something this page has to
+   reimplement — and the one thing the click handler does is stand aside when the
+   press was modified (tasks-lib.opensElsewhere). */
+.tasks-rowlink {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  /* A link with no text still must not be underlined or tinted if it ever
+     inherits a rule from elsewhere. */
+  text-decoration: none;
+  color: inherit;
+}
+
+.tasks-rowlink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
 }
 
 .tasks-title {
@@ -379,6 +479,10 @@
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+  /* Above the row's stretched link, or the link would eat the press and every
+     one of these buttons would navigate instead of acting. */
+  position: relative;
+  z-index: 2;
 }
 
 .tasks-row:hover .tasks-act,
@@ -620,6 +724,9 @@
   font-size: 12.5px;
   cursor: pointer;
   transition: background-color 0.08s ease;
+  /* Same stretched-link treatment as the task row above: a message row is a
+     real link to its own turn in the transcript, so ⌘-click opens it in a tab. */
+  position: relative;
 }
 
 .tasks-msg:hover {
