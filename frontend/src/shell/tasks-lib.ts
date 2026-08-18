@@ -2280,30 +2280,24 @@ export function groupByColumn(
 // A lane is either an open column or a 52px rail. Two things decide which, in
 // this order:
 //
-//   1. AN EMPTY LANE IS ALWAYS ROLLED UP. Not a default — a rule, and it
-//      outranks the reader's own choice for as long as the lane holds nothing.
-//   2. Otherwise: whatever the reader last chose for THAT lane. Explicit choices
-//      are the only thing stored, so a lane nobody has ever touched keeps
-//      following the rule below forever rather than being frozen at whatever it
-//      looked like the first time the page was opened.
-//   3. Otherwise: open.
+//   1. What the reader last chose for THAT lane. Explicit choices are the only
+//      thing stored, so a lane nobody has ever touched keeps following the rule
+//      below forever rather than being frozen at whatever it looked like the
+//      first time the page was opened.
+//   2. Otherwise: EMPTY lanes start rolled up, everything else starts open.
 //
-// Rule 1 was rule 2's tie-breaker until 2026-08-18 — empty lanes STARTED rolled
-// up, and an expand the reader had chosen back when the lane had cards in it
-// kept it open after the last one left. What that bought was an empty outline
-// the width of a column, with a header and a `0` over it, sitting between two
-// lanes that had work in them; four of those and the board was mostly furniture
-// (Akshil, screenshot). An empty column has nothing to show and nothing to read,
-// so the honest width for it is the rail's 52px.
-//
-// The choice is REMEMBERED, not discarded, and comes back the moment a card
-// does: a lane the reader had open before it drained opens again on the first
-// arrival, which is what makes this a display rule rather than a quiet edit of
-// their preference.
+// Rule 2 was briefly a RULE rather than a default — empty outranked the reader,
+// so a drained lane rolled itself up and would not open again. That went too
+// far (Akshil, 2026-08-18): the reader is still allowed to look inside an empty
+// column, and a lane that refuses to open is a control that has stopped being
+// one. What the complaint was actually about is the DEFAULT, which is unchanged
+// and is what keeps four empty outlined columns off a board with one busy lane
+// — and about the `0` on a rolled-up rail, which is gone for good (see
+// ScheduleTaskViews).
 //
 // Archive used to be hard-coded closed. It is not special any more (Akshil,
 // 2026-08-18) — an Archive with cards in it is a column like the others, and an
-// Archive with none rolls up under rule 1 like the others.
+// Archive with none rolls up under rule 2 like the others.
 
 /** The key the board's lane choices live under. Distinct from the array-shaped
  * key an earlier build wrote: that one recorded "collapsed now", defaults
@@ -2333,15 +2327,13 @@ export function parseLaneChoices(raw: string | null): LaneChoices {
   return out;
 }
 
-/** The three rules above, in order, for one lane. `count` is how many cards it
- * holds — and a `count` of 0 is the whole answer, whatever the reader chose. */
+/** Rule 1 then rule 2, for one lane. `count` is how many cards it holds. */
 export function laneCollapsed(
   lane: BoardColumn,
   count: number,
   choices: LaneChoices,
 ): boolean {
-  if (count === 0) return true;
   const chosen = choices[lane];
   if (chosen !== undefined) return chosen;
-  return false;
+  return count === 0;
 }

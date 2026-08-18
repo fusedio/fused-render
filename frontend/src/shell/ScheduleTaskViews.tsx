@@ -2315,18 +2315,18 @@ export function TaskBoard({
           const news = laneUnread(lane, read);
           const rolled = laneCollapsed(col.key, lane.length, choices);
           if (rolled) {
-            // AN EMPTY RAIL IS NOT A BUTTON. `laneCollapsed` keeps a lane with
-            // nothing in it rolled up whatever the reader chose, so the press
-            // that used to expand it now visibly does nothing — a dead click on
-            // a lit control (design-principles §0). It says so instead:
-            // `aria-disabled` and no handler, so the rail reads as the marker it
-            // has become.
+            // An empty rail is STILL A BUTTON. It briefly was not — empty
+            // outranked the reader's choice, so the press did nothing and the
+            // control said so with `aria-disabled` — and that was the wrong
+            // half of the complaint to fix (Akshil, 2026-08-18). Rolling up by
+            // default is what keeps four empty columns off the board; refusing
+            // to open is a lane telling the reader they may not look inside it.
+            // An expanded empty lane shows an empty panel, which is a fine
+            // answer to "is there anything in here", and it is a drop target
+            // either way.
             //
-            // `aria-disabled`, NOT `disabled`: a real disabled button stops
-            // receiving pointer events in every browser, and this element is
-            // still a DROP TARGET — dragging a card into a column that has never
-            // held one is the one thing an empty lane must go on accepting, and
-            // it is exactly the gesture that makes it non-empty again.
+            // `empty` survives for the one thing that WAS the complaint: the
+            // count below.
             const empty = lane.length === 0;
             return (
               <button
@@ -2334,20 +2334,18 @@ export function TaskBoard({
                 key={col.key}
                 className={
                   "schedule-tv-rail" +
-                  (empty ? " is-empty" : "") +
                   (dragging && allowed.has(col.key) ? " is-drop-legal" : "") +
                   (runLane === col.key ? " is-drop-run" : "") +
                   (overLane === col.key ? " is-drop-over" : "")
                 }
-                aria-disabled={empty || undefined}
                 title={
                   runLane === col.key
                     ? "Run the next scheduled message now"
                     : empty
-                      ? `Nothing in ${col.label}`
+                      ? `${col.label}: nothing yet`
                       : `${col.label}: ${lane.length}`
                 }
-                onClick={empty ? undefined : () => toggleLane(col.key, true)}
+                onClick={() => toggleLane(col.key, true)}
                 {...dropProps(col.key)}
               >
                 <StatusIcon status={col.key} unread={news > 0} count={news} />

@@ -5077,21 +5077,22 @@ describe("which board lanes are rolled up", () => {
     expect(laneCollapsed("in_progress", 1, {})).toBe(false);
   });
 
-  it("keeps an EMPTY lane rolled up even against the reader's own choice", () => {
-    // Not a default any more (Akshil, 2026-08-18): a lane the reader expanded
-    // while it had cards stayed open after the last one left, and the board
-    // filled with empty outlined columns wearing a header and a `0`. An empty
-    // column has nothing to show, so the honest width for it is the rail's.
-    expect(laneCollapsed("archived", 0, { archived: false })).toBe(true);
-    expect(laneCollapsed("in_progress", 0, { in_progress: false })).toBe(true);
+  it("lets the reader open an empty lane, and rolls it up only by default", () => {
+    // Empty briefly OUTRANKED the reader — the lane rolled itself up and would
+    // not open again — and that was the wrong half of the complaint to fix
+    // (Akshil, 2026-08-18). Rolling up by default is what keeps four empty
+    // columns off a board with one busy lane; refusing to open is a lane
+    // telling the reader they may not look inside it. An expanded empty lane
+    // shows an empty panel, which is a fine answer to "is there anything here".
+    expect(laneCollapsed("archived", 0, {})).toBe(true);
+    expect(laneCollapsed("archived", 0, { archived: false })).toBe(false);
+    expect(laneCollapsed("in_progress", 0, { in_progress: false })).toBe(false);
+    // And closing it again is the same one choice, written the other way.
+    expect(laneCollapsed("archived", 0, { archived: true })).toBe(true);
   });
 
-  it("lets the reader's own choice outrank the rule once the lane has cards", () => {
+  it("lets the reader's own choice outrank the rule, in both directions", () => {
     expect(laneCollapsed("upcoming", 12, { upcoming: true })).toBe(true);
-    // The choice is REMEMBERED through the emptiness, not discarded, so the
-    // lane opens again on the first arrival — a display rule, not a quiet edit
-    // of what the reader asked for.
-    expect(laneCollapsed("archived", 0, { archived: false })).toBe(true);
     expect(laneCollapsed("archived", 1, { archived: false })).toBe(false);
     // And a choice about ONE lane says nothing about its neighbours.
     expect(laneCollapsed("done", 0, { upcoming: true })).toBe(true);
@@ -5166,30 +5167,23 @@ describe("which board lanes are rolled up", () => {
     expect(block(SCHEDULE_CSS, ".schedule-cal-scroll")).toContain("scrollbar-width: none");
   });
 
-  it("makes an empty rail a marker rather than a control, without losing the drop", () => {
-    // The press that used to expand it now does nothing visible, so the rail
-    // stops claiming to be pressable.
+  it("keeps a rolled-up rail pressable, and takes the `0` off an empty one", () => {
+    // The rail toggles whether or not the lane has cards in it: it briefly
+    // carried `aria-disabled` and no handler while empty, which made the one
+    // control on an empty column refuse to work.
+    expect(LANES).toContain("onClick={() => toggleLane(col.key, true)}");
+    // The attribute, not the word — the comment above the rail still explains
+    // why it is gone.
+    expect(LANES).not.toContain("aria-disabled=");
+    // What the complaint was actually about: a lone `0` chip at the foot of an
+    // empty rail. A count answers "how many are hidden in here", which an empty
+    // rail has already answered by being empty.
     expect(LANES).toContain("const empty = lane.length === 0;");
-    expect(LANES).toContain("aria-disabled={empty || undefined}");
-    expect(LANES).toContain("onClick={empty ? undefined : () => toggleLane(col.key, true)}");
-    // `aria-disabled` and never the real thing: a disabled button stops
-    // receiving pointer events, and this element is still the drop target for
-    // the one gesture that makes an empty lane non-empty.
-    expect(LANES).not.toMatch(/[^-]disabled=\{empty/);
-    expect(LANES).toContain("{...dropProps(col.key)}");
-    // And no `0`: a count answers "how many are hidden in here", which on an
-    // empty rail the rail has already answered.
     expect(LANES).toContain("{!empty && (");
     expect(LANES).toContain('<span className="schedule-tv-rail-count">{lane.length}</span>');
-    // The dimming is the rail's own, and it lifts while a card is over it — an
-    // empty lane is the most likely drop there is.
-    const dim = block(SCHEDULE_CSS, '.schedule-tv-rail[aria-disabled="true"]');
-    expect(dim).toContain("cursor: default");
-    expect(dim).toMatch(/opacity: 0\.\d+/);
-    expect(block(
-      SCHEDULE_CSS,
-      '.schedule-tv-rail[aria-disabled="true"].is-drop-legal',
-    )).toContain("opacity: 1");
+    // Still a drop target either way — dragging a card into a column that has
+    // never held one is the gesture that makes it non-empty.
+    expect(LANES).toContain("{...dropProps(col.key)}");
   });
 
   it("is decided by laneCollapsed on the board, which stores only the toggle", () => {
@@ -5261,13 +5255,20 @@ describe("what the List remembers between visits", () => {
     // Stored beside the scroll and the open rows, in the same sessionStorage
     // row, so all three are restored by the one read on mount.
     expect(LIST).toContain("const memory = useRef<ListMemory>(readListMemory());");
-    // Painted in the app's own selection colour — the explorer listing and the
-    // sidebar both use it — with an accent rule hover does not have, so the two
-    // washes stay tellable apart, and after the hover rule so a hovered
-    // selected row still reads as selected.
+    // THE SAME FILL AS HOVER, and nothing else. The first cut used
+    // `--row-bg-active` plus a 2px accent rule, which on a page whose accent is
+    // a bright lime made one row in ninety look like a dialog's default button
+    // — an olive plate with a yellow edge, shouting a fact that only needs to
+    // be findable (Akshil, screenshot). Hover and selected looking identical is
+    // fine and was asked for: only one row can be hovered, and a row that is
+    // both is both.
     const sel = block(TASKS_CSS, ".tasks-row.is-selected");
-    expect(sel).toContain("background: var(--row-bg-active)");
-    expect(sel).toContain("box-shadow: inset 2px 0 0 var(--accent)");
+    expect(sel).toContain("background: var(--row-bg-hover)");
+    expect(sel).not.toContain("--accent");
+    expect(sel).not.toContain("box-shadow");
+    expect(sel).not.toContain("--row-bg-active");
+    // Stated after the hover rule so the fill does not blink off when the
+    // pointer leaves a selected row.
     expect(TASKS_CSS.indexOf(".tasks-row:hover"))
       .toBeLessThan(TASKS_CSS.indexOf(".tasks-row.is-selected"));
     expect(TASKS_CSS).toContain(".tasks-row.is-selected:hover");
