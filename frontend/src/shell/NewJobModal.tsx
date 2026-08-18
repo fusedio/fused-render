@@ -28,12 +28,13 @@ import { ICON_CLOCK, ICON_FOLDER } from "./ScheduleCalendar";
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
 
-// Where a new task points before the user says otherwise: ~/Desktop/fused
-// (Akshil, 2026-08-14 — an empty path field was the confusing part of the
-// form). Home-relative so it composes on any machine; the picker makes
+// Where a new task points before the user says otherwise: the Fused
+// workspace (Akshil, 2026-08-14 — an empty path field was the confusing part
+// of the form). Home-relative so it composes on any machine; the picker makes
 // changing it a click, and a machine without the folder gets the server's
-// clear 400 naming the path.
-const DEFAULT_TARGET_SUFFIX = "/Documents/Fused";
+// clear 400 naming the path. Keep in step with shell/seed.fused_dir(), which
+// D329 moved to ~/Fused — out of the iCloud-synced ~/Documents.
+const DEFAULT_TARGET_SUFFIX = "/Fused";
 
 // ---- Recent paths --------------------------------------------------------
 // The path field's dropdown offers the last folders the user actually used —

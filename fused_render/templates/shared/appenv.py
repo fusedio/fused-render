@@ -57,19 +57,23 @@ def home_dir() -> str:
 
 
 def workspace_dir() -> str:
-    """The user's Fused workspace (~/Documents/Fused), where app folders live
+    """The user's Fused workspace (~/Fused), where app folders live
     two levels down (<workspace>/<tag>/<name>).
 
     `FUSED_RENDER_WORKSPACE_DIR` is exported by the server ALREADY RESOLVED —
     the output of `shell.seed.fused_dir()`. The fallback mirrors that function
     for a template running standalone: the same `FUSED_RENDER_DIR` override
     tests use, else the default location.
+
+    This module runs in template subprocesses and is stdlib-only — it CANNOT
+    import fused_render — so the default is a copy that must be kept in step
+    with `shell/seed.fused_dir()` by hand (D329 moved it out of ~/Documents).
     """
     d = os.environ.get("FUSED_RENDER_WORKSPACE_DIR")
     if d:
         return d
     return os.path.abspath(
-        os.path.expanduser(os.environ.get("FUSED_RENDER_DIR") or "~/Documents/Fused")
+        os.path.expanduser(os.environ.get("FUSED_RENDER_DIR") or "~/Fused")
     )
 
 
