@@ -521,16 +521,19 @@ def test_a_recurring_template_is_not_a_message(client, projects_dir):
     assert task["messages"][0]["template_id"] == "tpl"
 
 
-def test_a_skipped_occurrence_reads_as_skipped_and_archives_the_task(
+def test_a_skipped_occurrence_reads_as_skipped_and_files_itself_away(
         client, projects_dir):
     """The user's skip and the loop's own missed verdict are the same fact about
-    a repeating run, and schedule-lib.ts files both under Archive."""
+    a repeating run, and schedule-lib.ts files both under Archive.
+
+    The MESSAGE is filed; the task is only archived when everything in it is
+    (`_message_archived`), so here the session's own prompt still speaks."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("occ", "every morning", T12, state=schedule.MISSED,
                            claude_session_id="sess-a", template_id="tpl")])
     task = _by_key(client)["sess-a"]
     assert task["messages"][0]["state"] == "skipped"
-    assert task["status"] == "archived"
+    assert task["status"] == "done"
 
 
 def test_a_task_whose_session_has_no_transcript_still_lists(client, tmp_path):
@@ -759,12 +762,16 @@ def test_a_session_keeps_its_row_with_every_entry_cancelled(client,
                                                             projects_dir):
     """A task that has run is a Claude session with a real transcript, and this
     app does not destroy transcripts (D306). Archive is the honest resting place
-    for that one — the row stays, whatever happened to its entries."""
+    for that one — the row stays, whatever happened to its entries.
+
+    Its STATUS is what the transcript's own prompt says, not `archived`:
+    cancelling a scheduled message files that message, and the turn it did not
+    replace is still the newest thing in the thread with something to say."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "later", T12, state=schedule.CANCELLED,
                            claude_session_id="sess-a")])
     task = _by_key(client)["sess-a"]
-    assert task["status"] == "archived"
+    assert task["status"] == "done"
     assert task["messages"][0]["state"] == "cancelled"
 
 
@@ -1175,36 +1182,39 @@ def test_a_never_run_message_that_was_cancelled_draws_no_chip(client, tmp_path):
 
 
 # ----------------------------------------------------------------- the status
+# The derivation, in the order `_status` applies it: anything running wins,
+# archived is a filing state that cascades onto the messages, otherwise the
+# newest message with something to say speaks, and a task with nothing to say is
+# Upcoming.
 
 
 @pytest.mark.parametrize("fields,expected", [
-    ({}, "upcoming"),
+    # A message with nothing to say yet leaves the run BEFORE it speaking — the
+    # transcript's own prompt, which ran. See the recurring case below for why
+    # that is the whole point rather than an accident.
+    ({}, "done"),
     ({"state": schedule.SENDING}, "in_progress"),
     ({"state": schedule.SENT, "turn": "ok", "fired": T12}, "done"),
     ({"state": schedule.MISSED}, "done"),
-    ({"state": schedule.CANCELLED}, "archived"),
+    # Cancelled is filed away, so the message under it speaks again.
+    ({"state": schedule.CANCELLED}, "done"),
     ({"state": schedule.ERROR, "error": "target vanished"}, "failed"),
     ({"state": schedule.SENT, "turn": "failed", "fired": T12}, "failed"),
     ({"state": schedule.SENT, "turn": "unknown", "fired": T12}, "failed"),
 ])
-def test_status_follows_the_newest_message(client, projects_dir, fields,
-                                           expected):
+def test_the_newest_message_with_a_verdict_speaks(client, projects_dir, fields,
+                                                  expected):
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "later", T12, claude_session_id="sess-a",
                            **fields)])
     assert _by_key(client)["sess-a"]["status"] == expected
 
 
-def test_triage_wins_where_it_disagrees(client, projects_dir, state_dir):
-    """The user dragged the card. A derivation that undid that on the next poll
-    would make the board unusable."""
-    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    _seed_schedule([_entry("e1", "later", T12, claude_session_id="sess-a")])
-    assert _by_key(client)["sess-a"]["status"] == "upcoming"
-
-    (state_dir / "triage.json").write_text(
-        json.dumps({"sess-a": {"status": "archived"}}))
-    assert _by_key(client)["sess-a"]["status"] == "archived"
+def test_a_task_that_has_never_run_is_upcoming(client, tmp_path):
+    """Upcoming means "no output yet" and nothing else: a promise is not a
+    verdict, so a task holding only pending messages has nothing to report."""
+    _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
+    assert _tasks(client)[0]["status"] == "upcoming"
 
 
 def test_archiving_yields_to_a_turn_that_is_still_running(client, projects_dir,
@@ -1252,173 +1262,272 @@ def test_the_archive_is_kept_and_comes_back_when_the_turn_ends(client,
     assert rec["status"] == "archived", "nothing here rewrites the filing"
 
 
-def test_a_done_record_is_not_given_the_archive_exception(client, projects_dir,
-                                                          state_dir):
-    """Only `archived` yields. `done` says "this run is over", and a new turn in
-    that conversation is already carried by the derivation — there is nothing
-    for an exception to fix, and widening it would make the one lane a user
-    files things INTO the one lane that cannot hold them."""
+# -- the way out of Archive is activity ----------------------------------------
+# There is no unarchive control anywhere — the lane is drag-locked and the row
+# draws no button — so a message typed into an archived conversation IS the
+# door, and it has to be a real one. These two tests are the pair that keeps
+# that from swallowing the cascade's own promise.
+
+
+def _filed_now(state_dir, session_id="sess-a", at=None):
+    """An archive record with a STAMP, which is what every filing this app
+    writes carries (`claude_sessions.write_triage`) and what the revival rule
+    measures a message against."""
+    (state_dir / "triage.json").write_text(json.dumps(
+        {session_id: {"status": "archived",
+                      "at": str(time.time() if at is None else at)}}))
+
+
+def test_a_message_that_arrives_after_the_filing_revives_the_task(
+        client, projects_dir, state_dir):
+    """New work in a task somebody had finished with. The filing is stale, so it
+    goes — from disk, not just from this response: leaving it there would put
+    the task back in Archive the moment the conversation went quiet again."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENDING,
-                           claude_session_id="sess-a")])
-    (state_dir / "triage.json").write_text(
-        json.dumps({"sess-a": {"status": "done"}}))
-    assert _by_key(client)["sess-a"]["status"] == "done"
-
-
-def test_a_stale_in_progress_pin_does_not_outlive_its_run(client, projects_dir,
-                                                          state_dir):
-    """The pin is a claim about the present, and the run it named has ended.
-
-    The Inbox's `autoFlow` writes `in_progress` for every session it sees
-    running and only writes it back to `done` if that same page is still open
-    to witness the stop, so a run nobody watched finish leaves the pin behind
-    forever. Honouring it was five cards stuck in In Progress for days over
-    entries whose turns were recorded `done`."""
-    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.SENT, fired=T9,
                            turn="ok", claude_session_id="sess-a")])
-    (state_dir / "triage.json").write_text(
-        json.dumps({"sess-a": {"status": "in_progress"}}))
+    _filed_now(state_dir, at=time.time() - 60)
+    assert _by_key(client)["sess-a"]["status"] == "archived"
 
+    # ...and then someone types into that conversation.
+    later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 1))
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("hi", T9, uuid="u1"), _user("actually, one more thing", later,
+                                          uuid="u2")])
+    tasks_mod.reset_cache()
+
+    # In Progress, not Done: the transcript was just written to, so the session
+    # is live and rule 1 answers first. The point is that it is not `archived`
+    # any more and will settle into its derived lane when the turn ends.
     task = _by_key(client)["sess-a"]
-    assert task["live"] is False
-    assert task["messages"][0]["turn"] == "done"
-    assert task["status"] == "done"
+    assert task["live"] is True
+    assert task["status"] == "in_progress"
+    rec = json.loads((state_dir / "triage.json").read_text()).get("sess-a", {})
+    assert "status" not in rec, "the filing is dropped, not merely outvoted"
 
 
-def test_a_stale_in_progress_pin_on_an_empty_thread_is_dropped(client,
-                                                               projects_dir,
-                                                               state_dir):
-    """The one the board showed with no messages at all. Nothing is running and
-    there is no turn to still be open, so the pin is the only thing holding it
-    in the lane."""
+def test_the_record_survives_everything_but_the_status(client, projects_dir,
+                                                       state_dir):
+    """A note or a read mark on that session is somebody else's data and
+    outlives the status the Board put on it."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    _seed_schedule([_entry("e1", "x", T12, state=schedule.CANCELLED,
-                           claude_session_id="sess-a")])
-    (state_dir / "triage.json").write_text(
-        json.dumps({"sess-a": {"status": "in_progress"}}))
+    (state_dir / "triage.json").write_text(json.dumps(
+        {"sess-a": {"status": "archived", "at": "1.0", "note": "keep me"}}))
+    _by_key(client)
+
+    rec = json.loads((state_dir / "triage.json").read_text())["sess-a"]
+    assert rec == {"note": "keep me"}
+
+
+def test_a_run_already_in_flight_when_it_was_filed_does_not_revive_it(
+        client, projects_dir, state_dir):
+    """The distinction the whole rule turns on.
+
+    That run started BEFORE the filing, so it is not new work — it is the work
+    the user archived on top of. The cascade's promise stands unchanged: it
+    keeps going, the card reads In Progress while it does, and the task settles
+    back into Archive the moment it ends, off the very record it ignored."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.SENT, fired=T9,
+                           turn="", claude_session_id="sess-a")])
+    _filed_now(state_dir)  # stamped NOW: the run above happened long before it
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+    rec = json.loads((state_dir / "triage.json").read_text())["sess-a"]
+    assert rec["status"] == "archived", "yielding is not un-filing"
+
+    # The turn ends. Same entry, now with a verdict — and the task goes back.
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a")])
+    tasks_mod.reset_cache()
     assert _by_key(client)["sess-a"]["status"] == "archived"
 
 
-def test_an_in_progress_pin_holds_while_the_turn_is_still_open(client,
-                                                               projects_dir,
-                                                               state_dir):
-    """The guard that protects a genuinely running turn from the reap above.
+def test_an_unstamped_filing_revives_on_nothing(client, projects_dir,
+                                                state_dir):
+    """A filing that does not say WHEN cannot be shown to have been overtaken.
+    The sessions Inbox's own `set_triage.py` stamps nothing, and reading those
+    as older-than-everything would revive every archive it has ever written on
+    the next poll."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    (state_dir / "triage.json").write_text(
+        json.dumps({"sess-a": {"status": "archived"}}))
+    assert _by_key(client)["sess-a"]["status"] == "archived"
 
-    A turn thinking through a long tool call appends nothing to its transcript
-    for minutes and reads as NOT live, so liveness alone would reap it. The
-    store still has the send in flight — spawned, no `turn` verdict — which is
-    `_busy_sessions`, the second guard, and the one that is right here.
 
-    Note what this asserts about the RENDERED turn: it is `idle`, because
-    `_entry_turn` folds liveness in and has no word for "sent, no verdict, not
-    live". So the message the row carries cannot be the guard; the store's own
-    claim has to be."""
+def test_a_session_with_nothing_in_it_at_all_is_over_not_upcoming(
+        client, projects_dir):
+    """UPCOMING NEEDS SOMETHING COMING, and this is the row that proved it.
+
+    A session whose transcript surfaces no prompt — one that ran only a slash
+    command, whose envelope `strip_machinery` drops — has no output AND nothing
+    scheduled. Filing it under Upcoming put a card in the lane that cannot do
+    the one thing the lane is for: the drag into In Progress fires a pending
+    message and there is none, so `dropLanes` refused it and an Upcoming card
+    became undraggable. On one real machine every card in the lane was this
+    shape — nine of them, `/clear` and `/making-a-release` and `/mcp`.
+    """
+    _write_transcript(projects_dir, "sess-a", "/p", [_assistant("done", T9)])
+    task = _by_key(client)["sess-a"]
+    assert task["message_count"] == 0, "the shape under test: nothing in it"
+    assert task["status"] == "done"
+
+
+def test_a_task_with_a_run_still_coming_is_upcoming_whatever_else_it_holds(
+        client, projects_dir):
+    """The other side: one message still waiting is enough, and it is what makes
+    every card in Upcoming runnable."""
+    _write_transcript(projects_dir, "sess-a", "/p", [])
+    _seed_schedule([_entry("e1", "tomorrow", T12, claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "upcoming"
+    # And the row carries what the drag needs to fire.
+    assert task["messages"][0]["state"] == schedule.PENDING
+    assert task["messages"][0]["entry_id"] == "e1"
+
+
+def test_a_finished_run_with_the_next_one_booked_sits_in_done(client,
+                                                              projects_dir):
+    """THE RECURRING CASE, and the reason a pending message says nothing.
+
+    A daily job that ran this morning and is due again tomorrow has OUTPUT in
+    it that nobody has read. Reading the status off the newest message filed it
+    under Upcoming — the lane a person scans for what has not happened yet —
+    and the run they actually have to look at was hidden behind tomorrow's
+    promise. The next run is still named on the row (`next_run`), which is what
+    the chip beside the title shows."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("pull the news", T9, uuid="a1")])
+    _seed_schedule([
+        _entry("e1", "pull the news", T9, state=schedule.SENT, fired=T9,
+               turn="ok", template_id="tpl", claude_session_id="sess-a"),
+        _entry("e2", "pull the news", T12, template_id="tpl",
+               session_id="sess-a"),
+    ])
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "done"
+    assert task["next_run_entry"] == "e2", "the run ahead is still named"
+
+
+def test_a_run_in_flight_beats_a_newer_message_that_is_only_a_promise(
+        client, projects_dir):
+    """Activity beats recency. The newest message is next week's occurrence;
+    the one under it is still going, and that is what the task IS doing."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    _seed_schedule([
+        _entry("e1", "go", T9, state=schedule.SENDING, template_id="tpl",
+               claude_session_id="sess-a"),
+        _entry("e2", "go", T12, template_id="tpl", session_id="sess-a"),
+    ])
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+
+def test_a_send_the_scheduler_is_still_waiting_on_reads_as_running(
+        client, projects_dir):
+    """The transcript is not live — a turn thinking through a long tool call
+    appends nothing for minutes — but the store still has the send in flight.
+    `schedule.busy_sessions` is the scheduler's own answer and the one that is
+    right here; the RENDERED turn cannot be the guard, because `_entry_turn`
+    folds liveness in and writes `idle` for exactly this case."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
                            turn="", claude_session_id="sess-a")])
-    (state_dir / "triage.json").write_text(
-        json.dumps({"sess-a": {"status": "in_progress"}}))
-
     task = _by_key(client)["sess-a"]
     assert task["live"] is False
     assert task["messages"][0]["turn"] == "idle"
     assert task["status"] == "in_progress"
 
 
-def test_an_in_progress_pin_holds_over_a_send_in_flight(client, projects_dir,
-                                                        state_dir):
-    """A `sending` claim has not reached a transcript at all, so there is no
-    turn to have settled and nothing to reap."""
+def test_a_finished_run_is_not_in_progress_however_it_was_pinned(
+        client, projects_dir, state_dir):
+    """The stale-pin bug, gone by construction rather than by reaping.
+
+    The sessions Inbox's `autoFlow` writes `in_progress` for every session it
+    sees running and only writes it back if that same page is still open to
+    witness the stop, so a run nobody watched finish left a pin on disk that
+    outlived it forever — and the board held cards in In Progress for days over
+    runs recorded `done` a day earlier. In Progress is now Claude's output and
+    nothing else, so the record is simply not read."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENDING,
-                           claude_session_id="sess-a")])
-    (state_dir / "triage.json").write_text(
-        json.dumps({"sess-a": {"status": "in_progress"}}))
-    assert _by_key(client)["sess-a"]["status"] == "in_progress"
-
-
-def test_a_stale_pin_does_not_hide_the_next_occurrence(client, projects_dir,
-                                                       state_dir):
-    """A recurring task whose last run left a pin behind, and whose next
-    occurrence has since materialised. The card belongs in Upcoming — the pin
-    is describing a run that is over, and honouring it hides the fact that this
-    task is due again.
-
-    Note that a user cannot have MEANT this pin: dropping an upcoming card on
-    In Progress is `dropAction`'s run-now move, not a triage write, so the only
-    thing that puts an `in_progress` pin on an upcoming task is a stale one."""
-    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    _seed_schedule([
-        _entry("e1", "every day", T9, state=schedule.SENT, fired=T9, turn="ok",
-               template_id="tpl", claude_session_id="sess-a"),
-        _entry("e2", "every day", T12, template_id="tpl", session_id="sess-a"),
-    ])
-    (state_dir / "triage.json").write_text(
-        json.dumps({"sess-a": {"status": "in_progress"}}))
+    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
+                           turn="ok", claude_session_id="sess-a")])
+    (state_dir / "triage.json").write_text(json.dumps(
+        {"sess-a": {"status": "in_progress", "at": str(time.time())}}))
 
     task = _by_key(client)["sess-a"]
-    assert task["status"] == "upcoming"
-    assert task["next_run_entry"] == "e2"
+    assert task["live"] is False
+    assert task["status"] == "done"
 
 
-def test_a_pin_placed_after_the_run_ended_is_the_users_own_and_sticks(
-        client, projects_dir, state_dir):
-    """The reopen drag: a `done` card dropped back on In Progress. `dropLanes`
-    offers that lane for a done task, so it is a real gesture, and a derivation
-    that undid it on the next 20s poll would make the board unusable.
+def test_a_recorded_done_does_not_overrule_a_broken_run(client, projects_dir,
+                                                        state_dir):
+    """Done is a fact about a run, not a place a reader may put a card — the
+    Board offers no drop on that lane at all any more. A record left over from
+    when it did must not paint a failure green."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
+                           turn="failed", claude_session_id="sess-a")])
+    (state_dir / "triage.json").write_text(
+        json.dumps({"sess-a": {"status": "done"}}))
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "failed"
+    assert task["failed"] is True
 
-    A stamp is what tells it apart from the Inbox's automatic pin. `autoFlow`
-    writes `{status}` and nothing else, so its pins carry no `at` and are
-    reapable; the shell stamps its own writes, and a stamp later than anything
-    that has happened in the session is a decision no run has contradicted."""
+
+def test_archiving_a_task_files_every_message_with_it(client, projects_dir,
+                                                      state_dir):
+    """The filing state. The task is archived, so what is in it is archived —
+    including the run that finished, which would otherwise keep speaking."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
                            turn="ok", claude_session_id="sess-a")])
     assert _by_key(client)["sess-a"]["status"] == "done"
 
-    (state_dir / "triage.json").write_text(json.dumps(
-        {"sess-a": {"status": "in_progress", "at": str(time.time())}}))
+    (state_dir / "triage.json").write_text(
+        json.dumps({"sess-a": {"status": "archived"}}))
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+
+
+def test_an_archived_task_with_a_run_still_going_stays_in_progress(
+        client, projects_dir, state_dir):
+    """A run cannot be filed away while it is happening. It keeps going, the
+    card keeps reading In Progress, and the task falls into Archive by itself
+    once the run ends — nothing has to come back and finish the job."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENDING,
+                           claude_session_id="sess-a")])
+    (state_dir / "triage.json").write_text(
+        json.dumps({"sess-a": {"status": "archived"}}))
     assert _by_key(client)["sess-a"]["status"] == "in_progress"
 
 
-def test_a_pin_holds_on_a_task_that_still_has_work_ahead_of_it(
-        client, projects_dir, state_dir):
-    """The same deliberate pin, on a task whose next run has not happened yet.
-
-    This is where measuring the stamp against "the last activity" went wrong.
-    The row's newest message is one due TOMORROW, and a scheduled message's `at`
-    is the time it was ASKED FOR — it never moves and it is not a thing that has
-    occurred (see `_entry_at`). Folded into the activity the pin is compared
-    against, it made every stamp a user could make look older than the session,
-    so the reap fired on the next 20s poll for exactly the tasks that have work
-    coming.
-
-    The gesture is reachable: `archiveIntent` and `dropLanes` both put a card
-    coming back out of Archive into In Progress, whatever it has scheduled, and
-    that write is stamped by the triage endpoint.
-
-    `last_active` deliberately still reads the due time — the List surfaces a
-    message due tomorrow near the top so it can be seen BEFORE it fires — which
-    is why the two are separate values and this asserts both."""
-    soon = time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                         time.gmtime(time.time() + 86400))
-    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+def test_a_thread_whose_every_message_is_filed_is_archived(client,
+                                                           projects_dir):
+    """The other way in. Nobody said "archive this task"; every message in it
+    was cancelled, which is the same thing said one message at a time."""
+    _write_transcript(projects_dir, "sess-a", "/p", [])
     _seed_schedule([
-        _entry("e1", "every day", T9, state=schedule.SENT, fired=T9, turn="ok",
-               template_id="tpl", claude_session_id="sess-a"),
-        _entry("e2", "every day", soon, template_id="tpl",
-               session_id="sess-a"),
+        _entry("e1", "x", T9, state=schedule.CANCELLED,
+               claude_session_id="sess-a"),
+        _entry("e2", "y", T12, state=schedule.CANCELLED,
+               claude_session_id="sess-a"),
     ])
-    (state_dir / "triage.json").write_text(json.dumps(
-        {"sess-a": {"status": "in_progress", "at": str(time.time())}}))
+    assert _by_key(client)["sess-a"]["status"] == "archived"
 
-    task = _by_key(client)["sess-a"]
-    assert task["next_run"] > time.time(), "the upcoming run is the whole case"
-    assert task["status"] == "in_progress"
-    assert task["last_active"] == task["next_run"], \
-        "the sort still surfaces the run ahead; only the pin's clock changed"
+
+def test_filing_the_newest_message_hands_the_word_back_to_the_one_before(
+        client, projects_dir):
+    """Cancel the message on top and the run under it speaks again — which is
+    what makes filing one message a real gesture rather than a way to silence a
+    whole thread."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("pull the news", T9, uuid="a1")])
+    _seed_schedule([
+        _entry("e1", "pull the news", T9, state=schedule.SENT, fired=T9,
+               turn="failed", claude_session_id="sess-a"),
+        _entry("e2", "and again", T12, state=schedule.CANCELLED,
+               claude_session_id="sess-a"),
+    ])
+    assert _by_key(client)["sess-a"]["status"] == "failed"
 
 
 def test_an_unreadable_created_stamp_still_leaves_a_row(client, tmp_path):
@@ -1431,50 +1540,6 @@ def test_an_unreadable_created_stamp_still_leaves_a_row(client, tmp_path):
     task = _tasks(client)[0]
     assert task["status"] == "upcoming"
     assert task["last_active"] > 0, "the due time still surfaces it"
-
-
-def test_a_pin_placed_before_the_run_ended_is_reaped(client, projects_dir,
-                                                     state_dir):
-    """The other side of the stamp. A pin from before the last run finished is
-    describing that run, and the run answered it."""
-    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
-                           turn="ok", claude_session_id="sess-a")])
-    (state_dir / "triage.json").write_text(json.dumps(
-        {"sess-a": {"status": "in_progress", "at": "1.0"}}))
-    assert _by_key(client)["sess-a"]["status"] == "done"
-
-
-def test_the_triage_write_stamps_the_pin(client, projects_dir, state_dir):
-    """The stamp the reap above reads has to actually be written, or every pin
-    the shell makes is reaped on the next poll."""
-    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
-                           turn="ok", claude_session_id="sess-a")])
-    r = client.post("/api/claude-sessions/triage",
-                    json={"session_id": "sess-a", "status": "in_progress"})
-    assert r.status_code == 200, r.text
-
-    rec = json.loads((state_dir / "triage.json").read_text())["sess-a"]
-    assert float(rec["at"]) > 0
-    assert _by_key(client)["sess-a"]["status"] == "in_progress"
-
-
-@pytest.mark.parametrize("pinned", ["done", "archived"])
-def test_the_timeless_pins_still_win_over_a_settled_run(client, projects_dir,
-                                                        state_dir, pinned):
-    """Only `in_progress` is falsifiable. `done` and `archived` are filing
-    decisions that stay true however long the card sits there, so the reap must
-    not touch them — the user dragged the card and a derivation that undid it on
-    the next poll would make the board unusable."""
-    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    _seed_schedule([_entry("e1", "x", T12, state=schedule.ERROR,
-                           error="target vanished", claude_session_id="sess-a")])
-    assert _by_key(client)["sess-a"]["status"] == "failed"
-
-    (state_dir / "triage.json").write_text(
-        json.dumps({"sess-a": {"status": pinned}}))
-    assert _by_key(client)["sess-a"]["status"] == pinned
 
 
 def test_a_dead_turn_is_reported_as_a_failure(client, projects_dir):
@@ -1494,10 +1559,12 @@ def test_a_dead_turn_is_reported_as_a_failure(client, projects_dir):
     assert task["status"] == "failed"
 
 
-def test_a_skipped_occurrence_is_archived_and_not_failed(client, projects_dir):
+def test_a_skipped_occurrence_does_not_speak_for_the_task(client,
+                                                          projects_dir):
     """A run the coalescer dropped was filed away and never attempted. Only
     something that actually ran can fail, and calling a routine skip a failure
-    makes ordinary behaviour look like breakage."""
+    makes ordinary behaviour look like breakage — so it says nothing at all and
+    the session's own prompt speaks."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "every morning", T12, template_id="tpl",
                            state=schedule.MISSED,
@@ -1505,24 +1572,92 @@ def test_a_skipped_occurrence_is_archived_and_not_failed(client, projects_dir):
                            claude_session_id="sess-a")])
     task = _by_key(client)["sess-a"]
     assert task["messages"][0]["state"] == "skipped"
-    assert task["status"] == "archived"
+    assert task["status"] == "done"
     assert task["failed"] is False
 
 
-def test_triage_still_wins_over_a_failure(client, projects_dir, state_dir):
-    """`failed` is derived and triage is the user's own act, so filing a broken
-    run under done is allowed to stick. The `failed` flag stays true underneath
-    it, which is the one direction the two are meant to disagree in."""
-    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
-                           turn="failed", claude_session_id="sess-a")])
-    assert _by_key(client)["sess-a"]["status"] == "failed"
+# --------------------------------------------------------------- archiving it
+# `POST /api/tasks/archive` — one gesture with two halves: the work is called
+# off and the session is filed.
 
-    (state_dir / "triage.json").write_text(
-        json.dumps({"sess-a": {"status": "done"}}))
-    task = _by_key(client)["sess-a"]
-    assert task["status"] == "done"
-    assert task["failed"] is True
+
+def test_archiving_cancels_the_work_and_files_the_session(client, projects_dir,
+                                                          state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("e1", "ran", T9, state=schedule.SENT, fired=T9, turn="ok",
+               claude_session_id="sess-a"),
+        _entry("e2", "tomorrow", T12, claude_session_id="sess-a"),
+    ])
+    r = client.post("/api/tasks/archive", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] == 1
+    assert r.json()["filed"] is True
+
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["e2"] == schedule.CANCELLED, "the run ahead is called off"
+    assert states["e1"] == schedule.SENT, "what already ran is left alone"
+    rec = json.loads((state_dir / "triage.json").read_text())["sess-a"]
+    assert rec["status"] == "archived"
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+
+
+def test_archiving_stops_the_rule_behind_the_next_occurrence(client,
+                                                             projects_dir):
+    """A recurring rule that keeps materialising occurrences is a rule that
+    keeps un-archiving the task — the one thing filing something away must
+    never do."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("tpl", "every day", T9, state=schedule.RECURRING,
+               repeats="0 9 * * *", claude_session_id="sess-a"),
+        _entry("e2", "every day", T12, template_id="tpl",
+               claude_session_id="sess-a"),
+    ])
+    r = client.post("/api/tasks/archive", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["tpl"] == schedule.CANCELLED
+    assert states["e2"] == schedule.CANCELLED
+    assert r.json()["cancelled"] == 1, "the rule takes its occurrence with it"
+
+
+def test_archiving_leaves_a_send_already_away_alone(client, projects_dir):
+    """`sending` means the helper is away and the turn may have started, so
+    "cancelled" would be a claim this server cannot make good on. It runs, the
+    card reads In Progress, and Archive collects it afterwards."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.SENDING,
+                           claude_session_id="sess-a")])
+    r = client.post("/api/tasks/archive", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] == 0
+    assert schedule.list_entries()[0]["state"] == schedule.SENDING
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+
+def test_archiving_a_task_with_no_session_only_cancels(client, tmp_path):
+    """A message scheduled for tomorrow that has never run has no session to
+    file. Cancelling it leaves nothing for a row to be about, which is
+    `_is_task`'s rule and older than this endpoint."""
+    _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
+    key = _tasks(client)[0]["key"]
+    r = client.post("/api/tasks/archive", json={"key": key})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": key, "cancelled": 1, "filed": False}
+    assert schedule.list_entries()[0]["state"] == schedule.CANCELLED
+    assert _tasks(client) == []
+
+
+def test_archiving_a_task_that_is_not_there_is_a_404(client):
+    assert client.post("/api/tasks/archive",
+                       json={"key": "nope"}).status_code == 404
+
+
+def test_archiving_without_a_key_is_a_400(client):
+    assert client.post("/api/tasks/archive",
+                       json={"key": "  "}).status_code == 400
 
 
 # ----------------------------------------------------------------- the unread
