@@ -293,16 +293,48 @@ def ensure_baseline(*, digest: str = "", now: float | None = None) -> dict:
     marker without a second walk. `digest` is the caller's already-computed hash
     of the same tree (`begin_session` has one in hand), reused rather than
     re-walked; omit it and this takes its own.
+
+    **A MARKER FOR THIS VERSION VETOES A FRESH BASELINE**, which is the one thing
+    this must never get wrong. Taking the baseline from the tree in front of us is
+    only honest on the first session of a version, and the marker is a standing
+    claim that this tree is NOT the one we shipped. Without the veto, a baseline
+    file that has gone missing under a live marker — the fix session itself is an
+    agent editing this installation and can delete its state dir; the first write
+    can have failed with `OSError` — would be re-taken from the PATCHED tree, and
+    `reconcile` would then find current == "pristine" on the next start and clear
+    the badge while the patch was still on disk. Silently un-warning a modified
+    install is the exact failure the whole feature exists to prevent.
+
+    The marker carries `baseline_digest`, so the usual repair is exact: the
+    pristine digest is recovered from it and the file rewritten. When the marker
+    has none either (it was stamped in a session whose own baseline write failed)
+    NOTHING is written and the digest comes back empty — `reconcile` finds no
+    pristine and leaves the badge alone. A badge that outstays its modification
+    is a cosmetic wrong; a badge that vanishes over a live one is the harmful
+    one, and this is the direction to fail in.
     """
     now = time.time() if now is None else now
     with _lock:
         existing = _read_json(baseline_path())
         if existing and existing.get("version") == __version__ and existing.get("digest"):
             return existing
+        marker = _read_json(marker_path()) or {}
+        modified_here = marker.get("version") == __version__
+        # An upgrade is NOT this case: the marker's version is then the old one,
+        # the new release really did replace the tree, and `reconcile` discards
+        # such a marker on sight anyway.
+        if modified_here:
+            recovered = str(marker.get("baseline_digest") or "")
+            if not recovered:
+                logger.info("self-fix: no baseline and a modified marker with no "
+                            "pristine digest — declining to baseline a patched tree")
+                return {"schema": SCHEMA, "version": __version__, "digest": "",
+                        "at": now}
+            logger.info("self-fix: recovering the lost baseline from the marker")
         record = {
             "schema": SCHEMA,
             "version": __version__,
-            "digest": digest or tree_digest(),
+            "digest": recovered if modified_here else (digest or tree_digest()),
             "at": now,
         }
         try:

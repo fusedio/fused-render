@@ -432,6 +432,61 @@ def test_reconcile_does_not_drop_a_fix_recorded_while_it_walked(install,
     assert [f["run_id"] for f in selffix.status()["fixes"]] == ["r1", "r2"]
 
 
+def test_a_lost_baseline_is_recovered_from_the_marker_not_from_the_patched_tree(
+        install):
+    """The badge must never be cleared by re-baselining the patch itself.
+
+    `ensure_baseline` takes the tree in front of it as pristine, which is only
+    honest on the first session of a version. The baseline file can go missing
+    under a LIVE marker — the fix session is an agent editing this installation
+    and can delete its state dir, and the very first write can have failed with
+    `OSError` — and re-taking it from the patched tree makes `reconcile` find
+    current == "pristine" on the next start and clear a badge for a change that
+    is still on disk.
+
+    The marker already carries the pristine digest, so the repair is exact
+    rather than defensive.
+    """
+    pristine, _ = selffix.begin_session()
+    (install / "jobs.py").write_text("patched\n")
+    selffix.settle(before=pristine, run_id="r1")
+    assert selffix.status() is not None
+    assert selffix.status()["fixes"][0]["run_id"] == "r1"
+
+    os.unlink(selffix.baseline_path())          # the file goes missing
+    recovered, before = selffix.begin_session()  # a second session opens
+    assert recovered == pristine                 # NOT the patched tree
+    assert before != pristine
+
+    # ...and the point of all that: reconcile still knows this tree is patched.
+    selffix.reconcile()
+    assert selffix.status() is not None, "the badge was cleared over a live patch"
+
+
+def test_with_no_pristine_digest_anywhere_the_badge_is_kept_not_cleared(install):
+    """The other half: a marker whose own `baseline_digest` is empty.
+
+    That is the marker a session stamps when its baseline write failed, so
+    nothing on disk knows what the release shipped. Guessing from the patched
+    tree would clear the badge; the honest answer is to write no baseline at all
+    and leave the badge standing. A badge that outstays its modification is
+    cosmetic — one that vanishes over a live patch is the failure this feature
+    exists to prevent.
+    """
+    (install / "jobs.py").write_text("patched\n")
+    selffix.mark_modified(run_id="r1", digest=selffix.tree_digest(),
+                          baseline_digest="")
+    assert not os.path.exists(selffix.baseline_path())
+    assert (selffix.status() or {}).get("modified") is True
+
+    baseline, before = selffix.begin_session()
+    assert baseline == ""                                  # no claim made
+    assert before                                          # ...but this session
+    assert not os.path.exists(selffix.baseline_path())     # ...and none written
+    selffix.reconcile()
+    assert selffix.status() is not None, "the badge was cleared with no baseline"
+
+
 def test_a_new_version_starts_a_fresh_baseline(install, monkeypatch):
     """An upgrade legitimately replaced the tree the old baseline described;
     trusting it would report every upgrade as a modification."""
