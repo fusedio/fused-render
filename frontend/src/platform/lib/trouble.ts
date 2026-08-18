@@ -293,6 +293,54 @@ export function troubleInstructions(ctx: TroubleContext): string {
 // card on every click for as long as the registry stays broken.
 const announced = new Set<string>();
 
+/** The sticky registry toast's whole lifecycle, in one place.
+ *
+ * IT LIVES HERE RATHER THAN IN THE COMPONENT because it is a state machine
+ * with three transitions and no rendering, and the two bugs it has already had
+ * were both in the transitions: an ungated push (a toast on a file that had a
+ * better answer beside it) and an overwritten id (a second kind of broken
+ * pushing a new toast while the first stayed on screen for good). A component
+ * effect is not a testable place to keep three transitions.
+ *
+ * The rules, in the order they are checked:
+ *
+ *  1. NO ERROR — the registry parses again, so whatever claim is up is now
+ *     false: dismiss it, and forget the message so the same fault arriving
+ *     later is announced again rather than reading as a fix that held.
+ *  2. NOT ANNOUNCEABLE — this file has a better answer beside it, so say
+ *     nothing AND leave any existing toast alone. Walking onto a file with no
+ *     view must not take down a claim that is still true.
+ *  3. ALREADY SAID — the error rides every stat; saying it once is the point.
+ *  4. A DIFFERENT ERROR SUPERSEDES the old one. The registry has one state at a
+ *     time, so the previous toast is stale by definition and comes down as the
+ *     new one goes up. Without this the two stack, and only the newer is ever
+ *     dismissed.
+ */
+export function syncRegistryToast(
+  message: string,
+  announceable: boolean,
+  io: { push: () => number; dismiss: (id: number) => void }
+): void {
+  const text = String(message || "").trim();
+  if (!text) {
+    if (outstandingToast !== null) {
+      io.dismiss(outstandingToast);
+      outstandingToast = null;
+      resetAnnouncedTemplateErrors();
+    }
+    return;
+  }
+  if (!announceable) return;
+  if (!shouldAnnounceTemplateError(text)) return;
+  if (outstandingToast !== null) io.dismiss(outstandingToast);
+  outstandingToast = io.push();
+}
+
+/** The toast currently claiming the registry is broken, if any. Module state
+    because the toast outlives any one view: it is pushed while looking at one
+    file and is still up several files later, which is the point of it. */
+let outstandingToast: number | null = null;
+
 /** Whether this registry error still needs saying, marking it said.
  *
  * Keyed on the MESSAGE rather than on the path: one broken registry produces
@@ -314,4 +362,5 @@ export function shouldAnnounceTemplateError(message: string): boolean {
 /** Test seam — the set is module state and suites share a module. */
 export function resetAnnouncedTemplateErrors(): void {
   announced.clear();
+  outstandingToast = null;
 }
