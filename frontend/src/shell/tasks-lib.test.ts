@@ -5234,3 +5234,45 @@ describe("what the List remembers between visits", () => {
     expect(LIST).not.toMatch(/owed\.current = memory\.current\.scroll[\s\S]{0,400}staleEmptied\.current = true/);
   });
 });
+
+// ---- the page's own measure ----------------------------------------------------
+// Edge-to-edge was the absence of a decision, not the use of the space: on a wide
+// display the List ran to 2000px of three-line rows and the title sat marooned at
+// the far left of it. The cap and the centring are read out of the stylesheet
+// because neither is visible in a diff of the page's markup, which did not change.
+
+describe("the tasks page measure", () => {
+  it("centres the page on one measure wide enough for the widest view", () => {
+    // Edge-to-edge was the absence of a decision: on a 27" display the List ran to
+    // 2000px and the title sat marooned at the far left of it (design-principles
+    // §3). The cap is the BOARD's number — five 260px lanes plus four 12px gaps is
+    // 1348 — so the widest view fits inside the measure and the other two are not
+    // given a second one.
+    const lane = block(SCHEDULE_CSS, ".schedule-tv-lane");
+    expect(lane).toContain("flex: 0 0 260px");
+    const board = block(SCHEDULE_CSS, ".schedule-tv-board");
+    expect(board).toContain("gap: 12px");
+    const measure = 1360;
+    expect(measure).toBeGreaterThanOrEqual(5 * 260 + 4 * 12);
+    const page = block(SCHEDULE_CSS, ".prefs-page.schedule-page > *");
+    expect(page).toContain(`max-width: ${measure}px`);
+    // Centred, and applied to every child so the header travels with the views — a
+    // centred board under a left-flush "Tasks" reads as a layout bug.
+    expect(page).toContain("margin-inline: auto");
+    // Both classes in the selector: the rule it has to beat is `.prefs-page > *`,
+    // which a lone `.schedule-page > *` only ties with — and a tie is settled by
+    // import order, which is not a thing this page should depend on.
+    expect(SCHEDULE_CSS).toContain(".prefs-page.schedule-page > * {");
+    // The sections restate it, since `.prefs-page > *` outranks the rule above for
+    // them; prose keeps the reading measure inside the widened box.
+    expect(block(SCHEDULE_CSS, ".schedule-page > .prefs-section")).toContain(
+      `max-width: ${measure}px`,
+    );
+    expect(block(SCHEDULE_CSS, ".schedule-page .prefs-section > p")).toContain(
+      "max-width: 760px",
+    );
+    // No horizontal PAGE scroll under the cap: the board is the one thing that can
+    // exceed the window, and it scrolls inside itself (design-principles §0).
+    expect(board).toContain("overflow-x: auto");
+  });
+});
