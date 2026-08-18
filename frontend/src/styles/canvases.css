@@ -115,6 +115,15 @@
   color: color-mix(in srgb, var(--accent) 65%, var(--fg));
 }
 
+/* Server-provided preview image filling the plate. */
+.canvas-card-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .canvas-card-body {
   padding: 12px 14px 14px;
   display: flex;
