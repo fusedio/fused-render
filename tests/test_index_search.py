@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.index.config import IndexConfig, load_config
-from fused_render.index.query import search_under
+from fused_render.index.query import search_ranked, search_under
 from fused_render.index.store import Sink, compact, partition_files
 from fused_render.server import create_app
 
@@ -218,6 +218,88 @@ def test_search_route_requires_a_root(home, tmp_path):
     assert resp.status_code == 400
 
 
+def _ranked_client(tmp_path, root, files, dirs=()):
+    cfg = load_config()
+    src = _index(tmp_path, root, files, dirs=dirs)
+    os.rename(src.dir, cfg.dir)
+    return TestClient(create_app(start_dir=str(tmp_path)))
+
+
+def test_rank_route_answers_ranked_hits(home, tmp_path):
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root,
+                            [root + "/readme.md", root + "/docs/readme-old.md",
+                             root + "/other.bin"], dirs=[root + "/docs"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "readme.md"}).json()
+    assert body["ok"] is True and body["covered"] is True
+    assert body["hits"][0]["rel"] == "readme.md"
+    assert body["total"] == len(body["hits"])
+
+
+def test_rank_route_does_not_return_positions(home, tmp_path):
+    """The client re-runs fuzzyMatch over the ~200 rows it got back, so
+    fuzzy.ts stays the single source of truth for what highlights — and the
+    response stays small."""
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert "positions" not in body["hits"][0]
+
+
+def test_rank_route_on_a_missing_index_is_a_quiet_miss(home, tmp_path):
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = client.get("/api/index/rank",
+                      params={"root": str(tmp_path), "q": "x"}).json()
+    assert body["ok"] is True and body["covered"] is False and body["hits"] == []
+
+
+def test_rank_route_requires_a_root(home, tmp_path):
+    resp = TestClient(create_app(start_dir=str(tmp_path))).get("/api/index/rank")
+    assert resp.status_code == 400
+
+
+def test_rank_route_filters_a_gitignored_dir_under_a_NON_repo_root(home, tmp_path):
+    """The hole a narrowed payload opens, closed.
+
+    Oracles used to be discovered from the entry list handed to the filter, and
+    the ranked route hands it ~200 candidates from which stage A has already
+    dropped every dot-leading rel — so `.gitignore` could essentially never be
+    in the set, every entry came back undecided, and NOTHING was filtered. The
+    corpus route did not have the bug only because it carries the whole tree,
+    dotfiles included.
+
+    Home is not a repo here, which is the case that matters: inside a repo one
+    oracle at the toplevel decides everything and the payload's contents are
+    irrelevant."""
+    root = str(tmp_path / "userhome")
+    proj = tmp_path / "userhome" / "proj"
+    (proj / "dist").mkdir(parents=True)
+    (proj / ".gitignore").write_text("dist/\n", encoding="utf-8")
+    client = _ranked_client(
+        tmp_path, root,
+        [root + "/proj/.gitignore", root + "/proj/dist/zzbundle.js",
+         root + "/proj/zzkeep.js"],
+        dirs=[root + "/proj", root + "/proj/dist"])
+    body = client.get("/api/index/rank", params={"root": root, "q": "zz"}).json()
+    assert body["covered"] is True
+    assert [h["rel"] for h in body["hits"]] == ["proj/zzkeep.js"]
+    # And the two routes agree, which is the actual requirement: the same file
+    # must not appear in one search and vanish from the other.
+    corpus = client.get("/api/index/search", params={"root": root}).json()
+    assert "proj/dist/zzbundle.js" not in [e["rel"] for e in corpus["entries"]]
+
+
+def test_rank_route_honours_the_limit(home, tmp_path):
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root,
+                            [f"{root}/alpha{i}.txt" for i in range(10)])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha", "limit": 3}).json()
+    assert len(body["hits"]) == 3 and body["truncated"] is True
+
+
 def test_search_under_ignores_a_lookalike_underscore_sibling(tmp_path):
     """`_` matches any char in LIKE: searching inside /x/my_dir must not list
     files that actually live in /x/my-dir (the prefix is escaped)."""
@@ -294,3 +376,322 @@ def test_an_index_written_without_a_depth_column_still_reads(tmp_path):
     out = search_under(cfg, "/r", limit=2)
     assert out["covered"] is True
     assert sorted(e["rel"] for e in out["entries"]) == ["a", "top.txt"]
+
+
+# -- search_ranked: filtering AND ranking, server-side -------------------------
+#
+# The home page used to fetch the whole corpus (20 MB, 164k rows, silently
+# capped at MAX_CORPUS so ~71% of the user's files could not be found at all)
+# and rank it in the browser. `search_ranked` does both here and returns ~200
+# rows. The ranker itself is pinned by tests/test_index_rank.py; these are
+# about the two-stage query around it.
+
+def test_search_ranked_returns_the_best_match_first(tmp_path):
+    cfg = _index(tmp_path, "/r",
+                 ["/r/readme.md", "/r/docs/readme-draft.md",
+                  "/r/readme/other.txt", "/r/unrelated.bin"],
+                 dirs=["/r/docs", "/r/readme"])
+    out = search_ranked(cfg, "/r", "readme.md")
+    assert out["covered"] is True
+    assert out["hits"][0]["rel"] == "readme.md"
+
+
+def test_search_ranked_finds_a_subsequence_the_like_filter_would_miss(tmp_path):
+    """Stage A's coarse filter must admit fuzzy hits, not just substrings —
+    that is the whole reason it is a subsequence regex and not an ILIKE."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha-beta.txt"])
+    out = search_ranked(cfg, "/r", "albe")
+    assert [h["rel"] for h in out["hits"]] == ["alpha-beta.txt"]
+
+
+def test_search_ranked_hits_are_walk_shaped_and_carry_the_ranking(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt"])
+    [hit] = search_ranked(cfg, "/r", "alpha")["hits"]
+    assert hit["rel"] == "alpha.txt" and hit["is_dir"] is False
+    assert hit["size"] == 10 and hit["mtime"] == 100.0
+    assert hit["score"] > 0 and hit["tier"] == 1 and hit["depth"] == 1
+
+
+def test_search_ranked_ranks_directories_against_files_in_one_query(tmp_path):
+    """The same property search_under has, for the same reason: two queries
+    gave folders only the budget the files left over, and folder search died
+    on any tree big enough to fill it."""
+    cfg = _index(tmp_path, "/r", [f"/r/target/f{i}.txt" for i in range(5)],
+                 dirs=["/r/target"])
+    out = search_ranked(cfg, "/r", "target", limit=2)
+    assert out["hits"][0]["rel"] == "target"
+    assert out["hits"][0]["is_dir"] is True
+
+
+def test_search_ranked_answers_an_empty_query_with_no_hits(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt"])
+    out = search_ranked(cfg, "/r", "")
+    assert out["covered"] is True and out["hits"] == [] and out["total"] == 0
+
+
+def test_search_ranked_is_a_quiet_miss_on_an_uncovered_root(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt"])
+    out = search_ranked(cfg, "/elsewhere", "alpha")
+    assert out["covered"] is False and out["hits"] == []
+
+
+def test_search_ranked_filters_gitignored_entries_BEFORE_cutting_to_limit(tmp_path):
+    """Filtering after the cut is what makes today's corpus report `truncated`
+    while holding fewer rows than it says: the cap was spent on entries that
+    were then dropped. So `limit` counts entries the user can actually see."""
+    cfg = _index(tmp_path, "/r", [f"/r/alpha{i}.txt" for i in range(10)])
+    dropped = {"alpha0.txt", "alpha1.txt", "alpha2.txt"}
+    out = search_ranked(cfg, "/r", "alpha", limit=5,
+                        gitignore_filter=lambda root, es, oracles:
+                            [e for e in es if e["rel"] not in dropped])
+    assert len(out["hits"]) == 5
+    assert not dropped & {h["rel"] for h in out["hits"]}
+    assert out["truncated"] is True
+
+
+def test_search_ranked_flags_nothing_when_every_hit_fits(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.txt"])
+    out = search_ranked(cfg, "/r", "alpha", limit=5)
+    assert out["truncated"] is False and out["total"] == 1
+
+
+def test_the_substring_pass_alone_answers_when_it_fills_the_cut(tmp_path):
+    """The cheap pass is the whole query when it is enough.
+
+    ILIKE over 571k rows costs ~51 ms where the subsequence regex costs ~143 ms,
+    and the regex can only ever APPEND rows below every substring hit (see
+    search_ranked's docstring on longest_run), so a filled cut means the second
+    pass is pure spend."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/a-l-p-h-a.txt"])
+    out = search_ranked(cfg, "/r", "alpha", limit=1)
+    assert [h["rel"] for h in out["hits"]] == ["alpha.txt"]
+    assert out["escalated"] is False
+
+
+def test_it_escalates_to_the_subsequence_pass_when_substring_hits_run_short(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/a-l-p-h-a.txt"])
+    out = search_ranked(cfg, "/r", "alpha", limit=5)
+    assert [h["rel"] for h in out["hits"]] == ["alpha.txt", "a-l-p-h-a.txt"]
+    assert out["escalated"] is True
+
+
+def test_the_escalation_ladder_is_lossless(tmp_path):
+    """Skipping the regex pass must not change ONE row of the answer.
+
+    The substring pass answering alone and the full two-pass answer have to
+    agree on the rows they both cover — otherwise the optimisation is a
+    behaviour change wearing a performance costume."""
+    files = ["/r/alpha.txt", "/r/docs/alpha-notes.md", "/r/a-l-p-h-a.txt",
+             "/r/away/lower/place/hat/area.txt"]
+    cfg = _index(tmp_path, "/r", files, dirs=["/r/docs", "/r/away",
+                                              "/r/away/lower",
+                                              "/r/away/lower/place",
+                                              "/r/away/lower/place/hat"])
+    full = search_ranked(cfg, "/r", "alpha", limit=50)
+    assert full["escalated"] is True
+    for n in (1, 2):
+        short = search_ranked(cfg, "/r", "alpha", limit=n)
+        assert short["escalated"] is False
+        assert [h["rel"] for h in short["hits"]] == \
+            [h["rel"] for h in full["hits"]][:n]
+
+
+def test_a_query_the_substring_pass_cannot_answer_still_answers(tmp_path):
+    """Zero substring hits is the escalation case, not an empty result."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha-beta.txt"])
+    out = search_ranked(cfg, "/r", "albe", limit=1)
+    assert [h["rel"] for h in out["hits"]] == ["alpha-beta.txt"]
+    assert out["escalated"] is True
+
+
+def test_the_stage_a_cap_keeps_the_name_matches_over_the_fuzzy_ones(tmp_path):
+    """Stage A can in principle drop a row stage B would rank top. Its coarse
+    tier ordering is what makes that unlikely, and this is the property: with a
+    cap far below the candidate count, the rows that survive are the ones the
+    real ranker also puts first."""
+    files = [f"/r/noise/a{i}-l-p-h-a.txt" for i in range(50)]
+    files.append("/r/alpha.txt")
+    cfg = _index(tmp_path, "/r", files, dirs=["/r/noise"])
+    out = search_ranked(cfg, "/r", "alpha", cap=3)
+    assert out["hits"][0]["rel"] == "alpha.txt"
+
+
+# ---------------------------------------------------------------- the reason
+#
+# A non-answer says WHY. The in-folder search box switches on it — the live
+# walk survives for mount-backed (and package) folders only, an uncovered one
+# is scanned on demand, and a running scan is polled — and the rule that
+# decides which is which lives HERE, in the server, because a second copy of
+# the mount policy in TypeScript would drift from MountGuard.
+
+def test_rank_route_reports_covered_with_no_reason(home, tmp_path):
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["covered"] is True and body["reason"] == ""
+
+
+def test_rank_route_says_an_unscanned_root_is_uncovered(home, tmp_path):
+    """"No index yet" and "outside the scanned roots" are one condition to the
+    client: both are answered by scanning the folder on demand."""
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = client.get("/api/index/rank",
+                      params={"root": str(tmp_path), "q": "x"}).json()
+    assert body["covered"] is False and body["reason"] == "uncovered"
+
+
+def test_rank_route_names_a_package_directory(home, tmp_path):
+    """A package is recorded as ONE opaque row and never listed, so no amount
+    of scanning will ever cover it — the client must not ask for one."""
+    root = str(tmp_path / "Foo.app")
+    client = _ranked_client(tmp_path, str(tmp_path), [str(tmp_path) + "/a.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "a"}).json()
+    assert body["covered"] is False and body["reason"] == "package"
+
+
+def test_rank_route_names_a_mount_backed_root(home, tmp_path):
+    """The one case the live walk still answers. The client must not carry a
+    copy of this rule: it is MountGuard's, and it is checked here."""
+    root = str(home / "branches" / "main" / "mounts" / "s3")
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "x"}).json()
+    assert body["covered"] is False and body["reason"] == "mount"
+
+
+def test_rank_route_reports_a_scan_that_covers_the_root(home, tmp_path, monkeypatch):
+    """A scan in flight over this folder is why an answer is thin, and it is
+    the signal that says "ask again in a moment" rather than "nothing here"."""
+    from fused_render.index import runner
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r1", "root": str(tmp_path), "running": True}]})
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    # Covered AND scanning: the rows it has are real and are returned; the
+    # reason says more are coming.
+    assert body["covered"] is True and body["reason"] == "scanning"
+    assert [h["rel"] for h in body["hits"]] == ["alpha.txt"]
+
+
+def test_a_scan_of_a_subfolder_also_counts_as_covering(home, tmp_path, monkeypatch):
+    """Both directions: a scan of an ancestor will rewrite this folder's rows,
+    and a scan of a descendant is adding rows underneath it."""
+    from fused_render.index import runner
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r1", "root": root + "/deep", "running": True}]})
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["reason"] == "scanning"
+
+
+def test_a_finished_scan_elsewhere_is_not_a_reason(home, tmp_path, monkeypatch):
+    from fused_render.index import runner
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r1", "root": root, "running": False},
+                 {"run_id": "r2", "root": "/somewhere/else", "running": True}]})
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["reason"] == ""
+
+
+def test_rank_route_names_a_folder_the_ignore_list_excludes(home, tmp_path):
+    """The third permanently-uncoverable case, and the one that would
+    otherwise cost a pointless scan on every search: a folder the ignore rules
+    exclude is not "not scanned yet", it is "never will be". Asking for a scan
+    of it would spawn a worker that walks it, indexes nothing, and rewrites
+    the whole store to say so."""
+    root = str(tmp_path / "proj" / "node_modules")
+    client = _ranked_client(tmp_path, str(tmp_path / "proj"),
+                            [str(tmp_path / "proj") + "/a.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "a"}).json()
+    assert body["covered"] is False and body["reason"] == "ignored"
+
+
+def test_a_cancelled_run_is_not_a_scan_in_flight(home, tmp_path, monkeypatch):
+    """A run told to stop still reads `running` in its log for a moment — the
+    worker notices the flag a couple of hundred directories later. Reporting it
+    starts a poll cycle for a scan that is about to produce nothing, which is
+    why runner.active_run refuses the same runs."""
+    import os
+
+    from fused_render.index import runner
+    from fused_render.index.config import load_config
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    cfg = load_config()
+    run_dir = os.path.join(cfg.runs_dir, "r1")
+    os.makedirs(run_dir, exist_ok=True)
+    open(os.path.join(run_dir, "cancel"), "w").close()
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r1", "root": root, "running": True}]})
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["reason"] == ""
+
+
+def test_the_run_listing_is_not_re_read_on_every_keystroke(home, tmp_path, monkeypatch):
+    """`list_runs` folds every run directory — stats and a liveness check per
+    run — and this fires on EVERY ranked request, which is one per keystroke in
+    two search boxes. The answer cannot change meaningfully inside a poll
+    interval, so it is cached for a beat."""
+    from fused_render.index import runner
+    from fused_render.server.routers import index as index_routes
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    calls = []
+    real = runner.list_runs
+    monkeypatch.setattr(runner, "list_runs",
+                        lambda cfg, limit=20: (calls.append(1), real(cfg, limit=limit))[1])
+    index_routes._forget_runs()
+    for q in ("a", "al", "alp", "alph", "alpha"):
+        client.get("/api/index/rank", params={"root": root, "q": q})
+    assert len(calls) == 1
+
+
+def test_the_cached_run_listing_expires(home, tmp_path, monkeypatch):
+    """Cached for a beat, not for the process: a scan that STARTS has to become
+    visible, or the box never learns to poll."""
+    import time
+
+    from fused_render.index import runner
+    from fused_render.server.routers import index as index_routes
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    index_routes._forget_runs()
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {"runs": []})
+    assert client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()["reason"] == ""
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r9", "root": root, "running": True}]})
+    monkeypatch.setattr(time, "monotonic",
+                        lambda: index_routes._runs_cache[0] + index_routes.RUNS_CACHE_S + 1)
+    assert client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()["reason"] == "scanning"
+
+
+def test_a_package_is_never_reported_as_scanning(home, tmp_path, monkeypatch):
+    """Ordering matters: a package under a root being scanned still answers
+    "package", because polling for it would never end."""
+    from fused_render.index import runner
+
+    root = str(tmp_path / "Foo.app")
+    client = _ranked_client(tmp_path, str(tmp_path), [str(tmp_path) + "/a.txt"])
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r1", "root": str(tmp_path), "running": True}]})
+    body = client.get("/api/index/rank", params={"root": root, "q": "a"}).json()
+    assert body["reason"] == "package"

@@ -118,8 +118,8 @@ of every root-keyed store (`scans.json`, the applied-ignore map, the FSEvents po
 Detection is the §2 rule read backwards: `dirs.parquet` already stores `mtime_ns` per
 directory, so it is one indexed row lookup against one `os.stat` — no walk. Three
 values read as "nothing to compare against" and trigger nothing: no index, no row for
-this directory (an uncovered folder already falls back to the live walk, `query.md §6`,
-so a scan buys its search nothing), and a stored `0` (the placeholder a partition
+this directory (an uncovered folder is scanned on demand the moment somebody searches
+it, `server-api.md §7.2`, so this cheaper check has nothing to add), and a stored `0` (the placeholder a partition
 predating the column compacts to — reading it as a real mtime would make the folder
 stale forever and fire on every open).
 
