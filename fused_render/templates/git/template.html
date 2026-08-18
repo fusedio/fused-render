@@ -901,7 +901,7 @@
  *   into the explorer's URL (that is what makes `?_side=git&panel=branch` a
  *   working deep link), and up there a revision is actively harmful: a path change
  *   preserves the query verbatim, so a sha picked from THIS file's commit list
- *   would be carried onto the next file; the session sidecar PUTs the whole query
+ *   would be carried onto the next file; bookmarks store the whole query
  *   string and replays it on the next bare open, so it would outlive a restart;
  *   and bookmarks store the search too. So `previewed` travels to the shell as an
  *   ancestor-window call instead (`window._fusedSelectRev`, see `hopRev`), the
@@ -993,7 +993,7 @@ function select(kind, value) {
  *
  * The sha travels through the runtime's ancestor-window hop (`_fusedSelectRev` —
  * the `_fusedFsChanged` idiom), never through a param, so it cannot reach the
- * shell's address bar, its session sidecar or a bookmark. See the state header.
+ * shell's address bar or a bookmark. See the state header.
  */
 let previewed = null;
 

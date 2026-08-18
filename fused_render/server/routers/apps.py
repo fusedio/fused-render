@@ -26,9 +26,9 @@ POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
 plus a ``CLAUDE.md``) and — when the request carries a prompt — starts a
 detached Claude Code session in the new folder via the claude template's own
-backend (templates/claude/agent.py), so the session lands in the sidecar next
-to ``index.html`` and the existing claude template UI lists and resumes it
-with no new machinery. "local" is just this feature's own tag — nothing about
+backend (templates/claude/agent.py), so the session's transcript lands in the
+folder's ~/.claude/projects dir and the existing claude template UI lists and
+resumes it with no new machinery. "local" is just this feature's own tag — nothing about
 the listing side treats it specially.
 
 An app folder carries no ``.claude/`` of its own (D185); the starter
@@ -288,7 +288,7 @@ def _app_name_error(name) -> str | None:
 
 
 # The spawn machinery (where agent.py lives, why _start cannot be called in
-# this process, and the poll that gets a run into its sidecar) is shared with
+# this process, and the poll that gets a run's turn committed) is shared with
 # scheduled messages and lives in fused_render/claude_spawn.py.
 #
 # These two are re-bound as module-level names rather than called through
@@ -333,9 +333,9 @@ def _start_app_session(app_dir: str, prompt: str) -> tuple[str | None, str | Non
     """Start a detached Claude Code session on the new app's FOLDER.
 
     The seam the tests stub. Reuses the claude agent's _start (via the
-    fork-safe helper above) — cwd = the app folder, stream-json log, sidecar
-    at <app_dir>/.claude-split.json, the same place the split view the app
-    opens in lists and resumes from — with the prompt over stdin
+    fork-safe helper above) — cwd = the app folder, stream-json log, the
+    transcript in the same project dir the split view the app opens in lists
+    and resumes from — with the prompt over stdin
     (message_via_stdin) so user text never enters argv. Returns
     (run_id, error), exactly one of them set: a missing claude CLI or spawn
     failure must not fail the creation that already succeeded, but the reason

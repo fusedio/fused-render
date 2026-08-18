@@ -574,21 +574,6 @@
       throw new Error("no _file");
     }
 
-    // Sidecar writability probe: commenting always works (the URL is the live
-    // store), but when the history log (home_dir()/sidecar/<mapped path>.json,
-    // D83-reversal) can't be written, say so instead of losing history
-    // silently. Probe failure itself stays silent — same best-effort posture
-    // as the record call below.
-    fused.runPython("./annotate.py", { action: "status", file }, { key: null }).then(async (st) => {
-      if (st && st.writable === false) {
-        const sidecarName = (await window._fusedSidecarPath(file)).split("/").pop();
-        fusedRoBadge.update(document.getElementById("ro"), "History not saved",
-          "The file's sidecar (" + sidecarName + ") isn't " +
-          "writable, so this review lives only in this URL and won't be " +
-          "recorded to comment history.");
-      }
-    }).catch(() => {});
-
     // --- data ---------------------------------------------------------------
     // Legacy import: the removed built-in stored comments in the RESERVED
     // `_comments` shell param, which fused.params doesn't expose. If this
@@ -675,8 +660,7 @@
     // handler) marks the ones a previous handoff carried, `resolved` marks the
     // settled ones, and only the remainder rides the next send. The flag is
     // deliberately the shortest truthy value that survives JSON — the URL store
-    // has a hard byte BUDGET below, so a timestamp string would buy nothing the
-    // sidecar's own `updated_at` doesn't already record.
+    // has a hard byte BUDGET below, so a timestamp string would buy nothing.
     const sendable = (arr) => arr.filter((c) => !c.resolved && !c.sent);
     // The URL is the store, so it has a budget (~6 KB, matching the removed
     // overlay): over it, evict the oldest RESOLVED thread first, then the oldest
@@ -696,11 +680,7 @@
     // list over budget, so the payload IS the whole sent tier — one click would
     // drop a live comment out of the review the user is in the middle of
     // sending, and the "removed" note explaining it goes into a bar the
-    // navigation destroys milliseconds later. (Not annihilation: the same save
-    // mirrors every comment into the `<file>.json` log below, where absence
-    // never deletes, so an evicted comment is still recoverable through the
-    // history view. It leaves the LIVE store — the rail, the pins, the shared
-    // URL — which for a comment being sent right now is loss enough.) When that
+    // navigation destroys milliseconds later. When that
     // leaves nothing evictable we take the over-budget write: a long URL beats
     // dropping a comment from the live review to make room for a flag, and the
     // send proceeds either way.
@@ -712,15 +692,8 @@
       }
       return null;
     }
-    // `opts` is forwarded straight to the runtime's set() for the ONE caller that
-    // is not a reader action: the deep-link hydration below reads the sidecar
-    // behind `await fused.readFile(...)` and merges the logged review into the
-    // URL, so it really does change `comments` — no value comparison can absorb
-    // it — and D268's no-gesture gate has long since been opened by the click
-    // that followed the link. Hydrating a shared link is the state the page
-    // loaded in, not a step the reader took, so it asks for `{history:"replace"}`
-    // and leaves the entry pristine for their first real edit.
-    function save(arr, deletedIds, keep, opts) {
+    // `opts` is forwarded straight to the runtime's set().
+    function save(arr, keep, opts) {
       let dropped = 0;
       while (urlSize(arr) > BUDGET) {
         const oldest = evictTarget(arr, keep);
@@ -738,21 +711,6 @@
       // Always a string — the runtime's set() rejects non-strings (there is
       // no delete API), so an emptied list persists as "[]".
       fused.params.set("comments", JSON.stringify(arr), opts);
-      // Mirror the review into the target file's `<file>.json` sidecar as a
-      // write-only history log (upsert-by-id; absence never deletes) — the same
-      // sidecar the claude chat (agent.py) and bookmark history use. An
-      // explicit delete rides the SAME call as deleted_ids, so upsert and
-      // tombstone land in one atomic sidecar write (a separate delete call
-      // could race this record and lose the tombstone). The URL stays the sole
-      // live store; this is pure history, so it is fire-and-forget: a failed
-      // record must never block or throw into the review UI.
-      fused.runPython("./annotate.py", {
-        action: "record", comments: arr, file,
-        deleted_ids: deletedIds && deletedIds.length ? deletedIds : undefined,
-        // key:null — two quick saves must both land; default per-file cancellation
-        // (D114) would let the newer record abort the older and silently drop a
-        // history write (this call is fire-and-forget, so no error would surface).
-      }, { key: null }).catch(() => {});
       render();
       // The list as PERSISTED (post-eviction) — the Send to Claude handler needs
       // it to write `comments` into its own top-URL navigation, because set()
@@ -1161,20 +1119,13 @@
           // way to hand the same comment to Claude again is to clear the flag
           // that excludes it. (Resolving does NOT set `sent` — the two flags are
           // independent reasons to skip a comment.) `delete` rather than
-          // `sent = 0`, so the key leaves the URL entirely and the sidecar's
-          // None-guard merge (annotate.py) doesn't carry a falsy value forward.
+          // `sent = 0`, so the key leaves the URL entirely.
           if (!c.resolved) delete c.sent;
           save(comments);
         };
         card.querySelector('[data-a="delete"]').onclick = () => {
-          // Local delete is just absence from the URL array; the id also rides
-          // save()'s record call as a deleted_id, so the sidecar log stamps its
-          // tombstone in the SAME write (a separate delete call could race the
-          // record and lose it) and history shows it struck-through. Absence
-          // alone never deletes there (per-URL subsets) — deleted_ids is the
-          // one signal that says "deleted on purpose", and the stamp is
-          // permanent: a stale URL re-recording the id can't undo the delete.
-          save(comments.filter((x) => x.id !== c.id), [c.id]);
+          // Delete is absence from the URL array — the URL is the only store.
+          save(comments.filter((x) => x.id !== c.id));
         };
         list.appendChild(card);
       }
@@ -1289,43 +1240,10 @@
       deepLinkDone = true;
       const wanted = fused.params.get("comment");
       if (!wanted) return;
-      let comments = load();
-      let c = comments.find((x) => x.id === wanted);
-      if (!c) {
-        // Not in the live URL store: one-shot FULL-STATE hydration from the
-        // sidecar. The id arrived from the timeline, so the sidecar's
-        // upsert-by-id log is the authoritative history. Import EVERY live log
-        // entry (those without a `deleted_at` tombstone), stripping the server
-        // stamps. A tombstoned wanted id gets no special pass — deleted stays
-        // deleted (owner call 2026-07-10); hydrate the live set, skip the
-        // focus. Merge into the live array, live entries winning by id; save
-        // once (re-records — a harmless upsert no-op). If the wanted id isn't
-        // logged at all, import nothing and skip silently.
-        try {
-          const sidecar = JSON.parse(await fused.readFile(await window._fusedSidecarPath(file)));
-          const log = Array.isArray(sidecar.comments) ? sidecar.comments : [];
-          const wantedEntry = log.find((x) => x && x.id === wanted);
-          if (wantedEntry && !wantedEntry.deleted_at) {
-            const strip = ({ recorded_at, updated_at, deleted_at, ...rest }) => rest;
-            const byId = new Map();
-            for (const e of log) {
-              if (e && typeof e.id === "string" && !e.deleted_at) byId.set(e.id, strip(e));
-            }
-            for (const live of comments) byId.set(live.id, live); // live wins by id
-            // Replace, not push: hydrating a shared deep link describes the state
-            // this page loaded in (see save()'s note on `opts`).
-            save([...byId.values()], undefined, undefined, { history: "replace" });
-            // Re-read what actually persisted: save() evicts oldest RESOLVED
-            // comments when the URL budget overflows, so the wanted id may not
-            // have survived — focusing a card that isn't rendered lights nothing.
-            comments = load();
-            c = comments.find((x) => x.id === wanted);
-          }
-        } catch (e) {
-          // sidecar unreadable / unparseable / id missing: no focus, no error UI.
-        }
-      }
-      if (!c) return;
+      const comments = load();
+      const c = comments.find((x) => x.id === wanted);
+      if (!c) return; // the URL is the only store — an id not in it can't focus
+
       // Same cross-view behavior as a card click: jump to the comment's own
       // view first (that reloads the template — the param survives, so this
       // resolver re-runs there and lands the focus), else light it up here.
@@ -1675,14 +1593,13 @@
       // business reading, explaining or reasoning about our bookkeeping.
       const wire = JSON.stringify(payload);
       // Stamp and persist BEFORE navigating: save() is what writes the `comments`
-      // URL param (and, via the verbatim field merge in annotate.py, the
-      // `<file>.json` sidecar), and this frame is about to be torn down by the
+      // URL param, and this frame is about to be torn down by the
       // mode switch — a stamp applied after the navigation would never land.
       // The payload's ids are handed to save() as off-limits for eviction: the
       // stamp is what can push the list over BUDGET, and the comments being sent
       // are then the entire sent tier (see evictTarget).
       for (const c of payload) c.sent = 1;
-      const persisted = save(all, undefined, new Set(payload.map((c) => c.id)));
+      const persisted = save(all, new Set(payload.map((c) => c.id)));
       const top = window.top.location;
       const full = (top.search || "").replace(/^\?/, "");
       const rest = withoutLayoutSpan(top.search);
@@ -2242,25 +2159,16 @@
       // Between the counts and the hazard, because that is the reading order the
       // sheet asks for: how much changes, what changes, what it costs.
       renderConfirmDiff(plan.diff);
-      // The sharp hazard, stated plainly — and the SHEET NOW KNOWS whether a
-      // copy will actually be kept, rather than hedging. `plan.stash` is the
-      // same predicate the write itself runs, so the two cannot disagree. The
-      // hedge was the bug: "a copy is kept unless too large or not text" made
-      // the one genuinely unrecoverable case (content in no checkpoint AND no
-      // stash) read exactly like the safe one, and the user found out in the
-      // past tense, beside "Reverted to v3."
-      const irreversible = !!plan.unique_current && plan.stash === false;
+      // The sharp hazard, stated plainly: content in no checkpoint is
+      // destroyed by the write, and no copy of it is kept anywhere.
+      const irreversible = !!plan.unique_current;
       const warn = document.getElementById("confirmwarn");
       warn.hidden = !plan.unique_current;
-      warn.textContent = !plan.unique_current ? "" : (irreversible
-        ? "What is on disk now matches no checkpoint, and NO copy of it will " +
-          "be kept — " + (plan.stash_note || "the sidecar backstop is " +
-          "unavailable") + ". This content will be gone permanently and " +
-          "cannot be recovered from anywhere."
-        : "What is on disk now matches no checkpoint, so this overwrites " +
-          "content that exists nowhere else. A copy will be kept in the " +
-          "file's .json sidecar (revertStash). Unsaved edits in the framed " +
-          "view are not on disk and are not part of this comparison.");
+      warn.textContent = !plan.unique_current ? "" :
+        "What is on disk now matches no checkpoint, and NO copy of it will " +
+        "be kept. This content will be gone permanently and cannot be " +
+        "recovered from anywhere. Unsaved edits in the framed view are not " +
+        "on disk and are not part of this comparison.";
       // No tick-to-confirm: the owner removed it as friction, so the warning
       // above plus this button's own wording are the entire signal. The button
       // is therefore enabled unconditionally, and the irreversible case says
@@ -2279,7 +2187,7 @@
       if (!pending || busy) return;
       const plan = pending;
       // The sheet STAYS OPEN for the round trip. It used to close first, so a
-      // multi-hundred-ms Python call — a stash write, an os.replace, a full
+      // multi-hundred-ms Python call — an os.replace, a full
       // re-enumeration of the store — ran with nothing on screen changing, and the
       // click read as having done nothing at all. `busy` does double duty: it dims
       // the controls here, and `closeConfirm` refuses while it is set, so Cancel,
@@ -2351,12 +2259,9 @@
       } catch (e) {
         frame.src = frame.src; // torn-down frame — force it through the src
       }
-      const outcome = (out.action === "delete"
+      const outcome = out.action === "delete"
         ? "File deleted."
-        : "Reverted to " + plan.id.split("@")[1] + ".") +
-        (out.stashed
-          ? " Previous content kept in the .json sidecar."
-          : " " + (out.stash_note || "No copy of the previous content was kept."));
+        : "Reverted to " + plan.id.split("@")[1] + ".";
       // Handed to the carry slot BEFORE the refresh, because the shell's
       // fs-event watch is already racing us: the target changed on disk, and the
       // whole preview can be torn down and rebooted at any moment from here on.

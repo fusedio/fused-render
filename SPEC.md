@@ -119,7 +119,7 @@ Left sidebar in the shell, always visible:
 - **SB-4** Bookmarks are renamable inline (edit affordance on hover → input → Enter/blur commits) and deletable. No confirm on delete (re-bookmarking is one click). While a row's rename input is open its whole hover-action cluster is hidden (**Save to disk**, **Rename**, **Delete** — folder rows likewise) — the input wants the row's full width, and every one of them fights the edit in progress: save would snapshot the pre-edit name, rename is what's already happening, and delete would destroy the row being named. Commit (Enter/blur) or cancel (Escape) first.
 - **SB-5** **DECIDED: persistence = server-side file** `~/.fused-render/bookmarks.json` (D75; superseded the original localStorage store). JSON array `{id, name, url, created_at}` (+ folders, D44); `id = crypto.randomUUID()`. Served by `GET /api/bookmarks` → `{exists, bookmarks, missing}` and `PUT /api/bookmarks` (whole-tree, atomic, last-write-wins); server code lives in `fused_render/shell/`. Frontend reads a synchronous in-memory cache hydrated at boot; mutations await the PUT (no optimistic update); a 30 s poll re-reads the server so another tab's edits converge (D77, eventual ≤30 s, still last-write-wins). **(D104):** the one-time legacy localStorage import has been removed — every pre-D75 install has long since migrated. **(D127):** `missing` is a bookmark-id side-channel — ids whose target is confirmed gone from disk, recomputed fresh on every GET (bounded, concurrent, mount-safe, fail-open) and never persisted/round-tripped through PUT. The sidebar keeps a flagged row's name at its normal color and shows a warning glyph + hover-card note (owner call: the icon alone carries the flag); nothing is auto-removed. The bookmark poll also fires immediately on window focus (in-flight guarded), not just every 30s. Contrast with Recents (§29, D115), which stays hidden-when-missing by deliberate owner choice.
 - **SB-6** Duplicate URLs allowed; **names are globally unique, case-insensitive** (D97 — names become `<name>.bookmark` filenames): a colliding create/rename auto-suffixes `-1`, `-2`, ... instead of rejecting, existing duplicates migrate once on GET (oldest by `created_at` keeps its name). Folder names are a separate namespace. List ordered by creation time. *(drag reorder, active-bookmark highlight: polish, later)*
-- **SB-7** **DECIDED: bookmark create/update is mirrored into the target file's `.html.json` sidecar** (D83) as `bookmarkHistory` — the same per-file sidecar the `claude` chat template owns via `claudeSessions` (§7). `POST /api/bookmarks/history` upserts an entry by bookmark `id`; the frontend calls it fire-and-forget right after `addBookmark`/`updateBookmarkUrl` commit. A bookmark targeting a layout/tab sentinel or a path no longer on disk records nothing. **Delete never touches the sidecar** — history is permanent, independent of the bookmark's current lifetime.
+- **SB-7** **REMOVED (D335, retiring D83): bookmark history is gone with the per-file sidecar.** Nothing mirrors bookmark create/update anywhere; `POST /api/bookmarks/history` and its frontend caller are deleted. Kept as a tombstone so older references resolve.
 - **SB-8** **Save to disk**: a per-bookmark button writes a portable `<name>.bookmark` JSON file (format v1: `{version, name, icon?, kind: single|panel|tab, path?, search}`, D98) next to the file(s) the bookmark points at — a single bookmark into its target's own directory (`path` relative to it), a panel/tab bookmark into the deepest common ancestor directory of all `_layout` leaves, each leaf path rewritten relative to that dir (grammar, nesting, per-leaf queries and global params untouched). The button's hover title shows the exact destination path before the click; it is disabled (greyed, explanatory title) when no save target exists — a leaf without an absolute fs path, or no common root. Frontend computes `{dir, filename, content}` (`lib/bookmark-file.ts`); `POST /api/bookmarks/export` validates and writes, overwrite allowed (a re-save refreshes the snapshot).
 - **SB-9** **Double-click open** (macOS): the packaged app registers `.bookmark` as an Owner document type (D99); Finder-opening one routes to the `/view/_bookmark?file=<abs path>` sentinel, which reads the file (`GET /api/bookmark-file`), resolves its relative paths against the file's own directory (`lib/bookmark-file.ts` `bookmarkOpenUrl`, the inverse of SB-8's relativize) and `location.replace()`s to the described view — single, panel or tab. Browsing to a `.bookmark` file in the explorer opens it the same way (never a preview). Malformed / unsupported-version files render a readable error, no redirect.
 
@@ -334,8 +334,8 @@ def main(city: str = "oslo", limit: int = 100):
   whose mount POLICY stay in `shell/mounts.py`, so this does not weaken the
   mount-agnostic rule (§26/MD-11): a template may ASK a fact, never branch on how
   mounts work. A site that cannot reach `appenv` keeps whatever fail-closed or
-  degrade rule it documents (`_refuse_mounts` refuses; `_sidecar_writable` falls
-  back to `os.access`) — and because that is now the primary path when no server
+  degrade rule it documents (`_refuse_mounts` refuses) — and because that is
+  now the primary path when no server
   exported the vars, each one is tested directly. Pinned by
   `tests/test_templates_decoupled.py`, which asserts **zero** `fused_render`
   imports under `fused_render/templates/` (AST, not grep — the word appears
@@ -434,7 +434,7 @@ const page = await fused.runPython("./reader.py",
 | `.html .htm` | `_render`, `code`, `claude`, `reader` | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4). A page is authored, so it carries the authored-file pair (PT-14): the chat's left pane renders the page itself and the chat edits it. This is also the key where a `?_mode=claude` link written before D235 works again for free, because D237's rename put the chat back on the file keys (`examples_seed/tutorial/`) |
 | unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
 
-- **PT-14** **ONE chat template serves both kinds of target, and the companion that used to split by kind is GONE (D235, chat half overturned by D237; the timeline half removed with the `history` template).** *Original (D235) form: four companion modes split by target kind — a directory offered `claude` + `git`, a file offered `claude_split` + `history`, with two separate chat templates. **The two-chat premise is void, and so is the second companion.*** There is now a single chat template, **`claude`** (`claude_split` renamed after the plain full-width `claude` was deleted, D237), and it is bound to **both** the universal `/` directory key and all 47 authored-file keys — 48 keys in all. The other companion those keys used to carry, `history` (a per-path commit timeline that also materialised a commit as a browsable tree), **is deleted**: the `git` view answers the same question without a second surface, because its commit list is SCOPED to whatever target it was opened on and selecting a commit renders the open file as of it (§33, GT-17 — resolved on read through `/api/git/show`, with nothing written to disk). So the companion set is now the chat plus `git`, and **`git` (the Source Control view, §33, GT-2) is FOLDER-ONLY: the universal `/` directory key and no file extension at all.** Everything `git` offers — staging, discarding, stashing, committing, branches, push/pull — is a REPOSITORY-level act, and the working tree a file sits in is its FOLDER's working tree, not the file's: you do not stash a file, you stash a tree. A file therefore has no binding of its own for it; what a file's reader wants — "what happened to this file" — is served by the SAME view borrowed from the file's parent folder into the preview sidebar (`apps/explorer/lib/dir-mode.ts`), scoped to the open path. `git` did briefly ride along on all 48 keys, and the reason was a gap in a different surface rather than anything about the mode: the explorer gave a FOLDER no mode switcher of its own, the only mode surface a browsing user had was the preview pane's, and the pane acted on the SELECTED ROW, always a file — so a mode bound to `/` alone was unreachable without hand-writing `?_mode=git`. The pane selects and previews FOLDER rows now (the folder peek, FS-10/FS-11), so the folder has a mode surface and the workaround is retired. Two rules, not 47 table rows: the per-extension lists above simply say *which* extensions count as authored files. The **authored-file set** — source, config, prose, notebooks, record streams, tabular data, geo data and image assets, 47 keys — is deliberately withheld from spreadsheets, PDFs, media, archives, 3D and generated tool files: a chat is for bytes a human authors or analyses, and those lists are left alone rather than churned. The `/` key's gating asymmetry is the visible consequence of D237 (its third party, `app`, is gone entirely — D262 deleted the app-builder route and D264 the template): the chat's gate accepts **any** directory, while `git`'s takes any folder in a work tree and refuses a file outright (GT-3), which is the binding stated a second time — so a hand-written `?_mode=git` on a file is not offered a repository-level view of something that is not a repository. The chat's own contract (its gate, its left pane's three shapes, and the system prompt that must agree with the pane) is **PT-16**. **What the deleted timeline mode leaves behind, deliberately.** It materialised a commit by `git archive`-ing it into `~/.fused-render/app-versions/<key>/<sha>/` and framing that directory, and two mechanisms outlive it because trees an older version already extracted are still on disk and still immutable: (1) `server/mount.py::_is_under_snapshot_root` makes every `/api/fs` mutation handler refuse a path under that root with the existing `readonly` contract (403 + `{"error": "readonly"}`) and makes `_writable` report `false` there, so a framed editor draws read-only mode up front instead of only failing at Cmd+S; a **copy out** is still allowed — read-only, not sealed. (2) `?snapshot=1` on an embed URL (`router.ts` `IS_SNAPSHOT` → `body.snapshot`) still says FROZEN TREE, NOT A LIVE FOLDER: it opens no preview pane of its own and suppresses the breadcrumb and the corner chips, all of which would act on a frozen copy as though it were live. **Neither has a producer inside the app any more** — nothing writes `app-versions/` and no view frames a snapshot — and that is recorded here rather than left for a reader to rediscover from dead code. What is **still rejected**: (a) keeping `git` on file keys. The original argument was "two commit-log modes for one story", which stopped applying the moment `git` dropped its commit log (GT-2) — and on that basis the mode WAS bound to every file key for a while. The reason it is rejected again is not about duplication: a file key is the wrong place for a repository-level view. Staging, stashing and pushing are done to a tree, the tree in question is the folder's, and putting that behind a single file offers the user a control whose scope is not the thing they selected. What the file-key binding was really buying was REACHABILITY, back when a folder had no mode surface — and that is now bought properly, by the preview pane peeking folder rows and the file sidebar borrowing the parent's entry, rather than by binding the mode to the wrong target. (b) keeping `annotate` as a standalone mode — its tools live in the chat's pane, so the mode was deregistered from every core key rather than left as a second, staler way in (§17), and its comment handoff is now doubly unreachable (no binding, no receiver). What is **no longer** rejected, and is the reversal itself: D235 rejected "binding ONE chat template to both kinds" on the grounds that the split pane renders a target and an ordinary folder has no app entry to render, so one template would have to branch on kind and carry a dead pane for half its bindings. It does branch on kind, in two places — the pane and the prompt — and D239 has since conceded half of D235's premise while leaving its conclusion overturned: an ordinary folder really does have nothing to render, so it gets **no pane**, not a substitute for one (PT-16). What that does not follow is that the template must therefore fork. A no-pane target is a *layout* the one template resolves — the pane is removed and the conversation takes the width — and everything the two kinds actually SHARE is the part that costs something to duplicate: the transcript, the composer, the approval cards, the permission modes, the run/resume/stop machinery, the session sidecar and the transcript restore. D235's own evidence is the argument here: the second chat template WAS that fork, and it drifted into the feature-poor twin (8 mentions of the annotation machinery against 277) precisely because a fork's two halves are maintained by whoever happens to be editing one of them. So the branch is one predicate read in two places, and the cost of the case that has no pane is a flag and a removal — not a second copy of a chat.
+- **PT-14** **ONE chat template serves both kinds of target, and the companion that used to split by kind is GONE (D235, chat half overturned by D237; the timeline half removed with the `history` template).** *Original (D235) form: four companion modes split by target kind — a directory offered `claude` + `git`, a file offered `claude_split` + `history`, with two separate chat templates. **The two-chat premise is void, and so is the second companion.*** There is now a single chat template, **`claude`** (`claude_split` renamed after the plain full-width `claude` was deleted, D237), and it is bound to **both** the universal `/` directory key and all 47 authored-file keys — 48 keys in all. The other companion those keys used to carry, `history` (a per-path commit timeline that also materialised a commit as a browsable tree), **is deleted**: the `git` view answers the same question without a second surface, because its commit list is SCOPED to whatever target it was opened on and selecting a commit renders the open file as of it (§33, GT-17 — resolved on read through `/api/git/show`, with nothing written to disk). So the companion set is now the chat plus `git`, and **`git` (the Source Control view, §33, GT-2) is FOLDER-ONLY: the universal `/` directory key and no file extension at all.** Everything `git` offers — staging, discarding, stashing, committing, branches, push/pull — is a REPOSITORY-level act, and the working tree a file sits in is its FOLDER's working tree, not the file's: you do not stash a file, you stash a tree. A file therefore has no binding of its own for it; what a file's reader wants — "what happened to this file" — is served by the SAME view borrowed from the file's parent folder into the preview sidebar (`apps/explorer/lib/dir-mode.ts`), scoped to the open path. `git` did briefly ride along on all 48 keys, and the reason was a gap in a different surface rather than anything about the mode: the explorer gave a FOLDER no mode switcher of its own, the only mode surface a browsing user had was the preview pane's, and the pane acted on the SELECTED ROW, always a file — so a mode bound to `/` alone was unreachable without hand-writing `?_mode=git`. The pane selects and previews FOLDER rows now (the folder peek, FS-10/FS-11), so the folder has a mode surface and the workaround is retired. Two rules, not 47 table rows: the per-extension lists above simply say *which* extensions count as authored files. The **authored-file set** — source, config, prose, notebooks, record streams, tabular data, geo data and image assets, 47 keys — is deliberately withheld from spreadsheets, PDFs, media, archives, 3D and generated tool files: a chat is for bytes a human authors or analyses, and those lists are left alone rather than churned. The `/` key's gating asymmetry is the visible consequence of D237 (its third party, `app`, is gone entirely — D262 deleted the app-builder route and D264 the template): the chat's gate accepts **any** directory, while `git`'s takes any folder in a work tree and refuses a file outright (GT-3), which is the binding stated a second time — so a hand-written `?_mode=git` on a file is not offered a repository-level view of something that is not a repository. The chat's own contract (its gate, its left pane's three shapes, and the system prompt that must agree with the pane) is **PT-16**. **What the deleted timeline mode leaves behind, deliberately.** It materialised a commit by `git archive`-ing it into `~/.fused-render/app-versions/<key>/<sha>/` and framing that directory, and two mechanisms outlive it because trees an older version already extracted are still on disk and still immutable: (1) `server/mount.py::_is_under_snapshot_root` makes every `/api/fs` mutation handler refuse a path under that root with the existing `readonly` contract (403 + `{"error": "readonly"}`) and makes `_writable` report `false` there, so a framed editor draws read-only mode up front instead of only failing at Cmd+S; a **copy out** is still allowed — read-only, not sealed. (2) `?snapshot=1` on an embed URL (`router.ts` `IS_SNAPSHOT` → `body.snapshot`) still says FROZEN TREE, NOT A LIVE FOLDER: it opens no preview pane of its own and suppresses the breadcrumb and the corner chips, all of which would act on a frozen copy as though it were live. **Neither has a producer inside the app any more** — nothing writes `app-versions/` and no view frames a snapshot — and that is recorded here rather than left for a reader to rediscover from dead code. What is **still rejected**: (a) keeping `git` on file keys. The original argument was "two commit-log modes for one story", which stopped applying the moment `git` dropped its commit log (GT-2) — and on that basis the mode WAS bound to every file key for a while. The reason it is rejected again is not about duplication: a file key is the wrong place for a repository-level view. Staging, stashing and pushing are done to a tree, the tree in question is the folder's, and putting that behind a single file offers the user a control whose scope is not the thing they selected. What the file-key binding was really buying was REACHABILITY, back when a folder had no mode surface — and that is now bought properly, by the preview pane peeking folder rows and the file sidebar borrowing the parent's entry, rather than by binding the mode to the wrong target. (b) keeping `annotate` as a standalone mode — its tools live in the chat's pane, so the mode was deregistered from every core key rather than left as a second, staler way in (§17), and its comment handoff is now doubly unreachable (no binding, no receiver). What is **no longer** rejected, and is the reversal itself: D235 rejected "binding ONE chat template to both kinds" on the grounds that the split pane renders a target and an ordinary folder has no app entry to render, so one template would have to branch on kind and carry a dead pane for half its bindings. It does branch on kind, in two places — the pane and the prompt — and D239 has since conceded half of D235's premise while leaving its conclusion overturned: an ordinary folder really does have nothing to render, so it gets **no pane**, not a substitute for one (PT-16). What that does not follow is that the template must therefore fork. A no-pane target is a *layout* the one template resolves — the pane is removed and the conversation takes the width — and everything the two kinds actually SHARE is the part that costs something to duplicate: the transcript, the composer, the approval cards, the permission modes, the run/resume/stop machinery, the session list and the transcript restore. D235's own evidence is the argument here: the second chat template WAS that fork, and it drifted into the feature-poor twin (8 mentions of the annotation machinery against 277) precisely because a fork's two halves are maintained by whoever happens to be editing one of them. So the branch is one predicate read in two places, and the cost of the case that has no pane is a flag and a removal — not a second copy of a chat.
 - **PT-15** **A template whose layout needs width is responsible for collapsing itself; the shell offers modes by *binding and gate* only — never by how much room a host happens to have (D236).** The set of modes a target gets is decided by the registry (PT-7/CT-3) and, for a gated folder, by its `condition.py` verdict (CT-12): those two inputs and nothing else. A **split-layout** template — two panes and a divider, like `claude` (the chat, PT-16) or `history` — therefore has to survive every host the shell renders it in, and three of them are narrow by design: the listing's **preview pane** (floor 220 px, default width *half* its split container — FS-12), a **Panel pane** dragged freely (§14), and **`/embed`** in a small window. The rule: the template ships a **media query** at the width its own layout stops being **useful** — the sum of its panes' minimum *useful* widths, rounded up, which is **not** the width at which they merely stop overflowing — and below it shows **one view at a time with a toggle**, the idiom `log_studio` (780 px), `map` (650), `duckdb`/`sqlite` (560) and `bundle` (640) already use. `claude` collapses at **800 px** (its useful floor: `#left` 420 + divider 4 + `#chat` 440 = 864; the breakpoint sits a deliberate notch below it, trading a slightly-squeezed band for keeping the split alive on more hosts) and `history` at **640 px** (`#side` 200 + divider 4 + a 420 px preview frame that is still a page = 624, rounded up) — the two deliberately do NOT share a figure, because `history`'s non-preview column is a 200 px commit spine where `claude`'s is a 440 px chat. The arithmetic **scopes to the targets that have two panes**, which since D239 is `claude`'s file and app-folder shapes only: an ordinary folder has no `#left`, so there is no sum to satisfy, no collapse to perform and no toggle to offer — a single-column layout is already the thing the breakpoint exists to produce, at every width. This is not an exemption from the rule; it is the rule having nothing to do, and it is why the collapse logic is short-circuited outright for that target rather than left to run against a column that is not in the document. The figures sit **at the useful floors and not the ~560 the overflow floors give** because the listing preview pane defaults to *half* its split container — ~700 px on a 1700 px window — so a breakpoint set at the overflow floor engaged the split in every host that could hold it without breaking and none that could hold it usefully; the arithmetic is written down beside the query, so the figure is checkable rather than a taste call. Three sub-rules the two built-ins establish, because getting them wrong is silent: **(a) park the hidden half, do not `display: none` it** — an iframe with no layout box gives its document a 0×0 viewport, so a screenshot of it rasterises 1×1 and every element rect an annotation pin is anchored to collapses (§17); out of flow + `visibility: hidden` + `pointer-events: none` keeps a real viewport and shows nothing. **(b) An inline width written by the divider's own JS outranks the media query**, so the collapse must neutralise it — either from CSS (`!important`) or by having the apply function skip the inline write while narrow; the split *ratio* param is never touched either way, so crossing back restores the user's width with no reload. **(c) A control that acts on the hidden half is absent, not disabled**, and any **armed** state it owns is reset on the flip — a disabled control still asserts the feature exists, and an armed control over an invisible document swallows input or attaches something the user cannot see. Only the view toggle itself (navigation, not a feature) and content the user has already authored stay reachable from both views. The toggle **names what its destination is FOR**, not merely where it goes: `claude`'s reads **"Comment on preview"** outbound and **"Back to chat"** on the return (D239; the verb was "Annotate" until D298 relabelled the whole feature "Comment" in the UI, ids and params unchanged), because the preview column is where the annotation tools live and that is the only reason a person leaves the conversation for it — "Preview"/"Chat" named the two halves and said nothing about why one would move. It stays navigation and is **not merged** with the annotate switch (§17), which arms the mode once you are there: one control moves the view, the other changes what a click in the frame does, and one button doing both would arm a mode in the same gesture that reveals the surface. The label and the `aria-label` are **one string**, since a second wording is a second thing to keep in step; the longer labels are what `#viewbtn`'s `flex-shrink: 0` and the annotate switch's own ellipsis exist for, so a 220px host truncates the mode name rather than overflowing the row or half-hiding the only way back. Which view **leads** is the mode's subject, not the wider pane: the chat opens on the chat, `history` on the commit list (a snapshot must be picked before there is a preview). **Pane-local params** are the persistence channel and stay pane-local under D72's boundary: `claude` carries `split` (the ratio), `annotations` + `annmode` (§17's notes and armed mode — and **`annmode` is written only when the URL does not already MEAN the new state**: it is effectively-on, so absent and `1` are the same answer, and the boot default normalising an absent param to `1` was a semantic no-op that still cost a history entry under the runtime's first-change-push rule (PR-3), which is why expanding the preview pane to full screen took TWO presses of Back to undo. Writing `0` over an absent param is a real disarm — a narrow pane boots that way — and still pushes; the single-writer funnel is unchanged, it just has a no-op guard), **`leftmode`** (which of the offerable stat entries the left pane frames, PT-16 — a listbox picker at the RIGHT-HAND end of the pane's own bar, showing each template's `icon.svg` beside its name, hidden below two choices, an unknown value falling back to the default silently as in PT-9) and **`paneview`** (`chat`|`preview`, which of the two the narrow layout shows, chat by default) — all four of which an ordinary folder's chat **ignores silently** rather than strips (PT-16), since they describe a layout that target does not have; `history` keeps its narrow view in a **body class only**, deliberately not a param, since which half a temporarily-narrow host shows is not state a bookmark should reproduce. What was **rejected**: having the **shell filter split-layout modes out of narrow hosts**. A pane's width is *dynamic* — the listing pane defaults to half its container, so on a wide window the split fits and the mode should be offered — which makes a host-based ban wrong in the one place it was aimed at; a width-based filter makes modes appear and disappear from the switcher (PT-10) mid-divider-drag and can yank the **active** mode out from under the user; it needs per-template width knowledge in the shell, i.e. a new `registry.json` field plus a new field on stat's template entries (which carry only `mode`/`path`/`icon`/`conditional`, PT-8), applied separately in three hosts (`ListingPreviewPane.tsx`, `PaneModeMenu.tsx`, `/embed`); and **user templates (§16) would never inherit it**, whereas a media query in the template is something a user template gets for free. **The `annmode` clause above has since GENERALISED past boot and SPLIT along D271's policy.** Generalised: every always-live control asks the same question and gets it wrong the same way — see **PT-17**, which is the rule `annmode` was the first instance of. Split: "do not write it" was the right answer for `annmode` because effectively-on is what an absent param already MEANS, but a param whose default the reader could have CHOSEN is stamped into the URL instead, with `{history: "replace"}` so the stamp costs no entry (PR-3), while a value the view DERIVES from something the URL does not record is not written at all and its MODE is the bookmark.
 - **PT-16** **The chat template's contract: one gate, TWO pane shapes plus a no-pane case, and a system prompt that cannot disagree with the pane (D237, revised by D239).** `templates/claude/` is the single chat mode (PT-14). Because it is bound to two kinds of target it branches on kind in exactly two places — the left pane and the prompt — and both read the **same** predicate, `shared/app_entry.entry_html`, so what the prompt claims is beside the chat is what is beside the chat. *This clause said "three pane shapes" until D239: the third shape — fused-render's own file browser framed for a folder with no app entry — is **removed**, and an ordinary folder now gets a full-width chat with no pane at all. The predicate and the two-places rule are unchanged; what changed is that one of the two answers is "there is nothing beside the chat", and the prompt says nothing about a pane there because there is none.*
   - **The gate** (`claude/condition.py`, CT-12) accepts **any existing regular file and any existing directory**, and nothing else: `os.path.isfile` / `os.path.isdir`, never `not isdir` (the loose form also swallows every path that does not exist, and "cannot tell" must read as "refuse"), and it never lists, walks, globs or resolves symlinks, because it runs for every path the explorer stats. That reduces to "the path exists", which the shell already knows — so the gate exists for **one** refusal: a **mount-backed** path (`shared/appenv.is_mount_backed`). The bytes under the mounts dir arrive over FUSE and an agent turned loose there rewrites the remote tree, the same reason every peer gate refuses those paths (MD-11). This is a **capability deliberately removed** relative to the deleted plain chat template, which shipped no `condition.py` at all and therefore did offer a chat over an rclone/NFS mount. **Rejected:** deleting the gate outright now that everything else about it is always-true — an always-true gate would be worth removing, a gate that still says no to remote mounts is not.
@@ -572,14 +572,14 @@ The reload logic lives **entirely in the injected runtime** — the shell needs 
 
 ### 13.5 Read-only files — the editability contract
 
-Write surfaces are decentralized (the code editor via `/api/fs/write`; the sqlite/duckdb grids and the annotate sidecar via their own Python writers), so read-onlyness is decided close to whoever writes, using host primitives — never probed from JS.
+Write surfaces are decentralized (the code editor via `/api/fs/write`; the sqlite/duckdb grids via their own Python writers), so read-onlyness is decided close to whoever writes, using host primitives — never probed from JS.
 
 - **RO-1** `/api/fs/stat` (and `/api/fs/write`'s stat-shaped response) carries `writable`: an existing path needs `W_OK` on itself, a not-yet-existing file needs `W_OK` on its parent. The flag means exactly "`/api/fs/write` would accept this path" — the two must never disagree.
 - **RO-2** `/api/fs/write` refuses a non-writable target with `403 {"error": "readonly"}`. This closes the atomic-write loophole: temp-file + `os.replace` goes through the parent directory and would otherwise silently overwrite a `chmod -w` file. `runtime.js` `writeFile` surfaces the refusal as a typed error (`err.type === "readonly"`), mirroring the 409 `"conflict"` case — the backstop for a template that never checked the flag.
-- **RO-3** Any template-side Python **writer** applies the same gate itself (`os.access(file, W_OK)` → `PermissionError`) before writing, for the same reason: writers that rewrite via `os.replace` (duckdb, annotate's sidecar, `shared/file_history.py`'s revert — §34/FH-7) bypass the read-only bit, and ones that don't (sqlite) fail late with an unhelpful mid-transaction error. The two `os.replace` writers that also consult the mount flag through `shared/appenv` (annotate's `_sidecar_writable`, `file_history.file_writable`) are the exception RO-8's known gap notes; `file_writable` additionally requires `W_OK` on the **directory**, since that is where mkstemp and the replace both land.
+- **RO-3** Any template-side Python **writer** applies the same gate itself (`os.access(file, W_OK)` → `PermissionError`) before writing, for the same reason: writers that rewrite via `os.replace` (duckdb, `shared/file_history.py`'s revert — §34/FH-7) bypass the read-only bit, and ones that don't (sqlite) fail late with an unhelpful mid-transaction error. The one `os.replace` writer that also consults the mount flag through `shared/appenv` (`file_history.file_writable`) is the exception RO-8's known gap notes; `file_writable` additionally requires `W_OK` on the **directory**, since that is where mkstemp and the replace both land.
 - **RO-4** Template **readers** fold fs writability into the editability verdict they already return — `editable` + `readonly_message` (short badge text) + `readonly_tooltip` (hover explanation). Filesystem read-onlyness is just one more reason alongside content-level ones ("View", "No rowid", "JSON"); the fs gate wins over a content-level "editable".
 - **RO-5** UI treatment is shared: `/template-shared/ro-badge.js` (`fusedRoBadge.update(el, message, tooltip)`) renders the identical badge in every template with an edit surface. The code editor derives its verdict from `stat.writable` (no Python reader) and locks the CodeMirror buffer; the grids disable editing per their reader's verdict.
-- **RO-6** Read-only never blocks *viewing*, and a template whose write target differs from the viewed file gates on ITS target: annotate checks the `<file>.json` sidecar (a `status` action), keeps commenting fully functional (the URL is the live store), and only warns that history won't be recorded.
+- **RO-6** Read-only never blocks *viewing*, and a template whose write target differs from the viewed file gates on ITS target. *(The clause's original example — annotate probing its sidecar's writability — went with the sidecar, D335.)*
 - **RO-7** (D110) An archive member's **preview** copy (zip and tar readers) lands **0444**: it is a throwaway — an edit "saved" to it never reaches the archive — and the permission bit routes it through RO-1..RO-6 unchanged (stat.writable false, templates open read-only, `/api/fs/write` refuses, writer gates hold). The copy is written to a unique temp file and `os.replace`'d into place, so a re-preview swaps out a stale read-only copy and a concurrent preview of the same member never sees a half-written or permission-flapping file. Deliberate `extract`/`extract_all` output keeps the original semantics: writable, and failing loudly (EACCES) on a write-protected existing target rather than silently replacing it.
 - **RO-8** (D110) A mount record persists `read_only`, re-detected **non-mutatingly on every attach** (rc `operations/fsinfo`: a present Features map with no Put/PutStream/Copy → read-only; `config/get`: anonymous S3 — no keys, no env_auth, no profile — → read-only) unless the flag was set explicitly via `read_only` in the create body (strict boolean, 400 otherwise; persisted with a `read_only_user` marker that detection never overrides). An **inconclusive** probe (rc failure, missing Features map) persists nothing — a transient hiccup must not freeze a wrong verdict; the next attach re-probes. `_writable` folds the flag in ahead of the `W_OK` check — under a mount `W_OK` lies (CacheMode=full takes any write into the local VFS cache and fails only at async upload) — so stat.writable and the write guard flip together per RO-1, via an mtime-cached mountpoint lookup (no mounts.json parse per stat). Unflagged mounts stay rw (pre-flag behavior; a credentialed-but-IAM-read-only remote is knowingly not caught — only a junk-writing probe could tell). Known gap, accepted for now: template-side writer gates (RO-3, `os.access`) don't see the flag — only `/api/fs/write` surfaces do; the deep fix is mounting read-only remotes with the VFS `ReadOnly` option so `W_OK` itself turns truthful, deferred because the serve and the mount must carry identical vfs option sets (see SERVE_VFS_OPT) and a per-mount option split needs its own validation. `mount_view` exposes the flag; the Mounts card labels the mount "read-only".
 
@@ -761,32 +761,14 @@ off-screen text simply has no pin until it scrolls back in — off-screen, not
 detached, as with code anchors.
 
 **Comment focus deep link:** an ordinary `comment` template param carries an
-id-only deep link (the sidecar-inspector→annotate contract, §24 HV-8 —
-that caller is removed, this param is not; mirrors the claude
-`session_id` resume precedent — the id is the whole contract and is never
-cleared after use). At boot, once the framed view is wired, the template reads
-`comment`: if the id is in the live URL store it focuses it (jumping to the
-comment's own view first when it differs, then lighting the pin/card); if it
-isn't, the template does a **one-shot full-state hydration** — a single read of
-`<file>.json`'s `comments` log that imports every LIVE entry (those without a
-`deleted_at` tombstone; a tombstoned wanted id gets no import and no focus —
-deleted stays deleted, owner call 2026-07-10), strips the server stamps
-(`recorded_at`/`updated_at`/`deleted_at`), and merges them into the live set
-(live entries win by id) — then saves once (re-recording, a harmless upsert
-no-op) and focuses. Deletion is an **explicit** signal: the annotate delete
-button drops the comment from the URL and sends its id as `deleted_ids` on the
-SAME `record` call, so upsert and tombstone land in one atomic sidecar write
-(two separate calls could interleave and lose the tombstone); `annotate.py`
-stamps `deleted_at` (server `time.time()` SECONDS) on each named log entry.
-The tombstone is **permanent** — recording an id never clears it, so a stale
-bookmarked URL that still carries the deleted comment (or the hydration merge's
-live-wins rule) cannot silently resurrect it in the log. Absence
-from a `record` array NEVER deletes — each URL carries only its own review
-subset, so a missing id means "not in this review", not "deleted". The live URL
-`comments` param stays the sole live store; the sidecar read is one boot-time
-hydration for a deep link whose id is absent from the live set, not a live-store
-sync back from the sidecar. An unreadable/unparseable sidecar or a missing id
-fails silently (no error UI, no focus).
+id-only deep link (mirrors the claude `session_id` resume precedent — the id is
+the whole contract and is never cleared after use). At boot, once the framed
+view is wired, the template reads `comment`: if the id is in the live URL store
+it focuses it (jumping to the comment's own view first when it differs, then
+lighting the pin/card); an id not in the URL cannot focus — the URL is the only
+store (the sidecar comments log, its `deleted_ids` tombstones and the one-shot
+hydration that used to back this went with the sidecar, D335, retiring
+D100/D101's log half). Deletion is simply absence from the URL array.
 
 **The whole Send-to-Claude round trip below is DEAD CODE as of D237, and it is
 recorded rather than deleted.** Both legs are described exactly as built, because
@@ -806,10 +788,8 @@ pane, so the honest question is whether a handoff should exist at all.
 time). The handoff sends only the comments that are neither `resolved` nor
 `sent` — `sent: 1` is an ordinary per-comment field, stamped on exactly the
 comments in the payload and `save()`d *before* the mode switch so it lands in the
-`comments` URL param and, through annotate.py's verbatim field merge, in the
-`<file>.json` log. The flag is a bare truthy `1` because the URL store's ~6 KB
-budget is the binding constraint and the sidecar's own `updated_at` already dates
-the write. The flag is stripped from what the agent sees (the payload is
+`comments` URL param. The flag is a bare truthy `1` because the URL store's
+~6 KB budget is the binding constraint. The flag is stripped from what the agent sees (the payload is
 serialized before stamping) — it is bookkeeping for the URL store, not something
 `formatComments` should hand the model to reason about. A comment **being sent
 right now is off-limits to eviction**: the save that stamps `sent` is the save that
@@ -818,10 +798,8 @@ payload is then the whole sent tier — so the payload's ids are passed to `save
 as protected, and an over-budget write is preferred over dropping a comment from
 the live review to make room for a flag (the "removed" bar note explaining it
 would be destroyed by the navigation milliseconds later, making that loss silent).
-Eviction is not annihilation — the same `save()` mirrors every comment into the
-`<file>.json` log, where absence never deletes, so an evicted comment stays
-recoverable through the sidecar itself; what it leaves is the **live** store,
-the rail and pins and the shared URL, which for a comment mid-send is loss enough.
+With the sidecar log gone (D335) eviction from the URL IS annihilation, which is
+one more reason the open-unsent tier is never evicted.
 A sent card shows a "sent ↗" chip so its exclusion is visible — but **not** on a
 resolved card, which is the terminal state, already explains the exclusion, and
 takes the stronger dim (`.card.resolved.sent` encodes that precedence in
@@ -831,10 +809,7 @@ whichever rule was written second). The
 again; and when nothing is sendable the button writes the inline bar note instead
 of navigating. The URL budget's eviction order gains a second tier — oldest
 `resolved` first, then oldest `sent` (already in a chat transcript), never an
-open unsent comment. `sent` is deliberately **not** surfaced in the history
-timeline (§24): the sidecar is a write-only log where absence never deletes, so
-the un-send that Reopen performs (the key simply leaves the URL) cannot be
-represented there, and a label that can go stale is worse than no label.
+open unsent comment.
 
 The return leg was the chat's — the half D237 deleted, per the note above; what
 follows is how it worked, not what runs. Annotate sets `claudeReturn=<mode>` alongside
@@ -1313,10 +1288,10 @@ quirk).
 `getSession`/`putSession`/`LastSession` in `platform/lib/api.ts`, the `writable`
 gate and the `ready` preview hold in `StatView`, and `restoredSearch` in
 `platform/lib/session-params.ts`. **No migration:** a `lastSession` key already on
-disk is simply never read or written again, and sits inert beside the sidecar's
-live keys (`claudeSessions`, `bookmarkHistory`, `comments`, `revertStash`,
-`slides`, `docs`, `excel`, `latex`, `usd`), which are untouched by this — the
-sidecar file itself is not going anywhere.
+disk is simply never read or written again. *(The sidecar file this key lived in
+has since been deleted outright — every remaining key and its machinery, D335 —
+so the "sits inert beside the live keys" framing above is now moot: the whole
+tree under `~/.fused-render/sidecar/` is inert residue.)*
 
 **ONE RULE SURVIVES AND IS STILL BINDING — LSN-12's never-persisted params, now
 owned by RECENTS.**
@@ -1789,9 +1764,8 @@ defect — `frontend/src/apps/explorer/listing/mode-labels.test.ts` exists
 because of it — and the sidecar inspector was the half nobody reached for. **That
 successor has since been deleted too**, folded into the folder-only `git` view
 (§33, PT-14), so neither timeline mode ships and no template folder answers to
-`history` at all. The
-sidecar itself is unchanged and still written and read by the surfaces that own
-it; what is gone is the merged read-only view of it. `".*.json"` now falls
+`history` at all. *(The sidecar this section inspected has since been deleted
+outright as well — D335.)* `".*.json"` now falls
 through to `["tree", "code"]`, which renders the same bytes without pretending
 to be a history.
 
@@ -2251,7 +2225,7 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   the raw line for level words — the field NAME `"error": null` made every
   healthy call render as ERROR in `log_studio`, which the registry offers for
   this file. Absent-means-null is safe for every consumer here (all read through
-  `.get()`), and matches the sidecar's additive-records posture (HV-6). The
+  `.get()`), and matches the additive-records posture the sidecar had (HV-6). The
   last-resort shrink for a record still over ~32 KiB after the per-field caps
   **marks** the fields it drops by setting them to `None`, so its result goes
   back through the same prune before serialization — writing it directly emitted
@@ -2351,9 +2325,9 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   "last file by name" as "newest records" — not the store walk (CL-12), and not
   any bounded newest-first probe a future gate does (CL-11), which must order by
   **mtime**: on reverse name order its whole window can be stale same-day files. Not the `<file>.json`
-  sidecar (SB-7, §7, D82–D84): every writer there does a whole-file
+  sidecar (since deleted outright, D335): every writer there did a whole-file
   read-merge-write, which at call volume is O(n²) plus a lost-update race —
-  the sidecar is right for low-frequency history, wrong for a firehose. Not
+  it was right for low-frequency history, wrong for a firehose. Not
   the app log (`logs.py`): that file is disposable by design (D68) and
   unparseable. `.calls.jsonl` is a compound registry key, so the store opens
   in the `calls` view by default and `.jsonl`'s `duckdb` binding still queries
@@ -2683,7 +2657,7 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   notes, and `code` stays **unchanged** as the raw-source escape hatch. The chat
   mode sits where it sits on `.html` (after the editors, before the trailing
   meta-modes) and for the same reason: the chat template is file-type agnostic — it
-  works off `_file` and its own sidecar — so binding it here is what
+  works off `_file` alone — so binding it here is what
   gives a note a chat about itself. **D235** rebound this key from the plain chat
   to the split one (`claude_split`) because a note is a FILE; **D237** deleted the
   plain chat and renamed the survivor back to `claude`, so the spelling here is
@@ -4280,12 +4254,11 @@ wanting "what has this file been through" wants §33.
   not checkpointed by anyone, so they are **not revertible** — this reverts the
   agent's edits, and only those.
 - **FH-7** **The one write is to the target, gated and atomic.** `file_writable`
-  is the same three-part gate as `annotate.py::_sidecar_writable` (RO-3, RO-6):
+  is a three-part gate (RO-3, RO-6):
   the read-only-mount check FIRST, through `shared/appenv`'s env contract, because
   `os.access(W_OK)` **lies** under a read-only mount with CacheMode=full — the
   write lands in the local VFS cache and only 403s at the async upload; then W_OK
-  on the **directory** (mkstemp and the replace both land there — this half the
-  sidecar's gate does not need and a replace does); then W_OK on the file itself
+  on the **directory** (mkstemp and the replace both land there); then W_OK on the file itself
   when it exists, since `os.replace` goes through the directory and would
   otherwise blow past a `chmod -w`. The write is mkstemp + `os.replace` in the
   target's own directory — atomic, never cross-device — and carries an existing
@@ -4367,28 +4340,22 @@ wanting "what has this file been through" wants §33.
   change. `reason` is also how a genuinely EMPTY diff arrives (an explicitly
   clicked version holding exactly what is on disk): an empty box reads as a broken
   diff, so no-diff is never silent. `ok: false` plans carry no `diff` key at all.
-- **FH-10** **Second line of defence: the pre-restore content is stashed in the
-  target's own `<file>.json` sidecar**, under `revertStash`, through the same
-  read-merge-write `annotate.py` already uses — so `claudeSessions`,
-  `bookmarkHistory`, `comments` and every other unowned key round-trip. Never
-  into the Claude dir (FH-6). Bounded to a few entries and skipped above a byte
-  cap or for non-text content, because the sidecar is a small JSON file three
-  other writers rewrite constantly, not a version store — `file_history` already
-  is one. A skip is **reported** (FH-9) so the confirm step can escalate rather
-  than silently losing the net, and a revert the user confirmed — having been told
-  whether a copy would be kept — is never then blocked by a sidecar that could
-  not be written.
-
-  The stash is **byte-faithful**: the target is read in BINARY and decoded
-  explicitly, and the recorded `size` is the byte count. Text mode applied
-  universal-newline translation, so a CRLF file stashed as LF — the recovered
-  content was not the bytes that were destroyed, and it disagreed with the `size`
+- **FH-10** **REMOVED (D335): there is no pre-restore stash.** The second line
+  of defence used to copy the current content into the per-file sidecar's
+  `revertStash` before a revert; the sidecar is deleted, so `unique_current`
+  (FH-13) now always means what it says — the write destroys the only copy —
+  and the confirm copy states that plainly instead of branching on a stash
+  predicate. *(Historical note, kept because the bug class is instructive: the
+  stash was byte-faithful — BINARY read, explicit decode, recorded `size` = byte
+  count. Text mode applied universal-newline translation, so a CRLF file stashed
+  as LF — the recovered content was not the bytes that were destroyed, and it
+  disagreed with the `size`
   stored beside it. This package ships a `windows/` dir, so CRLF is a live case,
   not a hypothetical. Each of the three refusals (too large, unreadable, not
   UTF-8) is reported separately and truthfully; folding an EACCES into "not UTF-8
   text", or a `getsize` failure into "nothing on disk to stash" (which reads as
-  "the file is absent"), describes a fixable machine problem as a fact about the
-  content.
+  "the file is absent"), described a fixable machine problem as a fact about the
+  content.)*
 - **FH-11** **Every failure crosses the bridge as data.** Anything raised out of
   a template's `main` becomes the red traceback overlay, and "no store on this
   machine", "no versions for this file", "already matches the latest checkpoint",
@@ -4510,18 +4477,16 @@ wanting "what has this file been through" wants §33.
   cause: a guard living below the layer that decides whether to offer the action.
   The read-only verdict was enforced in `apply_revert` but invisible to the plan,
   so the sheet opened on a doomed target (FH-16). A symlink was refused the same
-  way and one layer lower still, so the sidecar stash ran first — and read
-  *through* the link, leaving the wrong file's content in `revertStash` for a
-  revert that then failed. And the blocking-skips refusal was computed inside
+  way and one layer lower still, so the (since-removed, FH-10/D335) sidecar
+  stash ran first — and read *through* the link, capturing the wrong file's
+  content for a revert that then failed. And the blocking-skips refusal was computed inside
   `revert_plan` while the timeline went on publishing a striped target and an
   enabled button whose only possible outcome was that refusal. Each was a
   different symptom of the same missing seam, so the fix is the seam: `timeline`
   publishes `offer` (may the button be pressed) and `offer_reason` (the sentence
   the plan would refuse with, already on screen so no press is needed to discover
   it), `revert` names a row only when that row is genuinely actionable, and the
-  bridge re-reads the verdict *before* `_stash` — which must be gated rather than
-  merely followed by a raise, because it runs first by design and there is nothing
-  left to copy afterwards. `writable_reason` absorbs the directory and symlink
+  bridge re-reads the verdict before applying. `writable_reason` absorbs the directory and symlink
   refusals for the same reason: they are answers to "can this be reverted", and
   keeping them somewhere else is precisely what made them invisible to the caller
   that needed them.
@@ -4588,7 +4553,8 @@ wanting "what has this file been through" wants §33.
   beside "Recent chats"), fed by `agent.py`'s `action="snapshots"` — a
   pass-through to `file_history.timeline`, adding nothing but the offer. The
   store stays
-  strictly read-only; what a restore writes is the TARGET FILE and the sidecar.
+  strictly read-only; what a restore writes is the TARGET FILE, and nothing else
+  (the pre-revert sidecar stash went with the sidecar — FH-10, D335).
   - **The action is not called `history`.** That name is already taken on this
     module by the chat SESSION TRANSCRIPT replay. Two meanings on one action
     name is a collision only ever found in production.
@@ -4658,7 +4624,7 @@ wanting "what has this file been through" wants §33.
       where a revert lands — so `snapRuns` may only insert boundaries, never
       reorder or merge. A session that edited the file, left, and came back gets
       TWO headings, which is what happened.
-    - **The heading is named from the SIDECAR**, using the same `preview` string
+    - **The heading is named from the SESSION LIST**, using the same `preview` string
       the "Recent chats" rows above it are labelled with, so the two sections of
       the landing page agree about what a chat is called. `loadRecent()` fills that
       map and **repaints the headings when it finishes**, because the two reads
@@ -4669,7 +4635,8 @@ wanting "what has this file been through" wants §33.
       Ordering the call sites would have worked today and broken on the next path
       added onto the landing page. A MISS is ordinary, not a
       degraded state: this store records every Claude Code session that touched the
-      file, terminal ones included, and those were never in this file's sidecar —
+      file, including ones from another folder's page whose transcripts are not in
+      this cwd's project dir —
       so the fallback claims only "chat" and puts the session's short id beside the
       count, that id being the one handle that separates two unnamed chains. The
       full id stays on the heading's `title`, and on each row's, so a row read out
@@ -4717,10 +4684,9 @@ wanting "what has this file been through" wants §33.
     outright without one. `unique_current` (the bytes on disk are in no
     checkpoint, so the write destroys the only copy) additionally demands
     `confirm_unique`, which the page sends ONLY for that case: a token passed on
-    every call is a token nobody reads. Before the write, the current content is
-    stashed into the sidecar's `revertStash` (`STASH_KEEP` 3, `STASH_BYTE_CAP`
-    256 KB) — and an unwritable target is refused BEFORE that stash, or a failed
-    revert would still have mutated the sidecar. The write answers with the
+    every call is a token nobody reads. There is no pre-revert stash (FH-10,
+    D335) — `unique_current` means the only copy is destroyed, and the confirm
+    copy says so. The write answers with the
     POST-revert enriched `timeline`, so the list never spends a round trip
     showing the pre-revert position back to the user who just clicked.
   - **A refusal is shown in the row, not by hiding it.** An unwritable file, a

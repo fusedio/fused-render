@@ -22,7 +22,6 @@ from fused_render.server.common import _error, _require_fused
 from fused_render.server.gitignore import _is_repo_root
 from fused_render.server.mount import _invalidate_stat_cache, _is_under_snapshot_root, _mount_probe, _mount_stat_payload, _mutation_result_payload, _probe_path, _stat_payload, _writable
 from fused_render.server.walk import _mount_list_error_response
-from fused_render.shell import storage as shell_storage
 
 
 # An ABSOLUTE git path is required to reach posix_spawn, not merely tidy: CPython
@@ -42,17 +41,6 @@ def _git_bin():
 
 
 router = APIRouter()
-
-
-def _is_under_sidecar_root(path: str) -> bool:
-    """True when `path` sits under home_dir()/sidecar/ (D83-reversal). Those
-    paths are server-derived (fused.sidecarPath), never user-typed, so an
-    absent deep subtree there is expected on a first write — unlike the
-    general "no mkdir -p" rule below, which exists so a typo'd arbitrary path
-    can't silently spawn a deep tree."""
-    root = os.path.abspath(os.path.join(shell_storage.home_dir(), "sidecar"))
-    ap = os.path.abspath(path)
-    return ap == root or ap.startswith(root + os.sep)
 
 
 def _snapshot_refusal(*paths: str | None):
@@ -173,9 +161,7 @@ def _fs_write(body: dict, x_fused: str | None):
     if os.path.isdir(path):
         return _error(f"path is a directory: {path}")
     if not os.path.isdir(parent):
-        if not _is_under_sidecar_root(path):
-            return _error(f"parent directory does not exist: {parent}", status=404)
-        os.makedirs(parent, exist_ok=True)
+        return _error(f"parent directory does not exist: {parent}", status=404)
 
     # Read-only guard: refuse before touching anything. The atomic write
     # below replaces the target via the PARENT directory, so without this

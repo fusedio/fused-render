@@ -20,11 +20,9 @@ Two things are pinned here:
 And the panel is INTERACTIVE: a row can be gone back to. That half is
 `snapshot_plan` + `snapshot_revert`, the same two-call contract annotate pinned
 (SPEC §34, D194) — the plan chooses and describes, the write only applies an id
-the plan already handed out — plus the pre-restore stash into the sidecar this
-module already read-merge-writes.
+the plan already handed out.
 """
 import importlib.util
-import json
 import os
 import sys
 
@@ -42,10 +40,9 @@ skip_root = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path, monkeypatch):
-    # The sidecar (and its revertStash) live under home_dir()/sidecar/ (D205),
-    # so pin FUSED_RENDER_HOME or a revert test writes into the real
-    # ~/.fused-render. The mounts dir hangs off the same root, which is also how
-    # the mount-backed refusal below gets a path to point at.
+    # The mounts dir hangs off home_dir(), which is how the mount-backed
+    # refusal below gets a path to point at — pin FUSED_RENDER_HOME so these
+    # tests never touch a real ~/.fused-render.
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
 
 
@@ -249,8 +246,6 @@ def test_a_plan_describes_the_write_for_the_row_that_was_clicked(
     assert plan["action"] == "restore"
     # The confirm step must be able to say WHAT changes, not only how much.
     assert any(ln.startswith("+wanted") for ln in plan["diff"]["lines"])
-    # ...and whether a copy of the current bytes will be kept, BEFORE the click.
-    assert plan["stash"] is True
     # The sharp one: these on-disk bytes are in no checkpoint at all.
     assert plan["unique_current"] is True
 
@@ -291,24 +286,6 @@ def test_a_plan_then_a_revert_puts_that_version_back_on_disk(
     assert out["timeline"]["available"] is True
 
 
-def test_the_previous_content_is_stashed_before_the_write(
-    agent, claude_home, tmp_path
-):
-    # Current bytes are frequently in NO checkpoint, so the restore can vaporize
-    # work that exists nowhere else — the stash is the second line of defence
-    # behind the confirm step.
-    f = _target(tmp_path, "unsaved work\n")
-    write_version(claude_home, "sess-a", f, "wanted\n")
-    out = agent.main(action="snapshot_revert", file=f, version_id="sess-a@v1",
-                     confirm_unique="1")
-    assert out["ok"] is True and out["stashed"] is True
-    data = json.loads(f_text(agent._sidecar_path(f)))
-    assert data["revertStash"][0]["content"] == "unsaved work\n"
-    assert data["revertStash"][0]["version_id"] == "sess-a@v1"
-    # ...and the keys this module does not own survive the read-merge-write.
-    assert isinstance(data["claudeSessions"], list)
-
-
 def test_content_in_no_checkpoint_is_not_destroyed_without_a_confirmation(
     agent, claude_home, tmp_path
 ):
@@ -334,9 +311,6 @@ def test_an_unwritable_target_answers_with_a_reason_not_an_exception(
         out = agent.main(action="snapshot_revert", file=f,
                          version_id="sess-a@v1", confirm_unique="1")
         assert "error" in out
-        # The refusal must land BEFORE the stash: a failed revert that still
-        # mutated the sidecar is the hazard this ordering exists for.
-        assert not os.path.exists(agent._sidecar_path(f))
         assert f_text(f) == "disk\n"
     finally:
         os.chmod(f, 0o644)
@@ -369,7 +343,7 @@ def test_a_mount_backed_target_is_refused_before_anything_stats_it(
 
 
 def test_the_store_is_never_written_by_a_revert(agent, claude_home, tmp_path):
-    # Still strictly read-only: the revert writes the TARGET and the sidecar,
+    # Still strictly read-only: the revert writes the TARGET,
     # never Claude Code's own edit history.
     f = _target(tmp_path, "disk\n")
     write_version(claude_home, "sess-a", f, "old\n")

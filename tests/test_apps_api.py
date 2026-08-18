@@ -783,9 +783,10 @@ def test_poll_serves_a_run_started_by_the_server(tmp_path, workspace, monkeypatc
     assert data["message"] == "make it red"
     assert "on it" in (data.get("text") or "")
     assert data.get("session_id") == "sid-live"
-    # ...and the session lists in the entry file's sidecar, so a later visit
-    # without a `run` param still finds the conversation
-    assert agent._sessions(str(entry))["sessions"][0]["id"] == "sid-live"
+    # ...and the run records its session id, so a later visit without a `run`
+    # param can still match the conversation to its run (_live_run's session file)
+    with open(os.path.join(agent.RUNS, run_id, "session"), encoding="utf-8") as fh:
+        assert fh.read().strip() == "sid-live"
 
 
 # --------------------------------------------- opens recorded by GET /render

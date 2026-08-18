@@ -1,18 +1,16 @@
-"""One list of past chats, from two stores (templates/claude/agent.py
+"""One list of past chats, from one store (templates/claude/agent.py
 `_sessions`).
 
-The template used to list only its own sidecar, so the chat the user had in a
-terminal five minutes ago — about the same folder, in the same Claude Code
-session store — was missing from the page's list of their sessions. The merged
-list adds the transcripts already sitting in this cwd's ~/.claude/projects dir
-that no sidecar claims, and stamps every row with `source` so the page can say
-which is which.
+The list is a scan of the transcripts already sitting in this cwd's
+~/.claude/projects dir (D335 removed the per-file sidecar): whether a chat
+started in this page or in a terminal, Claude Code wrote its transcript into
+the same project dir, so ONE reader answers for both.
 
-The whole reason this needs no new resume path is the fact these tests exist to
-protect: a session's home is its cwd's project dir, and the template keys on
-EXACTLY the same dir (`_munge(_workdir(file))`), so a transcript found this way
-is already where `_history` reads and where `--resume` looks from. Break that
-identity and the rows still render while nothing opens.
+The whole reason this needs no resume path of its own is the fact these tests
+exist to protect: a session's home is its cwd's project dir, and the template
+keys on EXACTLY the same dir (`_munge(_workdir(file))`), so a transcript found
+this way is already where `_history` reads and where `--resume` looks from.
+Break that identity and the rows still render while nothing opens.
 
 Reads of a transcript must stay cheap — this runs on every home-view paint — so
 the title comes out of the file's head and the recency out of its mtime, never
@@ -42,8 +40,8 @@ def _load_agent():
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path, monkeypatch):
-    # FUSED_RENDER_HOME is where the sidecar lands (D83-reversal): pinned to a
-    # tmp dir so no test ever reads or writes the developer's real store.
+    # Pinned to a tmp dir so no test ever reads or writes the developer's real
+    # store.
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
 
 
@@ -90,75 +88,33 @@ def _said(text, cwd, **extra):
     return row
 
 
-# ---------------------------------------------------------------- the merge
+# ----------------------------------------------------------------- the list
 
 
 def test_a_terminal_session_shows_up_in_this_files_past_chats(agent, target):
     file, workdir = target
     _cli_transcript(agent, workdir, "cli-1", [_said("fix the header", workdir)])
     rows = agent._sessions(file)["sessions"]
-    assert [(r["id"], r["source"], r["preview"]) for r in rows] == [
-        ("cli-1", "cli", "fix the header")]
+    assert [(r["id"], r["preview"]) for r in rows] == [("cli-1", "fix the header")]
 
 
-def test_both_stores_land_in_one_list_tagged_by_provenance(agent, target):
+def test_newest_activity_first(agent, target):
     file, workdir = target
-    agent._record_session(file, "mine-1", "what does this do", "")
-    _cli_transcript(agent, workdir, "cli-1", [_said("fix the header", workdir)])
-    rows = agent._sessions(file)["sessions"]
-    assert {r["source"] for r in rows} == {"template", "cli"}
-    assert {r["id"] for r in rows} == {"mine-1", "cli-1"}
-
-
-def test_a_session_this_chat_started_is_not_listed_twice(agent, target):
-    """The template's own runs write their transcripts into the SAME project dir
-    (cwd = _workdir), so every sidecar session is also on disk. Without the id
-    check the list would show every one of them twice — once as itself and once
-    as its own transcript."""
-    file, workdir = target
-    agent._record_session(file, "mine-1", "what does this do", "")
-    _cli_transcript(agent, workdir, "mine-1", [_said("what does this do", workdir)])
-    rows = agent._sessions(file)["sessions"]
-    assert [r["id"] for r in rows] == ["mine-1"]
-    # and the sidecar wins the row: it has the preview as TYPED and the real
-    # created_at, neither of which a transcript's head and mtime can give back
-    assert rows[0]["source"] == "template"
-
-
-def test_the_sidecar_is_never_modified_by_being_listed(agent, target):
-    """`source` is ours, not the store's. `_load_sidecar`'s dicts are the same
-    ones `_save_sidecar` writes back, so stamping them in place would leak a
-    view-model field into the file on the next turn."""
-    file, _ = target
-    agent._record_session(file, "mine-1", "hello", "")
-    assert agent._sessions(file)["sessions"][0]["source"] == "template"
-    with open(agent._sidecar_path(file), encoding="utf-8") as f:
-        stored = json.load(f)
-    assert "source" not in stored["claudeSessions"][0]
-
-
-def test_newest_activity_first_across_both_sources(agent, target):
-    file, workdir = target
-    agent._record_session(file, "mine-1", "older template chat", "")
-    data = agent._load_sidecar(file)
-    data["claudeSessions"][0]["last_used"] = 1000.0
-    agent._save_sidecar(file, data)
     _cli_transcript(agent, workdir, "cli-old", [_said("oldest", workdir)], mtime=500)
+    _cli_transcript(agent, workdir, "cli-mid", [_said("middle", workdir)], mtime=1000)
     _cli_transcript(agent, workdir, "cli-new", [_said("newest", workdir)], mtime=9000)
     rows = agent._sessions(file)["sessions"]
-    assert [r["id"] for r in rows] == ["cli-new", "mine-1", "cli-old"]
+    assert [r["id"] for r in rows] == ["cli-new", "cli-mid", "cli-old"]
 
 
-def test_a_null_last_used_does_not_crash_the_sort(agent, target):
-    """A sidecar written by an older version can carry an explicit null, which a
-    `.get(key, 0)` default hands straight to sorted()."""
+def test_a_null_last_used_does_not_crash_the_sort(agent, target, monkeypatch):
+    """The sort reads `last_used or created_at or 0`; a row missing both — or
+    carrying explicit nulls — must fall to 0, not into a None comparison."""
     file, _ = target
-    agent._record_session(file, "mine-1", "hello", "")
-    data = agent._load_sidecar(file)
-    data["claudeSessions"][0]["last_used"] = None
-    data["claudeSessions"][0]["created_at"] = 42.0
-    agent._save_sidecar(file, data)
-    assert [r["id"] for r in agent._sessions(file)["sessions"]] == ["mine-1"]
+    rows = [{"id": "a", "preview": "p", "last_used": None, "created_at": 42.0},
+            {"id": "b", "preview": "p", "last_used": None, "created_at": None}]
+    monkeypatch.setattr(agent, "_cli_sessions", lambda f: list(rows))
+    assert [r["id"] for r in agent._sessions(file)["sessions"]] == ["a", "b"]
 
 
 # ------------------------------------------------- what the row is named with
@@ -297,9 +253,8 @@ def test_the_strip_list_names_the_tags_the_page_actually_writes(agent, template)
             sorted(written), sorted(agent._MACHINERY_STRIP)))
 
 
-def test_the_preview_is_truncated_like_a_sidecar_preview(agent, target):
-    """80 chars, the same cut `_record_session` makes — the two sources sit in
-    one list and one of them ellipsising at a different width would show."""
+def test_the_preview_is_truncated(agent, target):
+    """80 chars — a preview is a row title, not the message."""
     file, workdir = target
     _cli_transcript(agent, workdir, "cli-1", [_said("x" * 500, workdir)])
     assert agent._sessions(file)["sessions"][0]["preview"] == "x" * 80
@@ -408,9 +363,8 @@ def test_the_title_read_does_not_parse_the_whole_transcript(agent, target):
 
 
 def test_recency_comes_from_the_mtime_under_both_timestamp_keys(agent, target):
-    """The page's row renderer reads `last_used || created_at` off a sidecar
-    entry; one shape for both sources is what lets the list merge at all. mtime
-    is the only timestamp a transcript offers for free."""
+    """The page's row renderer reads `last_used || created_at` off a row; mtime
+    is the only timestamp a transcript offers for free, so it lands on both."""
     file, workdir = target
     _cli_transcript(agent, workdir, "cli-1", [_said("hi", workdir)], mtime=4242)
     row = agent._sessions(file)["sessions"][0]
@@ -438,30 +392,6 @@ def test_a_terminal_session_replays_through_the_ordinary_history_action(agent, t
     assert turns[0]["text"] == "what does this file do"
 
 
-def test_resuming_one_makes_it_an_ordinary_template_session(agent, target):
-    """`_start` records the session in the sidecar, after which the SAME chat is
-    a "template" row and the id check keeps it from appearing twice. Asserted
-    through `_record_session` (the part `_start` reaches on a successful turn)
-    rather than by spawning claude."""
-    file, workdir = target
-    _cli_transcript(agent, workdir, "cli-1", [_said("fix the header", workdir)])
-    assert agent._sessions(file)["sessions"][0]["source"] == "cli"
-    agent._record_session(file, "cli-1", "and now the footer", "cli-1")
-    rows = agent._sessions(file)["sessions"]
-    assert [(r["id"], r["source"]) for r in rows] == [("cli-1", "template")]
-
-
-def test_migrating_a_listed_session_is_a_no_op(agent, target):
-    """Copy-on-resume exists for a target that MOVED. One of these transcripts
-    is already at the destination, so the copy must not run — and above all must
-    not overwrite the live file (which is where new turns append)."""
-    file, workdir = target
-    path = _cli_transcript(agent, workdir, "cli-1", [_said("fix the header", workdir)])
-    before = open(path, encoding="utf-8").read()
-    agent._migrate_session(file, "cli-1")
-    assert open(path, encoding="utf-8").read() == before
-
-
 # ------------------------------------------------------ what the page renders
 
 
@@ -472,28 +402,19 @@ def template():
         return f.read()
 
 
-def test_one_row_shape_and_one_list_for_both_sources(template):
-    """The rows merge into the existing list rather than gaining a second
-    section: a chat about this folder is a chat about this folder, and splitting
-    by which surface started it asks the reader to remember something they had
-    no reason to keep."""
+def test_one_row_shape_and_one_list(template):
+    """One row renderer, one loop over the one list."""
     assert template.count("function addChatRow(") == 1
-    # one call site, in the one loop over the merged list (the second hit on the
+    # one call site, in the one loop over the list (the second hit on the
     # signature is the definition itself)
     assert template.count("addChatRow(list, s)") == 2
 
 
-def test_the_source_tag_is_rendered_only_for_the_outside_rows(template):
-    assert 'class="row-tag"' in template
-    assert 's.source === "cli"' in template
-    # and it is a footnote, not a heading: the tag has its own quiet rule
-    assert ".chat-row .row-tag {" in template
-
-
-def test_the_row_click_is_unchanged_for_both_sources(template):
-    """No branch on `source` in the open path — that is the whole payoff of the
-    two stores sharing a project dir. A special case here would be the first
-    sign the identity in agent.py `_cli_sessions` had been broken."""
+def test_the_row_click_does_not_branch_on_provenance(template):
+    """No branch on where a session came from in the open path — that is the
+    whole payoff of the page and the CLI sharing a project dir. A special case
+    here would be the first sign the identity in agent.py `_cli_sessions` had
+    been broken."""
     body = template[template.index("function addChatRow("):]
     body = body[:body.index("\n}")]
     open_fn = body[body.index("const open ="):]

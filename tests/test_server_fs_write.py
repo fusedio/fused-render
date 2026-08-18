@@ -20,7 +20,6 @@ from fastapi.responses import JSONResponse
 
 from fused_render.server.mount import _fs_stat as STAT
 from fused_render.server.fs_mutate import _fs_write as WRITE
-from fused_render.shell import storage
 
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
@@ -119,12 +118,10 @@ def test_write_create_ok_for_new_file(tmp_path):
     assert out["writable"] is True
 
 
-# --------------------------------------------- missing parent (D83-reversal)
-# The general write endpoint refuses a missing parent (no mkdir -p — a typo'd
-# arbitrary path must not silently spawn a deep tree), but a sidecar path
-# (home_dir()/sidecar/<mapped path>.json) is server-derived, not user-typed,
-# and its deep subtree usually doesn't exist on the FIRST write from a JS
-# template (bugbot: docs/excel/latex sidecar saves 404'd here before this).
+# ------------------------------------------------------------ missing parent
+# The write endpoint refuses a missing parent unconditionally (no mkdir -p — a
+# typo'd arbitrary path must not silently spawn a deep tree). The one carve-out
+# it used to have (the sidecar subtree) went with the sidecar, D335.
 
 def test_write_refuses_missing_parent_for_an_ordinary_path(tmp_path):
     f = tmp_path / "nope" / "new.txt"
@@ -132,16 +129,6 @@ def test_write_refuses_missing_parent_for_an_ordinary_path(tmp_path):
     assert _status(resp) == 404
     assert "parent directory does not exist" in _data(resp)["error"]
     assert not f.exists()
-
-
-def test_write_auto_creates_missing_parent_under_sidecar_root(tmp_path, monkeypatch):
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    f = storage.sidecar_path(str(tmp_path / "sample.html"))
-    assert not os.path.isdir(os.path.dirname(f))  # the deep subtree doesn't exist yet
-
-    out = _data(_write(f, '{"comments": []}'))
-    assert out["writable"] is True
-    assert json.loads(open(f, encoding="utf-8").read()) == {"comments": []}
 
 
 # ---------------------------------------------------- read-only remote mounts

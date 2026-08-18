@@ -7,9 +7,7 @@ file — converted to/from the editor's HTML by pandoc. Everything the editor
 offers is limited to what pandoc's HTML<->docx/odt round-trip genuinely
 preserves, so the file on disk is the single source of truth: text, headings,
 lists, tables, images, math, and comments (written as native Word/ODT
-comments via pandoc's comment-start/comment-end spans). Version history lives
-in the file's JSON sidecar
-(<file>.json under the "docs" key). This script only holds what genuinely
+comments via pandoc's comment-start/comment-end spans). This script only holds what genuinely
 needs Python: pandoc conversion, PDF via the typst compiler, and browsing the
 filesystem for "Save a copy…". Params arrive as strings; annotate.
 
@@ -285,7 +283,7 @@ def _list_remote(src, path, cap=5000):
 
 def main(action: str = "export", file: str = "", html: str = "", title: str = "",
          fmt: str = "pdf", path: str = "", directory: str = "", expected_mtime: str = "",
-         sha: str = "", keep: str = "", src: str = ""):
+         src: str = ""):
     if action == "warmup":
         import pypandoc
         return {"pandoc": pypandoc.get_pandoc_version()}
@@ -433,47 +431,10 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
             # already consumed the tmp
             with contextlib.suppress(OSError):
                 os.remove(tmp)
-        # Version snapshot for the history panel: content-addressed blob in the
-        # cache — the sidecar holds metadata only, so image-heavy documents
-        # can't balloon it. Best-effort: a snapshot hiccup must not fail a
-        # document save that already landed.
-        version_sha = hashlib.sha256(html.encode("utf-8")).hexdigest()
-        vdir = os.path.join(_cache_dir(file), "versions")
-        try:
-            os.makedirs(vdir, exist_ok=True)
-            vpath = os.path.join(vdir, version_sha + ".html")
-            if not os.path.exists(vpath):
-                with open(vpath, "w", encoding="utf-8") as f:
-                    f.write(html)
-        except OSError:
-            version_sha = ""
-        else:
-            # Prune blobs the sidecar no longer references, per its own
-            # retention policy (thinVersions keeps every manual save
-            # indefinitely) — never a blind age/mtime cap, which could evict a
-            # blob a manual entry still points to. `keep` is the sidecar's
-            # current version list (sent by the caller); per-file best-effort,
-            # separate from the write above, so one locked old blob can't
-            # un-record the version that just landed nor block the rest.
-            if keep:
-                with contextlib.suppress(OSError, ValueError):
-                    keep_shas = set(json.loads(keep)) | {version_sha}
-                    # vdir is under CACHE_ROOT (~/.fused-render) — a local
-                    # version cache, never a user mount path; kernel scan is safe.
-                    for e in os.scandir(vdir):
-                        if e.name[:-len(".html")] not in keep_shas:
-                            with contextlib.suppress(OSError):
-                                os.unlink(e.path)
-        return {"path": file.replace(os.sep, "/"), "mtime": os.path.getmtime(file),
-                "version_sha": version_sha}
-
-    # ---- fetch a version snapshot recorded by a previous save
-    if action == "version_html":
-        if not re.fullmatch(r"[0-9a-f]{64}", sha):
-            raise ValueError(f"bad version id: {sha}")
-        vpath = os.path.join(_cache_dir(file), "versions", sha + ".html")
-        with open(vpath, encoding="utf-8") as f:
-            return {"html": f.read()}
+        # (The version-snapshot blob cache and the `version_html` action that
+        # read it went with the version-history panel — its metadata lived in
+        # the per-file sidecar, deleted outright, D335.)
+        return {"path": file.replace(os.sep, "/"), "mtime": os.path.getmtime(file)}
 
     # ---- first save of a new/untitled draft: write the .docx to the location
     # the user browsed to and bind to it, then drop the library scratch draft we
@@ -484,18 +445,15 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         dest = _resolve_dest(path, directory)
         _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
                  "--standalone", "-o", dest], input_text=html)
-        # Drop the library scratch draft + its sidecar (in the shared sidecar
-        # store, home_dir()/sidecar — not adjacent to the .docx). Never when the
-        # user saved back onto the scratch itself (browsing into DOCS_DIR under
-        # the same name) — that would delete the document we just wrote.
+        # Drop the library scratch draft. Never when the user saved back onto
+        # the scratch itself (browsing into DOCS_DIR under the same name) —
+        # that would delete the document we just wrote.
         saved_onto_scratch = (file and os.path.normcase(os.path.abspath(dest))
                               == os.path.normcase(os.path.abspath(file)))
         if (file and not saved_onto_scratch
                 and os.path.dirname(os.path.abspath(file)) == os.path.abspath(DOCS_DIR)):
-            from appenv import sidecar_path
-            for p in (os.path.abspath(file), sidecar_path(file)):
-                with contextlib.suppress(OSError):
-                    os.remove(p)
+            with contextlib.suppress(OSError):
+                os.remove(os.path.abspath(file))
         return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest),
                 "mtime": os.path.getmtime(dest)}
 

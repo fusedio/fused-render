@@ -51,7 +51,7 @@ Strictly READ-ONLY with respect to the Claude config dir. Nothing here writes,
 moves or unlinks anything under it, ever — that is the user's live edit history
 and this module is a guest in it. The only write it performs is to the target
 file itself, via mkstemp + `os.replace` in the target's own directory (the same
-atomicity rule as `annotate.py::_save_sidecar`), gated on `file_writable`.
+atomicity rule the sidecar writers used, D335), gated on `file_writable`.
 
 Stdlib only, and reachable by `sys.path`-relative import rather than
 `import fused_render...`, for the reason `appenv.py` next door documents at
@@ -152,7 +152,7 @@ def _why(exc, path) -> str:
 def file_writable(file: str) -> bool:
     """True iff `apply_revert` could actually replace `file`.
 
-    The same three-part gate as `annotate.py::_sidecar_writable`, and for the
+    A three-part gate, and for the
     same reasons:
 
       * a read-only remote mount is asked about FIRST, because `os.access(W_OK)`
@@ -166,7 +166,7 @@ def file_writable(file: str) -> bool:
         `os.replace` below goes through the directory and would otherwise
         silently blow past a `chmod -w` file.
       * the DIRECTORY needs W_OK either way, because mkstemp and the replace
-        both land there. (This half `_sidecar_writable` does not need and a
+        both land there. (A half a plain file write does not need and a
         replace does.)
 
     The two ways the mount probe can be unavailable are handled DIFFERENTLY on
@@ -201,7 +201,7 @@ def writable_reason(file: str) -> str:
     # every layer already consults to decide whether to offer a revert at all.
     # `apply_revert` refused both correctly and refused them ALONE, one layer below
     # the decision: so the sheet opened on a target that could not succeed, the
-    # bridge stashed the sidecar with content read THROUGH the link, and only then
+    # bridge (in the sidecar-stash era, D335) captured content read THROUGH the link, and only then
     # did the write raise — a failed revert that still mutated `revertStash`, with
     # the wrong file's content in it. Same shape as the read-only case before it:
     # the guard existed, just under the layer that offers the action.
@@ -1023,7 +1023,7 @@ def apply_revert(file, entry_id) -> dict:
       * a directory target;
       * a SYMLINK target. `os.replace` swaps the LINK for a regular file rather
         than writing through it, so the real file kept its pre-revert content
-        while the call reported success — and the sidecar stash captured a file
+        while the call reported success — and the then-extant sidecar stash captured a file
         that was never overwritten. Refusing is chosen over `realpath`-ing first,
         deliberately: the store's key is the sha256 of the path the VIEW opened,
         so following the link would revert a path whose own timeline is a
