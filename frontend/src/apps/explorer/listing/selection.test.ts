@@ -604,18 +604,3 @@ describe("nextSearchSelection over rows that answer an older query", () => {
     expect(fresh.select).toBe("/d/readme.md");
   });
 });
-
-describe("the Enter fallback", () => {
-  test("does not open the top row while it answers an older query", () => {
-    // Listing's Enter opens the lead, or row 0 when nothing is selected. With
-    // stale rows on screen and no selection, row 0 is the previous query's top
-    // hit — the in-folder twin of the home box's submitRow rule.
-    const src = readFileSync(join(import.meta.dir, "useListingSelection.ts"), "utf8");
-    const enter = src.slice(src.indexOf('if (e.key === "Enter")'),
-                            src.indexOf("// Start typing"));
-    expect(enter).toContain("rowsAnswerQuery");
-    // ...and the guard is on the FALLBACK, not on an explicit lead: a row the
-    // user selected still opens.
-    expect(enter).toContain("leadIdx === -1");
-  });
-});

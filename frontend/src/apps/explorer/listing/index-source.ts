@@ -40,7 +40,10 @@ export type SearchStep = "answer" | "scan" | "poll" | "walk";
 export const UNCOVERED_GRACE = 3;
 
 // How many times a scan in flight is polled before the box settles for what it
-// has. A first whole-home scan is ~10 s and a rescan of a big root can be
+// has. Per polling EPISODE, and per folder+generation within one — a query
+// typed midway through a scan inherits the patience already spent on that
+// scan rather than restarting it, since the thing being waited for is the
+// scan and not the query. A first whole-home scan is ~10 s and a rescan of a big root can be
 // minutes; the rows already returned are real, and re-asking for them at a
 // fixed cadence for the length of a scan is not what the poll is for. At
 // SCAN_POLL_MS this is a couple of minutes.

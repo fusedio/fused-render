@@ -87,119 +87,27 @@ describe("what to do with a ranked answer", () => {
   });
 });
 
-// -- how the hook is wired to it ------------------------------------------------
+// -- the one rule that is genuinely about the SOURCE ---------------------------
 //
-// Source guards. The suite has no DOM, so what is testable about the hook is
-// the mechanism — and each of these is a way the cutover could regress into
-// exactly what it replaced.
+// Everything else this describe used to assert — the epoch tag, the poll
+// counting its ticks, the in-flight guard, the memo predicate, which rows are
+// rendered — is now driven in useWalkSearch.render.test.ts, where a wrong
+// condition fails instead of a renamed one. What stays is the rule that has no
+// runtime shadow: WHERE the policy lives. A hook that starts switching on
+// reasons itself would pass every behavioural test in this directory and still
+// be the bug this phase set out to remove, because the drift only shows up
+// when the server's rules change.
 
 const HOOK = readFileSync(join(import.meta.dir, "useWalkSearch.ts"), "utf8");
 
-describe("useWalkSearch's half of the decision", () => {
+describe("who decides which source answers", () => {
   test("the hook never spells out which reasons mean the walk", () => {
-    // One place knows that, and it is this module. A second copy in the hook
-    // is how the client ends up with its own mount policy again.
     for (const literal of ['"mount"', '"package"', '"ignored"', '"uncovered"']) {
       expect(HOOK).not.toContain("=== " + literal);
     }
     expect(HOOK).toContain("nextStep(");
   });
-
-  test("the live walk runs only when the decision says so", () => {
-    // The walk is the fallback for folders no scan can cover, not a second
-    // source racing the first: exactly one call, gated on walkMode.
-    const calls = HOOK.split("\n").filter((l) => l.includes("walkDirStream("));
-    expect(calls).toHaveLength(1);
-    expect(HOOK).toContain("if (!walkMode || walkReq === null) return;");
-  });
-
-  test("a scan is asked for once, from the step that says to", () => {
-    const calls = HOOK.split("\n").filter((l) => l.includes("requestFolderScan("));
-    expect(calls).toHaveLength(1);
-    expect(HOOK).toContain('if (step === "scan") {');
-  });
-
-  test("a refused scan is not retried — it hands over to the walk", () => {
-    // The one shape of retry loop this route can produce: the server refuses
-    // (mount-backed, gone, scanned too recently), the box reads it as
-    // transient, and asks again on the next keystroke.
-    const scan = HOOK.slice(HOOK.indexOf('if (step === "scan") {'),
-                            HOOK.indexOf('if (step === "poll")'));
-    expect(scan).toContain("if (!r.started)");
-    expect(scan).toContain("setWalkMode(true)");
-  });
-
-  test("a reply that outlived its folder or generation is dropped", () => {
-    // The two requests that outlive the effect that issued them — the scan ask
-    // and the focus probe — both end in setWalkMode(true), and this hook is
-    // NOT remounted per folder. Without the epoch tag, a `refused` for the
-    // folder you just left pins the folder you just opened to the live walk,
-    // and only a generation change ever clears that.
-    const asks = HOOK.slice(HOOK.indexOf('if (step === "scan") {'),
-                            HOOK.indexOf('if (step === "poll")'));
-    expect(asks).toContain("const epoch = sourceEpoch.current;");
-    expect(asks.match(/if \(sourceEpoch\.current !== epoch\) return;/g)).toHaveLength(2);
-    const probe = HOOK.slice(HOOK.indexOf("const probeKey ="),
-                             HOOK.indexOf("// Debounced URL mirror"));
-    expect(probe).toContain("if (sourceEpoch.current !== epoch) return;");
-    // ...and the epoch has to actually move with the folder and generation.
-    expect(HOOK).toContain("sourceEpoch.current += 1;");
-  });
-
-  test("the poll counts its own ticks, not the answers it gets back", () => {
-    // A tick aborts the request in flight, so a rank that consistently
-    // outlasts the interval produces no answers — and a ceiling counted in
-    // answers is one the loop can starve, leaving a 1.5s request loop running
-    // long after the scan it was waiting for finished.
-    const timer = HOOK.slice(HOOK.indexOf("  useEffect(() => {\n    if (!polling"),
-                             HOOK.indexOf("--- the live walk"));
-    expect(timer).toContain("polls.current += 1;");
-    expect(timer).toContain("nextStep(");
-    // ...and nothing else increments it.
-    expect(HOOK.split("\n").filter((l) => l.includes("polls.current += 1"))).toHaveLength(1);
-  });
-
-  test("a ranked answer is behind only if the index moved AFTER it", () => {
-    // The scan the box asked for completes, the status poll turns that into a
-    // lifecycle bump, `gen` moves — and the answer the poll then fetched is
-    // the freshest that has ever existed for this folder. Measuring "behind"
-    // as `pinned !== gen` captioned it "not refreshed" at the moment it
-    // landed. The walk keeps `pinned`, whose corpus really is pinned.
-    expect(HOOK).toContain("walkMode ? pinned !== gen : answerGen.current !== gen");
-    expect(HOOK).toContain("answerGen.current = genRef.current;");
-    // A completed scan RE-ASKS on the ranked path — it is a few KB and never
-    // blanks the list — so the caption clears by being true rather than by
-    // being suppressed. A dir-watch bump still does not: those are frequent,
-    // and the deferral is what keeps a churny folder readable.
-    const deps = HOOK.slice(HOOK.indexOf("  }, [fsPath, q, searching, walkMode"));
-    const depline = deps.slice(0, deps.indexOf("]"));
-    expect(depline).toContain("lifecycle");
-    expect(depline).not.toContain(" gen,");
-    expect(HOOK).toContain('const key = [fsPath, pinned, lifecycle, retryNonce, q]');
-  });
-
-  test("a poll tick never aborts a request that is still out", () => {
-    expect(HOOK).toContain("if (inflightKey.current === key) return;");
-  });
-
-  test("the memo is not consulted while a scan is landing rows", () => {
-    // A remembered answer taken mid-scan is precisely the one that is out of
-    // date, and serving it would freeze the trickle the poll exists to show.
-    expect(HOOK).toContain("const remembered = polling ? undefined : memo.current.get(q)");
-    // ...and the WRITE side asks the pure rule rather than the same flag,
-    // which is a commit behind at exactly the moment a scan ends.
-    expect(HOOK).toContain('remembersAnswer(step, res.reason ?? "")');
-  });
-
-  test("the ranked rows are rendered under whatever query they answer", () => {
-    // The never-blank rule: query-tagged holding (lib/search-hold) is the
-    // walk's, where re-ranking is free. Routing the ranked answer through it
-    // would blank the list on every keystroke.
-    expect(HOOK).toContain("const indexRows = searching && !walkMode ? (answer?.hits ?? []) : []");
-    expect(HOOK).toContain("const displayHits = walkMode ? walkDisplay.hits : indexRows;");
-  });
 });
-
 
 // -- what the box is allowed to remember ---------------------------------------
 

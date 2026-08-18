@@ -254,8 +254,19 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // exists to refuse.
   const genRef = useRef(gen);
   genRef.current = gen;
+  // The index MOVING makes every remembered answer suspect at once — that is
+  // the memo's whole coherence story (platform/lib/instant-search), and
+  // without it the re-ask a completed scan triggers is answered from the trail
+  // instead of from the scan, so the rows never refresh and the caption never
+  // clears. Only the memo goes here: the rows on screen stay, and are replaced
+  // when the re-ask lands, because a completed scan is not a reason to blank
+  // the list.
   useEffect(() => {
     memo.current.clear();
+  }, [fsPath, pinned, lifecycle]);
+  // A new folder or an adopted generation, on the other hand, drops the answer
+  // outright: those rows are about something else.
+  useEffect(() => {
     setAnswer(null);
     setFailure("");
   }, [fsPath, pinned]);
@@ -264,7 +275,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // What to do with an answer: render it, ask for a scan, poll, or hand the
   // folder to the live walk. The decision itself is pure (listing/index-source);
   // this is the wiring for it.
-  const applyStep = (res: IndexRankResult) => {
+  const applyStep = (res: IndexRankResult, epoch: number) => {
     if (asked.current) sinceAsk.current += 1;
     covered.current = res.covered;
     const step = nextStep({
@@ -275,6 +286,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       covered: res.covered,
     });
     if (step === "walk") {
+      polls.current = 0;
       setWalkMode(true);
       setPolling(false);
       return step;
@@ -288,7 +300,6 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       // polling for it and let the walk answer, which is what the folder would
       // have got before any of this existed. Tagged with the epoch, because
       // this reply can land on a folder the box has since navigated away from.
-      const epoch = sourceEpoch.current;
       void requestFolderScan(fsPath).then(
         (r) => {
           if (sourceEpoch.current !== epoch) return;
@@ -353,15 +364,24 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       inflightKey.current = key;
       const ctl = new AbortController();
       inflight.current = ctl;
+      // The epoch AT ISSUE TIME, and this is the request that most needed it.
+      // `aborted` does not cover a folder change: the abort happens inside
+      // `run`, and the effect's cleanup only clears the debounce timer — so a
+      // reply issued for the previous folder lands unaborted, sets `covered`,
+      // `asked`, `polls` and `polling` for the folder now on screen, and on a
+      // `walk` verdict pins it there for the session. Reading the epoch in the
+      // reply instead of here would read the value the reset had already
+      // moved, which is no tag at all.
+      const epoch = sourceEpoch.current;
       issuedAt.current = Date.now();
       setPending(true);
       // The previous failure is not this request's verdict.
       setFailure("");
       indexRank(fsPath, q, { signal: ctl.signal, limit: SEARCH_RANK_LIMIT }).then(
         (res) => {
-          if (ctl.signal.aborted) return;
+          if (ctl.signal.aborted || sourceEpoch.current !== epoch) return;
           inflightKey.current = null;
-          const step = applyStep(res);
+          const step = applyStep(res, epoch);
           answerSeq.current += 1;
           answerGen.current = genRef.current;
           const next: RankAnswer = {
@@ -382,6 +402,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
         },
         (err: Error) => {
           if (ctl.signal.aborted || err.name === "AbortError") return;
+          if (sourceEpoch.current !== epoch) return;
           inflightKey.current = null;
           // The rows in hand STAY (see the header); the error only reaches the
           // screen when there is nothing else to show.
@@ -430,7 +451,10 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
         return;
       }
       // Out of patience — the same rule the answer path uses, so there is one
-      // definition of what running out means (listing/index-source).
+      // definition of what running out means (listing/index-source). The
+      // count is per polling EPISODE: leaving it armed would make the next
+      // scan of this folder give up on its first tick.
+      polls.current = 0;
       setPolling(false);
       if (step === "walk") setWalkMode(true);
     }, SCAN_POLL_MS);
@@ -730,7 +754,18 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // selected (useListingSelection). Both would otherwise act on a file that
   // answers nothing the user typed — and the selection they leave behind is
   // what Cmd+Backspace acts on too.
-  const rowsAnswerQuery = !searching || walkMode || (!staleRows && !pending);
+  //
+  // The question is about the ROWS, never about a request being out, and the
+  // difference is not academic: gating on `pending` flipped this false for the
+  // length of every round trip, so a poll tick during a scan made the listing
+  // withdraw its selection and re-place it a second and a half later — some
+  // twenty times over a 30 s scan, remounting the preview each time
+  // (listing/selection), with Enter dead in between. `deferredStale` is the
+  // other half and the one `pending` never covered: `q` trails the input by a
+  // commit under load, so there is a render where the rows answer a query the
+  // user has already typed past while nothing is in flight at all.
+  const rowsAnswerQuery =
+    !searching || walkMode || (!staleRows && !deferredStale);
 
   // The rendered rows: the top of the ranking only (listing/result-cap). This
   // is also what keyboard nav and auto-select walk, so they never address a
