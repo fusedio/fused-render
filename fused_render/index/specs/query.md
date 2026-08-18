@@ -176,19 +176,17 @@ Two flags travel with it:
   instant, mostly-right answer under a visible caveat beats re-walking the tree; a
   folder the index never reached has no answer at all, and that is what falls back.
 
-The client's decision table (`apps/explorer/listing/index-corpus.ts`):
-
-| has index | scanning | search reads | indicator |
-|---|---|---|---|
-| no | — | the live walk | "building index… N files" (optional) |
-| yes | yes | the index (last completed generation) | "indexing…" — required |
-| yes | no | the index | none |
-
 **A miss is never an error.** No index yet, a first-boot scan still running, a root
 outside the scanned roots, a stale index, a failed request — all of them return
-`{covered: false, entries: []}` with a 200, and the client falls back to the live walk
-silently. They are one condition from a search box's point of view, and none of them is
-something the user can act on.
+`{covered: false, entries: []}` with a 200. None of them is something the user can act
+on, so none of them is reported as a fault.
+
+They are not one ACTION, though, and the ranked route next door
+(`server-api.md §7.1`) is where that distinction lives: `covered: false` there carries a
+`reason`, and the in-folder search scans an uncovered folder on demand, polls a folder
+being scanned, and reserves the live streamed walk for the folders no scan can ever
+cover. This route keeps the older, coarser contract because it is the public
+`fused.fileIndex.search` bridge, not because the app still decides that way.
 
 The pruning of §4 applies with the folder prefix, which is what makes an in-folder
 search read a slice of the index rather than all of it.

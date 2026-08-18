@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { indexCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
+import { indexCaveat, searchCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
 import type { IndexStatus } from "@platform/lib/api";
 
 function status(over: Partial<IndexStatus> = {}): IndexStatus {
@@ -52,6 +52,26 @@ describe("indexCaveat", () => {
   it("prefers the running-scan message, which already implies the same thing", () => {
     expect(indexCaveat(status(), true)!.note).toBe("indexing…");
   });
+
+  it("says indexing… for a rescan this app triggered but nobody has seen yet", () => {
+    // The gap the old freshness gate used to cover by disqualifying the folder
+    // outright: between the rename and the rescan appearing in a status poll,
+    // the index still spells the old name and `scanning` is still false. The
+    // rows on screen are the ones that are wrong, so the caption has to be up
+    // before the poller catches the scan, not after.
+    const c = indexCaveat(status({ scanning: false }), false, true)!;
+    expect(c.note).toBe("indexing…");
+  });
+
+  it("still says nothing once the rescan has landed", () => {
+    expect(indexCaveat(status({ scanning: false }), false, false)).toBeNull();
+  });
+
+  it("a pending rescan outranks being a generation behind", () => {
+    // Both are true after an in-app change; "indexing…" is the one that says
+    // something is coming.
+    expect(indexCaveat(status({ scanning: false }), true, true)!.note).toBe("indexing…");
+  });
 });
 
 describe("withCaveat", () => {
@@ -66,5 +86,34 @@ describe("withCaveat", () => {
   it("leaves the count untouched when nothing is scanning", () => {
     expect(withCaveat("62 matches", null)).toBe("62 matches");
     expect(withCaveat(null, null)).toBeNull();
+  });
+});
+
+describe("searchCaveat", () => {
+  const state = (over: Partial<Parameters<typeof searchCaveat>[1]> = {}) => ({
+    behind: false, pending: false, rescanPending: false, ...over,
+  });
+
+  it("says nothing about a query that is merely in flight", () => {
+    // Every keystroke leaves the rows answering the previous query for a
+    // moment. Calling that "not refreshed — clear the search and run it
+    // again" is corpus-staleness language for a 40ms round trip, printed
+    // where the 200ms rule deliberately withholds even a spinner.
+    expect(searchCaveat(status({ scanning: false }), state({ behind: true, pending: true })))
+      .toBeNull();
+  });
+
+  it("says it once the rows are stuck", () => {
+    expect(searchCaveat(status({ scanning: false }), state({ behind: true }))!.note)
+      .toBe("not refreshed");
+  });
+
+  it("says indexing… for a rescan this app triggered", () => {
+    expect(searchCaveat(status({ scanning: false }), state({ rescanPending: true }))!.note)
+      .toBe("indexing…");
+  });
+
+  it("keeps quiet when there is nothing to say", () => {
+    expect(searchCaveat(status({ scanning: false }), state())).toBeNull();
   });
 });
