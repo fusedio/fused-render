@@ -7287,6 +7287,26 @@ the installation, and the mark that says so.
   changes it is warning them about. On a dismissed badge it would also re-light
   it — overturning a decision the user had explicitly made, on the strength of a
   session that did nothing.
+- **SF-7c** **A marker for this version VETOES a fresh baseline**, because taking
+  the baseline from the tree in front of us is only honest on the first session
+  of a version, and the marker is a standing claim that this tree is not the one
+  we shipped. The baseline file can go missing under a live marker in two
+  ordinary ways — the fix session IS an agent editing this installation and can
+  delete its state dir, and the first write can have failed with `OSError` (the
+  read-only path, where `ensure_baseline` carries the digest back in memory and
+  logs) — and re-taking it from the PATCHED tree makes `reconcile` find
+  `current == pristine` on the next start and clear the badge while the patch is
+  still on disk. Silently un-warning a modified install is the exact failure SF-7
+  exists to prevent, arriving through the bookkeeping instead of through the
+  model. The repair is usually exact rather than defensive: the marker carries
+  `baseline_digest`, so the lost pristine digest is recovered from it and the
+  file rewritten. When the marker has none either — it was stamped in a session
+  whose own baseline write failed — **nothing is written and the digest comes
+  back empty**, `reconcile` finds no pristine and leaves the badge alone. A badge
+  that outstays its modification is cosmetic; one that vanishes over a live patch
+  is not, and that asymmetry is which way to fail. An UPGRADE is not this case:
+  the marker's version is then the old one, the new release really did replace
+  the tree, and `reconcile` discards such a marker on sight anyway.
 - **SF-7a** **Only a self-fix session ever sets it.** There is deliberately no
   continuous verification. What is recorded is a *provenance* claim — "Claude
   changed this installation while fixing something, here is its report" — and not
