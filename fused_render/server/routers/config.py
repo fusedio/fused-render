@@ -113,6 +113,18 @@ def api_config(
     # GET /api/selffix the shell makes only when the chip is clicked.
     if (modified := selffix.status()) is not None:
         config["modified_install"] = modified
+    # This installation cannot be written to, so a self-fix session here can only
+    # DIAGNOSE (SPEC §43, SF-13). PRESENT ONLY WHEN READ-ONLY, like
+    # `modified_install` above and for the same reason: the ordinary install is
+    # one the user owns, and a field that is always there invites a truthiness
+    # check that `{"read_only": False}` would silently pass.
+    #
+    # It rides /api/config — rather than the GET /api/selffix snapshot that also
+    # reports it — because the download manager's failed rows need it to LABEL a
+    # button before anyone clicks it, and that snapshot costs a directory walk
+    # and a brew probe. This is one `os.access` call.
+    if not selffix.writable():
+        config["read_only"] = True
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}
         if token == instance[1]:

@@ -36,6 +36,11 @@ export interface Config {
   // always there invites a truthiness check that a `{modified: false}` object
   // would silently pass.
   modified_install?: ModifiedInstall;
+  // The installation cannot be written to, so a self-fix session started here
+  // can only DIAGNOSE (fused_render/selffix.py, SPEC §43 SF-13). PRESENT ONLY
+  // WHEN READ-ONLY, for the same reason as `modified_install` above: the
+  // ordinary install is one the user owns.
+  read_only?: boolean;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable

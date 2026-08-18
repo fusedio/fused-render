@@ -1,0 +1,166 @@
+// `useInstallReadOnly`, DRIVEN — the hook the download manager's failed row uses
+// to decide whether its button may promise a fix (SPEC §43, SF-13d).
+//
+// Worth driving rather than asserting on source, because three of the four
+// things it has to get right are invisible in a screenshot and in a grep: how
+// many requests N rows make, what a failed request leaves behind for the next
+// row, and which way absence answers.
+//
+// react-test-renderer with a local probe rather than the listing's hook-harness:
+// platform may not import apps (frontend/scripts/check-boundaries.mjs), and all
+// this hook needs is a mount and a microtask — no virtual clock.
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { act, create } from "react-test-renderer";
+import { createElement, type ReactElement } from "react";
+import type { Config } from "@platform/lib/api";
+
+// --- the module boundary ------------------------------------------------------
+let reply: () => Promise<Config>;
+let calls = 0;
+
+mock.module("@platform/lib/api", () => ({
+  getConfig: () => {
+    calls += 1;
+    return reply();
+  },
+}));
+
+// hooks.ts pulls in the router and the sidebar store, which read `location` and
+// register listeners at module scope; bun has no DOM. Same `??=` shim as
+// router.test.ts and toast.test.ts — never an assignment, and never a delete
+// afterwards: the suite shares one process, so a file that OVERWRITES `window`
+// hands the toast queue a stub with no `setTimeout`, and one that removes it
+// takes the shim out from under every file whose own `??=` already ran.
+(globalThis as { location?: unknown }).location ??= {
+  pathname: "/",
+  search: "",
+  href: "http://localhost/",
+};
+(globalThis as { history?: unknown }).history ??= {
+  state: null,
+  pushState() {},
+  replaceState() {},
+};
+(globalThis as { window?: unknown }).window ??= {
+  addEventListener() {},
+  removeEventListener() {},
+  dispatchEvent() {},
+  setTimeout: globalThis.setTimeout.bind(globalThis),
+  clearTimeout: globalThis.clearTimeout.bind(globalThis),
+};
+
+const { useInstallReadOnly, resetInstallReadOnly } = await import("@platform/lib/hooks");
+
+const config = (over: Partial<Config> = {}) => ({ version: "1.2.3", ...over }) as Config;
+
+/** Mount the hook and expose its latest return value. */
+function mount(): { current: () => boolean; unmount: () => void } {
+  let latest = false;
+  const Probe = (): ReactElement | null => {
+    latest = useInstallReadOnly();
+    return null;
+  };
+  let renderer: ReturnType<typeof create>;
+  act(() => {
+    renderer = create(createElement(Probe));
+  });
+  return {
+    current: () => latest,
+    unmount: () => act(() => renderer.unmount()),
+  };
+}
+
+/** Let the config reply and the state update it causes both settle. */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+beforeEach(() => {
+  calls = 0;
+  reply = () => Promise.resolve(config());
+  resetInstallReadOnly();
+});
+
+afterEach(() => {
+  resetInstallReadOnly();
+});
+
+describe("useInstallReadOnly", () => {
+  test("a read-only installation is reported, so the button can change its verb", async () => {
+    reply = () => Promise.resolve(config({ read_only: true }));
+    const probe = mount();
+    await settle();
+    expect(probe.current()).toBe(true);
+    probe.unmount();
+  });
+
+  test("absence is the ordinary case — an install the user owns", async () => {
+    // /api/config carries no `read_only: false`; the field is present only when
+    // the tree cannot be written to. A hook that checked for the false value
+    // would report every writable install as read-only.
+    const probe = mount();
+    await settle();
+    expect(probe.current()).toBe(false);
+    probe.unmount();
+  });
+
+  test("the FIRST paint promises a fix rather than a diagnosis", async () => {
+    // Before the reply lands there is no answer, and the label has to say
+    // something. It says "Fix this": nearly every installation is writable, and
+    // the cost of being wrong for one paint is a verb that corrects itself —
+    // against a session that is told the truth either way.
+    reply = () => new Promise(() => {}); // a config read nobody answers
+    const probe = mount();
+    await settle();
+    expect(probe.current()).toBe(false);
+    probe.unmount();
+  });
+
+  test("three failed rows ask ONCE, not three times", async () => {
+    // The PROMISE is cached, not just the answer, so simultaneous mounts share
+    // one request. A user with three failed downloads is the ordinary way to
+    // mount three of these, and they are all asking about one directory.
+    reply = () => Promise.resolve(config({ read_only: true }));
+    const probes = [mount(), mount(), mount()];
+    await settle();
+    expect(calls).toBe(1);
+    for (const probe of probes) expect(probe.current()).toBe(true);
+    for (const probe of probes) probe.unmount();
+  });
+
+  test("a failed read is not remembered as an answer", async () => {
+    // A transient fetch failure must not pin "writable" for the rest of the
+    // session — the next row that mounts asks again. Cached rejection would make
+    // one dropped request outlive the reason for it.
+    reply = () => Promise.reject(new Error("offline"));
+    const first = mount();
+    await settle();
+    expect(first.current()).toBe(false);
+    first.unmount();
+
+    reply = () => Promise.resolve(config({ read_only: true }));
+    const second = mount();
+    await settle();
+    expect(second.current()).toBe(true);
+    expect(calls).toBe(2);
+    second.unmount();
+  });
+
+  test("a successful read IS remembered", async () => {
+    // Permissions on the install root are a property of how the app was
+    // installed, so a later row re-uses the answer instead of re-asking.
+    reply = () => Promise.resolve(config({ read_only: true }));
+    const first = mount();
+    await settle();
+    first.unmount();
+
+    const second = mount();
+    await settle();
+    expect(second.current()).toBe(true);
+    expect(calls).toBe(1);
+    second.unmount();
+  });
+});

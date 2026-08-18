@@ -7201,7 +7201,7 @@ the installation, and the mark that says so.
 
 - **SF-1** **The trigger is an option on a FAILURE**, not a menu entry: a row in
   the download manager (§36) whose `state` is `error` grows a **Fix this** button
-  beside its ✕. That placement is the whole argument — a failure is the one
+  beside its ✕ (**Diagnose this** where the installation is read-only, SF-13d). That placement is the whole argument — a failure is the one
   moment the app has already admitted it cannot do the thing, so an offer to go
   and look at why is not an interruption. On a running row it would be noise; on
   a finished one, a question nobody asked. The trigger is a plain function over a
@@ -7575,10 +7575,25 @@ the installation, and the mark that says so.
   diagnostic session cannot earn one, so the stamp would buy 360 extra polls of
   a value guaranteed not to move — hence `diagnostic` on the start response, and
   `shouldNoteStart`.
-  (d) *The UI sets the expectation rather than closing the door*: the button
-  reads **Start a diagnostic session**, and the note beside it says a session
-  can diagnose but not fix, with the fix needing a copy the user owns. It is not
-  an error banner, because nothing has gone wrong.
+  (d) *The UI sets the expectation rather than closing the door, on BOTH ways
+  in*: in Preferences the button reads **Start a diagnostic session** and the
+  note beside it says a session can diagnose but not fix, with the fix needing a
+  copy the user owns — not an error banner, because nothing has gone wrong. On a
+  failed download row, where there is space for a verb and not a sentence, **Fix
+  this** becomes **Diagnose this** (the title attribute carries the sentence).
+  That second half was missed at first, and the way it was wrong is worth
+  keeping: the row promised a fix to *everyone*, so the one user who cannot be
+  helped locally was the one told most confidently that they could — and found
+  out only when the session ended. The row needs the answer BEFORE the click,
+  which is why `read_only` rides `/api/config` (present only when true, like
+  `modified_install`) instead of the `GET /api/selffix` snapshot that also
+  reports it: the snapshot costs a directory walk and a brew probe, and this is
+  one `os.access`. `useInstallReadOnly` caches the PROMISE rather than the
+  answer, so three failed rows ask once; a failed read is not cached, so one
+  dropped request does not pin the label for the session; and absence answers
+  *writable*, because nearly every install is, and a verb that briefly
+  overpromises beats mis-wording the button for everyone whose config fetch was
+  merely slow.
 - **SF-13a** **ONE Claude session at a time in the installation** (409 naming
   the run), because they all edit the same tree: two agents rewriting one
   installation is not a slow path but a conflict, and each report then describes

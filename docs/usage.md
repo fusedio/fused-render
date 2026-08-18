@@ -435,7 +435,8 @@ panel, below.)
 
 When something the app is doing fails — a model download, a long job, anything
 that shows up in the download manager at the bottom right — the failed row
-carries a **Fix this** button beside its ✕.
+carries a **Fix this** button beside its ✕ (*Diagnose this* on an installation
+you cannot write to — see below).
 
 It opens a Claude Code session **on the fused-render installation itself**, with
 what went wrong already written down for it, and drops you into that
@@ -453,8 +454,9 @@ A few things worth knowing:
   it for everyone, say — the session still runs, but it can only **diagnose**.
   Claude reads the code, works out what is wrong, and writes a report saying
   what the fix would be; nothing on your machine changes. Send that report on,
-  or apply the fix in a copy you own. The button says *Start a diagnostic
-  session* so you know before you start.
+  or apply the fix in a copy you own. **You are told before you start**, not
+  after: the failed row's button reads *Diagnose this* rather than *Fix this*,
+  and the Preferences one *Start a diagnostic session*.
 
 ### The modified badge
 

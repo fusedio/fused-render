@@ -229,6 +229,65 @@ function useBuiltinMountReady(initial: boolean, key: BuiltinMountKey): boolean {
   return ready;
 }
 
+// Whether this installation is read-only, which is what decides whether a
+// self-fix session can FIX or only DIAGNOSE (SPEC §43, SF-13). Preferences knows
+// this already, from the GET /api/selffix snapshot it opens with; the download
+// manager's failed rows do not, and they have to word a button BEFORE anyone
+// clicks it — so this reads the one bit off /api/config, which is a plain
+// `os.access` on the server.
+//
+// One fetch per page, not per row: a user with three failed downloads mounts
+// three of these, and they are all asking the same question about the same
+// directory. The PROMISE is what's cached rather than the answer, so three
+// simultaneous mounts share one request instead of racing three.
+//
+// Cached for the whole session, and that is sound in a way the learn-mount poll
+// above is not: file permissions on the install root are a property of how the
+// app was installed, and a copy that changes owner mid-session has bigger
+// problems than a stale button label.
+//
+// Absence answers FALSE — the label falls back to promising a fix. Deliberate:
+// nearly every installation is one the user owns, and the failure mode on the
+// rare read-only one is a button that overpromises for a moment, against a
+// server response that still tells the truth (`diagnostic`) and a session that
+// is told in its own prompt. Defaulting the other way would mis-word the button
+// for everyone whose config fetch was merely slow.
+let readOnlyProbe: Promise<boolean> | null = null;
+
+function probeReadOnly(): Promise<boolean> {
+  if (!readOnlyProbe) {
+    readOnlyProbe = getConfig().then(
+      (config) => config.read_only === true,
+      () => {
+        // Let the next mount try again — a transient fetch failure should not
+        // pin "writable" for the rest of the session.
+        readOnlyProbe = null;
+        return false;
+      }
+    );
+  }
+  return readOnlyProbe;
+}
+
+/** Test seam: forget the cached probe so a case can serve a different config. */
+export function resetInstallReadOnly(): void {
+  readOnlyProbe = null;
+}
+
+export function useInstallReadOnly(): boolean {
+  const [readOnly, setReadOnly] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    probeReadOnly().then((value) => {
+      if (!cancelled) setReadOnly(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return readOnly;
+}
+
 // Live sidebar chrome state (platform/lib/sidebarstate) — collapsed flag and
 // dragged width, shared so every owner of the frame agrees on the layout.
 export function useSidebarState(): SidebarState {
