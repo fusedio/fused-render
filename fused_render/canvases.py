@@ -974,12 +974,17 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
 # `active_fix_run_id` itself is NOT reusable here — it only tracks fix sessions
 # this module spawned, not a chat the user started in the right pane themselves.
 
-# How long a liveness answer is reused. The watcher asks once a second and the
-# workspace polls status every 2s, while the answer costs a meta.json read per
-# run dir (unbounded — see _live_run's `limit`). Caching for one poll interval
-# keeps that off the hot loop; the cost of being up to 2s stale is at worst one
-# suppressed-then-allowed push, which the debounce already tolerates.
-AGENT_LIVE_CACHE_S = 2.0
+# How long a liveness answer is reused. `_run()` refreshes it once a second on
+# EVERY tick, clean clone or not, so the request thread behind
+# `/api/canvases/sync/status` (polled every 2s) almost always finds a warm
+# cache and never itself pays for a scan (a meta.json read per run dir,
+# unbounded — see _live_run's `limit`; deliberately not result-capped, since a
+# capped scan can miss a live run buried under newer ones and silently stop
+# reporting it live). The TTL is kept a bit above the watcher's own 1s tick so
+# a slow tick still leaves margin before the request thread's poll interval
+# catches up and has to do the scan itself; the cost of being briefly stale is
+# at worst one suppressed-then-allowed push, which the debounce tolerates.
+AGENT_LIVE_CACHE_S = 3.0
 
 _AGENT_MOD = None
 _AGENT_MOD_TRIED = False
@@ -1856,6 +1861,18 @@ class _SyncManager:
                 paused = self.pause_count > 0
             if paused:
                 continue
+            # Keep the live-run cache warm from the WATCHER thread, on every
+            # tick, clean clone or not — not just from the dirty/debounce
+            # branch below. Without this a clean clone (the common case: a
+            # chat-only session, or between edits) never refreshes it here at
+            # all, so the unbounded os.walk-of-RUNS scan `agent_run_id()` runs
+            # (AGENT_LIVE_CACHE_S has a short TTL, so it re-triggers on the
+            # cache's own schedule) happened on the REQUEST thread instead,
+            # roughly every other `/api/canvases/sync/status` poll
+            # (SYNC_POLL_MS's 2s is close to AGENT_LIVE_CACHE_S's 2s). This
+            # call is a no-op read of the cache except once every
+            # AGENT_LIVE_CACHE_S seconds, so it does not add a scan per tick.
+            self.agent_run_id()
             current = self._take_fingerprint()
             if current != self._fingerprint:
                 self._fingerprint = current

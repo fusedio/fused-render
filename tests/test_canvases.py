@@ -1896,6 +1896,40 @@ def test_agent_active_tracks_the_live_run(harness, tmp_path, monkeypatch, fake_a
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
+def test_a_clean_clone_still_refreshes_the_live_run_cache_from_the_watcher(
+        harness, tmp_path, monkeypatch):
+    """A clean clone (no pending push, nothing to debounce) used to never call
+    agent_run_id() from the watcher thread at all — that only happened inside
+    the dirty+debounce branch. So the unbounded RUNS scan (a meta.json read
+    per run dir, deliberately not result-capped) ran on the REQUEST thread
+    instead, roughly every other `/api/canvases/sync/status` poll (the cache's
+    short TTL is close to the poll interval). The watcher must refresh it on
+    every tick regardless of dirty state, so the request thread almost always
+    finds a warm cache."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    agent = _FakeAgent(live="run-xyz")
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: agent)
+    monkeypatch.setattr(canvases_mod, "AGENT_LIVE_CACHE_S", 0.3)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    # The clone is clean (freshly seeded) — nothing to debounce or push, yet
+    # the watcher's own ticks must still be calling into the agent module.
+    assert _wait_for(lambda: len(agent.calls) >= 2, timeout=3), (
+        "the watcher never refreshed the live-run cache on a clean clone", agent.calls)
+
+    # A status poll right after must find a warm cache, not trigger its own
+    # scan: the call count settles rather than growing 1:1 with polls.
+    before = len(agent.calls)
+    for _ in range(5):
+        harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    time.sleep(0.05)
+    assert len(agent.calls) - before <= 1, (
+        "status() polling itself is paying for the scan instead of reading "
+        "the watcher-refreshed cache", agent.calls)
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
 def test_agent_active_is_false_when_nothing_is_syncing(harness, tmp_path, monkeypatch):
     """A page that polls a canvas with no watcher must still be told the lock is
     off — otherwise a dropped watcher or a server restart mid-lock leaves the
