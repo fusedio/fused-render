@@ -379,6 +379,33 @@ def test_a_declared_project_reports_its_own_venv_not_this_process(tmp_path):
         "that venv's packages are not this process's — reporting them here "
         "would be a guess dressed up as an answer"
     )
+    assert body["python_version"] is None, (
+        "the venv can pin a different Python than the app (SPEC PY-16) — "
+        "this process's own sys.version is not known to match it"
+    )
+
+
+def test_a_py_that_cannot_be_resolved_is_an_error_not_a_guess(tmp_path):
+    """A relative `py` with no `html` to resolve it against, or a `py` that
+    resolves to nothing on disk, means resolution FAILED — the endpoint must
+    say so (mirroring /api/env/install's `_project_for`), not fall through to
+    "no project declares one", which asserts a fact resolution never actually
+    established.
+    """
+    client = _client(tmp_path)
+
+    resp = client.get("/api/env/interpreter", params={"py": "declared.py"},
+                      headers=HEADERS)
+    assert resp.status_code == 400, resp.text
+    assert "'html'" in resp.json()["error"]
+
+    resp = client.get(
+        "/api/env/interpreter",
+        params={"py": str(tmp_path / "nope.py")},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 400, resp.text
+    assert "no such Python file" in resp.json()["error"]
 
 
 def test_interpreter_resolves_a_relative_py_against_the_page(tmp_path):

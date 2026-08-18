@@ -157,27 +157,42 @@ def api_env_interpreter(py: str | None = None, html: str | None = None,
     if guard is not None:
         return guard
 
+    # Same resolution rule (and the same error wording) as /api/env/install's
+    # `_project_for`: a `py` this endpoint cannot resolve is answered as an
+    # error, never silently folded into "no project declares one" — that
+    # would assert a fact (no project) that resolution never actually
+    # established.
     project = None
     if py:
-        resolved = py if os.path.isabs(py) else (
-            os.path.normpath(os.path.join(os.path.dirname(html), py))
-            if html else None)
-        if resolved and os.path.isfile(resolved):
-            from fused_render import projectenv
-            project = projectenv.project_env_for(resolved)
+        if os.path.isabs(py):
+            resolved = py
+        elif html:
+            resolved = os.path.normpath(os.path.join(os.path.dirname(html), py))
+        else:
+            return _error(
+                "'py' is a relative path but 'html' was not provided; "
+                "either send an absolute 'py' path or include 'html' so it can be resolved"
+            )
+        if not os.path.isfile(resolved):
+            return _error(f"no such Python file: {resolved}")
+        from fused_render import projectenv
+        project = projectenv.project_env_for(resolved)
 
     from fused_render.shell import prefs as shell_prefs
     engine = shell_prefs.effective_engine()
 
+    python_version = None
     packages = None
     if project:
         from fused_render import envinstall
         interpreter = envinstall.venv_python_for(project)
         source = (f"{projectenv.display_name(project)}'s own project "
                   "environment (declared in its pyproject.toml)")
-        # Not this process's own packages — that venv is a different
-        # interpreter, and probing it here would cost a subprocess spawn for
-        # an answer most callers (no declared project) never need.
+        # Neither this process's own Python version nor its packages — that
+        # venv can pin a different Python than the app (SPEC PY-16 lets a
+        # project declare its own), and probing it here would cost a
+        # subprocess spawn for an answer most callers (no declared project)
+        # never need.
     else:
         if engine == "fused":
             from fused_render import engine as _engine
@@ -185,6 +200,7 @@ def api_env_interpreter(py: str | None = None, html: str | None = None,
         else:
             interpreter = sys.executable
         source = "this app's own interpreter (no project declares one, SPEC PY-17)"
+        python_version = sys.version
         packages = {}
         for name in _REPORTED_PACKAGES:
             try:
@@ -197,7 +213,7 @@ def api_env_interpreter(py: str | None = None, html: str | None = None,
         "engine": engine,
         "interpreter": interpreter,
         "source": source,
-        "python_version": sys.version,
+        "python_version": python_version,
         "packages": packages,
     })
 
