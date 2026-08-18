@@ -6,7 +6,7 @@ wrong and two scripts in one app silently run in two environments, or a stray
 manifest three levels down hijacks the app's.
 
 Isolation: every test points FUSED_RENDER_HOME and FUSED_RENDER_DIR at tmp_path,
-so the real ~/.fused-render and ~/Documents/Fused are never touched — the same
+so the real ~/.fused-render and ~/Fused are never touched — the same
 discipline as tests/test_core_templates.py.
 """
 import hashlib

@@ -8,7 +8,7 @@ set here at conftest import, ahead of the first test-module import, or the
 copy would land in the real ~/.fused-render.
 
 FUSED_RENDER_DIR is redirected for the same reason: /api/config reads it (D81)
-and the seed tests write into it, so no test may see the real ~/Documents/Fused.
+and the seed tests write into it, so no test may see the real ~/Fused.
 
 CLAUDE_CONFIG_DIR likewise: the user-level skill sync (user_skills.py, D185)
 writes into <config dir>/skills/ and POST /api/apps/new triggers it, so no

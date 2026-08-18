@@ -42,6 +42,7 @@ let splitDraft: typeof import("./NewJobModal").splitDraft;
 let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
 let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
+let defaultTargetOf: typeof import("./NewJobModal").defaultTargetOf;
 
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
@@ -69,6 +70,7 @@ beforeAll(async () => {
   pastNoteFor = mod.pastNoteFor;
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
   PAST_NOTE_CATCH_UP = mod.PAST_NOTE_CATCH_UP;
+  defaultTargetOf = mod.defaultTargetOf;
 });
 
 // Only the fields these functions read; the rest of a stored entry is noise
@@ -1422,5 +1424,24 @@ describe("the past-time note never blocks Save", () => {
     );
     expect(body.rule).toEqual(DAILY);
     expect(body.due).toBe("2025-01-01T09:00");
+  });
+});
+
+// ---- The default target ---------------------------------------------------
+
+describe("defaultTargetOf", () => {
+  test("uses the server's RESOLVED workspace, not home + a guessed suffix", () => {
+    // FUSED_RENDER_DIR is a supported override the workspace migration
+    // deliberately leaves alone; guessing `${home}/Fused` handed those users a
+    // folder that may not exist, and the server's 400.
+    expect(defaultTargetOf({ home: "/Users/x", fused_dir: "/data/work" })).toBe(
+      "/data/work",
+    );
+  });
+
+  test("normalizes a Windows workspace path", () => {
+    expect(
+      defaultTargetOf({ home: "C:\\Users\\v", fused_dir: "C:\\Users\\v\\Fused" }),
+    ).toBe("C:/Users/v/Fused");
   });
 });
