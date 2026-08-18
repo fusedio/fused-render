@@ -868,7 +868,19 @@ def _terminal_command(file: str, session_id: str = "") -> dict:
 
     The binary is spelled `claude` when PATH resolves it — a command the user
     reads and reuses should say what they would type — and falls back to the
-    located absolute path only when it doesn't."""
+    located absolute path only when it doesn't.
+
+    The `fused` wrapper dir is PREPENDED to PATH for the handed-over command
+    whenever the server exported one (`fused_cli_dir`, the same condition that
+    gates the `Bash(fused:*)` pre-allowance and the prompt's CLI note). The
+    sessions we spawn inherit that dir on PATH from the server process; a
+    terminal the user opens themselves does not. Without this, `fused` in the
+    continued session is not a wrong version — for a shipping user it is
+    `command not found`, because fused-render bakes its own pre-release fused
+    into the app's interpreter and they never installed one. Prepended rather
+    than appended so the app's CLI also wins over any fused a developer does
+    have, since only that one carries the manifest shims the canvas sync needs.
+    Spelled as an ordinary PATH assignment, which is what a user would type."""
     if not file:
         return {"error": "missing target file (no _file param?)"}
     workdir = _workdir(file)
@@ -888,15 +900,25 @@ def _terminal_command(file: str, session_id: str = "") -> dict:
             return {"error": "malformed session id"}
         _migrate_session(file, session_id)
         argv += ["--resume", session_id]
+    cli_dir = _fused_cli_dir()
     if os.name == "nt":
         # cmd.exe quoting: bare when safe, double-quoted otherwise. shlex is
         # POSIX-only and its output misleads on Windows.
         def quote(s):
             return '"' + s + '"' if (" " in s or not s) else s
-        command = "cd /d {} && {}".format(quote(workdir),
-                                          " ".join(quote(a) for a in argv))
+        parts = ["cd /d {}".format(quote(workdir))]
+        if cli_dir:
+            # `set` scopes to the shell the user pasted into, which is exactly
+            # the lifetime we want: the session they just continued.
+            parts.append('set "PATH={};%PATH%"'.format(cli_dir))
+        parts.append(" ".join(quote(a) for a in argv))
+        command = " && ".join(parts)
     else:
-        command = "cd {} && {}".format(shlex.quote(workdir), shlex.join(argv))
+        run = shlex.join(argv)
+        if cli_dir:
+            # A one-command env prefix, so nothing outlives the session.
+            run = "PATH={}:$PATH {}".format(shlex.quote(cli_dir), run)
+        command = "cd {} && {}".format(shlex.quote(workdir), run)
     return {"command": command, "cwd": workdir}
 
 
