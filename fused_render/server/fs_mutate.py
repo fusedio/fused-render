@@ -1,3 +1,5 @@
+import ctypes
+import datetime
 import json
 import os
 import shutil
@@ -5,6 +7,7 @@ import stat as stat_mod
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import zipfile
 from pathlib import Path
 from fastapi import APIRouter, Body, File, Form, Header, Request, UploadFile
@@ -603,9 +606,17 @@ def _fs_compress(body: dict, x_fused: str | None):
 
 
 def _trash_supported() -> bool:
-    # Move-to-Trash is macOS-only (a ~/.Trash + Finder concept). Isolated so
-    # tests can force it on/off without touching the global sys.platform.
-    return sys.platform == "darwin"
+    # Every desktop platform we run on has an OS-level bin, and each gets its own
+    # backend below: macOS ~/.Trash, the freedesktop.org XDG trash on Linux, the
+    # Recycle Bin on Windows. Isolated as one predicate so tests can force each
+    # platform on/off without touching the global sys.platform — which is also
+    # why the dispatch below reads sys.platform in exactly one place.
+    #
+    # A `True` here promises only that a backend EXISTS, never that this
+    # particular path can use it: a Linux cross-device delete and a mount-backed
+    # file are both answered 501 later, which is the same signal the client
+    # already routes into its confirm-then-hard-delete fallback.
+    return sys.platform in ("darwin", "linux", "win32")
 
 
 def _trash_dest_name(name: str, counter: int) -> str:
@@ -621,7 +632,21 @@ def _trash_dest_name(name: str, counter: int) -> str:
     return f"{name} {counter}"
 
 
-def _move_to_trash(path: str) -> str | None:
+class _TrashUnsupported(Exception):
+    """This path cannot go to the bin, though the platform has one.
+
+    Raised only where nothing was moved, so the caller can answer the SAME 501
+    "trash unsupported" the platform gate answers and the client can route into
+    its confirm-then-hard-delete flow. Distinct from an OSError, which means the
+    trash was attempted and failed (a 500) — that must never be reported as
+    "unsupported", or a merely-failed recoverable delete would invite the user to
+    erase the file for good.
+    """
+
+
+# -- macOS: ~/.Trash --------------------------------------------------------
+
+def _move_to_macos_trash(path: str) -> str | None:
     # Move `path` into the user's ~/.Trash (macOS). A plain os.rename into
     # ~/.Trash is the fast path, with a " N" dedupe suffix when a name is
     # already there. A rename ACROSS devices (or any other OSError) can't be
@@ -660,9 +685,221 @@ def _move_to_trash(path: str) -> str | None:
         return None
 
 
+# -- Linux: the freedesktop.org XDG trash -----------------------------------
+
+def _xdg_trash_dir() -> Path:
+    # The spec's "home trash": $XDG_DATA_HOME/Trash, and $XDG_DATA_HOME defaults
+    # to ~/.local/share. A RELATIVE value is treated as unset, as the basedir
+    # spec requires — resolving it against the server's cwd would scatter trash
+    # roots wherever the app happened to be started from.
+    base = os.environ.get("XDG_DATA_HOME") or ""
+    root = Path(base) if os.path.isabs(base) else Path.home() / ".local" / "share"
+    return root / "Trash"
+
+
+def _trashinfo_body(path: str, when: datetime.datetime) -> str:
+    # The sidecar that makes an XDG trash entry restorable by ANY trash client,
+    # ours included. Two contract details the spec is explicit about and a naive
+    # writer gets wrong: `Path` is PERCENT-ENCODED (a name holding a space or a
+    # `#` otherwise reads as a different path, or as a comment, to every other
+    # reader), with "/" left unescaped so the value stays legible; and
+    # `DeletionDate` is LOCAL time in RFC-3339's basic shape with NO timezone
+    # suffix — the file says when, and the reader's own clock supplies where.
+    return (
+        "[Trash Info]\n"
+        f"Path={urllib.parse.quote(path, safe='/')}\n"
+        f"DeletionDate={when.strftime('%Y-%m-%dT%H:%M:%S')}\n"
+    )
+
+
+def _move_to_xdg_trash(path: str) -> str | None:
+    # Move `path` into the home XDG trash: the entry itself into `Trash/files/`,
+    # its metadata into `Trash/info/<name>.trashinfo`.
+    #
+    # THE INFO FILE IS THE LOCK, AND IT IS CREATED FIRST. The spec's own
+    # race-free ordering: claim the name with O_CREAT|O_EXCL on the .trashinfo
+    # (an atomic "this name is mine" no concurrent trasher can also win), and only
+    # then move the entry in. Picking a free name by looking and then renaming
+    # would let two deletes agree on the same name between the look and the move.
+    # A claim we then fail to fill is REMOVED again, so a crash mid-way cannot
+    # leave a name reserved for a file that never arrived.
+    #
+    # The name must be free in BOTH directories, not just the one we locked: a
+    # stale `files/` entry whose info file is gone (another tool's crash, a hand
+    # deletion) would otherwise be silently overwritten by the rename.
+    #
+    # RETURNS `files/<name>`, which the client records as the undo pair's
+    # destination. None means NOTHING WAS MOVED — a cross-device path (EXDEV),
+    # which is the common one for a file on another volume, or an unusable trash
+    # root. The caller answers 501 for it and the client falls back to the
+    # confirm-then-hard-delete flow. Deliberately NOT handled: copying the bytes
+    # across the boundary (shutil.move's fallback), and the spec's per-volume
+    # `.Trash-$uid` directories. A trash move that reads and rewrites an entire
+    # file is the same hazard the mount case refuses trash for, and a delete
+    # should not become the most expensive thing the app does.
+    trash = _xdg_trash_dir()
+    files_dir, info_dir = trash / "files", trash / "info"
+    name = os.path.basename(path.rstrip("/"))
+    try:
+        files_dir.mkdir(parents=True, exist_ok=True)
+        info_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+
+    counter = 1
+    while True:
+        cand = _trash_dest_name(name, counter)
+        info_path = info_dir / f"{cand}.trashinfo"
+        try:
+            fd = os.open(info_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            counter += 1
+            continue
+        except OSError:
+            return None
+        dest = files_dir / cand
+        if dest.exists():
+            # We won the info name but the entry name is taken anyway (a stale
+            # files/ entry). Give the claim back rather than overwrite.
+            os.close(fd)
+            _unlink_quietly(info_path)
+            counter += 1
+            continue
+        break
+
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(_trashinfo_body(path, datetime.datetime.now()))
+        os.rename(path, dest)
+    except OSError:
+        # Includes EXDEV. The claim goes back: an info file describing an entry
+        # that is not in files/ is exactly the orphan every trash client has to
+        # guess about, and we created it, so we remove it.
+        _unlink_quietly(info_path)
+        return None
+    return str(dest)
+
+
+def _unlink_quietly(path) -> None:
+    # For paths WE created and no longer want. A failure here cannot be reported
+    # to anyone usefully (the operation it belonged to has already been decided)
+    # and must not mask it.
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+# -- Windows: the Recycle Bin ----------------------------------------------
+
+_FO_DELETE = 0x0003
+_FOF_SILENT = 0x0004
+_FOF_NOCONFIRMATION = 0x0010
+_FOF_ALLOWUNDO = 0x0040
+
+
+class _SHFILEOPSTRUCTW(ctypes.Structure):
+    # Declared with plain ctypes types rather than ctypes.wintypes on purpose:
+    # importing wintypes raises outside Windows, and this struct is built (and
+    # asserted on) by tests that force the win32 branch from any host.
+    _fields_ = [
+        ("hwnd", ctypes.c_void_p),
+        ("wFunc", ctypes.c_uint),
+        ("pFrom", ctypes.c_wchar_p),
+        ("pTo", ctypes.c_wchar_p),
+        ("fFlags", ctypes.c_uint16),
+        ("fAnyOperationsAborted", ctypes.c_int),
+        ("hNameMappings", ctypes.c_void_p),
+        ("lpszProgressTitle", ctypes.c_wchar_p),
+    ]
+
+
+def _recycle_bin_request(path: str) -> tuple[str, int]:
+    # The (pFrom, fFlags) pair SHFileOperationW is asked for, split out so the
+    # two things easy to get silently wrong are testable without Windows.
+    #
+    # pFrom is a DOUBLE-NULL-TERMINATED list, not a string: the API reads paths
+    # until it meets an empty one, so a single terminator leaves it reading past
+    # the buffer. One absolute path plus its own terminator plus the list's.
+    #
+    # FOF_ALLOWUNDO is the flag that makes this the Recycle Bin instead of an
+    # erase; NOCONFIRMATION and SILENT keep the shell from putting its own dialog
+    # and progress window in front of a local web app's delete, which the app has
+    # already decided (and, for the hard delete, confirmed itself).
+    return path + "\0\0", _FOF_ALLOWUNDO | _FOF_NOCONFIRMATION | _FOF_SILENT
+
+
+def _shell32():
+    # The one Windows-only line, isolated so the tests can hand the backend a
+    # fake shell32 and assert what it was asked to do.
+    return ctypes.windll.shell32  # type: ignore[attr-defined]
+
+
+def _move_to_recycle_bin(path: str) -> None:
+    # Move `path` to the Recycle Bin via the shell, which is the only thing that
+    # produces a bin entry Explorer can restore. Raises on failure so the caller
+    # reports it as a 500 (a failed recoverable delete, never "unsupported").
+    #
+    # RETURNS NO DESTINATION, and that is the mechanism rather than an omission:
+    # the bin stores an item as `$R…` beside a `$I…` metadata file under
+    # `C:\$Recycle.Bin\<SID>\`, and restoring goes through the shell's own
+    # undo — there is no path a rename could put the entry back from. So no
+    # `trashed_to`, so no undo pair, which is the SAME rule the macOS
+    # cross-device Finder fallback already falls under: a destination we cannot
+    # name is not a destination we may record.
+    #
+    # WHERE FOF_ALLOWUNDO STILL ERASES PERMANENTLY: UNC/network shares, most
+    # removable and FAT-formatted volumes, and items larger than the bin's quota.
+    # None of those are reliably detectable up front, so the delete still
+    # succeeds and is still reported `trashed: true` — the honest position, since
+    # the shell did do the recoverable delete it was asked for and we cannot
+    # promise what the volume does with it.
+    p_from, flags = _recycle_bin_request(path)
+    op = _SHFILEOPSTRUCTW(
+        None, _FO_DELETE, p_from, None, flags, 0, None, None
+    )
+    # A pointer rather than byref: `.contents` is public API, so a test's fake
+    # shell32 can read the struct it was handed and set the aborted flag on it.
+    rc = _shell32().SHFileOperationW(ctypes.pointer(op))
+    if rc != 0:
+        raise OSError(f"SHFileOperationW failed with code {rc}")
+    if op.fAnyOperationsAborted:
+        # A zero return with the abort flag set is the shell's "I stopped": the
+        # entry may still be there, so reporting success would tell the user their
+        # file is in the bin when it is not.
+        raise OSError("the shell aborted the move to the Recycle Bin")
+
+
+def _move_to_trash(path: str) -> str | None:
+    # THE one trash entry point, dispatching on the platform and returning the
+    # destination when — and only when — WE named it. `_fs_delete` reports that
+    # as `trashed_to`, and the explorer's undo stack turns a named destination
+    # into an undoable rename pair (frontend lib/fs-undo). None means the entry
+    # is in the bin at a location we cannot name, which is recoverable through
+    # the OS's own UI and not through Cmd+Z.
+    #
+    # Raises _TrashUnsupported when this path cannot be trashed at all (nothing
+    # moved), and OSError when the attempt failed. The caller answers 501 and 500
+    # respectively, and the difference matters: only the 501 routes the client
+    # into the irreversible hard-delete flow.
+    if sys.platform == "win32":
+        _move_to_recycle_bin(path)
+        return None
+    if sys.platform == "linux":
+        dest = _move_to_xdg_trash(path)
+        if dest is None:
+            # Cross-device, or an unusable trash root. Nothing moved.
+            raise _TrashUnsupported(path)
+        return dest
+    return _move_to_macos_trash(path)
+
+
 def _fs_delete(body: dict, x_fused: str | None):
     # Remove a file or directory. With trash=true the target is moved to the
-    # user's Trash instead of being erased (recoverable, macOS only). Otherwise
+    # user's OS bin instead of being erased (recoverable; ~/.Trash on macOS, the
+    # XDG trash on Linux, the Recycle Bin on Windows — see _move_to_trash, which
+    # also decides whether the destination can be NAMED back, i.e. undone).
+    # Otherwise
     # a hard delete: a directory needs recursive=true unless it is empty (an
     # empty dir is a plain os.rmdir); a non-empty dir without the flag is a 409
     # so a stray click can't wipe a subtree. Read-only targets are refused with
@@ -725,6 +962,14 @@ def _fs_delete(body: dict, x_fused: str | None):
             return JSONResponse({"error": "trash unsupported"}, status_code=501)
         try:
             dest = _move_to_trash(path)
+        except _TrashUnsupported:
+            # The platform HAS a bin but this path cannot use it (a Linux
+            # cross-device delete), and nothing was moved. Same 501 the platform
+            # and mount gates answer, because the client's follow-up is the same:
+            # offer the confirm-then-hard-delete. This is the one 501 raised
+            # AFTER an attempt, which is safe precisely because the attempt left
+            # the file where it was.
+            return JSONResponse({"error": "trash unsupported"}, status_code=501)
         except Exception as e:  # noqa: BLE001 — rename OSError or osascript failure
             # A FAILED trash on a supported platform is a plain error, not the
             # 501 "unsupported" signal — that one routes the client into the
