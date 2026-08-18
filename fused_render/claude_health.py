@@ -477,6 +477,28 @@ def signed_in(path: Optional[str] = None) -> Optional[bool]:
 _CACHE_NAME = "claude-health.json"
 _LOCK = threading.Lock()
 
+#: Bumped whenever the MEANING of a field changes, so a snapshot written by an
+#: older build is discarded rather than served. Without it a cache is a record of
+#: what a previous version of this code believed: the sign-in probe used to
+#: answer `null` on macOS by rule, and every one of those snapshots would keep
+#: being served to the fixed code — the strip staying silent on a signed-out
+#: machine because a stale file said the question was unanswerable.
+_CACHE_VERSION = 2
+
+#: How long a snapshot may be served before it is re-measured.
+#:
+#: The fingerprint answers "is this the same binary", which is the whole truth
+#: for `path` and `version` and NO PART of the truth for `signed_in`. Signing out
+#: changes no path, no PATH and no mtime, so a fingerprint-only cache never
+#: notices it — on disk, so not even a restart clears it. That is not a staleness
+#: window, it is a permanent wrong answer, and it is the one fact here most
+#: likely to change while the app is running.
+#:
+#: A minute is the trade: page loads inside the window stay free, a logout is
+#: noticed on the next one after it, and the whole re-measure is ~1-2.5s of
+#: subprocess in a threadpool. "Check again" remains the instant path.
+_MAX_AGE_S = 60.0
+
 
 def _cache_path() -> str:
     return os.path.join(storage.home_dir(), _CACHE_NAME)
@@ -496,7 +518,7 @@ def _fingerprint(path: Optional[str]) -> str:
             stamp = str(os.stat(path).st_mtime_ns)
         except OSError:
             stamp = "missing"
-    return "\x1f".join([os.environ.get(BIN_ENV, ""),
+    return "\x1f".join([str(_CACHE_VERSION), os.environ.get(BIN_ENV, ""),
                         os.environ.get("PATH", ""), path or "", stamp])
 
 
@@ -593,6 +615,29 @@ def _measure(allow_shell: bool = True) -> dict:
     }
 
 
+def _too_old(cached: dict) -> bool:
+    """Whether `cached` has aged past the point of being trustworthy.
+
+    An unreadable or missing `checked_at` counts as too old: a snapshot that
+    cannot say when it was taken cannot be shown to be current, and re-measuring
+    costs a couple of seconds while serving it could mean a permanently wrong
+    answer.
+
+    A timestamp from the FUTURE counts as too old as well. That is not
+    defensive noise — the clock moving backwards (a correction, a suspended
+    laptop, a VM restore) would otherwise park a snapshot beyond every future
+    expiry check, which is the one way this could go stale forever again.
+    """
+    taken = cached.get("checked_at")
+    if not isinstance(taken, (int, float)) or isinstance(taken, bool):
+        return True
+    # Written as one bounded range rather than two rejections because that is
+    # also what makes it NaN-safe: every comparison against NaN is False, so a
+    # nonsense timestamp falls out of the `not` as "too old" instead of passing
+    # both `age < 0` and `age > MAX` and reading as permanently fresh.
+    return not 0 <= time.time() - taken <= _MAX_AGE_S
+
+
 def _read_cache() -> Optional[dict]:
     """The cached snapshot, or None when there isn't a usable one.
 
@@ -616,10 +661,15 @@ def snapshot(refresh: bool = False) -> dict:
     with _LOCK:
         if not refresh:
             cached = _read_cache()
-            # Re-fingerprint against the cached PATH so an upgrade of the same
-            # binary, a new override, or a PATH change all invalidate; anything
-            # else is answered from disk for free.
-            if cached and cached.get("fingerprint") == _fingerprint(cached.get("path")):
+            # TWO gates, because they answer different questions. The
+            # fingerprint asks "is this still the same binary" — an upgrade, a
+            # new override or a PATH change all invalidate. The age asks "could
+            # the answer have changed anyway", which is the only thing that ever
+            # catches a sign-out: it moves no path and touches no file, so the
+            # fingerprint is identical on both sides of it.
+            if (cached
+                    and cached.get("fingerprint") == _fingerprint(cached.get("path"))
+                    and not _too_old(cached)):
                 return dict(cached)
         fresh = _measure()
         try:

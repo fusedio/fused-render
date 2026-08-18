@@ -12,6 +12,7 @@ module boundary (the same discipline as test_server_ai.py).
 """
 import json
 import os
+import time
 
 import pytest
 
@@ -637,6 +638,62 @@ def test_refresh_does_not_probe_twice(tmp_path, monkeypatch):
                         lambda p: calls.append(p) or "2.1.220")
     claude_health.summary_refreshed()
     assert len(calls) == 1
+
+
+def test_signing_out_is_noticed_without_pressing_check_again(tmp_path, monkeypatch):
+    """THE BUG A FINGERPRINT-ONLY CACHE CANNOT SEE.
+
+    Signing out moves no path, changes no PATH and touches no file, so the
+    fingerprint is identical on both sides of it — and the cache is on disk, so
+    not even a restart cleared it. The strip stayed silent on a signed-out
+    machine indefinitely, which is what this was reported as.
+    """
+    bin_path = _fake_cli(tmp_path)
+    monkeypatch.setenv("PATH", os.path.dirname(bin_path))
+    monkeypatch.setattr(claude_health, "probe_version", lambda p: "2.1.220")
+    state = {"in": True}
+    monkeypatch.setattr(claude_health, "signed_in", lambda path=None: state["in"])
+
+    assert claude_health.summary()["signed_in"] is True
+    state["in"] = False                      # the user runs /logout
+
+    # Inside the window the cached answer still stands...
+    assert claude_health.summary()["signed_in"] is True
+    # ...and past it, the next read re-measures on its own. The real clock is
+    # captured BEFORE patching: `claude_health.time` is the time module itself,
+    # so a lambda that re-imported it would call the patch from inside the patch.
+    real_time = time.time
+    monkeypatch.setattr(claude_health.time, "time",
+                        lambda: real_time() + claude_health._MAX_AGE_S + 1)
+    assert claude_health.summary()["signed_in"] is False
+
+
+def test_a_snapshot_from_an_older_build_is_discarded(tmp_path, monkeypatch):
+    """A cache is a record of what a PREVIOUS VERSION of this code believed. The
+    sign-in probe used to answer null on macOS by rule; without the version in
+    the fingerprint, every one of those snapshots would keep being served to the
+    fixed code — the strip silent because a stale file said so."""
+    bin_path = _fake_cli(tmp_path)
+    monkeypatch.setenv("PATH", os.path.dirname(bin_path))
+    monkeypatch.setattr(claude_health, "probe_version", lambda p: "2.1.220")
+    monkeypatch.setattr(claude_health, "signed_in", lambda path=None: None)
+    claude_health.summary()
+
+    monkeypatch.setattr(claude_health, "signed_in", lambda path=None: False)
+    monkeypatch.setattr(claude_health, "_CACHE_VERSION", claude_health._CACHE_VERSION + 1)
+    assert claude_health.summary()["signed_in"] is False
+
+
+@pytest.mark.parametrize("taken", [None, "recently", True, float("nan")])
+def test_a_snapshot_that_cannot_date_itself_is_re_measured(tmp_path, monkeypatch, taken):
+    monkeypatch.setattr(claude_health, "probe_version", lambda p: None)
+    assert claude_health._too_old({"checked_at": taken}) is True
+
+
+def test_a_clock_that_went_backwards_does_not_park_a_snapshot(monkeypatch):
+    """A future timestamp would otherwise sit beyond every later expiry check —
+    the one way this could go permanently stale again."""
+    assert claude_health._too_old({"checked_at": time.time() + 3600}) is True
 
 
 def test_a_corrupt_cache_is_re_measured_not_raised(tmp_path, monkeypatch):
