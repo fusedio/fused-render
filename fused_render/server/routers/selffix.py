@@ -233,15 +233,24 @@ def api_selffix_start(body: dict = Body(default={}),
             "or a description of what the app is doing wrong")
 
     root = selffix.install_root()
-    if not selffix.writable():
-        # Refused BEFORE the spawn, not reported after it. A session that cannot
-        # write is several minutes of reading followed by a report describing a
-        # fix that was never applied — which reads, to the user watching, like a
-        # fix that WAS applied.
-        return _error(
-            f"this installation is read-only ({root}) — a local fix cannot be "
-            "applied here. Reinstall fused-render, or install it somewhere you "
-            "own.", status=409)
+    # A READ-ONLY INSTALLATION STILL GETS A SESSION — a DIAGNOSTIC one (SF-4a).
+    #
+    # This used to be a 409, on the argument that a session which cannot write
+    # spends minutes reading and then reports a fix that was never applied,
+    # which to the user watching reads like a fix that was. That argument is
+    # about a session that does not KNOW it cannot write. Told up front, the
+    # same session is the most useful thing available on a machine nobody can
+    # patch: it finds the cause and writes it down for someone who can, which is
+    # a strictly better outcome than a refusal that leaves the user with the
+    # original error and nothing else. An admin-installed copy is exactly where
+    # that user is least able to help themselves.
+    #
+    # Everything downstream turns on this flag: the prompt (which must say so,
+    # or the agent burns its turns fighting the permission error), where the
+    # report goes (`records_dir` — outside a tree it could not write to), and
+    # the watcher, which is skipped because nothing can change and therefore
+    # nothing can be stamped.
+    diagnostic = not selffix.writable()
 
     # Held across the LOOK and the SPAWN together, and released the moment the
     # request is done. Two clicks a millisecond apart would otherwise both find
@@ -264,14 +273,21 @@ def api_selffix_start(body: dict = Body(default={}),
             # it (what `settle` measures against) — see `selffix.begin_session`.
             # The incident write above cannot disturb either; the state dir is
             # outside the digest.
-            _, before = selffix.begin_session()
+            #
+            # SKIPPED WHEN DIAGNOSTIC, and not merely as an optimisation: the
+            # baseline is written INTO the install tree, which is the thing this
+            # branch cannot write to. There is also nothing for it to measure —
+            # a digest exists to answer "did this session change the tree?", and
+            # on a read-only install the answer is no by construction.
+            before = "" if diagnostic else selffix.begin_session()[1]
         except OSError as exc:
             return _error(f"could not write the incident file: {exc}", status=500)
 
         try:
             res = _spawn_helper(
                 root,
-                selffix.fix_prompt(incident, report, reported_error=reported_error),
+                selffix.fix_prompt(incident, report, reported_error=reported_error,
+                                   diagnostic=diagnostic),
                 selffix.FIX_PERMISSION_MODE)
         except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
             return _error(f"could not start the fix session: {exc}", status=502)
@@ -291,6 +307,14 @@ def api_selffix_start(body: dict = Body(default={}),
     if not title:
         first_line = str(body.get("note") or "").strip().splitlines()
         title = first_line[0][:120] if first_line else ""
+    # NOT WATCHED WHEN DIAGNOSTIC. The watcher exists to notice that the tree
+    # changed and stamp the installation; on a read-only one it would poll a
+    # digest that cannot move, and then try to write a marker into the same tree
+    # it could not write the baseline to. The session is still perfectly real —
+    # it just has nothing to stamp.
+    if diagnostic:
+        return {"run_id": str(run_id), "target": root, "incident": incident,
+                "report": report, "diagnostic": True}
     try:
         threading.Thread(target=_watch_fix,
                          args=(str(run_id), incident, report, title, before),

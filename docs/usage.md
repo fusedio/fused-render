@@ -449,8 +449,12 @@ A few things worth knowing:
 - **It can only fix some things.** The session is working on installed files:
   Python, templates, and shipped assets. Anything that needs a rebuilt frontend
   or a new release, it will tell you about rather than attempt.
-- **If the app is installed somewhere you can't write to**, the button says so
-  instead of starting a session that could not change anything.
+- **If the app is installed somewhere you can't write to** — an admin installed
+  it for everyone, say — the session still runs, but it can only **diagnose**.
+  Claude reads the code, works out what is wrong, and writes a report saying
+  what the fix would be; nothing on your machine changes. Send that report on,
+  or apply the fix in a copy you own. The button says *Start a diagnostic
+  session* so you know before you start.
 
 ### The modified badge
 
