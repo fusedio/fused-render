@@ -36,6 +36,9 @@ import {
   isFailedTask,
   isMessageRunning,
   isRunningNow,
+  isRunningIn,
+  activeMessage,
+  hasStarted,
   isPastDue,
   isUnread,
   isUpcomingTask,
@@ -5892,5 +5895,99 @@ describe("isRunningNow", () => {
     const idle = msg({ message_id: "MSG-001", state: "sent", turn: "idle" });
     const t = task({ status: "done", live: false, messages: [idle] });
     expect(isRunningNow(t, idle)).toBe(false);
+  });
+
+  // BUGBOT, 2026-08-18: "the newest row" was doing the work of "the active
+  // message", and on a RECURRING task those are routinely different rows. `at`
+  // is when a message is DUE, so `messages[0]` on a task that runs daily is
+  // tomorrow's `pending` occurrence — which has never run and cannot be what the
+  // task is doing now. The shimmer went to tomorrow's chip while this afternoon's
+  // real run wore nothing.
+  it("never calls a future promise the work in flight", () => {
+    const TODAY = Math.floor(Date.parse("2026-08-16T09:00:00") / 1000);
+    const TOMORROW = Math.floor(Date.parse("2026-08-17T09:00:00") / 1000);
+    // What the server sends for a daily rule mid-run: tomorrow's occurrence is
+    // the newest row, today's is the one being worked on.
+    const promise = msg({ message_id: "MSG-002", at: TOMORROW, ran_at: 0, state: "pending" });
+    const today = msg({
+      message_id: "MSG-001", at: TODAY, ran_at: TODAY, state: "sent", turn: "idle",
+    });
+    const t = task({ status: "in_progress", live: false, messages: [promise, today] });
+
+    expect(isRunningNow(t, promise)).toBe(false);
+    expect(isRunningNow(t, today)).toBe(true);
+    expect(activeMessage(t)?.message_id).toBe("MSG-001");
+  });
+
+  it("picks the newest STARTED message, and knows which states those are", () => {
+    // Only a message the scheduler has actually spent can be the active one.
+    for (const state of ["sending", "sent", "error"] as const) {
+      expect(hasStarted(msg({ state }))).toBe(true);
+    }
+    for (const state of ["pending", "missed", "cancelled", "skipped"] as const) {
+      expect(hasStarted(msg({ state }))).toBe(false);
+    }
+    const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+    const older = msg({ message_id: "MSG-001", at: at("2026-08-16T05:00:00"), state: "sent" });
+    const newer = msg({ message_id: "MSG-002", at: at("2026-08-16T14:00:00"), state: "sent" });
+    const skipped = msg({
+      message_id: "MSG-003", at: at("2026-08-16T20:00:00"), state: "skipped",
+    });
+    expect(activeMessage(task({ messages: [skipped, newer, older] }))?.message_id)
+      .toBe("MSG-002");
+    // A task that has only ever been scheduled has no active message at all, and
+    // therefore nothing for the task's own verdict to land on.
+    const never = task({ status: "in_progress", messages: [msg({ state: "pending" })] });
+    expect(activeMessage(never)).toBe(null);
+    expect(isRunningNow(never, never.messages[0])).toBe(false);
+  });
+});
+
+// ---- and what a calendar CHIP asks ---------------------------------------------
+// A chip is not a message: it is one task on one DAY, anchored at that day's
+// earliest message with the rest nested inside it (schedule-lib.taskChips). Two
+// questions therefore go wrong when the chip asks about its anchor alone, and the
+// second is the one bugbot caught.
+
+describe("isRunningIn", () => {
+  const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  // A daily task, mid-afternoon: this morning's run finished, the 14:00 run is in
+  // flight, and tomorrow's occurrence is already on the books as the newest row.
+  const morning = msg({
+    message_id: "MSG-001", at: at("2026-08-16T05:00:00"),
+    ran_at: at("2026-08-16T05:00:00"), state: "sent", turn: "done",
+  });
+  const afternoon = msg({
+    message_id: "MSG-002", at: at("2026-08-16T14:00:00"),
+    ran_at: at("2026-08-16T14:00:00"), state: "sent", turn: "idle",
+  });
+  const tomorrow = msg({
+    message_id: "MSG-003", at: at("2026-08-17T05:00:00"), ran_at: 0, state: "pending",
+  });
+  const daily = task({
+    status: "in_progress", live: false, messages: [tomorrow, afternoon, morning],
+  });
+
+  it("shimmers today's chip and leaves tomorrow's alone", () => {
+    // Today's chip holds both of today's messages and is ANCHORED on the finished
+    // 05:00 one — asking the anchor would say no.
+    expect(isRunningIn(daily, [morning, afternoon])).toBe(true);
+    expect(isRunningNow(daily, morning)).toBe(false);
+    // And tomorrow's chip is a promise, on a task that happens to be running.
+    expect(isRunningIn(daily, [tomorrow])).toBe(false);
+  });
+
+  it("says no when nothing under the chip is the active run", () => {
+    const settled = task({ status: "done", messages: [tomorrow, afternoon, morning] });
+    expect(isRunningIn(settled, [morning, afternoon])).toBe(false);
+    expect(isRunningIn(daily, [])).toBe(false);
+  });
+
+  it("is what the calendar actually asks", () => {
+    // The claim that cannot be held by the pure half: the view must hand over the
+    // CHIP's messages, not `chip.anchor`.
+    const CAL = readFileSync(join(SHELL, "ScheduleCalendar.tsx"), "utf8");
+    expect(CAL).toContain('isRunningIn(chip.task, chip.messages) ? " is-running" : ""');
+    expect(CAL).not.toContain("isRunningNow(chip.task, chip.anchor)");
   });
 });

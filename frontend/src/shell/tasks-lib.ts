@@ -2546,11 +2546,41 @@ export function isMessageRunning(m: TaskMessage): boolean {
 }
 
 /**
+ * Has this message's run STARTED — is there a turn behind it at all?
+ *
+ * The three states that mean the scheduler has spent it: `sending` (spawned, no
+ * answer yet), `sent` (gone) and `error` (tried and broke). Everything else has
+ * never run and may never run — `pending` is a promise about the future,
+ * `missed`/`cancelled`/`skipped` are promises that expired. A PROJECTED
+ * occurrence (schedule-lib's ghosts: cron arithmetic, not rows) is only ever
+ * minted `pending` or `missed`, so it cannot pass this either.
+ */
+export function hasStarted(m: TaskMessage): boolean {
+  return m.state === "sending" || m.state === "sent" || m.state === "error";
+}
+
+/**
+ * The message a task's CURRENT work belongs to: the newest one that has actually
+ * started, or null on a task that has never run.
+ */
+export function activeMessage(task: Task): TaskMessage | null {
+  let best: TaskMessage | null = null;
+  for (const m of task.messages ?? []) {
+    if (!hasStarted(m)) continue;
+    // Read off `at` rather than off the array order: the answer wanted here is
+    // "the latest run", and `messages` being newest-first is a convention of the
+    // endpoint rather than something this rule should depend on.
+    if (!best || m.at > best.at) best = m;
+  }
+  return best;
+}
+
+/**
  * Is THIS message the work this task is doing right now?
  *
  * Two ways, and the second is what a live chat turn needs — including the one
  * a live TRANSCRIPT cannot see. A message can say so itself (above), and
- * otherwise the newest message borrows the task's own verdict: `taskColumn`
+ * otherwise the ACTIVE message borrows the task's own verdict: `taskColumn`
  * reads `task.status`, which the server derives in `_status` from THREE
  * independent signals (`_message_running`, `live`, and `schedule.busy_sessions`)
  * — not just the two (`state`/`turn`, `task.live`) this function could see on
@@ -2558,15 +2588,38 @@ export function isMessageRunning(m: TaskMessage): boolean {
  * `idle` still files the task `in_progress` while a scheduled send is in
  * flight (`busy_sessions`); asking `taskColumn` instead of re-deriving that
  * third signal here is what keeps the calendar chip agreeing with the List
- * and Board, which read the same `task.status`. Older messages in an
- * in-progress task are not running: their turns ended when the next prompt
- * arrived.
+ * and Board, which read the same `task.status`.
+ *
+ * THE ACTIVE MESSAGE IS NOT THE NEWEST ROW (bugbot, 2026-08-18). `at` is when a
+ * message is DUE, so on a recurring task the newest row is routinely tomorrow's
+ * `pending` occurrence — never run, and impossible as "what this task is doing
+ * now". It is the newest STARTED message (activeMessage). Older started messages
+ * are not running either: their turns ended when the next prompt arrived.
  */
 export function isRunningNow(task: Task, m: TaskMessage): boolean {
   if (isMessageRunning(m)) return true;
   if (taskColumn(task) !== "in_progress") return false;
-  const newest = task.messages?.[0];
-  return !!newest && !!m.message_id && m.message_id === newest.message_id;
+  // A message with no run behind it cannot be borrowing the task's verdict,
+  // whatever else is true — the belt to activeMessage's braces, and what makes
+  // the rule safe to ask of a projected occurrence.
+  if (!hasStarted(m)) return false;
+  const active = activeMessage(task);
+  return !!active && !!m.message_id && m.message_id === active.message_id;
+}
+
+/**
+ * Is any of these messages the work happening right now?
+ *
+ * What a CALENDAR CHIP has to ask, because a chip is not a message: it is one
+ * task on one DAY, anchored at that day's EARLIEST message with the rest of the
+ * day nested inside it (schedule-lib.taskChips). Asking only about the anchor
+ * asks about the wrong occurrence in both directions — a day whose 05:00 run has
+ * finished and whose 14:00 run is in flight is anchored on the finished one, and
+ * before this rule a task whose newest row was tomorrow's promise put the
+ * shimmer on TOMORROW's chip. A chip is running when anything under it is.
+ */
+export function isRunningIn(task: Task, messages: TaskMessage[]): boolean {
+  return messages.some((m) => isRunningNow(task, m));
 }
 
 // ---- the sidebar's two-number summary of this page ----------------------------
