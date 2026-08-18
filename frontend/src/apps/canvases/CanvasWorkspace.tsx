@@ -281,6 +281,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         >
           {editorSrc ? (
             <iframe
+              // key forces a REMOUNT when a fix run starts: a plain src update
+              // on a mounted iframe can be shadowed by the embed shell's own
+              // history rewrites, leaving the chat pane on its old URL — the
+              // "have to reload the page to see the fix session" bug.
+              key={fixRunId ?? "chat"}
               src={editorSrc}
               title={`Edit: ${name}`}
               style={{ width: "100%", height: "100%", border: 0 }}
