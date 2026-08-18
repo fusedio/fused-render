@@ -52,7 +52,7 @@ const PREVIEW_SCALE = 0.25;
 //
 //   • `_preview=1` — don't record an open (D301), or scrolling the grid would
 //     reshuffle the recency order the grid is sorted by.
-//   • `_nofocus=1` — don't take the keyboard (D343). Focusing an element inside
+//   • `_nofocus=1` — don't take the keyboard (D348). Focusing an element inside
 //     a frame also scrolls that frame into view, and the scroll propagates out
 //     to the embedder's scroller: an app that focuses an input on boot yanked
 //     .apps-page down to its own card the moment the card mounted, so scrolling
