@@ -42,12 +42,17 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # The Hugging Face cache inventory (SPEC §37) — a client-side page like the
 # rest, and reachable by URL even where the sidebar hides its entry.
 @router.get("/ai-models")
-# Scheduled messages (SPEC §41). Omitting it here is what a missing entry in this
-# list looks like from the outside: in-app navigation worked (it is a client-side
-# pushState and never asks the server), and a refresh or a bookmark 404'd. That
-# asymmetry is why test_shell_routes.py now derives this list from the shell's own
-# route table rather than trusting the next page to remember.
-@router.get("/scheduled")
+# Tasks (SPEC §41) — served at `/scheduled` until 2026-08-18 and renamed with NO
+# redirect behind it: the page is called Tasks everywhere a person reads it, and
+# one address for one page is the whole point of the rename. An old `/scheduled`
+# link now 404s, which is the accepted cost.
+#
+# Omitting a page here is what a missing entry in this list looks like from the
+# outside: in-app navigation worked (it is a client-side pushState and never asks
+# the server), and a refresh or a bookmark 404'd. That asymmetry is why
+# test_shell_routes.py derives this list from the shell's own route table rather
+# than trusting the next page to remember.
+@router.get("/tasks")
 # Canvases (legacy-workbench local development): the listing page and the
 # per-canvas workspace (/canvases/<name>, matched by the wildcard below).
 @router.get("/canvases")

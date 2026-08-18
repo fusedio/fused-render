@@ -301,7 +301,7 @@ def test_the_page_reads_the_params_the_template_writes(code, page):
     """The contract, spelled in two files. A rename on either side leaves the
     button navigating to a Schedule page that simply ignores it — no error, no
     modal, nothing to debug from."""
-    assert 'SCHEDULE_URL = "/scheduled"' in code
+    assert 'SCHEDULE_URL = "/tasks"' in code
     assert 'q.get("new") !== "1"' in page
     for param in ("target", "message", "session_id", "back"):
         assert f'q.get("{param}")' in page, f"the page ignores {param}"

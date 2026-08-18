@@ -1,4 +1,4 @@
-// "New task" — the /scheduled page's own way to create a scheduled message,
+// "New task" — the /tasks page's own way to create a scheduled message,
 // alongside the chat composer's Send now pill (which stays the convenient path
 // when a chat is already open on the right folder). This form serves the
 // calendar-first direction, so it has to ask for the folder too.
@@ -1819,7 +1819,7 @@ export default function NewJobModal({
   // From a calendar slot click, or null from the New task button.
   initialTime: Date | null;
   // From a deep link that ALREADY knows the folder: the chat composer's
-  // Schedule button, which is bound to one target (/scheduled?new=1&target=…).
+  // Schedule button, which is bound to one target (/tasks?new=1&target=…).
   // It outranks the DEFAULT_TARGET_SUFFIX guess below — a guess is what you
   // offer when nobody said — and an Edit outranks both, having a stored target.
   initialTarget?: string | null;

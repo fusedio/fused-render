@@ -248,7 +248,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // highlighting both the row and the thing you opened read as two selections.
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
-  const tasksActive = pathname === "/scheduled";
+  const tasksActive = pathname === "/tasks";
 
   // Everything that is not primary nav lives in the bottom menu for now:
   // the former sidebar entries (Config / App Basics), then the settings
@@ -263,7 +263,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   menuEntries.push(
     { href: "/templates", label: "Templates", icon: TEMPLATES_ICON },
     { href: "/mounts", label: "Mounts", icon: MOUNTS_ICON },
-    // No /scheduled entry here on purpose: Tasks is primary nav now (see the
+    // No /tasks entry here on purpose: Tasks is primary nav now (see the
     // rail below). Listing the same route in the menu too would light the Tasks
     // row and the Preferences trigger at once, since `prefsActive` treats every
     // menu href as "you are on one of my pages" — the same double-selection the
@@ -299,7 +299,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   const rail: SidebarRailItem[] = [
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
-    { key: "scheduled", label: "Tasks", icon: SCHEDULED_ICON, href: "/scheduled", active: tasksActive },
+    { key: "tasks", label: "Tasks", icon: SCHEDULED_ICON, href: "/tasks", active: tasksActive },
     {
       key: "preferences",
       label: "Preferences",
@@ -333,8 +333,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               the nav is the one that can say when the work runs. Inbox itself is
               only unadvertised, never removed — /sessions still answers. */}
           <NavItem
-            href="/scheduled"
-            id="scheduled-link"
+            href="/tasks"
+            id="tasks-link"
             label="Tasks"
             icon={SCHEDULED_ICON}
             active={tasksActive}

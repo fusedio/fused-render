@@ -27,7 +27,7 @@
 // time filled in.
 //
 // The composer also has a THIRD affordance that lands here: its Schedule button
-// links to `/scheduled?new=1&target=…`, for the case the pill cannot serve — a
+// links to `/tasks?new=1&target=…`, for the case the pill cannot serve — a
 // task that wants a title, a description or a repeat rule. It is a handoff, not
 // a second form: the chat sends the folder it is bound to and nothing else, and
 // the effect below opens the modal on it.

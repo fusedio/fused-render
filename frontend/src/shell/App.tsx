@@ -436,7 +436,7 @@ export default function App({ config }: { config: Config }) {
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
   useMountHealth();
 
-  // The same shape, for scheduled messages: nobody is looking at /scheduled when
+  // The same shape, for scheduled messages: nobody is looking at /tasks when
   // one fires, so "it ran" / "it failed" / "it was missed" has to arrive on its
   // own rather than wait to be discovered.
   useScheduleEvents();
@@ -548,7 +548,7 @@ export default function App({ config }: { config: Config }) {
   const isMounts = pathname === "/mounts";
   // Scheduled Claude messages (shell/Scheduled.tsx) — same chrome-free settings
   // pattern as Mounts.
-  const isScheduled = pathname === "/scheduled";
+  const isTasks = pathname === "/tasks";
   // What the Hugging Face cache holds on this machine (shell/AiModels.tsx).
   const isAiModels = pathname === "/ai-models";
   // Apps hub = the app home: all detected apps with search + tag filters.
@@ -574,7 +574,7 @@ export default function App({ config }: { config: Config }) {
   // carries with no lookup at all. Anything under /apps that isn't the hub falls
   // through to the "Unrecognized URL" branch below, deliberately unredirected.
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isScheduled || isAiModels || isApps || isExplorerHome || isHome || isLearn || isSessions || isClaudeConfig || isCanvases || canvasWorkspaceName !== null || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isTasks || isAiModels || isApps || isExplorerHome || isHome || isLearn || isSessions || isClaudeConfig || isCanvases || canvasWorkspaceName !== null || isBookmark;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -592,8 +592,8 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isMounts
               ? "Mounts"
-              : isScheduled
-                ? "Scheduled messages"
+              : isTasks
+                ? "Tasks"
               : isAiModels
                 ? "AI Models"
                 : isApps
@@ -698,7 +698,7 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
-  } else if (isScheduled) {
+  } else if (isTasks) {
     // Scheduled Claude messages — the durable list plus the form that adds to
     // it. Keyed on `epoch` like its neighbours: the page has no URL-held view
     // state of its own, so a remount per navigation is just a fresh read.
