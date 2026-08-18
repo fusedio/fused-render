@@ -161,26 +161,24 @@ export function useDocumentTitle(label: string | null | undefined): void {
 // bounded poll from scratch — the Learn card would vanish for up to 2s and
 // reflow the grid on every trip back to Home, even though readiness was
 // already confirmed earlier in the session.
-// Per-builtin: learn and sessions confirm independently — one flag shared
-// between them would mark the other ready the moment either mount attaches.
+// Per-builtin, and keyed rather than a single flag: a mount confirms only
+// itself, and one flag shared between two would mark the other ready the
+// moment either attached.
 const cachedReady: Record<BuiltinMountKey, boolean> = {
   learn_mount_ready: false,
-  sessions_mount_ready: false,
 };
 
-// Two keys, not three: the Claude Config app is no longer a mount. It became
-// native React over its own server bridge, so its gate is a one-shot
-// GET /api/claude-config/status (apps/claude_config useClaudeConfigAvailable) —
-// availability is a property of the installation and cannot flip mid-session,
-// which is the only thing the poll below exists for.
-type BuiltinMountKey = "learn_mount_ready" | "sessions_mount_ready";
+// ONE key now. The Claude Config app stopped being a mount when it became
+// native React over its own server bridge (a one-shot
+// GET /api/claude-config/status — availability is a property of the
+// installation and cannot flip mid-session, which is the only thing the poll
+// below exists for), and the Sessions inbox page was deleted outright on
+// 2026-08-18 (Tasks supersedes it). The generic is kept rather than inlined:
+// the next bundled mount is a key, not a rewrite.
+type BuiltinMountKey = "learn_mount_ready";
 
 export function useLearnMountReady(initial: boolean): boolean {
   return useBuiltinMountReady(initial, "learn_mount_ready");
-}
-
-export function useSessionsMountReady(initial: boolean): boolean {
-  return useBuiltinMountReady(initial, "sessions_mount_ready");
 }
 
 function useBuiltinMountReady(initial: boolean, key: BuiltinMountKey): boolean {

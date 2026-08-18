@@ -214,6 +214,32 @@ export const ICON_SKIP = icon(<><polygon points="5 4 15 12 5 20 5 4" /><line x1=
 export const ICON_CANCEL = icon(<><circle cx="12" cy="12" r="9" /><path d="M8 8l8 8M16 8l-8 8" /></>);
 export const ICON_NOTES = icon(<><line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="14" y2="17" /></>);
 export const ICON_RESTORE = icon(<><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /></>);
+// The three views, as marks — the List / Board / Calendar switcher in
+// Scheduled.tsx. They live here with the rest of the page's vocabulary rather
+// than in that file because this is where `icon()` is, and a second copy of
+// that helper is how two icon sizes start. lucide `list`, `columns-3` and
+// `calendar`, unmodified: the switcher is the first control a person reads on
+// this page, so it should wear the shapes they already know from every other
+// board and calendar they use rather than bespoke ones.
+//
+// ICON_NOTES above is three lines too, and stays a separate glyph: it means
+// "this run has a note", and a mark that means two things on one page means
+// neither. The list icon carries the leading dots that one does not.
+export const ICON_VIEW_LIST = icon(
+  <><line x1="9" y1="6" x2="20" y2="6" /><line x1="9" y1="12" x2="20" y2="12" />
+    <line x1="9" y1="18" x2="20" y2="18" /><line x1="4" y1="6" x2="4.01" y2="6" />
+    <line x1="4" y1="12" x2="4.01" y2="12" /><line x1="4" y1="18" x2="4.01" y2="18" /></>,
+);
+export const ICON_VIEW_BOARD = icon(
+  <><rect x="3" y="3" width="18" height="18" rx="2" />
+    <line x1="9" y1="3" x2="9" y2="21" /><line x1="15" y1="3" x2="15" y2="21" /></>,
+);
+export const ICON_VIEW_CALENDAR = icon(
+  <><rect x="3" y="4" width="18" height="17" rx="2" />
+    <line x1="3" y1="10" x2="21" y2="10" /><line x1="8" y1="2" x2="8" y2="6" />
+    <line x1="16" y1="2" x2="16" y2="6" /></>,
+);
+
 export const ICON_INBOX = icon(<><path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></>);
 // Run now, and the word for doing it AGAIN. Two glyphs rather than one, for the
 // reason the archive pair is two: a person looking at a task that broke has to

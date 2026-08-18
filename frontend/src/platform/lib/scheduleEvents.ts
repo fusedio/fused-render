@@ -4,11 +4,11 @@
 // This exists because of the one thing that makes scheduled messages different
 // from everything else the app runs: **nobody is looking when they happen.** A
 // message that fired at 6am, or was missed because the app was closed, leaves a
-// row on /scheduled that is only ever seen by someone who goes to look. These
+// row on /tasks that is only ever seen by someone who goes to look. These
 // toasts are what make "it ran" and "it didn't" arrive on their own.
 //
 // Rules (per event kind):
-//  - failed  → error, persistent, with an "Open" action onto /scheduled. Covers
+//  - failed  → error, persistent, with an "Open" action onto /tasks. Covers
 //              both halves of failing: the send never happened, or the turn it
 //              started died. Either way a person has to decide something.
 //  - missed  → error, persistent, same action. Nothing went wrong — the app
@@ -86,7 +86,7 @@ export function useScheduleEvents(): void {
           label: "Open",
           onClick: () => {
             dismissToast(id);
-            navigateUrl("/scheduled");
+            navigateUrl("/tasks");
           },
         },
       });

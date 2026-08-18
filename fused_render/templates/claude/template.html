@@ -7991,7 +7991,7 @@ document.querySelectorAll(".perm-sel").forEach((el) =>
 // 2026-08-16): it could defer ONE message and nothing else — no title, no
 // description, no repeat rule, no second thought — which meant a row of send-later
 // presets sitting permanently in front of every user to serve the rarest thing
-// they do with a draft. Everything past a bare deferral is the /scheduled page's
+// they do with a draft. Everything past a bare deferral is the /tasks page's
 // form, so the whole job here is the HANDOFF, and the handoff is one button.
 //
 // What travels is what the page cannot know and this template always does: the
@@ -8018,7 +8018,7 @@ document.querySelectorAll(".perm-sel").forEach((el) =>
 // (platform/lib/router.ts navigateUrl does the same two lines); the href
 // assignment underneath is the fallback for a cross-origin or absent parent,
 // where reading `top.location.href` throws.
-const SCHEDULE_URL = "/scheduled";
+const SCHEDULE_URL = "/tasks";
 
 // Where "Back to chat" has to land. The TOP window's path when it is readable,
 // this document's otherwise — the same split every other navigation in this file
@@ -12287,10 +12287,22 @@ async function adoptLiveRun(session_id) {
 
 async function resumeRun(run_id, opts) {
   const neverShown = !!(opts && opts.neverShown);
+  const retryUnknown = !!(opts && opts.retryUnknown);
   if (sending) return;
   sending = true;
   try {
-    const probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+    let probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+    if (probe.error === "unknown run_id" && retryUnknown) {
+      // A frame handed a run id by its EMBEDDER (the canvases workspace's
+      // "Fix with Claude" navigates this iframe with ?run= the moment the
+      // spawn call returns) can boot before the freshly created run dir is
+      // visible to the agent — a race, not a stale bookmark. A few short
+      // retries tell the two apart; only then is the id written off.
+      for (let i = 0; i < 5 && probe.error === "unknown run_id"; i++) {
+        await new Promise((r) => setTimeout(r, 700));
+        probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+      }
+    }
     if (probe.error === "unknown run_id") {
       // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach
       // to, and nothing to hand annotations back to: resolve any stragglers
@@ -13413,7 +13425,7 @@ async function loadSnapshots() {
     // run streams, but a resumed conversation with nothing in flight never
     // reaches that loop — and its pages are no less published for it.
     if (session_id) pollArtifacts();
-    if (run_id) await resumeRun(run_id);
+    if (run_id) await resumeRun(run_id, { retryUnknown: true });
     // No `run` on the URL is not proof that nothing is running: a reload after
     // the param was dropped, a bookmark of the bare chat, or a mode switch all
     // land here with a live turn still streaming server-side. Ask before
