@@ -79,6 +79,7 @@ import {
   projectOptions,
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
+import { publishTasks } from "./tasksPulse";
 import { viewFromSearch, viewUrl } from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
 
@@ -243,6 +244,12 @@ export default function Scheduled() {
       (r) => {
         setTasks(r.tasks ?? []);
         setTasksFailed(false);
+        // The sidebar's Tasks entry reads the same rows (shell/tasksPulse): the
+        // dot and the counts beside the label are this answer, not a second poll
+        // of their own — two polls would show a dot the page disagrees with for
+        // twenty seconds at a time. Publishing also restarts that module's own
+        // timer, so while this page is open nothing else calls /api/tasks.
+        publishTasks(r.tasks ?? []);
       },
       () => {
         setTasks([]);

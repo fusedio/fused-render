@@ -18,6 +18,8 @@ import { navigateUrl } from "@platform/lib/router";
 import { useUrlVersion, useLearnMountReady } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useAiRuntime } from "@shell/aiRuntime";
+import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
+import { pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
 
@@ -250,6 +252,66 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const homeActive = pathname === "/home";
   const tasksActive = pathname === "/tasks";
 
+  // WHAT THE TASKS ENTRY KNOWS, and it is two numbers: what is running, and what
+  // finished that nobody has read (shell/tasksPulse — one poll shared with the
+  // page, which publishes into it). Two numbers rather than a badge count
+  // because they are two different sentences: yellow is "the machine is working
+  // for you", green is "go and look". Yellow WINS whenever both are true — a
+  // reader who is being told work is still in flight does not also need to be
+  // sent to the page mid-flight, and the trip is still waiting when it settles.
+  const pulse = useTasksPulse();
+  // LANDING ON THE PAGE IS THE DISMISSAL. Not a button and not a per-row read:
+  // "an in-progress task completed" is news exactly until the reader has been
+  // where it is shown. Repeated on every pulse while the entry is active so the
+  // mark stays gone while the page is open; it comes back only for a completion
+  // stamped after the visit (tasks-lib.seenAfterVisit), which is why the
+  // dismissal is a stamp per task and not a flag.
+  useEffect(() => {
+    if (tasksActive) markTasksSeen();
+  }, [tasksActive, pulse]);
+  // AND WHILE THE READER IS ON /tasks, THERE IS NO COUNT AT ALL. The dismissal
+  // above needs a poll to land before it can stamp anything, so a completion that
+  // arrives in the same tick as the navigation would flash a chip beside the row
+  // of the page being looked at, then clear itself. Suppressed here rather than
+  // fixed in the store, because it is not a timing detail: a "go and look" mark
+  // pointing at the open page is noise whatever the clock says. RUNNING is not
+  // suppressed — it is a live state, not an errand.
+  const shown = { running: pulse.running, doneUnread: tasksActive ? 0 : pulse.doneUnread };
+  const tasksTip = pulseTitle(shown);
+
+  // The collapsed rail has no label to hang a word on, so the whole signal is
+  // one dot in the icon's top-right corner: yellow while anything runs, green
+  // for unread completions, nothing at all otherwise. The hues are the status
+  // ring's own (--status-progress / --status-done, schedule.css) — one status,
+  // one colour, on every surface that names it (design-principles §1).
+  const tasksDot =
+    shown.running > 0 ? (
+      <span className="sidebar-rail-dot is-running" title={tasksTip} />
+    ) : shown.doneUnread > 0 ? (
+      <span className="sidebar-rail-dot is-unread" title={tasksTip} />
+    ) : undefined;
+
+  // Expanded, the same two facts get words: a shimmering "N running" (the ink
+  // moves while the work does, and prefers-reduced-motion pins it), and the
+  // count chip the bookmark folders wear (`.sidebar-count-chip`, sidebar.css) —
+  // the same element for the same kind of fact, not a lookalike. NO DOT here:
+  // a dot on the icon plus a readout beside the label is one fact stated twice.
+  const tasksTrailing =
+    shown.running > 0 || shown.doneUnread > 0 ? (
+      <>
+        {shown.running > 0 && (
+          <span className="sidebar-running" title={tasksTip}>
+            {runningLabel(shown.running)}
+          </span>
+        )}
+        {shown.doneUnread > 0 && (
+          <span className="sidebar-count-chip" title={tasksTip}>
+            {shown.doneUnread}
+          </span>
+        )}
+      </>
+    ) : undefined;
+
   // Everything that is not primary nav lives in the bottom menu for now:
   // the former sidebar entries (Config / App Basics), then the settings
   // pages. Same gates as before — an entry a machine can't use stays hidden.
@@ -299,7 +361,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   const rail: SidebarRailItem[] = [
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
-    { key: "tasks", label: "Tasks", icon: SCHEDULED_ICON, href: "/tasks", active: tasksActive },
+    {
+      key: "tasks",
+      label: tasksTip ? `Tasks — ${tasksTip}` : "Tasks",
+      icon: SCHEDULED_ICON,
+      href: "/tasks",
+      active: tasksActive,
+      badge: tasksDot,
+    },
     {
       key: "preferences",
       label: "Preferences",
@@ -337,6 +406,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             label="Tasks"
             icon={SCHEDULED_ICON}
             active={tasksActive}
+            trailing={tasksTrailing}
           />
         </div>
         <BookmarksSection />
