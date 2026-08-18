@@ -93,6 +93,7 @@ import {
   type QueueCount,
 } from "@platform/lib/jobs";
 import { navigateUrl } from "@platform/lib/router";
+import { useInstallReadOnly } from "@platform/lib/hooks";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { failureContextFromJob, fixSessionUrl, startSelfFix } from "@platform/lib/selffix";
 
@@ -279,6 +280,12 @@ function Bar({ job }: { job: Job }) {
 // their app while they look at a spinner.
 function FixButton({ job, onError }: { job: Job; onError: (msg: string | null) => void }) {
   const [busy, setBusy] = useState(false);
+  // WORDED BEFORE THE CLICK, not after (SF-13d). On a read-only installation the
+  // server starts a session that can only diagnose, and this button used to
+  // promise a fix to everyone — so the one user who cannot be helped locally was
+  // the one told most confidently that they could. Preferences already says this
+  // in a sentence; a row has space for a verb, so the verb changes.
+  const readOnly = useInstallReadOnly();
 
   const start = async () => {
     setBusy(true);
@@ -290,9 +297,11 @@ function FixButton({ job, onError }: { job: Job; onError: (msg: string | null) =
       navigateUrl(fixSessionUrl(started), { isDir: true });
     } catch (e) {
       // Reported ON THE ROW (the caller renders it under the status line)
-      // rather than as a toast: the row is what the user clicked, and the most
-      // likely refusal — "this installation is read-only" — is a fact about the
-      // app that they need in front of the thing that failed.
+      // rather than as a toast: the row is what the user clicked, and every
+      // refusal left here is a fact about the app that they need in front of the
+      // thing that failed — Claude Code not installed, Claude not signed in, or
+      // a session already running in this installation (SF-13a). Read-only is no
+      // longer among them; it changes the button's verb instead.
       onError(String((e as Error)?.message || e));
     } finally {
       setBusy(false);
@@ -304,9 +313,13 @@ function FixButton({ job, onError }: { job: Job; onError: (msg: string | null) =
       className="dl-fix"
       onClick={start}
       disabled={busy}
-      title="Open a Claude session on this installation and try to fix it here"
+      title={
+        readOnly
+          ? "This installation is read-only: open a Claude session to find the cause and write it up — applying the fix needs a copy you own"
+          : "Open a Claude session on this installation and try to fix it here"
+      }
     >
-      {busy ? "Starting…" : "Fix this"}
+      {busy ? "Starting…" : readOnly ? "Diagnose this" : "Fix this"}
     </button>
   );
 }

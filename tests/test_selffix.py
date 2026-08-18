@@ -911,6 +911,26 @@ def test_snapshot_carries_the_panel_and_config_carries_only_the_flag(client, ins
     assert "issues_url" in snapshot
 
 
+def test_config_says_read_only_so_a_row_can_word_its_button(client, install,
+                                                            monkeypatch):
+    """The one bit the download manager needs BEFORE anyone clicks (SF-13d).
+
+    Preferences learns this from GET /api/selffix, which costs a directory walk
+    and a brew probe — far too much to word a label with. A failed download row
+    has to say either "Fix this" or "Diagnose this" the moment it appears, so
+    the flag rides the config poll the shell already makes. It is one
+    `os.access` call.
+
+    PRESENT ONLY WHEN READ-ONLY, like `modified_install`: a `read_only: False`
+    on every writable install is a field that invites a truthiness check which
+    passes for the wrong reason.
+    """
+    assert "read_only" not in client.get("/api/config").json()
+
+    monkeypatch.setattr(selffix, "writable", lambda: False)
+    assert client.get("/api/config").json()["read_only"] is True
+
+
 def test_clear_endpoint(client, install):
     _pristine()
     (install / "jobs.py").write_text("patched\n")
