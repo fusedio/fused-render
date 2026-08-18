@@ -7,18 +7,35 @@
 // renaming again — so undo, redo and undo-again are all the same primitive and
 // each one is reproducible.
 //
+// THE TRASH DELETE IS ONE OF THEM, and it took a corrected premise to see it.
+// This file used to exclude delete outright, on the grounds that "the inverse is
+// a restore we do not own (the OS Trash)". That is true of a hard delete and
+// false of the recoverable one: `_move_to_trash` (server/fs_mutate.py) trashes by
+// `os.rename(path, ~/.Trash/<deduped name>)` — WE compute the destination — so a
+// trash delete is already a rename whose two ends are both named. The server
+// reports that destination as `trashed_to`, undo renames the entry out of
+// ~/.Trash and back to where it was, redo renames it in again. Nothing new is
+// introduced here for it: no restore API, no special case in applyFsOp or
+// invertFsOp, and the `"delete"` kind exists for the toast's wording alone.
+//
 // Everything else the explorer can do is deliberately NOT here:
 //
 //   copy-paste, duplicate, new file/folder, compress → the inverse is a DELETE.
 //     Undo would destroy data on the user's behalf, and a redo after it cannot
 //     reproduce what was lost.
-//   delete / trash → the inverse is a restore we do not own (the OS Trash), so
-//     "undo" would be a promise this module cannot keep.
+//   hard delete (the confirm dialog) → the inverse really is a restore nobody
+//     owns: the bytes are gone, so "undo" would be a promise this module cannot
+//     keep. Its dialog says "This can't be undone", and that stays true.
+//   a trash the server could not name → the cross-device fallback hands the move
+//     to Finder, which picks the location; a destination we cannot name is not a
+//     pair, and guessing one would aim an undo at a path nothing is at.
 //
-// A stack of two kinds of op is not a limitation to be grown out of; it is the
-// reason this can be trusted at all. Adding an asymmetric op means answering
-// "what does redo mean after an undo that deleted something", and there is no
-// good answer.
+// A stack of ops that are all one primitive is not a limitation to be grown out
+// of; it is the reason this can be trusted at all. Adding an ASYMMETRIC op means
+// answering "what does redo mean after an undo that deleted something", and there
+// is no good answer — which is why the list above is still closed, and why the
+// trash delete joined it by turning out to be symmetric rather than by relaxing
+// the rule.
 //
 // AN ENTRY IS DATA, NOT A CLOSURE. Every pair is a pair of absolute paths, and
 // nothing in here captures React state. A move can navigate and remount the
@@ -36,15 +53,35 @@ export interface FsPair {
 }
 
 export interface FsOp {
-  // Only for the toast's wording ("Undid the move" / "Undid the rename"). The
-  // mechanics are identical — which is exactly why both are here.
-  kind: "move" | "rename";
+  // Only for the toast's wording ("Undid the move" / "Undid the rename" /
+  // "Undid the delete"). The mechanics are identical — which is exactly why all
+  // three are here, and a `"delete"` that needed a branch anywhere below would
+  // mean the symmetry claim in the header is false.
+  kind: "move" | "rename" | "delete";
   // The pairs that ACTUALLY LANDED, in the order they were written. Recording
   // the intended batch instead would try to un-move entries that never moved:
   // moveEntriesInto stops at its first failure, so an interrupted batch has
   // fewer pairs than it was asked for, and each pair's `to` is the real
   // destination (freePastePath can turn "report.csv" into "report copy.csv").
   pairs: FsPair[];
+}
+
+// The pairs a batch of TRASHED entries yields, in the direction the delete
+// happened: `from` is where the entry was, `to` is where the server put it in
+// ~/.Trash. That direction is the whole of what makes undo work — the stack holds
+// ops as they happened and inverts them on the way out (invertFsOp), so an undo
+// renames ~/.Trash/x back to x and a redo renames it in again.
+//
+// A ROW WITH NO DESTINATION CONTRIBUTES NOTHING. `to` is absent exactly when
+// Finder did the move (fs-actions' TrashOutcome), and a pair needs both ends: a
+// batch that mixed a Finder-trashed row in stays undoable for the rows that CAN
+// be put back, rather than being abandoned wholesale or, worse, undone onto a
+// guessed path.
+//
+// Pure and separate from the hook that calls it, for the same reason
+// relocationToast is: the arithmetic is testable without a renderer.
+export function trashUndoPairs(trashed: { path: string; to?: string }[]): FsPair[] {
+  return trashed.flatMap((t) => (t.to ? [{ from: t.path, to: t.to }] : []));
 }
 
 // How many ops are remembered. Deep enough that undo covers a session's worth

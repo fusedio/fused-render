@@ -876,14 +876,20 @@ export function mkdir(path: string): Promise<StatResult> {
 // With trash=true the entry is moved to the user's Trash instead (macOS only);
 // where that's unsupported the server replies 501 "trash unsupported" and the
 // caller falls back to a hard delete.
+//
+// `trashed_to` is WHERE a trash move landed — present only when the server
+// chose that path itself (its own os.rename into ~/.Trash), absent when Finder
+// did the move and therefore picked the location. It is what makes a trash
+// delete undoable: with it the delete is a rename pair like any other
+// relocation (explorer/lib/fs-undo). Never present on a hard delete.
 export function deleteEntry(
   path: string,
   recursive = false,
   trash = false
-): Promise<{ deleted: string; trashed?: boolean }> {
+): Promise<{ deleted: string; trashed?: boolean; trashed_to?: string }> {
   return noteAfter(
     path,
-    postJson<{ deleted: string; trashed?: boolean }>("/api/fs/delete", {
+    postJson<{ deleted: string; trashed?: boolean; trashed_to?: string }>("/api/fs/delete", {
       path,
       recursive,
       trash,

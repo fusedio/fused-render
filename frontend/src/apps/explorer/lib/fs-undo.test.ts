@@ -4,6 +4,11 @@
 // inverse is the exact path the entry came from (never a deduped one), and an
 // entry that cannot be undone leaves the stack rather than sitting at the top
 // failing forever.
+//
+// The TRASH DELETE is covered at the bottom, and what those cases assert is that
+// it needs no mechanics of its own: a trash is a rename into ~/.Trash whose
+// destination the server names, so it inverts, reports and toasts through the
+// same code as a move.
 import { beforeEach, expect, test } from "bun:test";
 
 // The apply path renames through the api layer, and the toast wording reaches
@@ -58,6 +63,7 @@ const {
   resetFsUndo,
   takeRedoOp,
   takeUndoOp,
+  trashUndoPairs,
   UNDO_CAP,
 } = await import("@apps/explorer/lib/fs-undo");
 
@@ -574,4 +580,108 @@ test("a vanished source fails the same way — the entry is not retried forever"
   });
   expect(report.done).toEqual([]);
   expect((report.failed[0].error as { status?: number }).status).toBe(404);
+});
+
+// -- the TRASH DELETE, which is a relocation like any other -----------------
+
+test("a delete op inverts like a move — the same reversed, swapped pairs", () => {
+  // The whole claim of the delete kind: at the filesystem a trash IS a rename
+  // into ~/.Trash, so the inverse is the rename back and nothing in the
+  // mechanics knows the difference.
+  expect(
+    invertFsOp({
+      kind: "delete",
+      pairs: [
+        { from: "/w/a.md", to: "/h/.Trash/a.md" },
+        { from: "/w/b.md", to: "/h/.Trash/b 2.md" },
+      ],
+    })
+  ).toEqual({
+    kind: "delete",
+    pairs: [
+      { from: "/h/.Trash/b 2.md", to: "/w/b.md" },
+      { from: "/h/.Trash/a.md", to: "/w/a.md" },
+    ],
+  });
+});
+
+test("undoing a delete renames it OUT of the Trash, redoing it renames it back", async () => {
+  const op = {
+    kind: "delete" as const,
+    pairs: [{ from: "/w/notes.md", to: "/h/.Trash/notes.md" }],
+  };
+  // Undo: the inverse, asking for exactly the recorded original path — never a
+  // "… copy" one, since applyFsOp renames with overwrite off.
+  const undone = await applyFsOp(invertFsOp(op));
+  expect(renames()).toEqual([["/h/.Trash/notes.md", "/w/notes.md"]]);
+  expect(undone.done).toEqual([{ from: "/h/.Trash/notes.md", to: "/w/notes.md" }]);
+  // Redo is the op itself again: back into the Trash.
+  posts.length = 0;
+  await applyFsOp(op);
+  expect(renames()).toEqual([["/w/notes.md", "/h/.Trash/notes.md"]]);
+});
+
+test("the delete's toast wording reads as a sentence in both directions", async () => {
+  failRules = [];
+  const report = await applyFsOp({
+    kind: "delete",
+    pairs: [{ from: "/h/.Trash/a.md", to: "/w/a.md" }],
+  });
+  expect(relocationToast("undo", "delete", report)).toEqual({
+    msg: "Undid the delete.",
+    tone: "info",
+  });
+  expect(relocationToast("redo", "delete", report).msg).toBe("Redid the delete.");
+});
+
+test("an emptied Trash is one pair's problem, and it is said out loud", async () => {
+  // The two ways an undone delete legitimately fails: the entry is no longer in
+  // the Trash (emptied → 404, blamed on the Trash path that vanished) and the
+  // original name has since been retaken (409, blamed on the destination).
+  // Neither is systemic, so the batch runs to the end and nothing is left
+  // `pending`.
+  failRules = [
+    { src: "/h/.Trash/a.md", status: 404, error: "no such file or directory" },
+    { src: "/h/.Trash/c.md", status: 409, error: "conflict" },
+  ];
+  const report = await applyFsOp({
+    kind: "delete",
+    pairs: [
+      { from: "/h/.Trash/a.md", to: "/w/a.md" },
+      { from: "/h/.Trash/b.md", to: "/w/b.md" },
+      { from: "/h/.Trash/c.md", to: "/w/c.md" },
+    ],
+  });
+  expect(report.done).toEqual([{ from: "/h/.Trash/b.md", to: "/w/b.md" }]);
+  expect(report.pending).toEqual([]);
+  const { msg, tone } = relocationToast("undo", "delete", report);
+  expect(tone).toBe("error");
+  expect(msg).toStartWith("Undid part of the delete. ");
+  expect(msg).toContain('"a.md"'); // the 404 blames the path that is missing
+  expect(msg).toContain("(and 1 more)");
+  expect(msg).not.toContain("left in place");
+});
+
+test("trashUndoPairs records the delete as it happened, one op for the batch", () => {
+  expect(
+    trashUndoPairs([
+      { path: "/w/a.md", to: "/h/.Trash/a.md" },
+      { path: "/w/b.md", to: "/h/.Trash/b 2.md" },
+    ])
+  ).toEqual([
+    { from: "/w/a.md", to: "/h/.Trash/a.md" },
+    { from: "/w/b.md", to: "/h/.Trash/b 2.md" },
+  ]);
+});
+
+test("a trash with no known destination contributes NO pair", () => {
+  // The Finder fallback: the server could not name where the entry went, so
+  // there is nothing to rename back. The rows around it stay undoable.
+  expect(
+    trashUndoPairs([{ path: "/w/a.md" }, { path: "/w/b.md", to: "/h/.Trash/b.md" }])
+  ).toEqual([{ from: "/w/b.md", to: "/h/.Trash/b.md" }]);
+  // Every row unnamed → no pairs at all, and recordFsOp/push no-op on that.
+  expect(trashUndoPairs([{ path: "/w/a.md" }])).toEqual([]);
+  recordFsOp({ kind: "delete", pairs: trashUndoPairs([{ path: "/w/a.md" }]) });
+  expect(takeUndoOp()).toBeNull();
 });
