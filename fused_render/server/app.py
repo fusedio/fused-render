@@ -410,7 +410,7 @@ def create_app(start_dir: str) -> FastAPI:
     # probe. Its POSTs mutate, so they carry the D3 X-Fused guard.
     app.include_router(claude_config_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
-    # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
+    # POST /api/clone sparse-clone into ~/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
     from fused_render.deeplink import router as deeplink_router
 

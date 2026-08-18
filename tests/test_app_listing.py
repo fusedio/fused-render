@@ -66,7 +66,7 @@ def test_a_loose_file_at_the_top_level_is_not_a_tag(tmp_path):
 
 def test_a_folder_dropped_straight_into_the_workspace_is_an_app(tmp_path):
     """Depth 1 lists WHEN IT HAS A PAGE. This is the case the two-level walk
-    could not see at all: a user saves `~/Documents/Fused/sine/sine.html` and the
+    could not see at all: a user saves `~/Fused/sine/sine.html` and the
     apps page stayed empty, because only `<workspace>/<tag>/<name>` counted.
 
     Any `*.html`, not `index.html` — the depth-3 requirement does not apply here.

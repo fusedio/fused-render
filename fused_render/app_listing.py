@@ -245,7 +245,7 @@ def workspace_apps(root: str) -> list[dict]:
 
     It used to be exactly two levels (`<root>/<tag>/<name>/`, and the name said
     so). Two levels is not where people put their work: a folder dropped
-    straight into the workspace (`~/Documents/Fused/sine/sine.html`) was invisible
+    straight into the workspace (`~/Fused/sine/sine.html`) was invisible
     to the page, and so was an app one level below a tag dir. The walk is now
     recursive, with the depth bound and the per-level rules below.
 

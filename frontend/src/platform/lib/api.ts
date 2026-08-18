@@ -6,7 +6,7 @@ import type { IndexQueryOutcome } from "@platform/lib/index-query";
 export interface Config {
   start_dir: string;
   home: string;
-  // The Fused workspace dir (~/Documents/Fused) — the sidebar's "Fused" entry.
+  // The Fused workspace dir (~/Fused) — the sidebar's "Fused" entry.
   fused_dir: string;
   version: string;
   // Version installed on disk (bundle Info.plist), null when unpackaged.

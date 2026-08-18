@@ -1889,7 +1889,7 @@ A shareable link that lands a GitHub repository subdirectory in fused-render:
 — the original GitHub tree URL, verbatim, as the `git` query param (a link
 author copies the GitHub URL and prefixes it). Clicking it launches (or
 reuses) the app, shows a confirm page, sparse-clones the subdirectory into
-`~/Documents/Fused/<subpath basename>`, and opens the folder's `index.html`
+`~/Fused/<subpath basename>`, and opens the folder's `index.html`
 when one exists, else the folder itself.
 
 - **DL-1** Link shape: `fused-render://open?git=<github URL>`. The action
@@ -1927,7 +1927,8 @@ when one exists, else the folder itself.
   route): `git clone --filter=blob:none --sparse` + `sparse-checkout set
   <subpath>` (plain filtered clone for repo-root links) using the user's own
   git — public repos clone anonymously, private repos ride the user's
-  existing credentials. Destination is `~/Documents/Fused/<subpath basename>`
+  existing credentials. Destination is `~/Fused/<subpath basename>` (the workspace, moved
+  out of the iCloud-synced `~/Documents` by D337)
   (repo name for root links); the repo root, `.git` included, lives at the
   destination, so the opened view is the nested `<dest>/<subpath>` path. A
   failed clone removes the partial destination (retryable). Git runs
