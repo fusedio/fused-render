@@ -5056,6 +5056,10 @@ let annXOHost = null;    // the overlay's host element, in the PARENT's document
 const ANN_XO_SCROLL = { scrollX: 0, scrollY: 0 };
 
 function annXORemove() {
+  // The capture stream goes with the overlay: a target that stopped being
+  // cross-origin (or went away) has shotPane's own path back, and holding a
+  // tab share open past its use is a recording indicator with no purpose.
+  annXOStreamStop();
   if (!annXOHost) return;
   try { annXOHost.remove(); } catch (err) { /* parent torn down first */ }
   annXOHost = null;
@@ -5954,7 +5958,11 @@ async function annCommit() {
   // rule), so a pane the reader scrolled while typing still crops the spot the
   // note is about — and a composer that was cancelled costs no capture at all.
   if (saved && saved.kind === "point" && !saved.shot) {
-    const win = annTargetDoc() && annTargetDoc().defaultView;
+    // The cross-origin overlay's zero-scroll stand-in, exactly as the pin
+    // painter uses it: the coords are overlay-relative and the crop comes off
+    // the tab capture (shotXOPane), which shares that coordinate space.
+    const win = (annTargetDoc() && annTargetDoc().defaultView)
+      || (annXO ? ANN_XO_SCROLL : null);
     const p = annPointXY(saved, win);
     if (p) await annRecPointShot(saved, p.x, p.y);
   }
@@ -6155,6 +6163,14 @@ function annSetMode(on) {
   // target there is no choice either — no element can be resolved, every
   // click is a spot — so the picker stays hidden there too (annXO).
   annToolEl.hidden = !annOn || annXO;
+  // Arming over a cross-origin target is the natural moment to raise the ONE
+  // share prompt the tab-capture screenshots need (annXOStreamGet keeps the
+  // stream after it): the click that armed the mode is the user activation
+  // getDisplayMedia requires, where a later capture — a mic commit, a
+  // walkthrough click's fire-and-forget crop — may have none. Swallowed
+  // whole: a declined prompt just means notes without pictures, and each
+  // capture path already degrades to exactly that.
+  if (annOn && annXO) annXOStreamGet().catch(() => { /* declined: words only */ });
   // The label is the static markup "Comment" in BOTH states — the track's
   // accent fill is what says armed. It used to flip to "Commenting", but a
   // label that changes width makes the whole right-anchored row shuffle on
@@ -6547,10 +6563,7 @@ function annPollTarget() {
   // this chat's own chrome or nothing at all. In the split layout there is no
   // poll and no need for one — enterNoPane removes both buttons outright, which
   // is the structural version of this line.
-  // A cross-origin target (annXO) keeps the switch but not the cameras:
-  // shotPane cannot clone a document it cannot read, so a visible button
-  // would be a promise of a "screenshot failed" chip.
-  for (const b of shotBtns()) b.hidden = !has || annXO;
+  for (const b of shotBtns()) b.hidden = !has;
   if (has === had) {
     // Same ANSWER, different FRAME: the shell switched the pane's mode between
     // two iframes it keeps mounted and moved the mark from one to the other.
@@ -7768,11 +7781,92 @@ async function shotEncode(pane, rect, limits) {
   return null;
 }
 
+// ── the cross-origin pane's picture: tab capture, cropped to the frame ──
+// shotPane's clone-and-rasterise needs a readable document, and the annXO
+// target has none (D349). What the browser can still hand over is the TAB's
+// own pixels: getDisplayMedia with preferCurrentTab, one frame grabbed off
+// the video track and cropped to the marked iframe's rect — the same box the
+// overlay (and so every point coordinate) lives in, so the crops and the
+// whole-pane shot line up with the pins for free.
+//
+// The stream is KEPT between captures: the share prompt is paid once, not
+// once per note — a walkthrough clicking ten spots must not raise ten
+// pickers. Released when the user ends the share (`ended`), when the target
+// stops being cross-origin, and on pagehide (annXORemove covers both).
+let annXOStream = null;
+function annXOStreamStop() {
+  if (!annXOStream) return;
+  try { for (const t of annXOStream.getTracks()) t.stop(); } catch (err) { /* gone */ }
+  annXOStream = null;
+}
+async function annXOStreamGet() {
+  if (annXOStream
+      && annXOStream.getVideoTracks().some((t) => t.readyState === "live")) {
+    return annXOStream;
+  }
+  annXOStreamStop();
+  annXOStream = await navigator.mediaDevices.getDisplayMedia({
+    video: { displaySurface: "browser" },
+    audio: false,
+    // Chromium's current-tab hints: preselect THIS tab, offer no switching,
+    // no monitors. The crop below is only ever computed against this tab's
+    // own layout, so any other surface would be cropped wrong — the hints
+    // make the right choice the one-click one (they are ignored, not fatal,
+    // where unsupported).
+    preferCurrentTab: true,
+    selfBrowserSurface: "include",
+    surfaceSwitching: "exclude",
+    monitorTypeSurfaces: "exclude",
+  });
+  const track = annXOStream.getVideoTracks()[0];
+  if (track) track.addEventListener("ended", annXOStreamStop, { once: true });
+  return annXOStream;
+}
+// Same answer shape as shotPane, so every consumer — shotEncode's crops,
+// shotEncodeMarked's crosshair, shotCapturePane's whole-pane shot and the
+// three caveat writers — runs unchanged: a capture off live pixels has no
+// style walk, no image inlining and no WebGL readback to caveat, so the
+// doubt fields are simply clean. Null (not a throw) for every "cannot":
+// the callers already read null as "nothing to capture".
+async function shotXOPane() {
+  if (!annXO || !annFrame || !navigator.mediaDevices
+      || !navigator.mediaDevices.getDisplayMedia) return null;
+  let host;
+  try { host = window.parent; void host.innerWidth; } catch (err) { return null; }
+  const stream = await annXOStreamGet();
+  const video = document.createElement("video");
+  video.muted = true;
+  video.srcObject = stream;
+  await video.play();
+  // One PAINTED frame — play() resolving does not mean pixels arrived.
+  if (video.requestVideoFrameCallback) {
+    await new Promise((res) => video.requestVideoFrameCallback(res));
+  } else {
+    await new Promise((res) => setTimeout(res, 150));
+  }
+  // The captured frame is the tab's viewport at the capture's own resolution;
+  // the iframe's rect in that viewport, scaled the same way, is the crop.
+  const sx = video.videoWidth / host.innerWidth;
+  const sy = video.videoHeight / host.innerHeight;
+  const r = annFrame.getBoundingClientRect();
+  const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(video,
+    r.left * sx, r.top * sy, r.width * sx, r.height * sy, 0, 0, w, h);
+  video.srcObject = null;
+  return { canvas, width: w, height: h, blanks: [],
+           styled: 0, incomplete: false, imagesMissing: 0 };
+}
+
 // Rasterise the visible left pane once. Returns
 // {canvas, width, height, blanks, styled, incomplete} or null when there is no
 // readable app document to capture. `deadline` is a Date.now() stamp the style
 // walk stops at — the capture's share of SHOT_TIMEOUT_MS, enforced INSIDE the
 // walk because that is the only place that can enforce it (see shotInlineStyles).
+// A cross-origin target takes the tab-capture path above instead — pixels off
+// the screen, since there is no document to clone.
 //
 // Why the clone is styled from the LIVE tree, which is what creates the race
 // shotInlineStyles has to defend against: a clone is detached, and a detached
@@ -7783,6 +7877,7 @@ async function shotEncode(pane, rect, limits) {
 // mutate the page the user is looking at. So the live tree is the only source of
 // truth for computed style, and the race is detected rather than avoided.
 async function shotPane(deadline) {
+  if (annXO) return shotXOPane();
   const win = appWindow();
   const doc = win && win.document;
   const body = doc && doc.body;

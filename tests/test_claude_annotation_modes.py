@@ -277,9 +277,9 @@ def test_a_cross_origin_target_gets_a_point_overlay_in_the_host_document(html):
     failed, and the switch armed a mode whose clicks went nowhere. Now that
     state is a mode of its own: an overlay in the HOST's document (same
     origin — it marked the frame for us), laid over the iframe's box, where
-    every armed click is a `kind: "point"` note. Element anchors, hover ring,
-    crops and pane screenshots stay off — they all need a document
-    cross-origin forbids."""
+    every armed click is a `kind: "point"` note. Element anchors and the hover
+    ring stay off — both need a document cross-origin forbids; the pictures
+    come off the TAB instead (see the tab-capture test below)."""
     # The state is derived in the ONE sync everything else already trusts,
     # and the overlay replaces the injected layer through the same variable.
     assert "annXO = !!(next && !doc);" in html
@@ -290,8 +290,8 @@ def test_a_cross_origin_target_gets_a_point_overlay_in_the_host_document(html):
     # the composer portal and annPlacePop need no second code path.
     assert "stage: host" in body
     # The click is a point note from birth — overlay-relative, `win` null (no
-    # scroll to fold in), shot null forever — and a recording click takes the
-    # same walkthrough path a same-origin point does.
+    # scroll to fold in), shot null until the save-time crop — and a recording
+    # click takes the same walkthrough path a same-origin point does.
     assert "annRecMarkPoint(x, y, null)" in body
     assert 'annOpenComposer(x, y, { kind: "point", x, y, shot: null }, null);' in body
     # Disarmed, the overlay must not eat a single event.
@@ -305,7 +305,7 @@ def test_the_point_overlay_coordinates_resolve_through_a_zero_scroll_stub(html):
     the chip's edit-click) hand it the zero-scroll stand-in rather than
     growing a second converter."""
     assert "const ANN_XO_SCROLL = { scrollX: 0, scrollY: 0 };" in html
-    assert html.count("annXO ? ANN_XO_SCROLL : null") == 2
+    assert html.count("annXO ? ANN_XO_SCROLL : null") == 3
 
 
 def test_the_overlay_is_torn_down_with_the_layer_it_stands_in_for(html):
@@ -316,3 +316,32 @@ def test_the_overlay_is_torn_down_with_the_layer_it_stands_in_for(html):
     assert "if (!annXO) annXORemove();" in html
     teardown = _block(html, 'window.addEventListener("pagehide"', "\n  });")
     assert "annXORemove();" in teardown
+
+
+def test_a_cross_origin_capture_comes_off_the_tab_not_the_document(html):
+    """The screenshots work over the cross-origin target too: shotPane — the
+    ONE rasteriser every capture path shares — branches to shotXOPane, which
+    grabs a frame off a getDisplayMedia tab share and crops the marked
+    iframe's rect out of it. Same {canvas, width, height, ...} shape, clean
+    doubt fields (no style walk, no image inlining, no WebGL readback), so
+    the crops, the crosshair burner and the whole-pane shot run unchanged."""
+    pane = _block(html, "async function shotPane(deadline)", "const clone")
+    assert "if (annXO) return shotXOPane();" in pane
+    body = _block(html, "async function shotXOPane()", "\n}\n\n")
+    assert "getBoundingClientRect()" in body
+    assert "blanks: []" in body and "incomplete: false" in body
+    # The share prompt is paid ONCE — the stream is cached and reused — and
+    # raised at ARM time, where the user activation actually is (a mic commit
+    # or a walkthrough click's fire-and-forget crop may have none).
+    assert "if (annOn && annXO) annXOStreamGet().catch" in html
+    getter = _block(html, "async function annXOStreamGet()", "\n}\n")
+    assert 'readyState === "live"' in getter
+    assert "preferCurrentTab: true" in getter
+    # And released with the overlay: ended share, target no longer
+    # cross-origin, pagehide (annXORemove covers all three).
+    remove = _block(html, "function annXORemove()", "\n}\n")
+    assert "annXOStreamStop();" in remove
+    # The save-time crop fires for an overlay note too, through the same
+    # zero-scroll stub the pin painter uses.
+    commit = _block(html, "async function annCommit()", "\n}\n")
+    assert "annXO ? ANN_XO_SCROLL : null" in commit

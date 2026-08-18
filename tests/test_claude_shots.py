@@ -2238,10 +2238,7 @@ def test_the_button_is_absent_wherever_there_is_nothing_to_photograph(html):
     the answer moves as the host switches what it shows. Both halves are here —
     the poll hides it, and the no-pane target removes it outright."""
     poll = _between(html, "function annPollTarget()", "\n}\n")
-    # `annXO` joins the predicate (D349): a cross-origin target has a mark and
-    # so a switch, but no document shotPane could ever clone — a visible camera
-    # there is a promise of a "screenshot failed" chip.
-    assert "for (const b of shotBtns()) b.hidden = !has || annXO;" in poll
+    assert "for (const b of shotBtns()) b.hidden = !has;" in poll
     click = _between(html, "async function shotAttachPane()", "\n}\n")
     assert "annCapable()" in click, "and a keyboard click cannot outrun the poll"
     nopane = _between(html, "function enterNoPane()", "\n}\n")
