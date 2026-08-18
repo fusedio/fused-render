@@ -1207,6 +1207,65 @@ def test_triage_wins_where_it_disagrees(client, projects_dir, state_dir):
     assert _by_key(client)["sess-a"]["status"] == "archived"
 
 
+def test_archiving_yields_to_a_turn_that_is_still_running(client, projects_dir,
+                                                          state_dir):
+    """Filing something does not stop it.
+
+    `archived` is a timeless decision and it is honoured for as long as nothing
+    is happening — but while a turn is genuinely in flight, a row that reads
+    `archived` is a lie the reader can watch: the work is happening, in that
+    conversation, now. Running is the one fact on this page that is about the
+    present, so for as long as it is true it outranks a decision about where the
+    task belongs afterwards.
+
+    Seeded through the SCHEDULER's half of "running" (a send with no verdict —
+    `_busy_sessions`) rather than transcript liveness, because that is the half
+    a scheduled task actually trips: a turn thinking through a long tool call
+    appends nothing and reads as not live."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
+                           turn="", claude_session_id="sess-a")])
+    (state_dir / "triage.json").write_text(
+        json.dumps({"sess-a": {"status": "archived"}}))
+
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is False, "the scheduler's claim is the guard here"
+    assert task["status"] == "in_progress"
+
+
+def test_the_archive_is_kept_and_comes_back_when_the_turn_ends(client,
+                                                               projects_dir,
+                                                               state_dir):
+    """The other half of the promise above: the record is never touched.
+
+    The exception is a display rule for the duration of a run, not a quiet
+    undo of the user's filing — the same entry with a verdict on it reads
+    `archived` again, off the very record the running task ignored."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
+                           turn="ok", claude_session_id="sess-a")])
+    (state_dir / "triage.json").write_text(
+        json.dumps({"sess-a": {"status": "archived"}}))
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+
+    rec = json.loads((state_dir / "triage.json").read_text())["sess-a"]
+    assert rec["status"] == "archived", "nothing here rewrites the filing"
+
+
+def test_a_done_record_is_not_given_the_archive_exception(client, projects_dir,
+                                                          state_dir):
+    """Only `archived` yields. `done` says "this run is over", and a new turn in
+    that conversation is already carried by the derivation — there is nothing
+    for an exception to fix, and widening it would make the one lane a user
+    files things INTO the one lane that cannot hold them."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENDING,
+                           claude_session_id="sess-a")])
+    (state_dir / "triage.json").write_text(
+        json.dumps({"sess-a": {"status": "done"}}))
+    assert _by_key(client)["sess-a"]["status"] == "done"
+
+
 def test_a_stale_in_progress_pin_does_not_outlive_its_run(client, projects_dir,
                                                           state_dir):
     """The pin is a claim about the present, and the run it named has ended.

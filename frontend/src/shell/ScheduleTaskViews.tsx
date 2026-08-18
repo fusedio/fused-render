@@ -72,7 +72,7 @@ import {
   markReadIntent,
   messageEditEntry,
   messageHref,
-  messageTone,
+  threadTone,
   messageWhenTitle,
   openMessageHref,
   openThreadIntent,
@@ -1854,7 +1854,10 @@ function TaskNode({
       {open && (
         <div className="tasks-thread">
           {view.messages.map((m) => {
-            const tone = messageTone(m);
+            // threadTone, not messageTone: a thread under an archived task is
+            // archived with it, except for a turn that is still running
+            // (tasks-lib says why).
+            const tone = threadTone(task, m);
             const mark = unreadMarker(task.key, m, read);
             const isNew = mark.unread;
             const stop = cancelIntent(m);
@@ -2275,27 +2278,50 @@ export function TaskBoard({
           const news = laneUnread(lane, read);
           const rolled = laneCollapsed(col.key, lane.length, choices);
           if (rolled) {
+            // AN EMPTY RAIL IS NOT A BUTTON. `laneCollapsed` keeps a lane with
+            // nothing in it rolled up whatever the reader chose, so the press
+            // that used to expand it now visibly does nothing — a dead click on
+            // a lit control (design-principles §0). It says so instead:
+            // `aria-disabled` and no handler, so the rail reads as the marker it
+            // has become.
+            //
+            // `aria-disabled`, NOT `disabled`: a real disabled button stops
+            // receiving pointer events in every browser, and this element is
+            // still a DROP TARGET — dragging a card into a column that has never
+            // held one is the one thing an empty lane must go on accepting, and
+            // it is exactly the gesture that makes it non-empty again.
+            const empty = lane.length === 0;
             return (
               <button
                 type="button"
                 key={col.key}
                 className={
                   "schedule-tv-rail" +
+                  (empty ? " is-empty" : "") +
                   (dragging && allowed.has(col.key) ? " is-drop-legal" : "") +
                   (runLane === col.key ? " is-drop-run" : "") +
                   (overLane === col.key ? " is-drop-over" : "")
                 }
+                aria-disabled={empty || undefined}
                 title={
                   runLane === col.key
                     ? "Run the next scheduled message now"
-                    : `${col.label}: ${lane.length}`
+                    : empty
+                      ? `Nothing in ${col.label}`
+                      : `${col.label}: ${lane.length}`
                 }
-                onClick={() => toggleLane(col.key, true)}
+                onClick={empty ? undefined : () => toggleLane(col.key, true)}
                 {...dropProps(col.key)}
               >
                 <StatusIcon status={col.key} unread={news > 0} count={news} />
                 <span className="schedule-tv-rail-label">{col.label}</span>
-                <span className="schedule-tv-rail-count">{lane.length}</span>
+                {/* No `0`. A count answers "how many are hidden in here", and on
+                    an empty rail the honest answer is already the whole rail —
+                    the chip only added a number to read before you could see it
+                    said nothing (Akshil, screenshot, 2026-08-18). */}
+                {!empty && (
+                  <span className="schedule-tv-rail-count">{lane.length}</span>
+                )}
               </button>
             );
           }

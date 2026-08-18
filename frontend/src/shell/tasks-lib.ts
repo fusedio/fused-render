@@ -300,6 +300,48 @@ export function messageTone(m: TaskMessage): MessageTone {
 }
 
 /**
+ * ARCHIVING A TASK ARCHIVES ITS THREAD — the message tone a row actually wears.
+ *
+ * `messageTone` above answers "what happened to this message", which is a fact
+ * about the message and nothing else. It was also, until 2026-08-18, the only
+ * thing the thread rows asked, and that made archiving look like it had half
+ * worked: the task card moved to Archive and the ten rows underneath it stayed
+ * green, amber and red, still reading as live work. A task is a thread, so
+ * filing the task files the thread — one gesture, one outcome, everywhere
+ * (design-principles §1).
+ *
+ * Archived is a PLACE, not an event, so the cascade changes only where a row is
+ * filed and never what it says happened: the label is left exactly as it was, so
+ * an archived thread can still be read back run by run. The `failed` flag does
+ * go — archiving is the "I have dealt with this" gesture, and a filed task that
+ * still flies a red mark is asking to be dealt with again.
+ *
+ * THE ONE EXCEPTION IS A TURN THAT IS STILL RUNNING. Filing something does not
+ * stop it, and a running turn is the one fact on this page that is about the
+ * present rather than the past — it stops being true on its own, in a minute or
+ * two, and until it does, saying otherwise is a lie the reader can watch. So a
+ * running message keeps its own tone, and the task keeps reading as In Progress
+ * over the archive record until the turn ends (the server's `_status` makes that
+ * half of the promise — see fused_render/server/routers/tasks.py). The archive
+ * is not lost either way: it is still recorded, and the moment the turn is over
+ * the task and its whole thread fall back into Archive.
+ */
+export function threadTone(task: Task, m: TaskMessage): MessageTone {
+  const tone = messageTone(m);
+  if (taskColumn(task) !== "archived") return tone;
+  if (tone.column === "in_progress") return tone;
+  return { ...tone, column: "archived", failed: false };
+}
+
+/** Is any message in this thread mid-turn? The client's half of the running
+ * exception above — `Task.live` is the server's, computed from the transcript's
+ * own tail, and the two are asked in different places rather than merged: this
+ * one is about the rows on screen, that one about the row's status. */
+export function threadRunning(messages: TaskMessage[]): boolean {
+  return messages.some((m) => messageTone(m).column === "in_progress");
+}
+
+/**
  * The task's own column, narrowed. The server decides it (Task.status); this
  * only keeps a value a newer server invented off the board's floor. An
  * unreadable status lands in Done, not Archive: a task the client cannot read
@@ -2216,15 +2258,30 @@ export function groupByColumn(
 // A lane is either an open column or a 52px rail. Two things decide which, in
 // this order:
 //
-//   1. What the reader last chose for THAT lane. Explicit choices are the only
-//      thing stored, so a lane nobody has ever touched keeps following the rule
-//      below forever rather than being frozen at whatever it looked like the
-//      first time the page was opened.
-//   2. Otherwise: EMPTY lanes start rolled up, everything else starts open.
+//   1. AN EMPTY LANE IS ALWAYS ROLLED UP. Not a default — a rule, and it
+//      outranks the reader's own choice for as long as the lane holds nothing.
+//   2. Otherwise: whatever the reader last chose for THAT lane. Explicit choices
+//      are the only thing stored, so a lane nobody has ever touched keeps
+//      following the rule below forever rather than being frozen at whatever it
+//      looked like the first time the page was opened.
+//   3. Otherwise: open.
+//
+// Rule 1 was rule 2's tie-breaker until 2026-08-18 — empty lanes STARTED rolled
+// up, and an expand the reader had chosen back when the lane had cards in it
+// kept it open after the last one left. What that bought was an empty outline
+// the width of a column, with a header and a `0` over it, sitting between two
+// lanes that had work in them; four of those and the board was mostly furniture
+// (Akshil, screenshot). An empty column has nothing to show and nothing to read,
+// so the honest width for it is the rail's 52px.
+//
+// The choice is REMEMBERED, not discarded, and comes back the moment a card
+// does: a lane the reader had open before it drained opens again on the first
+// arrival, which is what makes this a display rule rather than a quiet edit of
+// their preference.
 //
 // Archive used to be hard-coded closed. It is not special any more (Akshil,
 // 2026-08-18) — an Archive with cards in it is a column like the others, and an
-// Archive with none rolls up under rule 2 like the others.
+// Archive with none rolls up under rule 1 like the others.
 
 /** The key the board's lane choices live under. Distinct from the array-shaped
  * key an earlier build wrote: that one recorded "collapsed now", defaults
@@ -2254,13 +2311,15 @@ export function parseLaneChoices(raw: string | null): LaneChoices {
   return out;
 }
 
-/** Rule 1 then rule 2, for one lane. `count` is how many cards it holds. */
+/** The three rules above, in order, for one lane. `count` is how many cards it
+ * holds — and a `count` of 0 is the whole answer, whatever the reader chose. */
 export function laneCollapsed(
   lane: BoardColumn,
   count: number,
   choices: LaneChoices,
 ): boolean {
+  if (count === 0) return true;
   const chosen = choices[lane];
   if (chosen !== undefined) return chosen;
-  return count === 0;
+  return false;
 }
