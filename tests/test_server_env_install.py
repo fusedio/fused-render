@@ -355,7 +355,7 @@ def test_a_file_with_no_project_reports_this_process_as_the_interpreter(tmp_path
     assert body["ok"] is True
     assert body["engine"] == "builtin"
     assert body["interpreter"] == sys.executable
-    assert body["packages"]["duckdb"], "duckdb ships with the app; a version must be reported"
+    assert body["python_version"] == sys.version
 
 
 def test_a_declared_project_reports_its_own_venv_not_this_process(tmp_path):
@@ -375,10 +375,6 @@ def test_a_declared_project_reports_its_own_venv_not_this_process(tmp_path):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["interpreter"] == envinstall.venv_python_for(str(tmp_path))
-    assert body["packages"] is None, (
-        "that venv's packages are not this process's — reporting them here "
-        "would be a guess dressed up as an answer"
-    )
     assert body["python_version"] is None, (
         "the venv can pin a different Python than the app (SPEC PY-16) — "
         "this process's own sys.version is not known to match it"

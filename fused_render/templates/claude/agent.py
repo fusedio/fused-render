@@ -555,11 +555,12 @@ def _system_prompt(file: str) -> str:
     # own environment (SPEC PY-16/PY-17). `origin` is None only when there is no
     # server to ask (e.g. a bare test), in which case saying nothing is honest.
     env_note = (
-        f" If asked which Python interpreter or package versions produced "
-        f"{name}'s preview: `GET {origin}/api/env/interpreter` (header "
-        "`X-Fused: 1`) answers with the real interpreter, engine and "
-        "duckdb/pyarrow/pandas versions fused-render itself used — that is "
-        "the ground truth, not a shell probe of this session's own PATH."
+        f" If asked which Python interpreter produced {name}'s preview: `GET "
+        f"{origin}/api/env/interpreter` (header `X-Fused: 1`) answers with "
+        "the real interpreter and engine fused-render itself used — that is "
+        "the ground truth, not a shell probe of this session's own PATH. For "
+        "package versions, run that interpreter directly (you are on the "
+        "same machine): `<interpreter> -c \"import x; print(x.__version__)\"`."
     ) if origin else ""
     return (
         f"You are embedded in a local file viewer, opened on {file}. "

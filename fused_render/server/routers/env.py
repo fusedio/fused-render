@@ -20,13 +20,6 @@ from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
 
-# The bundled data-stack packages a first-party reader (duckdb/xlsx/sqlite/
-# structure) actually uses. Reported by /api/env/interpreter so a caller (a
-# Claude Code session embedded beside a file preview, in particular) can learn
-# the real versions instead of shelling out to a fresh interpreter that has no
-# relationship to the one that rendered the file.
-_REPORTED_PACKAGES = ("duckdb", "pyarrow", "pandas")
-
 
 def _project_for(body: dict):
     """(project_dir, error_response) for a {py, html} body, or (None, resp).
@@ -143,8 +136,7 @@ def api_env_interpreter(py: str | None = None, html: str | None = None,
     structure readers execute in-process (D72), and everything else without a
     declared project runs as a subprocess of this same interpreter
     (executor.py's `[sys.executable, CHILD]`) — so this process's own
-    `sys.executable` and its already-installed duckdb/pyarrow/pandas are
-    exactly what a reader used, not a guess.
+    `sys.executable` is exactly what a reader used, not a guess.
 
     This exists because a shell probe (`which python3`, a fresh `sys.
     executable`) run from outside this app — e.g. a Claude Code session
@@ -152,6 +144,15 @@ def api_env_interpreter(py: str | None = None, html: str | None = None,
     THAT SHELL'S PATH, which has no relationship to the interpreter
     fused-render itself used to render the file. That mismatch is silent: the
     shell probe always succeeds, it just answers a different question.
+
+    Deliberately does NOT report package versions: that caller runs on the
+    same machine as this interpreter (a local desktop app; a Claude session is
+    a subprocess of this same server), so once it has the real `interpreter`
+    path it can ask that interpreter about ANY package itself
+    (`<interpreter> -c "import x; print(x.__version__)"`) — more flexibly
+    than this endpoint hardcoding a guess at which packages matter. This
+    endpoint's only job is the one fact a caller cannot get any other way:
+    which interpreter is ground truth.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -182,17 +183,14 @@ def api_env_interpreter(py: str | None = None, html: str | None = None,
     engine = shell_prefs.effective_engine()
 
     python_version = None
-    packages = None
     if project:
         from fused_render import envinstall
         interpreter = envinstall.venv_python_for(project)
         source = (f"{projectenv.display_name(project)}'s own project "
                   "environment (declared in its pyproject.toml)")
-        # Neither this process's own Python version nor its packages — that
-        # venv can pin a different Python than the app (SPEC PY-16 lets a
-        # project declare its own), and probing it here would cost a
-        # subprocess spawn for an answer most callers (no declared project)
-        # never need.
+        # Not this process's own Python version — that venv can pin a
+        # different Python than the app (SPEC PY-16 lets a project declare its
+        # own), and this process's sys.version is not known to match it.
     else:
         if engine == "fused":
             from fused_render import engine as _engine
@@ -201,12 +199,6 @@ def api_env_interpreter(py: str | None = None, html: str | None = None,
             interpreter = sys.executable
         source = "this app's own interpreter (no project declares one, SPEC PY-17)"
         python_version = sys.version
-        packages = {}
-        for name in _REPORTED_PACKAGES:
-            try:
-                packages[name] = getattr(__import__(name), "__version__", None)
-            except ImportError:
-                pass
 
     return JSONResponse({
         "ok": True,
@@ -214,7 +206,6 @@ def api_env_interpreter(py: str | None = None, html: str | None = None,
         "interpreter": interpreter,
         "source": source,
         "python_version": python_version,
-        "packages": packages,
     })
 
 
