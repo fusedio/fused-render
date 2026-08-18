@@ -639,13 +639,15 @@ def test_fix_endpoint_spawns_a_primed_claude_session(harness, monkeypatch):
     assert res.status_code == 200
     assert res.json() == {"ok": True, "run_id": "run-77"}
     # Session lands on the clone dir, unattended-capable, primed with the
-    # verbatim transcript plus the guard rails (validate loop, never push).
+    # verbatim transcript plus what to do: validate, then publish. (It used to
+    # be told NOT to push; nothing races it now, and the push is how it
+    # confirms the fix landed — see _fix_prompt.)
     assert seen["target"] == str(harness.root / "alpha")
     assert seen["mode"] == "auto"
     for line in _VALIDATION_LINES:
         assert line in seen["prompt"]
     assert "fused workbench canvas validate" in seen["prompt"]
-    assert "Do NOT run `fused workbench canvas push`" in seen["prompt"]
+    assert "fused workbench canvas push ." in seen["prompt"]
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
@@ -1233,17 +1235,16 @@ def test_push_aborts_when_remote_moved_and_zip_unavailable(harness, tmp_path, mo
 
 
 def test_clone_seeds_claude_md_and_fusedignore(harness, tmp_path, monkeypatch):
-    # A clone gets a CLAUDE.md pointing the session at the fused:* skills
-    # (with the plugin-install fallback) and a .fusedignore keeping both
-    # files out of every push. Seeding never dirties the sync.
+    # A clone gets a CLAUDE.md pointing the session at the workbench:* skills
+    # and a .fusedignore keeping both files out of every push. Seeding never
+    # dirties the sync.
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     claude_md = harness.root / "alpha" / "CLAUDE.md"
     assert claude_md.exists()
     text = claude_md.read_text()
-    assert "fused:canvas-toml" in text
-    assert "fused claude plugin add" in text
+    assert "workbench:canvas-toml" in text
     ignore = (harness.root / "alpha" / ".fusedignore").read_text()
     assert "CLAUDE.md" in ignore and ".fusedignore" in ignore
     harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
@@ -1448,6 +1449,89 @@ def test_an_out_of_band_cli_push_is_force_pulled_back_by_the_watcher(
     # each pass takes a trash snapshot, so ~_TRASH_MAX out-of-band pushes evict
     # the entire recoverable history.
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+# -- what the clone tells the session ------------------------------------------
+
+
+def test_the_claude_md_names_exactly_the_skills_the_app_hands_over():
+    """skill_plugin.WORKBENCH_SKILLS is what validates a candidate plugin root;
+    this file is what asks the session to load them. If the two drift, the app
+    either rejects a good plugin or seeds a CLAUDE.md naming a skill it never
+    handed over."""
+    from fused_render import skill_plugin
+
+    text = canvases_mod._CLONE_CLAUDE_MD
+    for skill in skill_plugin.WORKBENCH_SKILLS:
+        assert "workbench:%s" % skill in text, skill
+
+
+def test_the_seeded_claude_md_never_hands_the_user_a_shell_command():
+    """The reader of this file is a Claude session in a chat pane. It cannot run
+    an install command, and the user reading it there is the wrong person to
+    hand one to — so the escape hatch is gone entirely rather than softened. The
+    app supplies the skills itself (--plugin-dir), and when it cannot, this file
+    degrades to the folder's own conventions."""
+    text = canvases_mod._CLONE_CLAUDE_MD
+    assert "plugin add" not in text
+    assert "plugin marketplace" not in text
+    assert "STOP" not in text
+    assert "fused:canvas-toml" not in text, "the plugin was renamed to workbench"
+    # It says what to do instead.
+    assert "canvas.toml" in text and "conventions" in text
+
+
+def test_the_seeded_claude_md_sanctions_the_standard_push():
+    """A1/B3. It used to call a manual push "usually redundant", which
+    understated it in both directions: the raw CLI push can destroy a concurrent
+    workbench edit, and now that the auto-push is held while a session works,
+    NOT pushing leaves the work unpublished until the session ends."""
+    text = canvases_mod._CLONE_CLAUDE_MD
+    assert "fused workbench canvas push ." in text
+    assert "usually redundant" not in text
+    assert "--no-validate" in text  # says it is refused
+    # And the bundled-CLI rule (A4d).
+    assert "pip install fused" in text
+    assert "python -m fused" in text
+
+
+def test_the_fix_prompt_tells_the_session_to_push():
+    """B5. The old "Do NOT run canvas push" is now wrong: nothing races it, and
+    the push is what confirms the fix landed."""
+    prompt = canvases_mod._fix_prompt("alpha", ["error: node 'x' has no source"],
+                                      "validation failed")
+    assert "error: node 'x' has no source" in prompt, "verbatim, per D328"
+    assert "fused workbench canvas push ." in prompt
+    assert "Do NOT run" not in prompt
+    assert "validate" in prompt
+
+
+def test_the_cli_prompt_note_no_longer_forbids_pushing_in_a_clone():
+    """The system-prompt disclosure said "rather than running `canvas push`
+    yourself", i.e. the exact opposite of the new contract. A session that
+    believes that finishes blind."""
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "templates", "claude", "agent.py")
+    spec = importlib.util.spec_from_file_location("claude_agent_for_cli_note", path)
+    agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agent)
+    note = agent._fused_cli_note.__doc__ + (
+        agent._fused_cli_note() if agent._fused_cli_dir() else "")
+    # The docstring keeps the history; the emitted text must not carry the old
+    # instruction. Check the emitted text alone.
+    os.environ["FUSED_RENDER_FUSED_CLI_DIR"] = "/tmp/fused-bin"
+    try:
+        text = agent._fused_cli_note()
+    finally:
+        os.environ.pop("FUSED_RENDER_FUSED_CLI_DIR", None)
+    assert text, "the note must render when a wrapper exists"
+    assert "rather than running `canvas push` yourself" not in text
+    assert "canvas push ." in text
+    assert "pip install fused" in text
+    assert "python -m fused" in text
+    _ = note
 
 
 # -- a live Claude session holds the auto-push, and shows up in status ----------

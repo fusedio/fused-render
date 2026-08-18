@@ -492,13 +492,25 @@ def _fused_cli_note() -> str:
 
     Appended to EVERY target's prompt (file, app folder, ordinary folder)
     rather than woven into each shape: the CLI is a fact about the machine,
-    not about the target. Three things it must say, each guarding a real
+    not about the target. Four things it must say, each guarding a real
     failure: run it as a BARE command (the `Bash(fused:*)` pre-allowance is a
     prefix rule, so `cd x && fused ...` still raises a card — correct, but
-    surprising if unsaid); never run its login flows (they open a browser and
-    a headless session hangs on them); and never hand-push inside a canvas
-    clone (fused-render's own sync manager already pushes those folders, and
-    a second pusher races it)."""
+    surprising if unsaid, and the bare form is also the ONLY spelling that
+    reaches the CLI this app ships, since the wrapper is what is on PATH);
+    never reach for some other fused (a `pip install fused`, a `python -m
+    fused`, another venv's copy — those miss the pieces the canvas sync needs
+    and bypass the push protection); never run its login flows (they open a
+    browser and a headless session hangs on them); and DO push inside a canvas
+    clone with the standard command.
+
+    That last one used to say the opposite — "let the sync push, rather than
+    running `canvas push` yourself" — which was right when a hand-push meant an
+    unguarded raw CLI call racing the watcher. It is now wrong twice: the
+    auto-push is HELD while a session is live in the clone (so there is nothing
+    to race, and a session that never pushes leaves its work unpublished until
+    it ends), and `canvas push` inside a clone is intercepted into the guarded
+    server-side push. Telling a session not to push now means telling it to
+    finish blind."""
     if not _fused_cli_dir():
         return ""
     return (
@@ -507,14 +519,19 @@ def _fused_cli_note() -> str:
         "workbench canvas push <dir> --canvas <name>`; see `fused --help`). "
         "Run it as a plain `fused ...` command — that exact form is "
         "pre-approved, while compound commands (`cd x && fused ...`) ask the "
-        "user first. It uses the user's existing Fused sign-in; NEVER run "
+        "user first — and never invoke fused any other way: no `pip install "
+        "fused`, no `python -m fused`, no copy from another path or "
+        "environment, since only the bare command reaches the CLI this app "
+        "ships. It uses the user's existing Fused sign-in; NEVER run "
         "`fused workbench login` or `fused cloud login` (they wait on a "
         "browser round-trip that cannot complete here) — on an auth error, "
         "ask the user to sign in from fused-render's Canvases page or a "
         "terminal instead. Inside a canvas folder under ~/.fused-render/"
-        "canvases, fused-render may already be auto-pushing every edit: "
-        "there, just edit the files and let that sync push, rather than "
-        "running `canvas push` yourself."
+        "canvases, fused-render holds its own auto-push while you work and "
+        "routes `fused workbench canvas push .` through its sync manager, "
+        "which merges concurrent workbench edits first: publish a coherent "
+        "change set with that command and read the errors it prints back. "
+        "See that folder's CLAUDE.md for the details."
     )
 
 

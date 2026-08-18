@@ -543,31 +543,64 @@ remote edits (made in the hosted workbench) back down, merging per file.
 
 A watcher in the fused-render app syncs this folder continuously:
 
-- **Auto-push**: after ~1.5s of file quiet it runs `fused canvas push`,
-  which REPLACES the remote UDF set with this folder (deletes propagate).
-  Before pushing it probes the remote and merges concurrent workbench
-  edits in, per file.
+- **Auto-push**: after ~1.5s of file quiet it pushes this folder, which
+  REPLACES the remote UDF set (deletes propagate). Before pushing it probes
+  the remote and merges concurrent workbench edits in, per file. It is
+  HELD while you are working — see "Publishing your work" below.
 - **Auto-pull**: every ~10s it checks the remote; workbench edits are
   pulled down (clean clone) or merged per file (dirty clone — a file only
   you changed keeps your version; only they changed gets theirs; both →
   yours wins).
 
-You MAY run `fused canvas push` / `fused canvas pull` yourself, e.g. to
-reconcile a conflict — just account for the side-effects:
+## Publishing your work
 
-- Your saved edits push themselves within seconds; a manual push is
-  usually redundant. Pushing mid-edit ships a half-done state.
-- `fused canvas pull --force` overwrites the WHOLE folder with remote:
-  any unpushed local edits are lost, and it deletes this CLAUDE.md /
-  .fusedignore (the watcher re-seeds them on its own pulls).
+While you are working here the auto-push is **held** — the debounce measures
+file quiet, and you go quiet mid-change-set (thinking, reading, waiting on a
+tool), so shipping then would publish a half-done rename. You publish
+deliberately instead:
+
+    fused workbench canvas push .
+
+That is the right command and it is safe here. Inside this folder fused-render
+intercepts it and runs the push through its own sync manager, which first
+probes the remote and merges any concurrent workbench edit in, and aborts
+rather than overwriting something it cannot reconcile. You get the CLI's real
+output back: if validation fails, the errors are printed here, one line per
+problem — fix them and push again.
+
+Push when a change set is COHERENT (e.g. a rename: the `.py` file *and* its
+`canvas.toml` entry), not after every edit.
+
+- If you never push, nothing is lost: the watcher pushes the folder on its
+  next tick once you stop working.
+- `--no-validate` / `--no-ignore` are refused here. Fix validation errors
+  rather than skipping them.
+- Do NOT try to work around the interception by invoking a fused from
+  somewhere else (see "Running the fused CLI" below) — a raw push skips the
+  merge guard and can destroy a workbench edit the user made seconds ago,
+  unrecoverably.
+- `fused workbench canvas pull --force` overwrites the WHOLE folder with
+  remote: any unpushed local edits are lost, and it deletes this CLAUDE.md /
+  .fusedignore (the watcher re-seeds them on its own pulls). You rarely need
+  it — the auto-pull already brings remote edits down.
 - After a manual pull, the watcher may see the changed files as fresh
   local edits and push them back — expected, mention it if surprising.
 
-Other rules:
+## Running the fused CLI
+
+Always invoke it as the bare command — `fused ...` — and nothing else. That
+resolves to the CLI this app ships, which is the only one that works here.
+
+Do NOT `pip install fused`, do NOT run `python -m fused`, and do NOT call a
+`fused` from any other path, venv or environment. A different fused misses the
+pieces this folder's two-way sync depends on, and it bypasses the push
+protection described above.
+
+## Keeping the canvas valid
 
 - After structural edits (renaming a node, adding/removing nodes or edges),
-  check the clone with `fused workbench canvas validate .` — the auto-push
-  rejects an invalid canvas and the error surfaces to the user.
+  check the clone with `fused workbench canvas validate .` — an invalid
+  canvas is rejected at push time and the error surfaces to the user.
 - `canvas.toml` defines the canvas (nodes, edges, viewport); every node
   needs its source file next to it (`<udfName>.py`; widgets are `.json`).
 
@@ -598,23 +631,23 @@ Consequences:
   period, and a half-done rename that gets pushed or merged mid-way is
   exactly how invalid states happen.
 
-## Required skills
+## Skills
 
-Before editing, load the Fused plugin skills — they carry the format
-references and workflows for this folder:
+Load these before editing — they carry the format references and workflows
+for this folder. fused-render hands them to this session itself, so they
+should already be in your available-skills list:
 
-- `fused:canvas-toml` — canvas.toml format and folder layout
-- `fused:fused-udfs` — writing Fused UDFs
-- `fused:json-ui-schemas` — widget JSON component props
-- `fused:fused-cli` — the fused CLI reference
+- `workbench:canvas-toml` — canvas.toml format and folder layout
+- `workbench:fused-udfs` — writing Fused UDFs
+- `workbench:json-ui-schemas` — widget JSON component props
+- `workbench:fused-cli` — the fused CLI reference
+- `workbench:canvas-comments` — reading and resolving canvas comments
 
-If no `fused:*` skills appear in your available-skills list, the Fused
-Claude plugin is not installed — STOP and ask the user to run:
-
-    fused claude plugin add
-
-(registers the `fusedio/claude-plugins` marketplace and installs
-`fused@fused-marketplace`; a new session picks the skills up.)
+If they are absent, or listed under a different prefix, just search your
+available skills for the matching names. If they genuinely are not there,
+carry on without them: follow the conventions of the files already in this
+folder and treat the existing `canvas.toml` as the format reference. Do not
+stop to ask for them, and do not try to install anything.
 """
 
 
@@ -1960,20 +1993,27 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
 def _fix_prompt(name: str, detail: list[str], error: str | None) -> str:
     """The first message of a fix session: the verbatim CLI output (never
     reworded — rewording makes an error unsearchable, D328) plus what the
-    session must and must not do. The no-push rule matters most: the watcher
-    auto-pushes this folder on every quiet period, so a session that pushes
-    by hand races it, and a session that pushes --no-validate defeats the
-    reason it was spawned."""
+    session must do.
+
+    It used to forbid pushing, because a hand-push raced the watcher and a
+    `--no-validate` one defeated the reason the session was spawned. Neither
+    holds now: the auto-push is HELD while this session is live, so there is
+    nothing to race, and `fused workbench canvas push` inside a clone is
+    intercepted into the guarded server-side push, which refuses
+    --no-validate outright. So the session is told to push — that is how it
+    confirms the fix actually landed, instead of finishing blind and leaving
+    the user to discover on the next tick whether it worked."""
     report = "\n".join(detail) or (error or "the push failed")
     return (
-        f"The automatic `fused workbench canvas push` for the canvas "
-        f"{name!r} (this folder) is failing. The CLI reported:\n\n"
+        f"The automatic canvas push for {name!r} (this folder) is failing. "
+        f"The CLI reported:\n\n"
         f"{report}\n\n"
         "Fix these problems in this folder's files. Check your work with "
-        "`fused workbench canvas validate .` until it passes. Do NOT run "
-        "`fused workbench canvas push` (with or without --no-validate) and "
-        "do not change the canvas name: fused-render watches this folder "
-        "and pushes automatically as soon as the files change."
+        "`fused workbench canvas validate .` until it passes, then publish "
+        "with `fused workbench canvas push .` — inside this folder that runs "
+        "through fused-render's sync manager, so it is safe, and it prints "
+        "any remaining errors straight back to you. Do not change the canvas "
+        "name, and do not use --no-validate (it is refused here anyway)."
     )
 
 
