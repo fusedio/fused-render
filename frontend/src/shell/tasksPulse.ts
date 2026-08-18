@@ -173,7 +173,14 @@ export function useTasksPulse(): TasksPulse {
     listeners.add(setCurrent);
     // Read immediately rather than waiting out an interval: a sidebar that has
     // just mounted should not claim "nothing is running" for ten seconds first.
-    void poll();
+    //
+    // UNLESS SOMEONE IS FEEDING US. The sidebar remounts on every navigation
+    // (App keys it on the nav epoch), so an unconditional read here would fire a
+    // second /api/tasks alongside the Tasks page's own on every trip to that
+    // page — the same double-poll the feeder exists to prevent, just spent per
+    // navigation instead of per tick. A feeder's answer is already on its way.
+    if (feeders === 0) void poll();
+    else schedule();
     return () => {
       listeners.delete(setCurrent);
       schedule();

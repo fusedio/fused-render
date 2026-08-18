@@ -221,6 +221,10 @@ describe("one poll behind both readers", () => {
     // hint about timing: it says this module is not the poller, and the timer
     // does not run at all while one is held.
     expect(STORE).toContain("export function useTasksFeeder()");
+    // Including the sidebar's own mount read: it remounts on every navigation
+    // (App keys it on the nav epoch), so an unconditional fetch there would
+    // spend the same double-poll per trip to /tasks instead of per tick.
+    expect(STORE).toContain("if (feeders === 0) void poll();");
     expect(STORE).toContain("feeders++");
     expect(STORE).toContain("feeders--");
     expect(SCHEDULED).toContain("useTasksFeeder();");
