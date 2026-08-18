@@ -321,6 +321,36 @@ describe("the Tasks entry's two marks", () => {
     expect(cycle).not.toContain("opacity");
     expect(cycle).not.toContain("color");
 
+    // AND IT NEVER GOES AWAY EITHER (Akshil, screenshot, 2026-08-18: the label
+    // animated in and out). With `background-clip: text` plus a transparent fill,
+    // the glyphs are a window onto the background — so anywhere the background
+    // does not reach, the letters are not drawn at all. Two holes, both closed:
+    //
+    // 1. THE SWEEP RAN OFF THE BOX. `no-repeat` and a travel from 150% to -150%
+    //    left the gradient entirely outside the element for most of the cycle,
+    //    blanking the label and bringing it back. Every stop of the travel must
+    //    stay inside 0%-100%, where a 300%-wide image still covers the box.
+    const stops = [...cycle.matchAll(/background-position:\s*(-?\d+)%/g)].map((m) =>
+      Number(m[1]),
+    );
+    expect(stops.length).toBeGreaterThanOrEqual(2);
+    for (const stop of stops) {
+      expect(stop).toBeGreaterThanOrEqual(0);
+      expect(stop).toBeLessThanOrEqual(100);
+    }
+    // ...with the fill repeating, so not even a rounding error at the ends of the
+    // travel can expose an unpainted letter.
+    expect(grad).toContain("background-repeat: repeat");
+    expect(grad).not.toContain("no-repeat");
+
+    // 2. THE GLYPHS OVERFLOWED THE CLIP BOX. At `line-height: 1` the painted area
+    //    is shorter than the type it is clipped to, and the descender of the "g"
+    //    in "running" came out chipped. The box has to hold the whole glyph.
+    const lh = grad.match(/line-height:\s*([\d.]+)/);
+    expect(lh).not.toBe(null);
+    expect(Number(lh![1])).toBeGreaterThanOrEqual(1.4);
+    expect(grad).toMatch(/padding:\s*\d+px/);
+
     // The blanket reduced-motion rule runs an animation ONCE at 0.01ms, which
     // would park this gradient wherever it stopped — a readout whose ink depends
     // on an animation frame. So the gradient is dropped and the ink is the flat

@@ -312,10 +312,35 @@ a.sidebar-rail-btn {
    `--fg`, which raises contrast against the sidebar in BOTH themes (dark `--fg`
    over the light theme's amber, light `--fg` over the dark theme's yellow). The
    floor of the animation is therefore the flat, fully readable label the
-   reduced-motion arm below draws, and the motion only ever adds to it. */
+   reduced-motion arm below draws, and the motion only ever adds to it.
+
+   AND IT NEVER DISAPPEARS EITHER (Akshil, screenshot, 2026-08-18: the label
+   animated in and out). Not a fade and not a mount — a hole in the PAINT. With
+   `background-clip: text` the glyphs are a window onto the background and
+   `-webkit-text-fill-color: transparent` means there is no ink of their own
+   behind it, so anywhere the background does not reach, the letters are simply
+   not drawn. Two ways that was happening, and both are fixed here:
+
+     * THE SWEEP RAN OFF THE BOX. `no-repeat` plus a travel from 150% to -150%
+       put the whole gradient outside the element for most of the cycle, which
+       blanked the label and then brought it back — read, correctly, as the text
+       animating in and out. The travel now stays inside 100% → 0% (with a
+       300%-wide image, every position in that range still covers the box) and
+       the fill repeats, so there is no reachable frame with bare box in it.
+     * THE GLYPHS OVERFLOWED IT. At `line-height: 1` the background box is
+       shorter than the type it is clipped to, so the descender of the "g" in
+       "running" fell outside the paint and came out chipped. The box is given
+       room to hold the whole glyph — leading plus a hair of vertical padding —
+       rather than the text being trimmed to fit it.
+
+   Both are why the two rules below are load-bearing rather than cosmetic: no
+   part of the cycle may leave any part of a letter unpainted. */
 .sidebar-running {
   font-size: 10.5px;
-  line-height: 1;
+  /* The CLIP BOX, not just the text's spacing: ascenders and descenders have to
+     fall inside the painted area or they are not drawn at all. */
+  line-height: 1.6;
+  padding: 1px 1px;
   color: var(--status-progress);
   background-image: linear-gradient(
     100deg,
@@ -324,7 +349,11 @@ a.sidebar-rail-btn {
     var(--status-progress) 70%
   );
   background-size: 300% 100%;
-  background-repeat: no-repeat;
+  /* Belt to the in-range keyframes' braces: even a rounding error at the ends of
+     the travel tiles the fill rather than exposing an unpainted letter. The
+     gradient's first and last stops are the same hue, so a tile boundary is
+     invisible. */
+  background-repeat: repeat;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -332,12 +361,17 @@ a.sidebar-rail-btn {
   white-space: nowrap;
 }
 
+/* ONE property animates, and it is the position of the highlight — never
+   opacity, never the fill, never anything that could take a letter away. The
+   range is 100% → 0%: with a background 300% the width of the box, both ends (and
+   everything between) still paint every pixel of it, so the label is fully
+   visible at every frame and only the bright band moves. */
 @keyframes sidebar-running-shimmer {
   from {
-    background-position: 150% 0;
+    background-position: 100% 0;
   }
   to {
-    background-position: -150% 0;
+    background-position: 0% 0;
   }
 }
 
