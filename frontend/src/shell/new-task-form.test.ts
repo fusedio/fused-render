@@ -45,7 +45,6 @@ let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
 let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
 let defaultTargetOf: typeof import("./NewJobModal").defaultTargetOf;
-let parentFolder: typeof import("./NewJobModal").parentFolder;
 
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
@@ -74,7 +73,6 @@ beforeAll(async () => {
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
   PAST_NOTE_CATCH_UP = mod.PAST_NOTE_CATCH_UP;
   defaultTargetOf = mod.defaultTargetOf;
-  parentFolder = mod.parentFolder;
 });
 
 // Only the fields these functions read; the rest of a stored entry is noise
@@ -1451,51 +1449,52 @@ describe("defaultTargetOf", () => {
 });
 
 // ---- "recent" means one thing -------------------------------------------------
-// Until 2026-08-18 the app had two recents. The home page's Recent files strip
-// reads the server-backed store at ~/.fused-render/recents.json
-// (apps/explorer/lib/recents); this form read a localStorage array only it ever
-// wrote, so a person who had spent the morning in a repo opened New task and was
-// offered folders the form happened to remember instead. One noun per concept
+// The app had two recents. The home page shows the folders this machine has
+// Claude sessions in, newest session first (`/api/claude-sessions`, its "Claude
+// Sessions" strip); this form showed a localStorage array only it ever wrote, so
+// a person who had spent the morning in a repo opened New task and was offered
+// folders the form happened to remember. One noun per concept
 // (design-principles §1), and recents are exactly the "recognition over recall"
-// affordance §4 asks for — so the shared store leads the list now.
+// affordance §4 asks for — so the home page's list leads this one.
 describe("the folder recents come from the app's own recents", () => {
-  test("a recent FILE contributes the folder it lives in", () => {
-    // The shared store holds files (the server no-ops on directory urls) and a
-    // task wants a place to run, so the map from one to the other is the parent.
-    expect(parentFolder("/Users/a/code/app/main.py")).toBe("/Users/a/code/app");
-    // Windows paths arrive with backslashes from /api/config and friends; the
-    // picker's string surgery only understands forward ones.
-    expect(parentFolder("C:\\work\\repo\\main.py")).toBe("C:/work/repo");
-    // Roots degrade sanely rather than to the empty string, which would be
-    // silently dropped from the list.
-    expect(parentFolder("/notes.md")).toBe("/");
-    // A trailing separator is not a level of its own.
-    expect(parentFolder("/Users/a/code/app/")).toBe("/Users/a/code");
-    // Nothing to offer, rather than a bogus "".
-    expect(parentFolder("main.py")).toBe("");
-    expect(parentFolder("")).toBe("");
+  test("the leading tier is the home page's Claude sessions call, top five", () => {
+    const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+    // The SAME call Home.tsx makes, not a second endpoint that happens to
+    // answer something similar.
+    expect(src).toContain("getClaudeSessionFolders()");
+    expect(readFileSync(join(import.meta.dir, "Home.tsx"), "utf8"))
+      .toContain("getClaudeSessionFolders()");
+    // Five, and the server already answers newest-session-first, so the slice
+    // is the whole of the ordering — the folders reach the list in the order
+    // they arrived in, with no client-side re-sort to disagree with the strip.
+    expect(src).toContain("const SESSION_FOLDERS_SHOWN = 5;");
+    expect(src).toContain("r.folders.slice(0, SESSION_FOLDERS_SHOWN)");
+    expect(src).not.toContain("sessionFolders.sort");
+    // Enough of them to be worth opening: the dropdown shows five, and the
+    // leading tier can now fill it on its own.
+    expect(src).toContain("const RECENTS_SHOWN = 5;");
+    // NOT /api/recents. That is the explorer's recently-OPENED FILES — the wrong
+    // shape (files, not places to work) and, on a machine with dozens of
+    // sessions, three entries long.
+    expect(src).not.toContain("@apps/explorer/lib/recents");
+    expect(src).not.toContain("hydrateRecents");
   });
 
-  test("the list is built from the shared store first, then the form's own memory", () => {
+  test("the form's own memory follows it, and nothing is offered twice", () => {
     const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
-    // The SAME module the home page reads, not a second client for /api/recents.
-    expect(src).toContain('from "@apps/explorer/lib/recents"');
-    expect(src).toContain("loadRecents()");
-    // Raw MRU, which is what Home.tsx renders — not `displayRecents`, the
-    // sidebar's stable-slot view, whose order is deliberately sticky.
-    expect(src).not.toContain("displayRecents");
-    // The cache is filled on mount, for the case where a `/tasks?new=1` deep link
-    // makes this modal the first thing opened in a session.
-    expect(src).toContain("void hydrateRecents();");
     // Order: the app's recents, then folders picked through Browse or saved on a
     // task, then existing tasks' targets as padding. The middle tier is KEPT — a
-    // folder deliberately chosen here may hold no files anyone has opened, so the
-    // shared store would never learn it.
+    // folder deliberately chosen here may hold no Claude session at all, so the
+    // shared source would never learn it.
     const list = src.slice(src.indexOf("const readRecentList = useCallback("));
-    const body = list.slice(0, list.indexOf("}, [recentTargets]);"));
-    expect(body.indexOf("sharedRecentFolders()")).toBeLessThan(body.indexOf("readRecents()"));
+    const body = list.slice(0, list.indexOf("}, [recentTargets, sessionFolders]);"));
+    expect(body.indexOf("sessionFolders")).toBeLessThan(body.indexOf("readRecents()"));
     expect(body.indexOf("readRecents()")).toBeLessThan(body.indexOf("recentTargets"));
-    // Deduped, so a folder both stores know is offered once.
+    // Deduped, so a folder two tiers know is offered once.
     expect(body).toContain("seen.has(p)");
+    // The fetch is fire-and-forget: a suggestion list that fails to load costs
+    // suggestions, never the form.
+    expect(src).toContain("getClaudeSessionFolders().then(");
+    expect(src).toContain("      () => {},");
   });
 });

@@ -14,6 +14,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { Modal } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
+  getClaudeSessionFolders,
   getConfig,
   getTasks,
   listDir,
@@ -24,9 +25,6 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { navigateUrl } from "@platform/lib/router";
 import { describeRepeats, describeRule, repeatChoicesFor } from "./schedule-lib";
 import { ICON_CLOCK, ICON_FOLDER } from "./ScheduleCalendar";
-// The home page's Recent files, read through the very module Home.tsx reads —
-// see `sharedRecentFolders` below for why this form borrows them.
-import { hydrateRecents, loadRecents, recentFsPath } from "@apps/explorer/lib/recents";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
@@ -43,11 +41,11 @@ export const defaultTargetOf = (c: Pick<Config, "home" | "fused_dir">) =>
 
 // ---- Recent paths --------------------------------------------------------
 // The path field's dropdown offers the last folders the user actually used,
-// newest first, five shown. It draws on two stores — the app-wide one the home
-// page reads (see `sharedRecentFolders` below) and this form's own memory of
-// folders picked in the browser or saved on a task, which is what the rest of
-// this section is. That second half lives in localStorage so "the folder I
-// always schedule against" survives reloads.
+// newest first, five shown. It draws on two sources — the app-wide one the home
+// page reads (see the section below) and this form's own memory of folders
+// picked in the browser or saved on a task, which is what the rest of THIS
+// section is. That second half lives in localStorage so "the folder I always
+// schedule against" survives reloads.
 // try/catch throughout: storage can be denied (private mode), and a corrupt
 // value must read as "no recents", never crash the modal (Bugbot, PR #538
 // pattern).
@@ -77,44 +75,25 @@ function rememberRecent(path: string) {
 }
 
 // ---- The APP's recents, which are the ones a person means ------------------
-// "Recents" was two different lists until 2026-08-18. The home page's Recent
-// files strip reads the server-backed store at ~/.fused-render/recents.json
-// (apps/explorer/lib/recents, `/api/recents`) — every file this machine has
-// opened, newest first, deduped and cap-managed by the server. This form read
-// a localStorage array only it ever wrote. Both were called recents, and only
-// one of them matched what "recent" means everywhere else in the app: a person
-// who has spent the morning in a repo and then opens New task is thinking of
-// that repo, and the form had never heard of it (design-principles §1 — one
-// noun per concept, and §4 — recognition over recall).
+// "Recents" was two different lists until 2026-08-18. The home page shows the
+// folders this machine has Claude sessions in, newest session first
+// (`/api/claude-sessions`, its "Claude Sessions" strip); this form showed a
+// localStorage array only it ever wrote. Both were called recents, and only one
+// of them matched what a person means: someone who has spent the morning in a
+// repo opens New task thinking of that repo, and the form had never heard of it
+// (design-principles §1 — one noun per concept, §4 — recognition over recall).
 //
-// So the shared store leads the list now, and the form's own memory follows it.
-// The store holds FILES (the server no-ops on directory urls), and a task wants
-// a place to run, so each entry contributes its containing FOLDER; the MRU
-// order the server produced carries straight through the map, so this is home's
-// list, at folder granularity. Home reads raw MRU too (`loadRecents().entries`)
-// rather than the sidebar's stable-slot view, so the two orderings are the same
-// one.
+// So the home page's list leads this one, from the same endpoint and in the
+// same order, and it is the right shape as well as the right source: those
+// entries are FOLDERS — each session's own `cwd`, canonicalised and filtered to
+// directories that still exist — which is exactly what a task targets.
 //
-// Reads are synchronous off that module's in-memory cache and cannot throw;
-// `hydrateRecents()` is what fills it, and this form calls it on mount for the
-// case where the modal is the first thing opened in a session.
-export function parentFolder(path: string): string {
-  const trimmed = normPath(path).replace(/\/+$/, "");
-  const cut = trimmed.lastIndexOf("/");
-  // "/a" -> "/", "C:/a" -> "C:/", and a bare segment (no separator) has no
-  // parent worth offering.
-  if (cut < 0) return "";
-  return cut === 0 ? "/" : trimmed.slice(0, cut);
-}
-
-function sharedRecentFolders(): string[] {
-  const out: string[] = [];
-  for (const entry of loadRecents().entries) {
-    const folder = parentFolder(recentFsPath(entry.url));
-    if (folder) out.push(folder);
-  }
-  return out;
-}
+// It briefly led with `/api/recents` instead, the explorer's recently-OPENED
+// FILES, whose folders had to be derived by taking each path's parent. That was
+// the wrong list twice over: it is about files rather than places to work, and
+// it is short — three entries on a machine that had dozens of sessions, which
+// is the complaint that sent this back (Akshil, 2026-08-18).
+const SESSION_FOLDERS_SHOWN = 5;
 
 // ---- Browse: a slide-in explorer panel ---------------------------------------
 // Browsing happens BESIDE the card, not inside it: the in-modal picker was
@@ -2049,35 +2028,47 @@ export default function NewJobModal({
   const [home, setHome] = useState("");
   // The path field's recents dropdown, in three tiers and in this order:
   //
-  //  1. the APP's recents — the same server-backed store the home page's Recent
-  //     files strip reads, one folder per recently-opened file, in its MRU order
-  //     (see `sharedRecentFolders`). First because it is what a person means by
-  //     "recent": the folders they have actually been working in today.
+  //  1. the APP's recents — the top five folders from the same call the home
+  //     page's Claude Sessions strip makes, newest session first. First because
+  //     it is what a person means by "recent": the folders they have actually
+  //     been working in.
   //  2. this form's own memory — folders picked through Browse or saved on a
   //     task (localStorage). Kept, not replaced: a folder deliberately chosen
   //     here may hold no files anyone has opened, so tier 1 would never learn
   //     it.
   //  3. the folders existing tasks point at, as padding on a fresh machine.
   //
-  // RE-READ every time the list opens, not once per modal: both stores change
+  // Tier 2 is RE-READ every time the list opens, not once per modal: it changes
   // while the modal is up (Browse writes the folder you pick), so a read-once
   // state showed the list as it was BEFORE you went browsing — "I just went
   // through a bunch of folders but recents didn't update" (Akshil, 2026-08-16).
-  // Both reads are synchronous and local (a localStorage hit and an in-memory
-  // cache), on a user gesture, so doing it per open costs nothing worth saving.
+  // It is a single localStorage hit on a user gesture, so per-open costs nothing.
   const [recentsOpen, setRecentsOpen] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
-  // Fill the shared cache for the case where this modal is the first thing
-  // opened in a session (a `/tasks?new=1` deep link). Fire-and-forget, exactly
-  // as Home.tsx does it: a recents fetch that fails costs suggestions, never
-  // the form.
+  // Tier 1 is a fetch, so it is asked for once on mount and held. Exactly as
+  // Home.tsx asks for it, and fire-and-forget for the same reason: a suggestion
+  // list that fails to load costs suggestions, never the form. Normalised on the
+  // way in, like every other path this card handles.
+  const [sessionFolders, setSessionFolders] = useState<string[]>([]);
   useEffect(() => {
-    void hydrateRecents();
+    let alive = true;
+    getClaudeSessionFolders().then(
+      (r) => {
+        if (!alive) return;
+        setSessionFolders(
+          r.folders.slice(0, SESSION_FOLDERS_SHOWN).map((f) => normPath(f.path)),
+        );
+      },
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
   }, []);
   const readRecentList = useCallback(() => {
     const seen = new Set<string>();
     return [
-      ...sharedRecentFolders(),
+      ...sessionFolders,
       ...readRecents(),
       ...(recentTargets ?? []),
     ].filter((p) => {
@@ -2085,7 +2076,7 @@ export default function NewJobModal({
       seen.add(p);
       return true;
     });
-  }, [recentTargets]);
+  }, [recentTargets, sessionFolders]);
   const openRecents = () => {
     setRecents(readRecentList());
     setRecentsOpen(true);
