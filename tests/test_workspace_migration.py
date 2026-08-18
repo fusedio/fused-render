@@ -320,3 +320,58 @@ def test_a_stray_file_at_the_legacy_path_changes_nothing(machine):
 
     assert legacy.read_text(encoding="utf-8") == "not a workspace"
     assert storage.read_json(recents)["entries"][0]["url"] == url
+
+
+# ---------------------------------------------------- path shapes (no real fs)
+# These drive the pure helpers directly with Windows-shaped and
+# backslash-bearing POSIX input, so they assert the cross-platform behaviour on
+# any host — the same discipline storage._sidecar_subpath (ntpath) and
+# _view_url_codec are written for.
+
+def test_a_windows_view_url_is_remapped_despite_the_backslashed_source():
+    """The url decodes to a FORWARD-slashed drive path while the legacy dir
+    comes back from os.path.abspath backslashed; comparing them literally
+    matched nothing, so a Windows user kept every bookmark pointing at the
+    folder that just moved."""
+    src = "C:\\Users\\v\\Documents\\Fused"
+    dst = "C:\\Users\\v\\Fused"
+
+    assert (wm._remap_url("/explorer/view/C%3A/Users/v/Documents/Fused/x/index.html",
+                          src, dst)
+            == "/explorer/view/C%3A/Users/v/Fused/x/index.html")
+    # The workspace root itself, and a path outside it.
+    assert (wm._remap_url("/explorer/view/C%3A/Users/v/Documents/Fused", src, dst)
+            == "/explorer/view/C%3A/Users/v/Fused")
+    assert wm._remap_url("/explorer/view/C%3A/Users/v/Elsewhere/x", src, dst) is None
+
+
+def test_a_windows_bookmark_sentinel_query_is_remapped():
+    from urllib.parse import quote
+
+    src = "C:\\Users\\v\\Documents\\Fused"
+    dst = "C:\\Users\\v\\Fused"
+    url = ("/explorer/view/_bookmark?file="
+           + quote("C:/Users/v/Documents/Fused/saved.bookmark", safe="") + "&x=1")
+
+    assert wm._remap_url(url, src, dst) == (
+        "/explorer/view/_bookmark?file="
+        + quote("C:/Users/v/Fused/saved.bookmark", safe="") + "&x=1")
+
+
+def test_a_posix_backslash_in_a_filename_round_trips():
+    """On POSIX a backslash is a legal filename character (storage and the
+    frontend codec both normalize it ONLY for drive paths). Splitting on it
+    turned one bookmark into a path that does not exist."""
+    src = "/Users/x/Documents/Fused"
+    dst = "/Users/x/Fused"
+
+    assert (wm._remap_url("/explorer/view/Users/x/Documents/Fused/weird%5Cname.html",
+                          src, dst)
+            == "/explorer/view/Users/x/Fused/weird%5Cname.html")
+
+
+def test_a_posix_sibling_is_not_matched_through_a_backslash():
+    src = "/Users/x/Documents/Fused"
+    dst = "/Users/x/Fused"
+
+    assert wm._remap("/Users/x/Documents/Fused\\evil", src, dst) is None

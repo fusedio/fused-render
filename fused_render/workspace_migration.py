@@ -45,6 +45,7 @@ import os
 import re
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import storage
 from fused_render.shell.seed import fused_dir
 
@@ -113,16 +114,25 @@ def _run() -> None:
 
 def _remap(path: str, src: str, dst: str) -> str | None:
     """`path` re-rooted from `src` to `dst`, or None when it is not under
-    `src`. Both separators are accepted on the source side: a path that came
-    back out of a view url is forward-slashed even on Windows."""
+    `src`.
+
+    The two sides arrive in different shapes and are compared in
+    ``_view_url_codec.canonical_fs_path`` form so they can meet: `src`/`dst`
+    come from ``os.path.abspath`` and are backslashed on Windows, while a path
+    that came back out of a view url is forward-slashed on every platform.
+    Comparing the raw strings matched nothing at all on Windows.
+
+    The result takes its separator style from `path`, so a url value goes back
+    canonical and an OS-native record keeps ``os.sep``. Canonicalization is a
+    1:1 character substitution, which is what lets the tail be spliced by
+    offset off the original string.
+    """
     if not isinstance(path, str) or not path:
         return None
-    if path == src:
-        return dst
-    for sep in {os.sep, "/"}:
-        if path.startswith(src + sep):
-            return dst + path[len(src):]
-    return None
+    csrc, cpath = canonical_fs_path(src), canonical_fs_path(path)
+    if cpath != csrc and not cpath.startswith(csrc + "/"):
+        return None
+    return (canonical_fs_path(dst) if cpath == path else dst) + path[len(src):]
 
 
 def _rooted(segments: list[str]) -> str:
@@ -138,9 +148,13 @@ def _rooted(segments: list[str]) -> str:
 
 
 def _encode(path: str) -> str:
-    """Absolute path -> url path segments, mirroring _view_url_codec."""
+    """Absolute path -> url path segments, mirroring
+    _view_url_codec.view_url_path — including its rule that ONLY a drive-letter
+    path has its backslashes normalized. An unconditional replace here split a
+    legal POSIX filename ("weird\\name.html") into two segments and wrote a
+    bookmark for a path that does not exist."""
     return "/".join(quote(seg, safe="!*'()")
-                    for seg in path.replace("\\", "/").lstrip("/").split("/") if seg)
+                    for seg in canonical_fs_path(path).lstrip("/").split("/") if seg)
 
 
 def _remap_url(url: str, src: str, dst: str) -> str | None:
