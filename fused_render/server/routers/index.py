@@ -522,6 +522,63 @@ def api_index_scan(body: dict = Body(default={}),
     return {"ok": True, **runs[0], "runs": runs}
 
 
+@router.post("/api/index/scan-folder")
+def api_index_scan_folder(body: dict = Body(default={}),
+                          x_fused: str | None = Header(default=None)):
+    """Cover a folder the index has never visited, because someone searched it.
+
+    The in-folder search box used to answer an uncovered folder with a live
+    streamed walk. That walk survives only for the folders no scan can ever
+    reach, so this is what replaces it: the box asks, the scan runs, and the
+    box polls `/api/index/rank` (reason `scanning`) until rows appear.
+
+    THE FOLDER ITSELF is the scan root, not some enclosing configured one: a
+    folder is uncovered precisely because no configured root covers it — or
+    because one does and pruned it, in which case rescanning that root would
+    prune it again. Compaction keeps every row outside the root it is given
+    (index/store.py), so a folder-sized scan merges into the store instead of
+    replacing it.
+
+    Never an error, and every "no" is a durable one — this route is called
+    from a search box, so a refusal it could read as transient becomes a
+    keystroke-rate retry loop:
+
+      * `refused` — `runner.start` said no. Mount-backed (structurally, and
+        BEFORE any kernel syscall on the path) or simply not a directory.
+      * `debounced` — scanned inside `SCAN_DEBOUNCE_S`. The startup
+        scheduler's own floor, deliberately not a second one: a folder that is
+        still uncovered after a scan (the ignore rules exclude it) must not be
+        rescanned on the next keystroke, and the next one after that.
+      * `joined` — a run over this root was already in flight; polling it is
+        the whole of what a second one would have achieved.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = str(body.get("path") or "").strip()
+    if not path:
+        return _error("'path' is required")
+    import time
+
+    cfg = load_config()
+    root = runner.canonical_root(path)
+    last = runner.last_scan(cfg, root)
+    if last is not None and (time.time() - last) < SCAN_DEBOUNCE_S:
+        return {"ok": True, "started": False, "why": "debounced",
+                "run_id": None, "root": root}
+    try:
+        started = runner.start(cfg, root)
+    except ValueError as e:
+        logger.info("index: not scanning %s on demand (%s)", root, e)
+        return {"ok": True, "started": False, "why": "refused",
+                "error": str(e), "run_id": None, "root": root}
+    logger.info("index: scanning %s on demand (run %s)",
+                root, started.get("run_id"))
+    return {"ok": True, "started": True,
+            "why": "joined" if started.get("already_running") else "started",
+            "run_id": started.get("run_id"), "root": root}
+
+
 @router.post("/api/index/cancel")
 def api_index_cancel(body: dict = Body(default={}),
                      x_fused: str | None = Header(default=None)):
