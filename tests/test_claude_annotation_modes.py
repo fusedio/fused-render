@@ -144,9 +144,12 @@ def test_the_tool_applies_inside_a_recording_too(html):
 
 def test_the_tool_picker_follows_the_mode(html):
     """Shown while comment mode (or a recording, which arms it) is on, hidden
-    otherwise — a picker for a click that cannot happen is noise."""
+    otherwise — a picker for a click that cannot happen is noise. A
+    cross-origin target (annXO, D349) hides it too: no element can ever be
+    resolved over there, so there is no choice to offer — every click is a
+    spot."""
     assert 'id="anntool" role="radiogroup"' in html
-    assert "annToolEl.hidden = !annOn;" in html
+    assert "annToolEl.hidden = !annOn || annXO;" in html
 
 
 def test_the_tool_picker_survives_the_hosted_layout(html):
@@ -263,3 +266,53 @@ def test_the_warm_up_is_opportunistic_never_load_bearing(html):
     assert "if (!asr.default) return;" in body
     assert '{ capability: "automatic-speech-recognition" }' in body
     assert "console.warn" in body
+
+
+# --------------------------------- the cross-origin target's point overlay
+
+def test_a_cross_origin_target_gets_a_point_overlay_in_the_host_document(html):
+    """D349: a marked frame whose document is out of reach (the /canvases
+    workspace marks its HOSTED workbench iframe) used to be the worst state —
+    annCapable() said yes off the mark alone, the layer injection silently
+    failed, and the switch armed a mode whose clicks went nowhere. Now that
+    state is a mode of its own: an overlay in the HOST's document (same
+    origin — it marked the frame for us), laid over the iframe's box, where
+    every armed click is a `kind: "point"` note. Element anchors, hover ring,
+    crops and pane screenshots stay off — they all need a document
+    cross-origin forbids."""
+    # The state is derived in the ONE sync everything else already trusts,
+    # and the overlay replaces the injected layer through the same variable.
+    assert "annXO = !!(next && !doc);" in html
+    assert ("const layer = doc ? annInjectLayer(doc)"
+            " : (annXO ? annXOLayer() : null);") in html
+    body = _block(html, "function annXOLayer()", "\n}\n\n")
+    # Same {root, pins, hl, stage} shape annInjectLayer answers, so the pins,
+    # the composer portal and annPlacePop need no second code path.
+    assert "stage: host" in body
+    # The click is a point note from birth — overlay-relative, `win` null (no
+    # scroll to fold in), shot null forever — and a recording click takes the
+    # same walkthrough path a same-origin point does.
+    assert "annRecMarkPoint(x, y, null)" in body
+    assert 'annOpenComposer(x, y, { kind: "point", x, y, shot: null }, null);' in body
+    # Disarmed, the overlay must not eat a single event.
+    assert 'catcher.style.display = annOn ? "" : "none";' in body
+
+
+def test_the_point_overlay_coordinates_resolve_through_a_zero_scroll_stub(html):
+    """annPointXY is the ONE converter from a point's stored coords to pixels,
+    and it refuses a null window. The overlay's coords are overlay-relative
+    with no scroll to convert through, so both readers (the pin painter and
+    the chip's edit-click) hand it the zero-scroll stand-in rather than
+    growing a second converter."""
+    assert "const ANN_XO_SCROLL = { scrollX: 0, scrollY: 0 };" in html
+    assert html.count("annXO ? ANN_XO_SCROLL : null") == 2
+
+
+def test_the_overlay_is_torn_down_with_the_layer_it_stands_in_for(html):
+    """The overlay is OUR node in the PARENT's document — the same orphaning
+    risk the injected layer's pagehide teardown exists for, so it is removed
+    there too, and whenever the target stops being cross-origin (the mark
+    moved to a same-origin frame, or away entirely)."""
+    assert "if (!annXO) annXORemove();" in html
+    teardown = _block(html, 'window.addEventListener("pagehide"', "\n  });")
+    assert "annXORemove();" in teardown

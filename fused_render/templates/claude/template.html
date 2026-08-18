@@ -5033,6 +5033,98 @@ function annTargetDoc() {
 // disappears when the host shows a listing (annPollTarget).
 const annCapable = () => (CHAT_ONLY ? !!annFrame : !noPane);
 
+// ── a marked frame we cannot enter: point notes over its picture (D349) ──
+// The /canvases workspace marks its hosted-workbench iframe, and that document
+// is CROSS-ORIGIN: no layer injection, no element anchors, no shotPane clone —
+// every mechanism above is walled off. What is NOT walled off is the frame's
+// BOX in the host's own document, and a point note (D344) never needed more
+// than a spot and some words. So this state gets its own overlay: a layer in
+// the HOST document (same origin — it marked the frame for us), positioned
+// over the iframe's rect, catching clicks only while comment mode is armed.
+// Every click is a `kind: "point"` note whose x/y are OVERLAY-relative (the
+// frame's content scroll/pan is unreadable, so there is no page coordinate to
+// convert through — ANN_XO_SCROLL is the zero-scroll stand-in annPointXY needs).
+// `shot: null` stays null forever: there is nothing we are allowed to
+// rasterise. The element tool, the hover ring and the screenshot buttons all
+// hide — offering them would be promising exactly what cross-origin forbids.
+//
+// Before this branch, marking a cross-origin frame produced the WORST state:
+// annCapable() said yes (the mark is readable), the layer injection silently
+// failed, and the switch armed a mode whose clicks went nowhere.
+let annXO = false;       // the marked frame's document is out of reach
+let annXOHost = null;    // the overlay's host element, in the PARENT's document
+const ANN_XO_SCROLL = { scrollX: 0, scrollY: 0 };
+
+function annXORemove() {
+  if (!annXOHost) return;
+  try { annXOHost.remove(); } catch (err) { /* parent torn down first */ }
+  annXOHost = null;
+}
+
+// Build (or re-find) the overlay and lay it over the frame's current rect.
+// Called from annSyncTarget on every render and every poll, which is what
+// tracks the splitter drag and a window resize without an observer of its own.
+// Returns the same {root, pins, hl, stage} shape annInjectLayer does, so the
+// pins, the composer portal and annPlacePop need no second code path — the
+// stage is the overlay host itself, whose box IS the frame's box.
+function annXOLayer() {
+  let pdoc = null;
+  try { pdoc = window.parent.document; } catch (err) { return null; }
+  if (!pdoc || !pdoc.body || !annFrame) return null;
+  let host = annXOHost;
+  // A host the parent re-rendered away, or one without its shadow tree:
+  // start again rather than trust it (same posture as annInjectLayer).
+  if (host && (!host.isConnected || !host.shadowRoot)) { annXORemove(); host = null; }
+  if (!host) {
+    host = pdoc.createElement("div");
+    host.setAttribute(ANN_LAYER_MARK, "xo-layer");
+    host.setAttribute("style", "position: fixed; display: block; margin: 0;"
+      + " padding: 0; border: 0; z-index: 2147483646; pointer-events: none;");
+    const root = host.attachShadow({ mode: "open" });
+    const style = pdoc.createElement("style");
+    // The catcher is the one element the shared sheet does not know: the full
+    // overlay surface that swallows clicks while the mode is armed. Its cursor
+    // is the crosshair ALWAYS — over here every click is a spot.
+    style.textContent = ANN_LAYER_CSS
+      + "\n.catch { position: absolute; inset: 0; cursor: crosshair;"
+      + " pointer-events: auto; }";
+    const catcher = pdoc.createElement("div");
+    catcher.className = "catch";
+    const hl = pdoc.createElement("div");
+    hl.className = "hl";
+    const pins = pdoc.createElement("div");
+    pins.className = "pins";
+    root.append(style, catcher, hl, pins);
+    catcher.addEventListener("click", (e) => {
+      if (!annOn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const r = host.getBoundingClientRect();
+      const x = Math.round(e.clientX - r.left), y = Math.round(e.clientY - r.top);
+      // Overlay-relative from birth, `win` deliberately null: there is no
+      // scroll to fold in (see ANN_XO_SCROLL above).
+      if (annRecOn) { annRecMarkPoint(x, y, null); return; }
+      annOpenComposer(x, y, { kind: "point", x, y, shot: null }, null);
+    });
+    pdoc.body.appendChild(host);
+    annXOHost = host;
+  }
+  const r = annFrame.getBoundingClientRect();
+  host.style.left = r.left + "px";
+  host.style.top = r.top + "px";
+  host.style.width = r.width + "px";
+  host.style.height = r.height + "px";
+  // Disarmed, the overlay must not eat a single event — the reader is USING
+  // the framed app. `display`, not pointer-events, so a hidden catcher can
+  // never intercept a drag that started while armed.
+  const catcher = host.shadowRoot.querySelector(".catch");
+  if (catcher) catcher.style.display = annOn ? "" : "none";
+  return { root: host.shadowRoot,
+           pins: host.shadowRoot.querySelector(".pins"),
+           hl: host.shadowRoot.querySelector(".hl"),
+           stage: host };
+}
+
 // The annotation layer, in CHAT_ONLY, cannot live in this document: the target
 // is a sibling iframe somewhere else in the host's layout, and an overlay here
 // would be pins drawn over the chat. So it is INJECTED into the target's own
@@ -5207,12 +5299,17 @@ function annSyncTarget() {
   // time never "moved" at all.
   if (next) annWatchTarget(next);
   const doc = annTargetDoc();
+  // A marked frame whose document is unreachable is the cross-origin overlay
+  // case (see annXOLayer); a same-origin frame mid-navigation reads the same
+  // for a beat and simply resolves on the next sync.
+  annXO = !!(next && !doc);
+  if (!annXO) annXORemove();
   // The re-render observer follows the target from here, because THIS is the
   // function that knows where the target is. Re-selecting an already-wired frame
   // never reaches annWireTarget, so that path cannot be the only one that moves
   // it. Idempotent, so the cost on an ordinary render is one comparison.
   annObserveTarget(doc);
-  const layer = annInjectLayer(doc);
+  const layer = doc ? annInjectLayer(doc) : (annXO ? annXOLayer() : null);
   annPins = layer && layer.pins;
   annHl = layer && layer.hl;
   annStageEl = layer && layer.stage;
@@ -5403,7 +5500,10 @@ function renderAnn() {
       // No element to resolve — the anchor IS the coordinate, converted back
       // through whatever the CURRENT scroll is (annPointXY), same as an
       // element's own getBoundingClientRect() is always current.
-      const p = annPointXY(c, doc && doc.defaultView);
+      // Cross-origin overlay: the coords are overlay-relative and there is no
+      // window to read a scroll off — the zero-scroll stand-in keeps the one
+      // converter honest (see ANN_XO_SCROLL).
+      const p = annPointXY(c, (doc && doc.defaultView) || (annXO ? ANN_XO_SCROLL : null));
       if (!p) return;
       x = p.x; y = p.y;
     } else {
@@ -5467,7 +5567,9 @@ function renderAnn() {
         // A point HAS a coordinate even with nothing to resolve — reuse it
         // rather than falling all the way to the generic thirds a truly
         // unresolvable element note is stuck with.
-        const p = c.kind === "point" ? annPointXY(c, d && d.defaultView) : null;
+        const p = c.kind === "point"
+          ? annPointXY(c, (d && d.defaultView) || (annXO ? ANN_XO_SCROLL : null))
+          : null;
         const el2 = !p && d ? annResolve(c, d) : null;
         const r = el2 && el2.getBoundingClientRect();
         const w = host ? host.clientWidth : 0, h = host ? host.clientHeight : 0;
@@ -6049,8 +6151,10 @@ function annSetMode(on) {
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
   // The tool picker follows the mode: it says what an armed click will pin,
-  // and there is no armed click while the mode is off.
-  annToolEl.hidden = !annOn;
+  // and there is no armed click while the mode is off. Over a cross-origin
+  // target there is no choice either — no element can be resolved, every
+  // click is a spot — so the picker stays hidden there too (annXO).
+  annToolEl.hidden = !annOn || annXO;
   // The label is the static markup "Comment" in BOTH states — the track's
   // accent fill is what says armed. It used to flip to "Commenting", but a
   // label that changes width makes the whole right-anchored row shuffle on
@@ -6443,7 +6547,10 @@ function annPollTarget() {
   // this chat's own chrome or nothing at all. In the split layout there is no
   // poll and no need for one — enterNoPane removes both buttons outright, which
   // is the structural version of this line.
-  for (const b of shotBtns()) b.hidden = !has;
+  // A cross-origin target (annXO) keeps the switch but not the cameras:
+  // shotPane cannot clone a document it cannot read, so a visible button
+  // would be a promise of a "screenshot failed" chip.
+  for (const b of shotBtns()) b.hidden = !has || annXO;
   if (has === had) {
     // Same ANSWER, different FRAME: the shell switched the pane's mode between
     // two iframes it keeps mounted and moved the mark from one to the other.
@@ -6766,6 +6873,9 @@ if (CHAT_ONLY) {
     const doc = annTargetDoc();
     const host = doc && doc.querySelector("[" + ANN_LAYER_MARK + "]");
     if (host) host.remove();
+    // The cross-origin overlay is OUR node in the PARENT's document — same
+    // orphaning risk as the layer above, same synchronous DOM-only removal.
+    annXORemove();
     if (annFrame) annFrame.__fusedAnnWatched = false;
     if (doc) doc.__fusedAnnWired = false;
   });

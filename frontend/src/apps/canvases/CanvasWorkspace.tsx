@@ -17,7 +17,7 @@
 // workbench iframe — the hosted workbench refreshes itself on upstream
 // changes.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { embedUrlForFsPath } from "@platform/lib/router";
+import { statPath } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   fixWithClaude,
@@ -40,6 +40,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [dir, setDir] = useState<string | null>(null);
+  // The claude template's path, from the clone dir's own stat — the same
+  // resolution the explorer's sidebar uses, so a user override (§16) wins here
+  // too. Needed because the chat is framed DIRECTLY via /render (below), not
+  // through /explorer/embed.
+  const [chatTpl, setChatTpl] = useState<string | null>(null);
   const [sync, setSync] = useState<SyncStatus | null>(null);
   // Splitter position: workbench pane width as a fraction of the row.
   const [leftFrac, setLeftFrac] = useState(0.55);
@@ -73,7 +78,14 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         }
         setHandle(who.handle);
         const started = await startSync(name);
-        if (!cancelled) setDir(started.dir);
+        if (cancelled) return;
+        setDir(started.dir);
+        const st = await statPath(started.dir);
+        if (!cancelled) {
+          setChatTpl(
+            st.templates?.find((t) => t.mode === "claude")?.path ?? null,
+          );
+        }
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
       }
@@ -150,17 +162,34 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     };
   }, [dragging]);
 
-  // Right pane: the local clone opened in the chrome-free explorer embed with
-  // the Claude template — the editing surface over the files the watcher
-  // pushes.
-  const editorSrc = dir
-    ? embedUrlForFsPath(
-        dir,
-        fixRunId
-          ? `?_mode=claude&run=${encodeURIComponent(fixRunId)}`
-          : "?_mode=claude",
-      )
-    : null;
+  // Right pane: the Claude chat over the local clone, framed DIRECTLY via
+  // /render — the same construction the explorer sidebar uses (Preview.tsx
+  // sideSrcFor) and for the same reason `chat_only=1` rides along: the
+  // template's own left preview would be a second canvas beside the live
+  // workbench. Direct rather than through /explorer/embed because the
+  // annotate-target contract is parent-scoped: the template looks for
+  // `data-fused-annotate-target` in `window.parent.document`, and only a
+  // sibling iframe (the workbench, marked below) satisfies that — one frame
+  // deeper and the mark is invisible to it.
+  //
+  // The `run` param does NOT ride this src: the template reads it through
+  // fused.params, i.e. off THIS page's URL (it sets no param boundary), so a
+  // fix run is handed over by writing `run` there — see the effect below.
+  const editorSrc =
+    dir && chatTpl
+      ? `/render?path=${encodeURIComponent(chatTpl)}&_file=${encodeURIComponent(dir)}&chat_only=1`
+      : null;
+
+  // Hand a fresh fix run to the chat: `run` goes on this page's own URL (where
+  // fused.params reads it — the template adopts the session and then clears
+  // the param itself), and the iframe's key remount below makes the template
+  // boot and see it.
+  useEffect(() => {
+    if (!fixRunId) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("run", fixRunId);
+    window.history.replaceState(window.history.state, "", url);
+  }, [fixRunId]);
 
   const onFix = async () => {
     setFixBusy(true);
@@ -252,6 +281,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
               ref={frameRef}
               src={frameSrc}
               title={`Workbench: ${name}`}
+              /* The annotate-target mark, same contract as Preview.tsx's: the
+                 claude chat beside this frame finds it via parent.document and
+                 aims its comment mode here. The workbench is cross-origin, so
+                 the template's own overlay (its annXO branch) draws point
+                 notes over this frame's box rather than inside its DOM. */
+              data-fused-annotate-target=""
               style={{ width: "100%", height: "100%", border: 0 }}
             />
           ) : (
@@ -281,10 +316,10 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         >
           {editorSrc ? (
             <iframe
-              // key forces a REMOUNT when a fix run starts: a plain src update
-              // on a mounted iframe can be shadowed by the embed shell's own
-              // history rewrites, leaving the chat pane on its old URL — the
-              // "have to reload the page to see the fix session" bug.
+              // key forces a REMOUNT when a fix run starts: the template only
+              // reads `run` at boot (it adopts the session and clears the
+              // param), so an already-running chat has to be rebooted to see
+              // it — the "have to reload the page to see the fix session" bug.
               key={fixRunId ?? "chat"}
               src={editorSrc}
               title={`Edit: ${name}`}
