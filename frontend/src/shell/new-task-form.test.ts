@@ -1337,8 +1337,15 @@ describe("the past-time note", () => {
 
   test("a past one-off says it runs as soon as it can", () => {
     expect(note(TUE, false, null)).toBe(PAST_NOTE_ONE_OFF);
-    // The boundary is inclusive: this instant has passed.
-    expect(note(NOW, false, null)).toBe(PAST_NOTE_ONE_OFF);
+    // THE BOUNDARY IS THE MINUTE, not the millisecond (2026-08-18): the picker has
+    // minute precision, and the current minute is the only way it can say "now" —
+    // which is the value the card now opens on, so this minute is silent...
+    expect(note(NOW, false, null)).toBeNull();
+    expect(
+      note(at("2026-08-19T10:00"), false, null, at("2026-08-19T10:00:45")),
+    ).toBeNull();
+    // ...and the minute before it is not.
+    expect(note(at("2026-08-19T09:59"), false, null)).toBe(PAST_NOTE_ONE_OFF);
   });
 
   test("a past ANCHOR under a ticked Repeat says its own thing instead", () => {
@@ -1445,6 +1452,23 @@ describe("defaultTargetOf", () => {
     expect(
       defaultTargetOf({ home: "C:\\Users\\v", fused_dir: "C:\\Users\\v\\Fused" }),
     ).toBe("C:/Users/v/Fused");
+  });
+});
+
+// ---- the when-row opens on now -------------------------------------------------
+describe("the when-row's default", () => {
+  test("is the current time, not an hour from it", () => {
+    const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+    // A task typed into this card is overwhelmingly one to RUN (Akshil,
+    // 2026-08-18). Opening an hour out made the commonest case a two-step: wind
+    // the time back, then save.
+    expect(src).toContain("initialTime ?? new Date()");
+    expect(src).not.toContain("3600_000");
+    // Anything the CALLER hands in still wins — a deep link that names a time,
+    // and an Edit's stored `due` ahead of both.
+    const init = src.slice(src.indexOf("const [when, setWhen] = useState("));
+    const body = init.slice(0, init.indexOf(");"));
+    expect(body.indexOf("editing?.due")).toBeLessThan(body.indexOf("initialTime"));
   });
 });
 
