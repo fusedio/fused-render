@@ -7396,3 +7396,25 @@ go. Four failures, one answer.
   That is a minute's fix the user could not previously know they needed.
 - **TR-10** **The install command is pinned by a test**, because it is shown as
   a thing to copy into a terminal and a wrong one there is worse than none.
+- **TR-11** **The agent brief always says WHERE, and when it cannot state the
+  path it says how to find it.** TR-8's degradation is right for the report — a
+  person reading a paste does not need labels with nothing after them — but it
+  is not enough for the instructions, because those are handed to something that
+  has to go and look. "Something around Fused Render is broken, please fix it"
+  with no directory is a brief an agent answers by guessing or by asking, and
+  the boot failure is both the case most likely to produce it and the one case
+  that cannot state a path. So the location is a FACT when the snapshot carries
+  it (`- The installed app: …`) and a TASK when it does not: the import that is
+  definitive on the app's own interpreter, the package metadata that covers pip
+  and uv, and the bundle glob that covers the DMG, where nothing on PATH points
+  at the app at all. Three more things ride along with it, because an agent that
+  knows only the install root still cannot see the two places that most often
+  hold the fault: `~/.fused-render` (settings, the template registry, the staged
+  core templates) is named as a DIFFERENT place, since a reinstall replaces one
+  and never touches the other; the per-pid log is named as a glob (it lives in
+  the system temp dir, `fused_render/logs.py`); and the `raw` steps now say to
+  check whether the server is running before concluding the app is broken —
+  "Failed to fetch" at boot is far more often a dead process than a broken app.
+  Pinned across both copies by `tests/test_trouble_parity.py`: a find command in
+  one copy only means the chat and the shell send agents looking in different
+  places.

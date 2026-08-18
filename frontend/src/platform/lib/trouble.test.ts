@@ -196,3 +196,47 @@ test("the instructions and the report are different documents", () => {
   expect(troubleReport(ctx)).not.toContain("Please:");
   expect(troubleInstructions(ctx)).toContain("Please:");
 });
+
+test("with no install path the brief says how to FIND the app", () => {
+  // The boot failure is the case that cannot describe itself — `/api/config` is
+  // what failed, so there is no version, no platform and no install path. A
+  // brief that names no directory sends an agent looking for an app it has no
+  // way to locate.
+  const text = troubleInstructions({
+    what: "loading the app's configuration at startup (GET /api/config)",
+    error: "Failed to fetch",
+  });
+  expect(text).toContain("import fused_render");
+  expect(text).toContain("pip show fused-render");
+  expect(text).toContain("/Applications/FusedRender.app");
+  // ...and it must not invent one, or print an empty label where one goes.
+  expect(text).not.toContain("undefined");
+  expect(text).not.toContain("Fused Render is installed at:");
+});
+
+test("with an install path the brief states it instead of hunting for it", () => {
+  // Knowing the answer and still printing three commands to find it is how a
+  // brief teaches an agent to distrust what it was told.
+  const text = troubleInstructions({
+    what: "starting a fix session",
+    error: "claude CLI not found",
+    install_root: "/opt/fused_render",
+  });
+  expect(text).toContain("The installed app: /opt/fused_render");
+  expect(text).not.toContain("pip show fused-render");
+});
+
+test("the brief separates the installation from the user's own data", () => {
+  // A reinstall replaces one and never touches the other, and ~/.fused-render
+  // is where the template registry lives — itself one of the four failures
+  // here. An agent that conflates them fixes the wrong directory.
+  const text = troubleInstructions({
+    what: "reading the template registry",
+    error: "registry.json: Expecting property name",
+    install_root: "/opt/fused_render",
+  });
+  expect(text).toContain("~/.fused-render");
+  expect(text).toContain("a reinstall does not touch it");
+  // The app's own log, which is per-pid in the temp dir and therefore a glob.
+  expect(text).toContain("fused-render-*.log");
+});
