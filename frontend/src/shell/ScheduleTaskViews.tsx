@@ -735,6 +735,11 @@ async function performRun(intent: TaskRunIntent): Promise<string> {
  */
 async function performUnarchive(key: string): Promise<string> {
   const said = await unarchiveTask(key);
+  // `unfiled: false` is the server saying NOTHING CHANGED — no filing to clear,
+  // or a cancelled-only thread whose derived status is still Archive. Claiming
+  // "Unarchived — back in Archive" for that would be the note lying about a
+  // move that never happened (Bugbot, 2026-08-18).
+  if (!said.unfiled) return `Nothing to unarchive — still ${columnLabel(statusColumn(said.status))}.`;
   return `Unarchived — back in ${columnLabel(statusColumn(said.status))}.`;
 }
 
