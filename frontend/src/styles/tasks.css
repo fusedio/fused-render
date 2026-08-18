@@ -76,9 +76,17 @@
    THAT — never typed. Retune any part and every indent moves together; hand-tune
    one and they part company, which is the whole bug. */
 .tasks-node {
-  --tasks-row-pad: 12px; /* the task row's left padding */
+  --tasks-row-pad: 14px; /* the task row's left padding */
+  /* The vertical half, named because both rows now state it and it is the whole
+     of "these rows can breathe" (§3, 2026-08-18: the list felt crowded). 7px and
+     5px gave a 13px title 27px of line to sit in; 10px and 8px give it 33px, and
+     a message row 29px. Deliberately not more: a task list is scanned down, and
+     past about 36px a row stops reading as one line of a column and starts
+     reading as a card, which is the Board's job. */
+  --tasks-row-pad-y: 10px;
+  --tasks-msg-pad-y: 8px;
   --tasks-caret-w: 16px; /* the disclosure gutter, OUTSIDE the rail */
-  --tasks-row-gap: 8px; /* the flex gap every row here uses */
+  --tasks-row-gap: 10px; /* the flex gap every row here uses */
   --tasks-rail-w: 16px; /* the status ring's width — what a rail slot is sized to */
   --tasks-msg-indent: 13px; /* a message row's own left padding */
   --tasks-rail-x: calc(
@@ -94,7 +102,7 @@
   display: flex;
   align-items: center;
   gap: var(--tasks-row-gap);
-  padding: 7px var(--tasks-row-pad);
+  padding: var(--tasks-row-pad-y) var(--tasks-row-pad);
   font-size: 13px;
   cursor: pointer;
   transition: background-color 0.08s ease;
@@ -187,9 +195,15 @@
   color: var(--fg-muted);
 }
 
+/* The TASK id is a reference, not a heading. It was 600 — heavier than the title
+   beside it at 500 — so a row announced its id before the work it is about, which
+   is the same inverted reading priority the unread mark was moved twice to fix.
+   Normal weight and the muted grey `.tasks-id` already sets, so the eye lands on
+   the title and finds the id when it goes looking (Akshil, 2026-08-18: the id
+   should read gray and quiet, the title bright). */
 .tasks-id--task {
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 400;
 }
 
 .tasks-id--message {
@@ -280,6 +294,22 @@
    title still had room. Scoped here so the card keeps its own answer. */
 .tasks-row .schedule-tv-id {
   flex: 0 0 auto;
+}
+
+/* And on a ROW the folder's NAME reads at title strength (Akshil, 2026-08-18).
+   Everywhere else it is `--fg-muted`, which is right on a board card, where the
+   chip sits alone in a foot and has nothing to be quieter than. On a row it is one
+   of two pieces of content — where the work happened, and what the work was — and
+   muting it made the right-hand end of every row look like metadata about a title
+   rather than the other half of the sentence.
+
+   The GLYPH beside it stays muted, and so does the time after it: the name is the
+   word being read, the folder icon only says what kind of word it is, and the time
+   is deliberately untouched here (it keeps `.tasks-msg-time`'s register, which the
+   thread below shares — two weights for one fact is how a row and its thread part
+   company). */
+.tasks-row .schedule-tv-id-name {
+  color: var(--fg);
 }
 
 /* -- Quiet row action (Open chat) ---------------------------------------------
@@ -446,11 +476,12 @@
   position: absolute;
   /* Centred on the head's line: the card's own top padding plus half of
      `--tasks-card-head-h`, less half a 22px button. Which is why the head has to
-     keep that height even now that nothing 16px tall stands in it — and why this
-     moved from 5px to 7px on 2026-08-17, when the card's padding was loosened from
-     8px to 10px (schedule.css). Left at 5px the strip rides high on the head. */
-  top: 7px;
-  right: 8px;
+     keep that height even now that nothing 16px tall stands in it. It has moved
+     twice, both times behind the card's padding: 5px → 7px when that went 8px →
+     10px (2026-08-17), and 7px → 9px when it went 10px → 12px (2026-08-18, the
+     breathing-room pass). Left behind, the strip rides high on the head. */
+  top: 9px;
+  right: 10px;
   /* Above the card it overlays; the card sets no z-index of its own. */
   z-index: 1;
   display: flex;
@@ -552,7 +583,7 @@
   /* The full indent, not indent-minus-1: the 1px used to be the rule's own
      width, and the row has to keep landing in the same column now that the
      rule is gone. */
-  padding: 5px 8px 5px var(--tasks-msg-indent);
+  padding: var(--tasks-msg-pad-y) 10px var(--tasks-msg-pad-y) var(--tasks-msg-indent);
   font-size: 12.5px;
   cursor: pointer;
   transition: background-color 0.08s ease;

@@ -1813,7 +1813,36 @@ describe("the unread mark", () => {
     // pixel off the column it is supposed to share with the task above.
     const body = TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
     expect(body).not.toContain("border-left");
-    expect(body).toMatch(/\.tasks-msg\s*\{[^}]*padding: 5px 8px 5px var\(--tasks-msg-indent\)/);
+    // The LEFT term is the whole claim: the full indent, not indent-minus-1, so
+    // the row lands in the column the rule used to leave room beside. The vertical
+    // term is the breathing-room variable and is free to move (2026-08-18).
+    expect(body).toMatch(
+      /\.tasks-msg\s*\{[^}]*padding: var\(--tasks-msg-pad-y\) 10px var\(--tasks-msg-pad-y\) var\(--tasks-msg-indent\)/,
+    );
+  });
+
+  it("gives both kinds of row room to breathe, from named variables", () => {
+    // §3, and Akshil 2026-08-18: the rows felt crowded. The vertical padding is a
+    // variable on `.tasks-node` rather than a number in two rules, because a task
+    // row and its thread have to loosen together or the thread reads as a denser
+    // page pasted under a looser one.
+    expect(TASKS_CSS).toMatch(/--tasks-row-pad-y: 10px/);
+    expect(TASKS_CSS).toMatch(/--tasks-msg-pad-y: 8px/);
+    expect(TASKS_CSS).toMatch(/--tasks-row-gap: 10px/);
+    expect(TASKS_CSS).toMatch(/--tasks-row-pad: 14px/);
+    expect(block(TASKS_CSS, ".tasks-row")).toContain(
+      "padding: var(--tasks-row-pad-y) var(--tasks-row-pad)",
+    );
+    // A message row is TIGHTER than its task row, deliberately: same step, one
+    // level in, so the indent is not the only thing saying which is which.
+    expect(block(TASKS_CSS, ".tasks-msg")).toContain("var(--tasks-msg-pad-y)");
+    // The Board took the same step, so a card does not read as the cramped view of
+    // the two — and the action strip's `top`, which is derived from the card's own
+    // padding, moved with it rather than being left riding high on the head.
+    expect(SCHEDULE_CSS).toMatch(
+      /\.prefs-section \.schedule-tv-board \.schedule-tv-card \{[^}]*padding: 12px 14px/,
+    );
+    expect(block(TASKS_CSS, ".tasks-card-acts")).toContain("top: 9px");
   });
 });
 
@@ -2148,16 +2177,18 @@ describe("the board's surfaces", () => {
 
   it("gives the card the reference's breathing room, and the strip follows it", () => {
     const card = block(SCHEDULE_CSS, ".schedule-tv-board .schedule-tv-card");
-    // Looser than the 8px/10px and 5px it shipped with, which is what made three
-    // short lines feel crowded. On the repo's even scale, and the three lines keep
-    // their relative hierarchy — no type size moved.
-    expect(card).toContain("padding: 10px 12px");
-    expect(card).toContain("gap: 6px");
+    // Loosened twice, both times because three short lines read as crowded:
+    // 8px/5px at first, then 10px/6px, and 12px/8px on 2026-08-18 alongside the
+    // List's rows — one step for both views, so neither becomes the cramped one.
+    // On the repo's even scale, and no type size moved with it.
+    expect(card).toContain("padding: 12px 14px");
+    expect(card).toContain("gap: 8px");
+    expect(block(SCHEDULE_CSS, ".schedule-tv-card-head")).toContain("gap: 8px");
     expect(block(SCHEDULE_CSS, ".schedule-tv-lane-body")).toContain("gap: 8px");
     // The action strip is centred on the head off the card's TOP PADDING (plus half
     // the head's line, less half a 22px button), so loosening the card without
-    // moving this leaves the strip riding high over the head: 10 + 8 - 11 = 7.
-    expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*top: 7px/);
+    // moving this leaves the strip riding high over the head: 12 + 8 - 11 = 9.
+    expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*top: 9px/);
   });
 });
 
@@ -3175,7 +3206,7 @@ describe("the hidden row actions", () => {
     // and a stylesheet that had forgotten them would bring the strip back in the
     // wrong place.
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
-    expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*top: 7px/);
+    expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*top: 9px/);
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*pointer-events: none/);
     expect(TASKS_CSS).toMatch(/--tasks-card-head-h: 16px/);
     // And it says so, so the next reader does not tidy away a rule with no live

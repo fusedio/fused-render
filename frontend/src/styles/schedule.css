@@ -2986,10 +2986,14 @@ input.schedule-when-field {
   flex-direction: column;
   align-items: stretch;
   align-self: stretch;
-  gap: 6px;
+  /* Loosened with the List's rows on 2026-08-18 (§3): the two views are lenses
+     on one dataset and a card that breathes less than a row makes the Board read
+     as the cramped one. 6px/10px/12px went to 8px/12px/14px — the same step the
+     rows took, so the change is one decision rather than two. */
+  gap: 8px;
   width: 100%;
   box-sizing: border-box;
-  padding: 10px 12px;
+  padding: 12px 14px;
   font: inherit;
   text-align: left;
   color: var(--fg);
@@ -3080,7 +3084,7 @@ input.schedule-when-field {
 .schedule-tv-card-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
 }
 
