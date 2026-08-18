@@ -7524,7 +7524,13 @@ go. Four failures, one answer.
   Repair left a permanent "could not be read" sitting beside that notice's own
   "Fixed". The remembered message is dropped at the same moment, so the
   identical fault arriving again is announced again instead of reading as a
-  repair that held.
+  repair that held. **A DIFFERENT error supersedes the toast it replaces**, for
+  the same reason the dismissal exists: the registry has one state at a time, so
+  the previous message is stale by definition. Pushing without dismissing left
+  two sticky toasts and only ever took down the newer, so the older outlived the
+  repair. All three transitions live in `syncRegistryToast` rather than in the
+  effect that calls it — both bugs this has had were transitions rather than
+  anything rendered, and a component effect is not a place a test can reach.
 - **TR-10** **The install command is pinned by a test**, because it is shown as
   a thing to copy into a terminal and a wrong one there is worse than none.
 - **TR-11** **The agent brief always says WHERE, and when it cannot state the
