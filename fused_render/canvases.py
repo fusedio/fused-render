@@ -396,6 +396,124 @@ def api_canvases_token(x_fused: str | None = Header(default=None)):
 # -- listing and cloning -----------------------------------------------------------
 
 
+def _shim_list_command(cli) -> list[str] | None:
+    """argv for the in-interpreter list shim, or None when the CLI is an
+    external binary we can't drive as Python (fall back to `canvas list`)."""
+    if cli.external:
+        return None
+    shim = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "_fused_canvases_list.py"
+    )
+    return [sys.executable, shim]
+
+
+# The shim pays the fused import cost, one list call, and one sign-image call
+# per canvas that has an uploaded preview.
+LIST_SHIM_TIMEOUT = 60.0
+
+
+def _iso_epoch(value) -> float | None:
+    """ISO-8601 timestamp (control-plane last_updated) → epoch seconds."""
+    if not isinstance(value, str) or not value:
+        return None
+    import datetime
+
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _list_entries():
+    """(entries, error): each entry is {name, id, preview_url, updated_at}.
+
+    Preferred path is the in-interpreter shim (ids, last_updated, and resolved
+    preview image URLs — the CLI's `canvas list` prints bare names only); an
+    external FUSED_RENDER_FUSED_BIN keeps the CLI path, degrading gracefully
+    to nameplate cards without previews.
+    """
+    cli = fused_cli()
+    if cli is None:
+        return None, _no_cli_error()
+    shim_cmd = _shim_list_command(cli)
+    if shim_cmd is not None:
+        try:
+            proc = subprocess.run(
+                shim_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=LIST_SHIM_TIMEOUT,
+                env=_cli_env(cli),
+            )
+        except subprocess.TimeoutExpired:
+            return None, _error(
+                f"listing canvases timed out after {int(LIST_SHIM_TIMEOUT)}s", 502
+            )
+        except OSError as e:
+            return None, _error(f"could not run the canvases list helper: {e}")
+        if proc.returncode != 0:
+            message = cli_error(proc.stderr or proc.stdout, "listing canvases failed")
+            # Same expired-credentials sniff as _run_cli: fall back to the
+            # sign-in flow instead of a dead error page.
+            if (
+                "re-authenticate" in message.lower()
+                or "refresh your fused credentials" in message.lower()
+            ):
+                return None, _error(message, 401)
+            return None, _error(message, 502)
+        try:
+            data = json.loads(proc.stdout)
+        except ValueError:
+            return None, _error(
+                f"the canvases list helper printed something that wasn't JSON: "
+                f"{proc.stdout.strip()[-200:]!r}",
+                502,
+            )
+        entries = []
+        if isinstance(data, list):
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if isinstance(name, str) and name:
+                    entries.append(
+                        {
+                            "name": name,
+                            "id": entry.get("id"),
+                            "preview_url": entry.get("preview_url"),
+                            "updated_at": _iso_epoch(entry.get("last_updated")),
+                        }
+                    )
+        return entries, None
+    proc, err = _run_cli(["workbench", "--format", "json", "canvas", "list"], LIST_TIMEOUT)
+    if err is not None:
+        return None, err
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError:
+        return None, _error(
+            f"the fused CLI printed something that wasn't JSON: {proc.stdout.strip()[-200:]!r}",
+            502,
+        )
+    # Normalize defensively: the CLI has printed both bare name lists and
+    # object lists across versions.
+    entries = []
+    raw = data if isinstance(data, list) else data.get("canvases") if isinstance(data, dict) else None
+    if isinstance(raw, list):
+        for entry in raw:
+            if isinstance(entry, str):
+                entries.append({"name": entry, "id": None, "preview_url": None, "updated_at": None})
+            elif isinstance(entry, dict):
+                name = entry.get("name") or entry.get("slug")
+                if isinstance(name, str) and name:
+                    entries.append(
+                        {"name": name, "id": entry.get("id"), "preview_url": None, "updated_at": None}
+                    )
+    return entries, None
+
+
 @router.get("/api/canvases/list")
 def api_canvases_list(x_fused: str | None = Header(default=None)):
     # EXECUTES a control-plane call — guarded like whoami.
@@ -404,28 +522,9 @@ def api_canvases_list(x_fused: str | None = Header(default=None)):
         return guard
     if not _logged_in():
         return _error("not signed in to Fused — sign in first", 409)
-    proc, err = _run_cli(["workbench", "--format", "json", "canvas", "list"], LIST_TIMEOUT)
+    canvases, err = _list_entries()
     if err is not None:
         return err
-    try:
-        data = json.loads(proc.stdout)
-    except ValueError:
-        return _error(
-            f"the fused CLI printed something that wasn't JSON: {proc.stdout.strip()[-200:]!r}",
-            502,
-        )
-    # Normalize defensively: the CLI has printed both bare name lists and
-    # object lists across versions.
-    canvases = []
-    entries = data if isinstance(data, list) else data.get("canvases") if isinstance(data, dict) else None
-    if isinstance(entries, list):
-        for entry in entries:
-            if isinstance(entry, str):
-                canvases.append({"name": entry, "id": None})
-            elif isinstance(entry, dict):
-                name = entry.get("name") or entry.get("slug")
-                if isinstance(name, str) and name:
-                    canvases.append({"name": name, "id": entry.get("id")})
     cloned = set()
     root = canvases_root()
     try:
