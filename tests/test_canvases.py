@@ -1448,3 +1448,177 @@ def test_an_out_of_band_cli_push_is_force_pulled_back_by_the_watcher(
     # each pass takes a trash snapshot, so ~_TRASH_MAX out-of-band pushes evict
     # the entire recoverable history.
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+# -- a live Claude session holds the auto-push, and shows up in status ----------
+
+
+class _FakeAgent:
+    """Stands in for the claude template's agent module. `live` is the run id
+    `_live_run` reports for the folder — "" for "nobody is editing"."""
+
+    def __init__(self, live=""):
+        self.live = live
+        self.calls = []
+
+    def _live_run(self, file, session_id="", limit=None):
+        self.calls.append((file, limit))
+        return {"run_id": self.live}
+
+
+@pytest.fixture()
+def fake_agent(monkeypatch):
+    agent = _FakeAgent()
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: agent)
+    # No cross-test cache: the module-level loader memoizes, and the per-manager
+    # answer is cached for AGENT_LIVE_CACHE_S.
+    monkeypatch.setattr(canvases_mod, "AGENT_LIVE_CACHE_S", 0.0)
+    return agent
+
+
+def test_the_auto_push_waits_for_a_live_session_and_then_fires(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """B4. The debounce measures file quiet, and a session goes quiet for much
+    longer than DEBOUNCE_S mid-change-set — thinking, reading, waiting on a
+    tool. Pushing then ships a half-done rename. But the watcher must stay the
+    BACKSTOP: once the run ends, a still-dirty clone pushes on the next tick, so
+    a session that never pushes degrades to today's behaviour, not to a lost
+    change set."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    fake_agent.live = "run-abc"
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    (harness.root / "alpha" / "a.py").write_text("half of a rename\n")
+
+    # Dirty and past the debounce, yet no push — held for the live session.
+    status = _wait_status(harness, lambda s: s["push_state"] == "pending")
+    assert status["push_state"] == "pending", status
+    time.sleep(0.5)
+    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]], \
+        "the watcher pushed a change set a live session was still writing"
+    assert harness.client.get(
+        "/api/canvases/sync/status?name=alpha").json()["agent_active"] is True
+
+    # The session ends. The clone is still dirty, so the backstop takes over.
+    fake_agent.live = ""
+    pushed = _wait_status(harness, lambda s: s["push_seq"] >= 1)
+    assert pushed and pushed["push_seq"] >= 1, (
+        "the watcher did not resume pushing after the session ended", pushed)
+    assert pushed["agent_active"] is False, pushed
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_the_remote_poll_keeps_running_while_a_session_is_live(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """Only the push leg is suppressed. If the poll stopped too, workbench edits
+    would stop arriving for the whole length of a chat — and the session would
+    be editing against a folder it has been told is kept up to date."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    fake_agent.live = "run-abc"
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    # Dirty, so the suppressed push leg is the one being exercised.
+    (harness.root / "alpha" / "a.py").write_text("a-local-edit\n")
+    _wait_status(harness, lambda s: s["push_state"] == "pending")
+    assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t1")
+
+    # A workbench edit lands: dirty clone → the per-file merge must still run.
+    shims.set_remote_files({**_BASE_FILES, "b.py": "b-from-workbench\n"})
+    shims.set_manifest("t2", {"b": {"hash": "h2", "last_updated": "t2"}})
+    status = _wait_status(harness, lambda s: s["merge_seq"] >= 1)
+    assert status and status["merge_seq"] >= 1, (
+        "the remote poll stopped while a session was live", status)
+    assert (harness.root / "alpha" / "b.py").read_text() == "b-from-workbench\n"
+    # (That the push itself stays suppressed is pinned by the test above. It is
+    # deliberately NOT re-asserted here: the merge and the push would race, so
+    # the assertion would pass or fail on ordering rather than on behaviour.)
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_agent_active_tracks_the_live_run(harness, tmp_path, monkeypatch, fake_agent):
+    """C1. The lock's signal, straight from the pid-based lookup — and asked
+    UNBOUNDED, because the capped scan can miss a live run on a busy machine and
+    a missed run means the workbench is silently left editable."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    assert harness.client.get(
+        "/api/canvases/sync/status?name=alpha").json()["agent_active"] is False
+    fake_agent.live = "run-xyz"
+    assert harness.client.get(
+        "/api/canvases/sync/status?name=alpha").json()["agent_active"] is True
+    fake_agent.live = ""
+    assert harness.client.get(
+        "/api/canvases/sync/status?name=alpha").json()["agent_active"] is False
+    # The clone dir is the identity, and the cap is off.
+    assert all(call[0] == str(harness.root / "alpha") for call in fake_agent.calls)
+    assert all(call[1] is None for call in fake_agent.calls), \
+        "the lock must not use the capped scan"
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_agent_active_is_false_when_nothing_is_syncing(harness, tmp_path, monkeypatch):
+    """A page that polls a canvas with no watcher must still be told the lock is
+    off — otherwise a dropped watcher or a server restart mid-lock leaves the
+    workbench read-only with nothing left to release it."""
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    body = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    assert body["watching"] is False
+    assert body["agent_active"] is False
+
+
+def test_a_liveness_lookup_failure_reads_as_not_live(harness, tmp_path, monkeypatch):
+    """"Cannot tell" has to mean "not live". The alternative is a lock that
+    never releases, which is worse than one that never engages — the user can
+    always stop editing, but they cannot un-stick a read-only pane."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "AGENT_LIVE_CACHE_S", 0.0)
+
+    class _Broken:
+        def _live_run(self, file, session_id="", limit=None):
+            raise RuntimeError("RUNS is gone")
+
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: _Broken())
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    (harness.root / "alpha" / "a.py").write_text("edited\n")
+    # Not live → the watcher still pushes, i.e. the sync did not seize up.
+    status = _wait_status(harness, lambda s: s["push_seq"] >= 1)
+    assert status and status["push_seq"] >= 1, status
+    assert status["agent_active"] is False
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_no_agent_module_at_all_does_not_stop_the_sync(harness, tmp_path, monkeypatch):
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: None)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    (harness.root / "alpha" / "a.py").write_text("edited\n")
+    status = _wait_status(harness, lambda s: s["push_seq"] >= 1)
+    assert status and status["push_seq"] >= 1, status
+    assert status["agent_active"] is False
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_the_real_agent_module_answers_for_a_folder(harness, tmp_path, monkeypatch):
+    """The fakes above pin canvases.py's logic; this pins the WIRING — that
+    `claude_spawn.load_agent()` really resolves and its `_live_run` really takes
+    the unbounded `limit`. A signature drift in the template would otherwise
+    only show up as a lock that never engages, in production."""
+    canvases_mod._AGENT_MOD = None
+    canvases_mod._AGENT_MOD_TRIED = False
+    try:
+        agent = canvases_mod._agent_module()
+        assert agent is not None, "the claude agent module did not load"
+        assert agent._live_run(str(tmp_path), limit=None) == {"run_id": ""}
+    finally:
+        canvases_mod._AGENT_MOD = None
+        canvases_mod._AGENT_MOD_TRIED = False

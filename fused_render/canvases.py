@@ -69,6 +69,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -82,6 +83,8 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -873,7 +876,60 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
     return {"ok": True, "dir": target}
 
 
-# -- the per-canvas sync watcher -----------------------------------------------------
+# -- "is a Claude session editing this clone?" ---------------------------------
+#
+# One question, two consumers: the watcher suppresses its debounced auto-push
+# while a session is mid-change-set, and the workspace makes the embedded
+# workbench read-only so the user cannot edit the same canvas from the other
+# pane at the same time.
+#
+# The answer is PID-BASED (agent.py's `_live_run`, whose liveness check is a live
+# process), never transcript activity. The distinction is the whole reason
+# `active_fix_run_id` is written the way it is, a few dozen lines below: a "no
+# recent activity" read carries a grace window that is fine for a status badge
+# and wrong for a lock, because a slow tool call mid-edit reads as "finished" and
+# would unlock the workbench underneath a session that is still writing.
+# `active_fix_run_id` itself is NOT reusable here — it only tracks fix sessions
+# this module spawned, not a chat the user started in the right pane themselves.
+
+# How long a liveness answer is reused. The watcher asks once a second and the
+# workspace polls status every 2s, while the answer costs a meta.json read per
+# run dir (unbounded — see _live_run's `limit`). Caching for one poll interval
+# keeps that off the hot loop; the cost of being up to 2s stale is at worst one
+# suppressed-then-allowed push, which the debounce already tolerates.
+AGENT_LIVE_CACHE_S = 2.0
+
+_AGENT_MOD = None
+_AGENT_MOD_TRIED = False
+_AGENT_MOD_LOCK = threading.Lock()
+
+
+def _agent_module():
+    """The claude template's agent.py, loaded once, or None if it won't load.
+
+    Reached through `claude_spawn.load_agent()`, which is the sanctioned seam for
+    in-process READ paths — canvases.py must not import agent.py directly (it is
+    a template, outside the package's import graph by design, SPEC PY-15).
+
+    Cached because `load_agent` execs the whole module on every call, and this is
+    on a once-a-second loop. A failure is cached too: if it cannot load now it
+    will not load on the next tick either, and retrying it 60 times a minute
+    would turn one broken import into a busy loop.
+    """
+    global _AGENT_MOD, _AGENT_MOD_TRIED
+    with _AGENT_MOD_LOCK:
+        if not _AGENT_MOD_TRIED:
+            _AGENT_MOD_TRIED = True
+            try:
+                from fused_render import claude_spawn
+
+                _AGENT_MOD = claude_spawn.load_agent()
+            except Exception:  # noqa: BLE001 — no agent module is an answer
+                logger.warning("could not load the claude agent module; canvas "
+                               "sync cannot tell whether a session is live",
+                               exc_info=True)
+                _AGENT_MOD = None
+        return _AGENT_MOD
 
 
 class _SyncManager:
@@ -936,6 +992,12 @@ class _SyncManager:
         self._history: list[dict] = []
         self.echo_seq = 0
         self.merge_rollback_seq = 0
+        # Cached answer to "is a Claude session live in this clone?" — see
+        # AGENT_LIVE_CACHE_S. Written by whichever of the watcher thread and a
+        # status request asks first; a lost race just means one extra scan, so
+        # the plain-attribute rule the class docstring states still holds.
+        self._agent_run_id = ""
+        self._agent_checked_at = 0.0
         self._load_base()
         self._fingerprint = self._take_fingerprint()
         # A fresh manager (server restart, self-heal after a dropped
@@ -1001,6 +1063,30 @@ class _SyncManager:
         # has moved on.
         self.stop_event.set()
         self.thread.join()
+
+    def agent_run_id(self, *, fresh: bool = False) -> str:
+        """The id of a Claude run live in this clone, or "" — cached.
+
+        `limit=None` on purpose: the capped default scan can miss a live run
+        buried under 60 newer run dirs, and nothing prunes RUNS. For a badge
+        that miss is cosmetic; for the workbench lock it means silently not
+        locking, so this caller pays for the reliable answer and caches it.
+        """
+        now = time.time()
+        if not fresh and now - self._agent_checked_at < AGENT_LIVE_CACHE_S:
+            return self._agent_run_id
+        agent = _agent_module()
+        run_id = ""
+        if agent is not None:
+            try:
+                run_id = str(agent._live_run(self.dir, limit=None).get("run_id") or "")
+            except Exception:  # noqa: BLE001 — a failed read must not stop the
+                # watcher, and "cannot tell" is reported as "not live": the
+                # alternative is a lock that never releases.
+                logger.debug("live-run lookup failed for %s", self.dir, exc_info=True)
+        self._agent_run_id = run_id
+        self._agent_checked_at = now
+        return run_id
 
     def _take_fingerprint(self) -> dict[str, tuple[float, int]]:
         fp: dict[str, tuple[float, int]] = {}
@@ -1673,9 +1759,26 @@ class _SyncManager:
                     self.push_state = "pending"
                 continue
             if self._dirty_since is not None and time.time() - self._dirty_since >= DEBOUNCE_S:
-                with self._op_lock:
-                    self._push()
-                continue
+                # Hold the debounced auto-push while a Claude session is live in
+                # this clone. The debounce measures file quiet, and a session
+                # goes quiet for far longer than DEBOUNCE_S in the middle of a
+                # change set — thinking, reading, waiting on a tool — so the
+                # watcher would ship a half-done rename (the .py file without
+                # its canvas.toml entry) as a validation failure the user sees.
+                # The session publishes deliberately instead, via
+                # /api/canvases/sync/push.
+                #
+                # The watcher stays the BACKSTOP: _dirty_since is left armed, so
+                # the moment no run is live a still-dirty clone pushes on the
+                # next tick. A session that never pushes therefore degrades to
+                # exactly today's behaviour — never to a lost change set.
+                if not self.agent_run_id():
+                    with self._op_lock:
+                        self._push()
+                    continue
+                # Deliberately NOT `continue`: the remote-poll leg below must
+                # keep running while a session works, or workbench edits would
+                # stop arriving for the whole length of a chat.
             if time.time() - self._last_pull_poll >= PULL_POLL_S:
                 self._last_pull_poll = time.time()
                 cli = fused_cli()
@@ -1708,6 +1811,11 @@ class _SyncManager:
             "error": self.last_error,
             "error_detail": list(self.error_detail),
             "fix_active": self.active_fix_run_id is not None,
+            # Whether a Claude session is editing this clone right now, for the
+            # workspace's left-pane lock. PID-based and NOT `fix_active`: that
+            # one only knows about fix sessions this module spawned, while the
+            # lock must also cover a chat the user started in the right pane.
+            "agent_active": bool(self.agent_run_id()),
         }
 
 
@@ -1931,5 +2039,10 @@ def api_canvases_sync_status(name: str = ""):
         return {"name": name, "watching": False, "push_state": "idle", "push_seq": 0,
                 "last_push_at": None, "pull_seq": 0, "last_pull_at": None,
                 "error": None, "error_detail": [], "dir": _canvas_dir(name),
-                "fix_active": False}
+                "fix_active": False,
+                # No watcher means nothing this page can be waiting on, so the
+                # lock must read "off" — a missing field would leave a locked
+                # pane with nothing left to unlock it (a dropped watcher or a
+                # server restart mid-lock).
+                "agent_active": False}
     return manager.status()
