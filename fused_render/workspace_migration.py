@@ -98,6 +98,11 @@ def _run() -> None:
                            src, dst, exc)
             return
         logger.info("moved the Fused workspace %s -> %s (D329)", src, dst)
+    if os.path.exists(src):
+        # Still there, and not a directory we could move (a stray FILE at the
+        # legacy path). Rewriting state to point at a destination nothing was
+        # moved into would be worse than leaving it.
+        return
     # Bookkeeping runs even when the folder move was a no-op: it is how a run
     # interrupted between the two steps heals.
     _move_sidecars(src, dst)

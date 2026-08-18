@@ -306,3 +306,17 @@ def test_create_app_never_migrates():
     the same property meta_migration has."""
     src = open("fused_render/server/app.py", encoding="utf-8").read()
     assert "workspace_migration" not in src
+
+
+def test_a_stray_file_at_the_legacy_path_changes_nothing(machine):
+    legacy, new, home = machine
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("not a workspace", encoding="utf-8")
+    recents = os.path.join(str(home), "recents.json")
+    url = "/explorer/view" + str(legacy / "a.html")
+    storage.write_json(recents, {"collapsed": False, "entries": [{"url": url}]})
+
+    wm.run()
+
+    assert legacy.read_text(encoding="utf-8") == "not a workspace"
+    assert storage.read_json(recents)["entries"][0]["url"] == url
