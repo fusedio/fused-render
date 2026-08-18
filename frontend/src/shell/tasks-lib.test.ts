@@ -1065,34 +1065,26 @@ describe("dropLanes", () => {
     expect(dropLanes(t)).toEqual([]);
   });
 
-  it("lets an archived card out to every other lane — one move, UNARCHIVE", () => {
-    // Leaving Archive says "not put away any more" and nothing about the work,
-    // so every lane is a legal place to LET GO and none of them is the
-    // destination: the task lands where it derives to, server-side.
+  it("locks Archive as a SOURCE — the Unarchive button is the only door", () => {
+    // (Akshil, 2026-08-19.) A drop target implies the reader picks the landing
+    // lane, and the lane is derived server-side, never picked. The button says
+    // what it does; a drag would lie about where the card goes.
     const t = task({ status: "archived" });
-    expect(dropLanes(t)).toEqual(["upcoming", "in_progress", "done", "failed"]);
-    expect(isDraggable(t)).toBe(true);
-    for (const lane of dropLanes(t)) {
-      expect(dropAction(t, lane)).toEqual({ kind: "unarchive" });
+    expect(dropLanes(t)).toEqual([]);
+    expect(isDraggable(t)).toBe(false);
+    for (const lane of ["upcoming", "in_progress", "done", "failed"] as const) {
+      expect(dropAction(t, lane)).toBeNull();
     }
   });
 
-  it("unarchives with no precondition at all — and never runs", () => {
-    // The run's precondition belongs to the run. An archived card with a
-    // pending message is still unarchived, not run (the drop would otherwise
-    // fire a message on a task somebody had put away); one with NOTHING pending
-    // still lifts, which a run-shaped rule would have refused.
+  it("refuses the drag even when a run would have been possible", () => {
+    // Locked means locked: neither a pending message nor a missing session
+    // re-opens the gesture. The button (filingIntent) is the way out.
     const pending = upcoming([T9], { status: "archived" });
     expect(canRunNow(pending)).toBe(true);
-    for (const lane of dropLanes(pending)) {
-      expect(dropAction(pending, lane)).toEqual({ kind: "unarchive" });
-    }
-    const spent = task({ status: "archived" }); // factory messages are `sent`
-    expect(canRunNow(spent)).toBe(false);
-    expect(dropAction(spent, "in_progress")).toEqual({ kind: "unarchive" });
-    // Including the never-run row with no session to un-file.
+    expect(dropLanes(pending)).toEqual([]);
     const fresh = task({ key: "pending:e1", session_id: "", status: "archived" });
-    expect(dropAction(fresh, "done")).toEqual({ kind: "unarchive" });
+    expect(dropAction(fresh, "done")).toBeNull();
   });
 
   it("locks In Progress, and locks Archive only as a DESTINATION", () => {
@@ -1303,9 +1295,10 @@ describe("dropAction", () => {
       expect(dropAction(task({ status: "in_progress" }), lane)).toBe(null);
     }
     expect(dropAction(task({ status: "archived" }), "archived")).toBe(null);
-    // And the one move it does have never starts a run.
+    // And an archived card answers null everywhere: the button un-files, not
+    // the drag.
     expect(dropAction(upcoming([T9], { status: "archived" }), "in_progress"))
-      .toEqual({ kind: "unarchive" });
+      .toBeNull();
     // A never-run task may now be filed as well as run: archiving is keyed by
     // task, not by session.
     const fresh = upcoming([T9], { key: "pending:e1", session_id: "" });
@@ -1320,21 +1313,12 @@ describe("dropAction", () => {
 describe("the unarchive drag", () => {
   const LANES = ["upcoming", "in_progress", "done", "failed"] as const;
 
-  it("is the same action on every lane the card may be dropped on", () => {
-    // The user does not pick the destination. Where the task lands is derived
-    // server-side from its messages, so a drop on Upcoming and a drop on Done
-    // are the same gesture and must not become two different calls.
-    for (const t of [
-      task({ status: "archived" }),
-      upcoming([T9], { status: "archived" }),
-      task({ status: "archived", key: "pending:e1", session_id: "" }),
-      task({ status: "archived", messages: [msg({ state: "cancelled" })] }),
-    ]) {
-      expect(dropLanes(t)).toEqual([...LANES]);
-      for (const lane of LANES) {
-        expect(dropAction(t, lane)).toEqual({ kind: "unarchive" });
-      }
-    }
+  it("is not a drag at all any more — the group pins the lock", () => {
+    // (Akshil, 2026-08-19.) The two things the move is NOT became three: not a
+    // choice of lane, not a run, and not a gesture. dropLanes is empty and the
+    // button carries the verb.
+    expect(dropLanes(task({ status: "archived" }))).toEqual([]);
+    expect(filingIntent(task({ status: "archived" }))?.kind).toBe("unarchive");
   });
 
   it("NEVER produces a run, whatever the archived task has pending", () => {
@@ -1355,12 +1339,10 @@ describe("the unarchive drag", () => {
     }
   });
 
-  it("carries no payload — not even the lane it was dropped on", () => {
-    // A lane in the action is a lane the client would expect honoured, and the
-    // server refuses to honour one. Structural equality is the assertion: an
-    // extra field here would be a promise nothing keeps.
-    expect(Object.keys(dropAction(task({ status: "archived" }), "done") ?? {}))
-      .toEqual(["kind"]);
+  it("still carries no lane on the button's intent", () => {
+    const intent = filingIntent(task({ status: "archived" }))!;
+    expect(intent.kind).toBe("unarchive");
+    expect(intent.lane).toBeNull();
   });
 
   it("does not make Archive a destination for an archived card", () => {
@@ -1680,14 +1662,11 @@ describe("filingIntent", () => {
         expect(dropLanes(t)).toContain("archived");
         continue;
       }
-      // UNARCHIVE names no lane — so the agreement to check is that EVERY lane
-      // the drag offers answers this same verb. A button that could do something
-      // the drag would not is the divergence both directions have now had.
+      // UNARCHIVE names no lane AND has no drag: the button is the only door
+      // out of Archive (Akshil, 2026-08-19), so the agreement to check is that
+      // the drag offers nothing while the button offers the verb.
       expect(a.lane).toBe(null);
-      expect(dropLanes(t).length).toBeGreaterThan(0);
-      for (const lane of dropLanes(t)) {
-        expect(dropAction(t, lane)).toEqual({ kind: "unarchive" });
-      }
+      expect(dropLanes(t)).toEqual([]);
     }
   });
 });
@@ -3536,8 +3515,8 @@ describe("the archive action", () => {
     // And the old, wrong version of this button stays gone: its move named a
     // lane (Archive → In Progress), and nothing here names one.
     expect(filingIntent(task({ status: "archived" }))!.lane).toBe(null);
-    expect(dropAction(task({ status: "archived" }), "done"))
-      .toEqual({ kind: "unarchive" });
+    // And the DRAG stays locked: the button is the only door out of Archive.
+    expect(dropAction(task({ status: "archived" }), "done")).toBeNull();
     // Both directions are one server verb over the task key, composed nowhere on
     // the client. Lookbehind so `unarchiveTask` is not counted as an archive.
     expect((VIEWS.match(/(?<!un)archiveTask\(task\.key\)/g) ?? []).length).toBe(3);
@@ -3770,7 +3749,8 @@ describe("the archive action", () => {
     // overlap. Left is half a gap shorter than right, which is what keeps them apart.
     expect(insets[1]).toBe("var(--tasks-archive-reach-r)");
     expect(insets[3]).toBe("var(--tasks-archive-reach-l)");
-    expect(zone).toContain("var(--tasks-archive-reach-r) + var(--tasks-row-gap) / 2");
+    expect(zone).toContain("var(--tasks-row-gap) / 2");
+    expect(zone).toContain("--tasks-archive-reach-l: 0px");
   });
 
   it("leaves the board card's archive exactly where it was", () => {

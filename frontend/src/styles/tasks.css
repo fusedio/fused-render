@@ -748,12 +748,12 @@ button.tasks-caret,
   --tasks-archive-reach-y: calc(
     var(--tasks-archive-overhang) - var(--tasks-row-pad-y)
   );
+  /* Half a gap sideways, not the whole one (Akshil, 2026-08-19: the full-gap
+     reach felt too wide in x). Height keeps the row's full span. */
   --tasks-archive-reach-r: calc(
-    var(--tasks-archive-overhang) - var(--tasks-row-gap)
+    var(--tasks-archive-overhang) - var(--tasks-row-gap) / 2
   );
-  --tasks-archive-reach-l: calc(
-    var(--tasks-archive-reach-r) + var(--tasks-row-gap) / 2
-  );
+  --tasks-archive-reach-l: 0px;
   inset: var(--tasks-archive-reach-y) var(--tasks-archive-reach-r)
     var(--tasks-archive-reach-y) var(--tasks-archive-reach-l);
   border-radius: 8px;

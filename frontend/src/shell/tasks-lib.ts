@@ -1381,13 +1381,11 @@ const LANE_EXITS: Record<BoardColumn, BoardColumn[]> = {
   done: ["archived"],
   // Retry, or file it away.
   failed: ["in_progress", "archived"],
-  // Out, and out is out: every lane that is not this one, because the move is
-  // UNARCHIVE and the drop target is only where the card was let go. Which of
-  // the four it lands in is derived server-side and is not this list's business
-  // — including In Progress, which accepts the card WITHOUT running anything
-  // (that lane stays locked as a SOURCE, and it is not a destination a person
-  // can assert either; see `laneAction`).
-  archived: ["upcoming", "in_progress", "done", "failed"],
+  // Locked (Akshil, 2026-08-19): the way out of Archive is the Unarchive
+  // BUTTON, not a gesture. The landing lane is derived server-side, never
+  // picked — a drop target would imply the reader picks it, which is exactly
+  // the lie the button avoids by not asking.
+  archived: [],
 };
 
 /**
@@ -1858,14 +1856,12 @@ export function filingIntent(task: Task): FilingIntent | null {
       title:
         "Archive — files this away and calls off any run still booked; the conversation is kept, and you can bring the task back",
     };
-  // BACK OUT. Every lane an archived card may be dropped on answers the same
-  // verb, so ANY of them proves the move is available and none of them is the
-  // destination — which is why the intent carries no lane. Asked over dropLanes
-  // rather than by naming a lane here, so a matrix that stops offering one lane
-  // cannot silently take the button with it.
-  const back = dropLanes(task)
-    .map((lane) => dropAction(task, lane))
-    .some((action) => action?.kind === "unarchive");
+  // BACK OUT. Asked of the row itself, NOT the drag matrix: Archive's exits are
+  // locked (Akshil, 2026-08-19 — the way out is this button, not a gesture), so
+  // deriving the button from dropLanes would delete the only door. The rule the
+  // drag used to encode survives here: an archived row that is not mid-run may
+  // un-file, and the landing lane is derived server-side — no lane named.
+  const back = taskColumn(task) === "archived";
   if (!back) return null;
   return {
     kind: "unarchive",
