@@ -4906,3 +4906,23 @@ describe("opensElsewhere", () => {
     expect(opensElsewhere({ metaKey: false, ctrlKey: false, button: 0 })).toBe(false);
   });
 });
+
+// ---- what the two views remember ---------------------------------------------
+// Read out of the source, because "how many cards does a lane open on" is a
+// number the constant and the button's label have to agree about.
+
+/** The Board, ending where the card it draws begins. */
+const LANES = VIEWS.slice(
+  VIEWS.indexOf("export function TaskBoard("),
+  VIEWS.indexOf("function TaskCard("),
+);
+
+describe("a board lane's page size", () => {
+  it("opens on twenty cards and reveals twenty more", () => {
+    expect(VIEWS).toContain("const LANE_INITIAL_VISIBLE = 20;");
+    expect(VIEWS).toContain("const LANE_REVEAL = 20;");
+    // The button's label is arithmetic over the same constant, so it cannot say
+    // ten while twenty arrive.
+    expect(LANES).toContain("Show {Math.min(LANE_REVEAL, hidden)} more");
+  });
+});

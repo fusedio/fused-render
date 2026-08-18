@@ -1831,8 +1831,11 @@ function TaskNode({
 
 // ---- Board view: columns of tasks --------------------------------------------
 
-const LANE_INITIAL_VISIBLE = 10;
-const LANE_REVEAL = 10;
+// A lane opens on twenty cards and reveals twenty at a time. Ten was two presses
+// to read a busy column (Akshil, 2026-08-18) and the lane scrolls anyway, so the
+// window is about how much is rendered, not about how much fits.
+const LANE_INITIAL_VISIBLE = 20;
+const LANE_REVEAL = 20;
 
 // Which lanes are rolled up into the 52px rail, remembered across visits —
 // Archive is closed by default because it is the one lane nobody opens the page
