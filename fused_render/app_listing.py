@@ -166,7 +166,8 @@ def app_category(dir_path: str) -> str | None:
     return cat.strip() or None
 
 
-def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
+def app_dict(path: str, name: str, tag: str, entry_html: str | None, *,
+             include_updated_at: bool = True) -> dict:
     """One app's listing entry — the single place the shape is built.
 
     `entry_html` is resolved by the CALLER, deliberately. Resolving it in here
@@ -199,7 +200,10 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
         # page's category filter; None means "All only".
         "category": app_category(path),
         "title": entry_title(entry_html) if entry_html else None,
-        "updated_at": dir_updated_at(path),
+        # A recent-first caller already has `opened_at`, which outranks this
+        # fallback timestamp. It may skip the direct-child stat sweep; the
+        # exhaustive listing keeps the default and therefore its old shape.
+        "updated_at": dir_updated_at(path) if include_updated_at else None,
     }
 
 

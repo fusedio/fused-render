@@ -23,3 +23,16 @@ test("embed documents do not reconcile the host OS clipboard", () => {
   const app = readFileSync(join(import.meta.dir, "App.tsx"), "utf8");
   expect(app.match(/if \(!IS_EMBED\) void reconcileOsClipboard\(\);/g)?.length).toBe(2);
 });
+
+test("Home requests the recent-first app row instead of the exhaustive catalog", () => {
+  const home = readFileSync(join(import.meta.dir, "Home.tsx"), "utf8");
+  expect(home).toContain("getHomeApps(MAX_ROW)");
+  expect(home).not.toContain("getApps()");
+  expect(home).not.toContain("sortApps(");
+});
+
+test("Home requests the early-stopping Claude session row", () => {
+  const home = readFileSync(join(import.meta.dir, "Home.tsx"), "utf8");
+  expect(home).toContain("getHomeClaudeSessionFolders(MAX_ROW)");
+  expect(home).not.toContain("getClaudeSessionFolders()");
+});

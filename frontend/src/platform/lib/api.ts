@@ -1657,6 +1657,15 @@ export function getApps(): Promise<{ apps: AppInfo[] }> {
   return getJson<{ apps: AppInfo[] }>("/api/apps");
 }
 
+// Home needs one recent row, not the exhaustive /apps catalog. The backend
+// hydrates stored recents first and only falls back to workspace discovery when
+// those do not fill the requested row.
+export function getHomeApps(limit: number): Promise<{ apps: AppInfo[] }> {
+  return getJson<{ apps: AppInfo[] }>(
+    `/api/apps/home?limit=${encodeURIComponent(String(limit))}`,
+  );
+}
+
 // (postAppOpen is gone — D301: the SERVER records app opens when GET /render
 // serves a page carrying the fused-app marker; no client post feeds opened_at
 // any more. The endpoint survives server-side for older clients only.)
@@ -1704,6 +1713,16 @@ export interface ClaudeSessionFolder {
 
 export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolder[] }> {
   return getJson<{ folders: ClaudeSessionFolder[] }>("/api/claude-sessions");
+}
+
+// Home only renders one row. The server orders transcript candidates by mtime
+// and stops opening JSONL files after this many unique existing folders land.
+export function getHomeClaudeSessionFolders(
+  limit: number,
+): Promise<{ folders: ClaudeSessionFolder[] }> {
+  return getJson<{ folders: ClaudeSessionFolder[] }>(
+    `/api/claude-sessions/home?limit=${encodeURIComponent(String(limit))}`,
+  );
 }
 
 // -- Claude sessions, one row each (GET /api/claude-sessions/summaries) --------

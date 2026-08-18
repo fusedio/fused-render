@@ -10,13 +10,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import {
-  getApps,
-  getClaudeSessionFolders,
+  getHomeApps,
+  getHomeClaudeSessionFolders,
   type AppInfo,
   type ClaudeSessionFolder,
   type Config,
 } from "@platform/lib/api";
-import { sortApps } from "@platform/lib/appEntry";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { FilesSearch } from "@apps/explorer/FilesHome";
@@ -103,13 +102,15 @@ export default function Home({ config }: { config: Config }) {
   const home = config.home.replace(/\\/g, "/");
   useRecentsVersion();
 
-  // Fused apps — one cheap GET on mount, newest first.
+  // Fused apps — hydrate the recent row first. The server only scans the full
+  // workspace when valid recents do not fill it, preserving discovery and the
+  // showcase fallback without charging returning visits for an exhaustive walk.
   const [apps, setApps] = useState<AppInfo[] | null>(null);
   const [appsError, setAppsError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
-    getApps().then(
-      (r) => alive && setApps(sortApps(r.apps).slice(0, MAX_ROW)),
+    getHomeApps(MAX_ROW).then(
+      (r) => alive && setApps(r.apps.slice(0, MAX_ROW)),
       (e: Error) => {
         if (!alive) return;
         setApps([]);
@@ -121,11 +122,12 @@ export default function Home({ config }: { config: Config }) {
     };
   }, []);
 
-  // Claude session folders — the server already answers newest-session-first.
+  // Claude session folders — Home's endpoint orders transcript mtimes first,
+  // then opens only enough newest JSONL files to fill this one row.
   const [sessions, setSessions] = useState<ClaudeSessionFolder[] | null>(null);
   useEffect(() => {
     let alive = true;
-    getClaudeSessionFolders().then(
+    getHomeClaudeSessionFolders(MAX_ROW).then(
       (r) => alive && setSessions(r.folders.slice(0, MAX_ROW)),
       () => alive && setSessions([]),
     );

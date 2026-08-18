@@ -1,8 +1,7 @@
-"""GET /api/claude-sessions (server/routers/claude_sessions.py): project
-folders holding Claude Code session transcripts, for the Explorer homepage's
-"Claude sessions" tab — one row per real project folder (read from each
-transcript's own `cwd`), newest session first, folders no longer on disk
-dropped.
+"""Claude project-folder endpoints (server/routers/claude_sessions.py): the
+exhaustive GET /api/claude-sessions and Home's newest-first, early-stopping GET
+/api/claude-sessions/home. Both read the real folder from each transcript's
+``cwd`` and drop folders no longer on disk.
 """
 import json
 import os
@@ -79,3 +78,88 @@ def test_folder_no_longer_on_disk_is_dropped(client, projects_dir, tmp_path):
 def test_missing_projects_dir_is_empty_not_an_error(client, projects_dir):
     shutil.rmtree(projects_dir)
     assert client.get("/api/claude-sessions").json() == {"folders": []}
+
+
+# --------------------------------------------------- Home's bounded hydration
+
+def test_home_opens_only_enough_newest_transcripts_to_fill_the_row(
+        client, projects_dir, tmp_path, monkeypatch):
+    folders = []
+    for i in range(20):
+        folder = tmp_path / f"folder-{i:02d}"
+        folder.mkdir()
+        folders.append(folder)
+        _session(projects_dir, f"project-{i:02d}", f"s{i}", str(folder), mtime=1000 + i)
+
+    real_session_cwd = claude_sessions_mod._session_cwd
+    opened = []
+
+    def counted_session_cwd(path):
+        opened.append(path)
+        return real_session_cwd(path)
+
+    monkeypatch.setattr(claude_sessions_mod, "_session_cwd", counted_session_cwd)
+    data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
+
+    assert [f["path"] for f in data["folders"]] == [
+        str(folders[19]), str(folders[18]), str(folders[17]),
+    ]
+    assert len(opened) == 3
+
+
+def test_home_skips_duplicate_and_missing_folders_until_the_row_is_full(
+        client, projects_dir, tmp_path, monkeypatch):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    c = tmp_path / "c"
+    for folder in (a, b, c):
+        folder.mkdir()
+    missing = tmp_path / "missing"
+    _session(projects_dir, "a", "new", str(a), mtime=600)
+    _session(projects_dir, "a", "old", str(a), mtime=500)
+    _session(projects_dir, "missing", "gone", str(missing), mtime=400)
+    _session(projects_dir, "b", "one", str(b), mtime=300)
+    _session(projects_dir, "c", "one", str(c), mtime=200)
+    # This older valid folder proves parsing stops exactly when the row fills.
+    older = tmp_path / "older"
+    older.mkdir()
+    _session(projects_dir, "older", "one", str(older), mtime=100)
+
+    real_session_cwd = claude_sessions_mod._session_cwd
+    opened = []
+
+    def counted_session_cwd(path):
+        opened.append(path)
+        return real_session_cwd(path)
+
+    monkeypatch.setattr(claude_sessions_mod, "_session_cwd", counted_session_cwd)
+    data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
+
+    assert [f["path"] for f in data["folders"]] == [str(a), str(b), str(c)]
+    assert len(opened) == 5
+
+
+def test_home_session_limit_is_capped_to_its_single_row(
+        client, projects_dir, tmp_path, monkeypatch):
+    for i in range(15):
+        folder = tmp_path / f"folder-{i:02d}"
+        folder.mkdir()
+        _session(projects_dir, f"project-{i:02d}", f"s{i}", str(folder), mtime=1000 + i)
+
+    real_session_cwd = claude_sessions_mod._session_cwd
+    opened = 0
+
+    def counted_session_cwd(path):
+        nonlocal opened
+        opened += 1
+        return real_session_cwd(path)
+
+    monkeypatch.setattr(claude_sessions_mod, "_session_cwd", counted_session_cwd)
+    data = client.get("/api/claude-sessions/home", params={"limit": 999}).json()
+    assert len(data["folders"]) == claude_sessions_mod.HOME_SESSION_LIMIT
+    assert opened == claude_sessions_mod.HOME_SESSION_LIMIT
+
+
+def test_home_missing_projects_dir_is_empty(client, projects_dir):
+    shutil.rmtree(projects_dir)
+    assert client.get("/api/claude-sessions/home").json() == {"folders": []}
