@@ -263,6 +263,16 @@ function usePreviewFileMenu(
   const doTrash = () => {
     trashEntry(fsPath, stat.is_dir).then((r) => {
       if (r.status === "trashed") {
+        // Undoable, exactly as the rename below is and for the same reason: the
+        // stack is module-level and the chord belongs to whichever Listing is
+        // mounted, so a delete made HERE is nearly always undone from the parent
+        // listing this navigates to. A delete that skipped this left the stack's
+        // top entry describing an older op, so Cmd+Z after it would undo that
+        // one instead — and the file stayed unreachable in the Trash.
+        //
+        // `to` is absent when Finder did the move (the server could not name the
+        // destination), and then there is no pair to record.
+        if (r.to) recordFsOp({ kind: "delete", pairs: [{ from: fsPath, to: r.to }] });
         notePathDeleted(fsPath);
         navigate(parent, { isDir: true });
       } else if (r.status === "unsupported") {
