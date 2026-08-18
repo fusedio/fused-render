@@ -3366,6 +3366,43 @@ input.schedule-when-field {
   border-color: var(--border);
 }
 
+/* An EMPTY rail is a marker, not a control — the lane stays rolled up whatever
+   the reader chooses while it holds nothing (tasks-lib.laneCollapsed), so it
+   carries no press and must not offer one. The label and the ring dim with it:
+   a column with nothing in it is the quietest thing on the board, and at full
+   strength four of them out-shouted the one lane that had work in it.
+
+   It keeps its hairline and its full height. Both are structural: the rail is
+   still where that lane LIVES, and a drop target the reader cannot see is a
+   drop they will not attempt. Hover says nothing back, because nothing happens.
+
+   `aria-disabled`, so the two hover rules above (which guard on the real
+   `:disabled`) still apply and are turned off here explicitly — a genuinely
+   disabled button would stop receiving the drag events this element exists to
+   accept. */
+.schedule-tv-rail[aria-disabled="true"],
+.prefs-section .schedule-tv-rail[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.schedule-tv-rail[aria-disabled="true"]:hover,
+.prefs-section .schedule-tv-rail[aria-disabled="true"]:hover {
+  background: transparent;
+  border-color: var(--border);
+}
+
+/* Except while a card is over it: an empty lane is the most likely drop there
+   is, and the dimming must not swallow the one moment it has something to say. */
+.schedule-tv-rail[aria-disabled="true"].is-drop-legal,
+.schedule-tv-rail[aria-disabled="true"].is-drop-over,
+.schedule-tv-rail[aria-disabled="true"].is-drop-run,
+.prefs-section .schedule-tv-rail[aria-disabled="true"].is-drop-legal,
+.prefs-section .schedule-tv-rail[aria-disabled="true"].is-drop-over,
+.prefs-section .schedule-tv-rail[aria-disabled="true"].is-drop-run {
+  opacity: 1;
+}
+
 /* The hairline gets out of the dashed drop outline's way — see the drag note
    above, where the reasoning lives. Both forms of the lane, one rule.
 

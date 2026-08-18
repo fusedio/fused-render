@@ -50,6 +50,8 @@ import {
   messageStamp,
   messageTime,
   messageTone,
+  threadRunning,
+  threadTone,
   messageWhenTitle,
   nextRunAt,
   openMessageHref,
@@ -829,6 +831,62 @@ describe("markReadIntent", () => {
 });
 
 // ---- per-message state -------------------------------------------------------
+
+describe("threadTone: archiving a task archives its thread", () => {
+  const archived = task({ status: "archived" });
+  const live = task({ status: "in_progress" });
+
+  it("files every settled message under Archive, whatever it was", () => {
+    // The bug it fixes: the card moved to Archive and the ten rows under it
+    // stayed green, amber and red, still reading as live work. A task is a
+    // thread, so filing the task files the thread.
+    for (const m of [
+      msg({ state: "sent", turn: "done" }),
+      msg({ state: "error" }),
+      msg({ state: "missed", template_id: "" }),
+      msg({ state: "pending" }),
+    ]) {
+      expect(threadTone(archived, m).column).toBe("archived");
+    }
+  });
+
+  it("keeps WHAT HAPPENED and drops only the alarm", () => {
+    // Archived is a place, not an event: the label is left exactly as it was so
+    // an archived thread can still be read run by run. `failed` goes, because a
+    // filed task that still flies a red mark is asking to be dealt with again.
+    const broke = threadTone(archived, msg({ state: "error" }));
+    expect(broke.label).toBe("Failed");
+    expect(broke.failed).toBe(false);
+    expect(threadTone(archived, msg({ state: "pending" })).label).toBe("Scheduled");
+  });
+
+  it("leaves a RUNNING turn exactly where it is", () => {
+    // Filing something does not stop it, and a running turn is the one fact on
+    // this page about the present. The server makes the other half of the same
+    // promise — an archived task with a turn in flight reads In Progress until
+    // it ends (fused_render/server/routers/tasks.py `_running_now`).
+    const running = msg({ state: "sent", turn: "" });
+    expect(threadTone(archived, running)).toEqual(messageTone(running));
+    expect(threadTone(archived, msg({ state: "sending" })).column).toBe("in_progress");
+  });
+
+  it("does nothing at all to a task that is not archived", () => {
+    for (const m of [msg({ state: "error" }), msg({ state: "sent", turn: "done" })]) {
+      expect(threadTone(live, m)).toEqual(messageTone(m));
+    }
+  });
+
+  it("answers whether anything in a thread is mid-turn", () => {
+    expect(threadRunning([msg({ state: "sent", turn: "done" })])).toBe(false);
+    expect(threadRunning([msg({ state: "sent", turn: "done" }), msg({ state: "sending" })]))
+      .toBe(true);
+    expect(threadRunning([])).toBe(false);
+  });
+
+  it("is what the List's thread rows actually ask", () => {
+    expect(VIEWS).toContain("const tone = threadTone(task, m);");
+  });
+});
 
 describe("messageTone", () => {
   it("never paints a failed or missed message as a clean run", () => {
@@ -5019,9 +5077,22 @@ describe("which board lanes are rolled up", () => {
     expect(laneCollapsed("in_progress", 1, {})).toBe(false);
   });
 
-  it("lets the reader's own choice outrank the rule, in both directions", () => {
+  it("keeps an EMPTY lane rolled up even against the reader's own choice", () => {
+    // Not a default any more (Akshil, 2026-08-18): a lane the reader expanded
+    // while it had cards stayed open after the last one left, and the board
+    // filled with empty outlined columns wearing a header and a `0`. An empty
+    // column has nothing to show, so the honest width for it is the rail's.
+    expect(laneCollapsed("archived", 0, { archived: false })).toBe(true);
+    expect(laneCollapsed("in_progress", 0, { in_progress: false })).toBe(true);
+  });
+
+  it("lets the reader's own choice outrank the rule once the lane has cards", () => {
     expect(laneCollapsed("upcoming", 12, { upcoming: true })).toBe(true);
-    expect(laneCollapsed("archived", 0, { archived: false })).toBe(false);
+    // The choice is REMEMBERED through the emptiness, not discarded, so the
+    // lane opens again on the first arrival — a display rule, not a quiet edit
+    // of what the reader asked for.
+    expect(laneCollapsed("archived", 0, { archived: false })).toBe(true);
+    expect(laneCollapsed("archived", 1, { archived: false })).toBe(false);
     // And a choice about ONE lane says nothing about its neighbours.
     expect(laneCollapsed("done", 0, { upcoming: true })).toBe(true);
   });
@@ -5047,6 +5118,35 @@ describe("which board lanes are rolled up", () => {
     expect("upcoming" in choices).toBe(false);
     expect(laneCollapsed("upcoming", 0, choices)).toBe(true);
     expect(laneCollapsed("upcoming", 4, choices)).toBe(false);
+    // The stored choice survives the round trip even while the empty rule is
+    // the thing being obeyed.
+    expect(choices.archived).toBe(false);
+  });
+
+  it("makes an empty rail a marker rather than a control, without losing the drop", () => {
+    // The press that used to expand it now does nothing visible, so the rail
+    // stops claiming to be pressable.
+    expect(LANES).toContain("const empty = lane.length === 0;");
+    expect(LANES).toContain("aria-disabled={empty || undefined}");
+    expect(LANES).toContain("onClick={empty ? undefined : () => toggleLane(col.key, true)}");
+    // `aria-disabled` and never the real thing: a disabled button stops
+    // receiving pointer events, and this element is still the drop target for
+    // the one gesture that makes an empty lane non-empty.
+    expect(LANES).not.toMatch(/[^-]disabled=\{empty/);
+    expect(LANES).toContain("{...dropProps(col.key)}");
+    // And no `0`: a count answers "how many are hidden in here", which on an
+    // empty rail the rail has already answered.
+    expect(LANES).toContain("{!empty && (");
+    expect(LANES).toContain('<span className="schedule-tv-rail-count">{lane.length}</span>');
+    // The dimming is the rail's own, and it lifts while a card is over it — an
+    // empty lane is the most likely drop there is.
+    const dim = block(SCHEDULE_CSS, '.schedule-tv-rail[aria-disabled="true"]');
+    expect(dim).toContain("cursor: default");
+    expect(dim).toMatch(/opacity: 0\.\d+/);
+    expect(block(
+      SCHEDULE_CSS,
+      '.schedule-tv-rail[aria-disabled="true"].is-drop-legal',
+    )).toContain("opacity: 1");
   });
 
   it("is decided by laneCollapsed on the board, which stores only the toggle", () => {
