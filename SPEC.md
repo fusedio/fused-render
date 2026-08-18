@@ -1,7 +1,7 @@
 # fused-render — Requirements Specification
 
 **Status:** Living specification, maintained alongside the shipped product.
-**Scope:** A fully local, single-user, single-machine app — it runs no cloud service of its own. Publishing a page to a hosted URL delegates to the `fused` CLI (bundled in the macOS app, a pip extra otherwise — §19, §27); see Non-Goals.
+**Scope:** A fully local, single-user, single-machine app — it runs no cloud service of its own. Publishing a page to a hosted URL is done directly through the `fused` CLI, run by the user in a terminal (bundled in the macOS app, a pip extra otherwise) against a bundle from `POST /api/export` (§18); see Non-Goals. *(§19/§27 — the in-app Deploy button/modal and Fused-account sign-in panel that used to broker this — are removed; see those section numbers for the tombstone.)*
 
 ---
 
@@ -24,11 +24,13 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 ### Non-Goals
 
 - Cloud or remote deployment, multi-user access, authentication/user accounts.
-  (Unchanged by §19/§27: deploying delegates to the fused CLI — bundled in the
-  packaged macOS app, a pip extra for source/pip installs — and the §27 "Fused
-  account" surface manages the *fused CLI's own*
-  credentials for those deploys — fused-render itself still has no accounts,
-  no tokens, and no server-side users.)
+  (Publishing still delegates entirely to the `fused` CLI — bundled in the
+  packaged macOS app, a pip extra for source/pip installs — run directly by the
+  user in a terminal against a `POST /api/export` bundle; fused-render no
+  longer brokers that CLI in-app at all, nor manages any of its credentials —
+  fused-render itself still has no accounts, no tokens, and no server-side
+  users. *This used to be brokered in-app by §19's Deploy flow and §27's Fused
+  account sign-in panel; both are removed — see those sections.*)
 - File editing (v1 is read/preview oriented; editing is a possible v2).
 - Sandboxing Python for safety against the *user's own* code — the user's code is trusted. (Protecting against *other websites* driving the server is in scope; see §9.)
 
@@ -947,9 +949,12 @@ nothing. Full detail: `docs/EXPORT.md`.
   runtime resolves the computed path to that key; a call `fused.rawUrl("data/" + name)`
   is a string *prefix* + expression, so it is counted here as computed, **not**
   mis-collected as a literal `data/` target). This warning is **suppressed when a
-  `manifest`-source asset (EX-6/EX-8) survives into the final bundle** — a `bundle`
-  provenance pill in §19's list (DP-2a) that shows the user what backs the call, so the
-  nag would be redundant. It keys on the *surviving* asset, evaluated after dedup and
+  `manifest`-source asset (EX-6/EX-8) survives into the final bundle** — once the file
+  backs the call it no longer reads as an unresolved manifest entry, so the nag would be
+  redundant. *(Before §19 was removed, surviving this way also drove a `bundle`
+  provenance pill in the Deploy modal's preview list, DP-2a, naming what backed the call
+  to the user; that consumer is gone, so today this state only affects suppression.)* It
+  keys on the *surviving* asset, evaluated after dedup and
   exclude, **not** the raw manifest globs: a manifest entry that is also a literal
   reference is deduped to a `reference` asset, and any manifest file can be dropped by
   `exclude` — in both cases no `bundle` row remains and the warning still fires. A
@@ -962,7 +967,7 @@ nothing. Full detail: `docs/EXPORT.md`.
   `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
   duplicate stems — so the map is always valid and injective.
 - **EX-6** The auto-detected set can be adjusted by an optional selection on
-  `/api/export` (and the Deploy modal, §19): `include` — extra page-relative files
+  `/api/export`: `include` — extra page-relative files
   bundled as assets beyond the literal scan (for a computed-path target or data a
   bundled `.py` reads at runtime), each validated like a scanned asset and deduped by
   key; and `exclude` — files dropped from the final set by literal path or bundle
@@ -970,10 +975,13 @@ nothing. Full detail: `docs/EXPORT.md`.
   `reference` (a literal `rawUrl`/`readFile` the scan resolved), `manifest`
   (declared in the page's EX-8 manifest), or `include` (added out-of-band via the
   selection) — attributed to the strongest claim in that order when a file is
-  reachable more than one way, and surfaced on `/api/deploy/preview` so §19's list
-  can label how each file is exposed (DP-2a). It is an in-process/preview
-  classification only: `manifest.json` (EX-2) does not carry it — the hosting
-  layer treats every asset the same.
+  reachable more than one way. It is an in-process
+  classification only: `manifest.json` (EX-2) does not carry it, and no endpoint
+  returns it — the hosting layer treats every asset the same. *(Before §19 was
+  removed, this also fed `GET /api/deploy/preview` so the Deploy modal's list could
+  label how each file was exposed to the user, DP-2a; that endpoint and its consumer
+  are gone — `POST /api/export`'s own response reports `path`/`name` per asset, not
+  `source`, so the classification is pure bookkeeping now.)*
 - **EX-7** First-party **modules** a bundled entrypoint imports are discovered by a
   static AST scan of the entrypoint sources (transitively) and shipped as `resources`,
   so a served entrypoint's `import helpers` resolves without hand-listing. Only an
@@ -1000,511 +1008,125 @@ nothing. Full detail: `docs/EXPORT.md`.
   before the dependency scan**, so its JSON body can never be misread as a `fused.*`
   call. `exclude` is **not** honored in the manifest (it would publish the withheld file
   names in the served page source) — it is warned about; drop files via EX-6 `exclude`
-  (kept on the deployment record, off the artifact). This is what collapses a
+  instead (a per-`/api/export`-call selection, kept off the artifact — *formerly also
+  kept on the now-removed per-page deployment record, DP-12, before §19 was removed*).
+  This is what collapses a
   hand-maintained `RAW_URLS`-style table (or a fake `_bundle*()` scanner-bait function)
   down to `fused.rawUrl("data/" + name)` against a `data/*.json` glob.
 - **EX-9** `manifest.json` carries a top-level **`cache_max_age`** (`"0s"` off by
   default; a duration like `"5m"`/`"1h"` — the same format the fused repo's
-  `openfused.caching.parse_cache_max_age` accepts) — the Deploy modal's caching
-  choice (DP-17), written fresh on every export so a redeploy always re-asserts
-  the current setting. The hosting layer's `build_html_artifact` applies it
+  `openfused.caching.parse_cache_max_age` accepts) — a caller's choice, set directly
+  in `/api/export`'s request body *(formerly also the Deploy modal's caching control,
+  DP-17, before §19 was removed)*, written fresh on every export so a re-export always
+  re-asserts the current setting. The hosting layer's `build_html_artifact` applies it
   **page-wide** — to every route uniformly (the shell, each `runPython` route,
   and the asset route), matching the managed backend's mount-wide caching; see
   the fused repo's spec/serve/fused-render.md § Caching. A bundle exported before
   this field existed omits it, which the hosting layer reads as off.
 
-## 19. Deploy — Hosted Publish through the fused CLI (M11)
+## 19. Deploy — Hosted Publish through the fused CLI — **REMOVED**
 
-Goal: close the gap between §18's bundle and a working URL, from the shell. The
-local-only invariant (§1) is unchanged in kind: fused-render still binds
-127.0.0.1, hosts nothing, and mints no URLs — **deploying is an explicit user
-action that delegates to the `fused` CLI** (bundled in the packaged app, a pip extra otherwise; `fused share`,
-the fused repo's one URL-minting operation — its spec/serve/share-links.md and
-spec/serve/fused-render.md; the same shell-out pattern the flow app uses for
-project deploys). The server orchestrates the child process; nothing else in
-the product gains network access.
+**This flow is deleted and the section is kept only as a tombstone, so the
+`DP-*` ids other sections still cite resolve to an explanation rather than to
+nothing.** §19 used to describe an in-app **Deploy** flow: any `.html`/`.htm`
+preview showed a header **Deploy** button (gated behind the opt-in
+`deploy_enabled` preference, formerly §20.4/PF-8), which opened a
+**DeployModal** driving `fused_render/deploy.py`. That module owned CLI
+resolution/on-demand install (DP-3/DP-3a/DP-4/DP-16), a hosted-environment
+picker sourced from the fused CLI's own `~/.openfused/envs.json`
+(DP-5/DP-6/DP-7), a live "Will publish" preview with per-asset provenance
+pills driven by export.py's `source` field (DP-2a/DP-2c, EX-6), a choosable
+link name (DP-9a), a caching control (DP-17), a "Let viewers clone this app"
+toggle (DP-19 — the publisher half of app cloning, feeding `share create
+--allow-clone`; the viewer half was §35's Clone flow, itself separately
+removed — see its tombstone), Deploy/Redeploy/Revoke/Clear-cache actions (DP-8/DP-9/DP-10/
+DP-11/DP-15/DP-18/DP-20), and sign-in prompts wired into §27's account panel
+(DP-2b). All of it is gone — the button, the modal, `deploy.py`, its
+`/api/deploy/*` endpoints (DP-14), the per-page pointer store it kept at
+`~/.fused-render/deployments.json` (DP-12/DP-12a/DP-12b), the env-wide
+deployments list (DP-13, later folded into §27's AC-11), and the
+`deploy_enabled` preference — along with their tests.
 
-### 19.1 Surface
+**Nothing in-app replaced it.** Publishing a page to a hosted URL is now a
+manual, two-step terminal workflow: export a bundle with `POST /api/export`
+(§18, unchanged — `docs/EXPORT.md`), then hand it to the `fused` CLI directly
+— `fused share create --public`, optionally `--token <name>`,
+`--cache-max-age <duration>`, `--allow-clone` (the same knobs DP-9a/DP-17/
+DP-19 used to expose as form controls). Redeploying (`share repoint`),
+checking a mount's status or errors (`share list`/`share errors`), clearing
+its cache (`share cache-clear`), and revoking it (`share revoke`) are
+likewise plain CLI invocations the user runs themselves now — fused-render
+keeps no record of what is deployed, shows no status dot, and spawns no
+`fused` subprocess for any of this. The fused CLI's own env/credentials model
+(`~/.openfused/envs.json`, `~/.openfused/fused-cloud-credentials.json`) is
+unaffected by the removal — only fused-render's in-app orchestration of it is
+gone.
 
-- **DP-1** Any file preview whose mode list carries the `_render` sentinel
-  **and** whose filename is `.html`/`.htm` shows a **Deploy** header action —
-  both conditions, because that is exactly the set `/api/export` accepts: a
-  registry rebind can put `_render` on any type (D73), but the exporter is
-  extension-gated, and the button must never open a modal that cannot deploy.
-  Additionally gated on the opt-in `deploy_enabled` pref (PF-8): Deploy is off
-  by default, so the button is hidden entirely until enabled from Preferences
-  → Deploy to Fused account (re-read on focus/visibility, so a toggle shows through
-  without a remount).
-  A green dot marks a page whose stored deployment reads active (a local
-  pointer read — opening a preview never spawns the CLI; re-read on tab
-  focus/visibility regain, so an out-of-band revoke — e.g. the Preferences
-  page in another tab — shows through without a remount). Directories never
-  show it. The action opens the Deploy modal.
-- **DP-2** The modal handles its states in order: the fused CLI missing → an
-  install panel; no hosted env configured → guidance (`fused env create` /
-  `fused cloud setup`, naming the envs file); else the form — env picker,
-  current-deployment card (status chip, URL with copy/open), a **"Will
-  publish" preview** (DP-2a), a collapsible **Link** section (DP-9a), a
-  collapsible **Caching** section (DP-17), an owner-only collapsible **Recent
-  errors** diagnostics section (the deployed mount's captured failures via
-  `fused share errors`; rendered for an undeployed page too, but **disabled**
-  with a hint, so the chrome is consistent rather than popping in on first
-  deploy), Deploy/Redeploy, and Revoke. The modal is scoped
-  to the current page; the **env-wide** deployment list (DP-13) lives on the
-  Fused account tab's Deployments section (AC-11, moved from Preferences
-  when the account surface landed), not in the modal.
-- **DP-2a** Before the click, the modal shows exactly what a deploy would
-  publish (`POST /api/deploy/preview` → `preview_deploy`, the same pure
-  `plan_export` scan the real export runs, resolved fresh with the current
-  selection, no files written): the page plus each `runPython` target (and its
-  served route name) and each asset. Every asset row carries a **provenance
-  pill** driven by the preview's per-asset `source` (EX-6) so the list *mentions
-  how a bundled file is exposed*: `rawUrl` — a scanned literal
-  `fused.rawUrl()`/`readFile()` reference (the page fetches it via
-  rawUrl/readFile); `bundle` — a file declared in the page's fused-bundle
-  manifest (EX-8), which auto-shows here to back a computed rawUrl/readFile path;
-  `added` — a hand-added include. All three are served read-only on the hosted
-  `_asset` route (the pill's tooltip says so). Export
-  blockers (EX-4) come back in the same response and **disable Deploy** with the
-  full list — an unexportable page reads as "fix these" up front, never as a
-  failed deploy; warnings (EX-4a) show alongside but never block. A preview
-  *fetch* failure (unexportable type, file deleted since the header rendered)
-  degrades to a blocker entry the same way — the dialog still renders its form; it
-  never dead-ends on the preview call. (Preview is `POST`, not `GET`: it carries
-  the include/exclude selection, which doesn't fit a query string; it stays
-  read-only and unguarded.)
-- **DP-2c** The "will publish" list is **editable** — the user layers a file
-  selection (EX-6) on the auto-detected set: remove a listed file (× → `exclude`),
-  restore an excluded one, add extra files via a picker over the page's folder
-  (`walkDir`, gitignore-aware), "Add all in folder", or "Reset to default"
-  (clear both lists). The selection is sent on Deploy and **persisted on the
-  deployment record** (`include`/`exclude`, beside `entrypoints` — no separate
-  sidecar), so a reopened modal reloads exactly what was last published. This is
-  how a page whose data is fetched by a computed path deploys at all (EX-4a): the
-  author bundles those files explicitly.
-- **DP-2b** Login state, before and after the click (amended by §27/M18: the
-  warning is now an *action*, not guidance).
-  `GET /api/deploy/config` carries `fused_logged_in` — presence of the fused
-  CLI's own control-plane credentials file
-  (`~/.openfused/fused-cloud-credentials.json`,
-  `OPENFUSED_FUSED_CLOUD_CREDENTIALS` honored). Presence-only by design: an
-  expired-but-refreshable token still works (the CLI refreshes silently), so
-  the CLI stays the authority at action time. With a managed `fused` env
-  selected and no credentials on disk, the modal warns **before** the click
-  and offers a working **Sign in to Fused** button — the AC-3/AC-4 in-app
-  flow via the shared client hook, with a background config reload flipping
-  the warning away on completion (AC-9). Likewise the no-envs state signs in
-  in place or routes to the account tab's setup panel; no modal state
-  instructs a terminal command for the managed path anymore. After a failed
-  action, CLI errors that name `fused cloud login` are still suffixed with
-  the packaged app's real wrapper path (fusedcli.py's `cli_error` +
-  `setup_cli_hint`) — plain `fused` doesn't resolve inside the .app, and the
-  CLI's error text must stay runnable as printed even though the app now
-  offers the in-app path first.
+The ids other sections still cite: **DP-2a** — the modal's per-asset
+provenance pill (§18 EX-6's `source` classification is now in-process
+bookkeeping only, with no consumer). **DP-5** — hosted environments were
+exclusively deploy targets, never execution targets (§20.2 still makes this
+point about the fused CLI's env store generally). **DP-12** — the per-page
+deployment pointer this app kept at `~/.fused-render/deployments.json`,
+cited by §18 EX-8 as where a per-deployment `exclude` used to live. **DP-17**
+— the modal's cache-duration control; the same choice is now just
+`/api/export`'s `cache_max_age` field, set by hand on each call (§18 EX-9).
+**DP-19** — the "Let viewers clone this app" toggle; publishing with
+`--allow-clone` directly on the `fused` CLI is its only form now. The viewer
+that consumed such a link (§35) is also removed, so there is no in-app way to
+act on the flag either way any more. **DP-20** — the modal passed `--name
+<page stem>` automatically on every deploy; a publisher now names their own
+app explicitly when they run `share create` (or accepts the CLI's own default
+from whatever directory they hand it) — see §35's tombstone (CL-1) for the
+folder-naming rule this fed on the (now also removed) viewer side.
 
-### 19.2 The fused CLI seam
+## 35. Open a Deployed App — Clone a Page Back from its URL (D196) — **REMOVED**
 
-- **DP-3** CLI resolution (`deploy.fused_cli`) has **exactly two sources —
-  one explicit, one autodetected — and nothing else**: (1)
-  `FUSED_RENDER_FUSED_BIN` (verbatim, whitespace-split — compound commands
-  work, and it is the test seam); (2) the `fused` package **importable in the
-  server's own interpreter**, run as `[sys.executable,
-  fused_render/_fused_cli.py]` — a shim that sets `argv[0] = "fused"` and
-  calls `fused._cli.main()`, behaviorally identical to the console script.
-  There is deliberately **no venv-bin scan, no PATH lookup, and no
-  well-known-location guessing**: a CLI the server didn't get from its own
-  interpreter runs only because the user explicitly configured it. (The old
-  venv-bin step is subsumed — a venv whose bin/ has the script always has the
-  package importable.)
-- **DP-3a** Child-env hygiene: an **external** CLI (the override) is spawned
-  with `PYTHONHOME`/`PYTHONPATH` scrubbed — inside the packaged app those are
-  bundle-scoped and would break any other Python (the las template's
-  external-spawn precedent); the in-interpreter shim keeps them (they are
-  what make `sys.executable` work in the bundle). `OPENFUSED_ENV` targeting
-  (DP-7) is unchanged for both.
-- **DP-4** When the CLI is missing and installing is possible (Python ≥ 3.11
-  per the wheel's marker, and the interpreter has pip), `POST
-  /api/deploy/install` pip-installs **the wheel pinned by
-  `deploy.PINNED_FUSED_REQUIREMENT`** into the server's interpreter — which
-  makes the package importable there, i.e. lands in DP-3's autodetected
-  source (finder caches are invalidated after the install so the probe sees
-  it without a restart). The constant is the in-code source of the pin;
-  pyproject.toml's `[fused]` extra must reference the same wheel and a test
-  pins the two together. Reading the pin from installed dist-info metadata is
-  rejected: metadata is absent on source-tree runs and stripped app bundles,
-  and goes stale on an editable install that predates the extra — all of
-  which disabled the button exactly when it mattered, while the constant
-  ships in the same file as the code using it. When installing is impossible,
-  the modal states why — old Python, or a pip-less embedded interpreter
-  (point `FUSED_RENDER_FUSED_BIN` at a fused installed with another Python) —
-  plus the manual `pip install "fused-render[fused]"` hint.
-- **DP-16** The packaged macOS app **ships the CLI**: `build_dmg.sh` installs
-  the `[fused]` extra into the bundle (py2app force-copies `fused` + its
-  data-bearing deps — `setup_py2app.py`), so DP-3's autodetected source is
-  always present and the install panel never appears in the .app (its sealed,
-  notarized bundle could not be pip-installed into anyway). The build also
-  ships a terminal wrapper, `Contents/Resources/bin/fused` (bundled python +
-  the DP-3 shim), and smoke-tests real CLI verbs through the shim before
-  signing, so a py2app packaging gap fails the build rather than the user's
-  first deploy. Since §27/M18 the wrapper is a **power-user escape hatch**,
-  not the setup path: sign-in and managed-env setup happen in-app (AC-3/AC-6),
-  and the wrapper remains for what stays terminal-scoped — self-hosted AWS
-  provisioning (`fused env create` / `fused infra serve`) and ad-hoc CLI use.
-  The wrapper lives under `Resources`, not `MacOS`: everything in a bundle's
-  `MacOS/` is nested code to codesign, and a shell script there cannot carry
-  a code signature — the bundle seal fails ("code object is not signed at
-  all"); a script under `Resources` is sealed by the resource rules instead.
-  `GET /api/deploy/config` carries `setup_cli` — the wrapper's absolute path
-  when frozen (`sys.frozen == "macosx_app"`), else `"fused"` — and CLI error
-  suffixes plus the remaining AWS guidance name it.
+**This flow is deleted and the section is kept only as a tombstone, so the
+`CL-*` ids other sections still cite resolve to an explanation rather than to
+nothing.** (These are §35's own `CL-*` ids — a different, unrelated numbering
+from the Call Log section's `CL-*` ids further below; the two were never the
+same namespace.) §35 used to describe the viewer half of app cloning: paste a
+deployed page's URL into the path bar, or use the **Open deployed app** entry
+on the Apps page, and — if the publisher had allowed cloning (`--allow-clone`
+on `share create`/`repoint`) — a two-step confirm flow (`GET
+/api/clone-app/info` preview, `POST /api/clone-app` commit) downloaded the
+page's export bundle and unpacked it into `~/Documents/Fused` as an ordinary
+local page, landing in a fresh folder named after the link's token or the
+publisher's app name (never overwriting or merging into an existing one —
+CL-2). The implementation (`fused_render/app_clone.py`, `CloneModal.tsx`,
+`CloneAppHost.tsx`, `cloneApp.ts`) enforced its own boundary hardening
+independent of anything §19/§27 did: HTTPS-only with no credentials sent
+(CL-3), the archive treated as hostile with a version/digest-checked fetch
+against SSRF-hardened address validation (CL-4), the same hardened unpacker
+`§23`'s template import uses (CL-5, `zip_import.py` — entry validation,
+symlink/path-escape refusal, decompressed-size caps, staging-then-move), and
+public-pages-only gating with ambiguous 404s so the serve layer never
+confirms a mount's existence or clone posture to an unauthorized caller
+(CL-6). None of that hardening depended on the in-app Deploy flow (§19) or
+account panel (§27) — cloning was always a *consumer* of pages published by
+the `fused` CLI directly (`fused share create --allow-clone`, run by the
+publisher in a terminal), never a producer, so its removal is independent of
+those two: the owner's call was simply that the whole viewer-side surface is
+gone too, along with its tests.
 
-### 19.3 Environments
+**Nothing in-app replaced it.** A page shared as a `share create
+--allow-clone` link can no longer be imported back into a local workspace
+through this app — the CLI's own hosted artifact is still fetchable by hand
+(the same `spec/serve/clone-protocol.md` contract this viewer used to read),
+but there is no UI or endpoint here that does it. Pasting an `https://` URL
+into the path bar now falls through to the same "can't open `https://` URLs
+in the explorer" refusal every other unhandled scheme gets (Breadcrumb.tsx);
+the Apps page no longer offers an "Open deployed app" entry at all. A
+`fused-render://open?app=<page URL>` deep link (CL-7's deferred idea) was
+never built, so there is nothing pending on that front either.
 
-- **DP-5** Eligible deploy targets are the **hosted** environments in the fused
-  CLI's own store (`~/.openfused/envs.json`, `OPENFUSED_ENVS_FILE` override):
-  backends `fused` (managed) and `aws` (self-provisioned serving plane) —
-  never `local`, which has no serving plane. The store is read directly, so the
-  picker renders even before the CLI is installed.
-- **DP-6** Default pick: `OPENFUSED_ENV` when it names an eligible env, else
-  the first `fused`-backend env (preferring the store default when it is one),
-  else the store default, else the first eligible.
-- **DP-7** The chosen env is targeted by setting `OPENFUSED_ENV` on the child —
-  the CLI's own override channel; no config file is edited.
-
-### 19.4 Deploy semantics
-
-- **DP-8** Each deploy re-exports the page (§18) into a fresh temp directory
-  and hands that bundle to the CLI; the bundle is deleted afterwards. An export
-  error blocks the deploy (400, all problems at once — nothing is uploaded).
-- **DP-9** Deploys are **public share links** (`share create --public`): an
-  opaque, unguessable capability URL by default. Rationale for staying public
-  (not authed): authed mounts cannot serve a hosted page's browser asset GETs
-  yet (fused repo, spec/serve/fused-render.md § Limitations); gate pickers
-  become an option when that lands.
-- **DP-9a** The token is choosable through a **collapsible "Link" section**
-  (like Caching, DP-17) whose one-line summary shows the current setting
-  (`unguessable` / `custom: <name>`). It has two body modes:
-  - **Picking** — a **random-vs-named radio**: **Unguessable link** (default)
-    keeps the crypto-random opaque token; **Custom name** reveals a name input
-    whose value rides through to `deploy_page`'s `custom_token`, appended as
-    `--token <name>` on that `share create --public` call (the fused CLI's own
-    allowed combination — a public mount with a chosen name is a **deliberately
-    guessable** URL, never produced by an omitted field, only an explicit
-    choice, so it is a two-way toggle rather than a "blank = random" field).
-    Shown when the next Deploy would mint a FRESH mount (no deployment yet, a
-    different env, or the recorded mount absent from `share list`), and in the
-    Change-link flow below. Client-side the name is checked against the CLI's
-    own token shape (`^[a-z0-9][a-z0-9_-]*$`); a malformed name (red error) and
-    a missing one (Custom name chosen, field empty — a quiet prompt) both
-    disable Deploy. An already-taken name is a `share create` rejection the CLI
-    itself reports (surfaced verbatim, DP-15).
-  - **Read-only summary** — once the mount's liveness is CONFIRMED
-    (active/revoked) on the same env, the picker is replaced by a summary of the
-    current link (custom name vs unguessable, read from the record's `named`
-    provenance) plus a **Change link** action. A plain redeploy keeps the token
-    (`repoint`/`recreate --same-token` take no `--token`, DP-10), so changing
-    the URL needs `force_new`: Change link re-reveals the picker and the next
-    Deploy takes the `force_new` path (mint a new token, best-effort revoke the
-    old — DP-10). An *unconfirmed* same-env status (env unreachable at open)
-    shows the picker, not the summary, since the next click may still fall
-    through to a fresh create.
-  The record persists a **`named`** boolean (whether the token is a chosen name
-  vs the opaque default), set at the fresh create that minted it and carried
-  forward unchanged on every token-reuse redeploy — the summary reads it rather
-  than re-deriving named-ness from the token string. The always-public,
-  **no-auth** posture (which the guessable/unguessable choice does not itself
-  state) is a note kept directly beneath the Link section, always visible.
-- **DP-10** Redeploy keeps the URL. Same-env pointer + mount active per
-  `share list` → `share repoint <token>` (stable URL); revoked tombstone →
-  `share recreate --same-token` then repoint (a failed repoint best-effort
-  re-revokes, so a deliberately taken-down link never comes back silently live
-  with old content; the pointer is then persisted to the TRUE resulting state
-  and the raised error names it — compensation succeeded → the link is down →
-  pointer `revoked`; compensation ALSO failed → the mount is live with its old
-  content → pointer `active` (so the dot matches reality) and the error names
-  the token for a manual `fused share revoke`); token absent from the list
-  entirely (e.g. after an
-  `infra teardown`) → fresh `create`. Deploying to a **different** env always
-  creates fresh there and repoints the pointer — the old env's mount stays
-  live, and the modal says so inline.
-- **DP-20** The deployed app is **named after the page**, stated explicitly as
-  `--name` on create *and* repoint (`deploy.app_name_for`: the page's stem, or its
-  folder's name when the stem names nothing by itself like `index.html`, sanitized
-  to the same conservative set a clone folder is; empty after that leaves the CLI's
-  own default). `share create`/`repoint` otherwise derive the name from the source
-  directory they are handed, and what this module hands them is a throwaway
-  `tempfile.mkdtemp(prefix="fused-render-deploy-")` — so pages published as
-  `fused-render-deploy-pabxq903`, which is the name the deployments list shows, the
-  name the clone inventory reports, and therefore the folder name a viewer's clone
-  inherits (§35 CL-1). Repoint restates it because repoint re-derives it too;
-  deriving from the page path keeps it stable across redeploys.
-- **DP-11** CLI output is parsed defensively (`token`/`id`/`url`/`status`
-  only): the managed backend returns the URL on create/repoint/recreate; an
-  AWS env prints token+path only, so `url` may stay null — the last-known URL
-  is kept, never regressed to null by a URL-less repoint.
-- **DP-15** Version dependency, surfaced not hidden: whether a *bundle* deploy
-  succeeds on a given backend is the installed fused CLI's contract, not ours —
-  the fused repo's spec/serve/fused-render.md publishes bundles via
-  `share create` on AWS envs and classifies them for inline upload
-  (`kind="html"`) on the managed backend, both as of fused 2.9.3.post6 (the
-  wheel this package pins as of that decision; the pin has since advanced —
-  see the `[fused]` extra in pyproject.toml); a control plane running an
-  older fused rejects the upload server-side. fused-render passes the CLI's
-  own error through verbatim rather than second-guessing the installed
-  version.
-- **DP-17** The modal carries a **caching control**: a checkbox ("Cache page
-  results") plus a duration select (1m/5m/15m/1h/6h/1d/7d/14d presets, default
-  **1h**, plus the current value verbatim when it isn't one of them — e.g. set by a
-  direct `share create --cache-max-age` outside this dialog). 30 days is the true
-  ceiling (the `results/` cache-bucket lifecycle GC backstop both backends fix at
-  30 days — `RESULTS_CACHE_LIFECYCLE_DAYS` for a managed environment,
-  `openfused-gc-results` for self-hosted AWS; a managed environment's
-  `_build_cache_settings` rejects anything beyond it), but 30d itself is
-  deliberately not offered as a preset — it would leave no margin against that
-  backstop, whereas 14d keeps a comfortable half-window of slack. Seeded on open
-  from the stored deployment record like `include`/`exclude` (DP-2c) and
-  re-sent as `cache_max_age` on every Deploy — there is no "leave it as it
-  was". It reaches the two backends **differently**, because they model
-  caching differently (fused repo's spec/serve/fused-render.md § Caching /
-  spec/serve/share-links.md §8): it travels in the export bundle's manifest
-  (EX-9) for an AWS environment (read by `build_html_artifact`, so a later
-  `repoint`/redeploy can change it too); for a managed `fused` environment the
-  manifest field is not read at all — only the explicit `--cache-max-age` flag
-  is, as the mount's own `cache_settings` (a control-plane concept independent
-  of the bundle, defined by the managed Fused service, amended). `deploy_page`
-  now sends `--cache-max-age` on every path — `create`, `repoint`, and the
-  follow-up `repoint` after a revoked-token `recreate --same-token` — so a
-  redeploy on either backend applies whatever the dialog's checkbox/duration
-  currently says, same token/URL, no "Deploy as new URL" workaround needed. A
-  `force_new=True` `deploy_page` call still exists as a general "mint an
-  entirely fresh URL and take the old one down" action (skip token reuse,
-  `share create` at a new token, repoint the page pointer to it, then
-  **best-effort revoke the superseded mount** last so a create failure never
-  takes the page down) — the modal just no longer needs to surface it as a
-  caching-change escape hatch.
-- **DP-18** **Clear cache** (`POST /api/deploy/clear-cache {"page"}` →
-  `clear_cache_deployment` → `fused share cache-clear <token>`) forces every
-  cached result for the deployment's mount to be recomputed on the next
-  request, without touching its status, URL, or caching setting — for "the
-  underlying data changed, not the code" (a redeploy dedupes to the same
-  content address and would otherwise keep serving the old cached result until
-  `cache_max_age` expires). Shown in the caching row (next to the duration
-  control) whenever the deployment is active; its result (`{deleted, scope}`)
-  renders as a one-line status ("Cleared N cached results…" / "Nothing was
-  cached…").
-
-### 19.5 State & truth
-
-- **DP-12** A thin per-page pointer at `~/.fused-render/deployments.json`
-  (shell/storage; keyed by absolute page path — env, backend, token, url,
-  status, entrypoints, `cache_max_age` (DP-17), updated_at) lets the shell mark
-  deployed files, re-show
-  the URL (`create` returns it exactly once; `share list` never carries one),
-  and redeploy to the same token. **`share list` on the env stays the
-  authority**: the modal reconciles status against it on open (`--all`, so an
-  AWS caller-identity change can't fake a revoke); an unreachable env returns
-  the last-known pointer with `reconciled: false` instead of failing the
-  dialog. A reconciled response also carries `live` (`active | revoked |
-  absent`): absent persists as pointer-status `revoked` (the link *is* down)
-  but the modal must not promise a same-URL restore for it — an absent mount
-  redeploys as a fresh create with a new link (DP-10), and the stored URL is
-  likewise never carried onto a *different* token (DP-11's fallback applies
-  only while the token is unchanged). The action label's URL promises
-  ("same URL" / "restore URL") render only from a **verified** `live`
-  classification: when the reconcile never ran (unreachable env, `live`
-  null) the button reads a plain "Redeploy" that promises nothing.
-- **DP-12a** Store integrity: the pointer file is rewritten whole on every
-  mutation, so two writers must not race and a corrupt file must not be
-  clobbered. Writes serialize through one process lock (`_update_store`) —
-  closing the lost-update window against the reconcile writer (a focus
-  refresh) — and load via `_load_store_for_write`, which raises rather than
-  overwrite a file that exists but doesn't parse (overwriting would drop every
-  other page's pointer, orphaning live mounts). `deploy_page` validates the
-  store before the CLI so a corrupt store fails fast instead of minting a
-  mount it then can't record. Reads (`get_deployment`, the status/dot) stay
-  lenient — a corrupt store shows as not-deployed rather than erroring a
-  preview.
-- **DP-12b** The open modal re-reconciles on tab focus/visibility regain (like
-  the header dot, DP-1), so a page revoked out-of-band — e.g. from the
-  Preferences tab — updates the open dialog instead of contradicting the dot.
-  That focus refresh is a **background** load: it updates in place, never
-  clearing the form to "Loading…" or replacing it with an error on a failed
-  re-fetch (only the initial mount load does that). 
-  It preselects the deployment's env only when that env is still configured
-  (else falls back to the default and states the old env is gone), so a
-  removed env never leaves Deploy silently disabled. The dialog is always
-  closeable — even mid-action (the action continues server-side and the dot
-  stays correct via `onChange`), so a slow CLI child can't trap the user.
-- **DP-13** `GET /api/deploy/shares?env=…` is the "what's deployed on this
-  env" view: every mount from `share list --all`, joined back to the local
-  page that deployed it via the pointer store (`page: null`, rendered "not
-  from this app"), local pages first, live before revoked. Its consumer is the
-  **Fused account tab's Deployments section** (AC-11; formerly Preferences'
-  PF-6) — a single env-wide list with Revoke — not the per-page Deploy modal. `share list` returns no URLs on
-  either backend; each mount's URL is the pointer's recorded one, else
-  **derived from the env's base URL**: every mount on one env serves as
-  `<base>/<token>` (share-links.md §6), so any recorded absolute URL whose path
-  ends in its own token reveals the base for all the rest (`_serve_base_url`).
-  With no recorded link to derive from (e.g. only AWS deploys so far), URLs
-  stay null and the cell says why on hover.
-- **DP-19** *Source code* (§35): a collapsible section beside Caching and Link, headed
-  **Source code** — the heading names what is at stake ("is my Python readable?") to a
-  publisher who has never used the viewer-side flow, where "Cloning" named our mechanism and
-  gave them no reason to open it. Its "Let viewers clone this app" toggle rides
-  `POST /api/deploy` as `allow_clone` and becomes `--allow-clone` on `share create` /
-  `--allow-clone`/`--no-allow-clone` on `share repoint`. Persisted on the pointer record
-  like `cache_max_age`, but the MOUNT is the authority: `GET /api/deploy/status?reconcile=1`
-  refreshes it from `share list` on the same read that reconciles `status`, so a posture
-  changed from a terminal shows through instead of being re-sent stale. Repoint states it
-  explicitly in both directions — the CLI preserves an omitted flag, which is right for a
-  CLI and wrong for a dialog whose toggle is always a definite statement.
-  The posture is only ever read from **deployment metadata** — the mount record, or our pointer
-  record as its cache — and never inferred from what happens to be on disk or from which route
-  the user came in through. That is what makes create / repoint / recreate predictable: the
-  decision is carried, not recomputed, so the same source published twice cannot flip it.
-- **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
-  shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
-  `GET /api/deploy/preview`, `GET /api/deploy/shares`, `POST /api/deploy`,
-  `POST /api/deploy/revoke`, `POST /api/deploy/clear-cache` (DP-18),
-  `POST /api/deploy/install`; the POSTs carry the
-  `X-Fused` guard (D36). CLI failures surface their last stderr line verbatim
-  (click's `Error: ` prefix stripped) — the fused CLI's messages already name
-  the fix (`fused cloud login`, `fused infra serve`, …).
-
-## 35. Open a Deployed App — Clone a Page Back from its URL (D196)
-
-The viewer half of app cloning; the publisher half is the Deploy dialog's toggle (DP-19).
-Paste a deployed page's URL, and if its publisher allowed cloning, download its export
-bundle and unpack it into `~/Documents/Fused` as an ordinary local page.
-
-**Our side of a three-party boundary.** The contract is `fused`'s
-`spec/serve/clone-protocol.md`: *a deployed app may expose an authorized, versioned clone
-artifact; importing it is deterministic and does not require reconstructing deployment state.*
-`fused` owns the artifact — its layout, path rules, byte assembly, size limits, and the
-`protocol` version that states compatibility. The host serving it owns **authorization** only.
-**This repo owns safe local import**, and nothing else: fetch, verify, unpack, atomically claim
-a destination. So we read the protocol fields, use the advisory hints to place files and to
-describe the download, and treat the archive's interior as opaque — a second copy of the bundle
-schema on this side of the boundary would only drift from the one that defines it. What we do
-*not* delegate is validating the two manifest path fields we consume (CL-5): they arrive over
-the network and become paths on the user's machine, so checking them here is the trust boundary
-working, not a second opinion about the format.
-
-- **CL-1** Two steps, mirroring §26's confirm page: `GET /api/clone-app/info` previews
-  (read-only — the file list, the size, and the exact destination folder, all of it advisory
-  metadata the host may omit, in which case the confirm step simply shows less) and
-  `POST /api/clone-app` performs it. The preview names the folder the clone actually uses:
-  the client passes that folder back on the second call and the clone honours it while it is
-  free, so a page appearing in the workspace in between can't invalidate what the user was
-  shown. Carry-through rather than a lock — reserving the name would mean creating a
-  directory during a preview the user has not confirmed — so in the race the clone's own
-  response names where it landed, which is what the success view shows. The commit **claims
-  the name by renaming** (`zip_import.move_into_new_dir`), never `shutil.move`: move onto an
-  existing directory moves the payload *inside* it, which would report success with the page
-  a level below where `view` points, so a taken destination fails the rename and the next
-  name is tried. Running out of names is a stated refusal at both steps, not a 500.
-  The preview's file list names the paths the clone will
-  **create**, not the archive's member names: a v2 archive holds `manifest.json` plus
-  `<root>/<key>`, while the clone makes the payload dir *become* the page folder and keeps
-  nothing else — so echoing the inventory verbatim listed `files/sine.py` and `manifest.json`,
-  neither of which ever appears, under copy promising otherwise. The bundle's `manifest.json`
-  is read during the import (for `root`/`page`) and then **dropped with staging**: an earlier
-  build kept it in the page folder as a dotfile "so a re-export could reproduce the bundle",
-  but nothing read it back — `export_page` recomputes the manifest from the page's own files —
-  so it was write-only clutter, one more path the confirm step had to predict, and a second
-  move on the commit path that needed its own rollback. The commit is now a single rename.
-  The folder is named after the **link**, falling back to the **app name**: a deployed page's
-  URL ends in its token, which is either a name the publisher chose (`share create --token
-  my-solar-map`) or a random opaque one, and a chosen name is the best name available — it is
-  what the link the user followed says, what the publisher calls the deployment, and it is
-  stable across redeploys (a repoint keeps the token). An opaque token (lowercased base32, 26+
-  chars — `app_clone._OPAQUE_TOKEN`, mirroring fused's `mounts.is_opaque_token`; a shape check
-  used for naming only, never as a gate) names nothing, so the app name wins there — which is
-  why the publisher side states `--name` explicitly (DP-20) instead of letting the export's
-  temp directory name the app. Both are reduced to a conservative allow-list before becoming a
-  path, since both arrive from outside. The app name still heads the confirm step; only the
-  folder prefers the link. The same order applies on the commit path, which may run with no
-  preview at all. The confirm button says
-  **Clone to local**, not "Clone to <folder>": the body above it already names the
-  destination, and a generated folder name in a button label is noise. The modal is
-  **undismissable during the write** (`Modal`'s `busy`, so Esc / backdrop / ✕ are all
-  shut off, not just the Cancel button): the request keeps running, so an exit taken
-  mid-clone lands files in the workspace while dropping the only delivery of the
-  result — no success state, no navigation, and a folder the user has to find for
-  themselves. The preview step stays dismissable, since it writes nothing. Opposite
-  call from DeployModal, which stays closeable because its action completes
-  server-side and the dialog reports on it afterwards.
-  **Two triggers, one flow** (`CloneAppHost` at the shell, `CloneModal.tsx`): pasting an
-  `https://` link into the **path bar**, which previously answered "can't open https:// URLs
-  in the explorer" — true and useless — and hands the link to the confirm step rather than
-  pre-judging it; and an **Open deployed app** entry on the **Apps page**, shown only while
-  the PF-8 Deploy-apps toggle is on, since with deploying off the surface that produces
-  these links is hidden and an import entry would advertise a feature the user has turned
-  away from. The path-bar route is deliberately NOT gated: refusing a URL the user
-  explicitly pasted is a worse failure than one extra button. It is mounted at the shell
-  rather than in the sidebar — where it briefly lived — because Home and Apps render without
-  a sidebar, so an entry there is unreachable from the page that should host it. The modal
-  navigates to the cloned page on success.
-- **CL-2** **Not §26's git flow, and deliberately not folded into it.** That flow relies on
-  `.git` for identity, which is what lets it safely *update* an existing clone. An archive
-  carries no provenance we can verify, so there is no update branch here: every clone lands
-  in a fresh folder (`zip_import.unique_dir` → `name`, `name-2`, …) and can never overwrite
-  or merge into an existing one. `fused_render/app_clone.py` — a separate module and
-  separate routes (`/api/clone-app*`, not §26's `/api/clone`).
-- **CL-3** **URL contract.** HTTPS only (`http://` refused, never upgraded — silently
-  "fixing" it would hide that the user's link was insecure). The `_clone` URL is rebuilt
-  from parsed components, accepting the shapes a page is served at (`…/<token>`, `/`,
-  `_shell`, `_clone`) while dropping query and fragment; userinfo is **refused**, not
-  stripped, since quietly removing it would clone from a different origin than the URL
-  appears to name. No credentials are ever sent (CL-6).
-- **CL-4** **The archive is hostile, and the fetch is boundary-hardened.** Two separate
-  things, in order of importance. The *archive* is untrusted regardless of where it came from
-  (CL-5), and the download is verified. Compatibility is checked **twice, from one table**
-  (`_PROTOCOL_BUNDLE_VERSION`): the inventory's `protocol` gives an early refusal before
-  megabytes move, and the archive's own declared bundle version is the **enforcing** gate — a
-  bare `POST /api/clone-app` fetches no inventory, so a check that lived only there would be no
-  gate at all. The bytes are then checked against the digest the host published as the
-  download's **quoted** `ETag` (`"sha256:<hex>"`, RFC 9110 §8.8.3) — parsed, not string-matched,
-  because matching the bare form against a compliant quoted value reads as "no digest" and skips
-  the check silently; an unparseable tag (a proxy's opaque rewrite) means *cannot verify* rather
-  than *failed*, so it does not block valid clones — bytes that arrive complete but wrong are the one failure a length check
-  cannot see, and this makes "importing is deterministic" something we confirm instead of
-  assume. An absent or unrecognised digest is a weaker guarantee, not an error. Separately, the
-  *fetch* gets modest hardening because only a URL the user pasted is ever fetched and this
-  process sits inside the user's LAN beside `169.254.169.254`: one seam
-  (`_validated_address` + `_get`) resolves the host, refuses it unless **every** answer is
-  public, dials the validated address while keeping the hostname for `Host`/SNI (so the check
-  cannot be undone by re-resolution), follows no redirects, and caps on bytes actually
-  received rather than on `Content-Length`. Deliberately centralized and small — it is a
-  boundary control on a local app, not the architecture of this feature.
-- **CL-5** **One unpacker, shared with §23's template import** (`fused_render/zip_import.py`).
-  Shared *within this repo* — `fused`'s own validators cannot be reused here because the viewer
-  must work with no `fused` installed at all (the deploy feature installs it as a pinned wheel
-  into a separate environment and drives it as a CLI, so there is nothing importable in
-  process). What crosses the boundary is therefore the **format contract**, not the code:
-  entry validation before any write, symlink refusal, path-escape refusal, per-entry and
-  total caps enforced on bytes actually decompressed (the declared sizes are attacker
-  controlled), staging-then-move. A second extractor "just for clones" is how a hardened
-  path and an unhardened one end up side by side. The manifest's own `root`/`page` get the
-  same containment check the entries do — the entries can all be safe while a manifest field
-  points outside the bundle, and `root` is what gets moved.
-- **CL-6** **Public pages only, for now.** A gated page needs a token whose audience
-  satisfies that mount's gate, and neither a query string nor a deep link is an acceptable
-  place to carry one (both leak through history and logs). A `401`/`403` says so plainly. A
-  `404` is deliberately ambiguous at the source — the serve gate must not confirm whether a
-  mount exists or whether cloning is on — so the message names both possibilities rather
-  than guessing one. Every refusal is **shown verbatim in the modal**, so it reads as a
-  sentence: `app_clone._error` capitalizes at that one boundary rather than at each of the two
-  dozen raise sites, because most of those messages are f-strings or `zip_import` refusals
-  passed straight through — a per-raise fix covers the literals and misses the rest. A first
-  word that is a URL or a path is left alone: those are verbatim tokens the user is meant to
-  recognise, and "Https://…" would look like our mistake.
-- **CL-7** **A `fused-render://open?app=<page URL>` deep link is DEFERRED to its own change.**
-  §26's `?app=` sibling is the natural entry (`deeplink.py` already reserves new payload
-  *params* on the same `open` action as the extension point), but it needs its own confirm
-  surface and supervisor dispatch, and nothing routes one today. `CloneModal` takes an
-  `initialSrc` and auto-previews it, which is the seam that entry will use — it is not
-  evidence the link works.
+The one id another section still cites: **CL-1** — DP-20 (§19's tombstone)
+points here for why a publisher now names their own app explicitly on
+`share create`/`repoint` (`--name`) rather than the modal doing it
+automatically; that explanation stands as history even though the reader
+(this section) is gone too — both the automatic naming (DP-20) and the thing
+that consumed a chosen name (CL-1's folder-naming rule) no longer run.
 
 ## 20. Preferences — Shell Settings Page (M12)
 
@@ -1519,14 +1141,16 @@ never imports server).
 ### 20.1 Store & endpoints
 
 - **PF-1** `GET /api/prefs` → `{engine: {selected, effective, forced_by,
-  fused_available}, deploy: {enabled}, reader: {enabled}, model: {default,
+  fused_available}, reader: {enabled}, model: {default,
   choices}, calls: {…}}` — and no
-  `log` block (PF-5). `PUT /api/prefs`
-  (X-Fused) applies a **partial** update — any of `engine`, `deploy_enabled`,
+  `log` block (PF-5), and no `deploy` block. *(A `deploy: {enabled}` block —
+  the `deploy_enabled` pref, formerly §20.4/PF-8 — was removed along with §19;
+  see that section's tombstone.)* `PUT /api/prefs`
+  (X-Fused) applies a **partial** update — any of `engine`,
   `reader_enabled`, `default_model`, `calls_enabled`, `calls_params` or
   `calls_retention_days` present, so each control PUTs only its own field — and
-  returns the same shape. An unknown engine value, a non-boolean
-  `deploy_enabled`, or a body naming no known preference → 400; the file merges
+  returns the same shape. An unknown engine value,
+  or a body naming no known preference → 400; the file merges
   (future prefs are new keys, not new files).
 - **PF-1b** `default_model` is the user's preferred Claude model as a **short
   name** — `""` (unset), `fable`, `opus`, `sonnet` or `haiku`, the claude
@@ -1543,19 +1167,22 @@ never imports server).
   a plain `GET /api/prefs`, like its other `/api/…` reads. Read per request, so
   a change applies without a restart.
 - **PF-1a** The page renders its sections in this order: **Appearance**,
-  **Default model**, **Call log**, **Deploy to Fused account**,
+  **Default model**, **Call log**,
   **Accessibility**, and last
   **Execution engine** — last because it is the setting a user is least likely
   to have come here to change (builtin suits almost everyone, and an env var
   pins it where it matters). There is **no Tour button**: the tour still runs
   itself on a first visit (`maybeAutoStartTour`), because it is onboarding
   rather than a preference. (The spec subsection numbering below is
-  organizational, not the visual order.)
+  organizational, not the visual order.) *(A **Deploy to Fused account**
+  section used to sit between Call log and Accessibility — §20.4/PF-8; it is
+  removed along with §19.)*
 - **PF-2** The page is a thin client over existing backends everywhere else:
-  deployments via `GET /api/deploy/config` + `GET /api/deploy/shares`,
-  revocation via `POST /api/deploy/revoke`, registry via `GET
+  registry via `GET
   /api/templates/registry`, the call store's in-app browse via ordinary
-  navigation.
+  navigation. *(It used to also front deployments — `GET /api/deploy/config` +
+  `GET /api/deploy/shares` — and revocation, `POST /api/deploy/revoke`; those
+  backends are gone along with §19.)*
 
 ### 20.2 Execution engine switch
 
@@ -1588,7 +1215,9 @@ never imports server).
   `<home_dir()>/venvs`, ours not the backend's store, PY-16), never resolving a
   named environment; `envs.json`,
   the default env, and `OPENFUSED_ENV` play no part in page execution. Fused
-  *environments* are exclusively deploy targets (DP-5) — a separate axis,
+  *environments* are exclusively deploy targets for the `fused` CLI, run
+  directly by the user *(formerly documented as DP-5, before §19 was
+  removed)* — a separate axis,
   and the page's copy states this so "Fused engine" is never read as "runs
   on my Fused env".
 - **PF-4** `FUSED_RENDER_ENGINE` remains the **process-level override**: when
@@ -1612,33 +1241,27 @@ never imports server).
   log's own settings. The durable log a user has settings for is the call log
   (§31); the disposable one belongs to the process, not to preferences.
 
-### 20.4 Deploy to Fused account
+### 20.4 Deploy to Fused account — **REMOVED**
 
-- **PF-8** The section leads with an **opt-in toggle** for the Deploy
-  affordance: the persisted `deploy_enabled` pref (default **off**), PUT via
-  `{deploy_enabled}`. Deploy publishes a page to a public hosted URL through
-  the fused CLI, so it is opt-in — the preview-header **Deploy** button (§19,
-  DP-1) and its modal stay hidden until this is turned on. The gate is a UI
-  affordance only, not a security control (the `/api/deploy*` endpoints keep
-  their X-Fused guard); the preview re-reads the pref on focus/visibility so a
-  toggle shows through without a reload. Any non-`true` stored value reads as
-  off.
-- **PF-6** *(moved by M18/§27 — see AC-11)* The per-env share list lived
-  here before the account surface existed; Preferences keeps only the PF-8
-  Deploy-button toggle plus a link to the Fused account tab, where the list
-  now renders beside the environments table.
+**PF-8** (the opt-in `deploy_enabled` toggle that showed/hid the preview-header
+Deploy button) and **PF-6** (the env-wide share list this section pointed at,
+later moved to §27's AC-11) are both gone: this whole section shipped nothing
+but UI for the now-removed §19 Deploy flow, so it was deleted rather than
+tombstoned in place — no id from here is cited by any section that remains.
+The Preferences page renders no "Deploy to Fused account" section at all now
+(§20.1's PF-1a); publishing is a terminal-only `fused` CLI action with no
+in-app affordance to gate.
 
 ### 20.5 Tabs (D125)
 
-- **PF-9** The page is split into two tabs, active tab in the URL
-  (`?tab=account`, default clean-URL tab is **Render preferences** —
-  Logs/Execution engine/Deploy to Fused account/Tour, unchanged): **Render preferences**
-  and **Fused account** (§27's account panel, folded in here since it stopped
-  being its own sidebar-footer entry). The **Fused account** tab button is
-  offered only while the PF-8 Deploy toggle is on; requesting `?tab=account`
-  while it's off falls back to Render preferences rather than showing a tab
-  with nothing pointing at it. This is also where the sidebar footer's
-  signed-in dot now points — see AC-1.
+- **PF-9** The page is split into tabs, active tab in the URL
+  (default clean-URL tab is **Render preferences** —
+  Logs/Execution engine/Tour, unchanged). *(A second **Fused account** tab —
+  §27's account panel, `?tab=account`, offered only while the PF-8 Deploy
+  toggle was on — used to sit alongside Render preferences here, and the
+  sidebar footer's signed-in dot pointed at it (formerly AC-1). Both the tab
+  and the dot are gone along with §19/§27; neither PF-8 nor AC-1 is cited by
+  anything that remains.)*
 
 ### 20.6 Template registry view
 
@@ -1914,7 +1537,7 @@ this view ships (§20.5); the endpoint it used is now consumed here instead.
 
 New endpoints live in `fused_render/templates_api.py` (a `templates_router`,
 mirroring `shell/bookmarks.py`/`shell/prefs.py`), included from `server.py`
-alongside the existing bookmarks/prefs/deploy routers. Mutating routes carry
+alongside the existing bookmarks/prefs routers. Mutating routes carry
 the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
 
 - **TV-3** `GET /api/templates/inventory` — the template pool across sources:
@@ -2111,7 +1734,7 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   when `disabled`, broken-name chips (`exists:false`) in a warning style.
   Filters: All / Modified only / by source; a search box over key and
   template name. `+ Add extension` opens the row editor in create mode.
-- **TV-15** **Row editor modal (D91)** (DeployModal-style: backdrop +
+- **TV-15** **Row editor modal (D91)** (`Modal`-style: backdrop +
   dialog, Escape to close): in **create** mode, a key **pattern builder**
   covering all four CT-3 shapes — simple `.ext`, compound `.a.b`, wildcard
   `.*.json`, directory `.ext/` — via a segmented control with a
@@ -2335,216 +1958,36 @@ when one exists, else the folder itself.
 
 ---
 
-## 27. Fused Account — In-App Login & Setup (M18)
+## 27. Fused Account — In-App Login & Setup — **REMOVED**
 
-Goal: remove §19's remaining copy-a-terminal-command dead ends. Sign-in
-(`fused cloud login`), first-time managed-environment setup
-(`fused cloud setup`), and day-two env management happen in the app; the
-§1 non-goals stand — this surface manages the **fused CLI's own** credentials
-on the user's machine for deploy targets, and every mutation is a
-`fused cloud …` / `fused env …` child process through the DP-3 seam
-(fusedcli.py). The mechanics port the flow app's connect-fused surface (flow
-repo, `spec/app/connect-fused.md`); the design rationale is in DECISIONS.md
-(D111/D112). Scope line (deliberate, same as flow's): the
-in-app path covers the **managed `fused` backend** only — self-hosted AWS
-provisioning stays a documented terminal flow.
+**This surface is deleted and the section is kept only as a tombstone, so the
+`AC-*` ids other sections still cite resolve to an explanation rather than to
+nothing.** §27 used to describe an in-app **Fused account** tab on the
+Preferences page (`?tab=account`, offered only while §19's Deploy toggle was
+on) that ran `fused cloud login`/`fused cloud setup`/`fused env …` through
+`fusedcli.py` as background child processes: sign-in (AC-3/AC-4/AC-5), a
+CONNECT-or-create managed-environment setup wizard (AC-6/AC-6a), env
+default/delete management (AC-7), an org/role summary with a re-sign-in
+remedy for a stale-but-present credential (AC-8/AC-8b), the env-wide
+Deployments section later folded in here (AC-11, `/api/deploy/shares`), and a
+signed-in dot that rode the sidebar's Preferences icon (AC-1). It read and
+ran only the **fused CLI's own** credentials (`~/.openfused/`) and never
+persisted anything of its own (AC-10) — that boundary is unaffected by the
+removal. All of it — the tab, `fused_render/account.py`, its `/api/account/*`
+endpoints, the signed-in dot, and the setup-job tracking — is gone, along
+with its tests.
 
-### 27.1 Surface
+**Nothing in-app replaced it.** Signing in (`fused cloud login`), setting up
+or managing a hosted environment (`fused cloud setup`, `fused env …`), and
+everything else this section covered are now plain commands the user runs
+themselves in a terminal — the CLI is exactly as capable as it always was,
+fused-render just no longer wraps it in a UI or spawns it on the user's
+behalf. There is no signed-in indicator anywhere in the app any more.
 
-- **AC-1** *(amended by D125)* The account panel is the **Fused account** tab
-  on the `/view/_prefs` Preferences page, alongside a **Render preferences**
-  tab (Logs/Engine/Deploy to Fused account/Tour — SPEC §20), selected via `?tab=account`
-  (bookmarkable, same pattern as Templates' bindings/library tabs). The
-  account tab is offered only once the Deploy toggle (§20) is on — that's the
-  only reason this app cares about a Fused account. There is no longer a
-  standalone sidebar-footer entry for it: the green **signed-in dot** (the
-  deploy-dot affordance — the presence-only `logged_in` signal, re-read on
-  focus/visibility regain, errors keeping the last-known value) now rides the
-  **Preferences** entry's icon instead, shown only when Deploy is enabled
-  *and* signed in — the dot is not its own click target (too small to hit
-  reliably), so clicking it just opens Preferences like the rest of the
-  button. The old `/view/_account` sentinel still resolves: App.tsx redirects
-  it (render-time `history.replaceState`, same technique as the `/` → start-dir
-  redirect) to `/view/_prefs?tab=account`, so existing bookmarks and the
-  Deploy modal's "Set up hosted environment" link keep working.
-- **AC-2** `GET /api/account/status` composes: `cli` (DP-4's `cli_status`
-  shape), `logged_in` (DP-2b's presence signal), `login_in_flight` (a login
-  child is live), `creds_stamp` (the credentials file's mtime, or null — a
-  cheap fingerprint the client uses to invalidate its cached probe across a
-  credential change, see AC-8), `envs_file`, `store` (the RAW env store: every backend,
-  each entry flagged `hosted`, plus the store's own `default` pointer —
-  distinct from DP-6's derivation; the deploy picker's derived view stays on
-  `GET /api/deploy/config`), and `probe` (null unless requested). The plain
-  read is an open GET like deploy's config; `?probe=1` EXECUTES (it spawns a
-  control-plane child) and therefore carries the D36 X-Fused guard — a
-  foreign page must not be able to trigger subprocess/network work with
-  blind cross-origin GETs. `?probe=1` — only when logged in and a CLI
-  exists — shells
-  `fused cloud orgs` (the authoritative check: it exercises/refreshes the
-  token): `{ok, admitted, orgs: [{org, env, provision_state, role}], error}`;
-  a probe failure degrades to `ok: false` with the CLI's message via the
-  DP-2b error mapping, never an HTTP error (the page renders from the
-  presence signal first and fills the probe in).
-
-### 27.2 Login
-
-- **AC-3** `POST /api/account/login {return_url}` spawns
-  `fused cloud login --no-browser` and returns `{authorize_url}` — the first
-  `http(s)://` URL captured from the child's output; **opening it is the
-  client's job** (`window.open`; the server never drives a browser). Child
-  env carries `PYTHONUNBUFFERED=1` (Python block-buffers piped stdout — the
-  URL line would otherwise sit past the capture window) and
-  `OPENFUSED_LOGIN_RETURN_URL=<return_url>` so the CLI's post-login callback
-  302s the browser back into the app. `return_url` must be an http(s) URL on
-  a loopback host (400 otherwise — mirrors the CLI's own rule; this server is
-  loopback-only, D2/D3). **Single-flight**: a concurrent POST joins the live
-  child (same URL back; its return_url is ignored) — never a second callback
-  server. The capture window is 30s (a COLD external CLI compiles bytecode on
-  first run; observed >15s); a child that exits **without** a URL fails the
-  request immediately (an exit watcher wakes waiters — no burning the
-  window), 502 carrying the CLI's last line via the DP-2b mapping. Every
-  kill path confirms death (SIGTERM → SIGKILL escalation, inline or on a
-  daemon thread): a merely-SIGTERM'd child could keep its callback server
-  alive and complete a late round-trip against a retried login.
-- **AC-4** Completion is **polled, not pushed**: the client polls status
-  (~2s) until `logged_in` flips; the CLI child owns the OAuth round-trip
-  (localhost callback, self-terminating after ~5min). A child that exits
-  signed-out (abandoned browser tab, timeout) surfaces as a retryable
-  message, detected as `login_in_flight` dropping without `logged_in`.
-- **AC-5** `POST /api/account/login/cancel` terminates the child.
-  `POST /api/account/logout` terminates **and waits out** (SIGTERM →
-  SIGKILL escalation) any in-flight login BEFORE running
-  `fused cloud logout --no-browser` — a login child outliving the credential
-  delete could complete its callback later and silently re-write the JWT.
-  Optional `{env}` forwards `--env NAME` (also drops that env's stored
-  data-plane key — the CLI's full-signout semantics). A RUNNING setup job is
-  canceled too (account-scoped work; its record reports "canceled by signing
-  out" and frees the single job slot) — no wait needed there, a setup child
-  can't resurrect the JWT. Returns fresh status.
-
-### 27.3 Environment setup & management
-
-- **AC-6** `POST /api/account/setup {org?, env?, env_name?}` runs
-  `fused cloud setup --no-browser [--org O --env E] --env-name NAME` as
-  **the one tracked background job**: 202 `{job_id, env_name}`; 409 when a
-  job is already running, and 409 when signed out — the interactive login
-  flow lives in ONE place (AC-3); a setup child silently waiting on a
-  sign-in URL nobody sees would just burn its timeout. Presence isn't
-  proof: before spawning, the sign-in is VERIFIED with one `cloud orgs`
-  probe, so an expired credential with a dead refresh token gets an
-  immediate actionable 409 instead of ~5 minutes of doomed spinner. `org`/`env` go
-  together (both or neither — omitting them lets the CLI discover the
-  account's workspace, self-creating a personal org for an admitted org-less
-  account); `env_name` is validated as a single safe token and defaults to
-  flow's convention (`fused` for the default managed env, `fused-<env>`
-  otherwise). The child's stdout+stderr are merged into one pipe (progress
-  goes to stderr, the final line to stdout — one pipe keeps terminal order)
-  and pumped into a bounded tail; `PYTHONUNBUFFERED=1` again; a 900s
-  backstop kills a wedged child. The CLI does everything real: waits for
-  provisioning, mints the data-plane key into the local secrets store,
-  writes the env into `envs.json` — the app never touches a secret.
-- **AC-6a** `GET /api/account/setup` reports
-  `{state: idle|running|done|failed, job_id, env_name, detail}` — `detail`
-  is the CLI's own lines (mapped error when failed; keyring-less Linux
-  hosts get the CLI's error naming the `fused[local]` remedy verbatim). The
-  client polls (~1.5s), **matches job_id** (a stale job's terminal state
-  must not complete a newer attempt), and **adopts** a running job on mount
-  (the page reopened mid-setup shows live progress; one-job-at-a-time makes
-  it unambiguous).
-- **AC-7** `POST /api/account/envs/default {name}` →
-  `fused env default NAME`; `POST /api/account/envs/delete {name}` →
-  `fused env delete NAME --yes` — the CLI's **local-pointer-only** delete
-  (no cloud teardown, no key revocation), stated in the confirm dialog and
-  the table copy. Names are rejected when flag-shaped (leading `-`): the
-  name lands in argv, where `--help` would be parsed as a click option that
-  exits 0 — a silent no-op the endpoint would report as success. Both
-  return fresh status so the client updates in one round-trip; the client
-  merges it over its cached probe (env actions don't change org
-  membership), so the signed-in summary never flickers away.
-
-### 27.4 Tab & Deploy-modal behavior
-
-- **AC-8** The account tab's states, in checking order (the DP-2 pattern):
-  CLI missing → the DP-4 install panel (same one-click/manual split);
-  signed out → sign-in (waiting + Cancel while connecting; a sign-in
-  started elsewhere — Deploy modal, another tab — is adopted read-only with
-  its own Cancel); signed in → account summary (probe orgs/roles table,
-  not-admitted note, and — when the probe FAILED — a **Sign in again** action
-  inside that note, because `logged_in` is presence-only: stored credentials the
-  identity provider no longer accepts (an expired, revoked or rotated refresh
-  token, surfaced as the CLI's own `403 … invalid refresh token`) leave a state
-  that *looks* signed in and cannot be retried out of, so the remedy has to be
-  reachable from where the error appears rather than only from the CLI. It reuses
-  the one sign-in path — see AC-8b for why completion is not presence), the environments management table (default marker,
-  with make-default and forget-with-confirm behind a per-row overflow
-  ("⋯") menu — one quiet control per row instead of a button pair), and
-  the setup panel — presented
-  as CONNECT when the account already has a workspace (`cloud setup
-  --org --env` connects the existing environment; nothing is created) and
-  as create-your-workspace when it has none: workspace picker when >1
-  org/env, the single workspace shown read-only when exactly one (the
-  user must see WHICH environment will be connected). The CONNECT path is
-  a one-click import of the discovered environment — the primary button
-  names it ("Connect <org> / <env>") and the local env name (a nickname
-  for this machine's store, prefilled by convention) is demoted behind an
-  "Edit name" reveal so the common path needs no typing; the create path
-  (no workspace) shows the editable name up front, since naming is the
-  point there. Live progress log; prominent while no managed env exists, else collapsed
-  behind an "Add managed environment" toggle. The deep probe is CACHED:
-  focus/visibility refreshes re-read only the cheap presence status and
-  keep the orgs view they have, re-probing only when it is missing (initial
-  load, right after a sign-in), forced (setup completion — self-serve may
-  have created the workspace), or when `creds_stamp` changed since the cached
-  probe (a re-login as a different account that never flipped `logged_in`
-  false in this tab — the cache must not show the prior account's orgs). All
-  return-to-tab refreshes ride the shared `useRefreshOnReturn` hook
-  (lib/hooks.ts), which coalesces the double focus+visibilitychange firing.
-- **AC-8b** **A sign-in completes on FRESH CREDENTIALS, not on their presence.**
-  `useFusedLogin` captures `creds_stamp` before spawning the child and finishes
-  only once the poll reports `logged_in` **and** a stamp different from that
-  baseline. Presence alone is the wrong signal for a **re**-authentication: the
-  credentials file already exists, so `logged_in` is already true and the first
-  poll tick would declare success before the browser round-trip had happened —
-  reporting a fixed account while the probe still fails. For a signed-out start
-  the baseline is null and the condition collapses to the original presence
-  check, so that path is byte-for-byte unchanged. If the pre-flight read of the
-  baseline fails the hook degrades to presence — eager for a re-auth, correct for
-  a fresh sign-in — rather than refusing to complete at all.
-  **Cancel's reconcile applies the same test** (one shared `isFreshLogin`, not two
-  copies of the rule). Cancel re-reads the status because the sign-in may have landed
-  in the gap before the cancel took effect, and that read must ask the same question
-  the poll asks: testing presence there meant that on the re-auth path — credentials
-  present, merely rejected — pressing Cancel announced a completed sign-in that never
-  happened and dismissed the note that had asked the user to sign in again.
-- **AC-11** The page also hosts the **Deployments** section — the env-wide
-  `fused share list` view with per-mount Revoke that PF-6 previously placed
-  on Preferences (semantics unchanged: `/api/deploy/shares` joined to local
-  pages, revoke by env+token via `deploy.revoke_mount`). Each row's actions
-  (Open ↗ / Copy link, and the destructive Revoke behind a separator) live in
-  the same per-row overflow ("⋯") menu as the environments table, so the
-  section shows one control per row rather than an Open link + Revoke button
-  pair; a row with no link and nothing to revoke shows a muted "—". Environments and
-  Deployments render in BOTH auth states: the env store and an AWS env's
-  share list need the CLI, not a managed-Fused sign-in — an AWS-only user
-  must not pass through an irrelevant sign-in to revoke a link. Only the
-  account summary and the setup panel gate on `logged_in`.
-- **AC-9** The Deploy modal never dead-ends into a terminal for the managed
-  path: its signed-out warning carries the working sign-in button (DP-2b as
-  amended), and its no-envs state signs in in place or routes to the account
-  page's setup panel. AWS env creation keeps naming
-  `<setup_cli> env create` — out of scope by the §27 scope line — and that
-  hint renders in BOTH branches: an AWS-only user who is signed out must
-  not be funneled into an irrelevant managed-cloud sign-in to learn it.
-
-### 27.5 Trust & credentials
-
-- **AC-10** No credential ever touches fused-render: the CLI owns the JWT
-  (`~/.openfused/fused-cloud-credentials.json`) and the data-plane keys
-  (the CLI's local secrets store); this surface reads *presence/status* and
-  runs the CLI, and persists nothing of its own under `~/.fused-render`.
-  All mutating endpoints carry the D36 X-Fused guard; `return_url` is
-  loopback-constrained (AC-3). The D3 stance is unchanged — this is not
-  authentication *of* fused-render, and the §1 non-goal stands as annotated.
+The one id another section still cites: **AC-1** — the signed-in dot on the
+Preferences sidebar entry; §37/38's resident-model dot analogy and §20.5's
+tab description both carry their own note now that the precedent it pointed
+to no longer exists.
 ## 28. Canvas View — Conditional Layout Viewer for `canvas.toml` (D114)
 
 A `canvas` view template renders a Fused **canvas definition** (`canvas.toml`,
@@ -6357,8 +5800,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   loads when you only give it text; the image half goes unused until a runner
   wants it.) A **dot on the sidebar
   entry** whenever anything is resident, naming it on hover: gigabytes held by
-  something you have forgotten about is exactly what an indicator is for, and it
-  is the same treatment being signed in already gets (AC-1).
+  something you have forgotten about is exactly what an indicator is for. *(The
+  Preferences entry once carried an analogous signed-in dot, AC-1, before §27
+  was removed; that precedent is gone, but the pattern it modeled stands on its
+  own here.)*
 - **AI-7c** **The tab is URL state, and the cache path and the Hub host are
   links.** The two tabs are **Local** and **Discover** — "cached" names the
   mechanism (a Hugging Face cache directory) where "local" names the thing, and

@@ -25,7 +25,6 @@ scripts/dev.sh --port 9000     # extra args pass through to the server
 ```bash
 uv venv --python 3.12 .venv                                         # pinned: matches what dev.sh and all three installers use
 uv pip install --python .venv/bin/python -e ".[dev,bundled,fused]"  # dev extra now includes pytest-xdist
-uv pip install --python .venv/bin/python pip                        # uv venv doesn't seed pip; test_deploy.py needs it
 ```
 
 For `shell-dist/`: if you've run `scripts/dev.sh`, it's already built. If you'll *only* run tests and never start the server, build it once directly (repo uses npm, per `package-lock.json`):
@@ -45,6 +44,5 @@ Verify: `ls fused_render/static/shell-dist/index.html` and `.venv/bin/python -m 
 | `bundled` extra | duckdb, pandas, numpy, pyarrow, pillow… (templates + daemons). NOT the geo/PDF/plotting stack any more (D276) — `map`, `vector`, `pdf_studio` and friends declare those in their own folder `pyproject.toml`, and the server installs them into a project venv on first render |
 | `fused` extra | compute-engine wheel for `/api/run` |
 | frontend build | `create_app()` refuses to start without `shell-dist/` |
-| seeded `pip` | `uv venv` makes a pip-less venv; `test_deploy.py`'s install/one-click-installable tests exercise the *real* `_pip_available()` against this interpreter, so they fail without it |
 
 Parallel tests: the suite is xdist-safe (process isolation), so `pytest -n auto` works (~4.5x faster). Process-based only — `os.chdir` + `importlib.reload` would race under a threaded runner.

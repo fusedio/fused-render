@@ -269,19 +269,6 @@
   .mount-steps li { margin:5px 0; }
   .mount-steps code { font-size:11.5px; }
 
-  /* browser-frame mockup (deployed app preview) */
-  .browser { display:block; text-decoration:none; border:1px solid var(--border); border-radius:12px;
-       overflow:hidden; background:var(--panel); margin:0 0 8px; }
-  .browser:hover { border-color:#4a4a4e; }
-  .browser .bar { display:flex; align-items:center; gap:11px; padding:9px 13px; background:var(--panel2);
-       border-bottom:1px solid var(--border); }
-  .browser .dots { display:flex; gap:6px; flex-shrink:0; }
-  .browser .dots i { width:11px; height:11px; border-radius:50%; display:block; }
-  .browser .url { flex:1; min-width:0; background:var(--bg); border:1px solid var(--border); border-radius:7px;
-       padding:5px 11px; font:11.5px/1.4 "SF Mono",ui-monospace,Menlo,monospace; color:var(--dim);
-       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .browser .go { flex-shrink:0; font-size:11.5px; color:var(--yellow); }
-  .browser img { display:block; width:100%; height:auto; }
 
   .steps { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:0 0 14px; }
   .step { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
@@ -605,7 +592,6 @@
       <a class="navtile" href="?page=using"><span class="nt-ic">📌</span><div><h4>Bookmarks &amp; split view</h4><p>Pin the pages you use daily, side by side.</p></div></a>
       <a class="navtile" href="?page=templates"><span class="nt-ic">🧩</span><div><h4>Custom templates</h4><p>Teach it to open your file types, your way.</p></div></a>
       <a class="navtile" href="?page=mount"><span class="nt-ic">🔌</span><div><h4>Mount S3 &amp; remote buckets</h4><p>Browse remote data like a local folder.</p></div></a>
-      <a class="navtile" href="?page=deploy"><span class="nt-ic">🚀</span><div><h4>Deploy <span class="y" style="font-size:11px">· Beta</span></h4><p>Share a page as a public link.</p></div></a>
     </div>
 
     <h2>What people build</h2>
@@ -734,7 +720,7 @@
     </div>
 
     <h2>Next</h2>
-    <p class="sub">Render other file types through <a href="?page=templates">Templates</a>, pull in remote data with <a href="?page=mount">Mount</a>, then <a href="?page=deploy">Deploy</a> so others can open your app in a browser. Or see finished projects in the <a href="?page=showcase">Showcase</a>.</p>
+    <p class="sub">Render other file types through <a href="?page=templates">Templates</a>, pull in remote data with <a href="?page=mount">Mount</a>. Or see finished projects in the <a href="?page=showcase">Showcase</a>.</p>
   </section>
 
   <!-- ============================ 2 · CLAUDE CODE ============================ -->
@@ -990,44 +976,8 @@
       <figcaption><b>Andorra building footprints</b>, opened straight from the mounted <code>source coop</code> bucket (see the breadcrumb) — rendered by the <code>pmtiles</code> template.</figcaption></figure>
   </section>
 
-  <!-- ============================ 5 · DEPLOY (BETA) ============================ -->
-  <section class="page" data-slug="deploy" data-title="Deploy your Render" data-ix="5" data-beta="1">
-    <p class="crumb">Publish</p>
-    <h1 class="title">Deploy your Render <span class="y" style="font-size:15px">· Beta</span></h1>
-    <p class="lede">Take a project that runs on your machine and <b>deploy it</b> so others can open it in a browser.</p>
-
-    <div class="callout beta"><span class="lab">Beta · limited availability</span>
-      <p style="margin:6px 0 0">Performance won't match local, and you can't move much data through a deployed app yet. Expect rough edges while this matures.</p></div>
-
-    <h2><span class="n">1</span>Requirements</h2>
-    <ul>
-      <li><b>Turn Deploy on</b> — it's off by default while in beta. Open <b>Preferences</b> and enable the Deploy button; it then appears on every page.</li>
-      <li>A <b>Fused account</b> — sign up at <a href="https://www.fused.io" target="_blank" rel="noopener">fused.io</a> and sign in with the <code>fused</code> CLI.</li>
-      <li>Your project should already run locally the way you want it.</li>
-    </ul>
-    <div class="callout beta"><span class="lab">Enable it first</span>
-      <p style="margin:6px 0 0">Don't see a <b>Deploy</b> button on your pages? It's hidden until you switch it on in <b>Preferences</b> — that's expected during the beta.</p></div>
-
-    <h2><span class="n">2</span>Deploying</h2>
-    <p class="sub">Hit <b>Deploy</b> on any page. Pick which files ship (the page, its Python, and any bundled data), choose a managed Fused environment, and you get a shareable <code>open.fused.io</code> URL — redeploying keeps the same link.</p>
-    <figure class="figure"><img data-shot="assets/shot_deploy.webp" alt="The Deploy dialog: active URL, the files that will publish, and Redeploy / Revoke">
-      <figcaption><b>The Deploy dialog</b> — the live URL, the files that will publish, and Redeploy / Revoke.</figcaption></figure>
-
-    <h2><span class="n">3</span>See a live one</h2>
-    <p class="sub">The <b>COG Overview Pyramid</b> example, deployed — it opens a cloud-optimized GeoTIFF and stacks every resolution level into an interactive 3D pyramid, with each level's pixel size and byte cost. Open it in your browser, no install:</p>
-    <a class="browser" href="https://open.fused.io/5p5yp52aolmwqks63j7l4e7x3u" target="_blank" rel="noopener">
-      <div class="bar">
-        <div class="dots"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i></div>
-        <div class="url">open.fused.io/5p5yp52aolmwqks63j7l4e7x3u</div>
-        <span class="go">open ↗</span>
-      </div>
-      <img data-shot="assets/shot_cog_pyramid.webp" alt="Deployed COG Overview Pyramid running in the browser, on a Maxar optical scene">
-    </a>
-    <p class="sub" style="font-size:12px;color:var(--mut)">Deployed straight from the <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/cog_overview_pyramid" target="_blank" rel="noopener">cog_overview_pyramid</a> example — hosted it runs in a read-only mode on a bundled sample COG (a Maxar optical scene of Manila).</p>
-  </section>
-
-  <!-- ============================ 6 · SHOWCASE ============================ -->
-  <section class="page" data-slug="showcase" data-title="Showcase & Best Practices" data-ix="6">
+  <!-- ============================ 5 · SHOWCASE ============================ -->
+  <section class="page" data-slug="showcase" data-title="Showcase & Best Practices" data-ix="5">
     <p class="crumb">Examples</p>
     <h1 class="title">Showcase &amp; Best Practices</h1>
     <p class="lede">Working projects you can open and pick apart — each one is a <b>page plus a Python file</b> in a folder, like everything in Fused Render. Clicking a card clones it into your workspace.</p>

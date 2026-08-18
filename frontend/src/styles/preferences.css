@@ -1006,7 +1006,7 @@
   width: 100%;
 }
 
-/* Render preferences / Fused account tabs (D125) — same look as the
+/* Render preferences / Indexing tabs (D125) — same look as the
    Templates page's bindings/library tabs. */
 .prefs-tabs {
   display: flex;

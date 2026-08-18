@@ -321,6 +321,7 @@ def _probe_python(path: str) -> bool:
         proc = subprocess.run(
             [path, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
             capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             # close_fds=False for posix_spawn instead of fork()+exec, the discipline
             # `venvs.py` documents at module level: this server has almost certainly
             # touched pyproj/rasterio, and a forked child runs PROJ's atfork handler,
@@ -401,6 +402,7 @@ def _resolve_script_python() -> tuple[str | None, bool]:
             [uv, "python", "find", "--managed-python", "--no-project", "--system",
              SCRIPT_PYTHON_VERSION],
             capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             timeout=_SCRIPT_PYTHON_TIMEOUT_S, close_fds=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -544,6 +546,7 @@ def _venv_runs(venv_dir: str) -> bool | None:
         proc = subprocess.run(
             [exe, "-c", ""],
             capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             timeout=_VENV_PROBE_TIMEOUT_S, env=_child_env(),
             # close_fds=False for posix_spawn instead of fork()+exec — the same
             # discipline `_probe_python` above already follows, and the site
@@ -1079,6 +1082,7 @@ def _pid_alive(pid: int) -> bool:
         out = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
             capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
         )
         return str(pid) in (out.stdout or "")
     # Reap it first if WE spawned it. `start_new_session=True` does not reparent

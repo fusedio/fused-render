@@ -213,6 +213,7 @@ def _acquire_python(version):
     # otherwise pop a fresh one for a console-subsystem child like uv.exe.
     proc = subprocess.run([uv, "python", "install", version], env=_uv_env(),
                           capture_output=True, text=True, close_fds=False,
+                          encoding="utf-8", errors="replace",
                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     if proc.returncode != 0:
         # Verbatim, exactly like the requirements install below: uv's own text names
@@ -339,6 +340,7 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
     # every other spawn in this codebase follows; see `_acquire_python` above.
     proc = subprocess.run(cmd, cwd=project_dir, env=env,
                           capture_output=True, text=True, close_fds=False,
+                          encoding="utf-8", errors="replace",
                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     if proc.returncode != 0:
         # Verbatim: uv's own text names the real problem (no wheel for this

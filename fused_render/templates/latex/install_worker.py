@@ -75,7 +75,8 @@ def _warm_base(cache_dir, warm_dir, tectonic_bin):
         subprocess.run(
             [tectonic_bin, "-X", "compile", "--keep-logs", "--outdir", scratch, doc],
             env=env, cwd=scratch, capture_output=True, text=True, timeout=WARM_TIMEOUT_S,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         _warm_progress(warm_dir, "error", "package fetch timed out", done=True,
                        error="Preparing the LaTeX packages took too long — check your "

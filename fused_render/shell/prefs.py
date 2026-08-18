@@ -18,12 +18,11 @@ the registry's own ordering decides. See ``inference_engines``; the resolution,
 including what happens to a preference this machine cannot honour, belongs to
 ``ai/registry.py``.
 
-Four more preferences are persisted: **deploy_enabled** (whether the preview-header
-Deploy affordance is shown — opt-in, default off; see ``deploy_enabled``),
-**reader_enabled** (whether the Reader listen-to-files accessibility mode is
-offered — opt-in, default off; see ``reader_enabled``), **default_model** (the
-preferred Claude model as a short name, unset by default; see
-``default_model``), and the **execution engine** for /api/run:
+Three more preferences are persisted: **reader_enabled** (whether the Reader
+listen-to-files accessibility mode is offered — opt-in, default off; see
+``reader_enabled``), **default_model** (the preferred Claude model as a short
+name, unset by default; see ``default_model``), and the **execution engine**
+for /api/run:
 
   * ``"fused"`` (default, D204) — the fused local compute backend (engine.py):
     a folder's ``pyproject.toml`` dependencies resolved into cached venvs,
@@ -112,19 +111,6 @@ def selected_engine() -> str:
     """
     value = read_prefs().get("engine")
     return value if value in VALID_ENGINES else "fused"
-
-
-def deploy_enabled() -> bool:
-    """Whether the Deploy affordance is shown (default off — opt-in).
-
-    Deploy publishes a page to a public hosted URL through the fused CLI; it's
-    an opt-in surface, so the preview-header Deploy button stays hidden until
-    the user turns it on from the Preferences page. This gates only the UI
-    affordance — it is NOT a security control (the /api/deploy* endpoints keep
-    their own X-Fused guard); it just keeps the surface minimal for users who
-    don't deploy. Any non-`true` stored value (missing/legacy) reads as off.
-    """
-    return read_prefs().get("deploy_enabled") is True
 
 
 def reader_enabled() -> bool:
@@ -258,7 +244,8 @@ def calls_retention_days() -> int:
 
 def fused_engine_available() -> bool:
     """Whether the fused backend is importable, resolved off the request path:
-    engine.warm() caches it at startup, /api/deploy/install flips it via invalidate()."""
+    engine.warm() caches it at startup, a mid-session install flips it via
+    invalidate()."""
     from fused_render import engine as _engine
 
     return _engine.available_nonblocking()
@@ -309,8 +296,6 @@ def engine_state() -> dict:
 def _prefs_response() -> dict:
     return {
         "engine": engine_state(),
-        # Whether the preview-header Deploy affordance is shown (opt-in).
-        "deploy": {"enabled": deploy_enabled()},
         # Whether the Reader (listen-to-files) accessibility mode is offered (opt-in).
         "reader": {"enabled": reader_enabled()},
         # The default Claude model, as a short name; "" = unset (each consumer
@@ -435,7 +420,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if guard is not None:
         return guard
     # Partial update: apply only the keys present, so the page can PUT one
-    # setting without echoing the others (the engine radio and the deploy
+    # setting without echoing the others (the engine radio and the reader
     # toggle are independent controls).
     prefs = read_prefs()
     changed = False
@@ -446,12 +431,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 {"error": f"'engine' must be one of: {', '.join(VALID_ENGINES)}"}, status_code=400
             )
         prefs["engine"] = engine
-        changed = True
-    if "deploy_enabled" in body:
-        value = body.get("deploy_enabled")
-        if not isinstance(value, bool):
-            return JSONResponse({"error": "'deploy_enabled' must be a boolean"}, status_code=400)
-        prefs["deploy_enabled"] = value
         changed = True
     if "reader_enabled" in body:
         value = body.get("reader_enabled")
@@ -520,7 +499,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'engines', 'deploy_enabled', 'reader_enabled', "
+                      "'engines', 'reader_enabled', "
                       "'default_model', 'calls_enabled', 'calls_params' and/or "
                       "'calls_retention_days')"},
             status_code=400,

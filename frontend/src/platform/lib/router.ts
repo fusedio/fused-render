@@ -29,7 +29,6 @@ export function rewriteLegacyUrl(url: string): string {
   const qIdx = url.indexOf("?");
   const p = qIdx === -1 ? url : url.slice(0, qIdx);
   const q = qIdx === -1 ? "" : url.slice(qIdx);
-  if (p === "/view/_account") return "/preferences?tab=account";
   const mapped = LEGACY_SENTINELS[p];
   // A tab that MOVED PAGES, which the sentinel table cannot express: Inference
   // engines is the Engines tab of /ai-models now (shell/AiModelsEngines.tsx).

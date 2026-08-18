@@ -301,12 +301,13 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
 # the OAUTH_TIMEOUT backstop below is ours to enforce, not rclone's.
 #
 # The whole child lifecycle — dataclass record, stdout/stderr pump threads, an
-# exit watcher, SIGTERM->SIGKILL escalation, poll-don't-push completion — is
-# lifted from account.py's `fused cloud login` flow deliberately: that pattern is
-# already proven here, and a second concurrency shape for the same problem would
-# be a second thing to get wrong. The differences are only the ones the task
-# forces: there is no URL to capture (rclone opens the browser itself), so the
-# request returns as soon as the child is spawned and everything interesting
+# exit watcher, SIGTERM->SIGKILL escalation, poll-don't-push completion — was
+# lifted from the (since-removed) in-app `fused cloud login` flow deliberately:
+# that pattern was already proven there, and a second concurrency shape for the
+# same problem would be a second thing to get wrong. The differences are only
+# the ones the task forces: there is no URL to capture (rclone opens the
+# browser itself), so the request returns as soon as the child is spawned and
+# everything interesting
 # happens on the watcher thread; and a second sign-in is REJECTED rather than
 # joined, since rclone's callback port can only be bound once and a joiner would
 # be waiting on a remote with a different name.
@@ -397,7 +398,7 @@ class _ActiveAuthorize:
     `done` is set exactly once, by the watcher thread, AFTER `ok`/`error` are
     written — status readers only act on `done`, so that ordering is the whole
     synchronization (plain attribute writes are atomic under the GIL, the same
-    discipline account.py's _SetupJob uses).
+    discipline the (since-removed) in-app account setup job used).
 
     Two separate output sinks, and that split is load-bearing: `out` is stdout,
     which CARRIES THE TOKEN, and `tail` is stderr, which is what error messages
@@ -498,6 +499,7 @@ def _spawn_authorize(bin_: str, backend: str,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8", errors="replace",
         env={**os.environ, **(env_extra or {})},
     )
 
@@ -511,10 +513,10 @@ def _pump_authorize(stream, sink: collections.deque) -> None:
 
 
 def _ensure_dead_child(proc: subprocess.Popen) -> None:
-    """Escalate a terminated child to SIGKILL if it ignores SIGTERM (account.py's
-    _ensure_dead). A merely-SIGTERM'd authorize child could survive holding its
-    loopback callback server, complete a late Google round-trip, and race a
-    retried sign-in."""
+    """Escalate a terminated child to SIGKILL if it ignores SIGTERM (same idea
+    as the since-removed in-app account setup's own _ensure_dead). A merely-
+    SIGTERM'd authorize child could survive holding its loopback callback
+    server, complete a late Google round-trip, and race a retried sign-in."""
     try:
         proc.wait(OAUTH_KILL_GRACE)
     except subprocess.TimeoutExpired:
@@ -850,9 +852,10 @@ def start_remote_oauth(body: dict = Body(...), x_fused: str | None = Header(defa
     global _authorize
     with _AUTH_LOCK:
         if _authorize is not None and not _authorize.done.is_set():
-            # Not joinable like account.py's login: rclone's callback server
-            # binds 127.0.0.1:53682, so a second child could not even start, and
-            # the caller is asking for a differently-named remote anyway.
+            # Not joinable like the (since-removed) in-app account login:
+            # rclone's callback server binds 127.0.0.1:53682, so a second
+            # child could not even start, and the caller is asking for a
+            # differently-named remote anyway.
             return JSONResponse(
                 {"error": "a sign-in is already in progress — finish or cancel it first"},
                 status_code=409)
@@ -947,7 +950,8 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
     for k, v in sugg["params"].items():
         cmd += [k, v]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                           encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         return JSONResponse({"error": "rclone config create timed out (30s)"}, status_code=502)
     if r.returncode != 0:
@@ -964,7 +968,8 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
             # the next detect and re-invite the doomed mount.
             try:
                 d = subprocess.run([bin_, "config", "delete", name],
-                                   capture_output=True, text=True, timeout=30)
+                                   capture_output=True, text=True, timeout=30,
+                                   encoding="utf-8", errors="replace")
                 removed = d.returncode == 0
             except (OSError, subprocess.TimeoutExpired):
                 removed = False

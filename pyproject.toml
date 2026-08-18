@@ -239,8 +239,6 @@ app = [
 # to the same release the managed Fused service serves hosted pages from, so local and
 # hosted execution stay on one build. The engine needs 3.11+; on 3.10 the
 # marker skips it and the built-in executor runs.
-# The version pin must match deploy.PINNED_FUSED_REQUIREMENT (the Deploy modal's
-# one-click install, SPEC DP-4) — a test pins the two together.
 #
 # This extra is KEPT even though the same requirement now also sits in
 # `[bundled]` above, and the two must be updated together (a test asserts they

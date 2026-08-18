@@ -344,6 +344,8 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
             input=request,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             # The child inherits os.environ untouched: no `env=` and, in
             # particular, no PYTHONPATH injection. This used to append THIS

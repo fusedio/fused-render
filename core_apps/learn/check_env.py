@@ -37,6 +37,8 @@ def main():
                     text=True,
                     env=env,
                     timeout=8,
+                    encoding="utf-8",
+                    errors="replace",
                 )
                 for line in out.stdout.splitlines():
                     cand = line.strip()
@@ -63,6 +65,8 @@ def main():
                 text=True,
                 env=env,
                 timeout=8,
+                encoding="utf-8",
+                errors="replace",
             )
             prefix = npm.stdout.strip().splitlines()
             if prefix:
@@ -83,6 +87,8 @@ def main():
                 text=True,
                 env=clean_env(),
                 timeout=5,
+                encoding="utf-8",
+                errors="replace",
             )
             v = (out.stdout or out.stderr or "").strip()
             return v or None

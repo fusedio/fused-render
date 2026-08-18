@@ -8,7 +8,8 @@
 //   • optional `dirty` guard: the first close attempt shows an inline
 //     "close again to discard" hint and only the second (within ~2s) closes.
 // Chrome reuses the existing .deploy-* CSS (the body carries both `modal-body`
-// and `deploy-body` so descendant skins that key off .deploy-body keep working).
+// and `deploy-body` so descendant skins that key off .deploy-body keep working,
+// e.g. RowEditorModal).
 import {
   useCallback,
   useEffect,
@@ -32,8 +33,8 @@ export interface ModalProps {
   onClose: () => void;
   children: ReactNode;
   // When true, Esc / backdrop / ✕ do NOT close (an action is running that must
-  // not be abandoned). Note: DeployModal deliberately passes false — its action
-  // continues server-side and the dialog stays closeable (#12).
+  // not be abandoned). A modal whose action continues server-side regardless of
+  // whether the dialog is open can instead pass false and stay closeable (#12).
   busy?: boolean;
   width?: number | string;
   footer?: ReactNode;
@@ -44,7 +45,7 @@ export interface ModalProps {
   // Extra class on the dialog for per-modal width/padding tweaks
   // (e.g. "templates-editor", "templates-import").
   dialogClassName?: string;
-  // Tooltip for the ✕ button (e.g. DeployModal's "the action keeps running").
+  // Tooltip for the ✕ button (e.g. "the action keeps running" for a busy={false} modal).
   closeTitle?: string;
 }
 
@@ -191,9 +192,9 @@ export function Modal({
 
   const dialogStyle: CSSProperties | undefined = width !== undefined ? { width } : undefined;
 
-  // Portal to <body>: modals mount from arbitrary spots (e.g. DeployModal
-  // inside the preview toolbar), and ancestor-scoped `button` rules were
-  // leaking into the dialog chrome (boxed ✕ on Deploy only).
+  // Portal to <body>: modals mount from arbitrary spots (e.g. AI Models'
+  // NewJobModal inside a page's toolbar), and ancestor-scoped `button` rules
+  // were leaking into the dialog chrome (a boxed ✕ from just one caller's styles).
   return createPortal(
     <div
       className={"modal-overlay deploy-overlay" + (closing ? " closing" : "")}
