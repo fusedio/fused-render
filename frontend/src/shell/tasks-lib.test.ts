@@ -38,6 +38,7 @@ import {
   isUnread,
   isUpcomingTask,
   laneCollapsed,
+  laneRolledUp,
   laneUnread,
   laneTime,
   lastRunAt,
@@ -5077,18 +5078,41 @@ describe("which board lanes are rolled up", () => {
     expect(laneCollapsed("in_progress", 1, {})).toBe(false);
   });
 
-  it("lets the reader open an empty lane, and rolls it up only by default", () => {
-    // Empty briefly OUTRANKED the reader — the lane rolled itself up and would
-    // not open again — and that was the wrong half of the complaint to fix
-    // (Akshil, 2026-08-18). Rolling up by default is what keeps four empty
-    // columns off a board with one busy lane; refusing to open is a lane
-    // telling the reader they may not look inside it. An expanded empty lane
-    // shows an empty panel, which is a fine answer to "is there anything here".
+  it("never consults the store for an EMPTY lane", () => {
+    // The persistent answer, and it short-circuits: nothing a reader does to an
+    // empty column can be written down, so nothing can outlive the sitting.
     expect(laneCollapsed("archived", 0, {})).toBe(true);
-    expect(laneCollapsed("archived", 0, { archived: false })).toBe(false);
-    expect(laneCollapsed("in_progress", 0, { in_progress: false })).toBe(false);
-    // And closing it again is the same one choice, written the other way.
-    expect(laneCollapsed("archived", 0, { archived: true })).toBe(true);
+    expect(laneCollapsed("archived", 0, { archived: false })).toBe(true);
+    expect(laneCollapsed("in_progress", 0, { in_progress: false })).toBe(true);
+  });
+
+  it("rolls a lane up when it DRAINS, whatever it was set to when it had work", () => {
+    // The consequence a reader will actually notice. The expanded choice is not
+    // honoured on the way down — and not deleted either, so the lane opens again
+    // on it the moment cards come back.
+    const choices = { done: false };
+    expect(laneCollapsed("done", 3, choices)).toBe(false);
+    expect(laneCollapsed("done", 0, choices)).toBe(true);
+    expect(laneCollapsed("done", 1, choices)).toBe(false);
+  });
+
+  it("lets the reader PEEK into an empty lane, for this sitting only", () => {
+    // Opening a column with nothing in it answers "is there really nothing
+    // here?", and that is a question, not a preference. `laneRolledUp` is where
+    // the peek meets the store.
+    const none = new Set<BoardColumn>();
+    const peeked = new Set<BoardColumn>(["archived"]);
+    expect(laneRolledUp("archived", 0, {}, none)).toBe(true);
+    expect(laneRolledUp("archived", 0, {}, peeked)).toBe(false);
+    // A peek says nothing about a lane that has cards — which is what stops a
+    // stale one reopening a column that filled up and drained again.
+    expect(laneRolledUp("archived", 2, { archived: true }, peeked)).toBe(true);
+    expect(laneRolledUp("archived", 2, {}, peeked)).toBe(false);
+    // And with no peek it is exactly the persistent rule.
+    for (const count of [0, 1, 5]) {
+      expect(laneRolledUp("done", count, { done: true }, none))
+        .toBe(laneCollapsed("done", count, { done: true }));
+    }
   });
 
   it("lets the reader's own choice outrank the rule, in both directions", () => {
@@ -5186,8 +5210,22 @@ describe("which board lanes are rolled up", () => {
     expect(LANES).toContain("{...dropProps(col.key)}");
   });
 
-  it("is decided by laneCollapsed on the board, which stores only the toggle", () => {
-    expect(LANES).toContain("laneCollapsed(col.key, lane.length, choices)");
+  it("is decided by laneRolledUp on the board, which stores only the toggle", () => {
+    expect(LANES).toContain("laneRolledUp(col.key, lane.length, choices, peeked)");
+    // The peek is component state and is persisted NOWHERE — not localStorage,
+    // not the URL — so a remount (every navigation back to this page) starts the
+    // board with none.
+    expect(LANES).toContain("const [peeked, setPeeked] = useState<Set<BoardColumn>>(() => new Set());");
+    // WHICH store a press lands in is decided by the lane's contents. A press on
+    // a lane with cards is a preference and is written down; a press on an empty
+    // one is a peek and stays in memory.
+    const toggle = LANES.slice(LANES.indexOf("const toggleLane = (key: BoardColumn"));
+    const body = toggle.slice(0, toggle.indexOf("\n  };"));
+    expect(body).toContain("if ((byLane.get(key)?.length ?? 0) === 0) {");
+    expect(body.indexOf("setPeeked(")).toBeLessThan(body.indexOf("localStorage.setItem"));
+    // And the peek is dropped while the lane has cards, so a column that fills
+    // and drains comes back rolled up rather than answering an older emptiness.
+    expect(LANES).toContain("const next = new Set([...cur].filter((key) => (byLane.get(key)?.length ?? 0) === 0));");
     // The old snapshot key and its hard-coded Archive are gone.
     expect(VIEWS).not.toContain("scheduled-board-collapsed");
     expect(VIEWS).not.toContain('new Set<BoardColumn>(["archived"])');

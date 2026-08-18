@@ -2280,24 +2280,39 @@ export function groupByColumn(
 // A lane is either an open column or a 52px rail. Two things decide which, in
 // this order:
 //
+// AN EMPTY LANE IS ALWAYS ROLLED UP, AND NOTHING ABOUT IT IS REMEMBERED. That is
+// the whole of the empty case, and it is deliberately not a choice the reader
+// can make stick: a column with nothing in it has nothing to show, so opening
+// one is a PEEK — "is there really nothing here?" — and a peek is answered and
+// over. Left persistable, it is the one setting a reader would make once and
+// then be given four empty outlined columns by, for weeks, on a board they use
+// to see what is running.
+//
+// So the two states are stored in two different places, on purpose:
+//
+//   * `choices` — the reader's answer for a lane WITH CARDS IN IT. localStorage,
+//     survives reloads, and is what `laneCollapsed` below reads.
+//   * the peek — a lane opened while empty. Component state in TaskBoard,
+//     survives nothing: not a reload, not a remount, and not the lane filling up
+//     and draining again. `laneRolledUp` is where the two meet.
+//
+// The consequence worth stating, because it is the one a reader will notice: a
+// lane they had OPEN drains, and it rolls up. The expanded choice is not
+// honoured on the way down and it is not deleted either — it is simply not what
+// an empty lane is asked. Cards arrive, and the lane opens again on the choice
+// that was always there.
+//
+// For a lane with cards, two things decide, in this order:
+//
 //   1. What the reader last chose for THAT lane. Explicit choices are the only
 //      thing stored, so a lane nobody has ever touched keeps following the rule
 //      below forever rather than being frozen at whatever it looked like the
 //      first time the page was opened.
-//   2. Otherwise: EMPTY lanes start rolled up, everything else starts open.
-//
-// Rule 2 was briefly a RULE rather than a default — empty outranked the reader,
-// so a drained lane rolled itself up and would not open again. That went too
-// far (Akshil, 2026-08-18): the reader is still allowed to look inside an empty
-// column, and a lane that refuses to open is a control that has stopped being
-// one. What the complaint was actually about is the DEFAULT, which is unchanged
-// and is what keeps four empty outlined columns off a board with one busy lane
-// — and about the `0` on a rolled-up rail, which is gone for good (see
-// ScheduleTaskViews).
+//   2. Otherwise: open.
 //
 // Archive used to be hard-coded closed. It is not special any more (Akshil,
 // 2026-08-18) — an Archive with cards in it is a column like the others, and an
-// Archive with none rolls up under rule 2 like the others.
+// Archive with none rolls up like the others.
 
 /** The key the board's lane choices live under. Distinct from the array-shaped
  * key an earlier build wrote: that one recorded "collapsed now", defaults
@@ -2327,13 +2342,43 @@ export function parseLaneChoices(raw: string | null): LaneChoices {
   return out;
 }
 
-/** Rule 1 then rule 2, for one lane. `count` is how many cards it holds. */
+/**
+ * The PERSISTENT answer for one lane: what it looks like on a fresh render, with
+ * nothing but the store to go on. `count` is how many cards it holds.
+ *
+ * Empty short-circuits, and that is the whole point — a stored choice is never
+ * consulted for a lane with nothing in it, so nothing a reader does to an empty
+ * lane can outlive the sitting, and a lane that drains reverts here rather than
+ * honouring what it was set to when it still had work in it.
+ */
 export function laneCollapsed(
   lane: BoardColumn,
   count: number,
   choices: LaneChoices,
 ): boolean {
+  if (count === 0) return true;
   const chosen = choices[lane];
   if (chosen !== undefined) return chosen;
-  return count === 0;
+  return false;
+}
+
+/**
+ * What the board actually draws — `laneCollapsed` plus this sitting's peeks.
+ *
+ * `peeked` is the set of lanes the reader has opened WHILE EMPTY (TaskBoard
+ * holds it in component state and persists none of it). It is consulted only in
+ * the empty case: a peek is an answer to "is there really nothing here?", and it
+ * has nothing to say about a lane that has cards. That is also what keeps a
+ * stale peek from reopening a lane that filled up and drained again — the peek
+ * is ignored for the whole time the lane has cards, and TaskBoard drops it in
+ * that window.
+ */
+export function laneRolledUp(
+  lane: BoardColumn,
+  count: number,
+  choices: LaneChoices,
+  peeked: ReadonlySet<BoardColumn>,
+): boolean {
+  if (count === 0) return !peeked.has(lane);
+  return laneCollapsed(lane, count, choices);
 }

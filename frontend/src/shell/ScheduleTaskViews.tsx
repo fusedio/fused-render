@@ -65,7 +65,7 @@ import {
   isExpandable,
   isFailedTask,
   isUpcomingTask,
-  laneCollapsed,
+  laneRolledUp,
   laneUnread,
   markAllRead,
   markRead,
@@ -2113,10 +2113,12 @@ function TaskNode({
 const LANE_INITIAL_VISIBLE = 20;
 const LANE_REVEAL = 20;
 
-// Which lanes are rolled up into the 52px rail. The RULE lives in
-// tasks-lib.laneCollapsed (empty ⇒ rolled up, otherwise open) and only the
-// reader's own toggles are stored, so a lane nobody has touched keeps following
-// the rule as it fills and empties.
+// Which lanes are rolled up into the 52px rail. The RULE lives in tasks-lib —
+// `laneCollapsed` for what the store says and `laneRolledUp` for what is drawn —
+// and THIS is only half of the state: a lane with cards remembers the reader's
+// toggle here, and a lane with none remembers nothing at all (the peek, in
+// TaskBoard). So a lane nobody has touched keeps following the rule as it fills
+// and empties, and so does one they touched while it was empty.
 function readLaneChoices(): LaneChoices {
   try {
     return parseLaneChoices(localStorage.getItem(LANE_CHOICE_KEY));
@@ -2140,6 +2142,11 @@ export function TaskBoard({
   onReload: () => void;
 }) {
   const [choices, setChoices] = useState<LaneChoices>(readLaneChoices);
+  // Lanes the reader has opened WHILE EMPTY. Deliberately component state and
+  // deliberately not persisted: opening a column with nothing in it is a peek,
+  // and a peek is answered and over (tasks-lib, above `laneCollapsed`). A remount
+  // — every navigation back to this page — starts the board with none.
+  const [peeked, setPeeked] = useState<Set<BoardColumn>>(() => new Set());
   const [visible, setVisible] = useState<Record<string, number>>({});
   // The card in flight and the lane under it. Native HTML5 drag — a column
   // move needs nothing fancier than the platform's own.
@@ -2285,7 +2292,23 @@ export function TaskBoard({
   // own earlier one — so the press always means "the other one of these two".
   // Recording the RESULT rather than a flip is what makes the store a record of
   // choices instead of a snapshot of the board.
+  //
+  // WHICH of the two stores it lands in is decided by the lane's contents, and
+  // by nothing else. A press on a lane with cards is a preference and is written
+  // down; a press on an empty one is a peek and stays in memory, so nothing a
+  // reader does to an empty column can outlive the sitting. The peek is a
+  // straight toggle because it is the only thing the empty case has: closing a
+  // peeked lane is removing the peek, not recording "collapsed".
   const toggleLane = (key: BoardColumn, nowCollapsed: boolean) => {
+    if ((byLane.get(key)?.length ?? 0) === 0) {
+      setPeeked((cur) => {
+        const next = new Set(cur);
+        if (nowCollapsed) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+      return;
+    }
     setChoices((cur) => {
       const next = { ...cur, [key]: !nowCollapsed };
       try {
@@ -2298,6 +2321,19 @@ export function TaskBoard({
   };
 
   const byLane = useMemo(() => groupByColumn(tasks), [tasks]);
+
+  // A peek dies the moment the lane it was about stops being empty, so a column
+  // that fills up and drains again comes back rolled up rather than wearing an
+  // answer to a question the reader asked about a different, older emptiness.
+  // `laneRolledUp` already ignores the peek while there are cards, so this only
+  // has to clear it inside that window — which is exactly where it is safe to.
+  useEffect(() => {
+    setPeeked((cur) => {
+      if (cur.size === 0) return cur;
+      const next = new Set([...cur].filter((key) => (byLane.get(key)?.length ?? 0) === 0));
+      return next.size === cur.size ? cur : next;
+    });
+  }, [byLane]);
 
   return (
     <>
@@ -2313,7 +2349,7 @@ export function TaskBoard({
           // rather than messages (tasks-lib.laneUnread) because the header stands
           // over cards.
           const news = laneUnread(lane, read);
-          const rolled = laneCollapsed(col.key, lane.length, choices);
+          const rolled = laneRolledUp(col.key, lane.length, choices, peeked);
           if (rolled) {
             // An empty rail is STILL A BUTTON. It briefly was not — empty
             // outranked the reader's choice, so the press did nothing and the
