@@ -2313,16 +2313,14 @@ input.schedule-when-field {
   border-radius: 999px;
 }
 
-/* The five hues, stated once for every mark that wears them — the ring, and the
-   board card's `.tasks-news` dot. Two lists would be two places to forget. */
-.schedule-ring--upcoming,
-.tasks-news--upcoming { color: var(--status-upcoming); }
-.schedule-ring--in_progress,
-.tasks-news--in_progress { color: var(--status-progress); }
-.schedule-ring--done,
-.tasks-news--done { color: var(--status-done); }
-.schedule-ring--archived,
-.tasks-news--archived { color: var(--status-archived); }
+/* The five hues. One mark wears them — the status ring. A board card's unread dot
+   wore them too for part of 2026-08-18; it is the card TITLE'S WEIGHT now, which
+   costs no hue at all, so the list is back to naming the one mark that has a
+   lane. */
+.schedule-ring--upcoming { color: var(--status-upcoming); }
+.schedule-ring--in_progress { color: var(--status-progress); }
+.schedule-ring--done { color: var(--status-done); }
+.schedule-ring--archived { color: var(--status-archived); }
 
 /* Failed is a COLUMN of its own since 2026-08-17, and the red is its hue rather
    than an override. The second selector stays because the override case has not
@@ -2330,7 +2328,6 @@ input.schedule-when-field {
    caller, or a task the server still files under done) must still read red, and
    it has to outrank the done green to do it. */
 .schedule-ring--failed,
-.tasks-news--failed,
 .schedule-ring--failed.schedule-ring--done { color: var(--status-failed); }
 
 /* -- The inner dot: UNREAD, not merely settled ---------------------------------
@@ -2477,33 +2474,6 @@ input.schedule-when-field {
    "happening" now. Nothing in styles/reduced-motion.css named the animation (its
    blanket `animation-duration: 0.01ms` covered it), so removing it leaves nothing
    dangling there either. */
-
-/* -- The board card's unread mark ---------------------------------------------
-   A card does NOT wear a status ring: it is read inside the lane it was filed
-   into, and the lane header already carries the ring and the word, so a ring on
-   the card is the column saying its own name twice (Akshil, 2026-08-17 and again
-   2026-08-18). The one exception is a card whose status disagrees with its lane —
-   a failed run triaged to Done — and that ring is information rather than
-   repetition.
-
-   Which leaves unread with nowhere to live on a card, since it is the ring's
-   filled centre everywhere else. So the card gets a mark of its own: a small
-   filled dot leading the head, before the id, in the SAME status hue the ring
-   would have used. Hue keeps the vocabulary; the bare shape is what makes it a
-   different claim — a ring says "here is the status", which the header has
-   covered, and a dot says "there is something in here you have not seen", which
-   it cannot. Nothing at all on a read card.
-
-   `currentColor` off the `--` modifiers below, so the five hues are stated once
-   for the ring and the dot together and cannot drift apart. */
-.tasks-news {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  flex: 0 0 7px;
-  border-radius: 999px;
-  background: currentColor;
-}
 
 /* -- Folder chip: WHERE the row's work happened ------------------------------
    Was flow's initials-in-a-circle avatar, which in flow stands for an AGENT.
@@ -3122,6 +3092,38 @@ input.schedule-when-field {
   line-height: 1.35;
   overflow-wrap: anywhere;
   min-width: 0;
+}
+
+/* -- The board card's unread mark ---------------------------------------------
+   A card does NOT wear a status ring: it is read inside the lane it was filed
+   into, and the lane header already carries the ring and the word, so a ring on
+   the card is the column saying its own name twice (Akshil, 2026-08-17 and again
+   2026-08-18). The one exception is a card whose status disagrees with its lane —
+   a failed run triaged to Done — and that ring is information, not repetition.
+
+   Which left unread with nowhere to live on a card, since it is the ring's filled
+   centre everywhere else, and it took three tries to place it:
+
+     * The ring's own centre — which meant drawing a ring on any card with news,
+       and that is the repetition above, straight back.
+     * A `.tasks-news` dot: 7px, filled, the status hue, leading the head before
+       the id. It stopped repeating the lane and cost a whole glyph instead — and
+       a card is three short lines, so a fourth mark on it is the crowding the
+       whole pass was removing, in a new place.
+     * The TITLE'S WEIGHT, which is what shipped. No mark at all: bold means
+       unread, normal means read, and it is carried by the words the lane is
+       already being scanned for.
+
+   It is also the mark this page uses one level down — an unread MESSAGE row bolds
+   its body (`.tasks-msg.is-unread` in tasks.css) — so a card and a message row make
+   the same claim the same way, one about a thread and one about a turn.
+
+   NOT ON THE LIST ROW. A row carries the ring-dot and that is its primary signal;
+   bolding its title as well would state one fact twice on one line. The Board has
+   no ring to spare on a quiet card, which is the whole reason it needs a different
+   mark, so the two views differ here in order to agree everywhere else. */
+.schedule-tv-card-title.is-unread {
+  font-weight: 600;
 }
 
 /* No `.schedule-tv-card-title .tasks-dot` any more (2026-08-18). It placed the

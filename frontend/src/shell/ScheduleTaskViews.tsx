@@ -2082,34 +2082,18 @@ function TaskCard({
             and a chip in a day cell have no lane above them, so there the ring is
             the only thing that files them at all.
 
-            UNREAD DOES NOT BRING THE RING BACK. It did for half a day: the ring
-            became the page's unread mark, a quiet Done card has no ring, so the
-            condition was widened to `failedOffLane || unread > 0` and every card
-            with news grew a ring that repeated its lane's word to say something
-            else. Akshil, 2026-08-18: the repetition is the thing being removed, so
-            the card gets a mark of its OWN for unread — a small filled dot in the
-            status hue, leading the head, before the id. Read cards show nothing.
+            AND UNREAD IS NOT IN THIS HEAD AT ALL. It took three tries to get there
+            (all 2026-08-18): the ring's filled centre, which meant widening the
+            condition above and putting the repetition straight back; then a small
+            filled dot in the status hue leading the head, which stopped repeating
+            the lane but spent a whole glyph — and a card is three short lines, so a
+            fourth mark on it is the crowding again in a new place. It is the
+            TITLE'S WEIGHT now: unread cards read bold, read cards read normal. See
+            the title below.
 
-            Same hue as the ring would have been, so the vocabulary is intact; a
-            different SHAPE, because it is a different claim. A ring on this page
-            means "here is the status" and the lane header has already said that;
-            a bare dot means "there is something in here you have not seen", which
-            the header cannot say about any one card. The List and the Calendar
-            keep the ring as their unread mark because their rows carry a ring
-            anyway — nothing is repeated there, and adding a second mark to those
-            rows is exactly what this whole change undid. */}
+            So the head is the id, and a ring on the one card whose status its lane
+            does not mention. */}
         <span className="schedule-tv-card-head">
-          {unread > 0 && (
-            <span
-              className={
-                `tasks-news tasks-news--${lane}` + (failedOffLane ? " tasks-news--failed" : "")
-              }
-              role="img"
-              aria-label={taskUnreadLabel(unread) ?? ""}
-              data-tip={taskUnreadLabel(unread) ?? ""}
-              title=""
-            />
-          )}
           {failedOffLane && <StatusIcon status={lane} failed />}
           <IdChip id={task.task_id} kind="task" />
         </span>
@@ -2124,10 +2108,24 @@ function TaskCard({
 
             The clamp's removal STAYS — the title wraps freely, `overflow-wrap:
             anywhere` is the only guard it needs, and long titles make taller cards,
-            which is accepted. What went is the mark: the ring in the head above
-            carries read-state on all three views now, so this is a title and only
-            a title. */}
-        <span className="schedule-tv-card-title">
+            which is accepted. What went is the ATOM: no pill, no dot, nothing in
+            the flow after the last word.
+
+            UNREAD IS THE TITLE'S WEIGHT (Akshil, 2026-08-18, after three marks in
+            this slot and one in the head). Bold when there is something unread,
+            normal when there is not — no glyph, so the card gains no fourth thing
+            to read, and the signal is on the very words a lane is scanned for. It
+            is also the mark this page already uses one level down: an unread MESSAGE
+            row bolds its body (`.tasks-msg.is-unread`), and a card is the same claim
+            about a whole thread.
+
+            IT STAYS OFF THE LIST ROW, deliberately. A row already carries the
+            ring-dot and that is its primary signal; bolding the title as well would
+            state one fact twice on one line, which is exactly the double-signalling
+            the ring was introduced to end. The Board has no ring to spare on a
+            quiet card — that is why it needs a different mark at all — so the two
+            views differ HERE precisely so they agree about everything else. */}
+        <span className={"schedule-tv-card-title" + (unread > 0 ? " is-unread" : "")}>
           {firstLine(task.title) || "(untitled)"}
         </span>
         {/* The foot is the folder and nothing else, so when the folder says nothing

@@ -1551,49 +1551,46 @@ describe("the unread mark", () => {
     expect(TASKS_CSS).toMatch(/\.tasks-msg\.is-unread \.tasks-msg-body \{[^}]*font-weight: 600/);
   });
 
-  it("gives a board card a DOT instead, because its ring would repeat the lane", () => {
-    // The ring became the page's unread mark, a quiet Done card has no ring, and
-    // for half a day the fix was to bring one back on any card with unread. That
-    // reintroduced the exact repetition the ring's suppression exists to remove
-    // (Akshil, 2026-08-18), so the card has a mark of its OWN: a filled dot in the
-    // status hue, leading the head, before the id. Nothing on a read card.
+  it("gives a board card BOLD TITLE instead, because any mark repeats the lane", () => {
+    // Three arrangements, all 2026-08-18, each a fix for the last. The ring's own
+    // centre put back the repetition the ring's suppression exists to remove. A
+    // `.tasks-news` dot leading the head stopped repeating the lane but spent a
+    // whole glyph on a card that is three short lines — the crowding again, in a
+    // new place. So it is the TITLE'S WEIGHT: bold unread, normal read, no mark.
     expect(CARD).not.toContain("const ring =");
-    expect(CARD).toMatch(
-      /\{unread > 0 && \(\s*<span\s+className=\{\s*`tasks-news tasks-news--\$\{lane\}`/,
+    expect(CARD).not.toContain("tasks-news");
+    expect(SCHEDULE_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain("tasks-news");
+    expect(CARD).toContain(
+      '<span className={"schedule-tv-card-title" + (unread > 0 ? " is-unread" : "")}>',
     );
-    // Before the id, and before the exception ring — the head reads mark, then
-    // identity.
-    const dot = CARD.indexOf("tasks-news");
-    expect(dot).toBeGreaterThan(-1);
-    expect(dot).toBeLessThan(CARD.indexOf("<IdChip"));
-    // The ring is back to ONE reason, the one it always had: a status that
-    // disagrees with the lane it was filed into.
-    expect(CARD).toContain("{failedOffLane && <StatusIcon status={lane} failed />}");
+    expect(block(SCHEDULE_CSS, ".schedule-tv-card-title.is-unread")).toContain(
+      "font-weight: 600",
+    );
+    // The head is down to the id and the exception ring — nothing else in it.
+    const head = CARD.slice(
+      CARD.indexOf('<span className="schedule-tv-card-head">'),
+      CARD.indexOf('className={"schedule-tv-card-title"'),
+    );
+    expect(head).toContain("<IdChip");
+    expect(head).toContain("{failedOffLane && <StatusIcon status={lane} failed />}");
     expect((CARD.match(/<StatusIcon/g) ?? []).length).toBe(1);
-    // Same hue vocabulary as the ring, stated ONCE for both so the two cannot
-    // drift: the lane modifiers name each mark on the same line.
-    for (const [lane, token] of [
-      ["upcoming", "--status-upcoming"],
-      ["in_progress", "--status-progress"],
-      ["done", "--status-done"],
-      ["archived", "--status-archived"],
-    ] as const) {
-      expect(SCHEDULE_CSS).toContain(
-        `.schedule-ring--${lane},\n.tasks-news--${lane} { color: var(${token}); }`,
-      );
-    }
-    expect(SCHEDULE_CSS).toContain(".tasks-news--failed,");
-    // A bare disc — no border, which is what keeps it from reading as a small ring.
-    const news = block(SCHEDULE_CSS, ".tasks-news");
-    expect(news).toContain("background: currentColor");
-    expect(news).not.toContain("border:");
-    // ...and the title is a title, with nothing flowing after the words.
+    // The SAME mark this page already uses one level down, so a card and an unread
+    // message row make the same claim the same way.
+    expect(TASKS_CSS).toMatch(
+      /\.tasks-msg\.is-unread \.tasks-msg-body \{[^}]*font-weight: 600/,
+    );
+    // NOT on a List row: it carries the ring-dot, and bolding its title too would
+    // state one fact twice on one line.
+    expect(ROW).not.toContain("is-unread");
+    expect(TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(
+      ".tasks-title.is-unread",
+    );
+    // ...and the title is still a title, with nothing flowing after the words.
     expect(CARD).toMatch(
-      /className="schedule-tv-card-title">\s*\{firstLine\(task\.title\) \|\| "\(untitled\)"\}\s*<\/span>/,
+      /className=\{"schedule-tv-card-title"[^}]*\}>\s*\{firstLine\(task\.title\) \|\| "\(untitled\)"\}\s*<\/span>/,
     );
     // The wrapper that used to hold the title and a mark as flex siblings is still
-    // GONE, along with both of its bugs — it must not come back with the mark's
-    // removal, only the note explaining it, hence the stripped read.
+    // GONE, along with both of its bugs.
     expect(VIEWS).not.toContain('className="schedule-tv-card-name"');
     expect(SCHEDULE_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(
       "schedule-tv-card-name",
@@ -2268,10 +2265,10 @@ describe("the status ring's five hues", () => {
     });
   }
 
-  it("wears each lane's token on every mark that has a lane, and nothing hardcoded", () => {
-    // ONE list, naming the ring and the board card's unread dot together: two
-    // lists would be two places to forget a lane, and the dot exists precisely so
-    // a card can speak the ring's hue without drawing a ring.
+  it("wears each lane's token on the ring, and nothing hardcoded", () => {
+    // ONE mark has a lane, and it is the ring. A board card's unread dot briefly
+    // shared this list (2026-08-18) and is gone — a card says unread with its
+    // title's WEIGHT now, which costs no hue at all.
     for (const [lane, token] of [
       ["upcoming", "--status-upcoming"],
       ["in_progress", "--status-progress"],
@@ -2279,11 +2276,10 @@ describe("the status ring's five hues", () => {
       ["archived", "--status-archived"],
     ] as const) {
       expect(SCHEDULE_CSS).toContain(
-        `.schedule-ring--${lane},\n.tasks-news--${lane} { color: var(${token}); }`,
+        `.schedule-ring--${lane} { color: var(${token}); }`,
       );
     }
     expect(SCHEDULE_CSS).toContain("color: var(--status-failed);");
-    expect(SCHEDULE_CSS).toContain(".tasks-news--failed,");
   });
 
   it("keeps the surviving blue on the things that DO something", () => {
@@ -2351,7 +2347,7 @@ describe("the In Progress ring", () => {
     expect(SCHEDULE_CSS).not.toContain(".schedule-ring--in_progress {\n    animation");
     // Static yellow is all it is.
     expect(SCHEDULE_CSS).toContain(
-      ".schedule-ring--in_progress,\n.tasks-news--in_progress { color: var(--status-progress); }",
+      ".schedule-ring--in_progress { color: var(--status-progress); }",
     );
   });
 
@@ -3551,8 +3547,7 @@ describe("opening a thread, from either view", () => {
     // own dot — from the count they are drawing rather than from the server's raw
     // number, so a card cleared by its own click stays cleared until the poll
     // agrees. Two different marks, one arithmetic.
-    expect(CARD).toContain("{unread > 0 && (");
-    expect(CARD).toContain("aria-label={taskUnreadLabel(unread) ?? \"\"}");
+    expect(CARD).toContain('(unread > 0 ? " is-unread" : "")');
     expect(BOARD).toContain("taskUnread(task, read)");
     // The List asks with the count the row is drawing (local marks included),
     // which is what stops a second press from posting again.
