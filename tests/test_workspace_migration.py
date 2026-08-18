@@ -290,6 +290,98 @@ def test_missing_state_files_are_a_no_op(machine):
     assert not os.path.exists(os.path.join(str(home), "bookmarks.json"))
 
 
+def _pin_json(home, ref=""):
+    """Where the menu-bar pin lives for `home` — under Application Support, NOT
+    under the shell home dir, branch-nested exactly like it."""
+    base = os.path.join(str(home), "Library", "Application Support", "fused-render")
+    if ref:
+        base = os.path.join(base, "branches", ref)
+    return os.path.join(base, "pin.json")
+
+
+def test_rewrites_the_menu_bar_pin(machine, tmp_path):
+    """The pin (D97, SPEC 25 PV-7) is the one state path that does NOT live
+    under home_dir(); a stale one leaves the pinned view unopenable."""
+    legacy, new, _ = machine
+    legacy.mkdir(parents=True)
+    pin = _pin_json(tmp_path)
+    storage.write_json(pin, {"path": str(legacy / "app" / "index.html"),
+                             "size": [520, 640]})
+
+    wm.run()
+
+    data = storage.read_json(pin)
+    assert data["path"] == str(new / "app" / "index.html")
+    # The popover size is a window preference that survives re-pins
+    # (pin_store.save_pin merges); the rewrite must not drop it either.
+    assert data["size"] == [520, 640]
+
+
+def test_a_pin_outside_the_workspace_is_left_alone(machine, tmp_path):
+    legacy, _, _ = machine
+    legacy.mkdir(parents=True)
+    outside = str(tmp_path / "Elsewhere" / "note.html")
+    pin = _pin_json(tmp_path)
+    storage.write_json(pin, {"path": outside})
+
+    wm.run()
+
+    assert storage.read_json(pin) == {"path": outside}
+
+
+def test_a_missing_pin_file_is_a_no_op(machine, tmp_path):
+    legacy, _, _ = machine
+    legacy.mkdir(parents=True)
+
+    wm.run()
+
+    assert not os.path.exists(_pin_json(tmp_path))
+
+
+def test_a_corrupt_pin_file_is_a_no_op_and_never_raises(machine, tmp_path):
+    """pin_store itself treats a bad pin.json as "no pin, never raise"; this
+    matches that, and leaves the bytes exactly as they were."""
+    legacy, _, _ = machine
+    legacy.mkdir(parents=True)
+    pin = _pin_json(tmp_path)
+    os.makedirs(os.path.dirname(pin), exist_ok=True)
+    with open(pin, "w", encoding="utf-8") as f:
+        f.write("{not json at all")
+
+    wm.run()
+
+    assert open(pin, encoding="utf-8").read() == "{not json at all"
+
+    with open(pin, "w", encoding="utf-8") as f:
+        f.write('["a list, not the pin object"]')
+
+    wm.run()
+
+    assert storage.read_json(pin) == ["a list, not the pin object"]
+
+
+def test_the_pin_of_a_branch_install_is_the_nested_one(machine, tmp_path, monkeypatch):
+    """APP_SUPPORT_DIR is branch_dir()-nested like home_dir(); a
+    FUSED_RENDER_BRANCH install must rewrite its OWN pin and not the
+    baseline's."""
+    from fused_render import _branch
+
+    legacy, new, _ = machine
+    legacy.mkdir(parents=True)
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", "feat/pin")
+    monkeypatch.setattr(_branch, "_CACHED_REF", None)
+    baseline = _pin_json(tmp_path)
+    nested = _pin_json(tmp_path, _branch.branch_ref())
+    assert nested != baseline
+    storage.write_json(baseline, {"path": str(legacy / "a.html")})
+    storage.write_json(nested, {"path": str(legacy / "b.html")})
+
+    wm.run()
+
+    assert storage.read_json(nested)["path"] == str(new / "b.html")
+    assert storage.read_json(baseline)["path"] == str(legacy / "a.html")
+
+
 # ------------------------------------------------------------- the entry points
 
 @pytest.mark.parametrize("module", ["fused_render/cli.py", "fused_render/app.py"])

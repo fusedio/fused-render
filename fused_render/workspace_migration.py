@@ -32,8 +32,9 @@ b) the **sidecar subtree** — per-file state keyed by the source file's absolut
    mapping is a pure path transform, so one directory rename re-homes all of
    it and no file contents need patching;
 c) **absolute paths written into the app's own state** — community install
-   records, bookmark and recents view urls, and scheduled-message targets (a
-   stale one fails a 400 on an unattended run).
+   records, bookmark and recents view urls, scheduled-message targets (a
+   stale one fails a 400 on an unattended run), and the menu-bar pin (the one
+   of these that lives under Application Support, not ``home_dir()``).
 
 Re-entrant: (b) and (c) are attempted on every startup, gated on their own
 "old shape present, new shape absent" checks, so a process that died between
@@ -45,6 +46,7 @@ import os
 import re
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
+from fused_render._branch import branch_dir
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import storage
 from fused_render.shell.seed import fused_dir
@@ -269,7 +271,8 @@ def _rewrite_state(src: str, dst: str) -> None:
     for label, fn in (("community installs", _rewrite_installs),
                       ("bookmarks", _rewrite_bookmarks),
                       ("recents", _rewrite_recents),
-                      ("scheduled messages", _rewrite_schedule)):
+                      ("scheduled messages", _rewrite_schedule),
+                      ("the menu-bar pin", _rewrite_pin)):
         try:
             fn(src, dst)
         except Exception:
@@ -364,3 +367,42 @@ def _rewrite_schedule(src: str, dst: str) -> None:
     if changed:
         storage.write_json(path, data)
         logger.info("rewrote workspace paths in %s", path)
+
+
+def _app_support_dir() -> str:
+    """``~/Library/Application Support/fused-render``, branch-nested.
+
+    A deliberate duplicate of ``app.APP_SUPPORT_DIR`` rather than an import:
+    ``app`` is the desktop menu-bar entry point (heavy, AppKit-adjacent startup
+    state) and it already imports and calls this module, so importing back
+    would be a cycle. Built through the same ``branch_dir`` on the same base so
+    a ``FUSED_RENDER_BRANCH`` install operates on its OWN nested path, exactly
+    as ``storage.home_dir()`` does. Expanded per call, not at import, so it
+    follows HOME the way every other path here does.
+    """
+    return branch_dir(os.path.expanduser("~/Library/Application Support/fused-render"))
+
+
+def _rewrite_pin(src: str, dst: str) -> None:
+    """pin.json holds the menu-bar pin's one absolute path (D97, SPEC §25
+    PV-7) — a stale one leaves the pinned view unopenable until the user
+    re-pins. It is the only state file here that lives under Application
+    Support instead of ``home_dir()``, which is how it was missed.
+
+    Merged, never clobbered, for the same reason ``pin_store.save_pin``
+    merges: ``size`` is a window preference, not a property of the pinned
+    file. A missing, corrupt or wrong-shaped file is "nothing to do", matching
+    ``pin_store``'s own "no pin, never raise".
+    """
+    from fused_render import pin_store
+
+    path = os.path.join(_app_support_dir(), pin_store.PIN_FILENAME)
+    data = storage.read_json(path)
+    if not isinstance(data, dict):
+        return
+    remapped = _remap(data.get("path"), src, dst)
+    if remapped is None:
+        return
+    data["path"] = remapped
+    storage.write_json(path, data)
+    logger.info("rewrote the workspace path in %s", path)
