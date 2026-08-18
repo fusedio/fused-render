@@ -296,6 +296,15 @@
   font-weight: 700;
 }
 
+.home-sec-title-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.home-sec-title-link:hover {
+  text-decoration: underline;
+}
+
 .home-sec-more {
   display: inline-flex;
   align-items: center;
