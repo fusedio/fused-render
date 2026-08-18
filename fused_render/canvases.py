@@ -1064,6 +1064,13 @@ class _SyncManager:
         self.fix_lock = threading.Lock()
         self.pull_seq = 0
         self.last_pull_at: float | None = None
+        # True for the duration of a force-pull, three-way merge, or its
+        # validation-failure rollback — set/cleared around the two _run() call
+        # sites, both already under _op_lock. Read by the workspace lock
+        # (canvas-lock-lib.ts "pulling" hold): the clone's files are moving on
+        # disk right now, which is exactly the condition the push side of the
+        # lock exists for too.
+        self._pulling = False
         self.merge_seq = 0
         # Sync-point state for the three-way merge: per-file md5s of the
         # clone at the last sync point, and the last-seen remote manifest.
@@ -1911,11 +1918,25 @@ class _SyncManager:
                     probe = self._probe_remote()
                     if probe is not None:
                         with self._op_lock:
-                            self._poll_remote(probe)
+                            # `pulling` covers every write this leg can make:
+                            # the clean force-pull, the three-way merge, and
+                            # its validation-failure rollback — the workspace
+                            # lock (canvas-lock-lib.ts) holds the embedded
+                            # workbench read-only for the same reason a push
+                            # does: the clone's files are moving right now.
+                            self._pulling = True
+                            try:
+                                self._poll_remote(probe)
+                            finally:
+                                self._pulling = False
                 elif self._dirty_since is None and self.push_state == "idle":
                     # External CLI (no shims): legacy dry-run poll, clean only.
                     with self._op_lock:
-                        self._pull_if_remote_changed()
+                        self._pulling = True
+                        try:
+                            self._pull_if_remote_changed()
+                        finally:
+                            self._pulling = False
 
     def status(self) -> dict:
         return {
@@ -1933,11 +1954,19 @@ class _SyncManager:
             "error": self.last_error,
             "error_detail": list(self.error_detail),
             "fix_active": self.active_fix_run_id is not None,
-            # Whether a Claude session is editing this clone right now, for the
-            # workspace's left-pane lock. PID-based and NOT `fix_active`: that
-            # one only knows about fix sessions this module spawned, while the
-            # lock must also cover a chat the user started in the right pane.
+            # Whether a Claude session is live in this clone right now.
+            # PID-based and NOT `fix_active`: that one only knows about fix
+            # sessions this module spawned, while this also covers a chat the
+            # user started in the right pane. Informational only — reported
+            # for the badge/banner copy, but the workspace's left-pane lock no
+            # longer keys off it (a live session with no actual edits yet,
+            # e.g. a plain "hi", must not lock the workbench for the whole
+            # length of the chat).
             "agent_active": bool(self.agent_run_id()),
+            # True for the duration of a force-pull/three-way-merge leg. The
+            # lock holds for this exactly as it does for push_state
+            # pending/pushing: the clone's files are moving on disk right now.
+            "pulling": self._pulling,
         }
 
 
@@ -2185,5 +2214,6 @@ def api_canvases_sync_status(name: str = ""):
                 # lock must read "off" — a missing field would leave a locked
                 # pane with nothing left to unlock it (a dropped watcher or a
                 # server restart mid-lock).
-                "agent_active": False}
+                "agent_active": False,
+                "pulling": False}
     return manager.status()

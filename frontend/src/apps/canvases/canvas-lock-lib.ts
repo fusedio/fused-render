@@ -2,31 +2,47 @@
 // so the release rule can be tested. The rule is correctness-critical: getting
 // it wrong re-opens the clobber window the lock exists to close.
 //
-// While a Claude session edits the clone, the user must not also be editing the
-// same canvas in the workbench — collection saves there are last-writer-wins
-// with no revision precondition, which is the D339 incident (a stale tab
-// autosaved its pre-push in-memory state back over the remote).
+// TRIGGER, by deliberate owner decision (superseding an earlier "lock while a
+// Claude session is live" design): the lock engages ONLY while a sync
+// operation is actually moving the clone's files — a push in flight, or a
+// pull/merge in flight — never merely because a Claude run is live. Claude may
+// make many changes over a long chat, and the user must not be blocked from
+// the workbench for the whole length of it; a plain "hi" with no edits at all
+// must never lock anything. The accepted trade-off: a user editing in the
+// workbench WHILE Claude is mid-edit (but between sync operations) is no
+// longer prevented by this lock. D338's per-file three-way merge is what
+// handles that now — a same-file conflict may surface where the lock used to
+// simply forbid the collision, which is a deliberate, accepted cost of not
+// blocking the user for the length of a chat.
 //
-// Releasing is the subtle half. On unlock the workbench FLUSHES whatever is
-// dirty in its memory, and it only notices upstream changes on its own ~10s
-// poll. So releasing the instant the agent's process exits gives: agent's last
-// push still in flight or not yet pulled → workbench flushes stale state →
-// last-writer-wins overwrites the agent's work. The same incident, reproduced
-// by our own unlock. Hence release needs all three of: no live session, nothing
-// pending or in flight, and a grace window past that longer than the poll.
+// Releasing is the subtle half, and only for a PUSH. On unlock the workbench
+// FLUSHES whatever is dirty in its memory, and it only notices upstream
+// changes on its own ~10s poll. A push moves the remote out from under
+// that poll, so releasing the instant push_state goes idle gives: the
+// agent's last push still in flight or not yet visible upstream → workbench
+// flushes stale state → last-writer-wins overwrites the agent's work — the
+// D339 incident, reproduced by our own unlock. Hence a push's release needs a
+// grace window past that longer than the poll. A PULL does not move the
+// remote — it only writes local files from a manifest already fetched — so
+// there is nothing upstream for the workbench's poll to race, and pulling
+// releases the instant it ends, no grace window.
 
-/** Why the workbench is held read-only, or null for "not locked".
- *
- *  Only `editing` ever STARTS a lock. The other two only EXTEND one already
- *  engaged — otherwise arriving on a quiet canvas would lock the pane for a
- *  whole grace window for no reason. */
-export type LockHold = "editing" | "publishing" | "settling";
+/** Why the workbench is held read-only, or null for "not locked". Every hold
+ *  STARTS a lock unconditionally — there is no "already engaged" precondition
+ *  for `publishing`/`pulling` any more, because a sync operation in flight is
+ *  never safe to ignore, even on a page that just loaded. Only `settling`
+ *  requires having just come out of a `publishing` hold (see decideLock). */
+export type LockHold = "publishing" | "pulling" | "settling";
 
-/** The fields of SyncStatus the decision reads. */
+/** The fields of SyncStatus the decision reads. `agent_active` is
+ *  deliberately NOT here: it is reported for informational/badge use, but no
+ *  longer drives the lock at all. */
 export interface LockInput {
   watching: boolean;
-  agent_active: boolean;
   push_state: "idle" | "pending" | "pushing" | "error";
+  /** A force-pull or three-way merge is writing to the clone's files right
+   *  now (canvases.py's `_SyncManager._pulling`). */
+  pulling: boolean;
 }
 
 export interface LockDecision {
@@ -39,22 +55,24 @@ export interface LockDecision {
 
 /** Decide the hold.
  *
- *  `engaged` is whether a lock is currently on; `settledAt` is when the work
- *  first looked finished (null if not yet); `now` and `graceMs` are passed in
- *  so this is deterministic under test. */
+ *  `prevHold` is the hold this same function returned last time (null before
+ *  the first call) — it is what lets the grace window arm ONLY when coming
+ *  out of a push, not out of a pull: `settledAt` starts only when `prevHold`
+ *  was "publishing" or "settling" itself. `now` and `graceMs` are passed in so
+ *  this stays deterministic under test. */
 export function decideLock(
   status: LockInput | null,
-  engaged: boolean,
+  prevHold: LockHold | null,
   settledAt: number | null,
   now: number,
   graceMs: number,
 ): LockDecision {
-  // No watcher (server restart, dropped watcher) → release. The unlock must be
-  // reachable from the page's own state, not only from a transition it might
-  // miss, or the pane stays read-only with nothing left to free it.
+  // No watcher (server restart, dropped watcher, or a repeatedly failing
+  // status poll treated the same way) → release. The unlock must be reachable
+  // from the page's own state, not only from a transition it might miss, or
+  // the pane stays read-only with nothing left to free it.
   if (!status || !status.watching) return { hold: null, settledAt: null };
-  if (status.agent_active) return { hold: "editing", settledAt: null };
-  if (!engaged) return { hold: null, settledAt: null };
+  if (status.pulling) return { hold: "pulling", settledAt: null };
   if (status.push_state === "pending" || status.push_state === "pushing") {
     // The session's final change set has not landed. Unlocking now lets the
     // workbench flush stale state over work still on its way up.
@@ -67,16 +85,61 @@ export function decideLock(
     // lock with no end condition.
     return { hold: null, settledAt: null };
   }
+  // Idle, and not pulling. A pull just finishing releases immediately — it
+  // never moved the remote, so there is nothing for the workbench's own
+  // upstream poll to race. Only a push finishing arms the grace window.
+  if (prevHold !== "publishing" && prevHold !== "settling") {
+    return { hold: null, settledAt: null };
+  }
   const since = settledAt ?? now;
   if (now - since >= graceMs) return { hold: null, settledAt: null };
   return { hold: "settling", settledAt: since };
 }
 
 /** The banner's headline. Three distinct facts: conflating them leaves a user
- *  staring at a still-locked pane after the chat visibly stopped, with no idea
- *  why it has not released. */
+ *  staring at a still-locked pane after the sync op visibly stopped, with no
+ *  idea why it has not released. */
 export function lockMessage(hold: LockHold): string {
-  if (hold === "editing") return "Claude is editing this canvas";
   if (hold === "publishing") return "Publishing Claude’s changes";
+  if (hold === "pulling") return "Pulling in workbench changes";
   return "Finishing up — waiting for the workbench to catch up";
+}
+
+// -- enforcement handshake -------------------------------------------------
+//
+// Enforcement belongs to the WORKBENCH, not this page: an overlay here can
+// only ever block pointer events, never the workbench's own autosave timers
+// or its upstream poll, so the page must never imply protection it does not
+// have. The workbench that supports the lock replies `fused-embed-lock-ack`
+// to the `fused-embed-lock` message; one that does not (an older or
+// production deployment) stays silent. `AckState` is what CanvasWorkspace
+// renders off: "acked" → no blocking scrim, the workbench enforces it and the
+// canvas stays fully pannable/zoomable; "waiting"/"unacked" → a translucent
+// fallback scrim, since nothing else is stopping a click from reaching an
+// editable workbench.
+
+export type AckState = "waiting" | "acked" | "unacked";
+
+/** One transition in the ack handshake, kept pure so the reset-per-engagement
+ *  rule is testable without a timer or postMessage in the loop.
+ *
+ *  "engage": a NEW lock engagement started (the previous hold was null) —
+ *  always resets to "waiting", even if a prior engagement had already been
+ *  acked; the capability could differ next time (a different workbench
+ *  version deployed under this same tab is not the scenario this guards, but
+ *  "assume nothing carries over" is the safe default and the one the owner
+ *  asked for).
+ *  "ack": the workbench's `fused-embed-lock-ack` arrived — always wins,
+ *  including over an "unacked" fallback already showing (a late ack upgrades
+ *  to pass-through instead of leaving the fallback scrim up needlessly).
+ *  "timeout": the ack window elapsed with no reply — downgrades to
+ *  "unacked" ONLY if still "waiting"; an ack that already arrived (or a
+ *  previous timeout) must never be undone by a stale timer firing late. */
+export function nextAckState(
+  prev: AckState,
+  event: "engage" | "ack" | "timeout",
+): AckState {
+  if (event === "ack") return "acked";
+  if (event === "engage") return "waiting";
+  return prev === "waiting" ? "unacked" : prev;
 }

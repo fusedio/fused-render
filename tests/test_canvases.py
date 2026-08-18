@@ -49,6 +49,10 @@ def main():
         json.dump(scenario.get("canvases", ["alpha", "beta"]), sys.stdout)
         return
     if plain[:2] == ["canvas", "pull"]:
+        delay = scenario.get("pull_delay")
+        if delay:
+            import time as _t
+            _t.sleep(delay)
         out = plain[plain.index("-o") + 1]
         files = scenario.get("pull_files", {"canvas.toml": 'type = "canvas"\n'})
         if "--dry-run" in plain:
@@ -864,7 +868,10 @@ with open(os.environ["FAKE_MANIFEST"]) as f:
 """
 
 _ZIP_SHIM = """
-import io, os, sys, zipfile
+import io, os, sys, time, zipfile
+delay = os.environ.get("FAKE_ZIP_DELAY")
+if delay:
+    time.sleep(float(delay))
 src = os.environ["FAKE_REMOTE_DIR"]
 buf = io.BytesIO()
 with zipfile.ZipFile(buf, "w") as zf:
@@ -1938,6 +1945,82 @@ def test_agent_active_is_false_when_nothing_is_syncing(harness, tmp_path, monkey
     body = harness.client.get("/api/canvases/sync/status?name=alpha").json()
     assert body["watching"] is False
     assert body["agent_active"] is False
+    assert body["pulling"] is False
+
+
+# -- `pulling`: the lock's OTHER signal (task C) --------------------------------
+#
+# The frontend lock no longer engages on a live Claude run at all (a "hi" with
+# no edits must never lock the workbench) — only on an actual sync op moving
+# the clone's files: a push in flight (push_state pending/pushing, unchanged)
+# or a pull/merge in flight, which needed a new signal since nothing in
+# status() reported it before. `pulling` is that signal: true for exactly the
+# duration of _poll_remote's force-pull/merge leg or the legacy
+# _pull_if_remote_changed leg, both already serialized under _op_lock.
+
+
+def test_status_reports_pulling_during_a_clean_force_pull(harness, tmp_path, monkeypatch):
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    harness.log_in()
+    harness.set_scenario({"pull_files": _BASE_FILES})
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    shims = SyncShims(harness, tmp_path, monkeypatch)
+    shims.set_manifest("t1")
+    shims.set_remote_files(_BASE_FILES)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    _wait_for(lambda: getattr(_manager(), "_remote", None) is not None)
+
+    # Remote moves, clean clone → the force-pull branch. A slow pull (real
+    # canvas_pull.py can legitimately take a moment) gives a window to observe
+    # `pulling` go True while it runs.
+    harness.set_scenario({
+        "pull_files": {**_BASE_FILES, "remote_udf.py": "print('x')\n"},
+        "pull_delay": 0.6,
+    })
+    shims.set_manifest("t2")
+
+    assert _wait_for(
+        lambda: harness.client.get(
+            "/api/canvases/sync/status?name=alpha").json()["pulling"] is True,
+        timeout=3,
+    ), "status never reported pulling during the force pull"
+    # Widen PULL_POLL_S NOW, with the pull already in flight (`_last_pull_poll`
+    # was just stamped for THIS cycle) — so the very next cycle, which would
+    # otherwise probe again within 0.1s and race the post-pull assertion
+    # below, is pushed well out of the way instead.
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)
+    # pull_seq increments as soon as the force-pull itself lands, but the leg
+    # keeps `pulling` True through its own post-pull recheck dry-run too — so
+    # wait for `pulling` to clear, not just for pull_seq, or this races the
+    # tail end of the same leg.
+    status = _wait_status(harness, lambda s: s["pull_seq"] >= 1 and s["pulling"] is False)
+    assert status and status["pull_seq"] >= 1, status
+    assert status["pulling"] is False, status
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_status_reports_pulling_during_a_merge(harness, tmp_path, monkeypatch):
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)  # keep the clone dirty
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
+    shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
+    shims.set_manifest("t2")
+    monkeypatch.setenv("FAKE_ZIP_DELAY", "0.6")
+
+    assert _wait_for(
+        lambda: harness.client.get(
+            "/api/canvases/sync/status?name=alpha").json()["pulling"] is True,
+        timeout=3,
+    ), "status never reported pulling during the merge"
+    status = _wait_status(harness, lambda s: s["merge_seq"] >= 1)
+    assert status and status["merge_seq"] >= 1, status
+    assert status["pulling"] is False, status
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
 def test_a_liveness_lookup_failure_reads_as_not_live(harness, tmp_path, monkeypatch):

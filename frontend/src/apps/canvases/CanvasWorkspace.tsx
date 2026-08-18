@@ -28,9 +28,23 @@ import {
   startSync,
   type SyncStatus,
 } from "./api";
-import { decideLock, type LockHold, lockMessage } from "./canvas-lock-lib";
+import {
+  decideLock,
+  lockMessage,
+  nextAckState,
+  type AckState,
+  type LockHold,
+} from "./canvas-lock-lib";
 
 const SYNC_POLL_MS = 2000;
+
+// A status poll that keeps failing must not strand a lock ON forever. The
+// decide effect below is keyed on `sync`, and a caught poll failure used to
+// leave `sync` untouched — so a lock in force at the moment polling started
+// failing was never re-evaluated again at all (finding 6). After this many
+// consecutive misses, the canvas is treated as not-watched (same shape as a
+// dropped watcher), which both releases the lock and re-arms the self-heal.
+const FAILED_POLLS_BEFORE_RELEASE = 3;
 
 // -- the left-pane lock --------------------------------------------------------
 //
@@ -85,15 +99,19 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const [fixError, setFixError] = useState<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const baseOriginRef = useRef<string | null>(null);
-  // Lock state. `hold` is why we are locked; `acked` is whether the workbench
-  // confirmed it can actually enforce it (null = not yet known, false = it
-  // never answered, so the lock is advisory and we say so). Sticky once true:
-  // the capability belongs to the deployed workbench, not to one lock cycle.
+  // Lock state. `hold` is why we are locked. `ack` is whether the WORKBENCH
+  // confirmed it can enforce it for the CURRENT engagement — reset to
+  // "waiting" every time a new engagement starts (canvas-lock-lib's
+  // `nextAckState`), never sticky across engagements: enforcement belongs to
+  // the deployed workbench, and this page assumes nothing about it it hasn't
+  // just been told for THIS lock.
   const [lockHold, setLockHold] = useState<LockHold | null>(null);
-  const [lockAcked, setLockAcked] = useState<boolean | null>(null);
-  // Whether a lock is currently engaged, readable synchronously from the effect
-  // that decides the next hold (conditions 2 and 3 may only EXTEND a lock).
-  const lockEngagedRef = useRef(false);
+  const [ackState, setAckState] = useState<AckState>("waiting");
+  // The hold this same decision returned last time — read synchronously (not
+  // via the `lockHold` state, which only updates after a render) so the
+  // grace window can tell "just came out of a push" from "just came out of a
+  // pull" (see decideLock's `prevHold`).
+  const prevHoldRef = useRef<LockHold | null>(null);
   // When the session's work first looked settled, in LOCAL time. Deliberately
   // not `last_push_at`: that is the server's clock, and comparing it to
   // Date.now() makes the grace window wrong by whatever the skew is.
@@ -151,6 +169,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     frame.contentWindow.postMessage({ type: "fused-embed-lock", locked }, origin);
   }, []);
 
+  const locked = lockHold !== null;
+
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== baseOriginRef.current) return;
@@ -160,13 +180,15 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         // Re-assert the lock on (re)load: a workbench that reloaded mid-lock
         // comes back editable otherwise, and this is the one message that tells
         // us a fresh frame is listening.
-        if (lockEngagedRef.current) sendLock(true);
+        if (locked) sendLock(true);
       }
-      if (type === "fused-embed-lock-ack") setLockAcked(true);
+      if (type === "fused-embed-lock-ack") {
+        setAckState((a) => nextAckState(a, "ack"));
+      }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendLock]);
+  }, [seedToken, sendLock, locked]);
 
   // Decide whether the workbench should be locked, from the polled status. The
   // rule itself lives in canvas-lock-lib (pure, and tested — the release half
@@ -176,55 +198,78 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     const now = Date.now();
     const decision = decideLock(
       sync,
-      lockEngagedRef.current,
+      prevHoldRef.current,
       settledAtRef.current,
       now,
       LOCK_RELEASE_GRACE_MS,
     );
+    prevHoldRef.current = decision.hold;
     settledAtRef.current = decision.settledAt;
     setLockHold(decision.hold);
     if (decision.hold !== "settling" || decision.settledAt === null) return;
     // The next poll would get there anyway; this just releases on time rather
     // than up to SYNC_POLL_MS late.
     const remaining = decision.settledAt + LOCK_RELEASE_GRACE_MS - now;
-    const id = window.setTimeout(
-      () => setLockHold((h) => (h === "settling" ? null : h)),
-      Math.max(0, remaining),
-    );
+    const id = window.setTimeout(() => {
+      setLockHold((h) => {
+        if (h !== "settling") return h;
+        prevHoldRef.current = null;
+        return null;
+      });
+    }, Math.max(0, remaining));
     return () => window.clearTimeout(id);
   }, [sync]);
 
-  // Push each lock transition to the workbench, and probe whether it can
-  // actually enforce it.
-  const locked = lockHold !== null;
+  // Push each lock transition to the workbench, and — enforcement belongs to
+  // the WORKBENCH, this page only asks and observes — probe whether THIS
+  // engagement can actually be enforced. Reset per engagement (`locked`
+  // flipping false→true), never sticky across engagements: the fallback scrim
+  // this drives must default to "on" for a brand new lock rather than
+  // inheriting a previous engagement's answer.
   useEffect(() => {
-    lockEngagedRef.current = locked;
     sendLock(locked);
-    if (!locked || lockAcked !== null) return;
+    if (!locked) return;
+    setAckState((a) => nextAckState(a, "engage"));
     // No ack yet: give the workbench a moment, then treat silence as "this
-    // deployment does not support the lock" and fall back to the honest
-    // advisory UI. Silence is the expected answer until the workbench ships
-    // its half.
+    // deployment does not support the lock" and fall back to the translucent
+    // scrim. Silence is the expected answer until the workbench ships its
+    // half; an ack arriving after this fires still upgrades to pass-through
+    // (nextAckState's "ack" always wins).
     const id = window.setTimeout(() => {
-      setLockAcked((a) => (a === null ? false : a));
+      setAckState((a) => nextAckState(a, "timeout"));
     }, LOCK_ACK_TIMEOUT_MS);
     return () => window.clearTimeout(id);
-  }, [locked, lockAcked, sendLock]);
+  }, [locked, sendLock]);
 
   // Sync status poll for the status strip; re-arms the watcher if it drops.
   // The button's enabled/disabled state reads straight off sync.fix_active —
   // set server-side the instant a fix spawns, cleared only by that run's own
   // completion (D336 follow-up), never guessed from transcript activity here.
   useEffect(() => {
+    let consecutiveFailures = 0;
     const id = window.setInterval(() => {
       void getSyncStatus(name)
         .then((s) => {
+          consecutiveFailures = 0;
           setSync(s);
           setDir((d) => d ?? s.dir);
           // Self-heal: a server restart drops the watcher; re-arm it.
           if (!s.watching) void startSync(name).catch(() => undefined);
         })
-        .catch(() => undefined);
+        .catch(() => {
+          consecutiveFailures += 1;
+          // A repeatedly failing poll must not strand a lock ON forever
+          // (finding 6): the decide effect is keyed on `sync`, and a caught
+          // failure otherwise leaves `sync` — and therefore the lock —
+          // frozen at whatever it was when polling started failing, with
+          // nothing left to ever re-evaluate it. After a few misses, treat
+          // the canvas the same as a dropped watcher: decideLock's own
+          // `!status.watching` branch releases it, and the next successful
+          // poll's `if (!s.watching)` re-arms sync the normal way.
+          if (consecutiveFailures >= FAILED_POLLS_BEFORE_RELEASE) {
+            setSync((s) => (s ? { ...s, watching: false } : s));
+          }
+        });
     }, SYNC_POLL_MS);
     return () => window.clearInterval(id);
   }, [name]);
@@ -292,7 +337,15 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // over the same folder, and sync state only matters when it FAILS, which
   // the error banner below still reports. The poll keeps running for the
   // banner and the watcher self-heal.
-  const enforced = lockAcked === true;
+  // Whether THIS engagement's ack has arrived. Enforcement lives in the
+  // workbench: acked means it will refuse edits and allow pan/zoom on its
+  // own, so this page renders no blocking scrim at all — only the banner,
+  // with pointer-events: none, so a click always reaches the iframe beneath
+  // it. Unacked (still waiting, or the ack window elapsed with nothing) is
+  // the ONLY case that falls back to a blocking overlay, and even then it
+  // stays a light, translucent scrim — the canvas must stay visible and, per
+  // the banner's own wording, this is a courtesy, not a guarantee.
+  const enforced = ackState === "acked";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -311,12 +364,17 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             display: "flex",
             alignItems: "center",
             gap: 8,
+            // This bar never overlaps the panes below it, but it carries no
+            // interactive elements either way — pointer-events: none end to
+            // end, so nothing here can ever be the thing standing between a
+            // click and the iframe.
+            pointerEvents: "none",
           }}
         >
           <strong>{lockMessage(lockHold)}</strong>
           {enforced ? (
             <span style={{ opacity: 0.85 }}>
-              — the workbench is read-only until it finishes.
+              — the workbench enforces this itself; pan and zoom still work.
             </span>
           ) : (
             // Never claim protection we do not have: without the ack the
@@ -394,18 +452,21 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             !error && <p style={{ padding: 16 }}>Loading workbench…</p>
           )}
           {locked && !enforced && (
-            // Fallback for a workbench that never acked: block the clicks we
-            // CAN block. This is a courtesy, not a guarantee — the workbench's
-            // own autosave and its upstream auto-acknowledge run on timers
-            // inside the frame and are untouched by an overlay. The banner
-            // above says exactly that, so the scrim never reads as safety.
+            // Fallback for a workbench that hasn't (yet, or ever) acked this
+            // engagement: block the clicks we CAN block. This is a courtesy,
+            // not a guarantee — the workbench's own autosave and its upstream
+            // auto-acknowledge run on timers inside the frame and are
+            // untouched by an overlay. Deliberately a LIGHT, translucent
+            // scrim (not the near-black 45% this used to be) — the canvas
+            // must stay visible underneath, and the banner above already
+            // says this is only a courtesy.
             <div
               data-testid="workbench-lock-scrim"
-              title="Claude is editing this canvas"
+              title={lockMessage(lockHold)}
               style={{
                 position: "absolute",
                 inset: 0,
-                background: "rgba(20,20,25,0.45)",
+                background: "rgba(20,20,25,0.14)",
                 cursor: "not-allowed",
               }}
             />
