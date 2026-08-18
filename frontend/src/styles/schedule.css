@@ -3062,6 +3062,74 @@ input.schedule-when-field {
   background: var(--tasks-lane-bg);
 }
 
+/* -- The scrollbar the Tasks page's two column scrollers wear ------------------
+   macOS gives a webview OVERLAY scrollbars by default: the thumb floats on top
+   of the content instead of taking a column of its own, so a lane with more
+   cards than fit drew its thumb straight over the right-hand border of every
+   card under it (Akshil, screenshot, 2026-08-18). `scrollbar-gutter` cannot fix
+   that — the spec gives an overlay scrollbar a zero gutter by definition. What
+   does is styling the thing at all: a `::-webkit-scrollbar` rule opts this
+   element out of overlay scrollbars entirely, so the bar takes real layout
+   space and the cards are simply narrower by its width. No overlap is possible
+   after that, because there is nothing left to overlap.
+
+   `scrollbar-gutter: stable` is stated with it and is not redundant: the bar now
+   takes space, so without it the column would jump by 10px the moment the lane
+   crossed from four cards to five, and back again on the next poll.
+
+   The thumb is drawn INSIDE the track by a transparent border plus
+   `background-clip: padding-box` — 10px of track carrying 4px of ink — which is
+   what keeps it clear of the card edges as a mark rather than merely as layout,
+   and what makes it read as the quietest thing on the lane. It is mixed from
+   `--fg-muted` rather than given a colour, so it lands at the same weight over
+   the lane's fill in both themes. The track itself paints nothing: a groove
+   would be a second column drawn beside the cards.
+
+   ONE rule for all three of the page's content scrollers, though `.tasks-list`'s
+   box belongs to tasks.css and the other two to this file. Scrollbar chrome is
+   one decision about one kind of furniture, and two copies of it is how the
+   List and the Board end up wearing different bars.
+
+   The three are the Board's lane, the List, and the CALENDAR's popover thread —
+   the one calendar scroller that has a bar at all, since the week grid hides
+   its own (`.schedule-cal-scroll`, above: the hour lines say where you are).
+   The page's remaining scrollers are dropdown menus and pickers, which are
+   floating surfaces a few rows tall rather than columns of content, and are
+   deliberately left alone. */
+.schedule-tv-lane-body,
+.schedule-cal-thread,
+.tasks-list {
+  scrollbar-gutter: stable;
+}
+
+.schedule-tv-lane-body::-webkit-scrollbar,
+.schedule-cal-thread::-webkit-scrollbar,
+.tasks-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.schedule-tv-lane-body::-webkit-scrollbar-track,
+.schedule-cal-thread::-webkit-scrollbar-track,
+.tasks-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.schedule-tv-lane-body::-webkit-scrollbar-thumb,
+.schedule-cal-thread::-webkit-scrollbar-thumb,
+.tasks-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg-muted) 26%, transparent);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.schedule-tv-lane-body::-webkit-scrollbar-thumb:hover,
+.schedule-cal-thread::-webkit-scrollbar-thumb:hover,
+.tasks-list::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--fg-muted) 48%, transparent);
+  background-clip: padding-box;
+}
+
 /* The card is the LIT element of the board: the lane under it is a fill that
    deliberately loses to it, so this is the one surface on the page that steps
    toward the reader. `--tasks-card-bg` is that step, and its pairing with

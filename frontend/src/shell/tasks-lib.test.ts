@@ -5123,6 +5123,49 @@ describe("which board lanes are rolled up", () => {
     expect(choices.archived).toBe(false);
   });
 
+  it("keeps the lane's scrollbar out of the cards' right edge", () => {
+    // macOS gives a webview OVERLAY scrollbars, so a lane with more cards than
+    // fit drew its thumb straight over every card's right-hand border (Akshil,
+    // screenshot). Styling the bar at all is what opts the element out of
+    // overlay scrollbars, so it takes real layout space and no overlap is
+    // possible; the gutter is what stops the column jumping by its width when
+    // the fifth card arrives.
+    // Its own rule, beside the two sibling scrollers — `block` would hand back
+    // the lane's resting box, which is a different decision about the same
+    // selector.
+    const gutter = rules(SCHEDULE_CSS).find(
+      (r) => r.selectors.includes(".schedule-tv-lane-body")
+        && r.body.includes("scrollbar-gutter"),
+    );
+    expect(gutter?.body).toContain("scrollbar-gutter: stable");
+    expect(SCHEDULE_CSS).toContain(".schedule-tv-lane-body::-webkit-scrollbar,");
+    // The thumb sits INSIDE the track — a transparent border plus
+    // background-clip, so 10px of track carries 4px of ink and the mark itself
+    // is clear of the card edge, not merely the layout.
+    const bar = block(SCHEDULE_CSS, ".schedule-tv-lane-body::-webkit-scrollbar");
+    expect(bar).toContain("width: 10px");
+    const thumb = block(SCHEDULE_CSS, ".schedule-tv-lane-body::-webkit-scrollbar-thumb");
+    expect(thumb).toContain("background-clip: padding-box");
+    expect(thumb).toContain("border: 3px solid transparent");
+    // Mixed from a token, so it lands at the same weight over the lane's fill in
+    // both themes rather than being a colour tuned for one.
+    expect(thumb).toMatch(/background: color-mix\(in srgb, var\(--fg-muted\) \d+%, transparent\)/);
+    // The track paints nothing: a groove would be a second column beside the
+    // cards.
+    expect(block(SCHEDULE_CSS, ".schedule-tv-lane-body::-webkit-scrollbar-track"))
+      .toContain("background: transparent");
+    // ONE rule for the page's three content scrollers, so the List and the Board
+    // cannot end up wearing different bars.
+    const shared = rules(SCHEDULE_CSS).find(
+      (r) => r.selectors.includes(".schedule-tv-lane-body::-webkit-scrollbar-thumb"),
+    );
+    expect(shared?.selectors).toContain(".schedule-cal-thread::-webkit-scrollbar-thumb");
+    expect(shared?.selectors).toContain(".tasks-list::-webkit-scrollbar-thumb");
+    // The week grid is the exception and keeps hiding its bar outright — the
+    // hour lines already say where you are.
+    expect(block(SCHEDULE_CSS, ".schedule-cal-scroll")).toContain("scrollbar-width: none");
+  });
+
   it("makes an empty rail a marker rather than a control, without losing the drop", () => {
     // The press that used to expand it now does nothing visible, so the rail
     // stops claiming to be pressable.
