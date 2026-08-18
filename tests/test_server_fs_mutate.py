@@ -359,6 +359,57 @@ def test_xdg_trash_does_not_overwrite_a_stale_files_entry(tmp_path, monkeypatch)
     assert not (trash / "info" / "f.txt.trashinfo").exists()
 
 
+
+def test_xdg_trash_does_not_overwrite_a_dangling_symlink_entry(tmp_path, monkeypatch):
+    # Same class as the stale-entry case above, but the entry is a BROKEN SYMLINK:
+    # trashed while it pointed somewhere, and its target deleted afterwards.
+    # Path.exists() is False for it, so a name check that used exists() would read
+    # the name as free, win its O_EXCL claim, and have os.rename destroy an entry
+    # already in the bin.
+    trash = _xdg_home(monkeypatch, tmp_path)
+    (trash / "files").mkdir(parents=True)
+    dangling = trash / "files" / "f.txt"
+    dangling.symlink_to(tmp_path / "target-that-is-gone")
+    assert not dangling.exists() and dangling.is_symlink()  # the trap, stated
+    f = tmp_path / "f.txt"
+    f.write_text("new")
+    out = _data(DELETE({"path": str(f), "trash": True}, x_fused="1"))
+    assert dangling.is_symlink()  # untouched
+    assert out["trashed_to"] == str(trash / "files" / "f 2.txt")
+    assert (trash / "files" / "f 2.txt").read_text() == "new"
+
+
+def test_macos_trash_does_not_overwrite_a_dangling_symlink_entry(tmp_path, monkeypatch):
+    # The macOS backend has the same hole, and there it also makes the returned
+    # `trashed_to` a lie: it would name a path holding someone else's entry.
+    trash = _fake_home(monkeypatch, tmp_path)
+    trash.mkdir(parents=True)
+    dangling = trash / "f.txt"
+    dangling.symlink_to(tmp_path / "target-that-is-gone")
+    assert not dangling.exists() and dangling.is_symlink()
+    f = tmp_path / "f.txt"
+    f.write_text("new")
+    out = _data(DELETE({"path": str(f), "trash": True}, x_fused="1"))
+    assert dangling.is_symlink()  # untouched
+    assert out["trashed_to"] == str(trash / "f 2.txt")
+    assert (trash / "f 2.txt").read_text() == "new"
+
+
+def test_trashing_a_symlink_moves_the_LINK_not_its_target(tmp_path, monkeypatch):
+    # The other half of treating symlinks as entries in their own right: trashing
+    # one takes the link and leaves the target alone.
+    trash = _xdg_home(monkeypatch, tmp_path)
+    target = tmp_path / "target.txt"
+    target.write_text("payload")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+    out = _data(DELETE({"path": str(link), "trash": True}, x_fused="1"))
+    assert out["trashed_to"] == str(trash / "files" / "link.txt")
+    assert (trash / "files" / "link.txt").is_symlink()
+    assert target.read_text() == "payload"  # the target never moved
+    assert not link.is_symlink()
+
+
 def test_xdg_trash_cross_device_is_501_and_leaves_no_claim(tmp_path, monkeypatch):
     # EXDEV: a file on another volume. Nothing is copied (that is the whole point
     # of refusing), so the file stays put, the answer is the same 501 the client

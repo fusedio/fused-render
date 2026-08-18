@@ -668,7 +668,11 @@ def _move_to_macos_trash(path: str) -> str | None:
         trash.mkdir(parents=True, exist_ok=True)
         counter = 1
         dest = trash / _trash_dest_name(name, counter)
-        while dest.exists():
+        # lexists, NOT exists: a broken symlink already in the Trash (its target
+        # deleted after it was trashed) reads as absent to exists(), so the name
+        # would look free — os.rename would then destroy that entry, and the
+        # `trashed_to` we returned would name someone else's file.
+        while os.path.lexists(dest):
             counter += 1
             dest = trash / _trash_dest_name(name, counter)
         os.rename(path, dest)
@@ -769,7 +773,11 @@ def _move_to_xdg_trash(path: str) -> str | None:
             counter += 1
             continue
         dest = files_dir / cand
-        if dest.exists():
+        # lexists, NOT exists: a DANGLING SYMLINK in files/ (trashed, then its
+        # target deleted) is invisible to exists(), so the O_EXCL claim would
+        # succeed, the name would read as free, and the rename would silently
+        # destroy an entry already in the bin.
+        if os.path.lexists(dest):
             # We won the info name but the entry name is taken anyway (a stale
             # files/ entry). Give the claim back rather than overwrite.
             os.close(fd)
