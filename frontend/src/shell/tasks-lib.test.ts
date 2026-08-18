@@ -5,7 +5,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Task, TaskMessage } from "@platform/lib/api";
-import { BOARD_COLUMNS, columnLabel } from "./schedule-lib";
+import { BOARD_COLUMNS } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
   ALL_MESSAGES,
@@ -42,8 +42,8 @@ import {
   laneCollapsed,
   laneRolledUp,
   laneUnread,
-  LIST_SECTIONS,
-  listSections,
+  LIST_ORDER,
+  sortByLane,
   laneTime,
   lastRunAt,
   markAllRead,
@@ -1001,6 +1001,37 @@ describe("dropLanes", () => {
   // satisfied everywhere and the only thing under test is the lane's own rule.
   it("Upcoming may run early or be called off", () => {
     expect(dropLanes(upcoming([T9]))).toEqual(["in_progress", "archived"]);
+  });
+
+  it("Upcoming may be dragged into In Progress — the REAL server shape", () => {
+    // Not a task hand-fed a pending message: the row exactly as `/api/tasks`
+    // sends one for a message scheduled into a session that has not run it yet
+    // — one pending message with its entry id, no run behind it, `next_run`
+    // naming the same entry. This is the drag the user reported broken, and it
+    // is asserted end to end: the card lifts, the lane accepts it, and the
+    // action is a RUN of that entry rather than a filing.
+    const realUpcoming: Task = {
+      ...task({
+        key: "6f4c4f5c-38ff-4fc6-9abc-000000000001",
+        session_id: "6f4c4f5c-38ff-4fc6-9abc-000000000001",
+        status: "upcoming",
+        title: "pull today's news",
+        message_count: 1,
+        next_run: T18,
+        next_run_entry: "e1",
+      }),
+      messages: [
+        msg({ message_id: "MSG-001", state: "pending", entry_id: "e1",
+              at: T18, ran_at: 0, turn: "" }),
+      ],
+    };
+    expect(isDraggable(realUpcoming)).toBe(true);
+    expect(dropLanes(realUpcoming)).toEqual(["in_progress", "archived"]);
+    expect(dropAction(realUpcoming, "in_progress")).toEqual({
+      kind: "run",
+      entryId: "e1",
+      messageId: "MSG-001",
+    });
   });
 
   it("Failed may retry or be filed away", () => {
@@ -5604,64 +5635,67 @@ describe("the tasks toolbar", () => {
   });
 });
 
-// ---- the List's sections -----------------------------------------------------
-// The List is grouped by the same fact the Board is (taskColumn), in the List's
-// own order, with the empties dropped.
+// ---- the List's order --------------------------------------------------------
+// The rank order is a SORT and nothing more: no headers, no dividers, no counts
+// (Akshil, 2026-08-18).
 
-describe("listSections", () => {
+describe("sortByLane", () => {
   it("names every lane exactly once, in the list's order", () => {
-    expect(LIST_SECTIONS).toEqual([
+    expect(LIST_ORDER).toEqual([
       "upcoming",
       "in_progress",
       "failed",
       "done",
       "archived",
     ]);
-    // Same set as the Board's — a sixth lane cannot be silently unlistable.
-    expect([...LIST_SECTIONS].sort()).toEqual(
+    // Same set as the Board's — a sixth lane cannot be silently unsortable.
+    expect([...LIST_ORDER].sort()).toEqual(
       BOARD_COLUMNS.map((c) => c.key).slice().sort(),
     );
   });
 
-  it("drops empty sections entirely, header and all", () => {
-    const rows = [task({ key: "a", status: "done" }), task({ key: "b", status: "done" })];
-    const sections = listSections(rows);
-    expect(sections.map((s) => s.key)).toEqual(["done"]);
-    expect(sections[0].tasks).toHaveLength(2);
-    expect(listSections([])).toEqual([]);
-  });
-
-  it("orders Failed above Done and Archive last, whatever the input order", () => {
+  it("returns ONE flat list, not groups", () => {
     const rows = [
       task({ key: "d", status: "archived" }),
       task({ key: "c", status: "done" }),
       task({ key: "b", status: FAILED }),
       task({ key: "a", status: "upcoming" }),
     ];
-    expect(listSections(rows).map((s) => s.key)).toEqual([
-      "upcoming",
-      "failed",
-      "done",
-      "archived",
-    ]);
+    expect(sortByLane(rows).map((t) => t.key)).toEqual(["a", "b", "c", "d"]);
+    expect(sortByLane([])).toEqual([]);
   });
 
-  it("keeps the server's order inside a section, and never re-sorts", () => {
+  it("puts Failed above Done and Archive last, whatever the input order", () => {
+    const rows = [
+      task({ key: "done", status: "done" }),
+      task({ key: "arch", status: "archived" }),
+      task({ key: "fail", status: FAILED }),
+      task({ key: "run", status: "in_progress" }),
+      task({ key: "soon", status: "upcoming" }),
+    ];
+    expect(sortByLane(rows).map((t) => t.key))
+      .toEqual(["soon", "run", "fail", "done", "arch"]);
+  });
+
+  it("keeps the server's order inside a rank, and never re-sorts", () => {
     const rows = [
       task({ key: "first", status: "done", last_active: 1 }),
       task({ key: "second", status: "done", last_active: 999 }),
     ];
-    expect(listSections(rows)[0].tasks.map((t) => t.key)).toEqual(["first", "second"]);
+    expect(sortByLane(rows).map((t) => t.key)).toEqual(["first", "second"]);
   });
 
-  it("speaks the Board's own words, never a second spelling", () => {
-    const rows = LIST_SECTIONS.map((status, i) => task({ key: `k${i}`, status }));
-    for (const section of listSections(rows)) {
-      expect(section.label).toBe(columnLabel(section.key));
-    }
+  it("never mutates the polled list React is still holding", () => {
+    const rows = [
+      task({ key: "b", status: "done" }),
+      task({ key: "a", status: "upcoming" }),
+    ];
+    const before = rows.map((t) => t.key);
+    sortByLane(rows);
+    expect(rows.map((t) => t.key)).toEqual(before);
   });
 
-  it("loses no task: every row lands in exactly one section", () => {
+  it("loses no task and duplicates none", () => {
     const rows = [
       task({ key: "a", status: "upcoming" }),
       task({ key: "b", status: "in_progress" }),
@@ -5671,8 +5705,21 @@ describe("listSections", () => {
       // An unreadable status lands in Done, exactly as taskColumn says.
       task({ key: "f", status: "invented" as Task["status"] }),
     ];
-    const landed = listSections(rows).flatMap((s) => s.tasks.map((t) => t.key));
-    expect(landed.slice().sort()).toEqual(["a", "b", "c", "d", "e", "f"]);
+    const out = sortByLane(rows);
+    expect(out).toHaveLength(rows.length);
+    expect(out.map((t) => t.key).sort()).toEqual(["a", "b", "c", "d", "e", "f"]);
+  });
+
+  it("draws no headers, dividers or counts in the List", () => {
+    // The whole of the correction, read out of the source: grouping you can see
+    // claims the groups are navigable, and this one is a claim about priority.
+    for (const gone of ["tasks-section", "listSections", "TaskSection"]) {
+      expect(VIEWS).not.toContain(gone);
+    }
+    expect(TASKS_CSS).not.toContain(".tasks-section");
+    // And the rows are drawn straight off the sorted list.
+    expect(VIEWS).toContain("const rows = useMemo(() => sortByLane(tasks), [tasks]);");
+    expect(VIEWS).toContain("{rows.map((task) => (");
   });
 });
 

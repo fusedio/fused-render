@@ -35,7 +35,7 @@
 // status is re-derived, no lane membership is re-decided (taskColumn still asks
 // the server), and every key is a time the server itself sent.
 import type { Task, TaskMessage } from "@platform/lib/api";
-import { BOARD_COLUMNS, columnLabel, explorerUrl, isProjected, turnPhase } from "./schedule-lib";
+import { BOARD_COLUMNS, explorerUrl, isProjected, turnPhase } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 
 // How many messages the LISTING carries per task — the server's window, not a
@@ -2430,35 +2430,40 @@ export function laneRolledUp(
   return laneCollapsed(lane, count, choices);
 }
 
-// ---- the List's own sections -------------------------------------------------
-// The List and the Board are two lenses on ONE dataset, so the List is grouped
-// by the same fact the Board is: `taskColumn`. Same nouns, same colours, same
-// ring — a reader who learns "Failed" on one view has learned it on both, and a
-// row that moves lane on the Board moves section here.
+// ---- the List's order --------------------------------------------------------
+// The List and the Board read the same fact — `taskColumn`, so a row that moves
+// lane on the Board moves position here — but the List spends it as a SORT and
+// nothing else (Akshil, 2026-08-18). No headers, no dividers, no counts: one
+// flat list whose rows happen to arrive in status order.
 //
-// THE ORDER IS NOT THE BOARD'S, and the difference is deliberate. A board is
-// read left to right as a pipeline (Upcoming, In Progress, Done, Failed,
-// Archive); a list is read top to bottom as a to-do, so the two sections that
-// want a person's hands come first and the two that are finished sink:
+// IT WAS HEADERS FIRST, and they were wrong on a list. The Board's lanes are a
+// fixed frame, so a lane header is the frame's label and earns its ink; a list
+// has no frame, so five headers over a few dozen rows are five interruptions in
+// the one column a person is scanning — and the ORDER already says everything
+// the headers were saying. Grouping you can see is a claim that the groups are
+// navigable; grouping you can only feel is a claim about priority, which is what
+// this actually is.
+//
+// THE ORDER IS NOT THE BOARD'S, and that difference stays. A board is read left
+// to right as a pipeline (Upcoming, In Progress, Done, Failed, Archive); a list
+// is read top to bottom as work owed, so the ranks that want a person's hands
+// come first and the settled ones sink:
 //
 //   Upcoming → In Progress → Failed → Done → Archive
 //
-// Failed above Done because a broken run is work that is still owed, and Done
-// above Archive because Archive is not a status, it is where things go to stop
-// being read.
+// Failed above Done because a broken run is still owed, and Done above Archive
+// because Archive is not a status, it is where things go to stop being read.
 //
-// EMPTY SECTIONS ARE NOT DRAWN AT ALL — no header, no zero. The Board's lanes
-// are a fixed frame and an empty column there is information (nothing is
-// failing); a list has no frame, and five headers over three rows is a table of
-// contents for a page with nothing on it.
-//
-// WITHIN a section nothing is re-sorted: the server's order is the list's order
-// and always has been (TaskList takes `tasks` "in the SERVER's order. Never
-// re-sorted here"). Bucketing preserves it.
+// WITHIN a rank nothing is re-sorted: the server's order is the list's order and
+// always has been (TaskList takes `tasks` "in the SERVER's order"). A stable
+// bucketing keeps it, which is why this is a bucket-and-concat rather than a
+// comparator — `Array.prototype.sort` is stable in every engine this ships to,
+// but a comparator would also invite a second sort key later, and there is not
+// one: rank, then whatever the server said.
 
-/** Section order, top to bottom. Every BoardColumn appears exactly once — the
- * test holds it to that, so a sixth lane cannot be silently unlistable. */
-export const LIST_SECTIONS: BoardColumn[] = [
+/** Rank order, top to bottom. Every BoardColumn appears exactly once — the test
+ * holds it to that, so a sixth lane cannot be silently unsortable. */
+export const LIST_ORDER: BoardColumn[] = [
   "upcoming",
   "in_progress",
   "failed",
@@ -2466,27 +2471,15 @@ export const LIST_SECTIONS: BoardColumn[] = [
   "archived",
 ];
 
-export interface TaskSection {
-  key: BoardColumn;
-  /** The Board's own word for this lane (schedule-lib.columnLabel) — never a
-   * second spelling of it. */
-  label: string;
-  /** Non-empty, always: an empty section is absent rather than headed. */
-  tasks: Task[];
-}
-
-export function listSections(tasks: Task[]): TaskSection[] {
+/** The list's rows, in rank order, server order preserved inside each rank. A
+ * new array; the input is never mutated (it is the polled list, which React is
+ * still holding). */
+export function sortByLane(tasks: Task[]): Task[] {
   const buckets = new Map<BoardColumn, Task[]>(
-    LIST_SECTIONS.map((key) => [key, [] as Task[]]),
+    LIST_ORDER.map((key) => [key, [] as Task[]]),
   );
   for (const task of tasks) buckets.get(taskColumn(task))?.push(task);
-  const sections: TaskSection[] = [];
-  for (const key of LIST_SECTIONS) {
-    const held = buckets.get(key) ?? [];
-    if (held.length === 0) continue;
-    sections.push({ key, label: columnLabel(key), tasks: held });
-  }
-  return sections;
+  return LIST_ORDER.flatMap((key) => buckets.get(key) ?? []);
 }
 
 // ---- "and it runs again on Tuesday" ------------------------------------------

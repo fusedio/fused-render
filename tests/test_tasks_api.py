@@ -1354,6 +1354,37 @@ def test_an_unstamped_filing_revives_on_nothing(client, projects_dir,
     assert _by_key(client)["sess-a"]["status"] == "archived"
 
 
+def test_a_session_with_nothing_in_it_at_all_is_over_not_upcoming(
+        client, projects_dir):
+    """UPCOMING NEEDS SOMETHING COMING, and this is the row that proved it.
+
+    A session whose transcript surfaces no prompt — one that ran only a slash
+    command, whose envelope `strip_machinery` drops — has no output AND nothing
+    scheduled. Filing it under Upcoming put a card in the lane that cannot do
+    the one thing the lane is for: the drag into In Progress fires a pending
+    message and there is none, so `dropLanes` refused it and an Upcoming card
+    became undraggable. On one real machine every card in the lane was this
+    shape — nine of them, `/clear` and `/making-a-release` and `/mcp`.
+    """
+    _write_transcript(projects_dir, "sess-a", "/p", [_assistant("done", T9)])
+    task = _by_key(client)["sess-a"]
+    assert task["message_count"] == 0, "the shape under test: nothing in it"
+    assert task["status"] == "done"
+
+
+def test_a_task_with_a_run_still_coming_is_upcoming_whatever_else_it_holds(
+        client, projects_dir):
+    """The other side: one message still waiting is enough, and it is what makes
+    every card in Upcoming runnable."""
+    _write_transcript(projects_dir, "sess-a", "/p", [])
+    _seed_schedule([_entry("e1", "tomorrow", T12, claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "upcoming"
+    # And the row carries what the drag needs to fire.
+    assert task["messages"][0]["state"] == schedule.PENDING
+    assert task["messages"][0]["entry_id"] == "e1"
+
+
 def test_a_finished_run_with_the_next_one_booked_sits_in_done(client,
                                                               projects_dir):
     """THE RECURRING CASE, and the reason a pending message says nothing.

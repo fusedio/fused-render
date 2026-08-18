@@ -576,6 +576,33 @@ def _message_verdict(message: dict) -> str | None:
     return None
 
 
+def _waiting(messages: list[dict], filed: bool) -> bool:
+    """Is there anything in this task still to come?
+
+    THE OTHER HALF OF UPCOMING, and the half that was missing (Akshil,
+    2026-08-18: an Upcoming card could not be dragged into In Progress any more).
+    "No output yet" was read as enough on its own, which put every session whose
+    transcript surfaces no prompt at all — one that ran only `/clear`, or
+    `/making-a-release` — into Upcoming. On one real machine that was every card
+    in the lane: nine of them, each with `message_count: 0`.
+
+    Those cards are unrunnable BY CONSTRUCTION and correctly so — the drag into
+    In Progress fires a pending message and they have none — so the lane filled
+    up with the only cards in it that could not do the one thing it exists for.
+    The lane was the lie, not the drag: `dropLanes` was refusing a drop on a card
+    that had nothing to drop.
+
+    So Upcoming means work that has not happened but is going to, which is a
+    message still WAITING: not filed away, and with no verdict yet
+    (`_message_verdict` answers None for exactly the promises). A task with none
+    of those and nothing to report is over, and `done` is where it goes — the
+    same answer this server gave before the derivation landed ("a task with
+    nothing in it happened and is over"), for the same reason.
+    """
+    return any(not _message_archived(m, filed) and _message_verdict(m) is None
+               for m in messages)
+
+
 def _speaker(messages: list[dict], filed: bool) -> dict | None:
     """The message a task's status is reading off: the most recent one that is
     neither filed away nor still waiting to happen.
@@ -697,8 +724,11 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
        was filed keeps running and the card reads In Progress until it stops.
     3. **Otherwise the newest message that has something to say speaks** —
        `failed` for a run that broke, `done` for one that ended. See `_speaker`.
-    4. **Nothing to say ⇒ Upcoming.** Never run, or nothing but promises: the
-       lane means "no output yet" and nothing else.
+    4. **Nothing said yet, but something COMING ⇒ Upcoming**, and that second
+       half is the whole of it: the lane is what has not happened *yet*, so it
+       needs a message still waiting to happen. A task with nothing coming and
+       nothing to report is over, and `done` is where a spent session goes — see
+       `_waiting`.
 
     What is NOT here any more is triage's other two words. A person cannot file
     a task as In Progress (the lane is Claude's output, and the Board no longer
@@ -724,8 +754,10 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
         return "archived"
     if messages and all(_message_archived(m, filed) for m in messages):
         return "archived"
-    verdict = _message_verdict(_speaker(messages, filed) or {"state": "", "turn": ""})
-    return verdict or "upcoming"
+    speaker = _speaker(messages, filed)
+    if speaker is not None:
+        return _message_verdict(speaker) or "done"
+    return "upcoming" if _waiting(messages, filed) else "done"
 
 
 def _failed(speaker: dict | None) -> bool:
