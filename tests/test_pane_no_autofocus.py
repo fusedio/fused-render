@@ -8,7 +8,7 @@ autofocused, but nothing about it was claude-specific: any template with an
 input would do the same.
 
 So it is a CONTRACT, and this pins the three pieces of it that live outside the
-shell's own TypeScript (frontend/.../listing/frame-focus.test.ts covers that
+shell's own TypeScript (frontend/.../platform/lib/frame-focus.test.ts covers that
 half):
 
   * the param has ONE spelling, read out of the shell's own source rather than
@@ -34,9 +34,7 @@ import pytest
 
 TEMPLATE = os.path.join("fused_render", "templates", "claude", "template.html")
 RUNTIME = os.path.join("fused_render", "static", "runtime.js")
-SHELL = os.path.join(
-    "frontend", "src", "apps", "explorer", "listing", "frame-focus.ts"
-)
+SHELL = os.path.join("frontend", "src", "platform", "lib", "frame-focus.ts")
 
 
 def _node(script):
@@ -116,3 +114,44 @@ focusBox(el);
 console.log(JSON.stringify(calls));
 """
     assert _node(script) == ["focused", "focused"]
+
+
+# -- The card grids (D341) -----------------------------------------------------
+#
+# The same contract, one surface further out: a LIVE CARD THUMBNAIL is a picture
+# of an app, and focus inside a frame scrolls that frame into view — a scroll
+# that propagates out to the grid's own scroller. A thumbnail that took focus as
+# it mounted therefore jumped /apps to whatever row its card sits in, mid-scroll.
+# So every display-only thumbnail stamps `_nofocus=1` exactly as the pane does,
+# and these pin that none of the three places that build such a URL forgets it.
+
+CARD = os.path.join("frontend", "src", "apps", "builder", "AppPreviewCard.tsx")
+BOOKMARK_CARDS = os.path.join("frontend", "src", "apps", "explorer", "BookmarkCards.tsx")
+EMBED_SHELL = os.path.join("frontend", "src", "apps", "explorer", "Preview.tsx")
+
+
+def test_every_app_card_thumbnail_url_goes_through_the_stamp():
+    """Both thumbnail branches (the hover live preview over a preview.png, and
+    the no-png live card) build their src through the one helper, so a third
+    branch cannot quietly ship an unstamped frame."""
+    src = open(CARD, encoding="utf-8").read()
+    assert "withNoFocus(withPreviewFlag(" in src
+    # Every iframe in the file takes its src from the helper — nothing hand-rolls
+    # a /render URL beside it.
+    assert src.count("src={thumbSrc(app.entry_html)}") == 2
+    assert "src={`/render" not in src
+
+
+def test_a_bookmark_card_peek_is_stamped_too():
+    """The other live thumbnail in the shell: a bookmark/recent card peeking at
+    its target through the embed shell."""
+    src = open(BOOKMARK_CARDS, encoding="utf-8").read()
+    assert "withNoFocus(withPreviewFlag(src))" in src
+
+
+def test_the_embed_shell_forwards_the_stamp_with_the_thumbnail_flag():
+    """A card peek loads the EMBED shell, and the app itself is the frame that
+    shell renders inside — so the signal has to travel one hop further. It rides
+    on the thumbnail flag, which already inherits through nested frames."""
+    src = open(EMBED_SHELL, encoding="utf-8").read()
+    assert '"&_preview=1&_nofocus=1"' in src

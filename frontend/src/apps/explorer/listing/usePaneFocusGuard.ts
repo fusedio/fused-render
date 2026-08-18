@@ -1,4 +1,4 @@
-// The shell half of the preview pane's focus contract (listing/frame-focus.ts
+// The shell half of the preview pane's focus contract (platform/lib/frame-focus.ts
 // states it): keep the keyboard on the listing when a preview mounts.
 //
 // runtime.js asks every rendered page not to take focus, which is the half that
@@ -32,7 +32,7 @@
 // this hook remounts with the frame it guards and "has the user reached into
 // the pane" resets when the preview does.
 import { useEffect, useRef } from "react";
-import { shouldReclaimFocus, tabEntersFrame } from "@apps/explorer/listing/frame-focus";
+import { shouldReclaimFocus, tabEntersFrame } from "@platform/lib/frame-focus";
 
 // How long after a Tab keypress a frame taking focus still counts as the user's
 // doing. Tab is deliberate, but it is aimed by the browser rather than by us —
