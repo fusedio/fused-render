@@ -33,7 +33,12 @@ let shortTitle: typeof import("./NewJobModal").shortTitle;
 let TITLE_MAX: typeof import("./NewJobModal").TITLE_MAX;
 let deletePress: typeof import("./NewJobModal").deletePress;
 let saveEnabled: typeof import("./NewJobModal").saveEnabled;
+let saveBlockedReason: typeof import("./NewJobModal").saveBlockedReason;
 let TITLE_PLACEHOLDER: typeof import("./NewJobModal").TITLE_PLACEHOLDER;
+let ASK_PLACEHOLDER: typeof import("./NewJobModal").ASK_PLACEHOLDER;
+let composeTaskMessage: typeof import("./NewJobModal").composeTaskMessage;
+let withoutTitleHeading: typeof import("./NewJobModal").withoutTitleHeading;
+let splitDraft: typeof import("./NewJobModal").splitDraft;
 let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
 let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
@@ -56,7 +61,12 @@ beforeAll(async () => {
   TITLE_MAX = mod.TITLE_MAX;
   deletePress = mod.deletePress;
   saveEnabled = mod.saveEnabled;
+  saveBlockedReason = mod.saveBlockedReason;
   TITLE_PLACEHOLDER = mod.TITLE_PLACEHOLDER;
+  ASK_PLACEHOLDER = mod.ASK_PLACEHOLDER;
+  composeTaskMessage = mod.composeTaskMessage;
+  withoutTitleHeading = mod.withoutTitleHeading;
+  splitDraft = mod.splitDraft;
   pastNoteFor = mod.pastNoteFor;
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
   PAST_NOTE_CATCH_UP = mod.PAST_NOTE_CATCH_UP;
@@ -85,11 +95,11 @@ const DAILY: RecurrenceRule = { freq: "day" };
 
 const form = (over: Partial<Form> = {}): Form => ({
   target: " /tmp/work ",
-  // The SECOND field, and the required one: the message AND the description.
-  // There is no third text field on the form (Akshil, 2026-08-17).
+  // The SECOND field: the task's description, and the body of the message
+  // composed from it and the title. Optional as of 2026-08-18.
   message: "pull today's news",
-  // The FIRST field, and required as of 2026-08-17 — so a filled one is the
-  // ordinary case here. `title: ""` is still passed explicitly by the tests that
+  // The FIRST field, and the required one as of 2026-08-17 — so a filled one is
+  // the ordinary case here. `title: ""` is still passed explicitly by the tests that
   // are about the WIRE contract, which still allows the key to be absent.
   title: "Morning news",
   when: "2026-08-17T09:00",
@@ -166,11 +176,14 @@ describe("the Repeat checkbox", () => {
 });
 
 describe("the payload", () => {
-  test("a one-off is target, the ask (twice), the title, due and permission", () => {
+  test("a one-off is target, the composed message, the two fields, due and permission", () => {
     expect(buildSchedulePayload(form())).toEqual({
       target: "/tmp/work",
-      message: "pull today's news",
-      // Same text, second key: the one big field is the description too.
+      // What Claude is sent: the title as the first line, the description under
+      // it (composeTaskMessage).
+      message: "Morning news\n\npull today's news",
+      // …and the two halves still stored as themselves, because the task page
+      // shows them apart.
       description: "pull today's news",
       title: "Morning news",
       due: "2026-08-17T09:00",
@@ -178,11 +191,12 @@ describe("the payload", () => {
     });
   });
 
-  test("the big field IS the description — one field, both keys", () => {
+  test("the message is composed and tidy; the description is the field alone", () => {
     const body = buildSchedulePayload(form({ message: "  summarise the inbox  " }));
-    // The message goes verbatim, because that is literally what Claude
-    // receives; the description is the same text tidied up.
-    expect(body.message).toBe("  summarise the inbox  ");
+    // Both sides trimmed on the way into the join: the padding a textarea
+    // collects is not part of the instruction, and it would sit between the
+    // heading and the body where Claude reads it.
+    expect(body.message).toBe("Morning news\n\nsummarise the inbox");
     expect(body.description).toBe("summarise the inbox");
   });
 
@@ -196,6 +210,9 @@ describe("the payload", () => {
     // …and the description is still there, because it is not the title's
     // business: the ask always fills it.
     expect(body.description).toBe("pull today's news");
+    // With no title to head it, the message is the description alone — no
+    // leading blank line.
+    expect(body.message).toBe("pull today's news");
   });
 
   test("new_task_each_run is sent only when the task actually repeats", () => {
@@ -225,13 +242,42 @@ describe("the payload", () => {
       buildSchedulePayload(form({ sessionId: "abc", rule: DAILY, repeat: "daily" })).session_id,
     ).toBeUndefined();
   });
+
+  // THE TASK NUMBER SURVIVES AN EDIT. Editing is cancel + re-create — there is
+  // no PATCH — so the entry the user was looking at is replaced by one with a
+  // brand new id, and a task that has not run yet is NUMBERED on that id
+  // (`pending:<entry-id>`). Nothing said the two were the same task, so the
+  // server allocated the next number in the project and TASK-078 became TASK-079
+  // on a change of time, with no duplicate row to explain where it went (QA,
+  // 2026-08-18). `replaces` is what says it, and the server moves the number
+  // across instead of minting a second one.
+  test("an edit says which entry it replaces, so the task keeps its number", () => {
+    expect(
+      buildSchedulePayload(form({ replacesEntryId: "20260818-090000-abc123" })).replaces,
+    ).toBe("20260818-090000-abc123");
+    // It rides with everything else, including a repeat — a rule's template is
+    // an entry like any other and is re-created the same way.
+    expect(
+      buildSchedulePayload(
+        form({ replacesEntryId: "e1", rule: DAILY, repeat: "daily" }),
+      ),
+    ).toMatchObject({ replaces: "e1", rule: DAILY });
+  });
+
+  test("…and a NEW task replaces nothing, so the key stays off the wire", () => {
+    // Same discipline as `title`: absent means "there isn't one", and a builder
+    // that sent "" would be naming an entry id that does not exist.
+    expect("replaces" in buildSchedulePayload(form())).toBe(false);
+    expect("replaces" in buildSchedulePayload(form({ replacesEntryId: "" }))).toBe(false);
+  });
 });
 
-// BOTH prominent fields are required now (Akshil, 2026-08-17): the description
-// because it is the text Claude is actually sent, and Title because a task
-// nobody can name in a list is not much better. Title only became a legitimate
-// refusal once the form stopped opening it blank — see the naming block below,
-// which is the other half of this one.
+// ONE prominent field is required (Akshil, 2026-08-18): the Title. It names the
+// task in the list AND it is the first line of what Claude is sent
+// (composeTaskMessage), so a task with a name is a task with an instruction. The
+// description was required for a day, on the reasoning that it was the only text
+// Claude received; composing the two ended that, and making the user type
+// "Update the changelog" twice was the cost of the old rule.
 describe("what Save refuses", () => {
   // Everything Save wants, so each test can take exactly one thing away.
   const gate = (over: Partial<Parameters<typeof saveEnabled>[0]> = {}) => ({
@@ -252,23 +298,29 @@ describe("what Save refuses", () => {
     expect(saveEnabled(gate())).toBe(true);
   });
 
-  test("an EMPTY description is refused — it is the one required text field", () => {
-    expect(saveEnabled(gate({ message: "" }))).toBe(false);
-    // Whitespace is not an instruction, and a textarea collects plenty of it.
-    expect(saveEnabled(gate({ message: "   " }))).toBe(false);
-    expect(saveEnabled(gate({ message: "\n\n  \t\n" }))).toBe(false);
+  test("an EMPTY description SAVES — the title is the instruction", () => {
+    expect(saveEnabled(gate({ message: "" }))).toBe(true);
+    // Whitespace-only is the same case, and it is not refused either: what goes
+    // on the wire is composed from the title, which is not empty.
+    expect(saveEnabled(gate({ message: "   " }))).toBe(true);
+    expect(saveEnabled(gate({ message: "\n\n  \t\n" }))).toBe(true);
+    // The proof that the loosening is safe: `schedule.create` refuses an empty
+    // message, and the payload's is the title.
+    expect(buildSchedulePayload(form({ message: "", title: "Update the changelog" })).message)
+      .toBe("Update the changelog");
   });
 
-  test("…and an EMPTY title is refused too — it used to be the optional one", () => {
+  test("…and an EMPTY title is refused — it is the one required field now", () => {
     // The change of 2026-08-17. A blank Title used to save (the server named the
     // task from the transcript); it now refuses, because the field arrives
-    // prefilled and a blank one means the user deliberately cleared it.
+    // prefilled and a blank one means the user deliberately cleared it — and
+    // because a task with neither a name nor a description has nothing to send.
     expect(saveEnabled(gate({ title: "" }))).toBe(false);
-    // Spaces are not a name, exactly as newlines are not an instruction.
+    // Spaces are not a name.
     expect(saveEnabled(gate({ title: "   " }))).toBe(false);
-    // The two are independent refusals, not one rule read twice.
+    // And no amount of description buys the title back: they are one message,
+    // but the name is the half the list is read by.
     expect(saveEnabled(gate({ title: "", message: "pull today's news" }))).toBe(false);
-    expect(saveEnabled(gate({ title: "Morning news", message: "" }))).toBe(false);
   });
 
   test("the rest of the gate is unchanged by the swap", () => {
@@ -287,6 +339,91 @@ describe("what Save refuses", () => {
       true,
     );
   });
+
+  // WHY A REFUSAL HAS TO SPEAK. Save used to be `disabled` on a false
+  // `saveEnabled`, and a dead button answers a press with nothing at all — no
+  // message, no caret moved, the card just sitting there. The commonest way to
+  // meet it is the commonest thing to forget: open the form, type a name, press
+  // Save, and the description is still empty (QA, 2026-08-18). The rules did not
+  // change — an empty description is a task with nothing to do, and
+  // `schedule.create` refuses it on the server too — only the silence did.
+  describe("…and how it says so", () => {
+    test("a form that saves has nothing to say", () => {
+      expect(saveBlockedReason(gate())).toBe(null);
+    });
+
+    test("an empty second field has nothing to say — it is not a refusal", () => {
+      // Nothing is missing: the additional instructions are optional, and the
+      // sentence about a task with no instructions has moved to the field that
+      // now asks for them (below).
+      expect(saveBlockedReason(gate({ message: "" }))).toBe(null);
+      expect(saveBlockedReason(gate({ message: "\n\n  \t" }))).toBe(null);
+    });
+
+    test("every refusal names a field, and the sentence is a thing to DO", () => {
+      // The one missing-prose refusal there is, and it asks for the TASK: the
+      // field says "What should Claude do?", so a banner saying "give the task a
+      // name" would send the user looking for a label to invent instead of the
+      // instruction that is actually absent. It still focuses the primary field,
+      // which is where that answer goes.
+      const noTitle = saveBlockedReason(gate({ title: "   " }));
+      expect(noTitle?.field).toBe("title");
+      expect(noTitle?.text).toContain("Say what Claude should do");
+      expect(noTitle?.text).not.toContain("name");
+
+      expect(saveBlockedReason(gate({ target: "" }))?.field).toBe("target");
+      // A path that failed its existence check already wrote a sentence for a
+      // human; the banner repeats THAT rather than inventing a second one.
+      expect(saveBlockedReason(gate({ pathError: "This folder or file doesn't exist" })))
+        .toEqual({ text: "This folder or file doesn't exist", field: "target" });
+    });
+
+    test("the reasons that are not a field still say something, and focus nothing", () => {
+      // Nothing to put a caret in: the repeat lives behind a dialog and the
+      // date-time behind two popovers, so the sentence is the whole answer.
+      for (const over of [
+        { repeatOn: true, repeat: "custom", customRule: null },
+        { pickedOk: false },
+        { repeat: "cron", legacyCron: "" },
+        { replaced: true },
+      ]) {
+        const blocked = saveBlockedReason(gate(over));
+        expect(blocked?.field).toBe(null);
+        expect((blocked?.text ?? "").length).toBeGreaterThan(0);
+      }
+    });
+
+    test("it agrees with saveEnabled on every case saveEnabled decides", () => {
+      // The two are ONE rule set with two readers, so they must not drift: a
+      // form saveEnabled refuses has a reason, and one it allows has none. This
+      // is what keeps a new refusal from being added silently to only one of
+      // them.
+      const cases: Partial<Parameters<typeof saveEnabled>[0]>[] = [
+        {}, { message: "" }, { message: "  " }, { title: "" }, { title: "\t" },
+        { target: "" }, { pathError: "no such folder" }, { replaced: true },
+        { pickedOk: false }, { repeatOn: true, repeat: "custom", customRule: null },
+        { repeatOn: true, repeat: "custom", customRule: DAILY },
+        { repeat: "cron", legacyCron: "" },
+        { repeat: "cron", legacyCron: "0 9 * * *", pickedOk: false },
+        { title: "", message: "" },
+      ];
+      for (const over of cases) {
+        expect(saveBlockedReason(gate(over)) === null).toBe(saveEnabled(gate(over)));
+      }
+    });
+
+    test("the topmost problem is the one reported, in the card's reading order", () => {
+      // One reason at a time. A form with everything wrong reads back the FIRST
+      // field on the card, not a list — fixing the top one often fixes the rest,
+      // and a scolding is not a hint.
+      expect(saveBlockedReason(gate({ title: "", message: "", target: "" }))?.field).toBe("title");
+      expect(saveBlockedReason(gate({ message: "", target: "" }))?.field).toBe("target");
+      // Except `replaced`, which outranks everything: the task IS saved, so
+      // naming a missing field would be telling the user to fix a form whose
+      // work is already done.
+      expect(saveBlockedReason(gate({ replaced: true, title: "" }))?.field).toBe(null);
+    });
+  });
 });
 
 // The form asks for prose ONCE. Everything the server stores as two values —
@@ -303,8 +440,13 @@ describe("what an Edit opens the big field on", () => {
     expect(initialAskOf(entry({ message: "", description: "a note" }))).toBe("a note");
   });
 
-  test("a chat draft fills a NEW task, and never outranks the entry", () => {
-    expect(initialAskOf(null, "draft from the composer")).toBe("draft from the composer");
+  test("a chat draft fills a NEW task's description with its BODY, and never outranks the entry", () => {
+    // The draft's first line has gone to the title (see the split below), so
+    // what is left for this field is the rest of it.
+    expect(initialAskOf(null, "Port the reader\nstart with the parquet path"))
+      .toBe("start with the parquet path");
+    // A one-line draft is entirely a name: nothing is left over.
+    expect(initialAskOf(null, "draft from the composer")).toBe("");
     expect(initialAskOf(entry({}), "draft from the composer")).toBe("pull today's news");
     expect(initialAskOf(undefined)).toBe("");
   });
@@ -313,23 +455,61 @@ describe("what an Edit opens the big field on", () => {
     const saved = buildSchedulePayload(
       form({ message: "pull today's news", title: "Morning news" }),
     );
+    // What Claude is sent is BOTH fields, the title as the first line…
+    expect(saved.message).toBe("Morning news\n\npull today's news");
+    // …and the server still stores the description as itself.
+    expect(saved.description).toBe("pull today's news");
     // What the server would have stored, read back into the form's two fields.
     const stored = entry({
       message: saved.message,
       description: saved.description,
       title: saved.title,
     });
+    // The description field opens on the description, NOT on the composed
+    // message — opening on that would put the title back inside the body and the
+    // next Save would compose the heading twice.
     expect(initialAskOf(stored)).toBe("pull today's news");
     expect(stored.title).toBe("Morning news");
 
     // And re-saving that edit sends the same three values back — an edit is
-    // cancel + re-create, so anything the form fails to re-state is LOST.
+    // cancel + re-create, so anything the form fails to re-state is LOST, and
+    // nothing may be gained either: the message is composed once, not once per
+    // round trip.
     const again = buildSchedulePayload(
       form({ message: initialAskOf(stored), title: stored.title ?? "" }),
     );
-    expect(again.message).toBe("pull today's news");
+    expect(again.message).toBe(saved.message);
     expect(again.description).toBe("pull today's news");
     expect(again.title).toBe("Morning news");
+  });
+
+  test("a task saved BEFORE the two were composed still opens on its message", () => {
+    // No description stored at all (every task from before the field existed):
+    // the message is the only prose there is, and it is not a composed one, so it
+    // fills the field whole.
+    const old = entry({ message: "pull today's news", description: undefined });
+    expect(initialAskOf(old)).toBe("pull today's news");
+    // And one whose message DOES open with its title has the heading peeled off,
+    // so an edit does not stack a second copy of the name on top of the first.
+    const composed = entry({
+      title: "Morning news",
+      message: "Morning news\n\npull today's news",
+      description: undefined,
+    });
+    expect(initialAskOf(composed)).toBe("pull today's news");
+    // Exact, not fuzzy: prose that merely starts with the same words is prose.
+    expect(initialAskOf(entry({ title: "Morning", message: "Morning news please", description: undefined })))
+      .toBe("Morning news please");
+  });
+
+  test("a description-only task is sent as its description, with no blank first line", () => {
+    // The other half of the compose rule: either side alone is sent alone.
+    expect(buildSchedulePayload(form({ title: "", message: "pull today's news" })).message)
+      .toBe("pull today's news");
+    expect(buildSchedulePayload(form({ title: "Morning news", message: "" })).message)
+      .toBe("Morning news");
+    expect(buildSchedulePayload(form({ title: "Morning news", message: "" })).description)
+      .toBeUndefined();
   });
 
   test("an UNTITLED task opens its title BLANK, not on a copy of its message", () => {
@@ -344,6 +524,180 @@ describe("what an Edit opens the big field on", () => {
     expect(initialTitleOf(stored)).toBe("");
     // The description is untouched by any of it — the ask still opens filled.
     expect(initialAskOf(stored)).toBe("pull today's news");
+  });
+});
+
+// TITLE AND DESCRIPTION ARE ONE MESSAGE (Akshil, 2026-08-18). The card collects
+// a name and a body; Claude is sent both, the name as the first line. That is
+// what makes the description optional — the title is already an instruction —
+// and it is what a chat handoff is split across.
+describe("the first message the task sends", () => {
+  test("the title is its first line and the description its body", () => {
+    expect(composeTaskMessage("Morning news", "pull today's news")).toBe(
+      "Morning news\n\npull today's news",
+    );
+    // A BLANK line, not a bare newline: it is the plainest heading markdown has,
+    // and a single newline would run the name into the body as one paragraph.
+    expect(composeTaskMessage("Morning news", "pull today's news")).toContain("\n\n");
+  });
+
+  test("either side alone is sent alone, with no stray blank line", () => {
+    expect(composeTaskMessage("Update the changelog", "")).toBe("Update the changelog");
+    expect(composeTaskMessage("Update the changelog", "  \n ")).toBe("Update the changelog");
+    expect(composeTaskMessage("", "pull today's news")).toBe("pull today's news");
+    expect(composeTaskMessage("", "")).toBe("");
+    // Nothing composed ever opens or closes on whitespace — a message that did
+    // would reach Claude with an empty heading above it.
+    for (const composed of [
+      composeTaskMessage(" Morning news ", " pull today's news "),
+      composeTaskMessage(" Morning news ", ""),
+      composeTaskMessage("", " pull today's news "),
+    ]) {
+      expect(composed).toBe(composed.trim());
+    }
+  });
+
+  test("the heading comes back off when an Edit has only the message to read", () => {
+    expect(withoutTitleHeading("Morning news\n\npull today's news", "Morning news")).toBe(
+      "pull today's news",
+    );
+    // Only the exact join is peeled. A message that merely begins with the same
+    // words is prose, and prose is left alone.
+    expect(withoutTitleHeading("Morning news please", "Morning")).toBe("Morning news please");
+    expect(withoutTitleHeading("Morning news\npull today's news", "Morning news")).toBe(
+      "Morning news\npull today's news",
+    );
+    expect(withoutTitleHeading("pull today's news", "")).toBe("pull today's news");
+  });
+
+  // THE TITLE-ONLY TASK, which is the ordinary case now that the second field is
+  // optional: the composer appends nothing, so there is no `\n\n` prefix for the
+  // inverse to spot. It used to hand the whole message back as the additional
+  // instructions, and the next Save composed `title\n\ntitle` — one more copy of
+  // the name per edit, for ever (Bugbot, PR #595).
+  test("a task that is ALL title inverts to no additional instructions", () => {
+    expect(withoutTitleHeading("Update the changelog", "Update the changelog")).toBe("");
+    // Whitespace the wire may have picked up does not make it look like prose.
+    expect(withoutTitleHeading("  Update the changelog\n", "Update the changelog")).toBe("");
+    expect(withoutTitleHeading("Update the changelog", "  Update the changelog  ")).toBe("");
+  });
+
+  test("compose → peel is a true inverse, in all three shapes", () => {
+    for (const [title, additional] of [
+      ["Update the changelog", ""],
+      ["Morning news", "pull today's news"],
+      ["", "pull today's news"],
+    ]) {
+      const composed = composeTaskMessage(title, additional);
+      expect(withoutTitleHeading(composed, title)).toBe(additional);
+    }
+  });
+
+  test("editing a title-only task leaves the second field empty, edit after edit", () => {
+    // End to end, through the values the ?edit= flow actually passes: the entry
+    // the page found goes to the modal whole, and these two functions are the
+    // only readers of its prose.
+    const saved = buildSchedulePayload(form({ title: "Update the changelog", message: "" }));
+    expect(saved.message).toBe("Update the changelog");
+    expect(saved.description).toBeUndefined();
+
+    // The server has no `description` to store, so the Edit falls back to the
+    // message — which is the case the bug lived in.
+    let stored = entry({
+      title: saved.title,
+      message: saved.message,
+      description: undefined,
+    });
+    // Three round trips, because the bug COMPOUNDED: one copy of the name per
+    // save, and nothing on the card said where it came from.
+    for (let i = 0; i < 3; i += 1) {
+      expect(initialAskOf(stored)).toBe("");
+      expect(initialTitleOf(stored)).toBe("Update the changelog");
+      const again = buildSchedulePayload(
+        form({ title: initialTitleOf(stored), message: initialAskOf(stored) }),
+      );
+      expect(again.message).toBe("Update the changelog");
+      expect(again.description).toBeUndefined();
+      stored = entry({
+        title: again.title,
+        message: again.message,
+        description: undefined,
+      });
+    }
+  });
+
+  // The chat composer's Schedule button hands over one block of prose
+  // (`?new=1&message=…`) and the card has two fields to put it in. It is
+  // PARTITIONED, not copied: what the title takes, the description loses.
+  describe("splitting a chat draft across the two fields", () => {
+    test("first line names the task, the rest describes it", () => {
+      expect(splitDraft("Port the parquet reader\nstart with the path handling")).toEqual({
+        title: "Port the parquet reader",
+        description: "start with the path handling",
+      });
+      // And the two put back together are the draft again — the round trip that
+      // proves nothing was said twice and nothing dropped.
+      const s = splitDraft("Port the parquet reader\n\nstart with the path handling");
+      expect(composeTaskMessage(s.title, s.description)).toBe(
+        "Port the parquet reader\n\nstart with the path handling",
+      );
+    });
+
+    test("a one-line draft is all name and no body", () => {
+      expect(splitDraft("Update the changelog")).toEqual({
+        title: "Update the changelog",
+        description: "",
+      });
+      // Which is a saveable task, and one whose message is that single line.
+      expect(saveEnabled({
+        message: "", title: "Update the changelog", target: "/tmp/work", pathError: null,
+        repeatOn: false, repeat: "none", customRule: null, legacyCron: "",
+        pickedOk: true, replaced: false,
+      })).toBe(true);
+    });
+
+    test("nothing to split is two empty fields, not a title of spaces", () => {
+      expect(splitDraft(null)).toEqual({ title: "", description: "" });
+      expect(splitDraft(undefined)).toEqual({ title: "", description: "" });
+      expect(splitDraft("   \n\n  ")).toEqual({ title: "", description: "" });
+    });
+
+    test("a long first line is kept WHOLE — the line break is the only cut", () => {
+      // No clamp (Akshil, 2026-08-18). The field asks what Claude should do, and
+      // two thirds of a sentence is not an answer to that; the user can shorten
+      // their own line, and the one before this rule could not lengthen a clamped
+      // one without retyping it.
+      const head = "port the parquet reader and work out why the path handling "
+        + "drops the drive letter on windows before anything else happens";
+      expect(head.length).toBeGreaterThan(80);
+      expect(splitDraft(head + "\nstart with the tests")).toEqual({
+        title: head,
+        description: "start with the tests",
+      });
+      // And it is still a PARTITION: the long line is in one field, not in both.
+      expect(splitDraft(head + "\nstart with the tests").description).not.toContain(head);
+    });
+
+    test("the draft's name fills the field, and outranks the session lookup", () => {
+      // The lookup would land a beat later with the name of the CONVERSATION the
+      // draft was written in, replacing a name the user just typed.
+      const open = initialTitleStateOf(null, "sess-1", "Port the parquet reader");
+      expect(open.title).toBe("Port the parquet reader");
+      expect(open.lookupSession).toBe("");
+      // With no draft, the lookup runs exactly as it did.
+      expect(initialTitleStateOf(null, "sess-1").lookupSession).toBe("sess-1");
+      expect(initialTitleStateOf(null, "sess-1", "   ").lookupSession).toBe("sess-1");
+    });
+
+    test("…but a stored title still outranks the draft — an Edit never loses its name", () => {
+      const open = initialTitleStateOf(
+        entry({ title: "Morning news", session_id: "sess-1" }),
+        "sess-1",
+        "Port the parquet reader",
+      );
+      expect(open.title).toBe("Morning news");
+      expect(open.lookupSession).toBe("");
+    });
   });
 });
 
@@ -467,7 +821,7 @@ describe("which session an edit carries", () => {
   });
 
   test("but a template that forks every run carries no thread at all", () => {
-    // "New task each run" means a fresh session per occurrence; an id on that
+    // "Fresh task each run" means a fresh session per occurrence; an id on that
     // template is a thread it must NOT resume.
     expect(
       buildSchedulePayload(
@@ -643,9 +997,21 @@ describe("naming the task", () => {
     + "that has already learned a session id stops resuming that thread after "
     + "an edit, then fix it and add a regression test for it";
 
-  test("the placeholder is a field label now, and says nothing about optional", () => {
-    expect(TITLE_PLACEHOLDER).toBe("Title");
+  test("the placeholder asks for the TASK, not for a label", () => {
+    // It said "Title" — what the value is used for, not what the user is being
+    // asked to write — and people answered it with a label ("News") and put the
+    // real instruction in the field underneath. The question is the same one the
+    // chat composer asks, because the answer is the same text.
+    expect(TITLE_PLACEHOLDER).toBe("What should Claude do?");
     expect(TITLE_PLACEHOLDER).not.toContain("optional");
+  });
+
+  test("…and the second field is the OVERFLOW of that question, and says it is optional", () => {
+    // Never the same question twice: the field above asks what the task is, so
+    // this one asks only for what that answer left out.
+    expect(ASK_PLACEHOLDER).toBe("Additional instructions (optional)");
+    expect(ASK_PLACEHOLDER).toContain("optional");
+    expect(ASK_PLACEHOLDER).not.toContain("What should Claude do");
   });
 
   test("step 2: the session's own `ai-title` is what the form prefills", () => {
@@ -836,15 +1202,25 @@ describe("naming the task", () => {
     expect(initialTitleOf(entry({ title: "   " }))).toBe("");
   });
 
-  // THE regression, stated as plainly as it can be: the message being scheduled
-  // does not become the task's name, however the form was opened.
-  test("a long scheduled message never becomes the title", () => {
+  // THE regression, and what is left of it. The bug was DUPLICATION: the message
+  // being scheduled filled the description AND was copied into the title, so a
+  // long message arrived twice and the task was named after its own body. A chat
+  // draft's first line does fill the primary field now (splitDraft) — and that is
+  // the opposite operation, a partition: what the first field takes, the second
+  // one loses. What must still never happen is a title DERIVED from a message
+  // nobody put there, which is every path below.
+  test("a long scheduled message is never COPIED into the title", () => {
     expect(LONG.length).toBeGreaterThan(150);
 
-    // From a chat: the draft is the description, and Title has nothing
-    // synchronous to say. The old code returned firstLine(LONG) here.
+    // A one-line draft is one answer to one question, and it goes in the field
+    // that asks it — whole, because the line break is the only cut.
+    const split = splitDraft(LONG);
+    expect(split.title).toBe(LONG);
+    // The duplication is what is refused: it is in one field, not in both.
+    expect(split.description).toBe("");
+    expect(initialAskOf(null, LONG)).toBe("");
+    // Nothing synchronous puts a message in a title on any other path.
     expect(initialTitleOf(null)).toBe("");
-    expect(initialAskOf(null, LONG)).toBe(LONG);
 
     // Editing the task that draft created: the message is stored, and it is
     // still not a name.

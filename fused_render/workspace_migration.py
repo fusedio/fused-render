@@ -1,5 +1,5 @@
 """One-shot migration of the Fused workspace out of the iCloud-synced
-``~/Documents`` tree: ``~/Documents/Fused`` -> ``~/Fused`` (D329).
+``~/Documents`` tree: ``~/Documents/Fused`` -> ``~/Fused`` (D336).
 
 Runs at the real process entry points (``cli._run_serve``,
 ``app._start_server_thread``) immediately BEFORE ``seed.ensure_fused_dir`` —
@@ -28,9 +28,9 @@ a) the folder itself;
 b) the **sidecar subtree** — per-file state keyed by the source file's absolute
    path (``shell/storage.sidecar_path``). This is the part that protects real
    data: sidecars hold ``comments`` (the annotate log, D101), ``docs`` version
-   history, ``revertStash``, ``lastSession``, ``claudeSessions``, .... The
-   mapping is a pure path transform, so one directory rename re-homes all of
-   it and no file contents need patching;
+   history, ``revertStash``, ``claudeSessions``, .... The mapping is a pure
+   path transform, so one directory rename re-homes all of it and no file
+   contents need patching;
 c) **absolute paths written into the app's own state** — community install
    records, bookmark and recents view urls, scheduled-message targets (a
    stale one fails a 400 on an unattended run), and the menu-bar pin (the one
@@ -53,7 +53,7 @@ from fused_render.shell.seed import fused_dir
 
 logger = logging.getLogger(__name__)
 
-# The pre-D329 default. A literal, not a call to anything: this is history, and
+# The pre-D336 default. A literal, not a call to anything: this is history, and
 # it must keep naming the old location even as the default moves again.
 LEGACY_FUSED_DIR = "~/Documents/Fused"
 
@@ -100,7 +100,7 @@ def _run() -> None:
             logger.warning("could not move %s to %s (%s); nothing was changed",
                            src, dst, exc)
             return
-        logger.info("moved the Fused workspace %s -> %s (D329)", src, dst)
+        logger.info("moved the Fused workspace %s -> %s (D336)", src, dst)
     if os.path.exists(src):
         # Still there, and not a directory we could move (a stray FILE at the
         # legacy path). Rewriting state to point at a destination nothing was

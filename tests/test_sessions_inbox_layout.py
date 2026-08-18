@@ -1,23 +1,22 @@
 """The session inbox's List/Board choice has to survive leaving the page.
 
 `core_apps/sessions/inbox.html` renders two layouts and keeps the choice in the
-`layout` URL param, like every other filter on that page. A param alone was not
-enough to REMEMBER the choice, though, and the reason is structural rather than
-an oversight:
+`layout` URL param, like every other filter on that page. A param alone cannot
+REMEMBER the choice: nothing replays a page's last query on a bare open, so a
+fresh visit to /sessions arrives with no `layout` at all and would snap a board
+user back to the list.
 
-* The shell replays a file's last query on a bare open through per-file session
-  restore (LSN-*, `platform/lib/session.ts`).
-* Both halves of it — `useSessionRestore` and `useSessionTracking` — opt out
-  when `writable !== true`, because the sidecar write is server-refused on a
-  read-only mount and firing it is a guaranteed-null round trip.
-* The sessions app IS a read-only mount (`ensure_builtin_mounts` stamps
-  `read_only: True` on the `:archive:` record).
+*The shell once did replay it — per-file session restore (LSN-*,
+`platform/lib/session.ts`) — but this page never benefited even then: both
+halves of it opted out when `writable !== true`, and the sessions app IS a
+read-only mount (`ensure_builtin_mounts` stamps `read_only: True` on the
+`:archive:` record). D329 removed that machinery outright, which makes the store
+below the only answer for every page rather than just for this one.*
 
-So `?layout=board` was never restorable, and every fresh visit to /sessions
-snapped a board user back to the list. localStorage is the one store this page
-owns, and these tests pin the precedence it introduced: the param still wins
-when present (a shared link means what it says), the remembered value is only a
-fallback, and nothing here may throw when storage is blocked.
+localStorage is the one store this page owns, and these tests pin the precedence
+it introduced: the param still wins when present (a shared link means what it
+says), the remembered value is only a fallback, and nothing here may throw when
+storage is blocked.
 
 The behaviour is checked by running the page's REAL layout code under node (the
 `_js_block` approach of test_map_template_escaping.py / test_calls.py — a copy

@@ -312,7 +312,12 @@ def test_the_link_opens_the_form_immediately(page):
     read as two."""
     effect = page[page.index('q.get("new")'):]
     effect = effect[:effect.index("}, []);")]
-    assert "setCreating(new Date(" in effect
+    # `openForm` rather than `setCreating` since 2026-08-18: every opening of the
+    # form goes through one door, and that door is what bumps the modal's React
+    # key so a fresh card cannot inherit the previous one's answers. The deep link
+    # is an opening like any other, and what this test cares about is unchanged —
+    # it opens on arrival, prefilled, with no button left to press.
+    assert "openForm(new Date(" in effect
     assert "setNewTarget(" in effect
 
 

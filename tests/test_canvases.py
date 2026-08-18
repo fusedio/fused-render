@@ -182,6 +182,65 @@ def test_list_reports_clone_metadata(harness):
     assert canvases["alpha"]["mtime"] is None
 
 
+# In-interpreter list shim (the preferred path when the CLI isn't an external
+# binary): stub scripts standing in for _fused_canvases_list.py.
+def _wire_list_shim(tmp_path, monkeypatch, body: str) -> None:
+    shim = tmp_path / "list_shim.py"
+    shim.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(
+        canvases_mod, "_shim_list_command", lambda cli: [sys.executable, str(shim)]
+    )
+
+
+def test_list_shim_reports_previews_and_updated_at(harness, tmp_path, monkeypatch):
+    harness.log_in()
+    beta = harness.root / "beta"
+    beta.mkdir(parents=True)
+    (beta / "canvas.toml").write_text("", encoding="utf-8")
+    _wire_list_shim(
+        tmp_path,
+        monkeypatch,
+        "import json, sys\n"
+        "json.dump([\n"
+        "  {'name': 'alpha', 'id': 'id-a', 'preview_url': 'https://s3/signed.png',\n"
+        "   'last_updated': '2026-08-18T06:10:17.419215Z'},\n"
+        "  {'name': 'beta', 'id': 'id-b', 'preview_url': None, 'last_updated': None},\n"
+        "], sys.stdout)\n",
+    )
+    res = harness.client.get("/api/canvases/list", headers=GUARD)
+    assert res.status_code == 200
+    canvases = {c["name"]: c for c in res.json()["canvases"]}
+    assert canvases["alpha"]["preview_url"] == "https://s3/signed.png"
+    assert canvases["alpha"]["id"] == "id-a"
+    assert isinstance(canvases["alpha"]["updated_at"], float)
+    assert canvases["alpha"]["cloned"] is False
+    assert canvases["beta"]["preview_url"] is None
+    assert canvases["beta"]["cloned"] is True
+
+
+def test_list_shim_expired_credentials_map_to_401(harness, tmp_path, monkeypatch):
+    harness.log_in()
+    _wire_list_shim(
+        tmp_path,
+        monkeypatch,
+        "import sys\n"
+        "sys.stderr.write('Error: please re-authenticate with fused login\\n')\n"
+        "sys.exit(1)\n",
+    )
+    res = harness.client.get("/api/canvases/list", headers=GUARD)
+    assert res.status_code == 401
+
+
+def test_list_external_cli_entries_have_null_preview_fields(harness):
+    # The stub CLI is an external FUSED_RENDER_FUSED_BIN, so the fallback
+    # `canvas list` path runs: bare names, no previews or updated_at.
+    harness.log_in()
+    res = harness.client.get("/api/canvases/list", headers=GUARD)
+    canvases = {c["name"]: c for c in res.json()["canvases"]}
+    assert canvases["alpha"]["preview_url"] is None
+    assert canvases["alpha"]["updated_at"] is None
+
+
 def test_create_canvas_runs_cli(harness):
     harness.log_in()
     res = harness.client.post("/api/canvases/create", json={"name": "gamma"}, headers=GUARD)

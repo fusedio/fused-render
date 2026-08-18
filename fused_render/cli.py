@@ -127,7 +127,7 @@ def _run_serve(args: argparse.Namespace) -> None:
     install_no_window_policy()
     log_file = setup_logging()
     # One-shot relocation of the workspace out of iCloud-synced ~/Documents
-    # (D329). Strictly BEFORE onboarding: ensure_fused_dir creates ~/Fused, and
+    # (D336). Strictly BEFORE onboarding: ensure_fused_dir creates ~/Fused, and
     # an existing destination is exactly what the migration refuses to move into.
     from fused_render import workspace_migration
 

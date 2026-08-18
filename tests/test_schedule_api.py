@@ -10,7 +10,7 @@ Nothing here spawns a real claude — no test lets a message come due.
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import schedule, schedule_wake
+from fused_render import schedule, schedule_wake, tasks_store
 from fused_render.server import create_app
 from fused_render.shell import mounts as mounts_mod
 
@@ -343,3 +343,77 @@ def test_restore_is_guarded_and_unskips_over_http(client, target):
     again = client.post("/api/schedule/restore", headers=WRITE,
                         json={"id": occurrence["id"]})
     assert again.status_code == 404
+
+
+# ------------------------------------------------ the number an edit must keep
+
+@pytest.fixture()
+def task_state(tmp_path, monkeypatch):
+    """`tasks_store`'s own store, redirected at a tmp dir.
+
+    It is NOT under FUSED_RENDER_HOME: task numbers are deliberately global (a
+    session numbered from a worktree keeps that number on main), so the module
+    resolves STATE_DIR at import and the only way to move it is to patch it.
+    """
+    d = tmp_path / "task-state"
+    d.mkdir()
+    monkeypatch.setattr(tasks_store, "STATE_DIR", str(d))
+    return d
+
+
+def _number_for(entry_id):
+    return tasks_store.task_number(tasks_store.pending_key(entry_id))
+
+
+def test_an_edit_carries_its_task_number_onto_the_entry_that_replaces_it(
+        client, target, task_state):
+    """TASK-078 must not become TASK-079 because the user changed the time.
+
+    Editing a scheduled message is cancel + re-create — there is no PATCH — so
+    the entry stops existing and a new one with a new id takes its place. A task
+    that has not run yet is numbered on that entry id, so the listing saw a key
+    it had never seen and allocated the next number in the project; the user
+    watched the row rename itself, with no duplicate to explain it (QA,
+    2026-08-18). `replaces` is how the form says the two are one task.
+    """
+    first = client.post("/api/schedule", headers=WRITE,
+                        json={"target": str(target), "message": "pull the news",
+                              "due": "2030-01-01T09:00:00Z"}).json()["entry"]
+    # The number the user has seen. Allocated the way the listing allocates it.
+    tasks_store.ensure_ids([(tasks_store.pending_key(first["id"]), str(target), 1.0)])
+    seen = _number_for(first["id"])
+    assert seen == "TASK-001"
+
+    second = client.post("/api/schedule", headers=WRITE,
+                         json={"target": str(target), "message": "pull the news",
+                               "due": "2030-01-02T09:00:00Z",
+                               "replaces": first["id"]}).json()["entry"]
+    assert second["id"] != first["id"]
+    # Moved, not copied and not re-minted: the new entry IS TASK-001 and the old
+    # key no longer answers to anything.
+    assert _number_for(second["id"]) == seen
+    assert _number_for(first["id"]) == ""
+
+    # And the number is not spent twice: the next task in this project gets 002,
+    # not 001 — allocate-once survives the move.
+    third = client.post("/api/schedule", headers=WRITE,
+                        json={"target": str(target), "message": "something else",
+                              "due": "2030-01-03T09:00:00Z"}).json()["entry"]
+    tasks_store.ensure_ids([(tasks_store.pending_key(third["id"]), str(target), 2.0)])
+    assert _number_for(third["id"]) == "TASK-002"
+
+
+def test_replaces_is_a_no_op_when_there_is_nothing_to_move(client, target, task_state):
+    """Everything that is not the case above, and none of it may cost a send.
+
+    A `replaces` naming an entry that never had a number — it ran, so its task is
+    keyed on the session id, which an edit does not touch — leaves the new entry
+    to be numbered normally. An absent `replaces` (every new task) does the same.
+    Neither is an error: the message is scheduled either way.
+    """
+    for body in ({"replaces": "no-such-entry"}, {"replaces": ""}, {}):
+        res = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "x",
+                                "due": "2030-02-01T09:00:00Z", **body})
+        assert res.status_code == 200
+        assert _number_for(res.json()["entry"]["id"]) == ""

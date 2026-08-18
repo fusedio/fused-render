@@ -97,9 +97,6 @@ export interface StatResult {
   // the template iframe as _remote=1 so pages can prefer ranged HTTP reads.
   remote?: boolean;
   // False for a file on a read-only mount (or any path the user can't write).
-  // Session restore keys off this: a non-writable file can never have had a
-  // sidecar written, so its restore is skipped rather than blocking on a cold,
-  // guaranteed-null GET /api/session (see useSessionRestore).
   writable?: boolean;
   templates: TemplateEntry[];
   template_error?: string;
@@ -624,21 +621,6 @@ export function getBookmarkFile(path: string): Promise<BookmarkFileResult> {
   return getJson<BookmarkFileResult>("/api/bookmark-file?path=" + encodeURIComponent(path));
 }
 
-// Per-file session restore (LSN-*). `search` is the shell query without the
-// leading "?", stored verbatim in the target file's .html.json sidecar.
-export interface LastSession {
-  search: string;
-  updated_at: number;
-}
-
-export function getSession(fsPath: string): Promise<{ lastSession: LastSession | null }> {
-  return getJson("/api/session?path=" + encodeURIComponent(fsPath));
-}
-
-export function putSession(fsPath: string, search: string): Promise<void> {
-  return putJson<unknown>("/api/session", { path: fsPath, search }).then(() => undefined);
-}
-
 // Recently opened files (fused_render/shell/recents.py). `url` is the shell
 // /view/ url verbatim including its query string (D20 posture); entries whose
 // file has since been deleted are already filtered out server-side.
@@ -873,17 +855,25 @@ export function mkdir(path: string): Promise<StatResult> {
 
 // Remove a file or directory. A non-empty directory needs recursive=true (the
 // context menu passes it only after the confirm dialog spells that out).
-// With trash=true the entry is moved to the user's Trash instead (macOS only);
-// where that's unsupported the server replies 501 "trash unsupported" and the
-// caller falls back to a hard delete.
+// With trash=true the entry is moved to the OS bin instead — ~/.Trash on macOS,
+// the freedesktop XDG trash on Linux, the Recycle Bin on Windows. Where THIS PATH
+// cannot use the bin (a Linux cross-device move, a remote mount, a platform with
+// no backend) the server replies 501 "trash unsupported" and the caller falls
+// back to the irreversible hard delete.
+//
+// `trashed_to` is WHERE a trash move landed — present only when the server
+// chose that path itself (its own os.rename into ~/.Trash), absent when Finder
+// did the move and therefore picked the location. It is what makes a trash
+// delete undoable: with it the delete is a rename pair like any other
+// relocation (explorer/lib/fs-undo). Never present on a hard delete.
 export function deleteEntry(
   path: string,
   recursive = false,
   trash = false
-): Promise<{ deleted: string; trashed?: boolean }> {
+): Promise<{ deleted: string; trashed?: boolean; trashed_to?: string }> {
   return noteAfter(
     path,
-    postJson<{ deleted: string; trashed?: boolean }>("/api/fs/delete", {
+    postJson<{ deleted: string; trashed?: boolean; trashed_to?: string }>("/api/fs/delete", {
       path,
       recursive,
       trash,
@@ -895,6 +885,20 @@ export function deleteEntry(
 // 409 unless overwrite=true.
 export function renameEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {
   return noteAfter([src, dst], postJson<StatResult>("/api/fs/rename", { src, dst, overwrite }));
+}
+
+// Move an entry INTO or OUT OF the OS bin. Same guards and same error contract
+// as renameEntry (it delegates to the very same handler server-side), plus one
+// thing a plain rename cannot do: it keeps the bin's own bookkeeping straight —
+// on Linux the freedesktop `.trashinfo` sidecar is written when the entry moves
+// into the trash and removed when it moves back out.
+//
+// This is the primitive undo/redo uses for a `"delete"` op, and the only reason
+// it is separate from renameEntry: the sidecar is server-side knowledge, so the
+// undo stack stays a list of plain path pairs and picks a primitive by kind
+// (explorer/lib/fs-undo's applyFsOp) rather than learning what a trash is.
+export function trashMove(from: string, to: string): Promise<StatResult> {
+  return noteAfter([from, to], postJson<StatResult>("/api/fs/trash-move", { from, to }));
 }
 
 // Copy src -> dst (paste-of-a-copy, and Duplicate). Same 409-on-existing-dst
@@ -2526,6 +2530,16 @@ export function scheduleMessage(body: {
   // Only meaningful alongside `rule` or `repeats`; a one-off has no runs to
   // split apart.
   new_task_each_run?: boolean;
+  // The id of the entry this one REPLACES — set only by an edit, which is
+  // cancel + re-create and therefore mints a brand new entry id. A task that has
+  // not run yet is NUMBERED on that entry id (`pending:<entry-id>`), so without
+  // this the server allocated a second number and the task was renamed under the
+  // user: TASK-078 became TASK-079 on a time change, with no duplicate left
+  // behind to explain it. Sent so the number MOVES onto the new id instead.
+  //
+  // A no-op where there is nothing to move — a task whose session exists is
+  // numbered on the session id, and that key is untouched by an edit.
+  replaces?: string;
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }
