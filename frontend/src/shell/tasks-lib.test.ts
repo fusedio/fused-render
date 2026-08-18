@@ -5128,4 +5128,58 @@ describe("what the List remembers between visits", () => {
       arms.indexOf("setTasksFailed(true);"),
     );
   });
+
+  it("pays the preserved offset back when the rows return from a failed poll", () => {
+    // Holding the memory across a failed poll only got the reader halfway there.
+    // `owed` is seeded once at mount and cleared the moment the restore is paid,
+    // so by the time a poll fails there is nothing owed any more: the rows came
+    // back, the scroller remounted at zero, and the preserved offset sat in the
+    // store with nothing left to read it. The reader landed at the top — the
+    // exact outcome preserving the memory was supposed to prevent.
+    //
+    // A stale empty ARMS the restore again, rather than merely not destroying it.
+    expect(LIST).toContain("const staleEmptied = useRef(false);");
+    expect(LIST).toContain("if (!hasRows && stale && hadRows.current) staleEmptied.current = true;");
+    const rearm = LIST.slice(LIST.indexOf("if (!hasRows || !staleEmptied.current) return;"));
+    const body = rearm.slice(0, rearm.indexOf("}, [hasRows]);"));
+    // Re-seeded from the memory that the `stale` guard kept intact.
+    expect(body).toContain("owed.current = memory.current.scroll || null;");
+    // The scroller that comes back is a NEW element at zero, so the offset this
+    // code last set belonged to the old one and cannot be compared against.
+    expect(body).toContain("settled.current = null;");
+    // Fires once per recovery, not once per poll while the rows are back.
+    expect(body).toContain("staleEmptied.current = false;");
+
+    // ORDER IS THE WHOLE THING: the re-arm is a layout effect placed ABOVE the
+    // one that pays the restore, so both run in the same commit and the payer
+    // reads an `owed` that has already been re-seeded.
+    const rearmAt = LIST.indexOf("if (!hasRows || !staleEmptied.current) return;");
+    const payAt = LIST.indexOf("if (owed.current === null || !el) return;");
+    expect(rearmAt).toBeGreaterThan(-1);
+    expect(rearmAt).toBeLessThan(payAt);
+    // Both are layout effects — a passive one would paint the top of the list
+    // first and then jump.
+    expect(LIST.slice(rearmAt - 200, rearmAt)).toContain("useLayoutEffect");
+
+    // And a fresh deadline comes with it: the window is armed off `hasRows`, so
+    // every false→true gets one, not just the first load.
+    expect(LIST).toMatch(/if \(!hasRows\) return;\s*const t = setTimeout\(/);
+    expect(LIST).toMatch(/return \(\) => clearTimeout\(t\);\s*\}, \[hasRows\]\);/);
+  });
+
+  it("still lets the reader's own scroll cancel a recovery restore", () => {
+    // The recovery re-arms `owed`, and the ONE thing that must still outrank it
+    // is the reader deciding where to be. That rule lives in a single place, so
+    // re-arming cannot have quietly bought an exception to it: onScroll clears
+    // `owed` on any scroll that is not this code's own echo, whether that scroll
+    // arrives during a first-load restore or a recovery one.
+    const scroll = LIST.slice(LIST.indexOf("const onScroll = () => {"));
+    const body = scroll.slice(0, scroll.indexOf("\n  };"));
+    expect(body).toContain("if (mine) return;");
+    expect(body).toContain("owed.current = null;");
+    // Nothing in the recovery path re-seeds owed on a later render: it is guarded
+    // by a ref that it clears itself, so a user scroll is not undone by the next
+    // poll landing.
+    expect(LIST).not.toMatch(/owed\.current = memory\.current\.scroll[\s\S]{0,400}staleEmptied\.current = true/);
+  });
 });

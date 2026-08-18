@@ -986,6 +986,39 @@ export function TaskList({
   // reader's own — theirs cancels the restore, and nothing else does.
   const settled = useRef<number | null>(null);
 
+  // Is there a list on screen at all? Asked once, up here, because three separate
+  // things below turn on it: when the restore deadline opens, whether an empty
+  // list is worth forgetting an offset over, and the recovery immediately below.
+  const hasRows = tasks.length > 0;
+  const hadRows = useRef(false);
+  if (hasRows) hadRows.current = true;
+
+  // ROWS COME BACK, AND THE OFFSET HAS TO BE WAITING WHEN THEY DO (bugbot,
+  // 2026-08-18). Holding the memory across a failed poll only got the reader
+  // halfway there: `owed` is seeded once at mount and cleared the moment the
+  // restore is paid, so by the time a poll fails there is nothing owed any more.
+  // The rows came back twenty seconds later, the scroller remounted at zero, and
+  // the preserved offset sat in the store with nothing left to read it — the
+  // reader landed at the top, which is the exact outcome preserving the memory
+  // was meant to prevent.
+  //
+  // So a stale empty ARMS the restore again rather than merely not destroying it.
+  // `settled` is reset with it: the scroller that comes back is a new element at
+  // zero, and the offset this code last set belonged to the old one.
+  //
+  // A layout effect, and deliberately ABOVE the one that pays the restore, so
+  // both run in the same commit and in that order — the re-arm lands before the
+  // payer reads `owed`, and the rows are restored in the frame they return in
+  // rather than one frame later.
+  const staleEmptied = useRef(false);
+  if (!hasRows && stale && hadRows.current) staleEmptied.current = true;
+  useLayoutEffect(() => {
+    if (!hasRows || !staleEmptied.current) return;
+    staleEmptied.current = false;
+    owed.current = memory.current.scroll || null;
+    settled.current = null;
+  }, [hasRows]);
+
   useLayoutEffect(() => {
     const el = listRef.current;
     if (owed.current === null || !el) return;
@@ -1005,10 +1038,11 @@ export function TaskList({
   // therefore spending most of itself — sometimes all of it, on a cold server or
   // a slow disk — waiting for the rows it was meant to be measuring. The window
   // is supposed to be "a few seconds of settling once there is something to
-  // settle", so `hasRows` is what starts the clock. It goes false→true once, so
-  // this arms once too, and a filter that empties the list later cannot rewind
-  // it (by then the restore is long since paid or given up on).
-  const hasRows = tasks.length > 0;
+  // settle", so `hasRows` is what starts the clock.
+  //
+  // It re-arms on every false→true, which is what the stale recovery above needs:
+  // a restore armed again when the rows return needs a deadline of its own, and
+  // the one from the first load is long since spent.
   useEffect(() => {
     if (!hasRows) return;
     const t = setTimeout(() => {
@@ -1091,9 +1125,8 @@ export function TaskList({
   // That is the worst possible moment to forget it: the rows are coming back in
   // twenty seconds, and the reader is about to be dropped at the top of a list
   // they were halfway down. `stale` is the poll saying "this empty is mine, not
-  // the data's", and an empty we cannot vouch for changes nothing at all.
-  const hadRows = useRef(false);
-  if (hasRows) hadRows.current = true;
+  // the data's", and an empty we cannot vouch for changes nothing at all — it
+  // re-arms the restore instead, up where `staleEmptied` is set.
   useEffect(() => {
     if (hasRows || stale || !hadRows.current) return;
     owed.current = null;
