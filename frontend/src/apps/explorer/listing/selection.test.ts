@@ -440,7 +440,7 @@ describe("nextSearchSelection", () => {
 
   test("fills an empty selection with the top hit and remembers it placed it", () => {
     const { paths, byPath } = rowset("hit1.ts", "hit2.ts");
-    const out = nextSearchSelection(INITIAL_SEARCH_SELECT, paths, byPath, EMPTY_SELECTION);
+    const out = nextSearchSelection(INITIAL_SEARCH_SELECT, paths, byPath, EMPTY_SELECTION, true);
     expect(out.select).toBe("/d/hit1.ts");
     expect(out.state).toEqual({ autoPlaced: "/d/hit1.ts", userClaimed: false });
   });
@@ -448,7 +448,7 @@ describe("nextSearchSelection", () => {
   test("follows the ranking while the selection is still its own guess", () => {
     const { paths, byPath } = rowset("better.ts", "hit1.ts");
     const state = { autoPlaced: "/d/hit1.ts", userClaimed: false };
-    const out = nextSearchSelection(state, paths, byPath, oneSelected("/d/hit1.ts"));
+    const out = nextSearchSelection(state, paths, byPath, oneSelected("/d/hit1.ts"), true);
     expect(out.select).toBe("/d/better.ts");
   });
 
@@ -456,7 +456,7 @@ describe("nextSearchSelection", () => {
     const { paths, byPath } = rowset("better.ts", "chosen.ts");
     // auto-select had placed better.ts; the lead is somewhere else now
     const state = { autoPlaced: "/d/better.ts", userClaimed: false };
-    const out = nextSearchSelection(state, paths, byPath, oneSelected("/d/chosen.ts"));
+    const out = nextSearchSelection(state, paths, byPath, oneSelected("/d/chosen.ts"), true);
     expect(out.select).toBeNull();
     expect(out.state.userClaimed).toBe(true);
   });
@@ -469,11 +469,11 @@ describe("nextSearchSelection", () => {
     // user's choice.
     const claimed = { autoPlaced: "/d/top.ts", userClaimed: true };
     const first = rowset("README.md", "other.ts");
-    const held = nextSearchSelection(claimed, first.paths, first.byPath, oneSelected("/d/README.md"));
+    const held = nextSearchSelection(claimed, first.paths, first.byPath, oneSelected("/d/README.md"), true);
     expect(held.select).toBeNull();
     // ...now the query changes and the ranking is completely different
     const after = rowset("collab-canvas-share.zip", "a.ts", "b.ts", "README.md");
-    const out = nextSearchSelection(held.state, after.paths, after.byPath, oneSelected("/d/README.md"));
+    const out = nextSearchSelection(held.state, after.paths, after.byPath, oneSelected("/d/README.md"), true);
     expect(out.select).toBeNull(); // NOT the new top hit
     expect(out.state.userClaimed).toBe(true);
   });
@@ -483,7 +483,7 @@ describe("nextSearchSelection", () => {
     // whatever the new query ranked first.
     const state = { autoPlaced: "/d/hit1.ts", userClaimed: false };
     const after = rowset("brandnew.ts", "hit1.ts");
-    const out = nextSearchSelection(state, after.paths, after.byPath, oneSelected("/d/hit1.ts"));
+    const out = nextSearchSelection(state, after.paths, after.byPath, oneSelected("/d/hit1.ts"), true);
     expect(out.select).toBe("/d/brandnew.ts");
     expect(out.state).toEqual({ autoPlaced: "/d/brandnew.ts", userClaimed: false });
   });
@@ -491,7 +491,7 @@ describe("nextSearchSelection", () => {
   test("the top hit is taken back when the user's row drops out", () => {
     const claimed = { autoPlaced: "/d/old.ts", userClaimed: true };
     const { paths, byPath } = rowset("survivor.ts");
-    const out = nextSearchSelection(claimed, paths, byPath, oneSelected("/d/gone.ts"));
+    const out = nextSearchSelection(claimed, paths, byPath, oneSelected("/d/gone.ts"), true);
     expect(out.select).toBe("/d/survivor.ts");
     // ...and the claim is released, so the ranking is followed again after
     expect(out.state).toEqual({ autoPlaced: "/d/survivor.ts", userClaimed: false });
@@ -500,7 +500,7 @@ describe("nextSearchSelection", () => {
   test("clearing the selection is itself a claim, and stays cleared", () => {
     const state = { autoPlaced: "/d/hit1.ts", userClaimed: false };
     const { paths, byPath } = rowset("hit1.ts", "hit2.ts");
-    const out = nextSearchSelection(state, paths, byPath, EMPTY_SELECTION);
+    const out = nextSearchSelection(state, paths, byPath, EMPTY_SELECTION, true);
     expect(out.select).toBeNull();
     expect(out.state.userClaimed).toBe(true);
   });
@@ -513,7 +513,7 @@ describe("nextSearchSelection", () => {
     // under someone who is holding it still.
     const claimed = { autoPlaced: "/d/a.ts", userClaimed: true };
     const { paths, byPath } = rowset("new-top.ts", "a.ts");
-    const out = nextSearchSelection(claimed, paths, byPath, oneSelected("/d/a.ts"));
+    const out = nextSearchSelection(claimed, paths, byPath, oneSelected("/d/a.ts"), true);
     expect(out.select).toBeNull();
     expect(out.state.userClaimed).toBe(true);
   });
@@ -536,7 +536,86 @@ describe("nextSearchSelection", () => {
     // Distinct from the case above: nothing has been auto-placed yet, so an
     // empty selection is "results just arrived", not "the user cleared it".
     const { paths, byPath } = rowset("hit1.ts");
-    const out = nextSearchSelection(INITIAL_SEARCH_SELECT, paths, byPath, EMPTY_SELECTION);
+    const out = nextSearchSelection(INITIAL_SEARCH_SELECT, paths, byPath, EMPTY_SELECTION, true);
     expect(out.select).toBe("/d/hit1.ts");
+  });
+});
+
+// -- rows that do not answer the current query --------------------------------
+//
+// The ranked box never blanks the list: while the next answer is in flight the
+// PREVIOUS query's rows stay on screen, dimmed. That is deliberate, and it
+// creates a hazard the walk never had — on the walk path a query change
+// emptied the rows for a commit (lib/search-hold is query-tagged), so
+// auto-select had nothing to place and Enter fell out at `if (!rows.length)`.
+// Rows that outlive their query must therefore be DISPLAY-ONLY: visible, but
+// never the thing a default action acts on.
+
+describe("nextSearchSelection over rows that answer an older query", () => {
+  const rowset = (...names: string[]) => rows(names.map((n) => [n, false] as [string, boolean]));
+
+  test("does not auto-place a selection on them", () => {
+    // Type "read", get README.md selected; type "me" and the rows are still
+    // README.md while the answer for "readme" is in flight. Selecting it again
+    // arms Enter and every destructive shortcut on a row that answers nothing.
+    const { paths, byPath } = rowset("README.md");
+    const out = nextSearchSelection(INITIAL_SEARCH_SELECT, paths, byPath, EMPTY_SELECTION, false);
+    expect(out.select).toBeNull();
+    expect(out.clear).toBe(false);
+  });
+
+  test("withdraws a selection IT placed once the rows go stale", () => {
+    // The dangerous half: the row was auto-selected while it was the answer,
+    // and it stays selected as the query moves past it — so Cmd+Backspace
+    // trashes a file the user is no longer looking for.
+    const { paths, byPath } = rowset("README.md");
+    const placed = nextSearchSelection(INITIAL_SEARCH_SELECT, paths, byPath, EMPTY_SELECTION, true);
+    expect(placed.select).toBe("/d/README.md");
+    const stale = nextSearchSelection(placed.state, paths, byPath,
+                                      oneSelected("/d/README.md"), false);
+    expect(stale.clear).toBe(true);
+    expect(stale.select).toBeNull();
+  });
+
+  test("leaves a selection the USER made alone", () => {
+    // Their choice outlives a query change — that rule is older than this one
+    // and this must not quietly undo it. They pointed at a row they can see.
+    const { paths, byPath } = rowset("hit1.ts", "chosen.ts");
+    const claimed = { autoPlaced: "/d/hit1.ts", userClaimed: true };
+    const out = nextSearchSelection(claimed, paths, byPath, oneSelected("/d/chosen.ts"), false);
+    expect(out.clear).toBe(false);
+    expect(out.select).toBeNull();
+  });
+
+  test("withdraws only once — a cleared selection is not re-cleared", () => {
+    const { paths, byPath } = rowset("README.md");
+    const placed = nextSearchSelection(INITIAL_SEARCH_SELECT, paths, byPath, EMPTY_SELECTION, true);
+    const first = nextSearchSelection(placed.state, paths, byPath,
+                                      oneSelected("/d/README.md"), false);
+    const second = nextSearchSelection(first.state, paths, byPath, EMPTY_SELECTION, false);
+    expect(second.clear).toBe(false);
+  });
+
+  test("auto-select resumes when the answer catches up", () => {
+    const { paths, byPath } = rowset("readme.md");
+    const stale = nextSearchSelection(INITIAL_SEARCH_SELECT, paths, byPath,
+                                      EMPTY_SELECTION, false);
+    const fresh = nextSearchSelection(stale.state, paths, byPath, EMPTY_SELECTION, true);
+    expect(fresh.select).toBe("/d/readme.md");
+  });
+});
+
+describe("the Enter fallback", () => {
+  test("does not open the top row while it answers an older query", () => {
+    // Listing's Enter opens the lead, or row 0 when nothing is selected. With
+    // stale rows on screen and no selection, row 0 is the previous query's top
+    // hit — the in-folder twin of the home box's submitRow rule.
+    const src = readFileSync(join(import.meta.dir, "useListingSelection.ts"), "utf8");
+    const enter = src.slice(src.indexOf('if (e.key === "Enter")'),
+                            src.indexOf("// Start typing"));
+    expect(enter).toContain("rowsAnswerQuery");
+    // ...and the guard is on the FALLBACK, not on an explicit lead: a row the
+    // user selected still opens.
+    expect(enter).toContain("leadIdx === -1");
   });
 });

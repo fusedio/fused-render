@@ -140,6 +140,44 @@ describe("highlight rebasing", () => {
   });
 });
 
+describe("rankingSettled over a failure", () => {
+  it("is not settled while the rows on screen answer an older query", () => {
+    // The residual path the pending check cannot see. A CURRENT failure is
+    // reported correctly, and `settled` then licensed acting on rows that
+    // answer something else: type "read", get ten rows, type "readme", the
+    // request fails, press Enter — and submitRow opens "read"'s top hit.
+    expect(rankingSettled(answer({ query: "read" }), "readme", false, true)).toBe(false);
+  });
+
+  it("IS settled with nothing on screen, which is what arms the AI row", () => {
+    // Deliberate and unchanged: no answer is coming and the AI row really is
+    // the only content left.
+    expect(rankingSettled(null, "readme", false, true)).toBe(true);
+  });
+
+  it("IS settled when the failure is a refresh over the current query's rows", () => {
+    expect(rankingSettled(answer({ query: "readme" }), "readme", false, true)).toBe(true);
+  });
+
+  it("still checks pending first, whatever the rows say", () => {
+    expect(rankingSettled(answer({ query: "readme" }), "readme", true, true)).toBe(false);
+  });
+});
+
+describe("submitRow over a failure with stale rows", () => {
+  it("commits nothing when Enter has no explicit choice", () => {
+    // The whole point of the rule above: with rows for a previous query on
+    // screen, the top-hit fallthrough opens a file the user did not ask for.
+    const settled = rankingSettled(answer({ query: "read" }), "readme", false, true);
+    expect(submitRow(null, 10, settled)).toBeNull();
+  });
+
+  it("still commits a row the user pointed at", () => {
+    const settled = rankingSettled(answer({ query: "read" }), "readme", false, true);
+    expect(submitRow(3, 10, settled)).toBe(3);
+  });
+});
+
 describe("homeCountNote", () => {
   it("states the true total and owns up to the display cap", () => {
     expect(homeCountNote(1, false)).toBe("1 match");

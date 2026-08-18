@@ -218,6 +218,7 @@ export default function Listing({
     displayHits,
     visibleHits,
     showingHeld,
+    rowsAnswerQuery,
     cappedAway,
   } = useWalkSearch(fsPath, refresh, !embedded);
 
@@ -576,6 +577,7 @@ export default function Listing({
     selectedPath,
     selectedSet,
     selectOnly,
+    clearSelection,
     selectPaths,
     toggleSelected,
     extendTo,
@@ -584,6 +586,7 @@ export default function Listing({
     fsPath,
     navRows,
     listingLoaded,
+    rowsAnswerQuery,
     searchInputRef,
     rowCtxByPathRef,
     overlayOpenRef,
@@ -765,15 +768,21 @@ export default function Listing({
   const searchSelectRef = useRef(INITIAL_SEARCH_SELECT);
   useEffect(() => {
     if (embedded || provisional || !searching) return;
-    const { state, select } = nextSearchSelection(
+    const { state, select, clear } = nextSearchSelection(
       searchSelectRef.current,
       navRows,
       rowCtxByPath,
       sel,
+      rowsAnswerQuery,
     );
     searchSelectRef.current = state;
     if (select !== null) selectOnly(select);
-  }, [embedded, provisional, searching, navRows, rowCtxByPath, sel, selectOnly]);
+    // Withdrawing a selection this effect placed, because the rows it sits on
+    // have stopped answering the query in the box (listing/selection). Left
+    // standing it arms Enter and Cmd+Backspace on a file nobody is looking for.
+    else if (clear) clearSelection();
+  }, [embedded, provisional, searching, navRows, rowCtxByPath, sel, selectOnly,
+      clearSelection, rowsAnswerQuery]);
 
   // The selection as full rows, in rendered order (so a batch op processes rows
   // top-to-bottom regardless of the order they were clicked). Paths without a

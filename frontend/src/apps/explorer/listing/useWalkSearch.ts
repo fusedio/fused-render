@@ -686,6 +686,22 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // would stack two dims calibrated for different things.
   const showingHeld = walkMode ? walkDisplay.showingHeld : false;
 
+  // Whether the rendered rows are an ANSWER to the query in the box.
+  //
+  // Outside search, and on the walk path, this is structurally true: the walk
+  // ranks a corpus already in hand, so a keystroke re-ranks within a frame,
+  // and lib/search-hold refuses to render rows tagged with another query. The
+  // ranked path is the one that can show rows for a query the user has typed
+  // past, because it deliberately never blanks the list while the next answer
+  // is in flight — so it has to SAY so, and the sayer is this flag.
+  //
+  // It gates the guesses the listing makes on the user's behalf: auto-selecting
+  // the top hit (listing/selection) and Enter opening row 0 with nothing
+  // selected (useListingSelection). Both would otherwise act on a file that
+  // answers nothing the user typed — and the selection they leave behind is
+  // what Cmd+Backspace acts on too.
+  const rowsAnswerQuery = !searching || walkMode || (!staleRows && !pending);
+
   // The rendered rows: the top of the ranking only (listing/result-cap). This
   // is also what keyboard nav and auto-select walk, so they never address a
   // row that is not on screen.
@@ -774,6 +790,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     displayHits,
     visibleHits,
     showingHeld,
+    rowsAnswerQuery,
     cappedAway,
   };
 }

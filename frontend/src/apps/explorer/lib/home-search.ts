@@ -253,10 +253,21 @@ export function stepHighlight(
  * there spends a call on a query that was about to answer itself.
  *
  * A failed request IS settled — no answer is coming for it, so the AI row
- * really is the only content left. But only while nothing is in flight:
- * `pending` is checked FIRST, because a request that is still out may yet
- * answer, and reading the previous failure as this query's verdict is how a
- * single transient failure turned every later keystroke into an armed AI row.
+ * really is the only content left. Two conditions on that, and they are
+ * different conditions:
+ *
+ *  * only while nothing is in flight. `pending` is checked FIRST, because a
+ *    request that is still out may yet answer, and reading the previous
+ *    failure as this query's verdict is how a single transient failure turned
+ *    every later keystroke into an armed AI row.
+ *  * only if the rows on screen are not answering some OTHER query. The list
+ *    is deliberately never blanked, so a failure typically arrives over the
+ *    previous query's hits — and "settled" would then license `submitRow`'s
+ *    top-hit fallthrough to open one of them. Type "read", type "readme",
+ *    have that request fail, press Enter: you get "read"'s best match. The
+ *    pending check cannot see this one; nothing is in flight and the failure
+ *    is real. With no rows at all the AI row is still armed, because that is
+ *    the case the paragraph above is about.
  */
 export function rankingSettled(
   answer: HomeAnswer | null,
@@ -265,7 +276,7 @@ export function rankingSettled(
   failed: boolean,
 ): boolean {
   if (pending) return false;
-  if (failed) return true;
+  if (failed) return answer === null || answer.query === query;
   return answer !== null && answer.query === query;
 }
 
