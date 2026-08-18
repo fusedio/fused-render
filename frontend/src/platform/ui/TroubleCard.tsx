@@ -18,6 +18,7 @@ import {
   CLAUDE_INSTALL_COMMAND,
   isClaudeTrouble,
   troubleHelpUrl,
+  troubleInstructions,
   troubleKind,
   troubleReport,
   type TroubleFacts,
@@ -47,13 +48,10 @@ const SAID: Record<string, { title: string; explain: string }> = {
       "Nothing is broken — your plan includes a set amount of use and it is " +
       "spent for now. The message below says when it resets.",
   },
-  raw: {
-    title: "Something went wrong",
-    explain:
-      "This is the error as the app received it. If it means nothing to you, " +
-      "that is expected — copy the details below and paste them to whoever is " +
-      "helping, or open an issue with them.",
-  },
+  // No explanation for `raw`, deliberately: we do not know what this is, and a
+  // paragraph saying so in three clauses was reassurance rather than
+  // information. The error itself and the two copy buttons are the answer.
+  raw: { title: "Something went wrong", explain: "" },
 };
 
 function CopyLine({ text, label }: { text: string; label: string }) {
@@ -115,7 +113,9 @@ export function TroubleCard({
   const kind = troubleKind(error);
   const fallback = SAID[kind] ?? SAID.raw;
   const said = { title: title ?? fallback.title, explain: explain ?? fallback.explain };
-  const report = troubleReport({ what, error, ...(facts ?? {}) });
+  const ctx = { what, error, ...(facts ?? {}) };
+  const report = troubleReport(ctx);
+  const instructions = troubleInstructions(ctx);
 
   if (compact) {
     return (
@@ -124,6 +124,7 @@ export function TroubleCard({
         <div className="trouble-compact-error">{String(error || "").trim()}</div>
         <div className="trouble-actions">
           <CopyLine text={report} label="Copy the details" />
+          <CopyLine text={instructions} label="Copy Claude Code instructions" />
           <a
             className="version-panel-link"
             href={troubleHelpUrl(kind)}
@@ -141,7 +142,7 @@ export function TroubleCard({
   return (
     <div className="trouble-card" role="alert">
       <div className="trouble-title">{said.title}</div>
-      <p className="trouble-explain">{said.explain}</p>
+      {said.explain && <p className="trouble-explain">{said.explain}</p>}
 
       {/* Verbatim, in a box, scrollable. Rewording it would make it
           unsearchable, and searching it is the first thing anyone does. */}
@@ -165,6 +166,11 @@ export function TroubleCard({
             this is the one action that helps whether the user fixes it
             themselves or asks someone else. */}
         <CopyLine text={report} label="Copy the details" />
+        {/* The other reader. `report` describes the problem to a PERSON; this
+            is a brief for an agent that can act on it — the goal, the checks
+            worth running first, and what "fixed" looks like. Pasting an error
+            alone gets a guess back. */}
+        <CopyLine text={instructions} label="Copy Claude Code instructions" />
         <a
           className="version-panel-link"
           href={troubleHelpUrl(kind)}
