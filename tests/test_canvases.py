@@ -72,6 +72,11 @@ def main():
                 sys.stderr.write(ln + "\n")
             sys.exit(1)
         return
+    if plain[:2] == ["canvas", "validate"]:
+        if scenario.get("validate_fail"):
+            sys.stderr.write("error: node 'x' has no source file\n")
+            sys.exit(1)
+        return
     if plain[:2] == ["canvas", "create"]:
         return
     if plain[:1] == ["logout"]:
@@ -856,9 +861,11 @@ class SyncShims:
         monkeypatch.setenv("FAKE_REMOTE_DIR", str(self.remote_dir))
         self.harness = harness
 
-    def set_manifest(self, last_updated: str) -> None:
+    def set_manifest(self, last_updated: str, udfs: dict | None = None) -> None:
         self.manifest_file.write_text(
-            json.dumps({"id": "c1", "last_updated": last_updated, "udfs": {}}),
+            json.dumps(
+                {"id": "c1", "last_updated": last_updated, "udfs": udfs or {}}
+            ),
             encoding="utf-8",
         )
 
@@ -871,7 +878,14 @@ class SyncShims:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
 
-    def seed_base(self, name: str, files: dict, last_updated: str) -> None:
+    def seed_base(
+        self,
+        name: str,
+        files: dict,
+        last_updated: str,
+        udfs: dict | None = None,
+        history: list | None = None,
+    ) -> None:
         """The persisted sync-point state a manager loads at construction."""
         sync_dir = self.harness.root / ".sync"
         sync_dir.mkdir(parents=True, exist_ok=True)
@@ -879,7 +893,14 @@ class SyncShims:
             json.dumps(
                 {
                     "files": {rel: _md5(content) for rel, content in files.items()},
-                    "remote": {"id": "c1", "last_updated": last_updated, "udfs": {}},
+                    "remote": {
+                        "id": "c1",
+                        "last_updated": last_updated,
+                        "udfs": udfs or {},
+                    },
+                    "history": [
+                        {"udfs": h, "at": time.time()} for h in (history or [])
+                    ],
                 }
             ),
             encoding="utf-8",
@@ -956,6 +977,9 @@ def test_sync_merge_keeps_local_delete(harness, tmp_path, monkeypatch):
     assert status and status["merge_seq"] >= 1, status
     assert (harness.root / "alpha" / "a.py").read_text() == "a2-remote\n"
     assert not (harness.root / "alpha" / "b.py").exists()
+    # The overwritten a.py's pre-merge bytes landed in the trash safety net.
+    trashed = list((harness.root / ".sync" / "trash" / "alpha").glob("*/a.py"))
+    assert trashed and trashed[0].read_text() == "a1\n"
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
@@ -982,6 +1006,9 @@ def test_sync_merge_applies_remote_delete_when_untouched(harness, tmp_path, monk
     assert (
         harness.root / "alpha" / "canvas.toml"
     ).read_text() == 'type = "canvas"\nlocal = true\n'
+    # The remote-deleted file's bytes landed in the trash safety net.
+    trashed = list((harness.root / ".sync" / "trash" / "alpha").glob("*/b.py"))
+    assert trashed and trashed[0].read_text() == "b1\n"
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
@@ -1033,4 +1060,62 @@ def test_sync_shim_poll_pulls_clean_via_cli_force(harness, tmp_path, monkeypatch
     # The pull's writes are baseline, not local changes — no echo push.
     time.sleep(0.4)
     assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+_UDFS_OLD = {"a": {"hash": "h1", "last_updated": "t0"}}
+_UDFS_NEW = {"a": {"hash": "h2", "last_updated": "t1"}}
+
+
+def test_sync_stale_echo_is_repushed_not_pulled(harness, tmp_path, monkeypatch):
+    # A stale browser tab autosaved pre-push state over a fresh push: the
+    # probed remote matches a sync point this watcher already superseded
+    # (in history, inside ECHO_WINDOW_S). The guard must NOT pull it down
+    # (that's how a fresh local file gets deleted) — it queues a push that
+    # re-asserts local instead.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    shims.seed_base(
+        "alpha", _BASE_FILES, "t1", udfs=_UDFS_NEW, history=[_UDFS_OLD]
+    )
+    # The remote now shows the SUPERSEDED udf set again (fresh timestamp —
+    # a stale save always writes a new last_updated).
+    shims.set_manifest("t9", udfs=_UDFS_OLD)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    status = _wait_status(harness, lambda s: s["push_seq"] >= 1)
+    assert status and status["push_seq"] >= 1, status
+    assert status["echo_seq"] >= 1, status
+    assert status["pull_seq"] == 0 and status["merge_seq"] == 0, status
+    # Nothing was pulled down: the clone still holds all its files.
+    assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_sync_merge_rolls_back_when_it_breaks_validation(harness, tmp_path, monkeypatch):
+    # Per-file merge can mix canvas.toml from one side with source files
+    # from the other and produce an unpushable clone. When post-merge
+    # validation fails, the merge is rolled back: local files restored,
+    # clone stays dirty, the push re-asserts local wholesale.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.3)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
+    shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
+    shims.set_manifest("t2")
+    harness.set_scenario({"pull_files": _BASE_FILES, "validate_fail": True})
+
+    status = _wait_status(
+        harness, lambda s: s["merge_rollback_seq"] >= 1 and s["push_seq"] >= 1
+    )
+    assert status and status["merge_rollback_seq"] >= 1, status
+    assert status["merge_seq"] == 0, status
+    # The merge's write to b.py was undone; local edits untouched.
+    assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"
+    assert (harness.root / "alpha" / "a.py").read_text() == "a-local\n"
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
