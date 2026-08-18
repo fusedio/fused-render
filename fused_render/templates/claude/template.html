@@ -263,6 +263,31 @@
   #annrec[hidden] { display: none; }
   #annrec.on { color: var(--error); border-color: var(--error); animation: annrecpulse 1.1s infinite; }
 
+  /* The tool picker: a two-seat segmented pill in #annrec's quiet idiom. The
+     selected seat wears the accent the way #annbtn's armed track does — it is
+     a mode within the mode, and the two controls should read as one family. */
+  #anntool {
+    display: flex;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  #anntool[hidden] { display: none; }
+  #anntool button {
+    border: 0;
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: color .12s, background .12s;
+  }
+  #anntool button + button { border-left: 1px solid var(--border); }
+  #anntool button:hover { color: var(--fg); background: var(--surface); }
+  #anntool button[aria-checked="true"] { color: var(--on-accent); background: var(--accent); }
+
   /* ── the left pane's own top bar ────────────────────────────────────────
      Home of the view picker in the SPLIT layout: the control that chooses what
      the left pane frames sits ON the left pane, over the thing it changes,
@@ -3128,6 +3153,18 @@
       <button id="annrec" type="button" aria-pressed="false"
               aria-label="Record a spoken walkthrough"
               title="Record a spoken walkthrough — talk while you click, and each click becomes a note">🎙 Record</button>
+      <!-- WHAT a click pins, chosen up front: the element under it, or the
+           exact spot. Appears only while comment mode (or a recording, which
+           arms it) is on — it is a property of the armed click, and a picker
+           for a click that cannot happen is noise. Alt stays as the momentary
+           override of whichever tool is selected. A radiogroup, not two
+           toggles: exactly one is ever the answer. -->
+      <div id="anntool" role="radiogroup" aria-label="What a click pins" hidden>
+        <button id="toolel" type="button" role="radio" aria-checked="true"
+                title="Clicks pin the element under the cursor">▣ Element</button>
+        <button id="toolpt" type="button" role="radio" aria-checked="false"
+                title="Clicks pin the exact spot, with a marked screenshot">⌖ Point</button>
+      </div>
       <!-- More options (⋮), beside the annotate switch. One item today: hand
            this session to a real terminal. The LABEL is decided at open time
            (kebabOpen) because it names what the copied command will do —
@@ -4713,9 +4750,9 @@ function enterNoPane() {
   // the column being removed — and for an ordinary folder, where nothing is
   // hosted either, "photograph the whole visible pane" has nothing to photograph,
   // so the buttons go with it rather than sitting there as a promise.
-  const hostedControls = new Set(["annbtn", "annrec", "viewshot", "hviewshot"]);
-  for (const id of ["annbtn", "annrec", "viewshot", "hviewshot", "leftmode", "viewbtn",
-                    "left", "divider"]) {
+  const hostedControls = new Set(["annbtn", "annrec", "anntool", "viewshot", "hviewshot"]);
+  for (const id of ["annbtn", "annrec", "anntool", "viewshot", "hviewshot", "leftmode",
+                    "viewbtn", "left", "divider"]) {
     if (CHAT_ONLY && hostedControls.has(id)) continue;
     const el = document.getElementById(id);
     if (el) el.remove();
@@ -5197,6 +5234,24 @@ function annSyncTarget() {
 }
 
 let annOn = false;
+// WHAT an armed click pins: the element under it, or the exact spot. Chosen up
+// front in the #anntool picker (shown while the mode is armed), not per click —
+// the owner asked for the choice to be a visible tool, so a reader can decide
+// "now I'm pointing at spots" once and click away. Alt stays as the momentary
+// override of whichever tool is selected (a per-click exception, not a third
+// state). Session-local and sticky across arm/disarm; deliberately not a param
+// — which tool is in hand is a fact about the hand, not about the page.
+let annTool = "element";
+const annToolEl = document.getElementById("anntool");
+const annToolElBtn = document.getElementById("toolel");
+const annToolPtBtn = document.getElementById("toolpt");
+function annSetTool(t) {
+  annTool = t;
+  annToolElBtn.setAttribute("aria-checked", String(t === "element"));
+  annToolPtBtn.setAttribute("aria-checked", String(t === "point"));
+}
+annToolElBtn.addEventListener("click", () => annSetTool("element"));
+annToolPtBtn.addEventListener("click", () => annSetTool("point"));
 let annDraft = null;    // anchor of a NEW note being composed
 // The OTHER reading of the same click, when there was one: a click on an
 // element also names an exact spot, so the composer's anchor chip can flip the
@@ -5859,6 +5914,7 @@ function annMicCancel() {
 }
 async function annMicBegin() {
   if (annMicRecorder) return;
+  annWarmTranscriber();
   // Disabled for the width of the permission prompt, same as annRecBegin —
   // a second tap before the browser answers would open two mic streams.
   annMicBtn.disabled = true;
@@ -5992,6 +6048,9 @@ function annSetMode(on) {
   }
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
+  // The tool picker follows the mode: it says what an armed click will pin,
+  // and there is no armed click while the mode is off.
+  annToolEl.hidden = !annOn;
   // The label is the static markup "Comment" in BOTH states — the track's
   // accent fill is what says armed. It used to flip to "Commenting", but a
   // label that changes width makes the whole right-anchored row shuffle on
@@ -6004,7 +6063,7 @@ function annSetMode(on) {
   // and the highlight box that tracks the pointer over the app (the strongest
   // of the two: it only appears in comment mode and it follows what the user
   // is aiming at).
-  annBtn.title = annOn ? "Comment mode on — click an element to add a note, Alt-click (or click empty space) to pin an exact spot · Esc or click this button to stop"
+  annBtn.title = annOn ? "Comment mode on — clicks pin what the Element/Point tool says (Alt overrides for one click, empty space is always a spot) · Esc or click this button to stop"
                        : annIdleTitle();
   // The ring can be gone rather than merely hidden: hosted, it lives in the
   // target's document and that document may have been replaced (or unmarked)
@@ -6051,8 +6110,40 @@ function annRecExt(mime) {
   return ".webm";
 }
 
+// Warm the transcriber the moment a recording STARTS, so the words are not
+// waiting on a cold model when it stops — the load runs while the reader is
+// still talking, which is exactly the dead time it fits in. Fire-and-forget
+// and swallowed whole: `fused.ai.transcribe` loads a cold model inside its own
+// job anyway, so a failed warm-up costs nothing but the latency it was trying
+// to save. Skipped when a speech model is already resident (`loaded`), and
+// when the engine names no default — the transcribe call's own default (the
+// same first-curated entry) will resolve it then. One in flight at a time:
+// the mic and the walkthrough both call this, sometimes seconds apart.
+let annAsrWarming = false;
+function annWarmTranscriber() {
+  if (annAsrWarming) return;
+  annAsrWarming = true;
+  (async () => {
+    try {
+      const cat = await fused.ai.models.catalog();
+      const rows = (cat && cat.capabilities) || [];
+      const asr = rows.find((r) => r.capability === "automatic-speech-recognition");
+      if (!asr || !asr.available) return;
+      if ((asr.models || []).some((m) => m && m.loaded)) return;
+      if (!asr.default) return;
+      await fused.ai.models.load(asr.default,
+        { capability: "automatic-speech-recognition" });
+    } catch (err) {
+      console.warn("transcriber warm-up skipped:", err.message);
+    } finally {
+      annAsrWarming = false;
+    }
+  })();
+}
+
 async function annRecBegin() {
   if (annRecOn || !annCapable()) return;
+  annWarmTranscriber();
   // Disabled for the width of the permission prompt too, not just while a
   // recording runs — otherwise a second click before the browser answers the
   // first request opens two mic streams.
@@ -6491,23 +6582,27 @@ function annWireTarget() {
     annHl.style.width = r.width + "px";
     annHl.style.height = r.height + "px";
   };
-  // The Alt signal: while held in comment mode, the cursor is a crosshair and
-  // the ring goes away — the click will pin the exact spot, not the element,
-  // and the pointer says so before the click commits to it. Written on the
-  // app's root because the pointer is over the app's own nodes; cleared on
-  // keyup and on every non-Alt move, so a released key cannot strand it.
-  const annAltCursor = (on) => {
+  // The aim signal: while the click would pin a SPOT — the Point tool is in
+  // hand, or Alt overrides the Element tool for this click — the cursor is a
+  // crosshair and the ring goes away; the pointer says what the click will do
+  // before it commits. (Point tool + Alt is the element again, so the ring is
+  // back: the override works in both directions, same XOR the click handler
+  // uses.) Written on the app's root because the pointer is over the app's own
+  // nodes; re-derived on every move and on Alt's keyup, so neither a released
+  // key nor a tool switch can strand it.
+  const annAimCursor = (on) => {
     const root = doc.documentElement;
     if (on && root.style.cursor !== "crosshair") root.style.cursor = "crosshair";
     else if (!on && root.style.cursor === "crosshair") root.style.cursor = "";
   };
   doc.addEventListener("keyup", (e) => {
-    if (e.key === "Alt") annAltCursor(false);
+    if (e.key === "Alt") annAimCursor(annOn && annTool === "point");
   });
   doc.addEventListener("mousemove", (e) => {
-    if (!annOn) { annAltCursor(false); return; }
-    annAltCursor(e.altKey);
-    if (e.altKey) { if (annHl) annHl.style.display = "none"; return; }
+    if (!annOn) { annAimCursor(false); return; }
+    const aimPoint = (annTool === "point") !== e.altKey;
+    annAimCursor(aimPoint);
+    if (aimPoint) { if (annHl) annHl.style.display = "none"; return; }
     // Hovering our own pin is not hovering the app: leave the ring on whatever
     // it was marking rather than jumping it to a 22px circle of ours.
     if (annOwnNode(e.target)) return;
@@ -6577,20 +6672,23 @@ function annWireTarget() {
     anchor.tag = el.tagName.toLowerCase();
     const t = (el.textContent || "").trim().replace(/\s+/g, " ");
     if (t) anchor.text = t.slice(0, 80);
+    // Is THIS click a point? The tool in hand says so, or Alt says so for just
+    // this click (the momentary override of either tool — Point-tool + Alt
+    // means the element, so the exception works in both directions).
+    const wantPoint = (annTool === "point") !== e.altKey;
     // Recording: the click IS the note, immediately — no composer, because the
     // whole point of talking instead of typing is that nothing needs to grab
     // focus. annRecEnd fills the words in once the walkthrough is transcribed.
-    // Alt keeps its meaning here too: force the spot even over an element.
     if (annRecOn) {
-      if (e.altKey) { annRecMarkPoint(e.clientX, e.clientY, win); return; }
+      if (wantPoint) { annRecMarkPoint(e.clientX, e.clientY, win); return; }
       annPlaceHl(el);
       annRecMark(anchor);
       return;
     }
-    // Alt-click: the element reading exists (it is the chip's flip target),
-    // but the note leads with the spot — no ring, the crosshair cursor the
-    // reader was just shown (the mousemove handler) said as much.
-    if (e.altKey) {
+    // A point click over an element: the element reading exists (it is the
+    // chip's flip target), but the note leads with the spot — no ring, the
+    // crosshair cursor the reader was just shown (mousemove) said as much.
+    if (wantPoint) {
       if (annHl) annHl.style.display = "none";
       annOpenComposer(e.clientX, e.clientY, pointAnchor, anchor);
       return;

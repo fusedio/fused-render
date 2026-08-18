@@ -314,8 +314,8 @@ def test_the_no_pane_state_removes_the_column_the_divider_and_the_pane_controls(
     code = _pane_code()
     i = code.index("function enterNoPane()")
     body = code[i:code.index("\n}", i)]
-    assert ('for (const id of ["annbtn", "annrec", "viewshot", "hviewshot", "leftmode", '
-            '"viewbtn",\n                    "left", "divider"]) {') in body
+    assert ('for (const id of ["annbtn", "annrec", "anntool", "viewshot", "hviewshot", '
+            '"leftmode",\n                    "viewbtn", "left", "divider"]) {') in body
     assert "if (el) el.remove();" in body
     assert '"anntools"' not in body, "the strip survives — the kebab lives there"
     assert 'document.body.classList.add("nopane");' in body

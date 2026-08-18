@@ -120,9 +120,8 @@ def test_a_manual_background_click_opens_a_point_composer(html):
     assert body.count("annOpenComposer(e.clientX, e.clientY, pointAnchor, null)") == 2
 
 
-def test_alt_click_forces_the_point_reading_with_the_element_as_the_flip(html):
-    body = _block(html, "// Alt-click: the element reading exists",
-                  "// Re-anchor the ring")
+def test_a_point_click_over_an_element_keeps_the_element_as_the_flip(html):
+    body = _block(html, "// A point click over an element:", "// Re-anchor the ring")
     assert "annOpenComposer(e.clientX, e.clientY, pointAnchor, anchor)" in body
 
 
@@ -130,9 +129,31 @@ def test_an_element_click_carries_the_point_reading_as_the_flip_target(html):
     assert "annOpenComposer(e.clientX, e.clientY, anchor, pointAnchor)" in html
 
 
-def test_alt_forces_a_point_in_a_recording_too(html):
-    body = _block(html, "if (annRecOn) {\n      if (e.altKey)", "annRecMark(anchor);")
+def test_the_tool_decides_and_alt_is_a_two_way_override(html):
+    """XOR, not OR: Element tool + Alt is a spot, and Point tool + Alt is the
+    element again — the exception works in both directions, in the click
+    handler and the cursor alike."""
+    assert 'const wantPoint = (annTool === "point") !== e.altKey;' in html
+    assert 'const aimPoint = (annTool === "point") !== e.altKey;' in html
+
+
+def test_the_tool_applies_inside_a_recording_too(html):
+    body = _block(html, "if (annRecOn) {\n      if (wantPoint)", "annRecMark(anchor);")
     assert "annRecMarkPoint(e.clientX, e.clientY, win)" in body
+
+
+def test_the_tool_picker_follows_the_mode(html):
+    """Shown while comment mode (or a recording, which arms it) is on, hidden
+    otherwise — a picker for a click that cannot happen is noise."""
+    assert 'id="anntool" role="radiogroup"' in html
+    assert "annToolEl.hidden = !annOn;" in html
+
+
+def test_the_tool_picker_survives_the_hosted_layout(html):
+    """enterNoPane removes the pane's controls; the picker, like #annbtn and
+    #annrec, acts on the HOST's pane in CHAT_ONLY and must stay."""
+    body = _block(html, "const hostedControls = new Set(", "}\n")
+    assert '"anntool"' in body
 
 
 def test_a_point_anchor_is_page_coordinates_with_shot_null_from_the_start(html):
@@ -144,10 +165,10 @@ def test_a_point_anchor_is_page_coordinates_with_shot_null_from_the_start(html):
     assert "shot: null" in body
 
 
-def test_alt_shows_a_crosshair_and_hides_the_ring(html):
-    body = _block(html, "const annAltCursor = (on) =>", "annPlaceHl(el);")
+def test_a_point_aim_shows_a_crosshair_and_hides_the_ring(html):
+    body = _block(html, "const annAimCursor = (on) =>", "annPlaceHl(el);")
     assert 'root.style.cursor = "crosshair"' in body
-    assert 'if (e.altKey) { if (annHl) annHl.style.display = "none"; return; }' in body
+    assert 'if (aimPoint) { if (annHl) annHl.style.display = "none"; return; }' in body
 
 
 # --------------------------------------------------- one commit path, awaited
@@ -220,3 +241,25 @@ def test_the_chip_and_mic_are_styled_in_both_stylesheets(html):
         assert ("  %s {" % sel) in html, sel
         # the shadow copy (string list, #annpop-prefixed)
         assert ('"#annpop %s {' % sel) in html, sel
+
+
+# ------------------------------------------------ warming the transcriber
+
+def test_both_recorders_warm_the_transcriber_at_start(html):
+    """The load runs while the reader is still talking — the dead time it
+    fits in — instead of the words waiting on a cold model at stop."""
+    rec = _block(html, "async function annRecBegin()", "\n}\n")
+    mic = _block(html, "async function annMicBegin()", "\n}\n")
+    assert "annWarmTranscriber();" in rec
+    assert "annWarmTranscriber();" in mic
+
+
+def test_the_warm_up_is_opportunistic_never_load_bearing(html):
+    """transcribe loads a cold model inside its own job anyway, so the warm-up
+    swallows every failure, skips a resident model, and respects an engine
+    with no recommendation."""
+    body = _block(html, "function annWarmTranscriber()", "\n}\n")
+    assert "m.loaded" in body
+    assert "if (!asr.default) return;" in body
+    assert '{ capability: "automatic-speech-recognition" }' in body
+    assert "console.warn" in body
