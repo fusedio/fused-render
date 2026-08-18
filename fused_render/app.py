@@ -229,11 +229,10 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     Returns the server and its thread (quit drains it — `should_exit` alone is
     fire-and-forget, and uvicorn never resets `started`, so the thread ending is
     the only observable "it has stopped serving")."""
-    # One-shot relocation of the workspace out of iCloud-synced ~/Documents
-    # (D329). Strictly BEFORE onboarding, for the reason cli._run_serve records.
-    from fused_render import workspace_migration
-
-    workspace_migration.run()
+    # The D329 workspace migration does NOT run here: it runs in `main()`,
+    # before the run loop and before anything reads state (see the call site).
+    # This thread starts long after it, so onboarding below is still strictly
+    # after the migration — the ordering cli._run_serve records.
     # First-run onboarding (D81): create ~/Fused.
     start_dir = ensure_fused_dir()
     # Showcase apps: clone/sync the community repo into <workspace>/showcase in
@@ -690,6 +689,23 @@ def main() -> None:
         logger.info("found live server (pid %s, port %s); reusing it", pid, port)
         webbrowser.open(f"http://127.0.0.1:{port}/")
         return
+
+    # One-shot relocation of the workspace out of iCloud-synced ~/Documents
+    # (D329) — HERE, before the run loop, not in the server thread. The
+    # migration rewrites on-disk state, so it is a precondition of every
+    # component that READS that state, and the menu-bar pin reads its
+    # (workspace-absolute) path in PinController.__init__, which the boot timer
+    # runs before the server thread has even started: migrating later left the
+    # popover pointing at the pre-move path for the whole upgrade session.
+    # Cost is a same-filesystem os.rename (metadata only — the workspace holds
+    # git trees but no bytes move) plus a few small JSON reads, so the run loop
+    # starts imperceptibly later. Still strictly BEFORE ensure_fused_dir(),
+    # which only `_start_server_thread` calls, on a thread started below.
+    # Placed after the reuse-a-running-instance return above: that instance
+    # already migrated, and we are about to exit.
+    from fused_render import workspace_migration
+
+    workspace_migration.run()
 
     port = pick_port()
     url = f"http://127.0.0.1:{port}/"

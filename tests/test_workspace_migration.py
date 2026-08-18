@@ -384,13 +384,53 @@ def test_the_pin_of_a_branch_install_is_the_nested_one(machine, tmp_path, monkey
 
 # ------------------------------------------------------------- the entry points
 
-@pytest.mark.parametrize("module", ["fused_render/cli.py", "fused_render/app.py"])
-def test_runs_before_onboarding_at_every_entry_point(module):
+def _source(module):
+    """The module's source with comment lines dropped — these are ORDER
+    assertions, and a comment that merely names a call is not a call."""
+    return "\n".join(line for line in open(module, encoding="utf-8").read().splitlines()
+                      if not line.lstrip().startswith("#"))
+
+
+def _func_body(src, name):
+    start = src.index(f"def {name}(")
+    rest = src[start:]
+    end = rest.find("\ndef ", 1)  # main() is the last one: -1 -> to end of file
+    return rest if end < 0 else rest[:end]
+
+
+def test_the_cli_runs_before_onboarding():
     """Ordering is load-bearing: ensure_fused_dir CREATES the destination, and a
     destination that exists is what the migration refuses to move into."""
-    src = open(module, encoding="utf-8").read()
-    assert "workspace_migration.run()" in src, module
+    src = _source("fused_render/cli.py")
+    assert "workspace_migration.run()" in src
     assert src.index("workspace_migration.run()") < src.index("ensure_fused_dir()")
+
+
+def test_the_app_migrates_before_anything_can_read_the_state_it_rewrites():
+    """The migration is a STARTUP PRECONDITION, not a server concern: it
+    rewrites on-disk state, so every component that reads that state must come
+    after it. The menu-bar pin is the one that reads early — PinController's
+    constructor caches the pinned (workspace-absolute) path, and the boot timer
+    builds it before the server thread exists — so a migration inside
+    _start_server_thread left the popover on the pre-move path for the whole
+    upgrade session.
+
+    Source order, not behaviour: reaching main() means starting the AppKit run
+    loop, which a test cannot do. It still catches the real failure mode, which
+    is entirely "A read before B wrote"."""
+    src = _source("fused_render/app.py")
+    body = _func_body(src, "main")
+    migrate = body.index("workspace_migration.run()")
+    assert migrate < body.index("PinController("), "the pin would cache a stale path"
+    assert migrate < body.index("target=_bootstrap_server"), "the server reads state too"
+    # ...and still strictly before onboarding, which creates the destination the
+    # migration refuses to move into. Expressed as reachability rather than text
+    # order: the only ensure_fused_dir() call sits in _start_server_thread, which
+    # only _bootstrap_server reaches, on the thread main starts after migrating.
+    assert src.count("ensure_fused_dir()") == 1
+    assert "ensure_fused_dir()" in _func_body(src, "_start_server_thread")
+    assert src.count("_start_server_thread(port)") == 1
+    assert "_start_server_thread(port)" in body[body.index("def _bootstrap_server("):]
 
 
 def test_create_app_never_migrates():
