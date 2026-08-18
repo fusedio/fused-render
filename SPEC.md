@@ -7401,10 +7401,9 @@ go. Four failures, one answer.
   person reading a paste does not need labels with nothing after them — but it
   is not enough for the instructions, because those are handed to something that
   has to go and look. "Something around Fused Render is broken, please fix it"
-  with no directory is a brief an agent answers by guessing or by asking, and
-  the boot failure is both the case most likely to produce it and the one case
-  that cannot state a path. So the location is a FACT when the snapshot carries
-  it (`- The installed app: …`) and a TASK when it does not: the import that is
+  with no directory is a brief an agent answers by guessing or by asking. So the
+  location is a FACT when the snapshot carries it (`- The installed app: …`) and
+  a TASK when it does not: the import that is
   definitive on the app's own interpreter, the package metadata that covers pip
   and uv, and the bundle glob that covers the DMG, where nothing on PATH points
   at the app at all. Three more things ride along with it, because an agent that
@@ -7417,4 +7416,11 @@ go. Four failures, one answer.
   "Failed to fetch" at boot is far more often a dead process than a broken app.
   Pinned across both copies by `tests/test_trouble_parity.py`: a find command in
   one copy only means the chat and the shell send agents looking in different
-  places.
+  places. **The unknown branch states no CAUSE**, only the fact. It first read
+  *"the failure above is what would have told me"*, which is true of the boot
+  failure and of nothing else: the preview fallback and the builder's hero have
+  no path for a duller reason (the snapshot that carries one costs a `brew`
+  shell-out, too much for a card that may render on any failed preview), and the
+  chat template never knows. An agent that catches the app deducing wrong about
+  its own state has reason to discount the rest of the brief, so the line says
+  only what holds everywhere.

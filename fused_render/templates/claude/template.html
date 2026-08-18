@@ -8865,8 +8865,8 @@ const TROUBLE_LOG_LIST = 'ls -t "${TMPDIR:-/tmp}"/fused-render-*.log | head -3';
 
 function troubleWhereToLook() {
   const lines = ["Where to look on this machine:",
-    "- I do not know where the app is installed — the failure above is what",
-    "  would have told me. Find it first, and say which command answered:"];
+    "- I do not know where the app is installed, and little else here is",
+    "  actionable without it. Find it first, and say which command answered:"];
   TROUBLE_FIND_INSTALL.forEach((cmd) => lines.push("    " + cmd));
   lines.push(
     "- Settings, the template registry and the staged core templates: " + TROUBLE_USER_DATA_DIR,
