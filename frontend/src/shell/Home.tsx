@@ -22,6 +22,7 @@ import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@a
 import { FilesSearch } from "@apps/explorer/FilesHome";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
+import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 
 // One row per section: the page measures its own width and renders exactly
 // as many full-size cards as fit — no wrapping, no clipping, no scrolling.
@@ -166,6 +167,13 @@ export default function Home({ config }: { config: Config }) {
           // titles and "See all" stay flush with the cards' edges.
           <div ref={stripRef}>
             <div className="home-strips" style={{ width: count * (CARD_W + CARD_GAP) - CARD_GAP }}>
+            {/* Above the strips, because on a machine where Claude Code is not
+                set up this is the only thing on the page the user can act on —
+                and it renders nothing at all once there is nothing to say.
+                Inside the measured column so it lines up with the cards rather
+                than spanning the window. Hidden while a search is live for the
+                same reason the strips are: the search result IS the page then. */}
+            <ClaudeHealthStrip />
             <Section title="Fused Apps" seeAllHref="/apps">
               {apps === null ? (
                 <p className="fh-empty">Loading apps…</p>
