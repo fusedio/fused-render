@@ -1082,9 +1082,10 @@ def test_sync_stale_echo_is_repushed_not_pulled(harness, tmp_path, monkeypatch):
     shims.seed_base(
         "alpha", _BASE_FILES, "t1", udfs=_UDFS_NEW, history=[_UDFS_OLD]
     )
-    # The remote now shows the SUPERSEDED udf set again (fresh timestamp —
-    # a stale save always writes a new last_updated).
-    shims.set_manifest("t9", udfs=_UDFS_OLD)
+    # The remote now shows the SUPERSEDED udf BODIES again — but a stale
+    # save always writes fresh timestamps (collection and per-UDF), so the
+    # guard must match on the hashes alone.
+    shims.set_manifest("t9", udfs={"a": {"hash": "h1", "last_updated": "t8"}})
     harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
 
     status = _wait_status(harness, lambda s: s["push_seq"] >= 1)
@@ -1120,6 +1121,39 @@ def test_sync_merge_rolls_back_when_it_breaks_validation(harness, tmp_path, monk
     # The merge's write to b.py was undone; local edits untouched.
     assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"
     assert (harness.root / "alpha" / "a.py").read_text() == "a-local\n"
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_push_aborts_when_remote_moved_and_zip_unavailable(harness, tmp_path, monkeypatch):
+    # The pre-push probe sees the remote moved, but the zip download fails —
+    # pushing anyway would wholesale-replace edits we haven't seen. The push
+    # must abort and retry; once the zip works, merge + push proceed.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 1000.0)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    broken_zip = tmp_path / "broken_zip.py"
+    broken_zip.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+    working_zip_cmd = canvases_mod._shim_zip_command(None)  # monkeypatched: ignores cli
+    monkeypatch.setattr(
+        canvases_mod, "_shim_zip_command", lambda cli: [sys.executable, str(broken_zip)]
+    )
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
+    shims.set_manifest("t2")
+    (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
+
+    time.sleep(1.0)
+    status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    assert status["push_seq"] == 0, status
+    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+
+    # Zip recovers → merge folds b.py in, push publishes.
+    monkeypatch.setattr(canvases_mod, "_shim_zip_command", lambda cli: working_zip_cmd)
+    status = _wait_status(harness, lambda s: s["push_seq"] >= 1)
+    assert status and status["push_seq"] >= 1 and status["merge_seq"] >= 1, status
+    assert (harness.root / "alpha" / "b.py").read_text() == "b2-remote\n"
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 

@@ -1070,35 +1070,54 @@ class _SyncManager:
         except OSError:
             pass  # state stays in memory; rebuilt at the next sync point
 
+    @staticmethod
+    def _udf_hashes(udfs) -> dict:
+        """slug → body hash, from a manifest's `udfs` mapping or a history
+        entry's. Timestamps are deliberately dropped: a stale writer
+        re-saving old bodies stamps FRESH per-UDF last_updated values, so
+        any comparison that includes them can never match — the hashes are
+        the identity."""
+        if not isinstance(udfs, dict):
+            return {}
+        return {
+            slug: (info.get("hash") if isinstance(info, dict) else info)
+            for slug, info in udfs.items()
+        }
+
     def _rotate_remote(self, new_remote: dict | None) -> None:
         """Replace the manifest baseline, remembering the superseded one for
         echo detection. Every _remote assignment after construction goes
         through here so the history can't silently miss a sync point."""
         old = self._remote
-        if (
-            old is not None
-            and isinstance(old.get("udfs"), dict)
-            and (new_remote is None or old.get("udfs") != new_remote.get("udfs"))
-        ):
-            self._history.append({"udfs": old["udfs"], "at": time.time()})
-            del self._history[:-_HISTORY_MAX]
+        if old is not None and isinstance(old.get("udfs"), dict):
+            old_hashes = self._udf_hashes(old.get("udfs"))
+            new_hashes = (
+                None if new_remote is None else self._udf_hashes(new_remote.get("udfs"))
+            )
+            if old_hashes != new_hashes:
+                self._history.append({"udfs": old_hashes, "at": time.time()})
+                del self._history[:-_HISTORY_MAX]
         self._remote = new_remote
 
     def _is_stale_echo(self, probe: dict) -> bool:
         """True when the probed remote state is byte-identical (per-UDF
-        hashes) to a sync point this watcher already superseded within
-        ECHO_WINDOW_S — the signature of a stale writer (a browser tab
-        autosaving pre-push state over a fresh push). Layout-only echoes
-        can't be told apart from real layout edits (collection.last_updated
-        is a fresh stamp either way) — only the destructive UDF-level
-        revert is caught, which is the data-loss case."""
+        BODY HASHES — never timestamps, see _udf_hashes) to a sync point
+        this watcher already superseded within ECHO_WINDOW_S — the
+        signature of a stale writer (a browser tab autosaving pre-push
+        state over a fresh push). Layout-only echoes can't be told apart
+        from real layout edits (collection.last_updated is a fresh stamp
+        either way) — only the destructive UDF-level revert is caught,
+        which is the data-loss case."""
         cur = self._remote
-        if cur is None or probe.get("udfs") == cur.get("udfs"):
+        if cur is None:
+            return False
+        probe_hashes = self._udf_hashes(probe.get("udfs"))
+        if probe_hashes == self._udf_hashes(cur.get("udfs")):
             return False
         now = time.time()
         return any(
             now - entry.get("at", 0.0) <= ECHO_WINDOW_S
-            and entry.get("udfs") == probe.get("udfs")
+            and self._udf_hashes(entry.get("udfs")) == probe_hashes
             for entry in self._history
         )
 
@@ -1228,7 +1247,7 @@ class _SyncManager:
         except zipfile.BadZipFile:
             return None
 
-    def _merge_remote(self, probe: dict) -> None:
+    def _merge_remote(self, probe: dict) -> bool:
         """Apply remote changes into a DIRTY clone, per file, three-way.
 
         base = last sync point. For each bundle file: local untouched since
@@ -1246,15 +1265,19 @@ class _SyncManager:
         cross-file invariants (a node whose source file is gone) — a state
         the push then rejects forever. If the merge broke the clone, it is
         rolled back file-by-file and the clone stays dirty: local wins
-        wholesale, the push re-asserts it."""
+        wholesale, the push re-asserts it.
+
+        Returns True when the remote state was reconciled (merged, rolled
+        back, or nothing to do) and False on a transient failure (the zip
+        download) — the caller must NOT push over an unreconciled remote."""
         base = self._base_files
         if base is None:
             self._rotate_remote(probe)
             self._save_base()
-            return
+            return True
         zf = self._download_zip(probe["id"])
         if zf is None:
-            return  # transient — the next poll retries with the same probe
+            return False  # transient — retried with the same probe
         with zf:
             bundle: dict[str, bytes] = {}
             for info in zf.infolist():
@@ -1361,6 +1384,7 @@ class _SyncManager:
         if rollback:
             self.merge_seq += 1
             self.last_pull_at = time.time()
+        return True
 
     def _poll_remote(self, probe: dict) -> None:
         """Shim-backed poll leg: runs clean or dirty (unlike the legacy
@@ -1371,6 +1395,14 @@ class _SyncManager:
             # look is indistinguishable from the sync point — same blind
             # spot the pre-merge sync had; converges on the next remote save.
             self._remote = probe
+            # No merge base yet (first open after upgrade — no .sync file)
+            # and the watcher believes the clone is clean: local == remote
+            # is the steady state, so the disk IS the sync point. Without
+            # this the base stays None and every later merge degrades to
+            # local-wins wholesale. A dirty clone is left alone — hashing
+            # it would bless unpushed edits as "already synced".
+            if self._base_files is None and self._dirty_since is None and self.push_state == "idle":
+                self._base_files = self._take_file_hashes()
             self._save_base()
             return
         if not self._remote_moved(self._remote, probe):
@@ -1445,7 +1477,14 @@ class _SyncManager:
                 # to run replaces it with local, which is the cure.
                 and not self._is_stale_echo(probe)
             ):
-                self._merge_remote(probe)
+                if not self._merge_remote(probe):
+                    # The remote moved and could not be reconciled (zip
+                    # download failed) — pushing now would wholesale-replace
+                    # edits we haven't seen, the exact clobber the merge
+                    # exists to prevent. Re-arm and retry after the debounce.
+                    self.push_state = "pending"
+                    self._dirty_since = time.time()
+                    return
         # Baseline BEFORE the push: a save landing while the push runs must
         # re-arm the debounce, not vanish into the pushed snapshot. The file
         # hashes are taken at the same instant — they describe the snapshot
