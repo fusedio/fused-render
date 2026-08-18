@@ -288,11 +288,20 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const unseen = tasksActive ? 0 : pulse.unseen;
   const tasksTip = pulseTitle(pulse);
 
-  // The collapsed rail has no label to hang a word on, so the whole signal is
-  // one dot in the icon's top-right corner: yellow while anything runs, green
-  // for completions not yet shown, nothing at all otherwise. The hues are the
-  // status ring's own (--status-progress / --status-done, schedule.css) — one
-  // status, one colour, on every surface that names it (design-principles §1).
+  // ONE DOT ON THE ICON, IN BOTH MODES (Akshil, 2026-08-18): yellow while
+  // anything runs, green for completions not yet shown, nothing at all
+  // otherwise. It began as the collapsed rail's whole signal — no label there to
+  // hang a word on — and the expanded row deliberately went without it. That was
+  // wrong in use: the icon is where the eye lands whatever the sidebar's width,
+  // so a mark that shows collapsed and vanishes on expand reads as the STATE
+  // going away rather than the sidebar changing shape. The dot is now the
+  // constant, and expanding ADDS words beside it ("N running" + the count chip)
+  // instead of trading the dot for them.
+  //
+  // Still ONE dot: yellow outranks green — a reader told work is in flight does
+  // not also need sending to the page mid-run. The hues are the status ring's
+  // own (--status-progress / --status-done, schedule.css) — one status, one
+  // colour, on every surface that names it (design-principles §1).
   const tasksDot =
     pulse.running > 0 ? (
       <span className="sidebar-rail-dot is-running" title={tasksTip} />
@@ -300,11 +309,12 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       <span className="sidebar-rail-dot is-unread" title={tasksTip} />
     ) : undefined;
 
-  // Expanded, the same two facts get words: a shimmering "N running" (the ink
-  // moves while the work does, and prefers-reduced-motion pins it), and the
-  // count chip the bookmark folders wear (`.sidebar-count-chip`, sidebar.css) —
-  // the same element for the same kind of fact, not a lookalike. NO DOT here:
-  // a dot on the icon plus a readout beside the label is one fact stated twice.
+  // Expanded, the same two facts ALSO get words, beside the dot rather than
+  // instead of it: a shimmering "N running" (the ink moves while the work does,
+  // and prefers-reduced-motion pins it), and the count chip the bookmark folders
+  // wear (`.sidebar-count-chip`, sidebar.css) — the same element for the same
+  // kind of fact, not a lookalike. The dot says THAT there is something; the
+  // words say how much, and the chip's number is the ungated one (see above).
   const tasksTrailing =
     pulse.running > 0 || pulse.doneUnread > 0 ? (
       <>
@@ -421,6 +431,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             label="Tasks"
             icon={SCHEDULED_ICON}
             active={tasksActive}
+            extra={tasksDot}
             trailing={tasksTrailing}
           />
         </div>
