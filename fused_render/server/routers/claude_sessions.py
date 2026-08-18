@@ -436,12 +436,18 @@ def clear_triage(session_id: str) -> bool:
     """Take the filing back — drop `status` (and its stamp) from one session's
     record, keeping everything else in it. True when there was one to drop.
 
-    The Tasks router calls this when a task that was archived DOES SOMETHING
-    NEW: the way out of Archive is activity, not a gesture (there is no
-    unarchive control anywhere), so a message typed into an archived
-    conversation has to actually un-file it rather than be shown out of its lane
-    for one poll. See `_revived` there for which activity counts and why a run
-    that was already in flight when the filing happened does not.
+    TWO CALLERS in the Tasks router, and they are the two ways out of Archive:
+
+    * a task that was archived DOES SOMETHING NEW — a message typed into an
+      archived conversation has to actually un-file it rather than be shown out
+      of its lane for one poll. See `_revived` there for which activity counts,
+      and why a run already in flight when the filing happened does not.
+    * somebody drags the card out of the Archive lane (`api_task_unarchive`).
+      Which lane they dropped it on says nothing — the task lands wherever it
+      derives to — so that gesture has nothing to pass here either.
+
+    Both are the same one-line change to the same record, which is why it lives
+    here rather than in either caller.
 
     The record itself is NOT deleted — a note, a tag or a read mark on that
     session is somebody else's data and outlives the status the Board put on it.

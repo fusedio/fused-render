@@ -29,6 +29,9 @@ this file is written around:
 * ``POST /api/tasks/archive`` — file one task away. ONE gesture with two halves
   (cancel the work, archive the session), which is why it is a verb here rather
   than a triage write the client composes. See the archiving section at the end.
+* ``POST /api/tasks/unarchive`` — take that filing back, and nothing else: the
+  work archiving cancelled stays cancelled, no run starts, and the task lands in
+  whatever lane it DERIVES into rather than one a caller names. Same section.
 
 **What a message is.** A user prompt in the transcript, or a scheduled entry.
 Those two overlap: a scheduled message that fired IS a prompt in the transcript
@@ -653,12 +656,15 @@ def _filed_at(record: dict) -> float:
 def _revived(messages: list[dict], filed_at: float) -> bool:
     """Has this task DONE something since it was filed away?
 
-    THE WAY OUT OF ARCHIVE IS ACTIVITY (Akshil, 2026-08-18): "if you want to
-    move it to in progress or done, just type in a message inside that chat and
-    it will automatically move". There is no unarchive control anywhere — the
-    lane is drag-locked and the row draws no button — so this is the only door,
-    and it has to be a real one: the filing is dropped (`clear_triage`), not
-    overlooked for one poll.
+    THE AUTOMATIC WAY OUT OF ARCHIVE IS ACTIVITY (Akshil, 2026-08-18): "if you
+    want to move it to in progress or done, just type in a message inside that
+    chat and it will automatically move". This door has to be a real one: the
+    filing is dropped (`clear_triage`), not overlooked for one poll.
+
+    The other door is the drag — a card lifted out of the Archive lane
+    (`api_task_unarchive`) — and it is the SAME drop of the SAME record, which is
+    why neither has to know about the other. Nothing here changes because a
+    gesture exists: activity still un-files a task nobody dragged.
 
     WHICH ACTIVITY, and the distinction is the whole function. `ran_at` is when
     a message actually happened, so:
@@ -1612,6 +1618,62 @@ def api_task_archive(patch: ArchivePatch):
         sessions.write_triage(session_id, _FILED)
     return {"ok": True, "key": key, "cancelled": cancelled,
             "filed": bool(session_id)}
+
+
+class UnarchivePatch(BaseModel):
+    key: str
+
+
+@router.post("/api/tasks/unarchive")
+def api_task_unarchive(patch: UnarchivePatch):
+    """Take the filing back: drop the archive record, nothing else.
+
+    THE MOVE HAS ONE MEANING AND NO DESTINATION. Dragging a card out of the
+    Archive lane does not say which lane it should land in — the user drops it
+    somewhere because that is how a card leaves a lane, and where it goes is
+    DERIVED (`_status`) exactly as it is for every other task on the board. So
+    this verb takes a key and no status, and the lane the user happened to drop
+    on is not sent, not read and not honoured. `status` in the answer is where
+    the task actually landed, which is the one thing the client cannot work out
+    for itself before its next poll — and it may well not be the lane under the
+    cursor. That is correct: the board shows what the work is doing.
+
+    ONE HALF, unlike archiving's two. Archiving cancels the pending work AND
+    files the session; this only un-files. The cancelled runs stay cancelled —
+    a booked run that came back to life because somebody unarchived a card
+    would be a message firing that nobody asked for twice, and "put this back
+    on the board" is not consent to send it. Ask for the run again (or say
+    something in the conversation) if that is what is wanted.
+
+    NO RUN IS EVER STARTED HERE, which is why the drop onto In Progress is this
+    same call and not a run: In Progress is Claude's output, never a verdict a
+    reader hands down, so a card dropped there simply comes back and lands
+    wherever its thread puts it — Done, Failed or In Progress if a turn really
+    is live.
+
+    `clear_triage` keeps the rest of the record — a note, a tag, a read mark on
+    that session is somebody else's data and outlives the status the Board put
+    on it. Same function the revival rule calls (`_revived`), so the gesture and
+    the automatic way out of Archive drop the filing identically.
+    """
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    task = _collect().get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+
+    session_id = task["session_id"]
+    unfiled = bool(session_id) and sessions.clear_triage(session_id)
+    # Where it landed, read the same way the listing reads it — one row built
+    # from the same helpers, AFTER the filing is gone, so the answer is the lane
+    # the very next poll will draw rather than a guess about it.
+    _place(task)
+    row = _row(task, "", sessions._load_state("triage.json"),
+               tasks_store.read_state(), time.time(),
+               schedule.busy_sessions(schedule.list_entries()), [])
+    return {"ok": True, "key": key, "unfiled": unfiled,
+            "status": row["status"]}
 
 
 def _rules_behind(entries: list[dict]) -> list[str]:
