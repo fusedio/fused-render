@@ -322,6 +322,13 @@ export default function CanvasWorkspace({ name }: { name: string }) {
               // it — the "have to reload the page to see the fix session" bug.
               key={fixRunId ?? "chat"}
               src={editorSrc}
+              /* The chat's tab-capture screenshots (template annXO branch,
+                 D349) call getDisplayMedia from inside this frame, and
+                 display capture is gated by Permissions Policy — whether a
+                 same-origin iframe inherits it without an explicit allow
+                 varies by browser, so it is granted here rather than hoped
+                 for. */
+              allow="display-capture"
               title={`Edit: ${name}`}
               style={{ width: "100%", height: "100%", border: 0 }}
             />
