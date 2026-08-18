@@ -1306,7 +1306,7 @@
     word-break: break-word;
   }
 
-  /* The trouble card (SPEC §43): a failure the user can act on, as opposed to
+  /* The trouble card (SPEC §42): a failure the user can act on, as opposed to
      the plain red row above. WARNING-toned rather than error-toned on the same
      argument the shell's card makes — the app is running, Claude is not — and
      wide enough to hold an install command without wrapping it. */
@@ -8782,7 +8782,7 @@ function addAssistantTurn(text, segments) {
   return turn;
 }
 
-// WHEN THE FAILURE IS CLAUDE ITSELF (SPEC §43). This is the surface a user
+// WHEN THE FAILURE IS CLAUDE ITSELF (SPEC §42). This is the surface a user
 // reaches for when they want to use Claude, so "claude CLI not found" landing
 // here as a red line is the exact complaint the trouble card exists to answer:
 // it names a CLI in our vocabulary and leaves the reader with nowhere to go.

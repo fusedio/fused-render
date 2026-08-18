@@ -1,4 +1,4 @@
-// Self-fix's pure parts (SPEC §42). Everything here is a decision that is
+// Self-fix's pure parts (SPEC §43). Everything here is a decision that is
 // wrong in a way no screenshot shows: a handoff URL that drops the run id
 // lands the user in an empty chat beside a session that is already working, an
 // issue URL that forgets the version is a bug report nobody can act on, and a

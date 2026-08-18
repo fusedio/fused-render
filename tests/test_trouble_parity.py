@@ -1,4 +1,4 @@
-"""The shell and the chat template both classify Claude failures (SPEC §43).
+"""The shell and the chat template both classify Claude failures (SPEC §42).
 
 They have to: `frontend/src/platform/lib/trouble.ts` runs in the React shell and
 the copy inside `templates/claude/template.html` runs in a page served

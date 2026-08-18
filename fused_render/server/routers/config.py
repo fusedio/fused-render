@@ -105,7 +105,7 @@ def api_config(
 
     if (update_manager := mac_update.manager()) is not None:
         config["update"] = update_manager.status()
-    # A Claude session changed this installation (selffix.py, SPEC §42) — the
+    # A Claude session changed this installation (selffix.py, SPEC §43) — the
     # sidebar's version chip turns amber and leads to the report. Rides this
     # endpoint rather than getting a poll of its own, like `update` above; it is
     # one small JSON read, and the PANEL's contents (report list, reinstall

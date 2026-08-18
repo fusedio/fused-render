@@ -1,6 +1,6 @@
 // When the app cannot do the thing at all — Claude Code missing, a session
 // that would not start, the config that would not load, a template registry
-// that will not parse (SPEC §43).
+// that will not parse (SPEC §42).
 //
 // **Why this is a module and not four `catch` blocks.** These failures share a
 // shape: the app is fine, something *around* it is not, and the person looking
@@ -184,7 +184,7 @@ export const FIND_INSTALL_COMMANDS: string[] = [
 
 /** User data — NOT the installation, and the distinction is load-bearing: a
     reinstall replaces one and never touches the other. It holds the template
-    registry, which is itself one of the four failures here (§43). */
+    registry, which is itself one of the four failures here (§42). */
 export const USER_DATA_DIR = "~/.fused-render";
 
 /** This session's log. Per-pid in the system temp dir (fused_render/logs.py),
@@ -288,33 +288,48 @@ export function troubleInstructions(ctx: TroubleContext): string {
 // failing.
 //
 // So the fallback card (a file with NO view at all) is not enough on its own: it
-// only fires in the total case. The partial case needs to be announced, and
-// announced ONCE — the error rides every stat, so a card per file would be a
-// card on every click for as long as the registry stays broken.
-const announced = new Set<string>();
+// only fires in the total case, and there RegistryFixNotice already answers it
+// with a repair button. The partial case needs announcing, and announcing ONCE —
+// the error rides every stat, so a card per file would be a card on every click
+// for as long as the registry stays broken.
+
+/** WHAT THE SCREEN IS CURRENTLY SAYING, and the toast saying it — one value,
+    because they are one fact and the bugs here have all come from splitting it.
+    Module state, because the toast outlives any one view: it is pushed while
+    looking at one file and is still up several files later, which is the point
+    of it. It resets on reload, as it should — a fault the user has since fixed
+    must not stay quiet because a previous session mentioned it. */
+let shown: { message: string; toast: number } | null = null;
 
 /** The sticky registry toast's whole lifecycle, in one place.
  *
- * IT LIVES HERE RATHER THAN IN THE COMPONENT because it is a state machine
- * with three transitions and no rendering, and the two bugs it has already had
- * were both in the transitions: an ungated push (a toast on a file that had a
- * better answer beside it) and an overwritten id (a second kind of broken
- * pushing a new toast while the first stayed on screen for good). A component
- * effect is not a testable place to keep three transitions.
+ * IT LIVES HERE RATHER THAN IN THE COMPONENT because it is a state machine with
+ * no rendering in it, and every bug it has had was a transition: an ungated push
+ * (a toast on a file that had a better answer beside it), an overwritten id (a
+ * second kind of broken leaving the first toast on screen for good), and a
+ * remembered-messages SET that could not express "the screen is currently saying
+ * B" — so a registry that failed with A, then B, then A again kept a toast
+ * describing B while A was the live fault. A component effect is not a testable
+ * place to keep any of that.
+ *
+ * That last one is why the state is a single value rather than a set of seen
+ * messages. The question this answers is not "have we ever mentioned this?" but
+ * "is the screen already saying exactly this?", and only the second one stays
+ * true as the registry moves between states.
  *
  * The rules, in the order they are checked:
  *
  *  1. NO ERROR — the registry parses again, so whatever claim is up is now
- *     false: dismiss it, and forget the message so the same fault arriving
- *     later is announced again rather than reading as a fix that held.
+ *     false: dismiss it and forget it, which also means the same fault arriving
+ *     later is announced again rather than reading as a repair that held.
  *  2. NOT ANNOUNCEABLE — this file has a better answer beside it, so say
  *     nothing AND leave any existing toast alone. Walking onto a file with no
  *     view must not take down a claim that is still true.
- *  3. ALREADY SAID — the error rides every stat; saying it once is the point.
- *  4. A DIFFERENT ERROR SUPERSEDES the old one. The registry has one state at a
- *     time, so the previous toast is stale by definition and comes down as the
- *     new one goes up. Without this the two stack, and only the newer is ever
- *     dismissed.
+ *  3. ALREADY SAYING EXACTLY THIS — the error rides every stat; saying it once
+ *     is the point.
+ *  4. ANYTHING ELSE SUPERSEDES. The registry has one state at a time, so the
+ *     toast on screen is stale by definition and comes down as the new one goes
+ *     up.
  */
 export function syncRegistryToast(
   message: string,
@@ -323,44 +338,19 @@ export function syncRegistryToast(
 ): void {
   const text = String(message || "").trim();
   if (!text) {
-    if (outstandingToast !== null) {
-      io.dismiss(outstandingToast);
-      outstandingToast = null;
-      resetAnnouncedTemplateErrors();
+    if (shown) {
+      io.dismiss(shown.toast);
+      shown = null;
     }
     return;
   }
   if (!announceable) return;
-  if (!shouldAnnounceTemplateError(text)) return;
-  if (outstandingToast !== null) io.dismiss(outstandingToast);
-  outstandingToast = io.push();
+  if (shown && shown.message === text) return;
+  if (shown) io.dismiss(shown.toast);
+  shown = { message: text, toast: io.push() };
 }
 
-/** The toast currently claiming the registry is broken, if any. Module state
-    because the toast outlives any one view: it is pushed while looking at one
-    file and is still up several files later, which is the point of it. */
-let outstandingToast: number | null = null;
-
-/** Whether this registry error still needs saying, marking it said.
- *
- * Keyed on the MESSAGE rather than on the path: one broken registry produces
- * one error text across every file in the app, and the user needs to hear about
- * the registry once, not about each file that noticed it. Editing the registry
- * to a NEW kind of broken is a new message and is therefore said again, which
- * is right — that is a different mistake.
- *
- * Module state, so it resets on reload. A fault the user has fixed should not
- * stay quiet because a previous session already mentioned it.
- */
-export function shouldAnnounceTemplateError(message: string): boolean {
-  const key = String(message || "").trim();
-  if (!key || announced.has(key)) return false;
-  announced.add(key);
-  return true;
-}
-
-/** Test seam — the set is module state and suites share a module. */
-export function resetAnnouncedTemplateErrors(): void {
-  announced.clear();
-  outstandingToast = null;
+/** Test seam — `shown` is module state and suites share a module. */
+export function resetRegistryToast(): void {
+  shown = null;
 }

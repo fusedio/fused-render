@@ -7030,9 +7030,157 @@ world from one the user typed.
   occurrence; cancelling just the occurrence means "skip this one" and the
   schedule continues.
 
+## 42. When Something Around the App Is Broken (D328)
+
+Some of what this app does depends on things it does not contain: Claude Code
+has to be installed and signed in, its own config has to load, a template
+registry has to parse. When one of those is wrong the app is FINE and something
+beside it is not — and the user met a red string naming an endpoint or a CLI, in
+our vocabulary, with nowhere to go. Four failures, one answer.
+
+- **TR-1** **The four cases are the DOWNLOAD PAGE's four cases**, not a taxonomy
+  invented here: `notfound`, `login`, `limit`, `raw` (`lib/trouble.ts`,
+  matching render.fused.io's `data-err` tabs). The page already sorts these,
+  already explains each in plain words, and already accepts a deep link
+  (`#troubleshooting-<kind>`, read by its own `honorHash`), so the app links
+  straight to the answer instead of at a long page. Two vocabularies for one
+  problem is how a user ends up reading about installing something they have.
+- **TR-2** **A signed-out Claude is NOT a missing one**, which is the whole
+  reason classification is ordered and tested. "Not found" appears inside
+  messages whose real cause is named earlier in the same sentence, and telling
+  someone to install what they already installed spends the one minute they
+  needed. `login` and `limit` are therefore matched BEFORE the could-not-find
+  patterns, which are the broadest.
+- **TR-2a** **A failure SHAPE is not a subject**, and this is TR-2 arriving from
+  the other side. `ENOENT`, "no such file", "command not found", "authentication
+  failed" say nothing about *what* was missing, and this app produces them
+  constantly about files, mounts and credentials that have nothing to do with
+  Claude — so `could not write the incident file: [Errno 2] No such file or
+  directory` classified as Claude-missing and answered a disk-path problem with
+  a download link. Patterns are therefore two tiers: ones that NAME Claude or
+  quote the CLI's own vocabulary count anywhere, and ones that describe only a
+  shape count only when the message is about Claude. The same rule demotes a
+  bare "not signed in", which in this app is as likely to be the Fused account,
+  a deploy or an S3 mount.
+- **TR-3** **`raw` is an answer, not a fallback.** The page has a tab for "some
+  other error message", so an unrecognised failure is routed somewhere real
+  rather than shrugged at.
+- **TR-4** **The copyable block is the point of the card.** Everything else
+  nudges the user toward a page; the copied text is what they can paste into
+  their own AI or an issue and get an actual answer from. It carries **what the
+  app was doing before it carries what went wrong** (a paste that opens with a
+  traceback makes the reader work out the question first), and it carries **the
+  installation** — the fact every diagnosis needs and the one nobody can look up
+  for themselves. Paths, a version, an OS string and the error; nothing read
+  from the user's files.
+- **TR-5** **The error is verbatim, always.** Rewording it makes it
+  unsearchable, and searching it is the first thing anyone does.
+- **TR-6** **It is WARNING-toned, not error-toned.** Nothing here is a crash:
+  the app is running and something beside it is not. A red card would say "this
+  is broken" about the wrong subject, and the subject is the whole point of
+  every clause above.
+- **TR-7** **One component, two sizes, and a size is chosen by the surface
+  rather than by the failure.** The boot failure takes the full card on an
+  otherwise empty page; the builder's hero takes the full card under the
+  composer, because the app folder was created and only the session failed, so
+  there is something to say beyond the error. The compact size (title, clamped
+  error, copy, link) exists for surfaces that are notifications rather than
+  pages — a wall of explanation in a 340px popup is not read. A registry that
+  will not parse takes neither: see TR-9.
+- **TR-8** **The boot failure cannot describe itself, and degrades rather than
+  printing empty labels.** `/api/config` is what failed, so there is no version,
+  install path or platform to report — the block falls back to the error and the
+  help link. It still beats one red line naming an endpoint, because the person
+  reading it has an unusable app and no idea whether to reinstall, restart, or
+  ask someone.
+- **TR-9** **A broken template registry is surfaced where it is FELT, and the
+  failure to design around is the PARTIAL one.** The server has always reported
+  it (`template_error`, PT-8) and nothing ever read it, so a `~/.fused-render`
+  registry that would not parse presented as "this file has no preview" — for
+  every file at once, with the reason sitting unread in the payload.
+  **A file with NO view is no longer this feature's case**: #585's
+  `RegistryFixNotice` answers it in the fallback card and answers it better,
+  because it carries a *Repair Template Registry* button beside the same error.
+  A copyable report is the right shape when nobody present can act; here
+  somebody can, so the one-click fix wins and the card that used to sit there
+  is gone (a second card restating the error above a button that fixes it is
+  worse than either alone).
+  What remains is the case that notice cannot reach, and it is the reported one:
+  the built-in registry still matches, so **the file previews normally and only
+  the user's own bindings quietly stop applying** — "apps aren't rendering
+  properly", with no fallback card rendered anywhere to hang an answer on. That
+  is announced as a toast, ONCE per distinct registry error
+  (`shouldAnnounceTemplateError`), because the error rides every stat and a card
+  per file would be a card per click for as long as the registry stays broken;
+  its action COPIES the report rather than navigating, because the error is
+  longer than a toast line and what a user does with it is paste it — and the
+  block it copies is the same one every other surface here hands over.
+  **The toast is GATED on this file having a view** — the same boundary from
+  the other side. Ungated it fired on the no-view file too, putting a second
+  description of one fault beside the notice that fixes it, and saying "your
+  own bindings are not applying" about a file whose preview was gone
+  altogether. **And it comes down when the error clears.** It is sticky
+  (`ttlMs: 0`) because it describes a state rather than an event, so the id is
+  kept and dismissed on the next stat that parses; discarded, a successful
+  Repair left a permanent "could not be read" sitting beside that notice's own
+  "Fixed". The remembered message is dropped at the same moment, so the
+  identical fault arriving again is announced again instead of reading as a
+  repair that held. **A DIFFERENT error supersedes the toast it replaces**, on
+  the same argument: the registry has one state at a time, so what is on screen
+  is stale by definition. Pushing without dismissing left two sticky toasts and
+  only ever took down the newer, so the older outlived the repair.
+  **All of it reads off ONE value — what the screen is currently saying — and
+  not a set of messages already seen.** A set answers "have we ever mentioned
+  this?", which is the wrong question: a registry that failed with A, was edited
+  to fail with B, then edited back to A left the toast describing B, because A
+  counted as already announced. What stays true as the registry moves between
+  states is "is the screen already saying exactly this?". The transitions live
+  in `syncRegistryToast` rather than in the effect that calls it — every bug this
+  has had was a transition rather than anything rendered, and a component effect
+  is not a place a test can reach.
+- **TR-10** **The install command is pinned by a test**, because it is shown as
+  a thing to copy into a terminal and a wrong one there is worse than none.
+- **TR-11** **The agent brief always says WHERE, and when it cannot state the
+  path it says how to find it.** TR-8's degradation is right for the report — a
+  person reading a paste does not need labels with nothing after them — but it
+  is not enough for the instructions, because those are handed to something that
+  has to go and look. "Something around Fused Render is broken, please fix it"
+  with no directory is a brief an agent answers by guessing or by asking. So the
+  location is a FACT when the snapshot carries it (`- The installed app: …`) and
+  a TASK when it does not — and the order is the order
+  people actually install this. `/Applications/FusedRender.app` first, because
+  the DMG is the install; then the same bundle one level in
+  (`Contents/Resources/lib/python3.*/fused_render`), which is the code a fix
+  session edits and not something anyone would guess from the .app; then `brew
+  list --cask`, which answers a DIFFERENT question — the cask's `app` artifact
+  puts the bundle in the same place, so it finds no new path, but it says who
+  MANAGES that path, and that is what decides whether the repair ends in `brew
+  reinstall --cask` or in dragging a DMG over the top (`reinstall_advice` splits
+  on exactly this); then the Windows install dir. **No `python3 -c "import
+  fused_render"` and no `pip show`**: neither is a supported way to install
+  this, and both mislead, because a bare `python3` on PATH is not the
+  interpreter inside the bundle — it either fails or finds an unrelated copy,
+  and an agent handed that path goes and edits a copy the app does not run. Three more things ride along with it, because an agent that
+  knows only the install root still cannot see the two places that most often
+  hold the fault: `~/.fused-render` (settings, the template registry, the staged
+  core templates) is named as a DIFFERENT place, since a reinstall replaces one
+  and never touches the other; the per-pid log is named as a glob (it lives in
+  the system temp dir, `fused_render/logs.py`); and the `raw` steps now say to
+  check whether the server is running before concluding the app is broken —
+  "Failed to fetch" at boot is far more often a dead process than a broken app.
+  Pinned across both copies by `tests/test_trouble_parity.py`: a find command in
+  one copy only means the chat and the shell send agents looking in different
+  places. **The unknown branch states no CAUSE**, only the fact. It first read
+  *"the failure above is what would have told me"*, which is true of the boot
+  failure and of nothing else: the builder's hero has no path for a duller
+  reason (it renders from config alone and never asks for one), and the chat
+  template never knows, being a page rendered inside the app. An agent that catches the app deducing wrong about
+  its own state has reason to discount the rest of the brief, so the line says
+  only what holds everywhere.
+
 ---
 
-## 42. Self-Fix — A Claude Session on This Installation (D329)
+## 43. Self-Fix — A Claude Session on This Installation (D329)
 
 Goal: when the app fails on a machine we cannot see, the user has one more
 option than "dismiss it and hope" — they can ask Claude to look at the failure
@@ -7433,141 +7581,3 @@ the installation, and the mark that says so.
   everything it can fail on (the agent not loading, an unreadable runs directory)
   fails the spawn moments later too, with a message naming what actually went
   wrong instead of "already running".
-
-## 43. When Something Around the App Is Broken (D328)
-
-The self-fix feature above assumes Claude Code runs. When it does not — and in
-the other cases where the app is fine but something beside it is not — the user
-met a red string naming an endpoint or a CLI, in our vocabulary, with nowhere to
-go. Four failures, one answer.
-
-- **TR-1** **The four cases are the DOWNLOAD PAGE's four cases**, not a taxonomy
-  invented here: `notfound`, `login`, `limit`, `raw` (`lib/trouble.ts`,
-  matching render.fused.io's `data-err` tabs). The page already sorts these,
-  already explains each in plain words, and already accepts a deep link
-  (`#troubleshooting-<kind>`, read by its own `honorHash`), so the app links
-  straight to the answer instead of at a long page. Two vocabularies for one
-  problem is how a user ends up reading about installing something they have.
-- **TR-2** **A signed-out Claude is NOT a missing one**, which is the whole
-  reason classification is ordered and tested. "Not found" appears inside
-  messages whose real cause is named earlier in the same sentence, and telling
-  someone to install what they already installed spends the one minute they
-  needed. `login` and `limit` are therefore matched BEFORE the could-not-find
-  patterns, which are the broadest.
-- **TR-2a** **A failure SHAPE is not a subject**, and this is TR-2 arriving from
-  the other side. `ENOENT`, "no such file", "command not found", "authentication
-  failed" say nothing about *what* was missing, and this app produces them
-  constantly about files, mounts and credentials that have nothing to do with
-  Claude — so `could not write the incident file: [Errno 2] No such file or
-  directory` classified as Claude-missing and answered a disk-path problem with
-  a download link. Patterns are therefore two tiers: ones that NAME Claude or
-  quote the CLI's own vocabulary count anywhere, and ones that describe only a
-  shape count only when the message is about Claude. The same rule demotes a
-  bare "not signed in", which in this app is as likely to be the Fused account,
-  a deploy or an S3 mount.
-- **TR-3** **`raw` is an answer, not a fallback.** The page has a tab for "some
-  other error message", so an unrecognised failure is routed somewhere real
-  rather than shrugged at.
-- **TR-4** **The copyable block is the point of the card.** Everything else
-  nudges the user toward a page; the copied text is what they can paste into
-  their own AI or an issue and get an actual answer from. It carries **what the
-  app was doing before it carries what went wrong** (a paste that opens with a
-  traceback makes the reader work out the question first), and it carries **the
-  installation** — the fact every diagnosis needs and the one nobody can look up
-  for themselves. Paths, a version, an OS string and the error; nothing read
-  from the user's files.
-- **TR-5** **The error is verbatim, always.** Rewording it makes it
-  unsearchable, and searching it is the first thing anyone does.
-- **TR-6** **It is WARNING-toned, not error-toned** — the same argument the
-  modified badge makes (SF-6). Nothing here is a crash: the app is running and
-  something beside it is not. A red card would say "this is broken" about the
-  wrong subject.
-- **TR-7** **Three surfaces, one component, two sizes.** The Preferences tab
-  takes the full card; a failed download row takes the compact one (title,
-  clamped error, copy, link) because that surface is a 340px notification and a
-  wall of explanation in a corner popup is not read. The boot failure takes the
-  full card on an otherwise empty page. It was four: the preview's fallback card
-  had one too, and #585 replaced it — see TR-9.
-- **TR-8** **The boot failure cannot describe itself, and degrades rather than
-  printing empty labels.** `/api/config` is what failed, so there is no version,
-  install path or platform to report — the block falls back to the error and the
-  help link. It still beats one red line naming an endpoint, because the person
-  reading it has an unusable app and no idea whether to reinstall, restart, or
-  ask someone.
-- **TR-9** **A broken template registry is surfaced where it is FELT, and the
-  failure to design around is the PARTIAL one.** The server has always reported
-  it (`template_error`, PT-8) and nothing ever read it, so a `~/.fused-render`
-  registry that would not parse presented as "this file has no preview" — for
-  every file at once, with the reason sitting unread in the payload.
-  **A file with NO view is no longer this feature's case**: #585's
-  `RegistryFixNotice` answers it in the fallback card and answers it better,
-  because it carries a *Repair Template Registry* button beside the same error.
-  A copyable report is the right shape when nobody present can act; here
-  somebody can, so the one-click fix wins and the card that used to sit there
-  is gone (a second card restating the error above a button that fixes it is
-  worse than either alone).
-  What remains is the case that notice cannot reach, and it is the reported one:
-  the built-in registry still matches, so **the file previews normally and only
-  the user's own bindings quietly stop applying** — "apps aren't rendering
-  properly", with no fallback card rendered anywhere to hang an answer on. That
-  is announced as a toast, ONCE per distinct registry error
-  (`shouldAnnounceTemplateError`), because the error rides every stat and a card
-  per file would be a card per click for as long as the registry stays broken;
-  its action opens Preferences, which holds the whole error and copies it.
-  **The toast is GATED on this file having a view** — the same boundary from
-  the other side. Ungated it fired on the no-view file too, putting a second
-  description of one fault beside the notice that fixes it, and saying "your
-  own bindings are not applying" about a file whose preview was gone
-  altogether. **And it comes down when the error clears.** It is sticky
-  (`ttlMs: 0`) because it describes a state rather than an event, so the id is
-  kept and dismissed on the next stat that parses; discarded, a successful
-  Repair left a permanent "could not be read" sitting beside that notice's own
-  "Fixed". The remembered message is dropped at the same moment, so the
-  identical fault arriving again is announced again instead of reading as a
-  repair that held. **A DIFFERENT error supersedes the toast it replaces**, for
-  the same reason the dismissal exists: the registry has one state at a time, so
-  the previous message is stale by definition. Pushing without dismissing left
-  two sticky toasts and only ever took down the newer, so the older outlived the
-  repair. All three transitions live in `syncRegistryToast` rather than in the
-  effect that calls it — both bugs this has had were transitions rather than
-  anything rendered, and a component effect is not a place a test can reach.
-- **TR-10** **The install command is pinned by a test**, because it is shown as
-  a thing to copy into a terminal and a wrong one there is worse than none.
-- **TR-11** **The agent brief always says WHERE, and when it cannot state the
-  path it says how to find it.** TR-8's degradation is right for the report — a
-  person reading a paste does not need labels with nothing after them — but it
-  is not enough for the instructions, because those are handed to something that
-  has to go and look. "Something around Fused Render is broken, please fix it"
-  with no directory is a brief an agent answers by guessing or by asking. So the
-  location is a FACT when the snapshot carries it (`- The installed app: …`) and
-  a TASK when it does not — and the order is the order
-  people actually install this. `/Applications/FusedRender.app` first, because
-  the DMG is the install; then the same bundle one level in
-  (`Contents/Resources/lib/python3.*/fused_render`), which is the code a fix
-  session edits and not something anyone would guess from the .app; then `brew
-  list --cask`, which answers a DIFFERENT question — the cask's `app` artifact
-  puts the bundle in the same place, so it finds no new path, but it says who
-  MANAGES that path, and that is what decides whether the repair ends in `brew
-  reinstall --cask` or in dragging a DMG over the top (`reinstall_advice` splits
-  on exactly this); then the Windows install dir. **No `python3 -c "import
-  fused_render"` and no `pip show`**: neither is a supported way to install
-  this, and both mislead, because a bare `python3` on PATH is not the
-  interpreter inside the bundle — it either fails or finds an unrelated copy,
-  and an agent handed that path goes and edits a copy the app does not run. Three more things ride along with it, because an agent that
-  knows only the install root still cannot see the two places that most often
-  hold the fault: `~/.fused-render` (settings, the template registry, the staged
-  core templates) is named as a DIFFERENT place, since a reinstall replaces one
-  and never touches the other; the per-pid log is named as a glob (it lives in
-  the system temp dir, `fused_render/logs.py`); and the `raw` steps now say to
-  check whether the server is running before concluding the app is broken —
-  "Failed to fetch" at boot is far more often a dead process than a broken app.
-  Pinned across both copies by `tests/test_trouble_parity.py`: a find command in
-  one copy only means the chat and the shell send agents looking in different
-  places. **The unknown branch states no CAUSE**, only the fact. It first read
-  *"the failure above is what would have told me"*, which is true of the boot
-  failure and of nothing else: the preview fallback and the builder's hero have
-  no path for a duller reason (the snapshot that carries one costs a `brew`
-  shell-out, too much for a card that may render on any failed preview), and the
-  chat template never knows. An agent that catches the app deducing wrong about
-  its own state has reason to discount the rest of the brief, so the line says
-  only what holds everywhere.

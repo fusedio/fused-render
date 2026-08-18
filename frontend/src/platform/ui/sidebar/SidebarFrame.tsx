@@ -55,7 +55,7 @@ export interface SidebarFrameProps {
   title: string;
   /** Version chip after the title — shown only by the shell ("Render"). */
   version?: string;
-  /** Set when a self-fix session has changed this installation (SPEC §42):
+  /** Set when a self-fix session has changed this installation (SPEC §43):
       the chip turns amber and becomes the door to that session's report. The
       frame stays ignorant of what any of that means — it hands both values to
       VersionChip, which is where the two states are decided. */

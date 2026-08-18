@@ -5,8 +5,7 @@ import { expect, test } from "bun:test";
 import {
   CLAUDE_INSTALL_COMMAND,
   troubleInstructions,
-  resetAnnouncedTemplateErrors,
-  shouldAnnounceTemplateError,
+  resetRegistryToast,
   syncRegistryToast,
   isClaudeTrouble,
   troubleHelpUrl,
@@ -55,8 +54,8 @@ test("a failure SHAPE about something else is not about Claude", () => {
   // wrong advice TR-2 exists to prevent, arriving from the other side.
   expect(
     troubleKind(
-      "could not write the incident file: [Errno 2] No such file or directory: " +
-        "'/Volumes/gone/.fused-render-selffix/incidents/x.md'"
+      "could not write the report: [Errno 2] No such file or directory: " +
+        "'/Volumes/gone/notes/report.md'"
     )
   ).toBe("raw");
   expect(troubleKind("mount probe failed: authentication failed for s3://bucket")).toBe("raw");
@@ -100,7 +99,7 @@ test("the report carries the installation, which is what the user cannot look up
     install_root: "/Applications/FusedRender.app/Contents/Resources/lib/python3.12/fused_render",
     version: "0.4.22",
     platform: "macOS-15.0",
-    page: "/preferences?tab=selffix",
+    page: "/explorer/view/Users/me/data.parquet",
   });
   expect(text).toContain("/Applications/FusedRender.app");
   expect(text).toContain("v0.4.22");
@@ -128,31 +127,6 @@ test("the install command is the one the download page tells people to run", () 
   // Pinned because it is shown as a thing to copy and paste into a terminal:
   // a wrong command here is worse than no command.
   expect(CLAUDE_INSTALL_COMMAND).toBe("curl -fsSL https://claude.ai/install.sh | bash");
-});
-
-
-test("a broken registry is announced once, not once per file", () => {
-  // The error rides EVERY stat, so the naive wiring is a toast on every click
-  // for as long as the registry stays broken.
-  resetAnnouncedTemplateErrors();
-  const err = "cannot read registry.json: Expecting property name (char 2)";
-  expect(shouldAnnounceTemplateError(err)).toBe(true);
-  expect(shouldAnnounceTemplateError(err)).toBe(false);
-  expect(shouldAnnounceTemplateError(err)).toBe(false);
-});
-
-test("a DIFFERENT kind of broken is said again", () => {
-  // The user edited the registry and got it wrong another way. That is new
-  // news, and staying quiet would look like the first fix worked.
-  resetAnnouncedTemplateErrors();
-  expect(shouldAnnounceTemplateError("cannot read registry.json: bad JSON")).toBe(true);
-  expect(shouldAnnounceTemplateError("registry.json: not an object")).toBe(true);
-});
-
-test("an empty message is never announced", () => {
-  resetAnnouncedTemplateErrors();
-  expect(shouldAnnounceTemplateError("")).toBe(false);
-  expect(shouldAnnounceTemplateError("   ")).toBe(false);
 });
 
 
@@ -275,20 +249,6 @@ test("the unknown-path line states no cause, because there are several", () => {
   }
 });
 
-test("a registry that is fixed and breaks again is announced again", () => {
-  // The recovery path Preview relies on. The sticky toast is taken down when
-  // `template_error` clears, and the message is forgotten at the same moment —
-  // otherwise the identical fault arriving again (a repair that did not hold, a
-  // second bad edit) would stay silent, which reads as the fix having worked.
-  resetAnnouncedTemplateErrors();
-  const err = "cannot read registry.json: Expecting property name (char 2)";
-  expect(shouldAnnounceTemplateError(err)).toBe(true);
-  expect(shouldAnnounceTemplateError(err)).toBe(false);
-  resetAnnouncedTemplateErrors(); // what the recovery does
-  expect(shouldAnnounceTemplateError(err)).toBe(true);
-});
-
-
 // -- the sticky registry toast's lifecycle ------------------------------------
 //
 // A state machine with three transitions, and two of them have already been
@@ -314,7 +274,7 @@ function recorder() {
 }
 
 test("a broken registry is announced once, however many files are opened", () => {
-  resetAnnouncedTemplateErrors();
+  resetRegistryToast();
   const r = recorder();
   const err = "cannot read registry.json: Expecting property name (char 2)";
   syncRegistryToast(err, true, r.io);
@@ -328,7 +288,7 @@ test("a file with a better answer beside it says nothing, and takes nothing down
   // The no-view file has RegistryFixNotice and its repair button. Announcing
   // there would describe one fault twice on one screen — but walking onto that
   // file must not dismiss a claim that is still perfectly true either.
-  resetAnnouncedTemplateErrors();
+  resetRegistryToast();
   const r = recorder();
   syncRegistryToast("bad json", true, r.io);
   syncRegistryToast("bad json", false, r.io);
@@ -340,7 +300,7 @@ test("a DIFFERENT kind of broken supersedes the toast it replaces", () => {
   // The registry has one state at a time, so the old message is stale by
   // definition. Pushing without dismissing left two sticky toasts and only ever
   // took down the newer — the older then outlived a successful repair.
-  resetAnnouncedTemplateErrors();
+  resetRegistryToast();
   const r = recorder();
   syncRegistryToast("registry.json: bad json", true, r.io);
   syncRegistryToast("registry.json: not an object", true, r.io);
@@ -349,7 +309,7 @@ test("a DIFFERENT kind of broken supersedes the toast it replaces", () => {
 });
 
 test("a registry that parses again takes the claim down", () => {
-  resetAnnouncedTemplateErrors();
+  resetRegistryToast();
   const r = recorder();
   syncRegistryToast("bad json", true, r.io);
   syncRegistryToast("", true, r.io);
@@ -360,7 +320,7 @@ test("a registry that parses again takes the claim down", () => {
 });
 
 test("the same fault after a repair is announced again", () => {
-  resetAnnouncedTemplateErrors();
+  resetRegistryToast();
   const r = recorder();
   const err = "cannot read registry.json: bad json";
   syncRegistryToast(err, true, r.io);
@@ -372,10 +332,27 @@ test("the same fault after a repair is announced again", () => {
 });
 
 test("an empty or blank error is never announced", () => {
-  resetAnnouncedTemplateErrors();
+  resetRegistryToast();
   const r = recorder();
   syncRegistryToast("", true, r.io);
   syncRegistryToast("   ", true, r.io);
   expect(r.pushed).toEqual([]);
   expect(r.dismissed).toEqual([]);
+});
+
+test("a registry that breaks, breaks differently, then breaks the FIRST way again", () => {
+  // The set of seen messages could not express this: A is "already announced",
+  // so the screen kept a toast describing B while A was the live fault. The
+  // question is not "have we ever mentioned this?" but "is the screen already
+  // saying exactly this?" — and only the second stays true as the registry
+  // moves between states.
+  resetRegistryToast();
+  const r = recorder();
+  const a = "registry.json: bad json";
+  const b = "registry.json: not an object";
+  syncRegistryToast(a, true, r.io);
+  syncRegistryToast(b, true, r.io);
+  syncRegistryToast(a, true, r.io);
+  expect(r.pushed).toEqual([1, 2, 3]);
+  expect(r.dismissed).toEqual([1, 2]);
 });

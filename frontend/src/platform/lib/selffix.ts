@@ -1,5 +1,5 @@
 // Self-fix — asking Claude to repair this installation, and what it leaves
-// behind (fused_render/selffix.py, SPEC §42).
+// behind (fused_render/selffix.py, SPEC §43).
 //
 // Two halves that meet at a file on disk:
 //
@@ -89,7 +89,7 @@ export interface SelfFixSnapshot {
   issues_url: string;
   machine: Record<string, string | boolean>;
   /** Why the template registries cannot be trusted, when they cannot (SPEC
-      §43, TR-9). Absent when they are fine — there is no healthy value to
+      §42, TR-9). Absent when they are fine — there is no healthy value to
       check for. */
   template_error?: string;
 }
