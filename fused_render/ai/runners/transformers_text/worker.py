@@ -350,6 +350,21 @@ def _encode(tokenizer, messages, prompt, device):
     return ids.to(device), mask.to(device)
 
 
+def _prompt_tokens(ids):
+    """How many tokens the encoded prompt is, or None if this cannot say.
+
+    `ids` is one un-padded sequence (`_encode`), so its last dimension is the
+    length — via `.shape` for a real tensor, `len()` for anything sequence-like.
+    """
+    shape = getattr(ids, "shape", None)
+    try:
+        if shape is not None:
+            return int(shape[-1])
+        return len(ids)
+    except Exception:  # noqa: BLE001 - a count may not break a generation
+        return None
+
+
 def _stopping_criteria(local_stop=None):
     """Stop when `/cancel` was pressed or this stream went away.
 
@@ -387,6 +402,12 @@ def generate(body, write):
 
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
     ids, mask = _encode(tokenizer, messages, body.get("prompt") or "", model.device)
+    # What the model READ, reported as `input_tokens` (SPEC AI-3). Free here —
+    # the prompt has just been tokenized, and its length is the answer — where
+    # anything upstream would have to estimate it and disagree with the model.
+    # Fail-soft like the count itself: a tensor shape this cannot read costs the
+    # metric, never the generation.
+    prompt_tokens = _prompt_tokens(ids)
     max_tokens = int(body.get("max_tokens") or 1024)
     temperature = float(body.get("temperature", 0.7))
     top_p = float(body.get("top_p", 0.95))
@@ -454,10 +475,12 @@ def generate(body, write):
     if "error" in result:
         raise result["error"]
     if worker_base.CANCEL.is_set():
-        write({"type": "done", "ok": True, "cancelled": True, "tokens": count})
+        write({"type": "done", "ok": True, "cancelled": True, "tokens": count,
+               "input_tokens": prompt_tokens})
         return
     write({
         "type": "done", "ok": True, "tokens": count,
+        "input_tokens": prompt_tokens,
         "seconds": round(time.time() - started, 2),
     })
 
