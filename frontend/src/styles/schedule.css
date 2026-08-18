@@ -39,19 +39,24 @@
    decision, and it made the page the only surface in the app with no measure at
    all.
 
-   1360px is that decision, and it is a number the BOARD chose: five 260px lanes
-   plus four 12px gaps is 1348, so the widest of the three views fits its whole
-   content inside the measure and nothing has to scroll sideways at the size
-   this app is actually used at. List and calendar are comfortable well below
-   that — the flow reference sits around 1200-1400 — so one measure serves all
-   three, which is worth more than three tuned ones: the toggle switches the
-   view without the page changing shape underneath it.
+   1240px is that decision, and it is the LIST's number, not the board's. It was
+   1360 for a few hours — five 260px lanes plus four 12px gaps is 1348, so the
+   board fitted exactly — and letting the widest view set the measure was the
+   wrong way round: the board is the one view that can scroll inside itself, and
+   the list, which cannot, was the one paying for it (Akshil, 2026-08-18: tighter
+   still). 1240 is a comfortable measure for a three-line row and for a seven-day
+   calendar, and the board simply scrolls its lanes past it — which the board has
+   always done at any window narrower than five lanes, so this is its ordinary
+   behaviour rather than a new state.
+
+   One measure for all three views, and that is worth more than three tuned ones:
+   the toggle switches the view without the page changing shape underneath it.
 
    Applied to `> *` rather than to the section alone so the HEADER moves with
    the views; a centred board under a left-flush "Tasks" reads as a layout bug.
-   Under 1360 the cap is inert and the page is full-width as before — the board
-   keeps its own `overflow-x`, so a narrow window scrolls the lanes and never
-   the page (design-principles §0).
+   Under 1240 the cap is inert and the page is full-width as before. Either way
+   the board keeps its own `overflow-x`, so what scrolls sideways is the lane
+   strip and never the page (design-principles §0).
 
    Both classes in the selector, not just `.schedule-page`: the rule it has to
    beat is `.prefs-page > *`, which is exactly as specific as a lone
@@ -59,7 +64,7 @@
    stylesheet the barrel imports last, which is not a thing this page should
    depend on. */
 .prefs-page.schedule-page > * {
-  max-width: 1360px;
+  max-width: 1240px;
   margin-inline: auto;
 }
 
@@ -69,7 +74,7 @@
    purpose: tests/test_schedule_css.py reads this declaration to check the
    opt-out is still granted, and it reads a value, not a variable. */
 .schedule-page > .prefs-section {
-  max-width: 1360px;
+  max-width: 1240px;
 }
 
 .schedule-page .prefs-section > p {

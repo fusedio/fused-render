@@ -5293,15 +5293,18 @@ describe("the tasks toolbar", () => {
   it("centres the page on one measure wide enough for the widest view", () => {
     // Edge-to-edge was the absence of a decision: on a 27" display the List ran to
     // 2000px and the title sat marooned at the far left of it (design-principles
-    // §3). The cap is the BOARD's number — five 260px lanes plus four 12px gaps is
-    // 1348 — so the widest view fits inside the measure and the other two are not
-    // given a second one.
+    // §3). The measure is the LIST's number, not the board's — it was the board's
+    // for a few hours, and letting the one view that CAN scroll inside itself set
+    // the width for the two that cannot was the wrong way round.
+    const measure = 1240;
+    // Comfortably inside the flow reference's 1200-1400, and tighter than the
+    // board's own five-lane span, which is the point: the board scrolls.
+    expect(measure).toBeGreaterThanOrEqual(1200);
+    expect(measure).toBeLessThanOrEqual(1400);
     const lane = block(SCHEDULE_CSS, ".schedule-tv-lane");
     expect(lane).toContain("flex: 0 0 260px");
     const board = block(SCHEDULE_CSS, ".schedule-tv-board");
     expect(board).toContain("gap: 12px");
-    const measure = 1360;
-    expect(measure).toBeGreaterThanOrEqual(5 * 260 + 4 * 12);
     const page = block(SCHEDULE_CSS, ".prefs-page.schedule-page > *");
     expect(page).toContain(`max-width: ${measure}px`);
     // Centred, and applied to every child so the header travels with the views — a
@@ -5319,8 +5322,9 @@ describe("the tasks toolbar", () => {
     expect(block(SCHEDULE_CSS, ".schedule-page .prefs-section > p")).toContain(
       "max-width: 760px",
     );
-    // No horizontal PAGE scroll under the cap: the board is the one thing that can
-    // exceed the window, and it scrolls inside itself (design-principles §0).
+    // No horizontal PAGE scroll, at the cap or under it: the board is the one
+    // thing that exceeds the measure, and it scrolls inside itself — which it has
+    // always done at any window narrower than five lanes (design-principles §0).
     expect(board).toContain("overflow-x: auto");
   });
 });
