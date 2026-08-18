@@ -1824,7 +1824,7 @@ def _alive(run_dir: str) -> bool:
 _LIVE_SCAN_LIMIT = 60
 
 
-def _live_run(file: str, session_id: str = "") -> dict:
+def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LIMIT) -> dict:
     """The id of a run for `file` that is STILL GOING, or "" if there is none.
 
     The page can only re-attach to a run whose id it has, and until this existed
@@ -1842,12 +1842,27 @@ def _live_run(file: str, session_id: str = "") -> dict:
     to the `session` file by the first poll that sees one, because
     `--fork-session` can hand back a NEW id and the sidecar row then points at
     that one) — so either matching is a match.
+
+    `limit` is how many run dirs (newest first) the scan reads; `limit=None`
+    reads all of them. The default cap is right for the ORIGINAL caller — a page
+    re-attaching to its own run, where a run buried under 60 newer ones belongs
+    to a frame long gone — and wrong for a caller that needs a RELIABLE answer
+    about a folder rather than a cheap one. canvases.py's workbench lock is that
+    caller: it asks "is a session editing this clone?" to decide whether to make
+    the user's other editor read-only, and a live run that fell out of the
+    window would read as "nobody is editing", silently leaving the lock off.
+    Nothing prunes RUNS, so on a machine that has been chatting for weeks that
+    miss is the normal case, not an exotic one. Unbounded costs one meta.json
+    read per run dir, so the lock caller caches the answer across its poll
+    interval rather than paying it on every tick.
     """
     file = os.path.abspath(file)
     try:
-        names = sorted(os.listdir(RUNS), reverse=True)[:_LIVE_SCAN_LIMIT]
+        names = sorted(os.listdir(RUNS), reverse=True)
     except OSError:
         return {"run_id": ""}
+    if limit is not None:
+        names = names[:limit]
     for name in names:
         run_dir = os.path.join(RUNS, name)
         try:
