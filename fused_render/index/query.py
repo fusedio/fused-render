@@ -386,6 +386,46 @@ def _subseq_regex(q: str) -> str:
                      for c in q)
 
 
+# root -> (index generation, ignore-root rels). The `.gitignore` rows under a
+# root change only when the index does, and the query behind them is a scan of
+# the path column — a few tens of ms that a keystroke must not pay. Keyed on the
+# manifest's `updated`, so a completed scan re-discovers exactly once. Tiny and
+# bounded by the number of roots ever searched in one process.
+_ORACLE_RELS: dict = {}
+
+
+def _ignore_roots(con, cfg: IndexConfig, parts, root: str, prefix: str,
+                  updated) -> list:
+    """Dirs under `root` that hold a `.gitignore`, as rels ('' = the root).
+
+    The server's gitignore filter needs these, and it cannot get them from a
+    ranked payload: stage A drops every dot-leading rel unless the query asks
+    for hidden entries, so `.gitignore` is essentially never a candidate, and a
+    filter that discovers its oracles from the rows it is given then decides
+    nothing at all (server/index_gitignore.filter_corpus). The index knows
+    where they are, so it says.
+
+    Not the same question as "which oracle decides this row" — that stays in
+    the filter. This is only the discovery half, moved to the one place that
+    can see the whole tree cheaply."""
+    key = (cfg.dir, root)
+    cached = _ORACLE_RELS.get(key)
+    if cached is not None and cached[0] == updated:
+        return cached[1]
+    rels = []
+    if parts:
+        rel_from = len(prefix) + 1
+        rows = con.execute(
+            f"SELECT DISTINCT substr(path, {rel_from}) AS rel "
+            f"FROM {files_src(cfg, parts)} "
+            f"WHERE path LIKE '{like_literal(root)}/%' ESCAPE '\\' "
+            f"AND path LIKE '%/.gitignore' ESCAPE '\\'").fetchall()
+        for (rel,) in rows:
+            rels.append(rel[: -len("/.gitignore")] if "/" in rel else "")
+    _ORACLE_RELS[key] = (updated, rels)
+    return rels
+
+
 def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                   limit: int = RANK_LIMIT, include_dirs: bool = True,
                   cap: int = RANK_CANDIDATE_CAP,
@@ -449,9 +489,12 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     `truncated: true` in the response. Silent truncation is what this removes,
     not what it reintroduces.
 
-    `gitignore_filter(root, entries) -> entries` is how the server layer hands
-    in `index_gitignore.filter_corpus`; the index package does not import the
-    server. Omitted, nothing is filtered.
+    `gitignore_filter(root, entries, oracle_rels) -> entries` is how the server
+    layer hands in `index_gitignore.filter_corpus`; the index package does not
+    import the server. `oracle_rels` is this function's half of that job — the
+    dirs holding a `.gitignore`, read out of the INDEX (`_ignore_roots`),
+    because a filter that discovers them from a 200-row ranked payload finds
+    none and therefore filters nothing. Omitted, nothing is filtered.
 
     Coverage semantics are `search_under`'s exactly: an uncovered root, a
     missing index or a package directory answers `covered: false` with no hits
@@ -550,7 +593,9 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                    for rel, size, mtime, is_dir in rows[:cap]]
         ranked = rank_entries(qs, entries)
         if gitignore_filter is not None:
-            ranked = gitignore_filter(root, ranked)
+            ranked = gitignore_filter(
+                root, ranked,
+                _ignore_roots(con, cfg, hit, root, prefix, updated))
         return ranked, len(rows) > cap
 
     # The LADDER (see the docstring): the cheap substring pass first, and the

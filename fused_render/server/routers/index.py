@@ -236,11 +236,17 @@ def _ranked(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT) -> dic
     called BEFORE the cut to `limit` (search_ranked does that), and keyed on
     the enclosing INDEX ROOT rather than the requested folder, for the reason
     `api_index_search` gives: a pool keyed per browsed folder re-paid a whole
-    check-ignore sweep every time browsing evicted one."""
-    def drop_ignored(canonical_root: str, hits: list) -> list:
+    check-ignore sweep every time browsing evicted one.
+
+    `oracle_rels` comes from the caller, not from the payload: a ranked answer
+    is ~200 rows with no dot-leading rels among them, so the filter's own
+    discovery would find no `.gitignore`, decide nothing, and drop nothing
+    (index_gitignore.filter_corpus says this at length)."""
+    def drop_ignored(canonical_root: str, hits: list, oracle_rels: list) -> list:
         index_root = enclosing_root(scan_roots(cfg), canonical_root)
         return filter_corpus({"covered": True, "root": canonical_root,
-                              "entries": hits}, index_root=index_root)["entries"]
+                              "entries": hits}, index_root=index_root,
+                             oracle_rels=oracle_rels)["entries"]
 
     return index_rank(cfg, root, q=q, limit=limit, gitignore_filter=drop_ignored)
 

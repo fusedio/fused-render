@@ -260,6 +260,37 @@ def test_rank_route_requires_a_root(home, tmp_path):
     assert resp.status_code == 400
 
 
+def test_rank_route_filters_a_gitignored_dir_under_a_NON_repo_root(home, tmp_path):
+    """The hole a narrowed payload opens, closed.
+
+    Oracles used to be discovered from the entry list handed to the filter, and
+    the ranked route hands it ~200 candidates from which stage A has already
+    dropped every dot-leading rel — so `.gitignore` could essentially never be
+    in the set, every entry came back undecided, and NOTHING was filtered. The
+    corpus route did not have the bug only because it carries the whole tree,
+    dotfiles included.
+
+    Home is not a repo here, which is the case that matters: inside a repo one
+    oracle at the toplevel decides everything and the payload's contents are
+    irrelevant."""
+    root = str(tmp_path / "userhome")
+    proj = tmp_path / "userhome" / "proj"
+    (proj / "dist").mkdir(parents=True)
+    (proj / ".gitignore").write_text("dist/\n", encoding="utf-8")
+    client = _ranked_client(
+        tmp_path, root,
+        [root + "/proj/.gitignore", root + "/proj/dist/zzbundle.js",
+         root + "/proj/zzkeep.js"],
+        dirs=[root + "/proj", root + "/proj/dist"])
+    body = client.get("/api/index/rank", params={"root": root, "q": "zz"}).json()
+    assert body["covered"] is True
+    assert [h["rel"] for h in body["hits"]] == ["proj/zzkeep.js"]
+    # And the two routes agree, which is the actual requirement: the same file
+    # must not appear in one search and vanish from the other.
+    corpus = client.get("/api/index/search", params={"root": root}).json()
+    assert "proj/dist/zzbundle.js" not in [e["rel"] for e in corpus["entries"]]
+
+
 def test_rank_route_honours_the_limit(home, tmp_path):
     root = str(tmp_path / "proj")
     client = _ranked_client(tmp_path, root,
@@ -411,7 +442,7 @@ def test_search_ranked_filters_gitignored_entries_BEFORE_cutting_to_limit(tmp_pa
     cfg = _index(tmp_path, "/r", [f"/r/alpha{i}.txt" for i in range(10)])
     dropped = {"alpha0.txt", "alpha1.txt", "alpha2.txt"}
     out = search_ranked(cfg, "/r", "alpha", limit=5,
-                        gitignore_filter=lambda root, es:
+                        gitignore_filter=lambda root, es, oracles:
                             [e for e in es if e["rel"] not in dropped])
     assert len(out["hits"]) == 5
     assert not dropped & {h["rel"] for h in out["hits"]}

@@ -169,7 +169,8 @@ class _Verdicts:
         self.decider: dict = {}
 
 
-def filter_corpus(out: dict, index_root: str | None = None) -> dict:
+def filter_corpus(out: dict, index_root: str | None = None,
+                  oracle_rels: list | None = None) -> dict:
     """`search_under`'s response with gitignored entries removed.
 
     Only a covered response with entries is touched; `total` is recomputed and
@@ -180,6 +181,16 @@ def filter_corpus(out: dict, index_root: str | None = None) -> dict:
     and is what the verdict pool is keyed on. Omitted (or not actually an
     ancestor of the requested root) it falls back to the requested root, which
     is correct but gives that folder a pool of its own.
+
+    `oracle_rels` is the no-repo case's ignore roots (dirs holding a
+    `.gitignore`, as rels under `out["root"]`, '' = the root itself), supplied
+    by a caller that knows them from somewhere WIDER than this payload.
+    Omitted, they are discovered from the payload itself — correct for a whole
+    corpus, and exactly the hole this module's header warns about for a `q`- or
+    `limit`-narrowed one: the ranked search hands over ~200 candidate rows from
+    which its SQL has already dropped every dot-leading rel, so no `.gitignore`
+    could ever be among them, every entry came back undecided and nothing was
+    filtered at all. `index/query.py` reads them out of the index instead.
     """
     root = out.get("root") or ""
     entries = out.get("entries")
@@ -202,7 +213,8 @@ def filter_corpus(out: dict, index_root: str | None = None) -> dict:
     # Indexes, not rels: a corpus may legitimately repeat a rel (it cannot
     # today, but nothing here should depend on that) and the decider is
     # per-entry.
-    drop = _pooled_verdicts(base, prefix, root, entries, persist=persist)
+    drop = _pooled_verdicts(base, prefix, root, entries, persist=persist,
+                            oracle_rels=oracle_rels)
     if not drop:
         return {**out, "total": len(entries)}
     kept = [e for i, e in enumerate(entries) if i not in drop]
@@ -223,7 +235,8 @@ def _rel_prefix(base: str, root: str):
 
 
 def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
-                     persist: bool = True) -> set:
+                     persist: bool = True,
+                     oracle_rels: list | None = None) -> set:
     """The INDEXES into `entries` that git calls ignored.
 
     Reads what the pool already decided UNDER THE SAME ORACLE, queries git for
@@ -247,7 +260,7 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
     # Pure string work, no git: which oracle this request would consult for
     # each entry. Computed for the WHOLE corpus every time — a few tens of
     # milliseconds — because it is half of the cache key.
-    top, deciders = _deciders(root, entries, prefix)
+    top, deciders = _deciders(root, entries, prefix, oracle_rels)
     rels = [prefix + e["rel"] for e in entries]
     # A process that has never held this root's pool asks disk before it asks
     # git: the file is a sweep of this same root, by this process before a
@@ -493,7 +506,8 @@ def _sweep_tmp(dirname: str, keep: str) -> None:
             pass
 
 
-def _deciders(root: str, entries: list, prefix: str):
+def _deciders(root: str, entries: list, prefix: str,
+              oracle_rels: list | None = None):
     """`(repo_toplevel, [(name, marker), ...])` — the oracle for each entry.
 
     `name` identifies that oracle relative to the INDEX ROOT, so two requests
@@ -508,7 +522,9 @@ def _deciders(root: str, entries: list, prefix: str):
     Discovery reads the WHOLE `entries` list, never the subset being queried:
     the `.gitignore` that decides a path is itself a corpus entry, and once its
     own verdict is pooled it drops out of the query set — narrowing scope with
-    it would silently stop filtering everything it covers.
+    it would silently stop filtering everything it covers. A caller whose
+    payload cannot contain its own markers (the ranked search) passes
+    `oracle_rels` instead, and then the payload is not consulted at all.
     """
     top = _repo_toplevel(root)
     if top is not None:
@@ -519,7 +535,8 @@ def _deciders(root: str, entries: list, prefix: str):
         # case, and its name is the toplevel rather than a corpus rel because
         # that is genuinely a different set of rules from the graft below.
         return top, [("repo:" + top, None)] * len(entries)
-    oracle_rels = _oracle_roots(entries)
+    oracle_rels = (_outermost_only(oracle_rels) if oracle_rels is not None
+                   else _oracle_roots(entries))
     if not oracle_rels:
         return None, [(_UNDECIDED, None)] * len(entries)
     out = []
@@ -584,8 +601,16 @@ def _oracle_roots(entries: list):
             return [""]  # the root itself is an ignore root: one oracle, all under it
         if rel.endswith("/.gitignore"):
             markers.add(rel[: -len("/.gitignore")])
-    # Keep only outermost markers: a nested one is cascaded by its ancestor's
-    # oracle anyway, and querying both would double the git work.
+    return _outermost_only(markers)
+
+
+def _outermost_only(markers):
+    """Ignore-root rels with the nested ones removed: a nested marker is
+    cascaded by its ancestor's oracle anyway, and querying both would double
+    the git work. `''` (the root itself) swallows everything."""
+    markers = set(markers)
+    if "" in markers:
+        return [""]
     out = []
     for m in sorted(markers):
         if not any(m.startswith(o + "/") for o in out):
