@@ -24,6 +24,10 @@ export interface CanvasEntry {
   n_udfs: number | null;
   /** Newest file mtime (epoch seconds) in the local clone; null when not cloned. */
   mtime: number | null;
+  /** Canvas preview image (presigned or public URL) from the server; null when none. */
+  preview_url: string | null;
+  /** Control-plane last_updated (epoch seconds); null on the external-CLI fallback. */
+  updated_at: number | null;
 }
 
 export interface SyncStatus {
