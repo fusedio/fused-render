@@ -5,6 +5,9 @@
 // tell a user to install a CLI they have, or to sign into an account they are
 // signed into. Every one of those is the same wrong-advice failure the two-tier
 // matching in trouble.ts exists to prevent, arriving from the proactive side.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { beforeEach, expect, test } from "bun:test";
 
 import {
@@ -250,4 +253,53 @@ test("unavailable storage reads as NOT dismissed, and never throws", () => {
   } finally {
     (globalThis as { localStorage?: unknown }).localStorage = real;
   }
+});
+
+// -- when the strip re-evaluates itself (ui/ClaudeHealthStrip) ---------------
+//
+// Behaviour of the component rather than this lib, pinned the way the shell's
+// own suites pin theirs — over the source, because the regressions here are
+// "the effect stopped running" and "a flag shadowed the check", neither of
+// which a render assertion would notice.
+
+const STRIP = readFileSync(
+  join(import.meta.dir, "..", "ui", "ClaudeHealthStrip.tsx"), "utf8");
+
+test("mounting always re-asks; the module cache only seeds the first paint", () => {
+  // The regression: `if (cached !== null) return` skipped the fetch, so the
+  // only thing that ever refreshed the strip was its own button. A user who
+  // signed in and navigated back still faced a card telling them to sign in.
+  expect(STRIP).not.toContain("if (cached !== null) return");
+  expect(STRIP).toContain("useEffect(() => {\n    load(false);\n  }, [load]);");
+});
+
+test("returning to the window re-checks, and only while something is showing", () => {
+  // Every fix this card asks for happens elsewhere — a terminal, an installer —
+  // so coming back is exactly when the claim should be re-tested and the card
+  // allowed to disappear on its own.
+  expect(STRIP).toContain('window.addEventListener("focus", onFocus)');
+  expect(STRIP).toContain('document.addEventListener("visibilitychange", onFocus)');
+  expect(STRIP).toContain("if (!showing) return;");
+  // Forced, because the server cache is age-bounded and a sign-in usually lands
+  // inside that window — a plain read is the one that would still say "signed out".
+  expect(STRIP).toContain("load(true);");
+  // Both listeners are removed, or navigating away leaves probes firing forever.
+  expect(STRIP).toContain('window.removeEventListener("focus", onFocus)');
+  expect(STRIP).toContain('document.removeEventListener("visibilitychange", onFocus)');
+});
+
+test("focus bursts collapse into one check", () => {
+  expect(STRIP).toContain("Date.now() - lastCheck.current < FOCUS_RECHECK_MS");
+});
+
+test("a hidden document does not count as coming back", () => {
+  expect(STRIP).toContain('document.visibilityState === "hidden"');
+});
+
+test("dismissal is decided only by the signature check, never a local flag", () => {
+  // A `closed` flag shadowed isDismissed and was wrong in the direction that
+  // matters: dismissing "not signed in" suppressed a LATER, different problem
+  // for the rest of the page's life.
+  expect(STRIP).not.toContain("setClosed");
+  expect(STRIP).toContain("!isDismissed(issues)");
 });
