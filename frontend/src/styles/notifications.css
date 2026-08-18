@@ -315,13 +315,6 @@
   cursor: default;
 }
 
-/* Why the start's failure lands on the row: DownloadManager's FixButton. The
-   most likely one — a read-only installation — is a fact about the app, so it
-   is said in the error colour rather than in the status line's grey. */
-.dl-fix-error {
-  color: var(--error);
-}
-
 /* Same 16px slot as the queue row's controls below, so the ✕ column lines up down
    the whole list instead of stepping 4px sideways where the row kind changes. */
 .dl-x {
