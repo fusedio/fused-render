@@ -344,16 +344,26 @@ def status() -> dict | None:
     the machine, and the badge has to be gone the moment the new version serves
     its first request — not after the next restart, and not after a walk of the
     tree that a config poll must never pay for.
+
+    UNDER THE LOCK, like every other writer, because this one deletes. Reading
+    the marker and unlinking it are one decision — "the version that wrote this
+    is gone" — and split apart they stop being about the same file: a
+    `mark_modified` landing in between writes a fresh, current-version marker,
+    and the unlink then throws away a badge that had just become true. The
+    window is small and the poll is frequent, which is the wrong side of that
+    trade to be on. Holding it costs one small JSON read on a path the other
+    holders are equally brief on.
     """
-    path = marker_path()
-    marker = _read_json(path)
-    if not marker:
-        return None
-    if marker.get("version") != __version__:
-        logger.info("clearing a self-fix marker left by version %s",
-                    marker.get("version"))
-        _discard(path)
-        return None
+    with _lock:
+        path = marker_path()
+        marker = _read_json(path)
+        if not marker:
+            return None
+        if marker.get("version") != __version__:
+            logger.info("clearing a self-fix marker left by version %s",
+                        marker.get("version"))
+            _discard(path)
+            return None
     return _public(marker)
 
 

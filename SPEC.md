@@ -7302,7 +7302,14 @@ the installation, and the mark that says so.
     running one describes an installation that is gone and is deleted on sight —
     on the READ path, so the badge is gone the moment the new version serves its
     first request, not after the next restart, and without a walk that a config
-    poll must never pay for.
+    poll must never pay for. **That check and its unlink are ONE step, under the
+    same lock every writer takes.** Split apart they stop being about the same
+    file: `status` is the most frequent caller in the module (every
+    `/api/config` poll) and the only reader that deletes, so a `mark_modified`
+    landing between the check and the unlink writes a fresh marker for the
+    version now installed and has it deleted — the badge for a fix that really
+    happened never appearing, from the ordinary upgrade-then-fix sequence rather
+    than a contrived one.
   * a **digest reconciliation** at startup (`reconcile`), on a thread, and only
     when a marker exists. This catches what the version stamp cannot see: a
     *same-version* reinstall — the repair install someone does precisely because

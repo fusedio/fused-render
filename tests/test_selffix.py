@@ -991,3 +991,42 @@ def test_the_user_registry_is_reported_before_the_builtin_one(tmp_path, monkeypa
     error = server_templates.registry_error()
     assert "cannot read registry.json:" in error
     assert "built-in" not in error
+
+
+def test_the_stale_marker_check_and_the_unlink_are_one_step(install, monkeypatch):
+    """Read, decide, delete — under the lock, because otherwise they are about
+    two different files.
+
+    `status` runs on every `/api/config` poll, so it is the most frequent
+    caller in the module, and the one that DELETES. Between its version check
+    and its unlink, a fix session's watcher can call `mark_modified` and write
+    a fresh marker for the version now installed; the unlink then takes that
+    one away, and the badge for a fix that really happened never appears. The
+    precondition is exactly the ordinary upgrade-then-fix sequence, not a
+    contrived one.
+
+    Asserted by probing the lock from inside `_discard` rather than by racing
+    threads: a test that has to lose a race to fail is a test that passes by
+    luck.
+    """
+    _pristine()
+    (install / "jobs.py").write_text("patched\n")
+    selffix.settle(before=BEFORE[0], run_id="r1")
+    marker = json.loads(open(selffix.marker_path()).read())
+    marker["version"] = "0.0.1"
+    with open(selffix.marker_path(), "w") as f:
+        json.dump(marker, f)
+
+    seen = {}
+    real_discard = selffix._discard
+
+    def probe(path):
+        free = selffix._lock.acquire(blocking=False)
+        seen["held"] = not free
+        if free:
+            selffix._lock.release()
+        return real_discard(path)
+
+    monkeypatch.setattr(selffix, "_discard", probe)
+    assert selffix.status() is None
+    assert seen["held"], "the version check and the unlink must not be splittable"
