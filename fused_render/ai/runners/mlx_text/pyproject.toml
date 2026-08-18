@@ -11,6 +11,13 @@
 # Three packages, and each earns its place: mlx-lm loads and generates,
 # huggingface_hub downloads, psutil answers "how much memory is this costing".
 #
+# `mlx-lm` carries a CEILING for the reason `mflux_image/pyproject.toml` states
+# at length: no lockfile is committed beside these manifests and `uv sync` runs
+# bare, so an unbounded line re-resolves from PyPI on every new venv key — which
+# is how an mlx minor bump reached users' machines with no commit behind it.
+# `>=0.31,<0.32` because mlx-lm is pre-1.0, where a minor is the breaking one,
+# and because it is the package that pins `mlx` for this runner.
+#
 # tqdm used to be here, for a `tqdm_class` shim that reported hf's progress bars
 # to the download manager. It is gone with the shim (AI-5b): that hook only
 # exposes the outer FILE counter, which is how a 4.6GB pull came to read
@@ -20,7 +27,7 @@ name = "fused-render-runner-mlx-text"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "mlx-lm",
+    "mlx-lm>=0.31,<0.32",
     "huggingface_hub",
     "psutil",
 ]

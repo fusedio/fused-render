@@ -37,6 +37,25 @@
 #
 # No `av`, unlike the transcription runner: nothing here decodes media. The
 # no-subprocess rule still holds — `worker.py` never shells out.
+#
+# **Why every runner's inference lines carry a CEILING, stated once here because
+# this is where it was learned.** None of these folders has a committed
+# `uv.lock`: `.gitignore` ignores lockfiles globally and negates only
+# `templates/`, and `_env_install_worker` runs a BARE `uv sync` deliberately (its
+# own comment says why — a lock a user cannot have is worse than a resolve). So
+# an unbounded requirement does not mean "whatever was current when the feature
+# shipped", it means *resolved again from PyPI every time a venv key changes* —
+# a new checkout path, a new runner folder, a reinstall. That is not a wide
+# range, it is no range: the version a user runs is decided by PyPI on the day
+# they press Download, and when it changes there is no commit to point at. The
+# floors are the installed MINOR rather than the installed patch, so patch fixes
+# still flow; the ceiling is the next minor for a 0.x library (where a minor IS
+# the breaking release) and the next major otherwise. Bumping one is a normal
+# change with a render or a transcription behind it.
+# `tests/test_ai_runtime.py::test_every_runner_BOUNDS_its_model_runtimes`
+# enforces it for all seven manifests, against an allow-list of the dependencies
+# that are exempt — so the next unbounded library is a red test rather than a
+# discovery, and the exemptions have written reasons.
 [project]
 name = "fused-render-runner-mflux-image"
 version = "0.1.0"

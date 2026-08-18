@@ -34,8 +34,19 @@
 # That report is `worker.py`'s `load()` calling `worker_base.set_state(device=…)`
 # — the field `/health` carries and the page draws (see `worker_base.STATE`).
 #
+# **The runtime lines carry CEILINGS**, for the reason
+# `mflux_image/pyproject.toml` states at length: no lockfile is committed beside
+# these manifests and `uv sync` runs bare, so an unbounded requirement is
+# re-resolved from PyPI on every new venv key and a major bump lands on users
+# with no commit behind it. `transformers` keeps its `>=4.51` floor and gains
+# only `<6` — the installed version is 5.x, but raising the floor to it would
+# forbid the 4.x this runner is currently happy on, which is a change to what is
+# allowed TODAY rather than protection against tomorrow. The floor's job (stated
+# below) is qwen3 support; the ceiling's job is the next rewrite.
+#
 # What each earns:
-#   torch           the tensors and the device (CUDA / MPS / CPU)
+#   torch           the tensors and the device (CUDA / MPS / CPU). `<3` — the
+#                   major is the whole ABI and every wheel behind it.
 #   transformers    the model classes, the chat templates and TextIteratorStreamer.
 #                   `>=4.51` because that is the release that knows what a
 #                   `qwen3` is, and three of the four models this runner's
@@ -54,9 +65,9 @@ name = "fused-render-runner-transformers-text"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "torch",
-    "transformers>=4.51",
-    "accelerate",
+    "torch>=2.13,<3",
+    "transformers>=4.51,<6",
+    "accelerate>=1.14,<2",
     "sentencepiece",
     "protobuf",
     "huggingface_hub",
