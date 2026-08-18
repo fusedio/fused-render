@@ -2257,9 +2257,16 @@ describe("the board's surfaces", () => {
     );
     expect(hover).toMatch(/background: color-mix\(in srgb, var\(--fg\) \d+%, var\(--tasks-card-bg\)\)/);
     expect(hover).toContain("border-color:");
-    // The hover-revealed action strip is painted in the card's surface so it reads
-    // as floating over the head; it has to track the card or it is a patch on it.
-    expect(block(TASKS_CSS, ".tasks-card-act")).toContain("background: var(--tasks-card-bg)");
+    // The hover-revealed action strip paints NOTHING and lets the card show
+    // through. It used to carry a skin in the card's surface colour, which the
+    // hover lift above made untenable: a fill matching the RESTING colour is a
+    // dark rectangle on a lit card, and matching both would mean restating the
+    // hover expression in a second file for the two to drift apart at the next
+    // tuning (Bugbot). The strip is only ever seen over a hovered or focused
+    // card, so there is nothing to match.
+    const strip = block(TASKS_CSS, ".tasks-card-act");
+    expect(strip).toContain("background: transparent");
+    expect(strip).not.toContain("--tasks-card-bg");
   });
 
   it("lets a drop target announce itself by ADDING paint, not by changing it", () => {

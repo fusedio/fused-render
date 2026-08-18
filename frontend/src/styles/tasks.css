@@ -695,13 +695,26 @@ button.tasks-caret,
 .tasks-card-act,
 .prefs-section .tasks-card-act {
   pointer-events: auto;
-  /* An opaque skin in the card's OWN surface colour, so the strip reads as
-     floating over the head rather than as part of the head's row of marks. It
-     TRACKS the card, and is stated as the very token the card is painted in for
-     that reason: the card's fill has already moved twice (`--bg` → `--bg-panel`
-     → `--tasks-card-bg`, schedule.css) and each time a button left behind on the
-     old value became a visible patch on it in dark. */
-  background: var(--tasks-card-bg);
+  /* NO SKIN. The button lets the card show through and paints only on its own
+     hover (`.tasks-act:hover`, above).
+
+     It used to carry an opaque fill in the card's surface colour, so the strip
+     would read as floating over the head rather than as part of the head's row
+     of marks. Chasing that colour was a losing game: the card's fill has moved
+     three times (`--bg` → `--bg-panel` → `--tasks-card-bg`), and each time a
+     button left behind on the old value became a visible patch on it in dark.
+     The last move was the one that made the idea untenable rather than merely
+     fragile — the card now LIFTS on hover (`color-mix(--fg 6%, --tasks-card-bg)`,
+     schedule.css), so a fill matching the resting colour is a dark rectangle on
+     a lit card, and matching both would mean restating the card's hover
+     expression here for the two to drift apart at the next tuning (Bugbot,
+     2026-08-18).
+
+     Transparent is not a compromise, it is the accurate answer: this strip is
+     only ever SEEN over a hovered or focused card (`.tasks-card-acts` rests at
+     `opacity: 0`), and the head's right end it sits over is empty on every card
+     by construction. There is nothing to occlude and nothing to match. */
+  background: transparent;
 }
 
 .tasks-card-wrap:hover .tasks-card-act,
