@@ -994,6 +994,57 @@ export function opensElsewhere(e: {
   );
 }
 
+// ---- what the List remembers between visits ----------------------------------
+// Opening a task's chat LEAVES the Tasks page, and coming back used to hand the
+// reader a fully collapsed list scrolled to the top — so reading three threads
+// out of ninety meant re-finding the same row three times (Akshil, 2026-08-18).
+// The page now remembers which rows were open and where the list stood.
+//
+// sessionStorage, not localStorage: this is "where I was a moment ago", which is
+// true for this tab and this sitting only. A week-old scroll offset restored into
+// a list whose rows have all changed is not a memory, it is a surprise.
+
+/** The key the List's per-tab memory lives under. */
+export const LIST_MEMORY_KEY = "fused-render:tasks-list-memory";
+
+export type ListMemory = {
+  /** Task keys the reader had open. Keys that no longer exist simply never match
+   * a row, so a stale entry costs nothing and needs no pruning. */
+  expanded: string[];
+  /** scrollTop of the list's own scroller, in px. */
+  scroll: number;
+};
+
+export const EMPTY_LIST_MEMORY: ListMemory = { expanded: [], scroll: 0 };
+
+/**
+ * What came out of the store is a STRING WRITTEN BY SOMEONE ELSE — an older
+ * build, a hand-edited devtools row — so every field is checked and anything
+ * unrecognisable degrades to "remember nothing" rather than throwing during a
+ * render.
+ */
+export function parseListMemory(raw: string | null): ListMemory {
+  if (!raw) return EMPTY_LIST_MEMORY;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return EMPTY_LIST_MEMORY;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return EMPTY_LIST_MEMORY;
+  }
+  const row = parsed as { expanded?: unknown; scroll?: unknown };
+  const expanded = Array.isArray(row.expanded)
+    ? row.expanded.filter((k): k is string => typeof k === "string")
+    : [];
+  const scroll =
+    typeof row.scroll === "number" && Number.isFinite(row.scroll) && row.scroll > 0
+      ? row.scroll
+      : 0;
+  return { expanded, scroll };
+}
+
 // ---- where a click goes ------------------------------------------------------
 // schedule-lib.explorerUrl is the app's one answer to "open this session in the
 // explorer, with the Claude pane on it". A message adds one thing: WHICH turn

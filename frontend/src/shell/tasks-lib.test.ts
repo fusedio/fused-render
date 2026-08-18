@@ -56,6 +56,7 @@ import {
   openThreadIntent,
   opensElsewhere,
   parseLaneChoices,
+  parseListMemory,
   projectOptions,
   relativeWhen,
   ranOffSchedule,
@@ -4910,13 +4911,21 @@ describe("opensElsewhere", () => {
 });
 
 // ---- what the two views remember ---------------------------------------------
-// Read out of the source, because "how many cards does a lane open on" is a
-// number the constant and the button's label have to agree about.
+// Three complaints, one shape (Akshil, 2026-08-18): a lane that opens ten cards
+// at a time, an Archive lane nailed shut, and a List that forgets everything the
+// moment you open one of its threads. The RULES are here; the source assertions
+// beside them check the views ask these functions rather than keeping a second
+// copy of the answer.
 
 /** The Board, ending where the card it draws begins. */
 const LANES = VIEWS.slice(
   VIEWS.indexOf("export function TaskBoard("),
   VIEWS.indexOf("function TaskCard("),
+);
+/** The List, ending where the row it draws begins. */
+const LIST = VIEWS.slice(
+  VIEWS.indexOf("export function TaskList("),
+  VIEWS.indexOf("function TaskNode("),
 );
 
 describe("a board lane's page size", () => {
@@ -4977,5 +4986,42 @@ describe("which board lanes are rolled up", () => {
     // What is written is the RESULT of the press, for that one lane.
     expect(LANES).toContain("const next = { ...cur, [key]: !nowCollapsed };");
     expect(LANES).toContain("localStorage.setItem(LANE_CHOICE_KEY");
+  });
+});
+
+describe("what the List remembers between visits", () => {
+  it("remembers nothing at all when there is nothing stored", () => {
+    expect(parseListMemory(null)).toEqual({ expanded: [], scroll: 0 });
+    expect(parseListMemory("")).toEqual({ expanded: [], scroll: 0 });
+    expect(parseListMemory("{oops")).toEqual({ expanded: [], scroll: 0 });
+    expect(parseListMemory("[1,2]")).toEqual({ expanded: [], scroll: 0 });
+  });
+
+  it("keeps the task keys and the offset, and drops everything else", () => {
+    expect(
+      parseListMemory('{"expanded":["TASK-1",7,"TASK-2"],"scroll":420.5,"x":1}'),
+    ).toEqual({ expanded: ["TASK-1", "TASK-2"], scroll: 420.5 });
+    // A negative, infinite or non-numeric offset is not a place on a scrollbar.
+    expect(parseListMemory('{"scroll":-3}').scroll).toBe(0);
+    expect(parseListMemory('{"scroll":"120"}').scroll).toBe(0);
+    expect(parseListMemory('{"expanded":"TASK-1"}').expanded).toEqual([]);
+  });
+
+  it("restores the open rows and the scroll from THIS tab only", () => {
+    // sessionStorage: "where I was a moment ago" is true for this sitting, and a
+    // week-old offset restored into different rows is a surprise, not a memory.
+    expect(VIEWS).toContain("sessionStorage.getItem(LIST_MEMORY_KEY)");
+    expect(VIEWS).toContain("sessionStorage.setItem(LIST_MEMORY_KEY");
+    expect(VIEWS).not.toContain("localStorage.getItem(LIST_MEMORY_KEY)");
+    expect(LIST).toContain("new Set(memory.current.expanded)");
+    // The list's own scroller, not the window's — which is also why this cannot
+    // fight the chat's msg-anchor scroll on the other page.
+    expect(LIST).toContain(
+      '<div className="tasks-list" ref={listRef} onScroll={onScroll}>',
+    );
+    expect(LIST).toContain("el.scrollTop = top;");
+    // A row restored from memory was never toggled, so nothing fetched the rest
+    // of its thread; the restore makes that trip itself, once.
+    expect(LIST).toContain("if (task && threadView(task).more) void showMore(task);");
   });
 });
