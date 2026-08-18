@@ -123,7 +123,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         .then((s) => {
           setSync(s);
           setDir((d) => d ?? s.dir);
-          if (s.push_state !== "error") setFixStale(true);
+          // "idle" is the only state that means the push actually recovered —
+          // "pending"/"pushing" are mid-flight and may still land on "error",
+          // and marking stale there would re-enable the button (letting a
+          // second click spawn a concurrent fixer) while the first fix's own
+          // push is still in flight.
+          if (s.push_state === "idle") setFixStale(true);
           // Self-heal: a server restart drops the watcher; re-arm it.
           if (!s.watching) void startSync(name).catch(() => undefined);
         })
