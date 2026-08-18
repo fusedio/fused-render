@@ -345,3 +345,15 @@ def test_a_cross_origin_capture_comes_off_the_tab_not_the_document(html):
     # zero-scroll stub the pin painter uses.
     commit = _block(html, "async function annCommit()", "\n}\n")
     assert "annXO ? ANN_XO_SCROLL : null" in commit
+
+
+def test_the_capture_stream_state_is_declared_before_its_boot_time_teardown(html):
+    """Regression: annXORemove (which calls annXOStreamStop) runs during the
+    script's own boot — annSetMode → renderAnn → annSyncTarget — so the
+    stream's `let` must be ABOVE it. It was first declared 2700 lines later
+    in the screenshot section, and the temporal-dead-zone ReferenceError
+    killed the whole script at boot: empty model pills, no target poll, an
+    overlay stuck armed over the workbench."""
+    assert html.index("let annXOStream = null;") \
+        < html.index("function annXORemove()") \
+        < html.index('annSetMode(fused.params.get("annmode") === "1");')

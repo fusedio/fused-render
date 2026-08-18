@@ -5054,6 +5054,17 @@ const annCapable = () => (CHAT_ONLY ? !!annFrame : !noPane);
 let annXO = false;       // the marked frame's document is out of reach
 let annXOHost = null;    // the overlay's host element, in the PARENT's document
 const ANN_XO_SCROLL = { scrollX: 0, scrollY: 0 };
+// DECLARED HERE, beside the state it belongs to, and not with its users in
+// the screenshot section: annXORemove below runs during the script's own
+// boot (annSetMode → renderAnn → annSyncTarget), and a `let` further down
+// the file would be a temporal-dead-zone ReferenceError that kills the
+// whole script — no model pills, no poll, an overlay stuck armed. It did.
+let annXOStream = null;
+function annXOStreamStop() {
+  if (!annXOStream) return;
+  try { for (const t of annXOStream.getTracks()) t.stop(); } catch (err) { /* gone */ }
+  annXOStream = null;
+}
 
 function annXORemove() {
   // The capture stream goes with the overlay: a target that stopped being
@@ -7793,12 +7804,8 @@ async function shotEncode(pane, rect, limits) {
 // once per note — a walkthrough clicking ten spots must not raise ten
 // pickers. Released when the user ends the share (`ended`), when the target
 // stops being cross-origin, and on pagehide (annXORemove covers both).
-let annXOStream = null;
-function annXOStreamStop() {
-  if (!annXOStream) return;
-  try { for (const t of annXOStream.getTracks()) t.stop(); } catch (err) { /* gone */ }
-  annXOStream = null;
-}
+// `annXOStream` and its stop() live with the annXO state up top — the
+// teardown runs at boot, long before this section — see the note there.
 async function annXOStreamGet() {
   if (annXOStream
       && annXOStream.getVideoTracks().some((t) => t.readyState === "live")) {
