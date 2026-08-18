@@ -605,6 +605,20 @@ def test_a_finished_scan_elsewhere_is_not_a_reason(home, tmp_path, monkeypatch):
     assert body["reason"] == ""
 
 
+def test_rank_route_names_a_folder_the_ignore_list_excludes(home, tmp_path):
+    """The third permanently-uncoverable case, and the one that would
+    otherwise cost a pointless scan on every search: a folder the ignore rules
+    exclude is not "not scanned yet", it is "never will be". Asking for a scan
+    of it would spawn a worker that walks it, indexes nothing, and rewrites
+    the whole store to say so."""
+    root = str(tmp_path / "proj" / "node_modules")
+    client = _ranked_client(tmp_path, str(tmp_path / "proj"),
+                            [str(tmp_path / "proj") + "/a.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "a"}).json()
+    assert body["covered"] is False and body["reason"] == "ignored"
+
+
 def test_a_package_is_never_reported_as_scanning(home, tmp_path, monkeypatch):
     """Ordering matters: a package under a root being scanned still answers
     "package", because polling for it would never end."""

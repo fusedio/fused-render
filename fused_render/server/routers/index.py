@@ -33,7 +33,12 @@ from fused_render.index import freshness, runner
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
-from fused_render.index.ignore import MountGuard, default_ignore, norm
+from fused_render.index.ignore import (
+    MountGuard,
+    default_ignore,
+    ignored_for_index,
+    norm,
+)
 from fused_render.index.query import MAX_CORPUS, RANK_LIMIT
 from fused_render.index.query import lookup as index_lookup
 from fused_render.index.query import search_ranked as index_rank
@@ -309,6 +314,8 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
             return "mount"
         if out.get("reason") == "package":
             return "package"
+        if ignored_for_index(cfg.rules, norm(os.path.abspath(root)), tree=True):
+            return "ignored"
     if _scan_in_flight(cfg, root):
         return "scanning"
     return str(out.get("reason") or "")
