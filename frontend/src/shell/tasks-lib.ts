@@ -359,8 +359,20 @@ export function threadRunning(messages: TaskMessage[]): boolean {
  * against is a snapshot of what the server said LAST time.
  */
 export function taskColumn(task: Task): BoardColumn {
-  const s: string = task.status;
-  const known = BOARD_COLUMNS.find((c) => c.key === s);
+  return statusColumn(task.status);
+}
+
+/**
+ * The same narrowing, over a status that is not attached to a row.
+ *
+ * One caller and it needs exactly this: `api.unarchiveTask` answers with the
+ * lane the task LANDED in — a bare word, from a server that may know a lane this
+ * bundle does not — and the Board turns it into a sentence before its next poll
+ * has a Task to ask about. Split out rather than duplicated so a fifth lane
+ * cannot be swallowed into Done in one of the two places and not the other.
+ */
+export function statusColumn(status: string): BoardColumn {
+  const known = BOARD_COLUMNS.find((c) => c.key === status);
   return known ? known.key : "done";
 }
 
@@ -1262,8 +1274,8 @@ export function messageEditEntry(m: TaskMessage): string | null {
 // ---- drag --------------------------------------------------------------------
 // THE WHOLE DRAG MATRIX, and it follows from one sentence: a lane is what
 // Claude's work is DOING, and the only thing a person decides about a task is
-// whether to run it or to put it away. So there are exactly two moves, and
-// three lanes a card may leave.
+// whether to run it, to put it away, or to take that away back. So there are
+// exactly three moves, and four lanes a card may leave.
 //
 //   Upcoming    → In Progress  RUN IT NOW. Not a filing decision, an
 //                              instruction (Akshil, 2026-08-16: "if I move a
@@ -1285,20 +1297,37 @@ export function messageEditEntry(m: TaskMessage): string | null {
 //   Failed      → In Progress  RETRY — the same run-now call, same
 //                              precondition (something pending to fire).
 //               → Archive
-//   Archived    → nowhere      LOCKED — and the way back is not a gesture at
-//                              all, it is ACTIVITY (Akshil, 2026-08-18: "if you
-//                              want to move it to in progress or done, just
-//                              type in a message inside that chat and it will
-//                              automatically move"). A message that arrives
-//                              after the filing drops the filing outright,
-//                              server-side, and the task rejoins whichever lane
-//                              it derives into. So there is no unarchive
-//                              control anywhere, on either view.
+//   Archived    → anywhere     UNARCHIVE, and it is ONE move however far the
+//                 else         card is carried. Lifting a card out of Archive
+//                              means "this is not put away any more" and
+//                              nothing else; it does not name a lane, because
+//                              the lane is not a person's to name (that is the
+//                              same rule that keeps Done and Failed
+//                              undroppable, below). The filing is dropped
+//                              server-side and the task lands wherever it
+//                              DERIVES to — Done, Failed, In Progress — which
+//                              may well not be the lane under the cursor. That
+//                              is the intended outcome, not a near miss: the
+//                              board shows what the work is doing.
 //
 // Nothing may be dropped INTO Upcoming (a task cannot be un-run), into Failed
 // (failure is something that HAPPENED, and a lane you can drag a healthy task
 // into is a lane whose count means nothing), or into Done (a run says that,
-// not a reader).
+// not a reader) — with the ONE exception above, and it is not really an
+// exception: an archived card dropped on any of them does not become that lane,
+// it becomes unfiled. The lane is the gesture's target, never its argument.
+//
+// THE OTHER WAY OUT OF ARCHIVE IS STILL ACTIVITY, and it is the older one
+// (Akshil, 2026-08-18: "if you want to move it to in progress or done, just type
+// in a message inside that chat and it will automatically move"). A message that
+// arrives after the filing drops the filing by itself, server-side, with nobody
+// dragging anything. The drag is the same drop of the same record, reached
+// deliberately — so the two cannot disagree.
+//
+// THERE IS STILL NO UNARCHIVE BUTTON, on either view. The drag says what it
+// does — a card leaves a lane — where a button would have to be labelled, and
+// every label for it ("Restore", "Back in play") claims something about the
+// work that this move does not know.
 //
 // Legality follows from what each move NEEDS, never from what triage happens to
 // be keyed by. Run-now needs a pending MESSAGE, so a scheduled task that has
@@ -1307,18 +1336,22 @@ export function messageEditEntry(m: TaskMessage): string | null {
 // task's key, because it is one server verb over the whole task
 // (`POST /api/tasks/archive`) rather than a triage write keyed by session — so
 // the never-run row can be filed away too, which is the case the old
-// session-keyed rule could not reach.
-
-/** The lanes a person may drop a card ON. Two, and the second is not a
- * synonym for the first: one starts work, the other ends it. */
-export const DROP_LANES: BoardColumn[] = ["in_progress", "archived"];
+// session-keyed rule could not reach. Unarchive needs nothing at all — the same
+// task key, and the record either was there to drop or was not — so an archived
+// card always lifts, including the never-run one and the pure-chat one.
+//
+// There is no DROP_LANES list any more. It said "the lanes a person may drop a
+// card on", which stopped being one list the moment leaving Archive became a
+// move: In Progress is the target of a run AND of an unarchive, and Done is the
+// target of an unarchive and nothing else. Which lanes accept THIS card is
+// `dropLanes`, and it was already the only caller anything had.
 
 /**
  * THE MATRIX ITSELF: where a card in each lane may go. The table above in
  * words, written down once so `dropLanes` reads it instead of reconstructing it.
  *
  * A TABLE AND NOT A PREDICATE, which is the correction (bugbot, PR #613). It
- * was "every unlocked lane may go anywhere in DROP_LANES, subject to a
+ * was "every unlocked lane may go anywhere droppable, subject to a
  * precondition", and that quietly offered Done → In Progress to any done task
  * with something pending — which is not a corner case on this branch, it is the
  * COMMONEST done card there is: a recurring task whose last run finished and
@@ -1346,8 +1379,13 @@ const LANE_EXITS: Record<BoardColumn, BoardColumn[]> = {
   done: ["archived"],
   // Retry, or file it away.
   failed: ["in_progress", "archived"],
-  // Locked: the way back out is activity, not a gesture. See archiveIntent.
-  archived: [],
+  // Out, and out is out: every lane that is not this one, because the move is
+  // UNARCHIVE and the drop target is only where the card was let go. Which of
+  // the four it lands in is derived server-side and is not this list's business
+  // — including In Progress, which accepts the card WITHOUT running anything
+  // (that lane stays locked as a SOURCE, and it is not a destination a person
+  // can assert either; see `laneAction`).
+  archived: ["upcoming", "in_progress", "done", "failed"],
 };
 
 /**
@@ -1653,21 +1691,18 @@ export function taskRunIntent(task: Task): TaskRunIntent | null {
 /**
  * Which lanes this card may be dropped on. Empty ⇒ do not let it lift.
  *
- * `LANE_EXITS` decides where the card MAY go; the loop only drops a move whose
- * precondition is missing. There is one such precondition and it belongs to the
- * run: In Progress needs a pending MESSAGE to fire, not a session to file under
- * (see the note above), so a scheduled task that has never run may be dragged
- * there and a pure-chat task may not. Archive has no precondition — it is one
- * server verb over the task's own key.
+ * ASKED OF `laneAction`, one lane at a time, rather than re-deriving the
+ * preconditions here: a lane is offered exactly when the drop on it has
+ * something to do, so "where may this card go" and "what happens when it lands"
+ * cannot answer differently. Before, this held the run's precondition itself and
+ * dropAction re-checked it through this function — fine while there was one
+ * precondition, and wrong the moment In Progress became the target of two
+ * different moves with different requirements (a run needs a pending message; an
+ * unarchive needs nothing).
  */
 export function dropLanes(task: Task): BoardColumn[] {
   const here = taskColumn(task);
-  const lanes: BoardColumn[] = [];
-  for (const lane of LANE_EXITS[here]) {
-    if (lane === "in_progress" && !canRunNow(task)) continue;
-    lanes.push(lane);
-  }
-  return lanes;
+  return LANE_EXITS[here].filter((lane) => laneAction(task, here, lane) !== null);
 }
 
 export function isDraggable(task: Task): boolean {
@@ -1675,23 +1710,54 @@ export function isDraggable(task: Task): boolean {
 }
 
 /**
- * What a drop on `lane` actually DOES — the one place the two meanings are told
- * apart, so the Board's handler holds no rule of its own beyond which call to
- * make. Null when the drop is illegal, which is the same answer dropLanes gave
- * before the card lifted: the two agree because this asks it.
+ * What a drop on `lane` actually DOES — the one place the three meanings are
+ * told apart, so the Board's handler holds no rule of its own beyond which call
+ * to make. Null when the drop is illegal, which is the same answer dropLanes
+ * gave before the card lifted: the two agree because dropLanes asks this.
  *
- * `archive` carries no payload. It used to be a triage status, composed here
- * and sent to a session-keyed endpoint; it is now one verb over the whole task
- * (`api.archiveTask`, which cancels the work and files the session in one
- * request), and a verb with one meaning has nothing left to parameterise.
+ * `archive` and `unarchive` carry no payload, for the same reason and it is not
+ * an omission. Archiving used to be a triage status composed here and sent to a
+ * session-keyed endpoint; both are now one verb over the whole task
+ * (`api.archiveTask` / `api.unarchiveTask`), and a verb with one meaning has
+ * nothing left to parameterise. `unarchive` in particular does NOT carry the
+ * lane it was dropped on — the server would refuse to honour it, because the
+ * landing lane is derived from the thread and never asserted by a reader.
  */
 export type DropAction =
   | { kind: "run"; entryId: string; messageId: string }
-  | { kind: "archive" };
+  | { kind: "archive" }
+  | { kind: "unarchive" };
 
 export function dropAction(task: Task, lane: BoardColumn): DropAction | null {
-  if (!dropLanes(task).includes(lane)) return null;
+  return laneAction(task, taskColumn(task), lane);
+}
+
+/**
+ * The whole decision, given the lane the card is IN as well as the one it was
+ * dropped on — which is what lets `dropLanes` and `dropAction` be the same rule
+ * read twice instead of two rules that agree by inspection.
+ *
+ * SOURCE FIRST, and that ordering is the unarchive rule: a card leaving Archive
+ * is unfiled whatever it was dropped on, so the target lane is only ever a
+ * legality check (`LANE_EXITS`) and never an argument. In Progress is the case
+ * worth being explicit about — it is a legal DROP for an archived card and it
+ * starts NOTHING. The lane stays locked as a source (a run in flight is Claude's
+ * output and leaves when it ends), and it is equally not something a reader can
+ * put a task into: dropping there unarchives, and the task lands in In Progress
+ * only if a turn genuinely is live.
+ */
+function laneAction(
+  task: Task,
+  here: BoardColumn,
+  lane: BoardColumn,
+): DropAction | null {
+  if (!LANE_EXITS[here].includes(lane)) return null;
+  if (here === "archived") return { kind: "unarchive" };
   if (lane === "archived") return { kind: "archive" };
+  // The one precondition, and it belongs to the run rather than to the lane:
+  // In Progress needs a pending MESSAGE to fire, not a session to file under, so
+  // a scheduled task that has never run may be dragged there and a pure-chat
+  // task with nothing pending may not.
   const m = runNowTarget(task);
   return m ? { kind: "run", entryId: m.entryId, messageId: m.messageId } : null;
 }
@@ -1712,18 +1778,22 @@ export function dropAction(task: Task, lane: BoardColumn): DropAction | null {
 // the same shape of function, and it is defined below the one function it is
 // only a re-reading of.
 //
-// THERE IS NO UNARCHIVE CONTROL, on either view. It used to compute a way back
-// — Archive → In Progress — because an action whose only direction is away is a
-// trap; the row never drew it (SHOW_UNARCHIVE) and the Board did, which is two
-// answers to one question. Archive is a LOCKED lane now (see the matrix above),
-// so there is one answer.
+// THERE IS NO UNARCHIVE BUTTON, on either view — and that is a different
+// statement from "there is no way back", which there now is twice. It used to
+// compute a button — Archive → In Progress — and the row never drew it
+// (SHOW_UNARCHIVE) while the Board did, which is two answers to one question.
+// The button is the part that was wrong, not the direction: it had to be
+// labelled, and every label for it claims something the move does not know
+// ("back in play" says nothing about whether the work is done, and Archive →
+// In Progress asserted a lane a reader has no business asserting).
 //
-// And the way back is not missing, it is somewhere better: ACTIVITY. Say
-// something in that conversation and the task comes back on its own — the
-// server drops the filing when a message arrives after it, so the card rejoins
-// the lane its thread puts it in rather than a lane a button guessed at. A
-// gesture would have had to guess: "back in play" says nothing about whether
-// the work is done.
+// The two ways back both refuse to name a lane, which is why they are fine:
+//
+//   * ACTIVITY. Say something in that conversation and the task comes back on
+//     its own — the server drops the filing when a message arrives after it.
+//   * THE DRAG. Lift the card out of the Archive lane (`dropAction` answers
+//     `unarchive`, whatever lane it was let go over). One server call, no run
+//     started, and the card lands where its thread puts it.
 //
 // Nothing is destroyed either way. The conversation is kept, the transcript is
 // kept (D306), and Archive is a place to read them.
