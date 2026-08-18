@@ -40,10 +40,11 @@ import {
   resendScheduledMessage,
   runScheduledNow,
   archiveTask,
+  unarchiveTask,
 } from "@platform/lib/api";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
-import { BOARD_COLUMNS } from "./schedule-lib";
+import { BOARD_COLUMNS, columnLabel } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
@@ -68,6 +69,7 @@ import {
   laneRolledUp,
   laneUnread,
   sortByLane,
+  statusColumn,
   markAllRead,
   markRead,
   markReadIntent,
@@ -2206,8 +2208,8 @@ export function TaskBoard({
     setDragging(null);
     setOverLane(null);
     if (!task || !allowed.has(lane)) return;
-    // Which of the two things this drop means — file the task, or run its next
-    // message early — is tasks-lib's decision, not this handler's.
+    // Which of the three things this drop means — file the task, un-file it, or
+    // run its next message early — is tasks-lib's decision, not this handler's.
     const action = dropAction(task, lane);
     if (!action) return;
     setNote(null);
@@ -2217,6 +2219,20 @@ export function TaskBoard({
         // left alone, so the thread reads as a run that happened early rather
         // than a schedule that was quietly rewritten.
         await runScheduledNow(action.entryId);
+      } else if (action.kind === "unarchive") {
+        // Archive → anywhere else. ONE meaning whatever `lane` is: the filing is
+        // dropped and the task lands in whatever lane it DERIVES to, which is
+        // frequently not the lane under the cursor. Nothing runs — including a
+        // drop onto In Progress, which is this same call: that lane is Claude's
+        // output, not a state a reader can assert, so the card goes there only
+        // if a turn genuinely is live.
+        //
+        // So the note says where it actually went. There is no flash or scroll
+        // on this board to point at the card with, and a card that silently
+        // reappears in a lane the person was not looking at is a gesture that
+        // seems to have done nothing.
+        const said = await unarchiveTask(task.key);
+        setNote(`Unarchived — back in ${columnLabel(statusColumn(said.status))}.`);
       } else {
         // → Archive. ONE call for both halves — the pending work is cancelled
         // and the session is filed — because a card dropped here that still
