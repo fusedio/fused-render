@@ -8639,11 +8639,19 @@ function consumeAnchor() {
   const landed = revealAnchor();
   if (anchorPending) {
     anchorPending = "";
-    // Spent, so it comes off the url — `replace`, because arriving on the
-    // message is not a place anyone navigated to twice, and a Back that
-    // re-fired the flare would be a history entry nobody made. Left behind it
-    // would also re-scroll a reload the reader has since scrolled away from.
-    fused.params.set("msg", "", { history: "replace", default: "" });
+    // Spent, so it comes OFF the url — `null`, not `""`. Absent is the spelling
+    // for "no anchor" (there is no such message as the empty one), and
+    // `set(k, "")` writes `k=`: the reader lands on their message, and the
+    // address bar they then copy from carries a dangling `&msg=` that means
+    // nothing to the page receiving it. `{default: ""}` cannot reach this — it
+    // only drops a write that would have changed nothing, and here the param is
+    // genuinely present, which is the one case it does not cover.
+    //
+    // `replace`, because arriving on the message is not a place anyone
+    // navigated to twice, and a Back that re-fired the flare would be a history
+    // entry nobody made. Left behind it would also re-scroll a reload the
+    // reader has since scrolled away from.
+    fused.params.set("msg", null, { history: "replace" });
   }
   return landed;
 }

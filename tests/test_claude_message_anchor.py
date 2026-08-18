@@ -240,7 +240,7 @@ def test_the_anchor_gives_up(code):
     # Cleared on the MISS as well as the hit — the `if` runs when revealAnchor
     # left it set, which is exactly the case where nothing matched.
     assert "if (anchorPending) {" in body
-    assert 'fused.params.set("msg", ""' in body
+    assert 'fused.params.set("msg", null' in body
 
 
 def test_the_anchor_is_spent_once(code):
@@ -254,10 +254,19 @@ def test_the_anchor_is_spent_once(code):
     Both live in `consumeAnchor` rather than `revealAnchor`, which is the whole
     point of splitting them: `revealAnchor` answers "is it here", and only the
     caller that knows this was the last chance may spend it.
+
+    REMOVED, not emptied. `set(k, "")` writes `k=`, so the reader who lands on
+    their message and copies the address bar copies a dangling `&msg=` — a link
+    that names no message and that the receiving page has to ignore. `null` is
+    the runtime's spelling for "this key is gone" (static/runtime.js `set`), and
+    `{default: ""}` is not a substitute: it only drops a write that would have
+    changed nothing, which is the one case that does not arise here.
     """
     spend = code[code.index("function consumeAnchor()"):]
     spend = spend[:spend.index("\n}")]
-    assert 'fused.params.set("msg", "", { history: "replace", default: "" })' in spend
+    assert 'fused.params.set("msg", null, { history: "replace" })' in spend
+    assert 'default:' not in spend, \
+        "a removal has no default — the runtime rejects the pair"
     reveal = code[code.index("function revealAnchor()"):]
     reveal = reveal[:reveal.index("\n}")]
     assert 'anchorPending = ""' not in reveal, \
