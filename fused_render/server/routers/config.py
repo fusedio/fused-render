@@ -125,21 +125,6 @@ def api_config(
     # and a brew probe. This is one `os.access` call.
     if not selffix.writable():
         config["read_only"] = True
-    # Claude Code is not on this machine, so NO self-fix session can start —
-    # neither a fix nor a diagnosis (SPEC §43, SF-13f). Same "present only when
-    # true" convention as the two above, and the same reason for riding this
-    # endpoint: a surface that offers the session has to know before it offers,
-    # and `shutil.which` plus a couple of `isfile`s is the cheapest true answer
-    # there is. Resolved by the SAME function that spawns the relay, so the
-    # offer and the spawn cannot disagree about what is installed.
-    #
-    # Deliberately only the BINARY. Whether Claude is signed in, or over its
-    # usage limit, cannot be learned without running it — those stay post-hoc,
-    # classified from the failure by lib/trouble.ts (§42).
-    from fused_render.server import ai as _ai
-
-    if _ai.claude_cli_path() is None:
-        config["claude_missing"] = True
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}
         if token == instance[1]:

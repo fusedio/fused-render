@@ -202,17 +202,6 @@ def _claude_bin() -> str | None:
     return None
 
 
-def claude_cli_path() -> str | None:
-    """The claude CLI this machine would run, or None when there is none.
-
-    Public because it answers a question two features share: this module needs
-    it to spawn the AI relay, and /api/config needs it to know whether offering
-    a self-fix session would be offering something that cannot start (SPEC §43,
-    SF-13f). One resolution, so the offer and the spawn cannot disagree.
-    """
-    return _claude_bin()
-
-
 def _needs_cmd_shim(bin_path: str) -> bool:
     """Whether `bin_path` can only be started through cmd.exe.
 

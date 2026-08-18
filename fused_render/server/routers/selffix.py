@@ -27,7 +27,7 @@ import threading
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render import claude_spawn, selffix
+from fused_render import claude_health, claude_spawn, selffix
 from fused_render.server import templates as _server_templates
 from fused_render.server.common import _error, _require_fused
 
@@ -83,13 +83,21 @@ _load_agent = claude_spawn.load_agent
 _record_session_when_ready = claude_spawn.record_session_when_ready
 
 
-def _claude_cli_path():
-    """The CLI this machine would run, or None — re-bound for the tests, like
-    the spawn above. Resolved by the same function /api/config reports from, so
-    the button's wording and this refusal cannot disagree."""
-    from fused_render.server import ai
+def _claude_found() -> bool:
+    """Is there a runnable Claude CLI on this machine? Re-bound for the tests,
+    like the spawn above.
 
-    return ai.claude_cli_path()
+    `claude_health` and nothing else — that module is the package's one place
+    that resolves the CLI (#621), and the divergence it was introduced to end is
+    exactly the one this gate could reintroduce: a self-fix button refusing on
+    one answer while the health strip beside it reports another, about the same
+    binary, in the same second.
+
+    Its snapshot is disk-cached and invalidated by the binary's mtime, so this
+    costs a small file read on the warm path and a `--version` spawn once on a
+    cold one — which is nothing beside the session this route is about to start.
+    """
+    return bool(claude_health.summary().get("found"))
 
 
 def _live_session_in(root: str) -> str:
@@ -242,7 +250,7 @@ def api_selffix_start(body: dict = Body(default={}),
     # same fact discovered a moment earlier: `spawn_helper` returns
     # CLAUDE_MISSING_ERROR when the CLI turns out to be missing, and that is
     # reported as 502.
-    if _claude_cli_path() is None:
+    if not _claude_found():
         return _error(claude_spawn.CLAUDE_MISSING_ERROR, status=502)
 
     # WHICH BRIEF the session gets, and it turns on whether the USER DESCRIBED
