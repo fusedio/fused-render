@@ -992,6 +992,46 @@ const T18 = Math.floor(Date.parse("2026-08-17T18:00:00") / 1000);
 const FAILED = "failed" as Task["status"];
 
 describe("dropLanes", () => {
+  // THE MATRIX, ONE LANE PER CASE. Written out per lane rather than as a loop
+  // over a table, because a loop over the same table the code reads would agree
+  // with a wrong table (bugbot, PR #613 — the rule used to be a predicate that
+  // let Done offer In Progress).
+  //
+  // Every case is a task WITH a pending message, so the run-now precondition is
+  // satisfied everywhere and the only thing under test is the lane's own rule.
+  it("Upcoming may run early or be called off", () => {
+    expect(dropLanes(upcoming([T9]))).toEqual(["in_progress", "archived"]);
+  });
+
+  it("Failed may retry or be filed away", () => {
+    expect(dropLanes(upcoming([T9], { status: FAILED })))
+      .toEqual(["in_progress", "archived"]);
+  });
+
+  it("Done may ONLY be archived, even with a run pending", () => {
+    // The regression this pins, and it is the commonest Done card on the page:
+    // a recurring task whose last run finished and whose next occurrence is
+    // booked sits in Done by design (the server's `_message_verdict`). The old
+    // predicate offered In Progress for exactly that shape, and the drop would
+    // have fired a real run — "do it again" is not something a drag may say.
+    const recurring = upcoming([T18], { status: "done" });
+    expect(canRunNow(recurring)).toBe(true);
+    expect(dropLanes(recurring)).toEqual(["archived"]);
+    expect(dropAction(recurring, "in_progress")).toBe(null);
+  });
+
+  it("In Progress goes nowhere, even with a run pending", () => {
+    const t = upcoming([T9], { status: "in_progress" });
+    expect(canRunNow(t)).toBe(true);
+    expect(dropLanes(t)).toEqual([]);
+  });
+
+  it("Archived goes nowhere, even with a run pending", () => {
+    const t = upcoming([T9], { status: "archived" });
+    expect(canRunNow(t)).toBe(true);
+    expect(dropLanes(t)).toEqual([]);
+  });
+
   it("locks the two lanes that are Claude's, not the reader's", () => {
     // In Progress is a run in flight: a card leaves it when the run ends and at
     // no other moment. Archive is where things rest, and there is no way back

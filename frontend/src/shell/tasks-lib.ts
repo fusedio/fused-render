@@ -1313,9 +1313,42 @@ export function messageEditEntry(m: TaskMessage): string | null {
  * synonym for the first: one starts work, the other ends it. */
 export const DROP_LANES: BoardColumn[] = ["in_progress", "archived"];
 
-/** The lanes a card may be dragged OUT of. The other two are Claude's:
- * In Progress is a run in flight, and Archive is where things rest. */
-const UNLOCKED: BoardColumn[] = ["upcoming", "done", "failed"];
+/**
+ * THE MATRIX ITSELF: where a card in each lane may go. The table above in
+ * words, written down once so `dropLanes` reads it instead of reconstructing it.
+ *
+ * A TABLE AND NOT A PREDICATE, which is the correction (bugbot, PR #613). It
+ * was "every unlocked lane may go anywhere in DROP_LANES, subject to a
+ * precondition", and that quietly offered Done → In Progress to any done task
+ * with something pending — which is not a corner case on this branch, it is the
+ * COMMONEST done card there is: a recurring task whose last run finished and
+ * whose next occurrence is booked now sits in Done by design (see
+ * `_message_verdict`, server side). So the lane a person is most likely to drag
+ * from was the one lane whose rules were wrong, and the drop would have fired a
+ * real run.
+ *
+ * Re-running a task that finished is deliberately not a gesture. "Run this
+ * again" on work that succeeded is an ask better made in the chat, where the
+ * person can say what they want differently this time — the same reasoning
+ * `taskRunIntent` gives for offering Re-send on a failed task and nowhere else.
+ *
+ * Every BoardColumn is a key, so a sixth lane is a type error here rather than a
+ * lane that silently permits nothing (or everything).
+ */
+const LANE_EXITS: Record<BoardColumn, BoardColumn[]> = {
+  // Run it early, or call it off.
+  upcoming: ["in_progress", "archived"],
+  // Locked: a run in flight is Claude's output, and it leaves this lane when it
+  // ends, not when a card is dragged.
+  in_progress: [],
+  // Archive only. "Not finished after all" is not something a drag can make
+  // true, and neither is "do it again".
+  done: ["archived"],
+  // Retry, or file it away.
+  failed: ["in_progress", "archived"],
+  // Locked: the way back out is activity, not a gesture. See archiveIntent.
+  archived: [],
+};
 
 /**
  * The next run the ROW ITSELF names, when it names one: the server's `next_run`
@@ -1617,16 +1650,23 @@ export function taskRunIntent(task: Task): TaskRunIntent | null {
   };
 }
 
-/** Which lanes this card may be dropped on. Empty ⇒ do not let it lift. */
+/**
+ * Which lanes this card may be dropped on. Empty ⇒ do not let it lift.
+ *
+ * `LANE_EXITS` decides where the card MAY go; the loop only drops a move whose
+ * precondition is missing. There is one such precondition and it belongs to the
+ * run: In Progress needs a pending MESSAGE to fire, not a session to file under
+ * (see the note above), so a scheduled task that has never run may be dragged
+ * there and a pure-chat task may not. Archive has no precondition — it is one
+ * server verb over the task's own key.
+ */
 export function dropLanes(task: Task): BoardColumn[] {
   const here = taskColumn(task);
-  if (!UNLOCKED.includes(here)) return [];
   const lanes: BoardColumn[] = [];
-  // The run-now lane. Its precondition is a pending message, NOT a session:
-  // see the note above. It is the same move from either side — Upcoming runs
-  // the message early, Failed runs it again — and the same call makes both.
-  if (canRunNow(task)) lanes.push("in_progress");
-  lanes.push("archived");
+  for (const lane of LANE_EXITS[here]) {
+    if (lane === "in_progress" && !canRunNow(task)) continue;
+    lanes.push(lane);
+  }
   return lanes;
 }
 
