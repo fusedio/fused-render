@@ -168,6 +168,50 @@ def test_nothing_installed_resolves_to_nothing():
     assert claude_health.resolve() == (None, None)
 
 
+def test_a_shell_only_install_is_adopted_as_the_override(monkeypatch):
+    """THE POINT OF PROBING THE SHELL AT ALL.
+
+    Neither spawn path shells out — server/ai.py:_claude_bin and the chat
+    template both go override → PATH → candidates — so a volta/fnm/nvm install
+    is invisible to both until the discovered path is published. Without this
+    the health report says "found" while every session still fails to start.
+    """
+    monkeypatch.delenv(claude_health.BIN_ENV, raising=False)
+    monkeypatch.setattr(claude_health, "_shell_probe", lambda: "/opt/volta/bin/claude")
+    monkeypatch.setattr(claude_health, "probe_version", lambda p: "2.1.220")
+
+    snap = claude_health._measure()
+    assert snap["source"] == "shell"          # still honest about HOW we found it
+    assert os.environ[claude_health.BIN_ENV] == "/opt/volta/bin/claude"
+
+    # ...and the spawn path now finds exactly that, which is the whole objective.
+    from fused_render.server import ai as _server_ai
+
+    assert _server_ai._claude_bin() == "/opt/volta/bin/claude"
+
+
+def test_adopting_never_overwrites_the_user_s_own_override(monkeypatch):
+    """Someone who set it deliberately has said which binary to run; a probe
+    replacing it would be the app overruling an explicit instruction."""
+    monkeypatch.setenv(claude_health.BIN_ENV, "/my/choice/claude")
+    assert claude_health.adopt("/opt/volta/bin/claude") is False
+    assert os.environ[claude_health.BIN_ENV] == "/my/choice/claude"
+
+
+def test_only_a_shell_find_is_adopted(tmp_path, monkeypatch):
+    """A binary already on PATH or in a candidate dir needs no publishing —
+    both spawn paths find it unaided, and pinning an override for one would
+    outlive the CLI later moving."""
+    bin_path = _fake_cli(tmp_path)
+    monkeypatch.setenv("PATH", os.path.dirname(bin_path))
+    monkeypatch.delenv(claude_health.BIN_ENV, raising=False)
+    monkeypatch.setattr(claude_health, "probe_version", lambda p: "2.1.220")
+
+    snap = claude_health._measure()
+    assert snap["source"] == "path"
+    assert claude_health.BIN_ENV not in os.environ
+
+
 def test_shell_probe_is_the_last_resort_and_is_labelled(monkeypatch):
     """A binary only the login shell can see is a DIFFERENT diagnosis from a
     missing one: the app's own PATH is the problem, and the fix is the override

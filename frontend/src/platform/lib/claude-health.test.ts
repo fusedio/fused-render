@@ -106,14 +106,13 @@ test("a stale override is its own diagnosis, never 'install Claude Code'", () =>
 
 // -- the found-but-not-ready cases -------------------------------------------
 
-test("a shell-only install blames the app's PATH, not the install", () => {
-  const issues = claudeIssues(healthy({ source: "shell", path: "/opt/volta/bin/claude" }));
-  expect(issues.map((i) => i.id)).toEqual(["shell-only"]);
-  expect(issues[0].detail).toContain(CLAUDE_BIN_ENV);
-  expect(issues[0].detail).toContain("/opt/volta/bin/claude");
-  // Emphatically NOT an install prompt: it is already installed.
-  expect(issues[0].command).toBeUndefined();
-  expect(issues[0].title).not.toContain("can't find");
+test("a shell-only install is not something to mention", () => {
+  // It IS a real problem — neither spawn path shells out, so a volta/fnm/nvm
+  // install is invisible to both — but one the app fixes for itself: the server
+  // publishes the discovered path as the override the moment it probes
+  // (claude_health.adopt). Asking the user to set an environment variable we
+  // were holding the value for was asking them to do our work.
+  expect(ids(healthy({ source: "shell", path: "/opt/volta/bin/claude" }))).toEqual([]);
 });
 
 test("an override that works is not something to mention", () => {
@@ -150,10 +149,8 @@ test("a signed-out CLI is reported only on an explicit false", () => {
 });
 
 test("several problems on one install are all reported, blocking first", () => {
-  const issues = ids(healthy({
-    source: "shell", version: "1.0.88", outdated: true, signed_in: false,
-  }));
-  expect(issues).toEqual(["shell-only", "outdated", "signed-out"]);
+  const issues = ids(healthy({ version: "1.0.88", outdated: true, signed_in: false }));
+  expect(issues).toEqual(["outdated", "signed-out"]);
 });
 
 // -- help links ---------------------------------------------------------------
@@ -162,7 +159,6 @@ test("every issue deep-links to a real troubleshooting tab", () => {
   const cases: ClaudeHealth[] = [
     healthy({ found: false, source: null }),
     healthy({ found: false, source: "override" }),
-    healthy({ source: "shell" }),
     healthy({ outdated: true, version: "1.0.0" }),
     healthy({ signed_in: false }),
   ];

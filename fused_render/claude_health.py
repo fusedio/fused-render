@@ -482,9 +482,48 @@ def _fingerprint(path: Optional[str]) -> str:
                         os.environ.get("PATH", ""), path or "", stamp])
 
 
+def adopt(path: str) -> bool:
+    """Publish `path` as the override, so every spawn path finds it too.
+
+    THE SHELL PROBE'S ANSWER IS ONLY USEFUL IF SOMETHING ACTS ON IT. It is the
+    one resolver that can find a volta/fnm/asdf/nvm install, and it runs HERE —
+    but the two paths that actually start Claude Code (`server/ai.py:_claude_bin`
+    and the chat template's own copy) both go override → PATH → candidates, and
+    neither shells out. So without this, a shell-only install left the health
+    report saying "found" while every session still failed to start, and the
+    only way out was telling the user to go and set an environment variable we
+    were already holding the value for.
+
+    Setting the override is what closes that, and it is the right lever rather
+    than a clever one: it is the documented escape hatch, it is what the
+    `notfound` error text tells users to set, and BOTH spawn paths already
+    honour it — including the chat template, which cannot import this module
+    (D166) but does inherit the server's environment. One assignment reaches
+    code that is not allowed to know this module exists.
+
+    A USER'S OWN SETTING IS NEVER OVERWRITTEN. Someone who set the override
+    deliberately has said which binary to run, and a probe silently replacing it
+    would be the app overruling an explicit instruction — the same reason
+    `resolve` reports a stale override rather than falling through to something
+    that works.
+
+    Process-scoped on purpose: nothing is written to the user's config or shell
+    profile. The probe re-runs at the next start and re-adopts, so this can
+    never leave a stale path behind on a machine where the CLI has moved.
+    """
+    if os.environ.get(BIN_ENV):
+        return False
+    os.environ[BIN_ENV] = path
+    return True
+
+
 def _measure(allow_shell: bool = True) -> dict:
     """Run every probe and build a fresh snapshot. Never raises."""
     path, source = resolve(allow_shell=allow_shell)
+    # Before anything else reads it: a binary only the login shell could find is
+    # one the spawn paths cannot find at all until it is published (see `adopt`).
+    if source == "shell" and path:
+        adopt(path)
     version = probe_version(path) if path else None
     # `found` is "we can run it", not "we resolved a string": a stale override
     # resolves to a path that is reported (see `resolve`) and still is not a

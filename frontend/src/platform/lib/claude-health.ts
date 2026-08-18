@@ -20,7 +20,7 @@ export interface ClaudeIssue {
   /** Stable id — the dismissal signature is built from these, so renaming one
       un-dismisses it for everybody. Worth it when the MEANING changed; never
       do it for wording. */
-  id: "missing" | "unusable-override" | "shell-only" | "outdated" | "signed-out";
+  id: "missing" | "unusable-override" | "outdated" | "signed-out";
   /** The one-line statement. Says what is true, not what is polite. */
   title: string;
   /** What to do about it, in a sentence. */
@@ -85,21 +85,15 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
     return issues; // everything below is about an install that exists
   }
 
-  // Found only by asking the login shell: the binary is fine, the app's PATH is
-  // not. A GUI-launched app inherits no shell profile, so this will keep
-  // happening on every start until the override is set — and "install Claude
-  // Code" would be exactly the wrong advice for it.
-  if (health.source === "shell") {
-    issues.push({
-      id: "shell-only",
-      title: "Claude Code is installed somewhere the app can't see",
-      detail:
-        `Your shell finds it at ${health.path}, but Fused Render does not ` +
-        `inherit your shell's PATH. Set ${CLAUDE_BIN_ENV} to that path so it ` +
-        "is found on every start.",
-      helpKind: "notfound",
-    });
-  }
+  // NOTHING IS SAID ABOUT source === "shell", deliberately. A binary only the
+  // login shell can see is a real problem — a GUI-launched app inherits no
+  // shell profile, so neither spawn path would find it — but it is one the app
+  // fixes for itself: the server publishes the discovered path as the override
+  // the moment it probes (claude_health.adopt), and both spawn paths already
+  // honour that. Telling the user to go and set an environment variable we were
+  // holding the value for was asking them to do our work, so the message is
+  // gone rather than reworded. `source` stays on the payload because it is
+  // worth having in a bug report, not because the strip acts on it.
 
   // Only ever set for a version we actually read AND that is below the floor —
   // the server never guesses this from an unreadable version string.
