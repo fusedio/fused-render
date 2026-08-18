@@ -11,7 +11,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import type { RecurrenceRule, ScheduledMessage } from "@platform/lib/api";
 
 const g = globalThis as unknown as Record<string, unknown>;
-g.location = { pathname: "/scheduled", search: "", hash: "", href: "http://x/scheduled", origin: "http://x" };
+g.location = { pathname: "/tasks", search: "", hash: "", href: "http://x/tasks", origin: "http://x" };
 g.history = { replaceState() {}, pushState() {}, state: null };
 g.window = globalThis;
 g.document = { addEventListener() {}, removeEventListener() {}, querySelector: () => null };

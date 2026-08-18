@@ -27,7 +27,7 @@
 // time filled in.
 //
 // The composer also has a THIRD affordance that lands here: its Schedule button
-// links to `/scheduled?new=1&target=…`, for the case the pill cannot serve — a
+// links to `/tasks?new=1&target=…`, for the case the pill cannot serve — a
 // task that wants a title, a description or a repeat rule. It is a handoff, not
 // a second form: the chat sends the folder it is bound to and nothing else, and
 // the effect below opens the modal on it.
@@ -75,6 +75,8 @@ import {
   projectOptions,
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
+import { viewFromSearch, viewUrl } from "./tasks-lib";
+import type { TaskView } from "./tasks-lib";
 
 // How often the page re-reads itself. A `pending` message becomes `sent` on the
 // server's own tick (30s), so anything much slower than this shows a message as
@@ -85,6 +87,12 @@ const POLL_MS = 20000;
 // calendar plans on the calendar every time. List is the default now (Akshil,
 // 2026-08-17): the page's first question turned out to be "what is running",
 // not "when", and the calendar is the drill-down for the scheduled subset.
+//
+// SECOND to the URL, since 2026-08-18. `?view=` (tasks-lib.viewFromSearch) is
+// what a link carries and therefore what wins; this key is the fallback for a
+// bare `/tasks`, which is how the page is opened from the sidebar. Both are
+// kept in step, so switching the view in one tab still greets the next visit
+// the same way.
 const VIEW_KEY = "fused-render:scheduled-view";
 
 // How far ahead a deep link's prefilled time lands. The form's own default is
@@ -93,8 +101,6 @@ const VIEW_KEY = "fused-render:scheduled-view";
 // rather than one because the when-field is minute-precision, and a value
 // inside the CURRENT minute opens the form on a time already behind the clock.
 const NEW_LINK_LEAD_MS = 120_000;
-
-type View = "list" | "board" | "calendar";
 
 export default function Scheduled() {
   const [state, setState] = useState<ScheduleResult | null>(null);
@@ -106,13 +112,19 @@ export default function Scheduled() {
   // localStorage can THROW (private mode, locked-down webviews), and this read
   // runs during first render — unguarded it took the whole page down for a
   // preference. Storage failing costs the memory, never the page.
-  const [view, setView] = useState<View>(() => {
+  const [view, setView] = useState<TaskView>(() => {
+    let saved: TaskView = "list";
     try {
-      const saved = localStorage.getItem(VIEW_KEY);
-      return saved === "board" || saved === "calendar" ? saved : "list";
+      const stored = localStorage.getItem(VIEW_KEY);
+      if (stored === "board" || stored === "calendar") saved = stored;
     } catch {
-      return "list";
+      // A blocked store just means no remembered view; the URL may still say.
     }
+    // The URL outranks the memory, and the memory is what a bare `/tasks`
+    // falls back to. Read once, in the initialiser: the page remounts on every
+    // navigation (App.tsx keys it on the nav epoch), so a back button onto
+    // `?view=board` comes through here rather than needing a subscription.
+    return viewFromSearch(location.search, saved);
   });
   // null = closed; a Date = open, prefilled (from a calendar slot click);
   // "blank" = open from the New task button, prefilled with "in an hour".
@@ -251,8 +263,18 @@ export default function Scheduled() {
     return () => window.clearInterval(id);
   }, []);
 
-  const pickView = (v: View) => {
+  const pickView = (v: TaskView) => {
     setView(v);
+    // Into the URL, so the view is a thing you can link to and reload onto.
+    // replaceState, not push: see tasks-lib.viewUrl — the toggle is a way of
+    // reading this page, not a place to come back to. The path is taken from
+    // `location` rather than hardcoded so this cannot be the thing that has to
+    // be remembered on the next rename.
+    try {
+      history.replaceState(history.state, "", viewUrl(location.pathname, location.search, v));
+    } catch {
+      // Some embeddings refuse history writes; the switch itself still happens.
+    }
     try {
       localStorage.setItem(VIEW_KEY, v);
     } catch {
@@ -396,6 +418,11 @@ export default function Scheduled() {
             <TaskList
               tasks={shown}
               home={home}
+              // A failed poll empties `tasks` too, and the List cannot tell that
+              // apart from a filter that matched nothing — but it must, because
+              // one is a reason to forget where the reader was and the other is
+              // a reason to hold onto it. See `stale` in TaskList.
+              stale={tasksFailed}
               onEditEntry={editEntry}
               // Cancelling a message changes server state. The 20s poll would
               // catch it anyway, so this is about the row not looking stuck for

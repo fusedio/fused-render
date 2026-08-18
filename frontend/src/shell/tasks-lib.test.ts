@@ -37,6 +37,7 @@ import {
   isPastDue,
   isUnread,
   isUpcomingTask,
+  laneCollapsed,
   laneUnread,
   laneTime,
   lastRunAt,
@@ -53,6 +54,9 @@ import {
   nextRunAt,
   openMessageHref,
   openThreadIntent,
+  opensElsewhere,
+  parseLaneChoices,
+  parseListMemory,
   projectOptions,
   relativeWhen,
   ranOffSchedule,
@@ -78,6 +82,8 @@ import {
   unmarkRead,
   unreadMarker,
   upcomingEditEntry,
+  viewFromSearch,
+  viewUrl,
 } from "./tasks-lib";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
@@ -1404,6 +1410,9 @@ const CALENDAR = readFileSync(join(SHELL, "ScheduleCalendar.tsx"), "utf8");
 /** The pure half's own source, for the handful of claims that are about HOW a rule
  *  is decided (which field it reads) rather than what it answers. */
 const LIB = readFileSync(join(SHELL, "tasks-lib.ts"), "utf8");
+/** The page that owns the poll and hands the three views their tasks — read for
+ *  the claims that are about what it PASSES DOWN, which no view can check alone. */
+const SCHEDULED = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
 const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
 const SCHEDULE_CSS = readFileSync(join(SHELL, "../styles/schedule.css"), "utf8");
 const TOKENS_CSS = readFileSync(join(SHELL, "../styles/tokens.css"), "utf8");
@@ -2588,12 +2597,14 @@ describe("the one-message row's missing chevron", () => {
   );
 
   it("puts the glyph behind the predicate and the gutter in front of it", () => {
-    // The SPAN is unconditional — no `{expandable && (` around it — so the gutter is
-    // drawn on every row...
-    expect(ROW).toContain('className={"tasks-caret" + (open ? " is-open" : "")}');
-    expect(ROW).not.toMatch(/expandable &&\s*\(?\s*<span[\s\S]{0,40}?"tasks-caret"/);
-    // ...and only its CONTENTS are conditional.
-    expect(ROW).toContain("{expandable ? ICON_CHEVRON : null}");
+    // Both arms wear `tasks-caret`, so the gutter is drawn on EVERY row — an
+    // expandable one as a real button, the rest as an empty box holding the
+    // column open. What is conditional is which, never whether.
+    expect(ROW).toContain("{expandable ? (");
+    expect(ROW).toContain('className="tasks-caret"');
+    expect(ROW).toContain('<span className="tasks-caret" aria-hidden />');
+    // ...and only the expandable arm holds a glyph.
+    expect(ROW).toContain("{ICON_CHEVRON}");
     // The gutter's width is the element's own, not the glyph's, or an empty span
     // would collapse and undo the whole point.
     const caret = block(TASKS_CSS, ".tasks-caret");
@@ -2612,14 +2623,15 @@ describe("the one-message row's missing chevron", () => {
     // with nothing left to close it.
     expect(VIEWS).toContain("const expandable = isExpandable(task);");
     expect(VIEWS).toContain("const open = expandable && requested;");
-    // Both ways in run the SAME function, so the mouse and the keyboard cannot
-    // drift apart — and the toggle is guarded inside it.
-    expect(ROW).toContain("onClick={activate}");
-    expect(ROW).toMatch(/onKeyDown=\{\(e\) => \{[\s\S]*?activate\(\);/);
-    expect(ACTIVATE).toContain("if (expandable) onToggle();");
-    // A row with no disclosure does not claim one. `false` would say "collapsed,
-    // press to expand", which is a promise it cannot keep.
-    expect(ROW).toContain("aria-expanded={expandable ? open : undefined}");
+    // The toggle is the CHEVRON's press now (2026-08-18) — the row's own press
+    // opens the conversation — so the guard is the arm that renders the button at
+    // all, and there is no toggle left anywhere in `activate`.
+    expect(ROW).toMatch(/\{expandable \? \([\s\S]*?onToggle\(\);/);
+    expect(ACTIVATE).not.toContain("onToggle");
+    // A row with no disclosure does not claim one, and only the button that HAS
+    // one carries the state.
+    expect(ROW).toContain("aria-expanded={open}");
+    expect((ROW.match(/aria-expanded=/g) ?? []).length).toBe(1);
   });
 
   it("leaves every other thing the row does alone", () => {
@@ -2627,8 +2639,12 @@ describe("the one-message row's missing chevron", () => {
     // row there now is, which is what that focus is for (see the leaf-click block
     // below). The `pressable` guard is the never-run row's business and is pinned
     // in "a row with nothing to open" further down.
-    expect(ROW).toContain('role={pressable ? "button" : undefined}');
-    expect(ROW).toContain("tabIndex={pressable ? 0 : undefined}");
+    expect(ROW).toContain('role={pressable && !href ? "button" : undefined}');
+    expect(ROW).toContain("tabIndex={pressable && !href ? 0 : undefined}");
+    // ...and where there IS an href, the control is the stretched link instead, so
+    // a row never carries two roles or two tab stops.
+    expect(ROW).toContain('className="tasks-rowlink"');
+    expect(ROW).toContain("href={href}");
     // Still the same one gesture that OPENS a multi-message conversation, and it is
     // still a button of its own rather than the row's click; pressing it still goes
     // through the shared performer, so it still clears the thread on the way out.
@@ -2641,16 +2657,10 @@ describe("the one-message row's missing chevron", () => {
     // Its own presence is decided by openThreadIntent — a session, not a message
     // count — so shortening the thread cannot take the button away.
     expect(VIEWS).not.toMatch(/\{chat && expandable/);
-    // And the row's own click still never opens a THREAD on an EXPANDABLE row: a
-    // multi-message row toggles and nothing else, because expanding shows the
-    // reader nothing and a press that cleared its unread would clear news nobody
-    // has seen. The row div carries no openChat of its own — the only way in is
-    // `activate`, where the first arm claims every expandable row before the
-    // openChat arm can be reached (pinned in "a row with no message at all").
+    // And the row's own click reaches that thread through the SAME `openChat`,
+    // never a second call of its own: the row div wires nothing but `activate`.
     expect(ROW).not.toMatch(/onClick=\{\(\) => \{\s*openChat/);
-    expect(ACTIVATE.indexOf("if (expandable) onToggle();")).toBeLessThan(
-      ACTIVATE.indexOf("openChat"),
-    );
+    expect(ACTIVATE).toContain("if (chat) openChat(chat);");
   });
 });
 
@@ -2676,37 +2686,28 @@ describe("a one-message row's click", () => {
     expect(soleMessage(one, held)!.message_id).toBe("MSG-009");
   });
 
-  it("goes through the MESSAGE row's own path, not a second one", () => {
-    // openMessage is the message row's click handler: it marks that one message
-    // read and navigates to messageHref. The leaf row calls exactly it, so there
-    // is no second place a message's address is built.
+  it("goes to the thread, the same way every other row with a session does", () => {
+    // 2026-08-18: the leaf arm is gone and it is not missed. A one-message task IS
+    // its one message, so "the end of the chat" and "that message" are the same
+    // place — and going through the thread arm means the leaf row, the accordion
+    // row and the Board card all open a conversation the same way, with the same
+    // mark, through the same performer.
     expect(VIEWS).toMatch(
-      /const activate = \(\) => \{\s*if \(expandable\) onToggle\(\);\s*else if \(edit\) onEditEntry\?\.\(edit\);\s*else if \(sole\) openMessage\(sole\);\s*else if \(chat\) openChat\(chat\);\s*\};/,
+      /const activate = \(\) => \{\s*if \(chat\) openChat\(chat\);\s*else if \(edit\) onEditEntry\?\.\(edit\);\s*\};/,
     );
-    expect(VIEWS).toContain("const sole = soleMessage(task, held);");
-    const at = VIEWS.indexOf("const openMessage = (m: TaskMessage)");
-    const fn = VIEWS.slice(at, VIEWS.indexOf("\n  };", at));
-    expect(fn).toContain("onRead(task.key, m);");
-    expect(fn).toContain("messageHref(task, m)");
-    // ONE definition of that path, and the leaf press does not add another: no
-    // second navigateUrl and no second href built anywhere in the row.
-    expect((VIEWS.match(/messageHref\(task, m\)/g) ?? []).length).toBe(1);
-    // Which means the press CLEARS that message's unread — the same clear the
-    // message row's own click makes, on the same message, because it is the same
-    // call. It does not mark the whole task: openMessage never does.
-    expect(fn).not.toContain("markWholeTaskRead");
-    expect(fn).not.toContain("onReadAll");
+    expect(VIEWS).not.toContain("openMessage(sole)");
+    // No per-turn anchor from a TASK row: `msg=` is a message row's business, and
+    // taskHref (what openThreadIntent hands over) never carries one.
+    const one = task({ message_count: 1, messages: [msg({ anchor: "uuid-7" })] });
+    expect(openThreadIntent(one)!.href).toBe(taskHref(one)!);
+    expect(openThreadIntent(one)!.href).not.toContain(MESSAGE_ANCHOR_PARAM);
   });
 
-  it("hands off rather than hopping when its own message has nowhere to go", () => {
-    // Two guards, and both are needed. `sole` is null on a task with no message,
-    // so this arm is not the one that answers for it (the thread arm below is)...
-    expect(VIEWS).toContain("else if (sole) openMessage(sole);");
-    // ...and openMessage navigates only if there is somewhere to go, which covers
-    // the one message on a task with no session yet (messageHref answers null).
-    const at = VIEWS.indexOf("const openMessage = (m: TaskMessage)");
-    const fn = VIEWS.slice(at, VIEWS.indexOf("\n  };", at));
-    expect(fn).toContain("if (to) navigateUrl(to);");
+  it("stays inert when there is no session to open and no run to edit", () => {
+    // Nothing built here can navigate to nowhere: openThreadIntent answers null
+    // without a session, and the row's href is exactly that intent's.
+    expect(openThreadIntent(task({ session_id: "" }))).toBe(null);
+    expect(VIEWS).toContain("const href = chat?.href ?? null;");
     expect(messageHref(task({ session_id: "" }), msg())).toBe(null);
   });
 });
@@ -2731,9 +2732,10 @@ describe("a row with no message at all", () => {
   const never = task({ key: "pending:e1", session_id: "", message_count: 0, messages: [] }, 0);
 
   it("opens the thread, through the one intent the Open chat button asked", () => {
-    // The third arm, in the shared handler — so the keyboard reaches it too (the
-    // row div wires onClick and onKeyDown to this same `activate`, pinned above).
-    expect(ACTIVATE).toContain("else if (chat) openChat(chat);");
+    // The FIRST arm now, in the shared handler — so the keyboard reaches it too
+    // (the stretched link's plain click and the edit row's Enter both spend this
+    // same `activate`, pinned above).
+    expect(ACTIVATE).toContain("if (chat) openChat(chat);");
     // Not a second url and not a second performer: `chat` is the row's existing
     // openThreadIntent value and openChat is the row's existing performOpen call.
     expect(VIEWS).toContain("const chat = openThreadIntent(task, unread);");
@@ -2771,16 +2773,14 @@ describe("a row with no message at all", () => {
     expect(soleMessage(never)).toBe(null);
     expect(openThreadIntent(never)).toBe(null);
     expect(isExpandable(never)).toBe(false);
-    // Which is exactly what `pressable` is: the arms of `activate` that can make a
-    // row a control, so the affordance cannot drift from the behaviour. (The edit arm
-    // is a narrowing of the leaf arm — it requires soleMessage — so it adds nothing
-    // here; that is pinned where the upcoming arm is.)
-    expect(VIEWS).toContain(
-      "const pressable = expandable || sole !== null || chat !== null;",
-    );
+    // Which is exactly what `pressable` is: the arms of `activate`, so the
+    // affordance cannot drift from the behaviour. `expandable` is deliberately not
+    // one of them any more — a disclosure is the CHEVRON's affordance, and it is a
+    // button with a tab stop of its own.
+    expect(VIEWS).toContain("const pressable = href !== null || edit !== null;");
     // The row then claims no role and takes no tab stop...
-    expect(ROW).toContain('role={pressable ? "button" : undefined}');
-    expect(ROW).toContain("tabIndex={pressable ? 0 : undefined}");
+    expect(ROW).toContain('role={pressable && !href ? "button" : undefined}');
+    expect(ROW).toContain("tabIndex={pressable && !href ? 0 : undefined}");
     // ...and drops the pointer cursor and the hover tint with a class, which must
     // outrank `.tasks-row` and `.tasks-row:hover` without !important.
     expect(ROW).toContain('(pressable ? "" : " is-inert")');
@@ -2792,29 +2792,21 @@ describe("a row with no message at all", () => {
     expect(block(TASKS_CSS, ".tasks-row.is-inert:hover")).not.toContain("!important");
   });
 
-  it("leaves the other two shapes of row exactly as they were", () => {
-    // EXACTLY ONE message is still the message anchor, not the thread: the leaf
-    // arm comes first, so `chat` — which a leaf row also has — never answers for
-    // it, and where it lands still carries the turn's own `msg=`.
+  it("leaves the other two shapes of row pressable, and pointed at the thread", () => {
+    // EXACTLY ONE message: the thread arm answers for it like every other row
+    // with a session. The MESSAGE row inside it is what still carries `msg=`.
     const one = task({ message_count: 1, messages: [msg({ anchor: "uuid-7" })] });
     expect(soleMessage(one)!.anchor).toBe("uuid-7");
-    expect(ACTIVATE.indexOf("openMessage(sole)")).toBeLessThan(
-      ACTIVATE.indexOf("openChat(chat)"),
-    );
     expect(messageHref(one, soleMessage(one)!)).toBe(
       `${taskHref(one)!}&${MESSAGE_ANCHOR_PARAM}=uuid-7`,
     );
     expect(pressableFor(one)).toBe(true);
 
-    // TWO OR MORE still toggles and opens nothing: the accordion arm sits above
-    // both opening arms, so a row with a session (every expandable row has one)
-    // cannot reach openChat.
+    // TWO OR MORE opens the thread as well, at the end of the chat — expanding it
+    // is the chevron's job and no longer competes with the row's press.
     const many = task({ message_count: 5 }, 5);
     expect(isExpandable(many)).toBe(true);
-    expect(soleMessage(many)).toBe(null);
-    expect(ACTIVATE.indexOf("onToggle()")).toBeLessThan(
-      ACTIVATE.indexOf("openChat(chat)"),
-    );
+    expect(openThreadIntent(many)).not.toBe(null);
     expect(pressableFor(many)).toBe(true);
 
     // And the zero-message-with-a-session row is pressable too, which is the
@@ -2895,17 +2887,20 @@ describe("an upcoming row's click", () => {
     expect(runNowIntent(named)!.entryId).toBe("e-next");
   });
 
-  it("sits between the accordion and the message, through the one callback", () => {
-    // Arm 2 of five: after the toggle, before openMessage — and in the shared
-    // handler, so the keyboard reaches it identically (the row wires onClick and
-    // onKeyDown to this same `activate`).
+  it("answers only when there is no thread to open, through the one callback", () => {
+    // The LAST arm of two now (2026-08-18): a row with a session opens its
+    // conversation, and the form is what is left for a row that has none — which
+    // is exactly the shape this arm was written for, a one-off scheduled and never
+    // run. In the shared handler, so the keyboard reaches it identically (the row
+    // wires onClick and onKeyDown to this same `activate` when it has no href).
     expect(ACTIVATE).toContain("else if (edit) onEditEntry?.(edit);");
-    expect(ACTIVATE.indexOf("onToggle()")).toBeLessThan(
+    expect(ACTIVATE.indexOf("if (chat) openChat(chat);")).toBeLessThan(
       ACTIVATE.indexOf("onEditEntry?.(edit)"),
     );
-    expect(ACTIVATE.indexOf("onEditEntry?.(edit)")).toBeLessThan(
-      ACTIVATE.indexOf("openMessage(sole)"),
-    );
+    // The `pending:<entry>` row this arm is for has no session at all, so the two
+    // arms never compete for the same row in practice.
+    expect(openThreadIntent(oneOff)).toBe(null);
+    expect(upcomingEditEntry(oneOff)).toBe("e9");
     // `onEditEntry` is the callback the thread's own Edit button and the calendar
     // popover already spend — Scheduled.tsx resolves the entry, and an occurrence to
     // its template — so the form has one way in and this arm builds nothing.
@@ -2920,20 +2915,85 @@ describe("an upcoming row's click", () => {
     expect(ACTIVATE).not.toContain("markRead");
   });
 
-  it("leaves the chevron a glyph, because the row still toggles", () => {
-    // The accordion is arm ONE, so no lane takes the toggle off a multi-message row
-    // and the chevron never needs a press of its own — nothing to double-fire.
-    expect(ACTIVATE).toMatch(/^\s*const activate = \(\) => \{\s*if \(expandable\) onToggle\(\);/);
-    const caret = ROW.slice(ROW.indexOf('"tasks-caret"'));
-    const span = caret.slice(0, caret.indexOf("</span>"));
-    expect(span).toContain("aria-hidden");
-    expect(span).not.toContain("role=");
-    expect(span).not.toContain("tabIndex");
-    expect(span).not.toContain("onClick");
-    expect(span).not.toContain("onKeyDown");
-    // aria-expanded stays the ROW's own, and there is exactly one of it.
-    expect(ROW).toContain("aria-expanded={expandable ? open : undefined}");
+  it("makes the chevron the one control that expands, with a zone to aim at", () => {
+    // The row's press opens the conversation now, so the disclosure has to be a
+    // control in its own right: a real button, with a real name, and its own
+    // press that does not also fire the row's.
+    expect(ACTIVATE).toMatch(/^\s*const activate = \(\) => \{\s*if \(chat\) openChat\(chat\);/);
+    const caret = ROW.slice(ROW.indexOf("{expandable ? ("));
+    const button = caret.slice(0, caret.indexOf("</button>"));
+    expect(button).toContain('type="button"');
+    expect(button).toContain("aria-expanded={open}");
+    expect(button).toContain("aria-label={open ?");
+    expect(button.indexOf("e.stopPropagation();")).toBeLessThan(
+      button.indexOf("onToggle();"),
+    );
+    // ONE aria-expanded on the row, and it is the button's.
     expect((ROW.match(/aria-expanded=/g) ?? []).length).toBe(1);
+
+    // THE HIT ZONE IS BIGGER THAN THE INK, and costs the layout nothing: padding
+    // grows it to the row's full height and out to the row's leading edge, and
+    // matching negative margins take that growth back out, which only works
+    // because the box is sized content-box.
+    //
+    // It hangs off `button.tasks-caret`, NOT off the shared `.tasks-caret` — see
+    // the leaf-row test below for why that distinction is the whole rule.
+    expect(block(TASKS_CSS, ".tasks-caret")).toContain("box-sizing: content-box");
+    const css = block(TASKS_CSS, "button.tasks-caret");
+    const flat = (s: string) => s.replace(/\s+/g, " ");
+    expect(flat(css)).toContain(
+      "padding: var(--tasks-row-pad-y) calc(var(--tasks-row-gap) / 2)" +
+        " var(--tasks-row-pad-y) var(--tasks-row-pad)",
+    );
+    expect(flat(css)).toContain(
+      "margin: calc(var(--tasks-row-pad-y) * -1) calc(var(--tasks-row-gap) / -2)" +
+        " calc(var(--tasks-row-pad-y) * -1) calc(var(--tasks-row-pad) * -1)",
+    );
+
+    // THE VERTICAL HALF IS THE ROW'S OWN TOKEN, never a number that happens to
+    // match it today. It was a literal 7px — the row's padding when it was
+    // written — and the rows-polish pass moved that padding into
+    // `--tasks-row-pad-y` and raised it to 10px without this rule following, so
+    // the zone came up 3px short top and bottom and those strips fell through to
+    // the row link. Two zones tiling one row cannot each state its height.
+    expect(flat(block(TASKS_CSS, ".tasks-row"))).toContain(
+      "padding: var(--tasks-row-pad-y) var(--tasks-row-pad)",
+    );
+    expect(css).not.toMatch(/padding:[^;]*\b\d+px/);
+    expect(css).not.toMatch(/margin:[^;]*-\d+px/);
+    // And it sits ABOVE the stretched row link, so the two zones cannot overlap
+    // ambiguously: the gutter expands, everything else opens.
+    expect(css).toContain("z-index: 2");
+    expect(block(TASKS_CSS, ".tasks-rowlink")).toContain("z-index: 1");
+    // NO VISUAL CHANGE: the rotation moved onto the inner glyph, because rotating
+    // the button would swing the chevron about the hit zone's centre instead of
+    // its own and slide it visibly left.
+    expect(block(TASKS_CSS, ".tasks-caret-glyph.is-open")).toContain("transform: rotate(90deg)");
+    expect(TASKS_CSS).not.toContain(".tasks-caret.is-open {");
+  });
+
+  it("leaves a leaf row's gutter to the row link, rather than to an inert span", () => {
+    // Both arms of the caret wear `.tasks-caret`, so anything that rule grants is
+    // also granted to the empty placeholder on a row with nothing to expand. Two
+    // of those grants would make the placeholder eat presses: the enlarged hit
+    // zone paints it over the row's leading edge for the row's full height, and
+    // `z-index: 2` lifts it above the stretched `.tasks-rowlink`. Nothing listens
+    // on a span, so that corner of a one-message row would be dead — pointer
+    // cursor and all, while every other pixel of the same row opens the chat.
+    //
+    // So the shared rule holds SPACE ONLY, and the growth and the stacking live
+    // on the button.
+    const shared = block(TASKS_CSS, ".tasks-caret");
+    expect(shared).toContain("flex: 0 0 var(--tasks-caret-w)");
+    expect(shared).not.toContain("z-index");
+    expect(shared).not.toContain("position: relative");
+    expect(shared).not.toContain("padding:");
+    expect(shared).not.toContain("margin:");
+    // Written twice over, so the `.prefs-section` copy must not smuggle back what
+    // the bare one gave up.
+    expect(block(TASKS_CSS, ".prefs-section .tasks-caret")).toBe(shared);
+    // The placeholder really is a bare span: no handler, nothing to press.
+    expect(ROW).toContain('<span className="tasks-caret" aria-hidden />');
   });
 
   it("falls through rather than opening a blank form when the entry is unknown", () => {
@@ -2947,6 +3007,7 @@ describe("an upcoming row's click", () => {
     });
     expect(upcomingEditEntry(vague)).toBe(null);
     expect(soleMessage(vague)).not.toBe(null);
+    // It still has a session, so the thread arm answers and the row is pressable.
     expect(pressableFor(vague)).toBe(true);
     // And with nothing to expand or open either, it is honestly inert.
     expect(
@@ -2957,15 +3018,14 @@ describe("an upcoming row's click", () => {
   });
 });
 
-/** `pressable` as the row computes it — the arms of `activate` that can make a row
- *  a control, evaluated here so the cases can be asserted as VALUES rather than only
- *  as source. The edit arm is absent for the reason the row's own comment gives: it
- *  requires soleMessage, so it is a narrowing of the leaf arm and can never make a
- *  row pressable that `sole` did not already. */
+/** `pressable` as the row computes it — the arms of `activate`, evaluated here so
+ *  the cases can be asserted as VALUES rather than only as source. `expandable` is
+ *  absent since 2026-08-18: the disclosure is the chevron's own button, and the row
+ *  must not advertise a press its own handler no longer makes. */
 function pressableFor(t: Task): boolean {
-  const sole = soleMessage(t);
   const chat = openThreadIntent(t, taskUnread(t, new Set()));
-  return isExpandable(t) || sole !== null || chat !== null;
+  const edit = upcomingEditEntry(t);
+  return chat !== null || edit !== null;
 }
 
 // ---- what a click on a MESSAGE row does -----------------------------------------
@@ -3023,9 +3083,11 @@ describe("a message row's click", () => {
 
   it("runs both meanings through ONE handler, and marks only the transcript one", () => {
     // The message row's click and its Enter/Space are the same function, exactly as
-    // the task row's are.
-    expect(THREAD).toContain("onClick={() => pressMessage(m)}");
-    expect(THREAD).toMatch(/onKeyDown=\{\(e\) => \{[\s\S]*?pressMessage\(m\);/);
+    // the task row's are — and so is the stretched link's, which is the third way
+    // in and spends nothing of its own.
+    expect(THREAD).toContain("onClick={to ? undefined : () => pressMessage(m)}");
+    expect(THREAD).toMatch(/onKeyDown=\{[\s\S]*?pressMessage\(m\);/);
+    expect(THREAD).toMatch(/className="tasks-rowlink"[\s\S]*?pressMessage\(m\);/);
     const at = VIEWS.indexOf("const pressMessage = (m: TaskMessage)");
     const fn = VIEWS.slice(at, VIEWS.indexOf("\n  };", at));
     expect(fn).toContain("const entry = onEditEntry ? messageEditEntry(m) : null;");
@@ -3409,7 +3471,7 @@ describe("the hidden row actions", () => {
     // its turn — or, since 2026-08-17, the form for a message that has not gone out —
     // hidden actions or not. Which is also what keeps Edit REACHABLE with the pencil
     // hidden: the row press is the way in now.
-    expect(msgRow).toContain("onClick={() => pressMessage(m)}");
+    expect(msgRow).toContain("pressMessage(m)");
   });
 
   it("deletes nothing — every intent, handler and call is still there", () => {
@@ -3876,48 +3938,64 @@ describe("opening a thread, from either view", () => {
     expect(acts).toContain("void triage(file.status)");
   });
 
-  it("is the row's Open chat button and NOT the row itself", () => {
-    // The row's own click TOGGLES the accordion; it does not open a conversation,
-    // so there is nothing it could have shown the reader and nothing to mark.
-    // Marking a whole task read on a press that merely expands it would clear
-    // messages nobody has seen. Read off the row div's OWN handlers, so a comment
-    // naming the intent cannot make this pass.
+  it("is the row ITSELF now, and a real link at that", () => {
+    // 2026-08-18, the reversal: the row's press used to TOGGLE and only the Open
+    // chat button opened a conversation, which made the commonest row on the page
+    // the one whose click did not open the thing it names. The row opens the
+    // thread now; expanding moved to the chevron, which got a zone to aim at.
     //
-    // Since 2026-08-17 the toggle is guarded rather than bare — a row with one
-    // message has nothing to expand — which changes what the press does on a leaf
-    // (open its message) but not what it can ever do on an ACCORDION (toggle, and
-    // nothing else).
-    const gesture = ROW.slice(0, ROW.indexOf('{/* The disclosure gutter'));
-    // One handler for the pointer and the keyboard both, so they cannot mean
-    // different things — and it is `activate`, whose body is read below.
-    expect(gesture).toContain("onClick={activate}");
-    expect(gesture).toMatch(/onKeyDown=\{\(e\) => \{[\s\S]*?activate\(\);/);
-    // The accordion arm is FIRST, so an expandable row is claimed by the toggle
-    // and can never reach the openChat arm below it however many messages it has.
-    expect(ACTIVATE).toContain("if (expandable) onToggle();");
-    expect(ACTIVATE.indexOf("if (expandable) onToggle();")).toBeLessThan(
-      ACTIVATE.indexOf("openChat(chat)"),
-    );
-    // And it never performs or marks anything itself: the thread arm spends the
-    // one shared performer through openChat, which is read in its own block.
+    // WHERE it goes and WHAT it marks are still not decided here — that is
+    // openThreadIntent, spent through the one shared performer.
+    expect(ACTIVATE).toContain("if (chat) openChat(chat);");
     expect(ACTIVATE).not.toContain("performOpen");
     expect(ACTIVATE).not.toContain("markWholeTaskRead");
-    // What it MAY do on a leaf row is open that row's single message, and only
-    // through the message row's own handler.
-    expect(ACTIVATE).toContain("else if (sole) openMessage(sole);");
-    // The mark rides on the explicit, named action instead — which keeps its own
-    // stopPropagation, so pressing it never also toggles the row.
+    expect(ACTIVATE).not.toContain("onToggle");
+
+    // A REAL <a href>, not a click handler on a div — which is what makes
+    // ⌘-click, middle click and "Open in new tab" work at all. Its href is the
+    // intent's, so this file still builds no address of its own.
+    expect(VIEWS).toContain("const href = chat?.href ?? null;");
+    expect(VIEWS).not.toContain("taskHref(");
+    const linkAt = ROW.indexOf('className="tasks-rowlink"');
+    expect(linkAt).toBeGreaterThan(-1);
+    const link = ROW.slice(linkAt, ROW.indexOf("/>", linkAt));
+    expect(link).toContain("href={href}");
+
+    // AND IT STANDS ASIDE for a modified press: no preventDefault, no SPA
+    // navigation, and — the part that matters — no read mark, because ⌘-click
+    // means "for later" and clearing a badge for a tab nobody has read yet is
+    // exactly what a background open must not do.
+    expect(link).toContain("if (opensElsewhere(e)) return;");
+    expect(link.indexOf("if (opensElsewhere(e)) return;")).toBeLessThan(
+      link.indexOf("e.preventDefault();"),
+    );
+    expect(link.indexOf("e.preventDefault();")).toBeLessThan(link.indexOf("activate();"));
+
+    // The named Open chat button is still there behind the flag, still with its
+    // own stopPropagation, so it cannot double-fire with the link beneath it.
     const openBtn = ROW.indexOf('title="Open chat"');
     expect(openBtn).toBeGreaterThan(-1);
     const btn = ROW.slice(openBtn);
     expect(btn.indexOf("e.stopPropagation();")).toBeLessThan(
       btn.indexOf("openChat(chat);"),
     );
-    // And it no longer navigates behind tasks-lib's back: the bare href is gone
-    // from this file entirely, so there is no way left to open a thread without
-    // asking the intent first.
     expect(ROW).not.toContain("navigateUrl(href)");
-    expect(VIEWS).not.toContain("taskHref(");
+  });
+
+  it("gives the message row the same link, anchored on its own turn", () => {
+    // One rule, two levels: the task row links the thread, the message row links
+    // the turn — `msg=` and all — so ⌘-click stacks up a turn in a tab exactly as
+    // it stacks up a conversation.
+    expect(THREAD).toContain("const to = fix ? null : openMessageHref(task, m);");
+    const linkAt = THREAD.indexOf('className="tasks-rowlink"');
+    expect(linkAt).toBeGreaterThan(-1);
+    const link = THREAD.slice(linkAt, THREAD.indexOf("/>", linkAt));
+    expect(link).toContain("href={to}");
+    expect(link).toContain("if (opensElsewhere(e)) return;");
+    // A row that opens the FORM has no href and keeps the old role/tab stop; a
+    // PROJECTED occurrence addresses no turn and gets neither (openMessageHref).
+    expect(THREAD).toContain('role={to ? undefined : "button"}');
+    expect(THREAD).toContain("tabIndex={to ? undefined : 0}");
   });
 
   it("gives a per-message dot back when its own write is refused", () => {
@@ -4788,5 +4866,320 @@ describe("string helpers", () => {
     expect(tildePath("/opt/x", "")).toBe("/opt/x");
     expect(basename("/Users/me/x/")).toBe("x");
     expect(basename("/")).toBe("/");
+  });
+});
+
+// ---- which view is up --------------------------------------------------------
+
+describe("the view in the URL", () => {
+  it("reads the three views and ignores anything else", () => {
+    expect(viewFromSearch("?view=board")).toBe("board");
+    expect(viewFromSearch("view=calendar")).toBe("calendar");
+    expect(viewFromSearch("?view=list")).toBe("list");
+    // A typo or a stale link lands on the default rather than on an error.
+    expect(viewFromSearch("?view=gantt")).toBe("list");
+    expect(viewFromSearch("")).toBe("list");
+  });
+
+  it("falls back to the remembered view only when the URL is silent", () => {
+    expect(viewFromSearch("", "calendar")).toBe("calendar");
+    expect(viewFromSearch("?new=1", "board")).toBe("board");
+    // The URL outranks the memory — that is the whole point of a shared link.
+    expect(viewFromSearch("?view=list", "board")).toBe("list");
+  });
+
+  it("writes the param, and omits it for the default", () => {
+    expect(viewUrl("/tasks", "", "board")).toBe("/tasks?view=board");
+    expect(viewUrl("/tasks", "?view=board", "calendar")).toBe("/tasks?view=calendar");
+    // List is the default, so it is spelled `/tasks` and never `?view=list`.
+    expect(viewUrl("/tasks", "?view=board", "list")).toBe("/tasks");
+    expect(viewUrl("/tasks", "", "list")).toBe("/tasks");
+  });
+
+  it("keeps every other param across a switch", () => {
+    expect(viewUrl("/tasks", "?new=1&target=%2Ftmp", "board"))
+      .toBe("/tasks?new=1&target=%2Ftmp&view=board");
+    expect(viewUrl("/tasks", "?view=calendar&new=1", "list")).toBe("/tasks?new=1");
+  });
+
+  it("round-trips: what viewUrl writes, viewFromSearch reads", () => {
+    for (const v of ["list", "board", "calendar"] as const) {
+      const url = viewUrl("/tasks", "", v);
+      const q = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+      expect(viewFromSearch(q)).toBe(v);
+    }
+  });
+});
+
+// ---- a press that leaves this tab --------------------------------------------
+
+describe("opensElsewhere", () => {
+  it("says yes to every gesture that means a new tab or window", () => {
+    expect(opensElsewhere({ metaKey: true })).toBe(true);
+    expect(opensElsewhere({ ctrlKey: true })).toBe(true);
+    expect(opensElsewhere({ shiftKey: true })).toBe(true);
+    expect(opensElsewhere({ altKey: true })).toBe(true);
+    // Middle click, as onAuxClick reports it.
+    expect(opensElsewhere({ button: 1 })).toBe(true);
+  });
+
+  it("says no to the plain press this page handles itself", () => {
+    expect(opensElsewhere({})).toBe(false);
+    expect(opensElsewhere({ button: 0 })).toBe(false);
+    expect(opensElsewhere({ metaKey: false, ctrlKey: false, button: 0 })).toBe(false);
+  });
+});
+
+// ---- what the two views remember ---------------------------------------------
+// Three complaints, one shape (Akshil, 2026-08-18): a lane that opens ten cards
+// at a time, an Archive lane nailed shut, and a List that forgets everything the
+// moment you open one of its threads. The RULES are here; the source assertions
+// beside them check the views ask these functions rather than keeping a second
+// copy of the answer.
+
+/** The Board, ending where the card it draws begins. */
+const LANES = VIEWS.slice(
+  VIEWS.indexOf("export function TaskBoard("),
+  VIEWS.indexOf("function TaskCard("),
+);
+/** The List, ending where the row it draws begins. */
+const LIST = VIEWS.slice(
+  VIEWS.indexOf("export function TaskList("),
+  VIEWS.indexOf("function TaskNode("),
+);
+
+describe("a board lane's page size", () => {
+  it("opens on twenty cards and reveals twenty more", () => {
+    expect(VIEWS).toContain("const LANE_INITIAL_VISIBLE = 20;");
+    expect(VIEWS).toContain("const LANE_REVEAL = 20;");
+    // The button's label is arithmetic over the same constant, so it cannot say
+    // ten while twenty arrive.
+    expect(LANES).toContain("Show {Math.min(LANE_REVEAL, hidden)} more");
+  });
+});
+
+describe("which board lanes are rolled up", () => {
+  it("rolls up an empty lane and opens every other one, Archive included", () => {
+    // Archive was hard-coded closed. It is a lane like the others now: cards ⇒
+    // open, none ⇒ rolled up.
+    expect(laneCollapsed("archived", 3, {})).toBe(false);
+    expect(laneCollapsed("archived", 0, {})).toBe(true);
+    expect(laneCollapsed("upcoming", 0, {})).toBe(true);
+    expect(laneCollapsed("in_progress", 1, {})).toBe(false);
+  });
+
+  it("lets the reader's own choice outrank the rule, in both directions", () => {
+    expect(laneCollapsed("upcoming", 12, { upcoming: true })).toBe(true);
+    expect(laneCollapsed("archived", 0, { archived: false })).toBe(false);
+    // And a choice about ONE lane says nothing about its neighbours.
+    expect(laneCollapsed("done", 0, { upcoming: true })).toBe(true);
+  });
+
+  it("reads back only booleans it recognises, and never throws on junk", () => {
+    // What is in the store is a string written by someone else — an older build
+    // that wrote an ARRAY there, or a hand-edited devtools row.
+    expect(parseLaneChoices(null)).toEqual({});
+    expect(parseLaneChoices("not json")).toEqual({});
+    expect(parseLaneChoices('["archived"]')).toEqual({});
+    expect(parseLaneChoices('{"archived":true,"nonsense":true,"done":"yes"}')).toEqual({
+      archived: true,
+    });
+    expect(parseLaneChoices('{"upcoming":false}')).toEqual({ upcoming: false });
+  });
+
+  it("stores choices, not the board — an untouched lane keeps following the rule", () => {
+    // The distinction the old array-shaped key could not make: it recorded what
+    // was collapsed RIGHT NOW, defaults included, so the first visit froze every
+    // lane's state forever. Round-tripping a choice map keeps the absence of a
+    // choice absent.
+    const choices = parseLaneChoices(JSON.stringify({ archived: false }));
+    expect("upcoming" in choices).toBe(false);
+    expect(laneCollapsed("upcoming", 0, choices)).toBe(true);
+    expect(laneCollapsed("upcoming", 4, choices)).toBe(false);
+  });
+
+  it("is decided by laneCollapsed on the board, which stores only the toggle", () => {
+    expect(LANES).toContain("laneCollapsed(col.key, lane.length, choices)");
+    // The old snapshot key and its hard-coded Archive are gone.
+    expect(VIEWS).not.toContain("scheduled-board-collapsed");
+    expect(VIEWS).not.toContain('new Set<BoardColumn>(["archived"])');
+    // What is written is the RESULT of the press, for that one lane.
+    expect(LANES).toContain("const next = { ...cur, [key]: !nowCollapsed };");
+    expect(LANES).toContain("localStorage.setItem(LANE_CHOICE_KEY");
+  });
+});
+
+describe("what the List remembers between visits", () => {
+  it("remembers nothing at all when there is nothing stored", () => {
+    expect(parseListMemory(null)).toEqual({ expanded: [], scroll: 0 });
+    expect(parseListMemory("")).toEqual({ expanded: [], scroll: 0 });
+    expect(parseListMemory("{oops")).toEqual({ expanded: [], scroll: 0 });
+    expect(parseListMemory("[1,2]")).toEqual({ expanded: [], scroll: 0 });
+  });
+
+  it("keeps the task keys and the offset, and drops everything else", () => {
+    expect(
+      parseListMemory('{"expanded":["TASK-1",7,"TASK-2"],"scroll":420.5,"x":1}'),
+    ).toEqual({ expanded: ["TASK-1", "TASK-2"], scroll: 420.5 });
+    // A negative, infinite or non-numeric offset is not a place on a scrollbar.
+    expect(parseListMemory('{"scroll":-3}').scroll).toBe(0);
+    expect(parseListMemory('{"scroll":"120"}').scroll).toBe(0);
+    expect(parseListMemory('{"expanded":"TASK-1"}').expanded).toEqual([]);
+  });
+
+  it("restores the open rows and the scroll from THIS tab only", () => {
+    // sessionStorage: "where I was a moment ago" is true for this sitting, and a
+    // week-old offset restored into different rows is a surprise, not a memory.
+    expect(VIEWS).toContain("sessionStorage.getItem(LIST_MEMORY_KEY)");
+    expect(VIEWS).toContain("sessionStorage.setItem(LIST_MEMORY_KEY");
+    expect(VIEWS).not.toContain("localStorage.getItem(LIST_MEMORY_KEY)");
+    expect(LIST).toContain("new Set(memory.current.expanded)");
+    // The list's own scroller, not the window's — which is also why this cannot
+    // fight the chat's msg-anchor scroll on the other page.
+    expect(LIST).toContain(
+      '<div className="tasks-list" ref={listRef} onScroll={onScroll}>',
+    );
+    expect(LIST).toContain("el.scrollTop = top;");
+    // A row restored from memory was never toggled, so nothing fetched the rest
+    // of its thread; the restore makes that trip itself, once.
+    expect(LIST).toContain("if (task && threadView(task).more) void showMore(task);");
+  });
+
+  it("does not let the restore overwrite the offset it is restoring", () => {
+    // The restore is paid in instalments: rows grow as their threads land, so the
+    // layout effect reaches part of the wanted offset, then more of it. Those
+    // partial positions used to be written straight back into the memory, so a
+    // reader who left at 1200 and came back to a list that momentarily only
+    // reached 300 had 300 saved over it — the memory destroyed by restoring it.
+    //
+    // `settled` is how the two are told apart: the layout effect records every
+    // offset it sets, so an event on that offset is this code's own echo.
+    expect(LIST).toContain(
+      "const mine = settled.current !== null && Math.abs(el.scrollTop - settled.current) <= 1;",
+    );
+    // And a programmatic scroll leaves BEFORE the write — it neither stores an
+    // offset nor cancels what is still owed.
+    const scroll = LIST.slice(LIST.indexOf("const onScroll = () => {"));
+    const body = scroll.slice(0, scroll.indexOf("\n  };"));
+    expect(body).toContain("if (mine) return;");
+    expect(body.indexOf("if (mine) return;")).toBeLessThan(
+      body.indexOf("remember({ ...memory.current, scroll: el.scrollTop });"),
+    );
+    expect(body.indexOf("if (mine) return;")).toBeLessThan(body.indexOf("owed.current = null;"));
+  });
+
+  it("starts the restore deadline when rows arrive, not when the page mounts", () => {
+    // Tasks come from a fetch, so the component mounts against an empty list. A
+    // deadline armed at mount spent itself waiting for the rows it was meant to
+    // be measuring, and on a slow load the window was gone before the first row
+    // existed — the restore silently never happened.
+    expect(LIST).toContain("const hasRows = tasks.length > 0;");
+    const deadline = LIST.slice(LIST.indexOf("const t = setTimeout(() => {"));
+    expect(deadline.slice(0, deadline.indexOf("}, ["))).toContain("RESTORE_WINDOW_MS");
+    expect(LIST).toContain("if (!hasRows) return;");
+    // Armed off `hasRows`, which flips once, so the window opens once.
+    expect(LIST).toMatch(/return \(\) => clearTimeout\(t\);\s*\}, \[hasRows\]\);/);
+  });
+
+  it("forgets the offset when a filter empties the list, but not before it fills", () => {
+    // The empty state unmounts the scroller, and the scroller is the only thing
+    // that reports scrolling — so the offset from before the search narrowed sat
+    // there describing a list nobody can see, and clearing the search threw the
+    // reader back down to it.
+    expect(LIST).toContain("remember({ ...memory.current, scroll: 0 });");
+    // Nothing is owed either: a pending restore has nowhere to land.
+    const empty = LIST.slice(LIST.indexOf("if (hasRows || stale || !hadRows.current) return;"));
+    const body = empty.slice(0, empty.indexOf("}, [hasRows, stale]);"));
+    expect(body).toContain("owed.current = null;");
+    expect(body).toContain("settled.current = null;");
+    // ONLY for a list that emptied. On the first paint `tasks` is empty because
+    // the fetch is still out, and zeroing there would erase the very offset the
+    // restore exists to pay back.
+    expect(LIST).toContain("const hadRows = useRef(false);");
+    expect(LIST).toContain("if (hasRows) hadRows.current = true;");
+    // The empty state is asked the same question as everything else above it.
+    expect(LIST).toContain("if (!hasRows) {");
+    expect(LIST).not.toContain("if (tasks.length === 0) {");
+  });
+
+  it("keeps the offset when the poll FAILED, rather than when the data is empty", () => {
+    // A failed getTasks sets `tasks` to [] and raises tasksFailed — the page
+    // keeps its shape and says one quiet line over an empty list. To the List
+    // that looked exactly like a filter matching nothing, so one dropped request
+    // in a 20s poll permanently forgot where the reader was: the worst possible
+    // moment for it, since the rows are back in twenty seconds and the reader is
+    // dropped at the top of a list they were halfway down.
+    //
+    // `stale` is the poll vouching for the emptiness, and an empty nobody
+    // vouches for changes nothing.
+    expect(LIST).toContain("if (hasRows || stale || !hadRows.current) return;");
+    expect(LIST).toContain("stale?: boolean;");
+    expect(LIST).toContain("stale = false,");
+    // It is the failure flag that is wired in, and only for the List — the Board
+    // and the Calendar keep no scroll memory to lose.
+    expect(SCHEDULED).toMatch(/<TaskList[\s\S]*?stale=\{tasksFailed\}/);
+    // And tasksFailed really is the failed-poll arm of getTasks.
+    const poll = SCHEDULED.slice(SCHEDULED.indexOf("getTasks().then("));
+    const arms = poll.slice(0, poll.indexOf("getScheduleQueue()"));
+    expect(arms).toContain("setTasksFailed(false);");
+    expect(arms).toContain("setTasks([]);");
+    expect(arms).toContain("setTasksFailed(true);");
+    expect(arms.indexOf("setTasksFailed(false);")).toBeLessThan(
+      arms.indexOf("setTasksFailed(true);"),
+    );
+  });
+
+  it("pays the preserved offset back when the rows return from a failed poll", () => {
+    // Holding the memory across a failed poll only got the reader halfway there.
+    // `owed` is seeded once at mount and cleared the moment the restore is paid,
+    // so by the time a poll fails there is nothing owed any more: the rows came
+    // back, the scroller remounted at zero, and the preserved offset sat in the
+    // store with nothing left to read it. The reader landed at the top — the
+    // exact outcome preserving the memory was supposed to prevent.
+    //
+    // A stale empty ARMS the restore again, rather than merely not destroying it.
+    expect(LIST).toContain("const staleEmptied = useRef(false);");
+    expect(LIST).toContain("if (!hasRows && stale && hadRows.current) staleEmptied.current = true;");
+    const rearm = LIST.slice(LIST.indexOf("if (!hasRows || !staleEmptied.current) return;"));
+    const body = rearm.slice(0, rearm.indexOf("}, [hasRows]);"));
+    // Re-seeded from the memory that the `stale` guard kept intact.
+    expect(body).toContain("owed.current = memory.current.scroll || null;");
+    // The scroller that comes back is a NEW element at zero, so the offset this
+    // code last set belonged to the old one and cannot be compared against.
+    expect(body).toContain("settled.current = null;");
+    // Fires once per recovery, not once per poll while the rows are back.
+    expect(body).toContain("staleEmptied.current = false;");
+
+    // ORDER IS THE WHOLE THING: the re-arm is a layout effect placed ABOVE the
+    // one that pays the restore, so both run in the same commit and the payer
+    // reads an `owed` that has already been re-seeded.
+    const rearmAt = LIST.indexOf("if (!hasRows || !staleEmptied.current) return;");
+    const payAt = LIST.indexOf("if (owed.current === null || !el) return;");
+    expect(rearmAt).toBeGreaterThan(-1);
+    expect(rearmAt).toBeLessThan(payAt);
+    // Both are layout effects — a passive one would paint the top of the list
+    // first and then jump.
+    expect(LIST.slice(rearmAt - 200, rearmAt)).toContain("useLayoutEffect");
+
+    // And a fresh deadline comes with it: the window is armed off `hasRows`, so
+    // every false→true gets one, not just the first load.
+    expect(LIST).toMatch(/if \(!hasRows\) return;\s*const t = setTimeout\(/);
+    expect(LIST).toMatch(/return \(\) => clearTimeout\(t\);\s*\}, \[hasRows\]\);/);
+  });
+
+  it("still lets the reader's own scroll cancel a recovery restore", () => {
+    // The recovery re-arms `owed`, and the ONE thing that must still outrank it
+    // is the reader deciding where to be. That rule lives in a single place, so
+    // re-arming cannot have quietly bought an exception to it: onScroll clears
+    // `owed` on any scroll that is not this code's own echo, whether that scroll
+    // arrives during a first-load restore or a recovery one.
+    const scroll = LIST.slice(LIST.indexOf("const onScroll = () => {"));
+    const body = scroll.slice(0, scroll.indexOf("\n  };"));
+    expect(body).toContain("if (mine) return;");
+    expect(body).toContain("owed.current = null;");
+    // Nothing in the recovery path re-seeds owed on a later render: it is guarded
+    // by a ref that it clears itself, so a user scroll is not undone by the next
+    // poll landing.
+    expect(LIST).not.toMatch(/owed\.current = memory\.current\.scroll[\s\S]{0,400}staleEmptied\.current = true/);
   });
 });
