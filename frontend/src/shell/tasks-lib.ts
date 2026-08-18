@@ -2445,14 +2445,17 @@ export function laneRolledUp(
 // this actually is.
 //
 // THE ORDER IS NOT THE BOARD'S, and that difference stays. A board is read left
-// to right as a pipeline (Upcoming, In Progress, Done, Failed, Archive); a list
-// is read top to bottom as work owed, so the ranks that want a person's hands
-// come first and the settled ones sink:
+// to right as a pipeline; a list is read top to bottom as work owed. The two
+// SWAPPED Done and Failed on 2026-08-18 (Akshil, "swap places for failed and
+// done status in list and kanban board") — each away from what it had, so the
+// difference between the views survived the change:
 //
-//   Upcoming → In Progress → Failed → Done → Archive
+//   Upcoming → In Progress → Done → Failed → Archive
 //
-// Failed above Done because a broken run is still owed, and Done above Archive
-// because Archive is not a status, it is where things go to stop being read.
+// Done above Failed here: what a reader comes to this list for is the output
+// waiting to be read, and a failure is a thing to come back to rather than the
+// first thing in the way of everything else. Archive stays last either way —
+// it is not a status, it is where things go to stop being read.
 //
 // WITHIN a rank nothing is re-sorted: the server's order is the list's order and
 // always has been (TaskList takes `tasks` "in the SERVER's order"). A stable
@@ -2466,8 +2469,8 @@ export function laneRolledUp(
 export const LIST_ORDER: BoardColumn[] = [
   "upcoming",
   "in_progress",
-  "failed",
   "done",
+  "failed",
   "archived",
 ];
 

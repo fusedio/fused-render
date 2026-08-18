@@ -268,11 +268,19 @@ export function assignLanes<T extends { time: Date }>(
 // consistent." Failure used to be a red ring inside Done — a visual with no
 // word — which meant the calendar had to keep its own vocabulary to say what
 // had happened. It says it here instead, once, for every view.
+//
+// FAILED BEFORE DONE, swapped on 2026-08-18 (Akshil, "swap places for failed and
+// done status in list and kanban board"). The board is read left to right, and a
+// lane that wants a person's hands belongs on the near side of one that wants
+// only their eyes: a failed run needs a decision, a done run needs reading. The
+// LIST swapped the other way in the same pass (tasks-lib.LIST_ORDER puts Done
+// above Failed), and that is deliberate — the two views rank the same five facts
+// for two different questions, and neither order is the other's.
 export const BOARD_COLUMNS = [
   { key: "upcoming", label: "Upcoming" },
   { key: "in_progress", label: "In Progress" },
-  { key: "done", label: "Done" },
   { key: "failed", label: "Failed" },
+  { key: "done", label: "Done" },
   { key: "archived", label: "Archive" },
 ] as const;
 
