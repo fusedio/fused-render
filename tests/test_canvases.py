@@ -65,6 +65,11 @@ def main():
                 f.write(content)
         return
     if plain[:2] == ["canvas", "push"]:
+        lines = scenario.get("push_fail_lines")
+        if lines:
+            for ln in lines:
+                sys.stderr.write(ln + "\n")
+            sys.exit(1)
         return
     if plain[:2] == ["canvas", "create"]:
         return
@@ -539,6 +544,103 @@ def test_sync_push_failure_reports_error(harness, monkeypatch):
         time.sleep(0.05)
     assert status and status["push_state"] == "error"
     assert "push exploded" in status["error"]
+
+
+_VALIDATION_LINES = [
+    "error: node 'buffer' has no source file (buffer.py missing)",
+    "error: edge references unknown node 'join'",
+    "error: widget_map.json: {{udf.buffer}} does not resolve",
+    "error: widget_map.json: param 'radius' not in UDF signature",
+    "Error: Canvas validation failed with 4 error(s). "
+    "Fix the errors or use --no-validate to push anyway.",
+]
+
+
+def _fail_push_with_validation(harness, monkeypatch) -> dict:
+    """Drive the watcher into a failed push whose stderr is a full
+    validation report; return the error status."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    harness.set_scenario({"push_fail_lines": _VALIDATION_LINES})
+    (harness.root / "alpha" / "udf.py").write_text("x = 1\n", encoding="utf-8")
+    deadline = time.time() + 5
+    status = None
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["push_state"] == "error":
+            break
+        time.sleep(0.05)
+    assert status and status["push_state"] == "error", status
+    return status
+
+
+def test_push_validation_failure_keeps_the_full_transcript(harness, monkeypatch):
+    # cli_error keeps ONE line — right for the pill, wrong for validation,
+    # where the lines that name the broken files are all above the summary.
+    # error_detail carries the verbatim transcript; a later good push clears it.
+    status = _fail_push_with_validation(harness, monkeypatch)
+    assert status["error_detail"] == _VALIDATION_LINES
+    assert "Canvas validation failed with 4 error(s)" in status["error"]
+
+    harness.set_scenario({})
+    (harness.root / "alpha" / "udf.py").write_text("x = 2\n", encoding="utf-8")
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["push_state"] == "idle" and status["push_seq"] >= 1:
+            break
+        time.sleep(0.05)
+    assert status["push_state"] == "idle", status
+    assert status["error_detail"] == []
+    assert status["error"] is None
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_fix_endpoint_requires_a_failing_push(harness, monkeypatch):
+    harness.log_in()
+    # No watcher at all → nothing to fix.
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 409
+    # A healthy watcher → still nothing to fix.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 409
+    # And the endpoint is write-guarded like every other canvases POST.
+    assert harness.client.post("/api/canvases/fix", json={"name": "alpha"}).status_code == 403
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_fix_endpoint_spawns_a_primed_claude_session(harness, monkeypatch):
+    from fused_render import claude_spawn
+
+    _fail_push_with_validation(harness, monkeypatch)
+    seen = {}
+    monkeypatch.setattr(
+        claude_spawn, "spawn_helper",
+        lambda target, prompt, mode, session_id="": (
+            seen.update(target=target, prompt=prompt, mode=mode),
+            {"run_id": "run-77"})[1])
+    monkeypatch.setattr(claude_spawn, "record_session_when_ready",
+                        lambda agent, run_id, on_tick=None: None)
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: object())
+
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "run_id": "run-77"}
+    # Session lands on the clone dir, unattended-capable, primed with the
+    # verbatim transcript plus the guard rails (validate loop, never push).
+    assert seen["target"] == str(harness.root / "alpha")
+    assert seen["mode"] == "auto"
+    for line in _VALIDATION_LINES:
+        assert line in seen["prompt"]
+    assert "fused workbench canvas validate" in seen["prompt"]
+    assert "Do NOT run `fused workbench canvas push`" in seen["prompt"]
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
 def test_token_external_cli_reads_store(harness):

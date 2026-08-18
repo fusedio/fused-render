@@ -41,6 +41,9 @@ export interface SyncStatus {
   pull_seq: number;
   last_pull_at: number | null;
   error: string | null;
+  /** Full per-line CLI output of the failing push (e.g. one validation
+   *  error per line); empty when the last push succeeded. */
+  error_detail: string[];
 }
 
 export const getCanvasesStatus = () => getJson<CanvasesStatus>("/api/canvases/status");
@@ -72,6 +75,11 @@ export const stopSync = (name: string) =>
 
 export const getSyncStatus = (name: string) =>
   getJson<SyncStatus>(`/api/canvases/sync/status?name=${encodeURIComponent(name)}`);
+
+/** Spawn a Claude session on the canvas clone primed with the failing
+ *  push's errors; attach the chat iframe with the returned run_id. */
+export const fixWithClaude = (name: string) =>
+  postJson<{ ok: boolean; run_id: string }>("/api/canvases/fix", { name });
 
 export const getAccessToken = () =>
   getJson<{ access_token: string }>("/api/canvases/token", GUARD);
