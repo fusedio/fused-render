@@ -107,3 +107,96 @@ def test_tree_titles_hold_one_line():
     css = _read(_CSS)
     assert _decl(css, ".schedule-tv-title", "white-space") == "nowrap"
     assert _decl(css, ".schedule-tv-title", "text-overflow") == "ellipsis"
+
+
+# -- 3. the calendar popover and its chips -------------------------------------
+# The popover is the calendar's whole detail surface, and three of its claims
+# are pixels rather than markup.
+
+_CAL = os.path.join(REPO_ROOT, "frontend", "src", "shell", "ScheduleCalendar.tsx")
+_TOKENS = os.path.join(REPO_ROOT, "frontend", "src", "styles", "tokens.css")
+
+
+def test_the_popover_title_outranks_the_facts_under_it():
+    """Title over description as ONE written block, and the title a real step
+    bigger than the 12px fact rows below — at 14px against 12px it was the same
+    size as its own metadata, which is not a hierarchy."""
+    css = _read(_CSS)
+    size = _decl(css, ".schedule-pop-write .schedule-pop-title", "font-size")
+    assert size and int(re.match(r"(\d+)px", size).group(1)) >= 16
+    rows = _decl(css, ".schedule-pop-rows", "font-size")
+    assert rows == "12px"
+    assert _decl(css, ".schedule-pop-desc", "color") == "var(--fg-muted)"
+
+
+def test_the_description_is_prose_and_wears_no_icon():
+    """It is read, not recognised, so it does not belong in the icon column with
+    the folder and the repeat rule."""
+    cal = _read(_CAL)
+    assert '<p className="schedule-pop-desc">{task.description}</p>' in cal
+    # The notes glyph is no longer led by the description row anywhere.
+    assert "{ICON_NOTES}" not in cal
+
+
+def test_the_occurrence_row_does_not_repeat_the_panel():
+    """A popover about ONE task printed its title again on the row and its
+    status word again beside it. The ring carries the state; the tooltip carries
+    the word."""
+    cal = _read(_CAL)
+    assert '<span className="schedule-cal-msg-state">' not in cal
+    # The body is kept only when it says something the title has not.
+    assert 'const showBody = body && body !== headline ? body : "";' in cal
+    assert "status.label" in cal, "the word must survive in the row's tooltip"
+
+
+@pytest.mark.parametrize("status,token", [
+    ("upcoming", "--status-upcoming"),
+    ("in_progress", "--status-progress"),
+    ("done", "--status-done"),
+    ("failed", "--status-failed"),
+    ("archived", "--status-archived"),
+])
+def test_every_status_pill_wears_its_own_status_token(status, token):
+    """One vocabulary means one palette. The pill and the ring beside it read
+    the SAME token, so green cannot mean two things two lines apart."""
+    css = _read(_CSS)
+    assert _decl(css, f".schedule-state--{status}", "--pill") == f"var({token})"
+    # And the token is real, not a name nothing defines.
+    assert f"{token}:" in _read(_TOKENS)
+
+
+def test_the_pill_tints_rather_than_fills():
+    """Text first: the label keeps the hue at full strength and the hue sits
+    behind it at a weight that survives both themes. A saturated fill would need
+    a second text colour per status per theme."""
+    css = _read(_CSS)
+    selector = (".schedule-state--upcoming,\n.schedule-state--in_progress,\n"
+                ".schedule-state--done,\n.schedule-state--failed,\n"
+                ".schedule-state--archived")
+    assert _decl(css, selector, "color") == "var(--pill)"
+    background = _decl(css, selector, "background")
+    assert background and background.startswith("color-mix(")
+
+
+def test_a_running_chip_says_so_and_stops_saying_it_on_request():
+    """The calendar has no In Progress lane, so the chip itself has to carry
+    the one fact that is only true while you are looking at it. Motion is the
+    signal — every static property on a chip is already spent on the project
+    hue, the projected dashes and the past fade — and a reader who has asked for
+    less of it still gets a static highlight."""
+    css = _read(_CSS)
+    assert "@keyframes schedule-cal-shimmer" in css
+    running = ".schedule-cal .schedule-cal-chip.is-running::after"
+    assert _decl(css, running, "animation") == "schedule-cal-shimmer 2s linear infinite"
+    # It must not eat the chip's own clicks: the chip is a button.
+    assert _decl(css, running, "pointer-events") == "none"
+    # The fallback is INSIDE a reduced-motion block, not merely after one: the
+    # whole point is that it applies only to the reader who asked for it.
+    blocks = re.findall(
+        r"@media \(prefers-reduced-motion: reduce\)\s*\{(.*?)\n\}\n",
+        css, re.DOTALL)
+    guarded = [b for b in blocks if "is-running" in b]
+    assert guarded, "the static fallback must sit inside a reduced-motion block"
+    assert "animation: none" in guarded[0]
+    # And the rule hangs off a class the view actually sets.
+    assert 'isRunningNow(chip.task, chip.anchor) ? " is-running" : ""' in _read(_CAL)
