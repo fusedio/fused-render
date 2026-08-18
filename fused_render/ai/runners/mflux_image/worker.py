@@ -241,7 +241,17 @@ def load(model_id, fetched):
     #     the same run dies with `There is no Stream(cpu, 2)`. Pinning cpu alone
     #     renders. Both are pinned; see `_pin_stream`.
     #   * With `_pin_stream` on both threads the same run returns a 256x256 PNG
-    #     in ~8.5s, and `mx.default_device()` is still `Device(gpu, 0)`.
+    #     and `mx.default_device()` is still `Device(gpu, 0)`. Both timings below
+    #     are `generate`'s OWN clock — the render, with the model already loaded
+    #     and the load excluded: ~8.5s for the FIRST render after a load (its
+    #     first step alone is ~6s, Metal compiling kernels), ~3.3-3.4s for every
+    #     warm render after that. Compare like for like when re-running: the
+    #     first number is not reproducible twice in one process.
+    #   * A different configuration, for scale rather than comparison: the same
+    #     fix driven end-to-end through the server at 512x512 / 4 steps, warm HF
+    #     cache, produced a 512x512 RGB PNG with per-step times 8.09s, 6.09s,
+    #     5.50s, 5.78s and ~51s of total wall clock INCLUDING the model load —
+    #     and no `libc++abi` or `Stream(cpu` line in the worker log.
     #
     # **Whether the LIVE PREVIEW is on changes only how the failure looks, not
     # whether it happens.** mflux calls `ctx.in_loop(t, latents)` one line BEFORE
