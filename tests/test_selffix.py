@@ -1,4 +1,4 @@
-"""Self-fix — a Claude session on the app's own installation (SPEC §43, D341).
+"""Self-fix — a Claude session on the app's own installation (SPEC §43, D343).
 
 What is actually at stake here is a promise the UI makes on the app's behalf:
 *this copy has been changed, and reinstalling gets you a clean one.* Both halves
