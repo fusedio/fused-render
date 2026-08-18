@@ -178,15 +178,29 @@ def augmented_path() -> str:
     return os.pathsep.join(parts)
 
 
-def _executable(path: str) -> bool:
+def executable(path: str) -> bool:
     """Whether `path` is a file we could actually exec.
 
-    isfile AND access(X_OK), because the resolvers this replaces disagreed:
-    some checked only isfile (a non-executable file shadows a real install
-    further down the list) and some only access (which answers False for a
-    directory, but also for a file whose bit is merely unset by a broken
-    install — worth skipping past, not worth stopping on)."""
-    return os.path.isfile(path) and os.access(path, os.X_OK)
+    isfile AND the exec bit, because the resolvers this replaces disagreed:
+    some checked only isfile (so a non-executable file shadows a real install
+    further down the list, and then fails to spawn) and some only access.
+
+    PUBLIC, and `server/ai.py:_claude_bin` calls it rather than testing isfile
+    itself. The two now walk the same candidate list, so a check that differed
+    between them would put the health report and the spawn on different
+    binaries — health calling the install ready while the session dies on the
+    dud, which is precisely the contradiction this module exists to end.
+
+    The exec bit is only consulted off Windows. There it means nothing —
+    `os.access(X_OK)` is true for any existing file, so the test would be
+    isfile twice — and what actually decides runnability is the extension,
+    which the candidate list spells out (`.exe` ahead of `.cmd`). Skipping it
+    explicitly rather than relying on that no-op also keeps this honest under a
+    test that simulates Windows on a POSIX filesystem.
+    """
+    if not os.path.isfile(path):
+        return False
+    return os.name == "nt" or os.access(path, os.X_OK)
 
 
 def _shell_probe() -> Optional[str]:
@@ -218,7 +232,7 @@ def _shell_probe() -> Optional[str]:
         # `where` equivalent adds nothing over PATH + the candidate list.
         return None
     shell = os.environ.get("SHELL") or "/bin/bash"
-    if not _executable(shell):
+    if not executable(shell):
         return None
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONHOME", "PYTHONPATH")}
@@ -235,7 +249,7 @@ def _shell_probe() -> Optional[str]:
             # `command -v` may answer with a shell function or alias rather
             # than a path; only an executable file is something we can spawn.
             cand = line.strip()
-            if cand and _executable(cand):
+            if cand and executable(cand):
                 return cand
     return None
 
@@ -270,7 +284,7 @@ def resolve(allow_shell: bool = True) -> tuple:
         return found, "path"
     for candidate in candidates():
         path = os.path.expanduser(os.path.expandvars(candidate))
-        if _executable(path):
+        if executable(path):
             return path, "candidate"
     # One more pass over the candidate dirs through `which`, which is not
     # redundant on Windows: PATHEXT resolution is how a `claude.cmd` beside a
@@ -401,7 +415,7 @@ def _measure(allow_shell: bool = True) -> dict:
     # during resolution — `which` tests access(X_OK) itself, and the direct probe
     # is `_executable` — while an override is taken entirely on faith, which is
     # exactly why it is the one that can be wrong.
-    usable = bool(path) and (source != "override" or _executable(path))
+    usable = bool(path) and (source != "override" or executable(path))
     return {
         "found": usable,
         "path": path,
@@ -473,21 +487,32 @@ def warm_in_background() -> None:
     threading.Thread(target=_run, daemon=True, name="claude-health").start()
 
 
-def summary() -> dict:
-    """The snapshot without its cache bookkeeping — the endpoint's payload.
+def _public(data: dict) -> dict:
+    """A snapshot without its cache bookkeeping — the endpoint's payload shape.
 
     `fingerprint` is dropped: it is how this module decides whether to re-probe
     and means nothing to a caller, and it carries the machine's whole PATH,
     which has no business in a browser.
     """
-    data = snapshot()
     return {k: v for k, v in data.items() if k != "fingerprint"}
 
 
+def summary() -> dict:
+    """The cached snapshot, as the endpoint answers it."""
+    return _public(snapshot())
+
+
 def summary_refreshed() -> dict:
-    """`summary()` after a forced re-measure."""
-    snapshot(refresh=True)
-    return summary()
+    """`summary()` after a forced re-measure.
+
+    Returns the measurement it just took, rather than re-reading through
+    `summary()`. Two reasons, and the first is a bug: a cache write that failed
+    (an unwritable home, which this module deliberately tolerates) would leave
+    `summary()` re-reading the OLD file, so "Check again" would answer with the
+    snapshot the user pressed the button to get past. The second is simply that
+    re-reading costs a second full probe whenever there is no cache to read.
+    """
+    return _public(snapshot(refresh=True))
 
 
 def as_json(value: Any) -> str:  # pragma: no cover - debugging aid

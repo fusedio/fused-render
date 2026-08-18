@@ -372,6 +372,44 @@ def test_refresh_re_probes_even_on_a_valid_cache(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
+def test_refresh_answers_with_the_measurement_it_just_took(tmp_path, monkeypatch):
+    """"Check again" must never answer with the snapshot it was pressed to get
+    past.
+
+    An unwritable home is tolerated by design, so a refresh that re-read through
+    the cache would serve the STALE file — the user installs Claude Code, presses
+    the button, and is told again that it is missing (Bugbot #621).
+    """
+    bin_path = _fake_cli(tmp_path)
+    versions = iter(["1.0.88", "2.1.220"])
+    monkeypatch.setattr(claude_health, "probe_version", lambda p: next(versions))
+
+    # First measurement: nothing on PATH, an old CLI. This one lands in the cache.
+    monkeypatch.setenv("PATH", os.path.dirname(bin_path))
+    assert claude_health.summary()["version"] == "1.0.88"
+
+    # Now the cache cannot be updated — and the refresh must still answer fresh.
+    monkeypatch.setattr(claude_health.storage, "write_json",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("read-only")))
+    refreshed = claude_health.summary_refreshed()
+    assert refreshed["version"] == "2.1.220"
+    assert refreshed["outdated"] is False
+    # and it is still the endpoint's shape, not the internal one
+    assert "fingerprint" not in refreshed
+
+
+def test_refresh_does_not_probe_twice(tmp_path, monkeypatch):
+    """The old form measured, then re-read through summary() — which probed a
+    second time whenever there was no cache to read."""
+    bin_path = _fake_cli(tmp_path)
+    monkeypatch.setenv("PATH", os.path.dirname(bin_path))
+    calls = []
+    monkeypatch.setattr(claude_health, "probe_version",
+                        lambda p: calls.append(p) or "2.1.220")
+    claude_health.summary_refreshed()
+    assert len(calls) == 1
+
+
 def test_a_corrupt_cache_is_re_measured_not_raised(tmp_path, monkeypatch):
     """A cache is disposable and entirely re-derivable, so a damaged one has
     nothing to recover and nothing to report. (User DATA is the opposite case

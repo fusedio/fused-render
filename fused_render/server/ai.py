@@ -190,7 +190,14 @@ def _claude_bin() -> str | None:
         # expandvars for the %VAR% Windows entries, expanduser for the ~ POSIX
         # ones; each is a no-op on the other platform's shape.
         path = os.path.expanduser(os.path.expandvars(candidate))
-        if os.path.isfile(path):
+        # claude_health.executable, NOT a local isfile. This walks the SAME list
+        # claude_health.resolve does, so a check that differed between them would
+        # put the health report and the spawn on different binaries: a
+        # non-executable dud early in the list (a truncated download, a botched
+        # install) is skipped there and taken here, so the first-run strip would
+        # call the install ready while every session died on the dud. That is the
+        # exact contradiction the shared list was introduced to end.
+        if claude_health.executable(path):
             return path
     return None
 

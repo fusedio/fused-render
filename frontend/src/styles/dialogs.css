@@ -209,8 +209,15 @@
 }
 
 /* Same quiet-control treatment as .trouble-actions — see the note there on why
-   these are peers in a row and not text links. */
-.claude-health-head-actions > button {
+   these are peers in a row and not text links.
+ *
+ * :not(.claude-health-close) is load-bearing, not defensive. `.x > button` is
+ * (0,1,1) and `.claude-health-close` is (0,1,0), so WITHOUT it this rule wins
+ * every property they share and the dismiss ✕ silently takes the bordered pill
+ * the rule below is written to keep off it. Excluding it here rather than
+ * out-specifying it there keeps the intent readable: this is the treatment for
+ * the ACTION buttons, and the ✕ is not one. */
+.claude-health-head-actions > button:not(.claude-health-close) {
   padding: 3px 10px;
   font: inherit;
   font-size: 12px;
@@ -221,12 +228,12 @@
   cursor: pointer;
 }
 
-.claude-health-head-actions > button:hover:not(:disabled) {
+.claude-health-head-actions > button:not(.claude-health-close):hover:not(:disabled) {
   background: var(--ctl-quiet-bg-hover);
   border-color: var(--ctl-quiet-border-hover);
 }
 
-.claude-health-head-actions > button:disabled {
+.claude-health-head-actions > button:not(.claude-health-close):disabled {
   cursor: default;
   color: var(--fg-muted);
 }

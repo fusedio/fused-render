@@ -995,7 +995,42 @@ def test_claude_bin_falls_back_to_install_dirs(monkeypatch, tmp_path):
 
     assert _server_ai._claude_bin() is None  # nothing installed anywhere
     bin_path.write_text("#!/bin/sh\n")
+    bin_path.chmod(0o755)
     assert _server_ai._claude_bin() == str(bin_path)
+
+
+def test_claude_bin_skips_a_non_executable_dud(monkeypatch, tmp_path):
+    """A dud early in the list must not shadow a real install further down.
+
+    The spawn and the health report walk the SAME candidate list now, and
+    claude_health.resolve skips a non-executable file. Testing only isfile here
+    would take the dud the health probe rejected — so the first-run strip would
+    call the install ready while every session died on the dud (Bugbot #621).
+    """
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    dud = home / ".local" / "bin" / "claude"          # first in the list
+    dud.write_text("truncated download")
+    dud.chmod(0o644)
+    (home / ".bun" / "bin").mkdir(parents=True)
+    real = home / ".bun" / "bin" / "claude"           # later in the list
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o755)
+
+    monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(_server_ai.os.path, "expanduser",
+                        lambda p: p.replace("~", str(home), 1))
+    monkeypatch.setattr(_server_ai.os, "name", "posix")
+
+    assert _server_ai._claude_bin() == str(real)
+    # ...and it is the same answer the health probe gives, which is the point.
+    from fused_render import claude_health
+
+    monkeypatch.setattr(claude_health.os.path, "expanduser",
+                        lambda p: p.replace("~", str(home), 1))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert claude_health.resolve(allow_shell=False)[0] == str(real)
 
 
 def test_posix_candidates_are_the_documented_install_locations():
