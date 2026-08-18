@@ -233,16 +233,21 @@ const STATUS_LABELS: Record<BoardColumn, string> = Object.fromEntries(
  * signal would let a dead turn read as a clean one.
  *
  * SHAPE is the read-state (2026-08-18). The centre dot used to mean "settled" and
- * was drawn on every Done and Failed ring; it now means "settled AND not looked at
- * yet", and a read one is hollow. That is the whole of the unread vocabulary on
- * this page — the grey dot that used to trail the title is gone, because a row
- * carrying a ring AND a dot a few characters apart makes a reader decode two marks
- * to answer one question. Colour did not move, so nothing was traded: the ring
- * still names its terminal state in the hue it always did.
+ * was drawn on every Done and Failed ring; it now means "not looked at yet", and a
+ * read one is hollow. That is the whole of the unread vocabulary on this page — the
+ * grey dot that used to trail the title is gone, because a row carrying a ring AND
+ * a dot a few characters apart makes a reader decode two marks to answer one
+ * question. Colour did not move, so nothing was traded: the ring still names its
+ * state in the hue it always did.
  *
- * The dot is deliberately only offered on the terminal columns (see the CSS): a
- * task that has not finished has nothing to have been read, which is also exactly
- * what the server means by unread.
+ * The dot is drawn on EVERY column, and the CSS gate is `--unread` alone. It was
+ * scoped to the terminal two for a few hours the same day, on the reasoning that
+ * nothing is unread until it has finished — but a recurring or rescheduled task
+ * sits in Upcoming, its next run ahead of it, while its thread still holds output
+ * from a past run nobody has read. So the combination is real, and the gate drew a
+ * hollow ring under a tooltip that said "1 unread". Which states can occur is the
+ * server's business and taskUnread's; this component's business is to draw what it
+ * is handed, and the stylesheet's is not to have an opinion about the lane.
  *
  * `unread` draws the dot. `count`, when given, is what the mark stands for and
  * turns into the tooltip — "3 unread" — and it is passed by CONTAINERS only: a

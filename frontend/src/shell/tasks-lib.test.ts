@@ -1489,27 +1489,36 @@ describe("the unread mark", () => {
     }
   });
 
-  it("gates that centre on UNREAD, not on being settled, in both stylesheets", () => {
+  it("gates that centre on UNREAD ALONE — every lane, no exceptions", () => {
     // The dot used to be drawn on every Done and Failed ring and meant "this is
-    // over"; it now means "over AND not looked at". Both stylesheets define it —
-    // schedule.css for Done, tasks.css for the Failed lane it added — and BOTH
-    // have to carry the same gate or a Failed row keeps a permanent dot.
-    expect(SCHEDULE_CSS).toMatch(
-      /\.schedule-ring--failed\.schedule-ring--unread::after,\n\.schedule-ring--done\.schedule-ring--unread::after \{/,
-    );
-    expect(TASKS_CSS).toMatch(/\.schedule-ring--failed\.schedule-ring--unread::after \{/);
-    // No ungated `::after` survives in either file: that is the rule that would
-    // silently re-fill every settled ring.
+    // over"; it now means "not looked at", and the selector names no lane.
+    //
+    // It DID name two for a few hours on 2026-08-18, on the reasoning that
+    // nothing is unread before it has finished. QA found the hole the same day: a
+    // recurring or rescheduled task sits in Upcoming, its next run ahead of it,
+    // while its thread still holds output from a past run nobody has read. The
+    // ring got `--unread` and a tooltip saying "1 unread", and no rule matched, so
+    // it was drawn hollow — a tooltip contradicting the glyph it hangs on.
     const css = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(SCHEDULE_CSS).toMatch(/\n\.schedule-ring--unread::after \{/);
+    // No LANE may appear beside `--unread` on that pseudo, in either file: that
+    // is the exact shape of the bug, and it is the shape a well-meaning "the dot
+    // only makes sense on Done" edit would reintroduce.
     for (const src of [TASKS_CSS, SCHEDULE_CSS]) {
+      expect(css(src)).not.toMatch(/\.schedule-ring--[a-z_]+\.schedule-ring--unread::after/);
+      expect(css(src)).not.toMatch(/\.schedule-ring--unread\.schedule-ring--[a-z_]+::after/);
+      // ...and no UNGATED one either, which would re-fill every read ring.
       expect(css(src)).not.toMatch(/\.schedule-ring--(done|failed)::after/);
     }
-    // And only the TERMINAL columns are offered one — the server marks nothing
-    // unread until it has finished, so a filled In Progress ring is a state that
-    // cannot occur and the selectors keep it that way.
-    for (const lane of ["upcoming", "in_progress", "archived"] as const) {
-      expect(css(SCHEDULE_CSS)).not.toContain(`.schedule-ring--${lane}.schedule-ring--unread`);
-    }
+    // One rule, once. tasks.css used to restate it for the Failed lane it added;
+    // with no lane in the selector there is nothing left for it to widen, and a
+    // second copy would only ever go stale.
+    expect(css(TASKS_CSS)).not.toContain("schedule-ring--unread::after");
+    // Twice in schedule.css and no more: the rule itself, and the calendar's
+    // size override for its 11px ring — which has to track the same selector or a
+    // popover row keeps an 8px dot in an 11px ring.
+    expect((css(SCHEDULE_CSS).match(/\.schedule-ring--unread::after/g) ?? []).length).toBe(2);
+    expect(css(SCHEDULE_CSS)).toContain(".schedule-cal-popover .schedule-ring--unread::after");
   });
 
   it("fills a TASK row's ring from its whole thread, and names the count", () => {
@@ -2202,7 +2211,7 @@ describe("the status ring's five hues", () => {
     // the ring's own `currentColor` rather than any colour of its own. That is the
     // last of the reason the hue vocabulary is exactly five: nothing on this page
     // is painted to mean "new".
-    const centre = block(SCHEDULE_CSS, ".schedule-ring--done.schedule-ring--unread::after");
+    const centre = block(SCHEDULE_CSS, ".schedule-ring--unread::after");
     expect(centre).toContain("background: currentColor");
     expect(centre).not.toContain("--activity");
     expect(centre).not.toContain("--fg-muted");

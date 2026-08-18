@@ -706,24 +706,22 @@
 }
 
 /* -- Failed, the fifth lane ----------------------------------------------------
-   schedule.css already paints `.schedule-ring--failed` red — it was the
-   modifier that repainted a Done ring — so the new column needs no hue of its
-   own. What it needs is the same centre Done gets, on the same terms: since
-   2026-08-18 that dot means UNREAD rather than "settled", so it is gated on
-   `--unread` here exactly as it is there. Failed and Done are the two terminal
-   columns and the only two offered a dot at all; the reasoning for the whole
-   change is written once, beside `.schedule-ring--done.schedule-ring--unread` in
-   schedule.css. */
-.schedule-ring--failed.schedule-ring--unread::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: currentColor;
-}
+   schedule.css already paints `.schedule-ring--failed` red — it was the modifier
+   that repainted a Done ring — so this column needs no hue of its own.
+
+   AND NO CENTRE OF ITS OWN EITHER, since 2026-08-18. There was a rule here that
+   widened `.schedule-ring--done::after` to cover Failed, because the dot meant
+   "settled" and Failed is settled. The dot means UNREAD now, and its rule names
+   no lane at all — `.schedule-ring--unread::after`, one gate for every ring on
+   the page — so a copy scoped to one lane would be a duplicate whose only future
+   is to go stale. Deleted rather than restated.
+
+   Why the gate is not the terminal columns, which is the part worth not
+   re-deriving: an Upcoming task can hold unread output from a past run (a
+   recurring rule whose next fire is ahead of it), so `--upcoming --unread` is a
+   real combination and gating the dot on Done/Failed drew it hollow under a
+   tooltip that said "1 unread". The full reasoning lives once, beside the rule,
+   in schedule.css. */
 
 /* -- The one drop that is not filing ------------------------------------------
    Upcoming → In Progress sends the task's next scheduled message immediately

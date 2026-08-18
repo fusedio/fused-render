@@ -944,8 +944,7 @@
   flex: 0 0 11px;
 }
 
-.schedule-cal-popover .schedule-ring--failed.schedule-ring--unread::after,
-.schedule-cal-popover .schedule-ring--done.schedule-ring--unread::after {
+.schedule-cal-popover .schedule-ring--unread::after {
   width: 5px;
   height: 5px;
 }
@@ -2351,12 +2350,24 @@ input.schedule-when-field {
    A page of settled work where everything is settled does not need the ring to
    keep repeating it.
 
-   Only the terminal columns are offered the dot at all, which is not a
-   restriction so much as a definition: the server marks nothing unread until it
-   has finished, so a filled In Progress ring is a state that cannot occur, and
-   writing the selectors this way keeps it that way. */
-.schedule-ring--failed.schedule-ring--unread::after,
-.schedule-ring--done.schedule-ring--unread::after {
+   EVERY LANE, not just the terminal two. This was gated on `--done`/`--failed`
+   for a few hours on 2026-08-18, on the reasoning that the server marks nothing
+   unread before it has finished — so a filled Upcoming ring was a state that
+   could not occur, and the narrow selector was there to keep it that way.
+
+   It CAN occur, and QA found it the same day: a recurring or rescheduled task
+   sits in Upcoming (its next run is ahead of it) while its thread still holds
+   output from a past run nobody has read. `taskUnread` counts that, so the ring
+   got `--unread` and its tooltip said "1 unread" — over a ring drawn hollow,
+   because no rule matched. A tooltip contradicting the glyph it hangs on is
+   worse than either state alone.
+
+   So the gate is `--unread` and nothing else, and the invariant it used to
+   encode is left to the place that actually knows it (the server, and
+   tasks-lib.taskUnread). Colour is still the lane's own `currentColor`, so an
+   unread Upcoming ring is a grey filled ring and an unread Done one is green —
+   the two readings stay orthogonal, which is the whole design. */
+.schedule-ring--unread::after {
   content: "";
   position: absolute;
   inset: 0;
