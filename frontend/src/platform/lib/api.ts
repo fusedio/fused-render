@@ -1881,8 +1881,18 @@ export interface Task {
   messages: TaskMessage[];
 }
 
+// The global sidebar needs task state, not the Tasks page's titles, paths,
+// descriptions, and message previews. Keep this structural subset compatible
+// with Task so the Tasks page can still publish its full rows into the shared
+// pulse store while every other route polls the compact endpoint.
+export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active">;
+
 export function getTasks(): Promise<{ tasks: Task[] }> {
   return getJson<{ tasks: Task[] }>("/api/tasks");
+}
+
+export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
+  return getJson<{ tasks: TaskPulseTask[] }>("/api/tasks/pulse");
 }
 
 // "Show more": the whole thread, newest first. Deliberately a separate call —

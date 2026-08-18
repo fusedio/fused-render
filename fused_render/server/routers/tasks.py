@@ -6,7 +6,7 @@ thread does not care which; that is the whole point of collapsing the two stores
 the app used to keep side by side (the scheduled-message list it owns, and the
 session transcripts Claude Code owns, joined by one field).
 
-Three endpoints, and the split between the first two is the design constraint
+The endpoints, and the split between the first three is the design constraint
 this file is written around:
 
 * ``GET /api/tasks`` — every task, newest first, each carrying its **three most
@@ -17,6 +17,10 @@ this file is written around:
   row is deliberately NOT read from that window: `next_run` (with the entry it
   names) is `min(at)` over every pending entry, because the Board orders Upcoming
   by it and three messages cannot answer it. See `_next_run`.
+* ``GET /api/tasks/pulse`` — the same task states reduced to the four fields the
+  global sidebar needs. It deliberately carries no titles, paths, descriptions,
+  or message bodies; Home should not download the Tasks page just to draw its
+  status dot and unread count.
 * ``GET /api/tasks/{key}/messages`` — one task's FULL thread. This is the
   "Show more" click: a whole-transcript parse, which is affordable exactly
   because it happens for one task at a time and never for a listing.
@@ -1282,14 +1286,13 @@ def _unread_count(task: dict, total: int, unfired: list[dict],
                - waiting)
 
 
-@router.get("/api/tasks")
-def api_tasks():
-    """Every task, newest activity first, each with its three newest messages.
+def _task_rows() -> list[dict]:
+    """Build the authoritative task rows shared by the two listing shapes.
 
-    Includes tasks that have never been scheduled (a chat session is a task) and
-    tasks that have never run (a message scheduled for tomorrow is a task, §5).
-    Excludes the ones that stopped being tasks: no session, and nothing left to
-    run — see `_is_task`. That is an absence of a task, not a filter hiding one.
+    Keeping collection here makes the compact sidebar endpoint a projection of
+    exactly the same status, unread and activity decisions as the Tasks page.
+    FastAPI serializes only the projection returned by that endpoint, so the
+    large titles, descriptions and message bodies never cross the wire there.
     """
     triage = sessions._load_state("triage.json")
     read = tasks_store.read_state()
@@ -1330,7 +1333,34 @@ def api_tasks():
     if not tasks_store.initialized(read):
         tasks_store.initialize([(r["key"], r["message_count"]) for r in rows])
     rows.sort(key=lambda r: r["last_active"], reverse=True)
+    return rows
+
+
+@router.get("/api/tasks")
+def api_tasks():
+    """Every task, newest activity first, each with its three newest messages.
+
+    Includes tasks that have never been scheduled (a chat session is a task) and
+    tasks that have never run (a message scheduled for tomorrow is a task, §5).
+    Excludes the ones that stopped being tasks: no session, and nothing left to
+    run — see `_is_task`. That is an absence of a task, not a filter hiding one.
+    """
+    rows = _task_rows()
     return {"tasks": rows}
+
+
+_PULSE_FIELDS = ("key", "status", "unread", "last_active")
+
+
+@router.get("/api/tasks/pulse")
+def api_tasks_pulse():
+    """The compact task facts used by the global sidebar's status pulse."""
+    return {
+        "tasks": [
+            {field: row[field] for field in _PULSE_FIELDS}
+            for row in _task_rows()
+        ]
+    }
 
 
 def _thread(task: dict, read: dict, now: float) -> list[dict]:
