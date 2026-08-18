@@ -229,7 +229,12 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     Returns the server and its thread (quit drains it — `should_exit` alone is
     fire-and-forget, and uvicorn never resets `started`, so the thread ending is
     the only observable "it has stopped serving")."""
-    # First-run onboarding (D81): create ~/Documents/Fused.
+    # One-shot relocation of the workspace out of iCloud-synced ~/Documents
+    # (D329). Strictly BEFORE onboarding, for the reason cli._run_serve records.
+    from fused_render import workspace_migration
+
+    workspace_migration.run()
+    # First-run onboarding (D81): create ~/Fused.
     start_dir = ensure_fused_dir()
     # Showcase apps: clone/sync the community repo into <workspace>/showcase in
     # the background — the apps grid lists it as an ordinary tag dir once done.
