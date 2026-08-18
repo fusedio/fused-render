@@ -67,7 +67,7 @@ import {
   isUpcomingTask,
   laneRolledUp,
   laneUnread,
-  listSections,
+  sortByLane,
   markAllRead,
   markRead,
   markReadIntent,
@@ -864,10 +864,10 @@ export function TaskList({
   // on every keystroke of the search box.
   const showProject = useMemo(() => spansProjects(tasks), [tasks]);
 
-  // The list's sections, in their fixed order, empties dropped. Memoised for the
-  // same reason `showProject` is: this runs on every keystroke of the search box
-  // and the answer only moves when the rows do.
-  const sections = useMemo(() => listSections(tasks), [tasks]);
+  // The list's rows, in rank order (tasks-lib.sortByLane). Memoised for the same
+  // reason `showProject` is: this runs on every keystroke of the search box and
+  // the answer only moves when the rows do.
+  const rows = useMemo(() => sortByLane(tasks), [tasks]);
 
   /**
    * Open or close a task — and, on the way OPEN, fetch the rest of its thread.
@@ -1121,51 +1121,38 @@ export function TaskList({
 
   return (
     <div className="tasks-list" ref={listRef} onScroll={onScroll}>
-      {/* GROUPED BY THE SAME FACT THE BOARD GROUPS BY (tasks-lib.listSections):
-          same nouns, same colours, same ring, so the two views are two lenses on
-          one dataset rather than two vocabularies. The ORDER is the list's own —
-          Upcoming, In Progress, Failed, Done, Archive — because a list is read
-          top to bottom as work owed, and a board left to right as a pipeline.
+      {/* ORDERED BY STATUS, NOT GROUPED BY IT (tasks-lib.sortByLane): Upcoming,
+          In Progress, Failed, Done, Archive — rank order, server order inside
+          each rank, and no headers, dividers or counts between them.
 
-          Empty sections are absent, header and all: a board's empty column is
-          information (nothing is failing), a list's empty header is a table of
-          contents for a page with nothing on it.
-
-          The section header is NOT sticky and NOT a button. Sticky headers over
-          an accordion whose rows change height on every disclosure fight the
-          scroll memory this list keeps; and a header that could be pressed would
-          be the second collapsible thing in a view whose rows already collapse. */}
-      {sections.map((section) => (
-        <Fragment key={section.key}>
-          <div className="tasks-section">
-            <StatusIcon status={section.key} />
-            <span className="tasks-section-label">{section.label}</span>
-            <span className="tasks-section-count">{section.tasks.length}</span>
-          </div>
-          {section.tasks.map((task) => (
-            <TaskNode
-              key={task.key}
-              task={task}
-              home={home}
-              showProject={showProject}
-              open={expanded.has(task.key)}
-              selected={selected === task.key}
-              onSelect={() => select(task.key)}
-              onToggle={() => toggle(task)}
-              onRetry={() => void showMore(task)}
-              loaded={loaded[task.key]}
-              loading={!!loading[task.key]}
-              error={errors[task.key]}
-              onEditEntry={onEditEntry}
-              onReload={onReload}
-              read={read}
-              onRead={clear}
-              onReadAll={clearAll}
-              onUnreadAll={restoreAll}
-              onSettleAll={settleAll}
-            />
-          ))}
-        </Fragment>
+          The grouping is a SORT and nothing more (Akshil, 2026-08-18). Headers
+          lived here for a round and were wrong on a list: the Board's lanes are
+          a fixed frame, so a lane header labels the frame and earns its ink,
+          where a list has no frame and five headers are five interruptions in
+          the one column a person is scanning. The order already says what they
+          said. */}
+      {rows.map((task) => (
+        <TaskNode
+          key={task.key}
+          task={task}
+          home={home}
+          showProject={showProject}
+          open={expanded.has(task.key)}
+          selected={selected === task.key}
+          onSelect={() => select(task.key)}
+          onToggle={() => toggle(task)}
+          onRetry={() => void showMore(task)}
+          loaded={loaded[task.key]}
+          loading={!!loading[task.key]}
+          error={errors[task.key]}
+          onEditEntry={onEditEntry}
+          onReload={onReload}
+          read={read}
+          onRead={clear}
+          onReadAll={clearAll}
+          onUnreadAll={restoreAll}
+          onSettleAll={settleAll}
+        />
       ))}
     </div>
   );

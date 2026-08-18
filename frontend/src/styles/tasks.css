@@ -1036,48 +1036,6 @@ button.tasks-caret,
   outline-offset: -2px;
 }
 
-/* ---- the List's section headers --------------------------------------------
-   The Board's lane header, flattened onto a list. Same ring, same word, same
-   uppercase register, same muted colour and the same count on the right — it IS
-   `.schedule-tv-lane-head` without the parts that only a column needs (the
-   press that collapses it, the hover ground, the full-width slab), because the
-   two views are two lenses on one dataset and a second spelling of "Failed" is
-   how they start drifting apart.
-
-   NOT A BUTTON and not sticky. A row in this list is already an accordion, so a
-   second collapsible thing on the same axis is two disclosure models in one
-   column; and a sticky header over rows that change height on every disclosure
-   fights the scroll memory the list keeps (see TaskList's `owed`).
-
-   The space above it is what does the grouping work — a header is a gap with a
-   word in it — and there is none above the FIRST one, which needs no separation
-   from a page edge. */
-.tasks-section {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 2px;
-  margin-top: 18px;
-}
-
-.tasks-section:first-child {
-  margin-top: 0;
-}
-
-.tasks-section-label {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-
-.tasks-section-count {
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-muted);
-}
-
 /* ---- "and it runs again on Tuesday" ----------------------------------------
    The run still to come, on a row whose own time is the run that already
    happened (tasks-lib.nextRunChip) — a recurring task in Done, which is where a
