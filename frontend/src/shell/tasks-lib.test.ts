@@ -5791,7 +5791,7 @@ describe("isMessageRunning", () => {
 
 describe("isRunningNow", () => {
   it("reads a live session's NEWEST message as the turn that is live", () => {
-    const t = task({ live: true }, 3);
+    const t = task({ live: true, status: "in_progress" }, 3);
     expect(isRunningNow(t, t.messages[0])).toBe(true);
     // The older ones are not: their turns ended when the next prompt arrived.
     expect(isRunningNow(t, t.messages[1])).toBe(false);
@@ -5807,5 +5807,23 @@ describe("isRunningNow", () => {
   it("says no on a quiet task", () => {
     const t = task({ live: false }, 2);
     expect(isRunningNow(t, t.messages[0])).toBe(false);
+  });
+
+  // BUGBOT: `sent` + a turn already rewritten to `idle` reads as not-running
+  // by state/turn alone, but `busy_sessions` can still be holding the task
+  // `in_progress` on the server (a scheduled send it has not heard back from
+  // yet) — the same task.status List and Board read. The chip has to agree
+  // with that server verdict rather than re-deriving liveness from `state`
+  // and `turn` on its own, or it goes stale while the other two views spin.
+  it("agrees with the server: task filed in_progress ⇒ its newest sent-but-idle message is running", () => {
+    const idle = msg({ message_id: "MSG-001", state: "sent", turn: "idle" });
+    const t = task({ status: "in_progress", live: false, messages: [idle] });
+    expect(isRunningNow(t, idle)).toBe(true);
+  });
+
+  it("does not read a done task's sent-but-idle message as running", () => {
+    const idle = msg({ message_id: "MSG-001", state: "sent", turn: "idle" });
+    const t = task({ status: "done", live: false, messages: [idle] });
+    expect(isRunningNow(t, idle)).toBe(false);
   });
 });

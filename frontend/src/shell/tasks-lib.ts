@@ -2548,14 +2548,23 @@ export function isMessageRunning(m: TaskMessage): boolean {
 /**
  * Is THIS message the work this task is doing right now?
  *
- * Two ways, and the second is what a live chat turn needs. A message can say so
- * itself (above), and a LIVE session says it about its newest message — the
- * transcript is mid-turn, and the newest prompt is the one that turn is
- * answering. Older messages in a live session are not running: their turns
- * ended when the next prompt arrived.
+ * Two ways, and the second is what a live chat turn needs — including the one
+ * a live TRANSCRIPT cannot see. A message can say so itself (above), and
+ * otherwise the newest message borrows the task's own verdict: `taskColumn`
+ * reads `task.status`, which the server derives in `_status` from THREE
+ * independent signals (`_message_running`, `live`, and `schedule.busy_sessions`)
+ * — not just the two (`state`/`turn`, `task.live`) this function could see on
+ * its own. A `sent` message whose turn the server has already rewritten to
+ * `idle` still files the task `in_progress` while a scheduled send is in
+ * flight (`busy_sessions`); asking `taskColumn` instead of re-deriving that
+ * third signal here is what keeps the calendar chip agreeing with the List
+ * and Board, which read the same `task.status`. Older messages in an
+ * in-progress task are not running: their turns ended when the next prompt
+ * arrived.
  */
 export function isRunningNow(task: Task, m: TaskMessage): boolean {
   if (isMessageRunning(m)) return true;
+  if (taskColumn(task) !== "in_progress") return false;
   const newest = task.messages?.[0];
-  return !!task.live && !!newest && !!m.message_id && m.message_id === newest.message_id;
+  return !!newest && !!m.message_id && m.message_id === newest.message_id;
 }
