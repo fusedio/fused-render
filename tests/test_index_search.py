@@ -424,6 +424,55 @@ def test_search_ranked_flags_nothing_when_every_hit_fits(tmp_path):
     assert out["truncated"] is False and out["total"] == 1
 
 
+def test_the_substring_pass_alone_answers_when_it_fills_the_cut(tmp_path):
+    """The cheap pass is the whole query when it is enough.
+
+    ILIKE over 571k rows costs ~51 ms where the subsequence regex costs ~143 ms,
+    and the regex can only ever APPEND rows below every substring hit (see
+    search_ranked's docstring on longest_run), so a filled cut means the second
+    pass is pure spend."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/a-l-p-h-a.txt"])
+    out = search_ranked(cfg, "/r", "alpha", limit=1)
+    assert [h["rel"] for h in out["hits"]] == ["alpha.txt"]
+    assert out["escalated"] is False
+
+
+def test_it_escalates_to_the_subsequence_pass_when_substring_hits_run_short(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/a-l-p-h-a.txt"])
+    out = search_ranked(cfg, "/r", "alpha", limit=5)
+    assert [h["rel"] for h in out["hits"]] == ["alpha.txt", "a-l-p-h-a.txt"]
+    assert out["escalated"] is True
+
+
+def test_the_escalation_ladder_is_lossless(tmp_path):
+    """Skipping the regex pass must not change ONE row of the answer.
+
+    The substring pass answering alone and the full two-pass answer have to
+    agree on the rows they both cover — otherwise the optimisation is a
+    behaviour change wearing a performance costume."""
+    files = ["/r/alpha.txt", "/r/docs/alpha-notes.md", "/r/a-l-p-h-a.txt",
+             "/r/away/lower/place/hat/area.txt"]
+    cfg = _index(tmp_path, "/r", files, dirs=["/r/docs", "/r/away",
+                                              "/r/away/lower",
+                                              "/r/away/lower/place",
+                                              "/r/away/lower/place/hat"])
+    full = search_ranked(cfg, "/r", "alpha", limit=50)
+    assert full["escalated"] is True
+    for n in (1, 2):
+        short = search_ranked(cfg, "/r", "alpha", limit=n)
+        assert short["escalated"] is False
+        assert [h["rel"] for h in short["hits"]] == \
+            [h["rel"] for h in full["hits"]][:n]
+
+
+def test_a_query_the_substring_pass_cannot_answer_still_answers(tmp_path):
+    """Zero substring hits is the escalation case, not an empty result."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha-beta.txt"])
+    out = search_ranked(cfg, "/r", "albe", limit=1)
+    assert [h["rel"] for h in out["hits"]] == ["alpha-beta.txt"]
+    assert out["escalated"] is True
+
+
 def test_the_stage_a_cap_keeps_the_name_matches_over_the_fuzzy_ones(tmp_path):
     """Stage A can in principle drop a row stage B would rank top. Its coarse
     tier ordering is what makes that unlikely, and this is the property: with a

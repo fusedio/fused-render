@@ -399,13 +399,42 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
 
     Two stages, because neither alone is affordable:
 
-    - **A, in SQL, over every row under `root`.** A subsequence regex on the
-      rel (the same relation `fuzzy_match` tests, so a candidate here is a
-      possible hit there) plus a coarse `tier` — name-exact / name-prefix /
+    - **A, in SQL, over every row under `root`.** A candidate filter on the rel
+      (the same relation `fuzzy_match` tests, so a candidate here is a possible
+      hit there) plus a coarse `tier` — name-exact / name-prefix /
       name-contains / rel-contains / subsequence-only — and `ORDER BY tier,
       depth, rel LIMIT cap`. Files and directories compete in ONE query, for
       the reason `search_under` explains at length: two queries served files
       first and folder search died on any tree big enough to fill the budget.
+
+      Two passes, cheapest first, and the second is often skipped:
+
+        1. substring — `lower(rel) LIKE '%q%'`;
+        2. subsequence — `regexp_matches(lower(rel), 'a.*b.*c')`.
+
+      Measured over 571k rows: `render` is 30,319 rows / 51 ms as a substring
+      against 176,505 / 143 ms as a subsequence; `readme.md` 3,056 / 41 ms
+      against 11,766 / 45 ms. So pass 2 runs only when pass 1 cannot fill the
+      returned `limit`, which is LOSSLESS rather than approximate:
+      `fuzzy_match`'s substring branch sets `longest_run = len(q)`, the maximum
+      the subsequence branch can never reach (a contiguous run of the whole
+      query would have taken the substring branch), and `rank_compare` orders
+      on `longest_run` first. Every substring hit therefore outranks every
+      subsequence-only hit, so once pass 1 fills the cut, pass 2 can only append
+      rows below the cut that nobody will ever see. `escalated` reports which
+      happened.
+
+      The check is made AFTER ranking and gitignore-filtering pass 1, not on
+      the raw SQL row count, so no safety margin is needed or used: the number
+      compared against `limit` is the number of rows the user would actually
+      get. A margin over the raw count would be the guess this avoids —
+      gitignore can drop any fraction of a pass, and guessing high spends the
+      143 ms it was trying to save.
+
+      Deliberately NOT taken: a depth cap on pass 1. `depth` is already a
+      tie-break in the ORDER BY, so shallow-first is delivered without a
+      cutoff, and a hard limit would hide a deep exact match and cost a second
+      round trip precisely when the first answer was wrong.
     - **B, in Python.** `rank_entries` (index/rank.py) over those ≤`cap` rows —
       the real fuzzy scoring, in parity with the browser's ranker — then the
       gitignore filter, THEN the cut to `limit`. That order is not incidental:
@@ -433,7 +462,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     m = read_manifest(cfg)
     empty = {"covered": False, "fresh": False, "updated": None, "age_s": None,
              "root": root, "hits": [], "truncated": False, "total": 0,
-             "scanned_partitions": 0,
+             "escalated": False, "scanned_partitions": 0,
              "of_partitions": len(((m or {}).get("partitions")) or [])}
     if m is None or not root or not os.path.exists(cfg.dirs_parquet):
         return empty
@@ -459,7 +488,8 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     if not qs:
         # Nothing typed is not "everything": the empty query has no ranking to
         # apply, and answering with an arbitrary 200 files would be noise.
-        return {**base, "hits": [], "truncated": False, "total": 0}
+        return {**base, "hits": [], "truncated": False, "total": 0,
+                "escalated": False}
 
     # `substr` from the prefix's length, so every comparison below is against
     # the REL — exactly the string stage B scores. Filtering on the full path
@@ -480,7 +510,8 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             f"{_depth_col(con, dsrc, 'dir')} AS depth "
             f"FROM {dsrc} WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'")
     if not branches:
-        return {**base, "hits": [], "truncated": False, "total": 0}
+        return {**base, "hits": [], "truncated": False, "total": 0,
+                "escalated": False}
 
     ql = like_literal(qs.lower())
     qq = _q(qs.lower())
@@ -497,28 +528,42 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     # query_wants_hidden / is_hidden_rel are the definitions; this mirrors them).
     hidden = ("" if _wants_hidden(qs)
               else " AND NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')")
-    sql = (f"SELECT rel, size, mtime, is_dir FROM ("
-           f"SELECT *, lower(rel) AS lrel, "
-           f"regexp_extract(lower(rel), '[^/]*$') AS nm FROM ("
-           + " UNION ALL ".join(branches) + ")) "
-           f"WHERE regexp_matches(lrel, '{_subseq_regex(qs.lower())}')"
-           f"{hidden} "
-           # One row past the cap, so "the cap bit" is known without a count.
-           f"ORDER BY {tier}, depth, rel LIMIT {cap + 1}")
-    rows = con.execute(sql).fetchall()
-    capped = len(rows) > cap
-    if capped:
-        logger.warning(
-            "index rank: the candidate cap (%d) bit for %r under %s — the "
-            "ranked answer is drawn from stage A's coarse top rows only",
-            cap, qs, root)
-    entries = [{"rel": rel, "is_dir": bool(is_dir),
-                "size": int(size) if size is not None else None,
-                "mtime": float(mtime) if mtime is not None else None}
-               for rel, size, mtime, is_dir in rows[:cap]]
-    ranked = rank_entries(qs, entries)
-    if gitignore_filter is not None:
-        ranked = gitignore_filter(root, ranked)
+    inner = (f"SELECT *, lower(rel) AS lrel, "
+             f"regexp_extract(lower(rel), '[^/]*$') AS nm FROM ("
+             + " UNION ALL ".join(branches) + ")")
+
+    def pass_over(predicate: str):
+        """One candidate pass: `predicate` over every row under the root, coarse
+        tier order, one row past the cap so "the cap bit" needs no count."""
+        rows = con.execute(
+            f"SELECT rel, size, mtime, is_dir FROM ({inner}) "
+            f"WHERE {predicate}{hidden} "
+            f"ORDER BY {tier}, depth, rel LIMIT {cap + 1}").fetchall()
+        if len(rows) > cap:
+            logger.warning(
+                "index rank: the candidate cap (%d) bit for %r under %s — the "
+                "ranked answer is drawn from stage A's coarse top rows only",
+                cap, qs, root)
+        entries = [{"rel": rel, "is_dir": bool(is_dir),
+                    "size": int(size) if size is not None else None,
+                    "mtime": float(mtime) if mtime is not None else None}
+                   for rel, size, mtime, is_dir in rows[:cap]]
+        ranked = rank_entries(qs, entries)
+        if gitignore_filter is not None:
+            ranked = gitignore_filter(root, ranked)
+        return ranked, len(rows) > cap
+
+    # The LADDER (see the docstring): the cheap substring pass first, and the
+    # regex only when the cheap one cannot fill the cut. `capped` also stops the
+    # escalation — a pass that filled the candidate cap already handed stage B
+    # more coarsely-better rows than it can return, so widening the filter can
+    # only push MORE of them out of the cap.
+    ranked, capped = pass_over(f"lrel LIKE '%{ql}%' ESCAPE '\\'")
+    escalated = False
+    if not capped and len(ranked) < limit:
+        escalated = True
+        ranked, capped = pass_over(
+            f"regexp_matches(lrel, '{_subseq_regex(qs.lower())}')")
     return {**base, "hits": ranked[:limit],
             "truncated": capped or len(ranked) > limit,
-            "total": len(ranked[:limit])}
+            "total": len(ranked[:limit]), "escalated": escalated}
