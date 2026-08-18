@@ -1070,3 +1070,245 @@
   align-items: center;
   text-decoration: none;
 }
+
+/* -- the Usage tab ----------------------------------------------------------
+   The graph, its window picker, the totals tiles and the per-model table
+   (shell/AiModelsUsage.tsx, SPEC AI-12).
+
+   Everything here is laid out on the vocabulary the other tabs already own —
+   .cc-mdcard for the graph card and each tile, .am-tabs/.am-tab for the window
+   picker — because the Usage tab is a fourth view of one page and not a
+   dashboard visiting it. What genuinely has no precedent on this page is the
+   chart itself, and that is what the rest of this block is. */
+.am-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.am-usage-card {
+  gap: 12px;
+}
+
+.am-usage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* The window's headline figure. Tabular so the number does not jiggle its own
+   caption sideways as it grows during a generation. */
+.am-usage-headline {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-usage-sub {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* The picker rides .am-tabs, but it is a control inside a card rather than the
+   page's own strip: no right margin, and it must not grow to fill the row. */
+.am-usage-ranges {
+  margin-right: 0;
+  flex: 0 0 auto;
+}
+
+.am-usage-chart {
+  position: relative;
+}
+
+/* Columns hang from the baseline and pack to the RIGHT, so `now` is always the
+   right-hand edge and a series shorter than the window (a process younger than
+   the graph) leaves the past blank instead of stretching over it. */
+.am-usage-bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  height: 132px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* A slot is the column's WIDTH and full height; the bar inside it is the value.
+   Two elements rather than one so the hover target is the whole column — an
+   idle bucket is 0px tall and would otherwise be unhoverable, which is exactly
+   the bucket somebody points at to ask "was anything running then?". */
+.am-usage-slot {
+  position: relative;
+  flex: 0 0 var(--am-usage-col);
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+  padding-inline: var(--am-usage-gap);
+  box-sizing: border-box;
+}
+
+/* Calls that failed in this bucket. On the baseline, under whatever the bar
+   did, because it is a different fact about the same ten seconds — not a
+   smaller amount of the same thing. Absolutely positioned so it neither takes
+   the bar's width nor moves it. */
+.am-usage-fail {
+  position: absolute;
+  left: var(--am-usage-gap);
+  right: var(--am-usage-gap);
+  bottom: -1px;
+  height: 3px;
+  background: var(--error);
+}
+
+.am-usage-bar {
+  width: 100%;
+  min-height: 0;
+  background: var(--accent);
+  border-radius: 1px 1px 0 0;
+}
+
+/* The stretch of the window that predates this process. Hatched rather than
+   left blank, because blank inside a plot frame reads as "measured, and it was
+   zero" — which is the one thing this region is not. */
+.am-usage-void {
+  align-self: stretch;
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 5px,
+    var(--border) 5px,
+    var(--border) 6px
+  );
+  opacity: 0.45;
+}
+
+/* The newest column covers a bucket that has not finished. Faint, because it is
+   a partial count and will keep growing for a few more seconds. */
+.am-usage-bar.partial {
+  opacity: 0.45;
+}
+
+.am-usage-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.am-usage-heading {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.am-usage-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.am-usage-tile {
+  gap: 2px;
+}
+
+.am-usage-tile-value {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-usage-tile-label {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* Model rows. A table rather than cards: four numbers per model, compared down
+   the column, is the one shape on this page that genuinely is tabular. */
+.am-usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-usage-table th,
+.am-usage-table td {
+  padding: 6px 8px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.am-usage-table th {
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+/* The id is the only non-number here, so it is the only left-aligned cell — and
+   the only one allowed to be long, since a Hub repo id is a whole path. */
+.am-usage-table th:first-child,
+.am-usage-table .am-usage-model {
+  text-align: left;
+}
+
+.am-usage-model {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.am-usage-empty p {
+  margin: 0 0 6px;
+}
+
+.am-usage-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* A count that is bad news — failures, wherever they are shown. Colour is the
+   ONLY thing it changes: the figure keeps its place in the row so a table of
+   numbers does not reflow when one of them goes wrong. */
+.am-usage-bad {
+  color: var(--error);
+}
+
+.am-usage-muted {
+  color: var(--fg-muted);
+}
+
+/* The Claude / local split. Two lines rather than two more tiles: they are a
+   restatement of the same totals cut a different way, and six tiles plus two
+   is a wall of numbers with no shape to it. */
+.am-usage-tierlines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 24px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-usage-tier-line b {
+  font-weight: 600;
+}
+
+.am-usage-failtypes {
+  margin-top: -4px;
+}
+
+/* Which half of `fused.ai` served a row. Quiet by design — it is a category,
+   not a status, and the id beside it already implies the answer. */
+.am-usage-tier {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  vertical-align: 1px;
+}

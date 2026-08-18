@@ -7047,6 +7047,79 @@ an AI Models page that could say what was on disk but not what was *running*.
   not claims about measured filesystem usage (D295). A first real load is the
   outstanding verification.
 
+- **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
+  graph** (D327). `fused.ai` is the only thing in this app that spends model
+  time, and it spent it invisibly: a page re-asking the model on every
+  keystroke, a render loop calling `fused.ai()` per frame, and an idle machine
+  were the same picture — as were a working chat box and one whose every call
+  timed out. `server/ai_metrics.py` keeps a fixed ring of 10-second buckets
+  covering one hour, plus since-start totals, and `/ai-models?tab=usage` draws
+  it. FOUR counters, because volume answers only the first question anybody
+  has: **tokens and completions** (the graph), **failures by kind** (a page
+  whose calls all fail has generated zero tokens, which is the same empty graph
+  as a page nobody opened), **seconds spent generating** and the tokens/second
+  that falls out of them (the number somebody choosing between two local models
+  wants, and the explanation when a model that landed on the CPU (AI-11b) feels
+  broken), and **which tier** — Claude or local, on the `/`-in-the-id seam AI-1
+  already dispatches on, because this page's subject is the local half and a
+  merged total answers neither question. **Local only, in every sense of the
+  word**: nothing is written to disk, nothing leaves the machine, and the
+  numbers start again at every launch — which is why every payload carries
+  `since` and the tab states the window under the figures. It is a diagnostic,
+  not a ledger: a usage bill is Claude Code's own to report, and a counter that
+  looked like one would be wrong the first time a user restarted the app
+  mid-morning. The graph is bars, never a line — the series is a count per
+  interval, and a line between two spikes draws a slope through minutes in
+  which nothing ran.
+- **AI-12a** **The counter is fed the caller's OWN `usage`, at the terminal
+  frame, on both tiers and in both shapes.** `record(model, usage, seconds)`
+  takes the very dict the relay is about to put on the wire (AI-1b), at all
+  four exits — Claude streaming and not, local streaming and not — so the graph
+  and the response can never disagree about what a completion generated.
+  Nothing here tokenizes anything: a count derived from the text would be a
+  different number wearing the same label. The duration rides BESIDE the usage
+  rather than inside it, because the Claude payload's `usage` is contractually
+  exactly two token keys (`_ai_usage`, RH-11) and a page parses it.
+  Consequences, stated rather than papered over: a Claude completion is counted
+  under its RESOLVED id (`opus` and `claude-opus-5` are one row, not two); a
+  CANCELLED local generation IS counted, because the worker reports the tokens
+  it emitted and this machine generated them — but its tokens do not divide
+  into any speed, since it reported no duration; a completion whose client went
+  away mid-stream is counted NOWHERE, because only the terminal frame carries a
+  count and there is nothing honest to add; and input tokens are counted only
+  where a tier reports them — a local worker counts what it generated and never
+  sees a prompt token (AI-3), so those rows report `null`, never a zero that
+  would read as an answer. Sessions Claude Code runs elsewhere in the app (the
+  `claude` template, the task runner) are not this endpoint's traffic and are
+  not counted.
+- **AI-12b** **A failure is counted, by kind, and is never a completion.** Every
+  exit that reached for a model and produced no text — `timeout`,
+  `ai_unavailable` (including a missing `claude` binary), `ai_error`, and the
+  409 `model_loading` that starts a download instead of answering — increments
+  a failure against its model, its tier and its bucket, so a period of failures
+  MARKS the timeline that would otherwise draw it as quiet. It is not folded
+  into `completions`, which must stay the count of calls that answered. A body
+  refused as malformed (400) is counted nowhere: nothing was asked of a model,
+  and folding a caller's typo into the failure rate would make the one number
+  that means "the AI is not working" mean "somebody sent a bad request" as
+  well. The type is kept because "3 failed" and "3 timed out" send a user to
+  different places, and it is safe to keep unbounded: the keys are this
+  server's own vocabulary, never a caller's string.
+- **AI-12c** **Bounded by construction, unguarded on read, clamped on ask.** The
+  ring is a fixed 360 slots and the breakdown a fixed 32 named models plus one
+  overflow row, so the store is the same few kilobytes after a million calls and
+  no prune ever has to run — the same posture CL-9 takes for the call log, minus
+  the disk it does not touch. `record()` cannot raise into the completion it is
+  counting. `GET /api/ai/metrics?minutes=N` is an ordinary READ (no `X-Fused`:
+  D3's guard is for the routes that spend this machine's time) whose `minutes`
+  is CLAMPED to the retention rather than refused, and whose buckets are DENSE
+  and oldest-first — every interval in the window, zeros included, because a
+  chart handed only the intervals that had traffic would draw four prompts an
+  hour apart as four adjacent bars. Nothing is emitted for time before the
+  process started counting: the graph would rather be short — and say so, with
+  a hatched stretch the tab draws for it — than claim an idle hour it was not
+  present for.
+
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
 Goal: the app could start a Claude Code session on demand — the split-view chat,
