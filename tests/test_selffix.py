@@ -33,6 +33,12 @@ def install(tmp_path, monkeypatch):
     (root / "jobs.py").write_text("RUNNING = 'running'\n")
     (root / "server" / "app.py").write_text("def create_app(): ...\n")
     monkeypatch.setattr(selffix, "install_root", lambda: str(root))
+    # The home dir too, for the same reason one line up. The module reads BOTH
+    # records homes now (`record_homes`), and the suite's home is per-worker
+    # rather than per-test — so without this a test that writes out of tree
+    # (every diagnostic one) leaves its reports in the listing every later test
+    # in the same worker sees.
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     return root
 
 
@@ -762,6 +768,82 @@ def test_a_read_only_installation_gets_a_DIAGNOSTIC_session(client, install,
     assert watched == []
     assert selffix.status() is None
     assert not os.path.exists(selffix.baseline_path())
+
+
+def test_a_write_that_fails_after_os_access_said_yes_becomes_diagnostic(
+        client, install, monkeypatch):
+    """`writable()` predicts; the write decides.
+
+    `os.access` answers for the real uid's permission bits and knows nothing
+    about an ACL that denies, a volume remounted read-only under a running app,
+    or a full disk. So an installation can predict "writable" and refuse the
+    very next write — and that used to surface as a 500 on precisely the
+    installation SF-13 exists to help. The session now runs in the mode that can
+    actually finish, and the incident lands where it can be written.
+    """
+    real_makedirs = os.makedirs
+    state = selffix.state_dir()
+
+    def no_writes_in_the_tree(path, *a, **k):
+        if str(path).startswith(state):
+            raise OSError(13, "Permission denied")
+        return real_makedirs(path, *a, **k)
+
+    monkeypatch.setattr(os, "makedirs", no_writes_in_the_tree)
+    assert selffix.writable() is True          # the prediction still says yes
+
+    seen = {}
+    monkeypatch.setattr(selffix_routes, "_spawn_helper",
+                        lambda target, prompt, mode: seen.update(prompt=prompt)
+                        or {"run_id": "run-acl"})
+    monkeypatch.setattr(selffix_routes, "_watch_fix", lambda *a, **k: None)
+
+    res = post(client, "/api/selffix/start", {"title": "boom"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["diagnostic"] is True
+    assert not selffix.in_state_dir(body["report"])
+    assert os.path.exists(body["report"])
+    # ...and the session is TOLD, which is the whole point of the mode.
+    assert "READ-ONLY" in seen["prompt"]
+
+
+def test_reports_written_out_of_tree_survive_the_install_becoming_writable(
+        install, monkeypatch):
+    """A report is a document about a machine's problem and outlives the
+    installation (SF-13b) — so the panel has to keep listing one written while
+    the install was read-only, after a chmod (or a move, or an ownership change)
+    makes it look writable again. Reading only `records_dir()` dropped them from
+    the list while the files sat on disk."""
+    monkeypatch.setattr(selffix, "writable", lambda: False)
+    _, diagnostic_report = selffix.record_incident({"title": "while locked"},
+                                                   now=1000.0)
+    assert not selffix.in_state_dir(diagnostic_report)
+
+    monkeypatch.setattr(selffix, "writable", lambda: True)
+    _, fix_report = selffix.record_incident({"title": "after chmod"}, now=2000.0)
+    assert selffix.in_state_dir(fix_report)
+
+    listed = [r["path"] for r in selffix.list_reports()]
+    assert diagnostic_report in listed, "the out-of-tree report stopped being listed"
+    assert fix_report in listed
+    # Newest first ACROSS both homes — which dir a report landed in is an
+    # accident of the day's permissions, not something to sort by.
+    os.utime(diagnostic_report, (1000.0, 1000.0))
+    os.utime(fix_report, (2000.0, 2000.0))
+    assert [r["path"] for r in selffix.list_reports()][:2] == [fix_report,
+                                                              diagnostic_report]
+
+
+def test_the_session_pointer_is_found_after_the_install_becomes_writable(
+        install, monkeypatch):
+    """Same rule for the guard's pointer: written in one home, still found from
+    the other. Losing it would let a second agent start on a tree the first is
+    still editing — the one thing SF-13a exists to prevent."""
+    monkeypatch.setattr(selffix, "writable", lambda: False)
+    selffix.note_session("run-locked")
+    monkeypatch.setattr(selffix, "writable", lambda: True)
+    assert selffix.active_run() == "run-locked"
 
 
 def test_a_writable_installation_is_not_told_it_is_read_only(client, install,

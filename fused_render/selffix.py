@@ -151,11 +151,63 @@ def records_dir() -> str:
     is a document about a machine's problem — it outlives the installation on
     purpose, and on a read-only one there was never anything to mark.
     """
-    if writable():
-        return state_dir()
+    return record_homes()[0]
+
+
+def out_of_tree_dir() -> str:
+    """The records home that does not depend on the installation at all."""
     from fused_render.shell.storage import home_dir
 
     return os.path.join(home_dir(), "selffix")
+
+
+def record_homes() -> list[str]:
+    """Both records homes, PREFERRED FIRST — and why there have to be two lists.
+
+    `writable()` is a PREDICTION (`os.access` on the install root), and a
+    prediction is the wrong thing to build a promise on. It answers for the real
+    uid's permission bits and knows nothing about an ACL that denies, a mount
+    remounted read-only, an immutable flag, or a full disk — so an install can
+    predict "writable" and refuse the very next write. Everything here therefore
+    follows one rule instead of trusting the prediction twice:
+
+        WRITERS take the first home that will actually have them.
+        READERS look in all of them.
+
+    That is what makes the promise in `records_dir` true rather than aspirational.
+    A report is a document about a machine's problem and outlives the
+    installation (SF-13b) — but `list_reports` used to walk only the home the
+    CURRENT prediction names, so reports a diagnostic session wrote out of tree
+    stopped being listed the moment the install started looking writable (a
+    `chmod`, a move, an admin copy taken over). The files were still there; the
+    panel had simply stopped looking where it had put them.
+    """
+    homes = [state_dir(), out_of_tree_dir()] if writable() else [out_of_tree_dir()]
+    # The state dir is never a candidate when the tree is unwritable: it is the
+    # one home we KNOW cannot take a write, and offering it first would spend an
+    # exception per record to learn what `os.access` already answered.
+    seen, out = set(), []
+    for home in homes:
+        key = os.path.normcase(os.path.realpath(home))
+        if key not in seen:
+            seen.add(key)
+            out.append(home)
+    return out
+
+
+def in_state_dir(path: str) -> bool:
+    """Is this record inside the installation's own state dir?
+
+    The question a caller asks to learn WHICH records home a write landed in,
+    which is the only trustworthy answer to "can this session write here?" —
+    `writable()` merely predicts it (`record_homes`).
+    """
+    root = os.path.normcase(os.path.realpath(state_dir()))
+    try:
+        here = os.path.normcase(os.path.realpath(path))
+    except OSError:
+        return False
+    return here == root or here.startswith(root + os.sep)
 
 
 def marker_path() -> str:
@@ -478,16 +530,37 @@ def note_session(run_id: str) -> None:
     of the guard, and the scan still covers the ordinary case; refusing to start
     a fix over it would be the wrong trade.
     """
-    try:
-        _write_json(session_path(), {"schema": 1, "run_id": str(run_id)})
-    except OSError:
-        logger.debug("could not record the fix session id", exc_info=True)
+    for home in record_homes():
+        try:
+            _write_json(os.path.join(home, SESSION_NAME),
+                        {"schema": 1, "run_id": str(run_id)})
+            return
+        except OSError:
+            continue
+    logger.debug("could not record the fix session id", exc_info=True)
 
 
 def active_run() -> str:
     """The run id last recorded here, or "". Says nothing about liveness — the
-    caller asks the process, which is the only thing that knows."""
-    return str((_read_json(session_path()) or {}).get("run_id") or "")
+    caller asks the process, which is the only thing that knows.
+
+    The NEWEST pointer across both records homes (`record_homes`), because an
+    installation's writability can change between one session and the next and
+    the guard must not lose sight of a live agent just because the pointer it
+    wrote now sits in the other home."""
+    newest, run = 0.0, ""
+    for home in record_homes():
+        path = os.path.join(home, SESSION_NAME)
+        record = _read_json(path)
+        if not record:
+            continue
+        try:
+            at = os.stat(path).st_mtime
+        except OSError:
+            continue
+        if at >= newest:
+            newest, run = at, str(record.get("run_id") or "")
+    return run
 
 
 def clear(*, now: float | None = None) -> bool:
@@ -806,31 +879,18 @@ def record_incident(context: dict, *, now: float | None = None) -> tuple[str, st
     copy back accurately. The session rewrites this file; if it never gets that
     far, what survives is still the most useful half.
 
-    Both files live in `records_dir()` — the state dir when the installation is
-    writable, which the digest ignores, so writing them is not itself a
-    modification of the installation; the user's own dir when it is not, since
-    a diagnostic session's report still has to land somewhere (SF-4a).
+    Both files go to the first of `record_homes()` that will actually take them
+    — the state dir when the installation is writable (the digest ignores it, so
+    writing them is not itself a modification of the installation), the user's
+    own dir when it is not, or when the install merely PREDICTED it was writable
+    and the write disagreed. That last case is not hypothetical padding: it is
+    an ACL that denies, a volume remounted read-only under a running app, or a
+    full disk, and it used to surface as a 500 on the very install SF-13 exists
+    for. The caller reads the returned path to learn which home won, and
+    switches the session to diagnostic when it is not the state dir.
     """
     now = time.time() if now is None else now
-    where = records_dir()
-    incidents = os.path.join(where, INCIDENTS_DIR)
-    reports = os.path.join(where, REPORTS_DIR)
-    os.makedirs(incidents, exist_ok=True)
-    os.makedirs(reports, exist_ok=True)
-    # Second resolution, plus a suffix when that is not enough. A user with two
-    # failed rows clicks Fix on both in the same second more often than the
-    # timestamp suggests — and the collision would not be a duplicate file, it
-    # would be the SECOND session overwriting the first session's report while
-    # that one was still being written to.
-    stamp = _stamp(now)
-    suffix = 0
-    while os.path.exists(os.path.join(reports, f"{stamp}.md")) or os.path.exists(
-            os.path.join(incidents, f"{stamp}.md")):
-        suffix += 1
-        stamp = f"{_stamp(now)}-{suffix}"
-    incident = os.path.join(incidents, f"{stamp}.md")
-    report = os.path.join(reports, f"{stamp}.md")
-
+    homes = record_homes()
     facts = machine_facts()
     note = str(context.get("note") or "").strip()
     message = str(context.get("message") or "").strip()
@@ -897,17 +957,49 @@ def record_incident(context: dict, *, now: float | None = None) -> tuple[str, st
     except Exception:  # noqa: BLE001 — a missing call log is not worth failing over
         pass
 
-    lines += ["", "---", "", "This file was written by fused-render when the user "
-              "asked for a local fix. It is the input to the session; the "
-              "session's own account of what it did goes in "
-              f"`{REPORTS_DIR}/{stamp}.md`.", ""]
-    incident_text = "\n".join(lines)
+    def write_into(home: str) -> tuple[str, str]:
+        incidents = os.path.join(home, INCIDENTS_DIR)
+        reports = os.path.join(home, REPORTS_DIR)
+        os.makedirs(incidents, exist_ok=True)
+        os.makedirs(reports, exist_ok=True)
+        # Second resolution, plus a suffix when that is not enough. A user with
+        # two failed rows clicks Fix on both in the same second more often than
+        # the timestamp suggests — and the collision would not be a duplicate
+        # file, it would be the SECOND session overwriting the first session's
+        # report while that one was still being written to.
+        stamp = _stamp(now)
+        suffix = 0
+        while os.path.exists(os.path.join(reports, f"{stamp}.md")) or os.path.exists(
+                os.path.join(incidents, f"{stamp}.md")):
+            suffix += 1
+            stamp = f"{_stamp(now)}-{suffix}"
+        incident = os.path.join(incidents, f"{stamp}.md")
+        report = os.path.join(reports, f"{stamp}.md")
+        text = "\n".join(lines + [
+            "", "---", "",
+            "This file was written by fused-render when the user asked for a "
+            "local fix. It is the input to the session; the session's own "
+            f"account of what it did goes in `{REPORTS_DIR}/{stamp}.md`.", ""])
+        with open(incident, "w", encoding="utf-8") as f:
+            f.write(text)
+        with open(report, "w", encoding="utf-8") as f:
+            f.write(_report_stub(stamp, text))
+        return incident, report
 
-    with open(incident, "w", encoding="utf-8") as f:
-        f.write(incident_text)
-    with open(report, "w", encoding="utf-8") as f:
-        f.write(_report_stub(stamp, incident_text))
-    return incident, report
+    for index, home in enumerate(homes):
+        try:
+            return write_into(home)
+        except OSError:
+            # The LAST home's failure is the caller's problem — there is nowhere
+            # else to put the file and a session with no incident has nothing to
+            # read. Any earlier one is the prediction being wrong, which is what
+            # the second home is for.
+            if index == len(homes) - 1:
+                raise
+            logger.info("self-fix: %s would not take the incident — falling back "
+                        "to a records home outside the installation", home,
+                        exc_info=True)
+    raise OSError("no records home available")  # unreachable: homes is never empty
 
 
 def _report_stub(stamp: str, incident_text: str) -> str:
@@ -932,23 +1024,40 @@ def list_reports() -> list[dict]:
     The DIRECTORY, not the marker's `fixes`: the marker is capped and a report
     file is the artefact, so a listing that could go missing under a cap would
     be the one thing this feature is not allowed to lose.
+
+    EVERY home, not the one today's prediction names (`record_homes`). A
+    diagnostic session writes out of tree, and an installation's writability is
+    not fixed for life — a `chmod`, a move out of /Applications, an admin copy
+    whose ownership changes — so reading only `records_dir()` made those reports
+    vanish from the panel the moment the install started looking writable. They
+    were never deleted; the panel had simply stopped looking where it put them,
+    which is a worse failure than never having listed them, because the feature
+    promises a report outlives the installation (SF-13b).
     """
-    reports = os.path.join(records_dir(), REPORTS_DIR)
-    out = []
-    try:
-        names = os.listdir(reports)
-    except OSError:
-        return out
-    for name in names:
-        if not name.endswith(".md"):
-            continue
-        full = os.path.join(reports, name)
+    out, seen = [], set()
+    for home in record_homes():
+        reports = os.path.join(home, REPORTS_DIR)
         try:
-            stat = os.stat(full)
+            names = os.listdir(reports)
         except OSError:
             continue
-        out.append({"path": full, "name": name, "at": stat.st_mtime,
-                    "size": stat.st_size})
+        for name in names:
+            if not name.endswith(".md"):
+                continue
+            full = os.path.join(reports, name)
+            key = os.path.normcase(os.path.realpath(full))
+            if key in seen:
+                continue
+            try:
+                stat = os.stat(full)
+            except OSError:
+                continue
+            seen.add(key)
+            out.append({"path": full, "name": name, "at": stat.st_mtime,
+                        "size": stat.st_size})
+    # Newest first ACROSS the homes: which directory a report landed in is an
+    # accident of the install's permissions on the day, and is not something the
+    # user has any reason to sort by.
     out.sort(key=lambda e: e["at"], reverse=True)
     return out
 

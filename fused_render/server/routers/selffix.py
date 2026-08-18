@@ -268,6 +268,23 @@ def api_selffix_start(body: dict = Body(default={}),
 
         try:
             incident, report = selffix.record_incident(body)
+        except OSError as exc:
+            # Both records homes refused it. There is nowhere left to put the
+            # file, and a session handed no incident has nothing to read.
+            return _error(f"could not write the incident file: {exc}", status=500)
+
+        # `writable()` PREDICTED; the write just PROVED. They disagree whenever
+        # `os.access` says yes and something else says no — an ACL, a volume
+        # remounted read-only under a running app, a full disk — and that used
+        # to be a 500 on exactly the installation SF-13 exists to help. The
+        # incident landing outside the tree is the proof, so believe it and run
+        # the session in the mode that can actually finish.
+        if not diagnostic and not selffix.in_state_dir(report):
+            logger.info("self-fix: the install predicted writable and the write "
+                        "disagreed — this session is diagnostic")
+            diagnostic = True
+
+        try:
             # BEFORE the session starts and never after. Two digests, not one:
             # the release's (for `reconcile`) and the tree as this session finds
             # it (what `settle` measures against) — see `selffix.begin_session`.
@@ -281,7 +298,7 @@ def api_selffix_start(body: dict = Body(default={}),
             # on a read-only install the answer is no by construction.
             before = "" if diagnostic else selffix.begin_session()[1]
         except OSError as exc:
-            return _error(f"could not write the incident file: {exc}", status=500)
+            return _error(f"could not read the installation: {exc}", status=500)
 
         try:
             res = _spawn_helper(
