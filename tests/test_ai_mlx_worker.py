@@ -114,3 +114,65 @@ def test_a_working_environment_is_not_second_guessed(worker, monkeypatch):
 
     assert loaded["path"] == "/snapshots/qwen"
     assert worker._loaded == {"model": "MODEL", "tokenizer": "TOKENIZER"}
+
+
+# -- what the prompt cost ------------------------------------------------------
+# `input_tokens` (SPEC AI-3) is counted HERE because this process holds the
+# tokenizer that decides the answer; anything upstream could only estimate it,
+# and an estimate under the same label as the model's own number is worse than
+# no number at all.
+
+
+class _Tokenizer:
+    def __init__(self, ids=(1, 2, 3, 4), raises=False):
+        self._ids = list(ids)
+        self._raises = raises
+
+    def encode(self, text):
+        if self._raises:
+            raise ValueError("this tokenizer refuses that string")
+        return self._ids
+
+
+def test_the_prompt_is_counted_in_the_models_own_tokens(worker):
+    assert worker._prompt_tokens(_Tokenizer(ids=(5, 6, 7)), "hello") == 3
+
+
+def test_a_tokenizer_that_cannot_count_costs_the_metric_not_the_completion(worker):
+    """None means "not reported", which every reader already handles — a
+    generation must not fail because a counter did."""
+    assert worker._prompt_tokens(_Tokenizer(raises=True), "hello") is None
+    assert worker._prompt_tokens(object(), "hello") is None
+
+
+def test_both_terminal_frames_carry_the_prompt_count(worker, monkeypatch):
+    """Including the CANCELLED one: the prompt was read whether or not the
+    answer was still wanted by the end."""
+    import types
+
+    class _Response:
+        text = "hi"
+
+    mlx_lm = types.ModuleType("mlx_lm")
+    mlx_lm.stream_generate = lambda *a, **kw: iter([_Response(), _Response()])
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda **kw: object()
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    worker._loaded.update(model=object(), tokenizer=_Tokenizer(ids=(1, 2, 3)))
+
+    frames = []
+    worker.generate({"prompt": "hello"}, frames.append)
+    done = frames[-1]
+    assert done["type"] == "done" and done["input_tokens"] == 3
+    assert done["tokens"] == 2
+
+    frames.clear()
+    worker_base = sys.modules["worker_base"]
+    worker_base.CANCEL.set()
+    try:
+        worker.generate({"prompt": "hello"}, frames.append)
+    finally:
+        worker_base.CANCEL.clear()
+    assert frames[-1]["cancelled"] is True
+    assert frames[-1]["input_tokens"] == 3

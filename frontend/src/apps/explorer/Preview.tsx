@@ -12,8 +12,11 @@ import {
   copyEntry,
   revealPath,
   deleteEntry,
+  getRegistryEntryForPath,
+  resetRegistryBinding,
+  repairTemplateRegistry,
 } from "@platform/lib/api";
-import type { StatResult, TemplateEntry } from "@platform/lib/api";
+import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { navigate, navigateUrl, urlForFsPath, replaceSearch, IS_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -35,7 +38,6 @@ import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { pushToast } from "@platform/lib/toast";
-import { TroubleCard } from "@platform/ui/TroubleCard";
 import { shouldAnnounceTemplateError } from "@platform/lib/trouble";
 import { runCommunity, touchCommunityApp, communityCacheSlug } from "@platform/lib/community";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
@@ -1406,7 +1408,155 @@ function TemplatePreview({
   );
 }
 
-function FallbackPreview({ fsPath, stat, actionsInTopbar }: { fsPath: string; stat: StatResult; actionsInTopbar?: boolean }) {
+// The "get me out of this" panel FallbackPreview shows when the reason
+// nothing renders is a fixable Template Registry state — a disabling user
+// override, or a corrupt user registry.json — rather than a genuinely
+// unbound file type (nothing to fix from here, so nothing is shown). Both
+// fixes are one click and stay entirely inside the app: no file to find, no
+// JSON to hand-edit.
+function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir: boolean; onReload?: () => void }) {
+  const [entry, setEntry] = useState<RegistryEntryForPath | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setEntry(null);
+    setActionError(null);
+    getRegistryEntryForPath(fsPath, isDir).then(
+      (r) => alive && setEntry(r),
+      () => alive && setEntry({ key: null })
+    );
+    return () => {
+      alive = false;
+    };
+  }, [fsPath, isDir]);
+
+  if (entry === null) return null; // first paint is instant; this enriches in the background
+
+  // The ONE registry state that truly empties a file's rendered template
+  // list is an explicit null/[] override on the key that would otherwise
+  // govern it — an unresolvable NAME alone self-heals, because
+  // _templates_for falls back to the core list when a user value resolves to
+  // nothing at all, so it never reaches this fallback card in the first
+  // place. Narrowed into its own variable (rather than a boolean flag) so
+  // every field below reads off the checked value, not back off `entry`.
+  const resetTarget = entry.key !== null && entry.overridesCore && entry.disabled ? entry : null;
+  const registryError = entry.registryError;
+  const coreRegistryError = entry.coreRegistryError;
+  if (!resetTarget && !registryError && !coreRegistryError) return null;
+
+  // `isFixed` lets a no-op success (repair's `{repaired: false}` — the file
+  // already parsed fine, nothing to do) skip the "Fixed" claim instead of
+  // reloading and toasting over a state that never changed. Reset has no
+  // such no-op shape given how resetTarget is gated above, so it takes the
+  // default (every resolution counts as fixed).
+  const run = <T,>(action: () => Promise<T>, isFixed: (result: T) => boolean = () => true) => {
+    setBusy(true);
+    setActionError(null);
+    action().then(
+      (result) => {
+        setBusy(false);
+        if (isFixed(result)) {
+          pushToast({ msg: "Fixed — reloading this file's preview…", tone: "info" });
+          onReload?.();
+        } else {
+          // The action no-opped (repair found the file already parses fine —
+          // maybe another tab beat this one to it, or fixed the binding this
+          // exact file needs while doing so). The stale `entry` fetched
+          // before this click still shows the "unreadable" banner and button,
+          // so it must be refetched rather than left standing while only
+          // actionError changes (Cursor Bugbot #585). A toast carries the
+          // message rather than inline text: refetching may make the whole
+          // notice disappear (nothing left to fix), which would otherwise
+          // take the message down with it before anyone reads it.
+          pushToast({ msg: "Nothing to repair — the registry file already reads fine.", tone: "info" });
+          getRegistryEntryForPath(fsPath, isDir).then(
+            (r) => setEntry(r),
+            () => setEntry({ key: null })
+          );
+          // Also re-stat: "already reads fine" can mean whoever got there
+          // first restored the WORKING binding this file needs, not just an
+          // empty {} — in which case the file itself renders again now, and
+          // only a re-stat (not just refetching this notice's own entry)
+          // surfaces that (Cursor Bugbot #585 follow-up). A harmless extra
+          // re-stat otherwise.
+          onReload?.();
+        }
+      },
+      (err: Error) => {
+        setBusy(false);
+        setActionError(err.message || String(err));
+      }
+    );
+  };
+
+  return (
+    <div className="metadata-card registry-fix-notice">
+      {registryError && (
+        <>
+          <p>
+            Your Template Registry file couldn't be read: <code>{registryError}</code>
+          </p>
+          <p className="registry-fix-hint">
+            Any custom preview bindings in it are being ignored until this is fixed.
+          </p>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={() => run(repairTemplateRegistry, (r) => r.repaired)}
+          >
+            Repair Template Registry
+          </button>
+        </>
+      )}
+      {coreRegistryError && (
+        // No button: this is fused-render's own PACKAGED registry, not
+        // anything a request handler may rewrite — it's immutable data healed
+        // only by ensure_core_templates' startup check, so the honest fix
+        // really is "restart the app", not a click here.
+        <p>
+          Fused Render's built-in Template Registry couldn't be read: <code>{coreRegistryError}</code>. Restarting
+          the app usually fixes this.
+        </p>
+      )}
+      {resetTarget && (
+        <>
+          <p>
+            Previews for <code>{resetTarget.key}</code> files are turned off in your Template Registry.
+          </p>
+          {resetTarget.coreTemplates && resetTarget.coreTemplates.length > 0 && (
+            <p className="registry-fix-hint">
+              Restoring the default will bring back: {resetTarget.coreTemplates.join(", ")}.
+            </p>
+          )}
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={() => run(() => resetRegistryBinding(resetTarget.key))}
+          >
+            Restore default previews for {resetTarget.key}
+          </button>
+        </>
+      )}
+      {actionError && <p className="registry-fix-error">{actionError}</p>}
+    </div>
+  );
+}
+
+function FallbackPreview({
+  fsPath,
+  stat,
+  actionsInTopbar,
+  onReload,
+}: {
+  fsPath: string;
+  stat: StatResult;
+  actionsInTopbar?: boolean;
+  onReload?: () => void;
+}) {
   // No renderable views back this file (that's why it's the fallback), so Open
   // With resolves to the empty "No views available" list without a re-stat.
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems([], () => {}));
@@ -1415,41 +1565,32 @@ function FallbackPreview({ fsPath, stat, actionsInTopbar }: { fsPath: string; st
     <>
       {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu} />}
       <div className="preview-body">
-        {/* WHY there is no view here, when the reason is our own registry
-            failing to parse rather than the file being unremarkable. The
-            server has always reported this (`template_error`, SPEC PT-8) and
-            nothing has ever read it, so a broken ~/.fused-render registry
-            presented as "this file just has no preview" — for every file at
-            once, with the reason sitting unread in the payload. That is a
-            registry the user can fix in a minute, and could not previously
-            know about. */}
-        {stat.template_error && (
-          <TroubleCard
-            what={`opening ${stat.name} — no view could be resolved for it`}
-            title="Your template registry could not be read"
-            explain={
-              "This file has no view, and the reason is ours rather than the " +
-              "file's: the registry that decides which view opens what will " +
-              "not parse. Fix the JSON and it applies on the next open."
-            }
-            error={stat.template_error}
-            facts={{ page: location.pathname + location.search }}
-          />
-        )}
-        <div className="metadata-card">
-          <dl>
-            <dt>Name</dt>
-            <dd>{stat.name}</dd>
-            <dt>Path</dt>
-            <dd>{fsPath}</dd>
-            <dt>Size</dt>
-            <dd>{formatSize(stat.size)}</dd>
-            <dt>Modified</dt>
-            <dd>{formatMtimeFull(stat.mtime)}</dd>
-          </dl>
-          <a href={rawUrl(fsPath)} download={stat.name}>
-            Download
-          </a>
+        {/* THE REGISTRY, when this file has no view because of it. #585's
+            RegistryFixNotice answers exactly the case this branch used to
+            answer with a TroubleCard, and answers it better: the same
+            unreadable-registry error, plus a button that repairs it. A
+            copyable report is the right shape when nobody can act; here
+            somebody can, so the one-click fix wins and the card goes. The
+            toast below still exists for the PARTIAL failure, which this
+            notice cannot reach: when the built-in registry still matches,
+            the file previews and no fallback is rendered at all. */}
+        <div className="metadata-stack">
+          <RegistryFixNotice fsPath={fsPath} isDir={stat.is_dir} onReload={onReload} />
+          <div className="metadata-card">
+            <dl>
+              <dt>Name</dt>
+              <dd>{stat.name}</dd>
+              <dt>Path</dt>
+              <dd>{fsPath}</dd>
+              <dt>Size</dt>
+              <dd>{formatSize(stat.size)}</dd>
+              <dt>Modified</dt>
+              <dd>{formatMtimeFull(stat.mtime)}</dd>
+            </dl>
+            <a href={rawUrl(fsPath)} download={stat.name}>
+              Download
+            </a>
+          </div>
         </div>
       </div>
       {fileMenu.overlays}
@@ -1470,9 +1611,16 @@ interface PreviewProps {
   // Explorer variant: no preview header bar; the mode switcher actions
   // portal into the breadcrumb bar's #topbar-mode-slot instead.
   actionsInTopbar?: boolean;
+  // Bumps StatView's reloadKey to re-fetch /api/fs/stat in place (App.tsx).
+  // FallbackPreview's RegistryFixNotice calls this after a fix succeeds, so a
+  // file that starts rendering again (e.g. "_render" is back) does so without
+  // a manual refresh. Undefined for callers that don't wire up StatView's
+  // reload (e.g. the learn page), where FallbackPreview simply omits the
+  // "reloading…" step.
+  onReload?: () => void;
 }
 
-export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, actionsInTopbar }: PreviewProps) {
+export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, actionsInTopbar, onReload }: PreviewProps) {
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
@@ -1536,5 +1684,5 @@ export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, act
         actionsInTopbar={actionsInTopbar}
       />
     );
-  return <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} />;
+  return <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} onReload={onReload} />;
 }

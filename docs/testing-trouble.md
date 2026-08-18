@@ -135,13 +135,16 @@ echo '{ this is not json' > ~/.fused-render/templates/registry.json
 ```
 
 - Open any file that would normally have a preview (a `.parquet`, a `.csv`).
-- Expect: the fallback metadata card, and **above it** a card naming the
-  registry and the parse error.
-- Expect the **toast** first, once per broken registry: the built-in registry
-  still matches, so the file previews and only your own bindings stop applying
-  (that partial failure is the reported symptom, and why a toast rather than a
-  card per file). Its Preferences action opens the tab, which holds the whole
-  error and copies it.
+- Expect the **toast**, once per broken registry: the built-in registry still
+  matches, so the file previews and only your own bindings stop applying — that
+  partial failure is the reported symptom, the one no fallback card can reach,
+  and the reason this is a toast rather than a card per file. Its Preferences
+  action opens the tab, which holds the whole error and copies it.
+- Open a file that has **no** view at all and you get #585's
+  `RegistryFixNotice` above the metadata card instead: same error, plus a
+  **Repair Template Registry** button. That surface is not this feature's — do
+  not expect a TroubleCard there, and if you find one, two cards are describing
+  one fault (TR-9).
 - Restore (`rm` the file or fix the JSON) and reopen the file — the card is
   gone, with no restart. The registry is read per stat.
 - **If you see nothing at all**, the shell bundle is stale — see the build step

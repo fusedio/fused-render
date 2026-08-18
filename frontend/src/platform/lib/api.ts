@@ -1328,6 +1328,37 @@ export function resetRegistryBinding(key: string): Promise<RegistryEntry | Regis
   return postJson<RegistryEntry | RegistryRemoved>("/api/templates/registry/reset", { key });
 }
 
+// Which registry key (if any) governs previews for one path — the seam
+// FallbackPreview uses to offer "restore default previews" instead of sending
+// someone off to hand-edit registry.json. `{key: null}` means neither registry
+// has a matching key at all (nothing to fix from here). Either error field can
+// be set even alongside a resolved `key`: a registry FILE that fails to parse
+// can hide a key that would otherwise have matched — a distinct problem from
+// one key's own `error`. The two error fields are NEVER merged: `registryError`
+// (the user's registry.json) is the one `repairTemplateRegistry` can act on;
+// `coreRegistryError` (the packaged core registry) has no in-app fix — it's
+// immutable package data, healed only by the app's own startup check — so a
+// caller must not offer the repair action for it.
+type RegistryFileErrors = { registryError?: string | null; coreRegistryError?: string | null };
+export type RegistryEntryForPath = (RegistryEntry & RegistryFileErrors) | ({ key: null } & RegistryFileErrors);
+
+export function getRegistryEntryForPath(path: string, isDir: boolean): Promise<RegistryEntryForPath> {
+  const params = new URLSearchParams({ path, is_dir: isDir ? "true" : "false" });
+  return getJson<RegistryEntryForPath>("/api/templates/registry/for-path?" + params.toString());
+}
+
+// Repair a USER registry.json that fails to parse: the unreadable file is
+// backed up alongside itself (never deleted) and replaced with a fresh empty
+// one. A no-op (`repaired: false`) when the file already parses or is absent.
+export interface RegistryRepairResult {
+  repaired: boolean;
+  backupPath?: string;
+}
+
+export function repairTemplateRegistry(): Promise<RegistryRepairResult> {
+  return postJson<RegistryRepairResult>("/api/templates/registry/repair", {});
+}
+
 // -- Export / import ---------------------------------------------------------
 // Export works for ANY template (core or user); import always lands in the user
 // source. Zips are folders only (no registry.json).
@@ -2221,6 +2252,91 @@ export function downloadAiModel(model: string, capability?: string): Promise<AiL
 
 export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boolean }> {
   return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model });
+}
+
+// -- AI usage (GET /api/ai/metrics, SPEC AI-12) -------------------------------
+// What `/api/ai` has generated in THIS server process: both tiers, in memory,
+// gone on restart. `since` is what keeps that honest — every number here is
+// "since the server started", never "today".
+
+/** The counters, wherever they are counted: a bucket, the window, a model's
+ *  row, a tier, or the whole process. */
+export interface AiUsageCounts {
+  /** Completions that reached a terminal frame. A cancelled local generation
+   *  counts (it produced tokens); a call that failed or was abandoned
+   *  mid-stream does not (nothing ever said how many tokens it made). */
+  completions: number;
+  /** Null means NOT REPORTED, never zero: a local worker counts what it
+   *  generated and says nothing about the prompt it read (SPEC AI-3), so a row
+   *  showing "0 read" for a local model would be inventing a fact. */
+  input_tokens: number | null;
+  output_tokens: number;
+  /** Calls that reached for a model and got nothing back. NOT completions —
+   *  and not malformed requests either, which never reached a model. */
+  failures: number;
+  /** Seconds the models spent generating, as the tiers themselves reported.
+   *  Null when nothing in this row was timed. */
+  seconds: number | null;
+  /** `seconds` divided into the tokens that were TIMED — not into every token,
+   *  since a cancelled generation reports tokens and no duration. Null when
+   *  nothing was timed. */
+  tokens_per_second: number | null;
+}
+
+/** One `bucket_seconds`-wide column of the graph. `t` is the bucket's START, in
+ *  epoch SECONDS (not ms — it comes straight from the server's clock). */
+export interface AiUsageBucket extends AiUsageCounts {
+  t: number;
+}
+
+export interface AiUsageModel extends AiUsageCounts {
+  /** The RESOLVED model id — "claude-opus-5", not the "opus" alias a caller may
+   *  have sent — or "other models", the overflow row past the server's cap. */
+  model: string;
+  /** Which half served it — null on the "other models" overflow row, which is a
+   *  mixture by construction and cannot claim either. */
+  tier: AiUsageTier | null;
+}
+
+/** Which half of `/api/ai` served it, on the `/`-in-the-id seam AI-1 dispatches
+ *  on — the server's own answer, not a guess made from the string here. */
+export type AiUsageTier = "claude" | "local";
+
+export interface AiUsage {
+  /** When this process started counting, epoch seconds. */
+  since: number;
+  /** The server's clock when it answered — the right end of the axis. Used
+   *  instead of Date.now() so a bucket never plots into the future. */
+  now: number;
+  bucket_seconds: number;
+  /** The window actually served, after the server clamped what was asked. */
+  window_minutes: number;
+  /** How far back the store can ever answer, whatever `minutes` asks for. */
+  retention_minutes: number;
+  /** When the last completion landed, epoch seconds — null if none ever has.
+   *  What tells "quiet for a while" from "never used". */
+  last_completion_at: number | null;
+  /** Since `since`. */
+  totals: AiUsageCounts;
+  /** The `window_minutes` the buckets cover. */
+  window: AiUsageCounts;
+  /** Since `since`, split by tier. Both keys are always present. */
+  tiers: Record<AiUsageTier, AiUsageCounts>;
+  /** Failures since `since`, by kind ("timeout", "ai_unavailable",
+   *  "ai_error", "model_loading"), commonest first. "3 failed" and "3 timed
+   *  out" send a user to different places. */
+  failure_types: { type: string; count: number }[];
+  /** Biggest generator first. */
+  models: AiUsageModel[];
+  /** Dense and oldest-first: every bucket in the window, zeros included, so a
+   *  gap in traffic draws as a gap. Short of the full window only while the
+   *  process is younger than it — nothing is emitted for time before counting
+   *  began. */
+  buckets: AiUsageBucket[];
+}
+
+export function getAiUsage(minutes: number, opts?: { signal?: AbortSignal }): Promise<AiUsage> {
+  return getJson<AiUsage>("/api/ai/metrics?minutes=" + encodeURIComponent(String(minutes)), opts);
 }
 
 // -- Git repos (GET /api/git-repos) -------------------------------------------

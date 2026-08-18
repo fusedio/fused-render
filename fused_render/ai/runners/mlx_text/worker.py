@@ -134,6 +134,28 @@ def _messages_to_prompt(tokenizer, messages, prompt):
     return "\n\n".join(m.get("content", "") for m in messages if isinstance(m, dict))
 
 
+def _prompt_tokens(tokenizer, text):
+    """How long the prompt is, in the model's OWN tokens — or None.
+
+    The number the API reports as `input_tokens` (SPEC AI-3). Counted here
+    rather than estimated upstream because this process is the only one holding
+    the tokenizer that decides the answer: characters/4 would be a plausible
+    number that disagrees with the model.
+
+    Fail-soft by design. This is a METRIC, and a tokenizer that spells `encode`
+    differently, or refuses this string, must cost the count and not the
+    completion — `None` means "not reported", which every reader already
+    handles (a worker that predates this said nothing at all).
+    """
+    encode = getattr(tokenizer, "encode", None)
+    if encode is None:
+        return None
+    try:
+        return len(encode(text))
+    except Exception:  # noqa: BLE001 - a count may not break a generation
+        return None
+
+
 def generate(body, write):
     """Stream one completion as NDJSON: {chunk} lines, then {done}."""
     from mlx_lm import stream_generate
@@ -153,17 +175,23 @@ def generate(body, write):
         top_p=float(body.get("top_p", 0.95)),
     )
 
+    # Counted BEFORE the first token, so a cancelled generation reports it too:
+    # the prompt was read whether or not the answer was wanted by the end.
+    prompt_tokens = _prompt_tokens(tokenizer, text)
+
     count = 0
     started = time.time()
     for response in stream_generate(model, tokenizer, text, max_tokens=max_tokens,
                                     sampler=sampler):
         if worker_base.CANCEL.is_set():
-            write({"type": "done", "ok": True, "cancelled": True, "tokens": count})
+            write({"type": "done", "ok": True, "cancelled": True, "tokens": count,
+                   "input_tokens": prompt_tokens})
             return
         count += 1
         write({"type": "chunk", "text": response.text})
     write({
         "type": "done", "ok": True, "tokens": count,
+        "input_tokens": prompt_tokens,
         "seconds": round(time.time() - started, 2),
     })
 
