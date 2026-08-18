@@ -1460,7 +1460,19 @@ function RegistryFixNotice({ fsPath, isDir, onReload }: { fsPath: string; isDir:
           pushToast({ msg: "Fixed — reloading this file's preview…", tone: "info" });
           onReload?.();
         } else {
-          setActionError("Nothing to repair — the registry file already reads fine.");
+          // The action no-opped (repair found the file already parses fine —
+          // maybe another tab beat this one to it). The stale `entry` fetched
+          // before this click still shows the "unreadable" banner and button,
+          // so it must be refetched rather than left standing while only
+          // actionError changes (Cursor Bugbot #585). A toast carries the
+          // message rather than inline text: refetching may make the whole
+          // notice disappear (nothing left to fix), which would otherwise
+          // take the message down with it before anyone reads it.
+          pushToast({ msg: "Nothing to repair — the registry file already reads fine.", tone: "info" });
+          getRegistryEntryForPath(fsPath, isDir).then(
+            (r) => setEntry(r),
+            () => setEntry({ key: null })
+          );
         }
       },
       (err: Error) => {
