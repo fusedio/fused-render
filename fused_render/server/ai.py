@@ -16,6 +16,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
+from fused_render.server import ai_metrics
 from fused_render.server.common import _require_fused
 from fused_render.shell.prefs import default_model
 
@@ -111,6 +112,35 @@ def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
         {"ok": False, "error": {"type": type_, "message": message}},
         status_code=status,
     )
+
+
+def _ai_failed(model: str, type_: str, message: str, status: int = 502):
+    """An error response that is also COUNTED (AI-12): a call that reached for a
+    model and got nothing back.
+
+    Only for failures past the validation gate, and only for calls that asked a
+    model for text and got none. A malformed body is refused with `_ai_error`
+    and counted nowhere — nothing was asked of a model — and neither is a 409
+    from a model that is still loading, which did the thing AI-5 designed it to
+    do. Both would make the one number that means "the AI is not working" mean
+    something else as well.
+    """
+    ai_metrics.record_failure(model, type_)
+    return _ai_error(type_, message, status=status)
+
+
+def _claude_seconds(data: dict) -> float | None:
+    """How long the CLI says the turn took, in seconds.
+
+    `duration_api_ms` when the result event carries it — it is the model's own
+    time, without the CLI's process overhead around it, which is what makes a
+    tokens/second figure a statement about the MODEL. `duration_ms` otherwise.
+    """
+    for key in ("duration_api_ms", "duration_ms"):
+        ms = data.get(key)
+        if isinstance(ms, (int, float)) and not isinstance(ms, bool) and ms > 0:
+            return ms / 1000.0
+    return None
 
 
 # Where Claude Code installs `claude`, for when it isn't on the PATH this
@@ -710,6 +740,24 @@ def _history_problem(history) -> str | None:
     return None
 
 
+def _local_usage(event: dict) -> dict:
+    """The `usage` a local worker's terminal frame becomes.
+
+    Same Anthropic-style names the Claude tier promises (RH-11), from the
+    worker's own vocabulary: it counts the tokens it GENERATED as `tokens` and
+    the prompt it read as `input_tokens` (AI-3). `input_tokens` is None from a
+    runner that cannot count it — a tokenizer that refused the string, or a
+    worker built before the count existed — and `null` is the honest answer
+    there, never a zero, which would state that the model read nothing.
+
+    `seconds` rides along because the local tier is the one that measures it;
+    the Claude tier's duration is passed to the counter separately (AI-12a).
+    """
+    return {"input_tokens": event.get("input_tokens"),
+            "output_tokens": event.get("tokens"),
+            "seconds": event.get("seconds")}
+
+
 def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                  body: dict):
     """One completion from a model resident on THIS machine (SPEC §40).
@@ -751,12 +799,19 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         events = supervisor.generate_text(model, request)
         first = next(events, None)
     except supervisor.ModelNotReady as e:
+        # NOT counted as a failure (AI-12b). This call did exactly what AI-5
+        # says it should: a model that is not resident cannot answer in the
+        # seconds a caller has, so the load STARTS and the job id comes back —
+        # the caller is meant to watch it and ask again. Counting that beside a
+        # timeout or a missing binary is how "3 failed" comes to mean "one
+        # model is downloading", which is the conflation this rule exists to
+        # prevent: the number has to mean one thing.
         return JSONResponse(
             {"ok": False, "error": {"type": "model_loading", "message": str(e),
                                     "jobId": e.job_id}},
             status_code=409)
     except supervisor.SupervisorError as e:
-        return _ai_error("ai_unavailable", str(e), status=502)
+        return _ai_failed(model, "ai_unavailable", str(e), status=502)
 
     def walk():
         """The events, with the one already pulled off put back in front."""
@@ -771,10 +826,14 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                 text.append(event.get("text") or "")
             elif event.get("type") == "done":
                 if not event.get("ok", True):
-                    return _ai_error("ai_error", str(event.get("error") or "generation failed"),
-                                     status=502)
-                usage = {"output_tokens": event.get("tokens"),
-                         "seconds": event.get("seconds")}
+                    return _ai_failed(model, "ai_error",
+                                      str(event.get("error") or "generation failed"),
+                                      status=502)
+                usage = _local_usage(event)
+        # The counter is fed the SAME dict the caller is about to read (AI-12),
+        # here and at the three other terminal frames — so the graph and the
+        # response can never disagree about what this completion generated.
+        ai_metrics.record(model, usage)
         return JSONResponse(
             {"ok": True, "result": {"text": "".join(text), "model": model, "usage": usage}})
 
@@ -799,17 +858,26 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                     yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
                 elif event.get("type") == "done":
                     ok = bool(event.get("ok", True))
+                    usage = _local_usage(event)
+                    # A CANCELLED generation lands here too, with the tokens it
+                    # produced before the Stop: the worker counts what it
+                    # emitted (AI-1a), and those tokens were generated by this
+                    # machine whether or not anybody wanted them by the end.
+                    if ok:
+                        ai_metrics.record(model, usage)
+                    else:
+                        ai_metrics.record_failure(model, "ai_error")
                     yield json.dumps({
                         "type": "done", "ok": ok,
                         **({"result": {
                             "text": "".join(text), "model": model,
-                            "usage": {"output_tokens": event.get("tokens"),
-                                      "seconds": event.get("seconds")}}}
+                            "usage": usage}}
                            if ok else {"error": {
                             "type": "ai_error",
                             "message": str(event.get("error") or "generation failed")}}),
                     }) + "\n"
         except supervisor.SupervisorError as e:
+            ai_metrics.record_failure(model, "ai_unavailable")
             yield json.dumps({"type": "done", "ok": False,
                               "error": {"type": "ai_unavailable", "message": str(e)}}) + "\n"
 
@@ -954,8 +1022,8 @@ async def _ai_relay(body: dict):
             status=400)
 
     if not _claude_bin():
-        return _ai_error(
-            "ai_unavailable",
+        return _ai_failed(
+            model, "ai_unavailable",
             "claude binary not found on PATH; install Claude Code or set "
             f"{_AI_BIN_ENV} to its location")
 
@@ -1016,17 +1084,22 @@ async def _ai_relay(body: dict):
         try:
             data = await run_once()
         except asyncio.TimeoutError:
-            return _ai_error(
-                "timeout",
+            return _ai_failed(
+                model, "timeout",
                 f"claude CLI did not answer within {_AI_TIMEOUT_S:.0f}s")
         except OSError as exc:
-            return _ai_error(
-                "ai_unavailable", f"could not run the claude CLI: {exc}")
+            return _ai_failed(
+                model, "ai_unavailable", f"could not run the claude CLI: {exc}")
         except _AiProcFailure as exc:
-            return _ai_error("ai_error", str(exc))
+            return _ai_failed(model, "ai_error", str(exc))
         payload, err = _ai_result_payload(data, model)
         if err is not None:
-            return _ai_error("ai_error", err)
+            return _ai_failed(model, "ai_error", err)
+        # Under the RESOLVED id, not the alias the caller sent: "opus" and
+        # "claude-opus-5" are one model and must not be two rows in the
+        # breakdown. `_ai_result_payload` already did that resolution.
+        ai_metrics.record(payload["model"], payload["usage"],
+                          _claude_seconds(data))
         return JSONResponse({"ok": True, "result": payload})
 
     # Streaming: NDJSON over a chunked 200. Anything that goes wrong after
@@ -1054,25 +1127,31 @@ async def _ai_relay(body: dict):
             try:
                 data = task.result()
             except asyncio.TimeoutError:
+                ai_metrics.record_failure(model, "timeout")
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "timeout",
                     "message": "claude CLI did not answer within "
                                f"{_AI_TIMEOUT_S:.0f}s"}}) + "\n"
                 return
             except OSError as exc:
+                ai_metrics.record_failure(model, "ai_unavailable")
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "ai_unavailable",
                     "message": f"could not run the claude CLI: {exc}"}}) + "\n"
                 return
             except _AiProcFailure as exc:
+                ai_metrics.record_failure(model, "ai_error")
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "ai_error", "message": str(exc)}}) + "\n"
                 return
             payload, err = _ai_result_payload(data, model)
             if err is not None:
+                ai_metrics.record_failure(model, "ai_error")
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "ai_error", "message": err}}) + "\n"
                 return
+            ai_metrics.record(payload["model"], payload["usage"],
+                              _claude_seconds(data))
             yield json.dumps(
                 {"type": "done", "ok": True, "result": payload}) + "\n"
         finally:
@@ -1124,3 +1203,19 @@ async def api_ai(body: dict = Body(...), x_fused: str | None = Header(default=No
     if guard is not None:
         return guard
     return await _ai_relay(body)
+
+
+@router.get("/api/ai/metrics")
+def api_ai_metrics(minutes: float = 15):
+    """What this process has generated, and when — SPEC AI-12.
+
+    An UNGUARDED read, like every other read in this app: the `X-Fused` guard
+    (D3) is on the routes that spend this machine's time, and there is nothing
+    here but counters a page could have kept itself. It reads no disk and takes
+    no lock anybody waits on, so the Usage tab can poll it.
+
+    `minutes` is the width of the returned series; it is CLAMPED rather than
+    refused (1 .. the ring's own retention), because a graph asking for two
+    hours from a store that keeps one should get the hour, not a 400.
+    """
+    return ai_metrics.snapshot(minutes)
