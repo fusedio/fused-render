@@ -2941,36 +2941,36 @@ input.schedule-when-field {
   color: var(--fg-muted);
 }
 
-/* The lane is not a PANEL. It used to paint `rgba(var(--tint), 0.05)` at rest,
-   which made every lane a filled slab: an empty Upcoming read as a large grey
-   plate with nothing in it, and every card competed with the box it was sitting
-   in rather than being the thing you looked at (Akshil, 2026-08-17, comparing
-   this board against flow's side by side — there the lanes are transparent and
-   the cards are the only surface).
+/* An OPEN lane has no edge — it is a quiet ground, not a box (Akshil,
+   2026-08-18, against the flow app again: there an open column is an invisible
+   panel and the cards are the only thing you see). The history is worth keeping
+   because it is a loop the page has already been round once: the lane painted a
+   `rgba(var(--tint), 0.05)` slab, lost it on 2026-08-17 for competing with the
+   cards, and gained a `--border` hairline in its place so the column still had a
+   bottom. The hairline turned out to be the same mistake in thinner form — five
+   outlined boxes read as five boxes, and the cards inside them were the second
+   thing you saw.
 
-   So the FILL is gone and nothing filled in for it — but the lane is still
-   BOUNDED ("at least they should have an outline when they're expanded", Akshil,
-   2026-08-17). Unfilled and unbounded, an open lane's only edge was the ragged
-   right-hand end of whatever card happened to be widest, so the column had no
-   bottom at all and a short lane beside a full one read as loose cards on the
-   page. A hairline answers that without putting the plate back: an outline says
-   where the column is, a fill says the column is a surface, and only the second
-   one was ever competing with the cards.
+   What replaces both is a FILL that loses: `--tasks-lane-bg` sits a whisper
+   above the page and a clear step BELOW the card (tokens.css orders the three).
+   That gives the column the bottom the hairline was there for — the lane is
+   visible as a shape — while making the card unambiguously the lit element,
+   because the only surface on the page brighter than its ground is the card.
 
-   Deliberately the SAME hairline the collapsed rail wears — 1px, `--border`, and
-   the 8px radius this element already had for the drop wash — so the two forms of
-   a lane read as one family and not as two ideas about what a lane's edge is. The
-   rail's is doing extra work (it is a button you press), but it is the same line.
+   The COLLAPSED rail keeps its hairline, deliberately: it is a button you press,
+   and it is 52px wide with no cards in it to give it shape (Akshil explicitly
+   OK'd a border there and only there). So the two forms of a lane no longer look
+   like one family, which is right — one is a column of work and the other is a
+   control.
 
-   What the padding is for, on top of insetting the cards off that new edge, is
+   What the padding is for, on top of insetting the cards off the lane's edge, is
    the DROP states below: it holds the dashed legal-drop outline off the top card
    so it reads as the lane's own edge rather than as a second border on the card.
 
-   An EMPTY lane therefore shows its header and an empty bounded column — the
-   label, the ring, a `0` and the box the cards would go in. That is still
-   "nothing scheduled looks like nothing": an empty outline is not a filled slab.
-   The `min-height` is what keeps it a droppable target, so a card can still be
-   dragged into a column that has never held one. */
+   An EMPTY lane therefore shows its header and an empty, barely-there column.
+   That is still "nothing scheduled looks like nothing". The `min-height` is what
+   keeps it a droppable target, so a card can still be dragged into a column that
+   has never held one. */
 .schedule-tv-lane-body {
   flex: 1 1 auto;
   min-height: 120px;
@@ -2987,25 +2987,31 @@ input.schedule-when-field {
      make the floor 122px and the number here would stop being the number the
      board actually has. */
   box-sizing: border-box;
-  padding: 4px;
-  border: 1px solid var(--border);
+  padding: 6px;
+  /* Transparent, not absent: the drag rules below still speak in `border-color`
+     and the 1px is part of the box the `min-height` above is measured against,
+     so removing the declaration would move the floor as well as the edge. */
+  border: 1px solid transparent;
   border-radius: 8px;
+  background: var(--tasks-lane-bg);
 }
 
-/* The card is the board's ONLY surface now that the lane is an outline rather than
-   a plate, so it has to carry the whole separation from the page ground — and the
-   ground is `--bg` in both themes (base.css `body`), which is exactly what the
-   card used to be painted in. Against a lane fill that was enough; against the
-   page it was the card disappearing, most obviously in light mode where both are
-   plain white.
+/* The card is the LIT element of the board: the lane under it is a fill that
+   deliberately loses to it, so this is the one surface on the page that steps
+   toward the reader. `--tasks-card-bg` is that step, and its pairing with
+   `--tasks-lane-bg` is the whole point — tokens.css owns the ordering (page <
+   lane < card) so neither half can be tuned into inverting it.
 
-   `--bg-panel` is the app's existing answer to "a surface floating above the
-   page", and it is tuned per theme for precisely this: in dark it steps LIGHTER
-   than the ground (#202329 over #131417), and in light it stays white and lets
-   the hairline plus a shadow do the lifting (tokens.css says so in as many
-   words). The shadow is the same `0 1px 2px var(--shadow-sm)` the settings
-   page's own cards use — one step of lift, not a drop shadow — and its token is
-   theme-tuned too, so it reads as depth in dark instead of as dirt in light.
+   It replaced `--bg-panel` on 2026-08-18. That token is the app's general
+   "surface floating above the page" and it lifted correctly, but it is a
+   POPOVER's colour: #202329 carries nine steps more blue than red, which over a
+   near-black page reads as grey rather than as the black-tinted charcoal the
+   flow app's cards have. Same lift, less blue. In light it resolves to white
+   and lets the hairline plus a shadow do the lifting, exactly as --bg-panel did.
+
+   The shadow is the same `0 1px 2px var(--shadow-sm)` the settings page's own
+   cards use — one step of lift, not a drop shadow — and its token is theme-tuned
+   too, so it reads as depth in dark instead of as dirt in light.
 
    Loosened on 2026-08-17 along with the lane: 8px/10px padding and a 5px gap
    were tighter than flow's cards, which is what made three short lines feel
@@ -3031,17 +3037,23 @@ input.schedule-when-field {
   font: inherit;
   text-align: left;
   color: var(--fg);
-  background: var(--bg-panel);
+  background: var(--tasks-card-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 1px 2px var(--shadow-sm);
   cursor: pointer;
-  transition: border-color 0.08s ease;
+  transition: background-color 0.08s ease, border-color 0.08s ease;
 }
 
+/* Hover now moves the FILL as well as the edge. It did not have to while the
+   lane was an outline — a brightening border was the only change available on a
+   page where nothing else was filled — but against a lane that is itself a
+   surface, an edge-only hover is easy to miss. A 6% lift of --fg into the card's
+   own token stays a whisper in both themes and cannot drift away from the token
+   it is mixed from. */
 .schedule-tv-board .schedule-tv-card:hover:not(:disabled),
 .prefs-section .schedule-tv-board .schedule-tv-card:hover:not(:disabled) {
-  background: var(--bg-panel);
+  background: color-mix(in srgb, var(--fg) 6%, var(--tasks-card-bg));
   border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
 }
 

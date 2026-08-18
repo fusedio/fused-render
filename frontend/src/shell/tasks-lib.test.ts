@@ -2086,70 +2086,121 @@ function rules(css: string): { selectors: string[]; body: string }[] {
 }
 
 // ---- which thing on the board is a surface -------------------------------------
-// The lane used to paint a fill at rest, so an empty lane was a grey slab and every
-// card competed with the box around it (Akshil, 2026-08-17, against flow side by
-// side). The fill is gone and the CARD is the only surface — but the lane is still
-// BOUNDED, by the same hairline the collapsed rail wears, because unfilled and
-// unbounded a column had no edge of its own at all (Akshil, same day: "at least
-// they should have an outline when they're expanded"). Four things then have to stay
-// true, and each was nearly broken by one of those two changes, so all four are read
-// out of the stylesheets: no fill comes back, the edge is there and is the rail's
-// edge, the card still lifts off the PAGE in both themes, and a drop target still
-// announces itself on a box that paints almost nothing — without its dashed line
-// stacking onto the hairline that is now underneath it.
+// The board has been round this loop twice. The lane painted a fill at rest, so an
+// empty lane was a grey slab and every card competed with the box around it (Akshil,
+// 2026-08-17, against flow side by side); the fill came off and a `--border` hairline
+// went on in its place, because unfilled and unbounded a column had no edge at all.
+// On 2026-08-18 the hairline turned out to be the same mistake in thinner form —
+// five outlined boxes read as five boxes — and both were replaced by the thing that
+// was actually wanted: an ORDERING. The lane is a fill that LOSES to the card, the
+// card is the only surface that steps toward the reader, and the collapsed rail
+// keeps its hairline because it is a control rather than a column.
+//
+// So what is read out of the stylesheets is the ordering itself (page < lane < card
+// in dark, card above lane in light — asserted on the token VALUES, since a
+// relationship written only in prose is one a later tuning can silently invert), the
+// open lane's lack of an edge against the rail's, the card's lift in both themes,
+// and the drop states, which have to keep announcing themselves by ADDING paint on a
+// box that now has a resting fill again.
+
+/** A token's value in one of tokens.css's two palette blocks. */
+function token(name: string, theme: "dark" | "light"): string {
+  const lightAt = TOKENS_CSS.indexOf(':root[data-theme="light"]');
+  const scope = theme === "dark" ? TOKENS_CSS.slice(0, lightAt) : TOKENS_CSS.slice(lightAt);
+  const found = scope.match(new RegExp(`${name}:\\s*([^;]+);`));
+  if (!found) throw new Error(`tokens.css has no ${name} in the ${theme} palette`);
+  return found[1].trim();
+}
+
+/** Rough perceived lightness of a `#rrggbb`, enough to order three greys. */
+function lightness(hex: string): number {
+  const m = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) throw new Error(`not a hex colour: ${hex}`);
+  const [r, g, b] = m.slice(1).map((h) => parseInt(h, 16));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
 
 describe("the board's surfaces", () => {
-  it("gives the lane no resting fill, but does give it an edge", () => {
+  it("orders page, lane and card so the card is the lit one", () => {
+    // The relationship the two tokens exist for. In dark all three are painted, and
+    // they have to climb: the lane is a whisper above the page (a column you can
+    // see) and the card a clear step above the lane (the thing you look at).
+    const dark = ["--bg", "--tasks-lane-bg", "--tasks-card-bg"].map((t) =>
+      lightness(token(t, "dark")),
+    );
+    expect(dark[0]).toBeLessThan(dark[1]);
+    expect(dark[1]).toBeLessThan(dark[2]);
+    // The lane must not become a slab on its way up — half of the page's own gap to
+    // the card is already more contrast than a quiet ground can carry.
+    expect(dark[1] - dark[0]).toBeLessThan((dark[2] - dark[0]) / 2);
+    // In light the page is the lightest thing available, so only the half that can
+    // still be stated is: the card stays above the lane.
+    expect(lightness(token("--tasks-lane-bg", "light"))).toBeLessThan(
+      lightness(token("--tasks-card-bg", "light")),
+    );
+    // The card's own fill must be a NEUTRAL charcoal in dark, not the blue-leaning
+    // grey `--bg-panel` is: a card whose blue channel runs away from its red reads
+    // as grey over a near-black page rather than as black-tinted (Akshil,
+    // 2026-08-18, against flow).
+    const cardHex = token("--tasks-card-bg", "dark").match(/^#(..)(..)(..)$/)!;
+    const [cr, , cb] = cardHex.slice(1).map((h) => parseInt(h, 16));
+    expect(cb - cr).toBeLessThan(6);
+  });
+
+  it("gives the OPEN lane a quiet fill and no edge, and the rail the opposite", () => {
     const lane = block(SCHEDULE_CSS, ".schedule-tv-lane-body");
-    // No FILL: a filled lane is a surface competing with the cards on it, which is
-    // the whole reason the plate came off.
-    expect(lane).not.toContain("background");
-    expect(block(SCHEDULE_CSS, ".schedule-tv-lane")).not.toContain("background");
-    // But BOUNDED — "at least they should have an outline when they're expanded".
-    // Unfilled and unbounded, the column's only edge was the widest card's ragged
-    // right-hand end.
-    expect(lane).toContain("border: 1px solid var(--border)");
+    // The fill is the lane's whole shape now — it is what replaced the hairline.
+    expect(lane).toContain("background: var(--tasks-lane-bg)");
+    // And NO visible edge: an open column is an invisible panel, not a box.
+    expect(lane).not.toContain("border: 1px solid var(--border)");
+    expect(lane).toContain("border: 1px solid transparent");
     expect(lane).toContain("border-radius: 8px");
     // Stated with it, so `min-height: 120px` stays the floor the board actually has.
     expect(lane).toContain("box-sizing: border-box");
-    // One hairline all the way round, not a rule down one side.
+    // One box all the way round, not a rule down one side.
     expect(lane).not.toContain("border-left");
     expect(lane).not.toContain("border-right");
-    // The collapsed lane is a lane too, and since 2026-08-17 the two wear the SAME
-    // edge — same width, same token, same radius, both unfilled — so the open and
-    // closed forms read as one family rather than as two ideas about a lane's edge.
+    // The lane's own wrapper stays unpainted — one fill per column, or the padding
+    // between header and body becomes a second, differently-shaped surface.
+    expect(block(SCHEDULE_CSS, ".schedule-tv-lane")).not.toContain("background");
+    // The COLLAPSED rail is the exception Akshil granted explicitly: 52px wide with
+    // no cards to give it shape, and a button you press, so it keeps the hairline.
     const rail = block(SCHEDULE_CSS, ".schedule-tv-rail");
     expect(rail).toContain("background: transparent");
     expect(rail).toContain("border: 1px solid var(--border)");
     expect(rail).toContain("border-radius: 8px");
   });
 
-  it("makes the card lift off the PAGE, in both themes, from tokens", () => {
+  it("makes the card lift off the LANE, in both themes, from tokens", () => {
     const card = block(SCHEDULE_CSS, ".schedule-tv-board .schedule-tv-card");
-    // `--bg` was the old fill and is also what the page ground is painted in
+    // `--bg` was the oldest fill and is also what the page ground is painted in
     // (base.css `body`), so keeping it would have made the card vanish against the
     // page — most obviously in light mode, where both are plain white.
     expect(card).not.toMatch(/background: var\(--bg\);/);
-    // `--bg-panel` is the app's "surface floating above the page" token: it steps
-    // lighter than the ground in dark and stays white in light, where the hairline
-    // and the shadow do the lifting instead.
-    expect(card).toContain("background: var(--bg-panel)");
+    // `--bg-panel` was the second, and is a POPOVER's colour: it lifted correctly
+    // but read as grey (see the ordering test above).
+    expect(card).not.toMatch(/background: var\(--bg-panel\);/);
+    expect(card).toContain("background: var(--tasks-card-bg)");
     expect(card).toContain("border: 1px solid var(--border)");
     expect(card).toContain("box-shadow: 0 1px 2px var(--shadow-sm)");
-    // Both halves of the lift are theme-tuned tokens with a value in BOTH blocks,
+    // Every part of the lift is a theme-tuned token with a value in BOTH blocks,
     // never a colour defined only under `[data-theme]` — a light-only definition is
     // how one theme ends up with no card surface at all.
-    for (const token of ["--bg-panel", "--shadow-sm"]) {
-      expect(TOKENS_CSS.slice(0, TOKENS_CSS.indexOf(':root[data-theme="light"]'))).toContain(
-        `${token}:`,
-      );
-      expect(TOKENS_CSS.slice(TOKENS_CSS.indexOf(':root[data-theme="light"]'))).toContain(
-        `${token}:`,
-      );
+    for (const name of ["--tasks-card-bg", "--tasks-lane-bg", "--shadow-sm"]) {
+      expect(token(name, "dark")).toBeTruthy();
+      expect(token(name, "light")).toBeTruthy();
     }
+    // Hover moves the FILL as well as the edge now: against a lane that is itself a
+    // surface, an edge-only hover on the card is easy to miss.
+    const hover = block(
+      SCHEDULE_CSS,
+      ".schedule-tv-board .schedule-tv-card:hover:not(:disabled)",
+    );
+    expect(hover).toMatch(/background: color-mix\(in srgb, var\(--fg\) \d+%, var\(--tasks-card-bg\)\)/);
+    expect(hover).toContain("border-color:");
     // The hover-revealed action strip is painted in the card's surface so it reads
     // as floating over the head; it has to track the card or it is a patch on it.
-    expect(block(TASKS_CSS, ".tasks-card-act")).toContain("background: var(--bg-panel)");
+    expect(block(TASKS_CSS, ".tasks-card-act")).toContain("background: var(--tasks-card-bg)");
   });
 
   it("lets a drop target announce itself by ADDING paint, not by changing it", () => {
@@ -2157,8 +2208,8 @@ describe("the board's surfaces", () => {
     // goes from nothing to something. A legal lane outlines dashed the moment a drag
     // starts, the lane under the pointer takes the accent wash, and the one drop
     // that SENDS rather than files swaps the hue for `--activity` and says so in
-    // words. On a transparent lane all four are more legible than they were on a
-    // tinted one, not less.
+    // words. The lane's resting fill is quiet enough that all four still add rather
+    // than merely change — which is the property, not the absence of a fill.
     expect(SCHEDULE_CSS).toMatch(
       /\.schedule-tv-lane-body\.is-drop-legal\s*\{[^}]*outline: 1px dashed color-mix\(in srgb, var\(--accent\)/,
     );
@@ -2175,7 +2226,7 @@ describe("the board's surfaces", () => {
     // The lane keeps the geometry those states are drawn with — the padding that
     // insets the outline off the top card, and the radius the wash takes.
     const lane = block(SCHEDULE_CSS, ".schedule-tv-lane-body");
-    expect(lane).toContain("padding: 4px");
+    expect(lane).toContain("padding: 6px");
     expect(lane).toContain("border-radius: 8px");
     // And it keeps a floor, so an EMPTY lane — which now shows its header and
     // nothing else, because "nothing scheduled" should look like nothing — is still

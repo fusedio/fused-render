@@ -98,6 +98,29 @@
   --tour-dim: #7c7f88;
   --tour-next-hover: #d8f238;
 
+  /* Board ground and board card (shell/ScheduleTaskViews.tsx). Two tokens
+     rather than reusing --bg-alt/--bg-panel because the Board needs a
+     RELATIONSHIP the general surfaces do not state: the lane is a quiet
+     ground and the card is the only lit thing standing on it, so the three
+     surfaces have to be ORDERED — page < lane < card in dark, card above lane
+     in light — and a later tuning of --bg-panel (a popover token, owned by
+     other screens) must not be able to invert that by accident.
+
+     Dark: the lane sits a whisper above --bg (#131417 → #16181b), enough to
+     say "column" without becoming a slab, and the card lands at #1e2023.
+     That second value is the one that moved on 2026-08-18: the card used to
+     be --bg-panel (#202329), whose blue channel runs nine steps above its red
+     and read as GREY over a near-black page (Akshil, comparing against the
+     flow app, whose cards are a black-tinted charcoal). #1e2023 keeps the
+     same lift off the ground and spends far less of it on blue, so the card
+     reads as dark charcoal over black rather than as a grey plate.
+
+     Light: the card stays white — it lifts by hairline and shadow, the way
+     every other light surface in this file does — and the lane goes a step
+     DARKER than the page so the same ordering survives the flip. */
+  --tasks-lane-bg: #16181b;
+  --tasks-card-bg: #1e2023;
+
   /* Task status hues — the Schedule page's tree/board/calendar rings
      (shell/ScheduleTaskViews.tsx, ported from the flow app's task board). Own
      tokens rather than --accent/--success/--warning because these five are a
@@ -239,6 +262,13 @@
   --tour-desc: #4a4e55;
   --tour-dim: #6f747c;
   --tour-next-hover: #4e5f00;
+
+  /* Board ground and board card (see the dark block for why these are their
+     own pair). The card is white and lifts by hairline + shadow; the lane is
+     a step darker than the page, which is what keeps "card above lane" true
+     in a palette where the page itself is the lightest thing available. */
+  --tasks-lane-bg: #eef0f2;
+  --tasks-card-bg: #ffffff;
 
   /* Upcoming tracks --fg-muted in both themes (see the dark block) — the same
      expression, restated because the light palette must redefine every token. */

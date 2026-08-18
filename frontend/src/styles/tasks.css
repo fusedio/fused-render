@@ -664,10 +664,11 @@ button.tasks-caret,
   pointer-events: auto;
   /* An opaque skin in the card's OWN surface colour, so the strip reads as
      floating over the head rather than as part of the head's row of marks. It
-     tracks the card: that surface became `--bg-panel` when the lane's fill was
-     removed and the card had to lift off the page by itself (schedule.css), and a
-     button still painted `--bg` would have been a visible patch on it in dark. */
-  background: var(--bg-panel);
+     TRACKS the card, and is stated as the very token the card is painted in for
+     that reason: the card's fill has already moved twice (`--bg` → `--bg-panel`
+     → `--tasks-card-bg`, schedule.css) and each time a button left behind on the
+     old value became a visible patch on it in dark. */
+  background: var(--tasks-card-bg);
 }
 
 .tasks-card-wrap:hover .tasks-card-act,
