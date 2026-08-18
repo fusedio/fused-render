@@ -1886,14 +1886,35 @@ export function markWholeTaskRead(
 // row, and it is exactly the row the old session-keyed triage write could not
 // touch.
 //
-// There is no unarchive. Archive is a locked lane (tasks-lib's drag matrix) and
-// the row draws no way back — which costs nothing, because archiving destroys
-// nothing: the conversation and its transcript are kept (D306).
+// The way back is `unarchiveTask` below — a drag, not a button. Nothing is
+// destroyed either way: the conversation and its transcript are kept (D306).
 export function archiveTask(
   key: string,
 ): Promise<{ ok: boolean; key: string; cancelled: number; filed: boolean }> {
   return postJson<{ ok: boolean; key: string; cancelled: number; filed: boolean }>(
     "/api/tasks/archive",
+    { key },
+  );
+}
+
+// Taking the filing back — the drag out of the Archive lane, and the exact
+// opposite of only ONE of archiving's two halves.
+//
+// NO LANE IS SENT, and that is the design rather than a missing field: leaving
+// Archive says "not put away any more" and nothing about what the work is doing,
+// so the server drops the filing and the task lands in whatever lane it DERIVES
+// into. `status` in the answer is that lane, which is the one thing the client
+// cannot know before its next poll — and it may not be the lane the card was
+// dropped on. That is intended, not a near miss (see tasks-lib's drag matrix).
+//
+// NOTHING RUNS. The work archiving cancelled stays cancelled, and a card dropped
+// onto In Progress unarchives like any other drop — In Progress is Claude's
+// output, never a lane a reader can put a task into.
+export function unarchiveTask(
+  key: string,
+): Promise<{ ok: boolean; key: string; unfiled: boolean; status: string }> {
+  return postJson<{ ok: boolean; key: string; unfiled: boolean; status: string }>(
+    "/api/tasks/unarchive",
     { key },
   );
 }
