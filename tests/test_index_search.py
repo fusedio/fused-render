@@ -218,6 +218,57 @@ def test_search_route_requires_a_root(home, tmp_path):
     assert resp.status_code == 400
 
 
+def _ranked_client(tmp_path, root, files, dirs=()):
+    cfg = load_config()
+    src = _index(tmp_path, root, files, dirs=dirs)
+    os.rename(src.dir, cfg.dir)
+    return TestClient(create_app(start_dir=str(tmp_path)))
+
+
+def test_rank_route_answers_ranked_hits(home, tmp_path):
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root,
+                            [root + "/readme.md", root + "/docs/readme-old.md",
+                             root + "/other.bin"], dirs=[root + "/docs"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "readme.md"}).json()
+    assert body["ok"] is True and body["covered"] is True
+    assert body["hits"][0]["rel"] == "readme.md"
+    assert body["total"] == len(body["hits"])
+
+
+def test_rank_route_does_not_return_positions(home, tmp_path):
+    """The client re-runs fuzzyMatch over the ~200 rows it got back, so
+    fuzzy.ts stays the single source of truth for what highlights — and the
+    response stays small."""
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert "positions" not in body["hits"][0]
+
+
+def test_rank_route_on_a_missing_index_is_a_quiet_miss(home, tmp_path):
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = client.get("/api/index/rank",
+                      params={"root": str(tmp_path), "q": "x"}).json()
+    assert body["ok"] is True and body["covered"] is False and body["hits"] == []
+
+
+def test_rank_route_requires_a_root(home, tmp_path):
+    resp = TestClient(create_app(start_dir=str(tmp_path))).get("/api/index/rank")
+    assert resp.status_code == 400
+
+
+def test_rank_route_honours_the_limit(home, tmp_path):
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root,
+                            [f"{root}/alpha{i}.txt" for i in range(10)])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha", "limit": 3}).json()
+    assert len(body["hits"]) == 3 and body["truncated"] is True
+
+
 def test_search_under_ignores_a_lookalike_underscore_sibling(tmp_path):
     """`_` matches any char in LIKE: searching inside /x/my_dir must not list
     files that actually live in /x/my-dir (the prefix is escaped)."""

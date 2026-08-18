@@ -34,8 +34,9 @@ from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
 from fused_render.index.ignore import MountGuard, default_ignore, norm
-from fused_render.index.query import MAX_CORPUS
+from fused_render.index.query import MAX_CORPUS, RANK_LIMIT
 from fused_render.index.query import lookup as index_lookup
+from fused_render.index.query import search_ranked as index_rank
 from fused_render.index.query import search_under as index_search
 from fused_render.index.query import stats as index_stats
 from fused_render.index.store import (
@@ -222,6 +223,28 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
         time.sleep(WARM_WAIT_POLL_S)
 
 
+# The query the startup warm ranks with. Anything selective enough to exercise
+# the two-stage plan without matching the whole tree; it is thrown away.
+WARM_RANK_QUERY = "readme"
+
+
+def _ranked(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT) -> dict:
+    """`search_ranked` with the server's gitignore filter wired in.
+
+    The index package cannot import the server, so `search_ranked` takes the
+    filter as a callable — this is the only place that knows both. It is
+    called BEFORE the cut to `limit` (search_ranked does that), and keyed on
+    the enclosing INDEX ROOT rather than the requested folder, for the reason
+    `api_index_search` gives: a pool keyed per browsed folder re-paid a whole
+    check-ignore sweep every time browsing evicted one."""
+    def drop_ignored(canonical_root: str, hits: list) -> list:
+        index_root = enclosing_root(scan_roots(cfg), canonical_root)
+        return filter_corpus({"covered": True, "root": canonical_root,
+                              "entries": hits}, index_root=index_root)["entries"]
+
+    return index_rank(cfg, root, q=q, limit=limit, gitignore_filter=drop_ignored)
+
+
 def run_startup_warm() -> None:
     """Pay the first search's cold cost at idle instead of on a keystroke.
 
@@ -281,6 +304,13 @@ def run_startup_warm() -> None:
         # precisely what the route runs.
         filter_corpus(out, index_root=enclosing_root(scan_roots(cfg),
                                                      out.get("root") or root))
+        # And the path the HOME search now takes, which is a different query
+        # over the same index: /api/index/rank, verbatim, with a query that
+        # matches something on essentially every machine. Same duckdb
+        # connection cost, same gitignore pool, but its own two-stage SQL —
+        # warming only the corpus would leave the home page's first keystroke
+        # paying for the ranked plan.
+        _ranked(cfg, out.get("root") or root, WARM_RANK_QUERY)
     except Exception:  # noqa: BLE001 - a warm must never take the server down
         logger.exception("could not warm the index search path")
 
@@ -553,6 +583,36 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     if fmt != COLUMNS_FMT:
         return {"ok": True, **out}
     return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
+
+
+@router.get("/api/index/rank")
+def api_index_rank(root: str = Query(default=""), q: str = Query(default=""),
+                   limit: int = Query(default=RANK_LIMIT)):
+    """The home search: filtered AND ranked here, top `limit` hits returned.
+
+    The corpus route next door hands the client every entry under `root`
+    (19.8 MB on a 164k-entry home, and silently capped so most of a big home
+    could not be found at all) and lets the browser rank it. This answers a
+    few KB — no columnar format and no gzip special-casing, because that
+    machinery exists for the 20 MB corpus and this is not that.
+
+    A miss is `{covered: false, hits: []}` with a 200, exactly as for the
+    corpus: "no index yet", "not covered" and "a scan is running" are one
+    condition to a search box.
+
+    `positions` are deliberately NOT returned. The client re-runs `fuzzyMatch`
+    over the ~200 rows it gets back to build its highlights, so
+    platform/lib/fuzzy.ts stays the single source of truth for what highlights
+    — and the ranker here stays free to carry positions internally without
+    them becoming a wire contract.
+    """
+    if not root.strip():
+        return _error("'root' is required")
+    cfg = load_config()
+    out = _ranked(cfg, root, q, limit)
+    out["hits"] = [{k: v for k, v in h.items() if k != "positions"}
+                   for h in out["hits"]]
+    return {"ok": True, **out}
 
 
 def _columnar(out: dict) -> dict:
