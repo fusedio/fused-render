@@ -38,16 +38,7 @@ import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { dismissToast, pushToast } from "@platform/lib/toast";
-import {
-  resetAnnouncedTemplateErrors,
-  shouldAnnounceTemplateError,
-} from "@platform/lib/trouble";
-
-// The outstanding registry toast, so it can be taken down when the registry
-// starts parsing again. Module scope rather than component state because the
-// toast outlives any one Preview: it is pushed while looking at one file and
-// is still on screen several files later, which is the point of it.
-let registryToastId: number | null = null;
+import { syncRegistryToast } from "@platform/lib/trouble";
 import { runCommunity, touchCommunityApp, communityCacheSlug } from "@platform/lib/community";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
@@ -1655,37 +1646,30 @@ export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, act
   // GATED ON THIS FILE ACTUALLY HAVING A VIEW, which is the whole scope. A file
   // with NO view falls through to FallbackPreview, where #585's
   // RegistryFixNotice states the same error and offers a button that repairs
-  // it; toasting there too put two descriptions of one fault on one screen, the
-  // toast's saying "your own bindings are not applying" about a file whose
+  // it; announcing there too put two descriptions of one fault on one screen,
+  // this one saying "your own bindings are not applying" about a file whose
   // preview was gone entirely. What is left is the PARTIAL failure — built-in
   // registry still matching, file previewing, only the user's own bindings
   // quietly dropped — which is the reported symptom and renders no card
   // anywhere for an answer to sit on.
   //
-  // Sticky (`ttlMs: 0`) because it describes a STATE rather than an event. A
-  // state ends, so the id is kept: when the error clears — Repair in that
-  // notice, or the user fixing the JSON, either way followed by a re-stat —
-  // the claim is taken down instead of sitting there insisting the registry is
-  // broken beside that notice's own "Fixed" toast. Forgetting the message at
-  // the same time is deliberate: the same fault arriving again after a repair
-  // is news again, and silence would read as the repair having held.
+  // The lifecycle itself is `syncRegistryToast` rather than three branches
+  // written out here: dismiss on recovery, supersede on a different error, stay
+  // quiet otherwise. It is a state machine, and both bugs it has had were in
+  // its transitions rather than in anything rendered, so it belongs somewhere a
+  // test can reach it.
   const previews = !resolving && visible.length > 0;
   useEffect(() => {
-    if (!stat.template_error) {
-      if (registryToastId !== null) {
-        dismissToast(registryToastId);
-        registryToastId = null;
-        resetAnnouncedTemplateErrors();
-      }
-      return;
-    }
-    if (!previews) return;
-    if (!shouldAnnounceTemplateError(stat.template_error)) return;
-    registryToastId = pushToast({
-      msg: `Your template registry could not be read, so your own view bindings are not applying: ${stat.template_error}`,
-      tone: "error",
-      ttlMs: 0,
-      action: { label: "Preferences", onClick: () => navigateUrl("/preferences?tab=selffix") },
+    const error = stat.template_error || "";
+    syncRegistryToast(error, previews, {
+      dismiss: dismissToast,
+      push: () =>
+        pushToast({
+          msg: `Your template registry could not be read, so your own view bindings are not applying: ${error}`,
+          tone: "error",
+          ttlMs: 0,
+          action: { label: "Preferences", onClick: () => navigateUrl("/preferences?tab=selffix") },
+        }),
     });
   }, [stat.template_error, previews]);
   if (resolving && templates.length > 0 && templates.every((t) => t.conditional)) {
