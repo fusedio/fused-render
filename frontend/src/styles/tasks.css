@@ -190,19 +190,32 @@
 
    The pair of padding and margin cancels exactly: padding-left `--tasks-row-pad`
    against margin-left `-(--tasks-row-pad)`, padding-right half a gap against the
-   same negative, and 7px of vertical padding against -7px of margin (the row's
-   own vertical padding, so the zone is the row's full height and no taller).
-   `content-box` above is what makes that true — `flex-basis` sizes the CONTENT
-   box, so both the padded button and the bare span still contribute exactly
-   `--tasks-caret-w` to the flex row and the rail measured from it never moves. */
+   same negative, and `--tasks-row-pad-y` of vertical padding against the same
+   negative — the row's OWN vertical padding, so the zone is the row's full
+   height and no taller. `content-box` above is what makes that true —
+   `flex-basis` sizes the CONTENT box, so both the padded button and the bare
+   span still contribute exactly `--tasks-caret-w` to the flex row and the rail
+   measured from it never moves.
+
+   THE VERTICAL PAIR IS THE TOKEN, NOT A NUMBER (bugbot, 2026-08-18). It was
+   written as a literal 7px, which was the row's vertical padding on the day it
+   was written; the rows-polish pass then moved that padding into
+   `--tasks-row-pad-y` and raised it to 10px to let the list breathe, and this
+   rule did not follow. The zone came up 3px short at the top and 3px at the
+   bottom, so the outermost strips of the gutter — exactly where a pointer
+   travelling down a column of chevrons lands — fell through to the row link and
+   opened the conversation instead of expanding the row. Two zones that are
+   meant to tile a row cannot each state the row's height separately. */
 button.tasks-caret,
 .prefs-section button.tasks-caret {
   cursor: pointer;
   align-self: center;
   appearance: none;
   -webkit-appearance: none;
-  padding: 7px calc(var(--tasks-row-gap) / 2) 7px var(--tasks-row-pad);
-  margin: -7px calc(var(--tasks-row-gap) / -2) -7px calc(var(--tasks-row-pad) * -1);
+  padding: var(--tasks-row-pad-y) calc(var(--tasks-row-gap) / 2)
+    var(--tasks-row-pad-y) var(--tasks-row-pad);
+  margin: calc(var(--tasks-row-pad-y) * -1) calc(var(--tasks-row-gap) / -2)
+    calc(var(--tasks-row-pad-y) * -1) calc(var(--tasks-row-pad) * -1);
   /* Above the stretched row link, so the leading gutter EXPANDS and everything
      else NAVIGATES — two zones, no overlap a person could land in by accident. */
   position: relative;

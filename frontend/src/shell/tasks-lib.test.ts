@@ -1410,6 +1410,9 @@ const CALENDAR = readFileSync(join(SHELL, "ScheduleCalendar.tsx"), "utf8");
 /** The pure half's own source, for the handful of claims that are about HOW a rule
  *  is decided (which field it reads) rather than what it answers. */
 const LIB = readFileSync(join(SHELL, "tasks-lib.ts"), "utf8");
+/** The page that owns the poll and hands the three views their tasks — read for
+ *  the claims that are about what it PASSES DOWN, which no view can check alone. */
+const SCHEDULED = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
 const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
 const SCHEDULE_CSS = readFileSync(join(SHELL, "../styles/schedule.css"), "utf8");
 const TOKENS_CSS = readFileSync(join(SHELL, "../styles/tokens.css"), "utf8");
@@ -2937,10 +2940,27 @@ describe("an upcoming row's click", () => {
     // the leaf-row test below for why that distinction is the whole rule.
     expect(block(TASKS_CSS, ".tasks-caret")).toContain("box-sizing: content-box");
     const css = block(TASKS_CSS, "button.tasks-caret");
-    expect(css).toContain("padding: 7px calc(var(--tasks-row-gap) / 2) 7px var(--tasks-row-pad)");
-    expect(css).toContain(
-      "margin: -7px calc(var(--tasks-row-gap) / -2) -7px calc(var(--tasks-row-pad) * -1)",
+    const flat = (s: string) => s.replace(/\s+/g, " ");
+    expect(flat(css)).toContain(
+      "padding: var(--tasks-row-pad-y) calc(var(--tasks-row-gap) / 2)" +
+        " var(--tasks-row-pad-y) var(--tasks-row-pad)",
     );
+    expect(flat(css)).toContain(
+      "margin: calc(var(--tasks-row-pad-y) * -1) calc(var(--tasks-row-gap) / -2)" +
+        " calc(var(--tasks-row-pad-y) * -1) calc(var(--tasks-row-pad) * -1)",
+    );
+
+    // THE VERTICAL HALF IS THE ROW'S OWN TOKEN, never a number that happens to
+    // match it today. It was a literal 7px — the row's padding when it was
+    // written — and the rows-polish pass moved that padding into
+    // `--tasks-row-pad-y` and raised it to 10px without this rule following, so
+    // the zone came up 3px short top and bottom and those strips fell through to
+    // the row link. Two zones tiling one row cannot each state its height.
+    expect(flat(block(TASKS_CSS, ".tasks-row"))).toContain(
+      "padding: var(--tasks-row-pad-y) var(--tasks-row-pad)",
+    );
+    expect(css).not.toMatch(/padding:[^;]*\b\d+px/);
+    expect(css).not.toMatch(/margin:[^;]*-\d+px/);
     // And it sits ABOVE the stretched row link, so the two zones cannot overlap
     // ambiguously: the gutter expands, everything else opens.
     expect(css).toContain("z-index: 2");
@@ -5068,8 +5088,8 @@ describe("what the List remembers between visits", () => {
     // reader back down to it.
     expect(LIST).toContain("remember({ ...memory.current, scroll: 0 });");
     // Nothing is owed either: a pending restore has nowhere to land.
-    const empty = LIST.slice(LIST.indexOf("if (hasRows || !hadRows.current) return;"));
-    const body = empty.slice(0, empty.indexOf("}, [hasRows]);"));
+    const empty = LIST.slice(LIST.indexOf("if (hasRows || stale || !hadRows.current) return;"));
+    const body = empty.slice(0, empty.indexOf("}, [hasRows, stale]);"));
     expect(body).toContain("owed.current = null;");
     expect(body).toContain("settled.current = null;");
     // ONLY for a list that emptied. On the first paint `tasks` is empty because
@@ -5080,5 +5100,32 @@ describe("what the List remembers between visits", () => {
     // The empty state is asked the same question as everything else above it.
     expect(LIST).toContain("if (!hasRows) {");
     expect(LIST).not.toContain("if (tasks.length === 0) {");
+  });
+
+  it("keeps the offset when the poll FAILED, rather than when the data is empty", () => {
+    // A failed getTasks sets `tasks` to [] and raises tasksFailed — the page
+    // keeps its shape and says one quiet line over an empty list. To the List
+    // that looked exactly like a filter matching nothing, so one dropped request
+    // in a 20s poll permanently forgot where the reader was: the worst possible
+    // moment for it, since the rows are back in twenty seconds and the reader is
+    // dropped at the top of a list they were halfway down.
+    //
+    // `stale` is the poll vouching for the emptiness, and an empty nobody
+    // vouches for changes nothing.
+    expect(LIST).toContain("if (hasRows || stale || !hadRows.current) return;");
+    expect(LIST).toContain("stale?: boolean;");
+    expect(LIST).toContain("stale = false,");
+    // It is the failure flag that is wired in, and only for the List — the Board
+    // and the Calendar keep no scroll memory to lose.
+    expect(SCHEDULED).toMatch(/<TaskList[\s\S]*?stale=\{tasksFailed\}/);
+    // And tasksFailed really is the failed-poll arm of getTasks.
+    const poll = SCHEDULED.slice(SCHEDULED.indexOf("getTasks().then("));
+    const arms = poll.slice(0, poll.indexOf("getScheduleQueue()"));
+    expect(arms).toContain("setTasksFailed(false);");
+    expect(arms).toContain("setTasks([]);");
+    expect(arms).toContain("setTasksFailed(true);");
+    expect(arms.indexOf("setTasksFailed(false);")).toBeLessThan(
+      arms.indexOf("setTasksFailed(true);"),
+    );
   });
 });
