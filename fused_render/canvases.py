@@ -1624,9 +1624,6 @@ class _SyncManager:
             return
         self.pull_seq += 1
         self.last_pull_at = time.time()
-        # The CLI's --force removed the seeded Claude helper files (they're
-        # not in the bundle) — put them back before rebaselining.
-        _seed_clone_claude_files(self.dir, self.name)
         # Did a local edit land WHILE --force was running? That window cannot
         # be closed with fingerprints — the pull's own writes and a concurrent
         # local edit both just look like "the file changed" — so ask the CLI,
@@ -1634,6 +1631,14 @@ class _SyncManager:
         # this the shim leg re-baselined unconditionally, so a file an active
         # session wrote mid-pull was overwritten AND adopted as the sync
         # point: the edit was lost with nothing left to notice it.
+        #
+        # Re-seed the Claude helper files ONLY AFTER this recheck, not before:
+        # they are .fusedignore'd on push, so the remote bundle never contains
+        # them, and the CLI's own delete-ignore list doesn't know their names
+        # either — seeding first would make the dry-run report them as a
+        # perpetual diff (`plan.deletes`), so `still_diff` would be True on
+        # every single poll and the manager would go "pending" → push forever,
+        # re-pushing the content it just pulled right back down each cycle.
         try:
             recheck = subprocess.run(
                 [*cli.command, "workbench", "canvas", "pull", self.name,
@@ -1647,6 +1652,9 @@ class _SyncManager:
         still_diff = recheck is not None and recheck.returncode == 0 and (
             "already up to date" not in (recheck.stdout or "")
         )
+        # The CLI's --force removed the seeded Claude helper files (they're
+        # not in the bundle) — put them back now that the recheck has run.
+        _seed_clone_claude_files(self.dir, self.name)
         self._fingerprint = self._take_fingerprint()
         # The remote genuinely IS at `probe` — we just pulled it — so rotate
         # either way; not rotating would make the next poll see the same move
@@ -1807,9 +1815,11 @@ class _SyncManager:
             return
         self.pull_seq += 1
         self.last_pull_at = time.time()
-        _seed_clone_claude_files(self.dir, self.name)
         # Did local diverge from remote again during the force pull? If so,
-        # local wins — queue a push instead of baselining as clean.
+        # local wins — queue a push instead of baselining as clean. Re-seed
+        # the Claude helper files only AFTER this recheck (see the shim leg's
+        # `_poll_remote` for why: seeding first makes the seeded, never-bundled
+        # files look like a permanent diff to the recheck).
         try:
             recheck = subprocess.run(
                 [*cli.command, *base, "--dry-run"],
@@ -1819,10 +1829,11 @@ class _SyncManager:
             )
         except (subprocess.TimeoutExpired, OSError):
             recheck = None
-        self._fingerprint = self._take_fingerprint()
         still_diff = recheck is not None and recheck.returncode == 0 and (
             "already up to date" not in (recheck.stdout or "")
         )
+        _seed_clone_claude_files(self.dir, self.name)
+        self._fingerprint = self._take_fingerprint()
         self._dirty_since = time.time() if still_diff else None
         if still_diff and self.push_state != "error":
             self.push_state = "pending"

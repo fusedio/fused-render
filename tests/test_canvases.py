@@ -49,21 +49,64 @@ def main():
         json.dump(scenario.get("canvases", ["alpha", "beta"]), sys.stdout)
         return
     if plain[:2] == ["canvas", "pull"]:
+        out = plain[plain.index("-o") + 1]
+        files = scenario.get("pull_files", {"canvas.toml": 'type = "canvas"\n'})
         if "--dry-run" in plain:
             # canvas_pull.py prints this sentinel when local == remote;
-            # anything else means the pull would change files.
+            # anything else means the pull would change files. An explicit
+            # override (used by tests of the genuine-diff case) always wins;
+            # otherwise this mirrors the real CLI's _pull_plan_and_conflicts:
+            # any on-disk file not in the bundle (besides its one exempt
+            # basename, _shared.fused) is a diff too, same as a content
+            # mismatch — so a clone carrying our own seeded CLAUDE.md /
+            # .fusedignore reports a diff exactly like the real CLI would.
+            if "pull_dry" in scenario:
+                sys.stdout.write(scenario["pull_dry"])
+                return
+            diff = False
+            for rel, content in files.items():
+                p = os.path.join(out, rel)
+                try:
+                    with open(p) as f:
+                        diff = f.read() != content
+                except OSError:
+                    diff = True
+                if diff:
+                    break
+            if not diff:
+                for root, _dirs, names in os.walk(out):
+                    for name in names:
+                        if name == "_shared.fused":
+                            continue
+                        rel = os.path.relpath(os.path.join(root, name), out)
+                        if rel.replace(os.sep, "/") not in files:
+                            diff = True
+                            break
+                    if diff:
+                        break
             sys.stdout.write(
-                scenario.get(
-                    "pull_dry",
-                    "Nothing to do: already up to date (local files match the canvas).",
-                )
+                "Would write files (local differs from the canvas)."
+                if diff else
+                "Nothing to do: already up to date (local files match the canvas)."
             )
             return
-        out = plain[plain.index("-o") + 1]
         os.makedirs(out, exist_ok=True)
-        files = scenario.get("pull_files", {"canvas.toml": 'type = "canvas"\n'})
+        # --force replaces the bundle wholesale: any on-disk file not in the
+        # bundle is deleted too (besides _shared.fused), matching the real
+        # CLI's plan.deletes.
+        if "--force" in plain:
+            for root, _dirs, names in os.walk(out):
+                for name in names:
+                    if name == "_shared.fused":
+                        continue
+                    p = os.path.join(root, name)
+                    rel = os.path.relpath(p, out).replace(os.sep, "/")
+                    if rel not in files:
+                        os.remove(p)
         for rel, content in files.items():
-            with open(os.path.join(out, rel), "w") as f:
+            full = os.path.join(out, rel)
+            os.makedirs(os.path.dirname(full) or out, exist_ok=True)
+            with open(full, "w") as f:
                 f.write(content)
         return
     if plain[:2] == ["canvas", "push"]:
@@ -1081,8 +1124,15 @@ def test_sync_shim_poll_pulls_clean_via_cli_force(harness, tmp_path, monkeypatch
     assert status and status["pull_seq"] >= 1, status
     assert (harness.root / "alpha" / "remote_udf.py").exists()
     assert status["merge_seq"] == 0
-    # The pull's writes are baseline, not local changes — no echo push.
+    # The pull's writes are baseline, not local changes — no echo push. This
+    # also pins the seeded-files regression: CLAUDE.md/.fusedignore are
+    # rewritten into the clone right after this force pull, and if that
+    # happened BEFORE the post-pull dry-run recheck (rather than after), the
+    # recheck would see them as an un-bundled diff on every single poll and
+    # push_state would be stuck "pending" forever.
     time.sleep(0.4)
+    status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    assert status["push_state"] == "idle", status
     assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
