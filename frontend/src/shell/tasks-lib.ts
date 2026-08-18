@@ -696,28 +696,77 @@ export function taskUnread(
  *     — a readout nobody acts on per unit, where the only decision it feeds is
  *     "is there anything new here?". That is one bit, so it is drawn as one bit,
  *     in the very mark the message rows already use.
+ *   * And then the mark left the title altogether (Akshil, 2026-08-18). A dot
+ *     after the words was a SECOND glyph on a row that already carries one — the
+ *     status ring — and two marks a few characters apart, one saying "this
+ *     finished" and one saying "you have not looked", is a row a reader has to
+ *     decode rather than scan. So read-state moved INTO the ring: the centre dot
+ *     that used to mean "settled" now means "settled AND unread", and a ring gone
+ *     hollow is the whole of "you have seen this". Colour is untouched, so the
+ *     ring still says WHICH terminal state in exactly the hue it always did, and
+ *     the row is back to one mark carrying two orthogonal facts — shape and hue.
  *
- * So there is no pill and no digit: a task with unread wears `.tasks-dot`, the
- * same quiet 7px grey dot as an unread message, immediately after its title.
+ * So there is no pill, no digit and no trailing dot: a task with unread wears a
+ * filled ring (ScheduleTaskViews.StatusIcon, `.schedule-ring--unread`), the same
+ * mark its own unread messages wear one level down, and the same mark the board
+ * lane's header wears one level up.
  *
- * THE COUNT IS NOT LOST, it is only unprinted — this function returns the
- * accessible name, and it names the real number. A reader who cannot see the dot
+ * THE COUNT IS NOT LOST, it is only unprinted — taskUnreadLabel below returns the
+ * accessible name, and it names the real number. A reader who cannot see the ring
  * gets more than the sighted one, which is the right way round for a mark whose
  * whole visual job is to be noticed rather than read.
  */
 
-/** The name a screen reader hears on the dot that trails a TASK's title, or null
- * when there is nothing unread and no dot is drawn at all. That is the difference
- * from unreadMarker: a message row's marker used to hold a LEADING column open
- * and so existed even when empty; a mark after the words holds nothing open, so
- * an empty one would just be a gap between the title and whatever follows it.
+/** The tooltip and accessible name a container wears when something inside it is
+ * unread — a TASK row over its thread, a board LANE over its cards. Null when
+ * there is nothing unread, and then nothing is said at all.
  *
- * Uncapped, and singular at one. The old pill printed "99+" past a cap because a
- * three-digit number does not fit a 16px chip; a dot has no such constraint, and
- * the name it carries is the whole of what the row knows. */
+ * "3 unread", not "3 unread messages" (2026-08-18). A lane's total counts TASKS
+ * and a task's counts MESSAGES, and the mark that carries both is now one glyph
+ * (StatusIcon's centre dot) — so the noun would have to change with the container
+ * while the mark did not, which is two vocabularies for one fact again. The
+ * count is the part a reader acts on; what it counts is whatever they are
+ * hovering.
+ *
+ * Uncapped, and the same shape at one. The old pill printed "99+" past a cap
+ * because a three-digit number does not fit a 16px chip; a tooltip has no such
+ * constraint, and the name it carries is the whole of what the row knows.
+ *
+ * LEAVES DO NOT GET ONE. A single unread message's dot means exactly "unread"
+ * and a hover saying "1 unread" over it is a caption for a symbol that needs
+ * none (Akshil, 2026-08-18); only containers, whose dot stands for a number the
+ * ink does not print, are named. */
 export function taskUnreadLabel(count: number): string | null {
   if (count <= 0) return null;
-  return count === 1 ? "1 unread message" : `${count} unread messages`;
+  return `${count} unread`;
+}
+
+/**
+ * How many of a LANE's tasks have something unread — what a kanban group header
+ * says about the column under it.
+ *
+ * Counted in TASKS, not messages: the header stands over cards, and the question
+ * a reader asks of a collapsed lane is "how many of these do I still have to
+ * look at", which is one per card however long its thread is. (A task's own mark
+ * counts messages, for the same reason at the other scale.)
+ */
+export function laneUnread(tasks: Task[], read: Set<string>): number {
+  return tasks.filter((t) => taskUnread(t, read) > 0).length;
+}
+
+/**
+ * A task whose work is still ahead of it — the List greys such a title, so a
+ * column of rows reads as "these already happened" with the future set behind
+ * them (Akshil, 2026-08-18).
+ *
+ * BOTH halves are required. The lane alone is not enough: an Upcoming task whose
+ * time has already gone by is overdue, and fading it would mute the one row on
+ * the page that most wants reading. And a future time alone is not enough
+ * either — a Done task usually has a next run scheduled too, and its title is
+ * history that HAS happened.
+ */
+export function isUpcomingTask(task: Task, now: number = Date.now()): boolean {
+  return taskColumn(task) === "upcoming" && !isPastDue(nextRunAt(task), now);
 }
 
 // ---- the accordion -----------------------------------------------------------

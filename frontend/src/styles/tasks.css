@@ -1,7 +1,7 @@
 /* -- Tasks page: the List accordion ------------------------------------------
    shell/ScheduleTaskViews.tsx. Everything the Tasks page ADDS to the vocabulary
    styles/schedule.css already established — the accordion node, the thread
-   rows, the TASK-n/MSG-n id chips, the unread dot — lives here. The shared
+   rows, the TASK-n/MSG-n id chips — lives here. The shared
    pieces (the status ring, the live ping, the folder chip, the board's lanes,
    cards and rails, the filter popover) are still schedule.css's: the three
    views are one page and must not drift into three dialects.
@@ -58,13 +58,14 @@
    under the task it belongs to by the width of a whole mark rather than by a
    number someone liked.
 
-   Two marks have left the rail, and both for the same reason. The task row's
-   unread COUNT led it first, and a number at the very start of a row made the
-   messages outrank the task they belong to; then the message row's unread DOT was
-   found doing the identical thing one indent in, which also left the thread
-   reading as a different dialect from the row above it (Akshil, 2026-08-17). Both
-   trail their titles now, and by the end of that day they were one mark rather than
-   two — `.tasks-dot`, the count deleted.
+   Two marks left the rail, and both for the same reason. The task row's unread
+   COUNT led it first, and a number at the very start of a row made the messages
+   outrank the task they belong to; then the message row's unread DOT was found
+   doing the identical thing one indent in, which also left the thread reading as a
+   different dialect from the row above it (Akshil, 2026-08-17). Both trailed their
+   titles after that, then became one dot rather than two, and on 2026-08-18 that
+   dot went as well — read-state is the RING's shape now, so the only mark left in
+   either column is the ring the column was built around.
 
    The dot's departure is why `--tasks-msg-ring-x` is written down. The message
    row's ring used to be pushed into its column by the empty slot the dot reserved
@@ -147,6 +148,26 @@
   text-overflow: ellipsis;
 }
 
+/* A task whose work has not happened yet (tasks-lib.isUpcomingTask, 2026-08-18).
+   The List is mostly history, and the rows scheduled ahead are the ones a reader
+   is not being asked to read yet; greying them lets the eye fall on what actually
+   ran without any of them leaving the list.
+
+   `--fg-muted`, the page's own quiet register — the same token the row's id, time
+   and folder already speak in — rather than an `opacity` on the title. Opacity
+   would blend the words into whatever is behind them and change with the row's
+   hover fill; a colour token is one value, it is themed, and it is the value every
+   other de-emphasised thing on this page uses.
+
+   THE TITLE ONLY. The ring, the id, the folder and the time stay at full strength:
+   fading a whole row is how this page says "archived", which is a different fact
+   with a lane of its own, and the time is precisely what a reader wants to read on
+   an upcoming row. Nor is the weight touched — `font-weight: 500` above holds, so
+   the column of titles keeps one shape and only its colour recedes. */
+.tasks-title.is-upcoming {
+  color: var(--fg-muted);
+}
+
 /* The row's ONE spacer (see the header note). */
 .tasks-grow {
   flex: 1 1 auto;
@@ -177,66 +198,41 @@
 }
 
 /* -- Unread ------------------------------------------------------------------
-   THE ONE MARK for unread, worn by an unread MESSAGE row and by any TASK that has
-   something unread — the List row and the Board card alike.
+   THERE IS NO `.tasks-dot` ANY MORE (2026-08-18), and no mark of unread's own on
+   this page at all. Read-state is the STATUS RING's shape — filled centre while
+   something inside is unread, hollow once it is not — and the rule and the whole
+   argument for it live with the ring, in schedule.css
+   (`.schedule-ring--done.schedule-ring--unread`). One mark per unit of work, hue
+   for the state and shape for whether anybody has looked.
 
-   GREY, not blue (Akshil, 2026-08-17, on a screenshot of `TASK-058 sho time ●`:
-   make it "a subtle grey dot instead of a blue dot"). It wore `--activity` while
-   it spoke for one message at a time, and a column of blue dots down a list of
-   tasks read as a page full of alerts. Unread is news, not an alarm: the mark has
-   to be FINDABLE, which is a matter of it being there at all, and it stops needing
-   a hue to do that once it is the only thing in that slot.
+   Four marks died to get here and the sequence is worth keeping, because each one
+   was a fix for the last and the last fix was to stop adding marks:
 
-   `--fg-muted` outright, the token the row's own metadata already speaks in, so no
-   new colour enters the page. It stays legible rather than merely present: 7.0:1 on
-   the resting row and 5.6:1 on the hover fill in dark, 5.9:1 and 4.7:1 in light,
-   6.0:1 on a board card's panel — the blue it replaced was 5.2–7.2:1, so nothing
-   was traded away except the shouting.
+     * A blue dot at the far RIGHT of a message row, beside the time, with the
+       word "unread" after it. Missed entirely (Akshil, 2026-08-16: "on the right
+       hand I missed it, I did not even see it") — a column is scanned down its
+       left edge.
+     * So it led the row, in a reserved rail slot drawn even when empty. And a
+       neutral numeric pill (`.tasks-count`) led the TASK row, for the thread's
+       total.
+     * Both moved to the END of their title (2026-08-17): a mark in front of every
+       line announces the marks before the words they are about, which "breaks the
+       reading priority" (Akshil).
+     * The number went ("only show a single dot like the notification that we
+       show"), the two marks became one 7px dot, and it went grey rather than blue
+       because a column of blue dots reads as a page full of alerts.
+     * And then the dot itself went, into the ring. A row carrying a ring AND a dot
+       is two glyphs to pair up before either means anything, and the ring was
+       already in the one column all three views agree on.
 
-   `--activity` KEEPS everything it was split out for — the live ping, Run now,
-   the drag-to-run outline, the calendar's run button. That token exists precisely
-   so those could stay blue when Upcoming went grey, and only the unread mark moved.
+   `--activity` keeps everything it was split out for — the live ping, Run now, the
+   drag-to-run outline, the calendar's run button — and no new colour ever entered
+   the page for unread, which is now painted in the status hue it belongs to.
 
-   The one collision worth naming: `--status-upcoming` is also `--fg-muted`, so an
-   Upcoming row now carries two grey marks. They do not twin — the ring is a 16px
-   HOLLOW circle in the left rail, this is a 7px FILLED disc after the last word of
-   the title, and the row's whole width sits between them. Checked on screen in both
-   themes before this shipped.
-
-   There were two marks until 2026-08-17: this dot on a message, and a neutral
-   numeric pill (`.tasks-count`) on the task. Akshil asked for "only show a single
-   dot like the notification that we show", and the number had no reader — the one
-   decision a task's unread total feeds is "is there anything new in here?", which
-   is a single bit that `211` spent three characters on. So the pill is gone and a
-   task wears this. The COUNT is not lost, only unprinted: it is the mark's
-   accessible name and its tooltip (tasks-lib.taskUnreadLabel, "3 unread
-   messages").
-
-   It sits immediately AFTER the title on both rows (2026-08-17). Leading the row,
-   in a reserved slot on the rail, it was an inverted reading priority — the mark
-   announced before the words it is about — and the task row above had already been
-   fixed, so a thread read as a different dialect from the task it hangs under.
-
-   `flex: 0 0 7px` and no margin. The row's `gap` is the separation; an `auto`
-   margin here would be the second one in the row, and flex answers two by
-   splitting the free space between them, which re-centres the trailing group
-   instead of pushing it to the end. `display: inline-block` is what lets the Board
-   card put the same mark INSIDE its title's text flow, where it lands after the
-   last word however many lines the title takes; the two declarations that needs on
-   top of this (a leading margin and `vertical-align`) are stated beside that title
-   in schedule.css, because they are true of the card and not of the row.
-
-   Nothing is drawn at all on a read message or an all-read task. Trailing a title
-   there is no column to hold open — which is the whole reason the empty rail slot
-   could go with it. */
-.tasks-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  flex: 0 0 7px;
-  border-radius: 999px;
-  background: var(--fg-muted);
-}
+   THE COUNT is not lost, only unprinted: it is the ring's tooltip and part of its
+   accessible name on any CONTAINER (a task row over its thread, a lane header over
+   its cards) — tasks-lib.taskUnreadLabel, "3 unread". A leaf gets no such name,
+   because a dot that already means unread does not need a caption. */
 
 /* No reserved slot at the head of a MESSAGE row any more. There was one — the ring
    slot's width, contents centred, drawn even when empty so the dots could not
@@ -291,13 +287,18 @@
    and a permanent icon on every row would out-shout the work itself. Kept
    reachable by keyboard — focus-within reveals it.
 
-   NOTE, 2026-08-17: the TASK ROW's and the BOARD CARD's strips are not rendered at
-   all right now — `SHOW_ROW_ACTIONS` in ScheduleTaskViews.tsx, off at Akshil's
-   request. These rules stay untouched and stay tested, because they are what the
-   strip comes back to when the flag flips; and hiding those buttons was done by not
-   rendering them rather than by turning this `opacity` permanent, since an
-   invisible button is still in the tab order. The rules below are still LIVE for
-   the message row's own Edit and Cancel, which are not part of that strip. */
+   NOTE, 2026-08-17, amended 2026-08-18: most of the TASK ROW's and the BOARD
+   CARD's strip is still not rendered at all — `SHOW_ROW_ACTIONS` in
+   ScheduleTaskViews.tsx, off at Akshil's request — but ARCHIVE is out from behind
+   it again and is LIVE on both views, revealed by exactly these rules.
+
+   Which is why the reveal is `opacity` plus a `:focus-visible` arm and never
+   `display: none` or `visibility: hidden`: the button has to stay in the tab order
+   and light up when a keyboard reaches it. Hiding the OTHER actions was done by not
+   rendering them at all rather than by turning this `opacity` permanent, for the
+   same reason from the other side — an invisible button that is still tabbable is
+   one a keyboard presses blind. These rules are also LIVE for the message row's own
+   Edit and Cancel, which are not part of that strip. */
 .tasks-act,
 .prefs-section .tasks-act {
   display: inline-flex;
@@ -561,13 +562,12 @@
   background: var(--row-bg-hover);
 }
 
-.tasks-msg-kind {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  color: var(--fg-muted);
-  opacity: 0.7;
-}
+/* No `.tasks-msg-kind` any more (2026-08-18). It held a 12px clock or speech
+   bubble between the ring and MSG-003 on every thread row, saying whether the
+   scheduler or a person put the message there. Removed at Akshil's request: a
+   12.5px line that opens with a status ring and an id does not have room for a
+   third mark, and nothing on this page acts on the distinction — the row's words
+   and its time say it anyway. */
 
 .tasks-msg-body {
   min-width: 0;
@@ -612,9 +612,10 @@
    time is now one relative unit with the full story in its tooltip — both instants,
    named, whenever they differ (tasks-lib.messageWhenTitle). */
 
-/* The message row's own unread mark is `.tasks-dot`, defined with the rest of the
-   unread vocabulary near the top of this file — beside the task row's count,
-   because the two are one decision and have to keep answering to it together. */
+/* The message row's own unread mark is its status RING (schedule.css
+   `.schedule-ring--unread`), the same one the task row above it wears — see the
+   Unread block near the top of this file for the four marks that came before it
+   and why none of them survived. */
 
 .tasks-thread-error {
   margin: 4px 0 0;
@@ -707,11 +708,13 @@
 /* -- Failed, the fifth lane ----------------------------------------------------
    schedule.css already paints `.schedule-ring--failed` red — it was the
    modifier that repainted a Done ring — so the new column needs no hue of its
-   own. What it needs is the FILLED centre every settled state carries: Failed
-   is terminal, and a hollow ring beside Done's solid one would read as "still
-   going" in the one column where nothing is. `.schedule-ring--done::after`
-   already defines that dot; this only widens who gets it. */
-.schedule-ring--failed::after {
+   own. What it needs is the same centre Done gets, on the same terms: since
+   2026-08-18 that dot means UNREAD rather than "settled", so it is gated on
+   `--unread` here exactly as it is there. Failed and Done are the two terminal
+   columns and the only two offered a dot at all; the reasoning for the whole
+   change is written once, beside `.schedule-ring--done.schedule-ring--unread` in
+   schedule.css. */
+.schedule-ring--failed.schedule-ring--unread::after {
   content: "";
   position: absolute;
   inset: 0;

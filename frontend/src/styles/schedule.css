@@ -944,8 +944,8 @@
   flex: 0 0 11px;
 }
 
-.schedule-cal-popover .schedule-ring--failed::after,
-.schedule-cal-popover .schedule-ring--done::after {
+.schedule-cal-popover .schedule-ring--failed.schedule-ring--unread::after,
+.schedule-cal-popover .schedule-ring--done.schedule-ring--unread::after {
   width: 5px;
   height: 5px;
 }
@@ -975,13 +975,11 @@
   text-overflow: ellipsis;
 }
 
-.schedule-cal-msg-unread {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--accent);
-}
+/* No `.schedule-cal-msg-unread` any more (2026-08-18). It was a 6px accent disc
+   after the body, and it was this view speaking its OWN dialect: the List and the
+   Board marked the same fact with a different colour, in a different place, on a
+   different element. Unread is the status ring's filled centre now, everywhere
+   (see `.schedule-ring--unread` below and ScheduleTaskViews.StatusIcon). */
 
 /* The row's second fact, when it has one: "ran 2 days late" for a catch-up
    (`at` vs `ran_at` — the chip never moves for it), "queued" for a message that
@@ -2329,9 +2327,36 @@ input.schedule-when-field {
 .schedule-ring--failed,
 .schedule-ring--failed.schedule-ring--done { color: var(--status-failed); }
 
-/* Settled — well or badly — is the state that carries the inner dot. */
-.schedule-ring--failed::after,
-.schedule-ring--done::after {
+/* -- The inner dot: UNREAD, not merely settled ---------------------------------
+   The centre used to be drawn on every Done and Failed ring and meant "this is
+   over". Since 2026-08-18 it means "this is over AND nobody has looked at it",
+   and a read one is hollow — the whole of the page's unread vocabulary, on all
+   three views at once (ScheduleTaskViews.StatusIcon).
+
+   WHY THE SHAPE AND NOT A SECOND MARK. There was a 7px grey dot after the title
+   as well, on List rows and Board cards, plus a blue one of the calendar's own
+   after a popover row's body. A row that carries a ring AND a dot a few
+   characters apart, each speaking about the same unit of work, is two glyphs a
+   reader has to pair up before either means anything. Folding read-state into the
+   ring leaves one mark carrying two orthogonal facts: HUE is the status, SHAPE is
+   whether it has been seen. Neither reading interferes with the other, and the
+   ring is already in the one column every view puts it in.
+
+   THE COST, stated plainly: "settled" is no longer legible without colour on a
+   READ row — a read Done ring and an Upcoming ring are both hollow circles and
+   differ only by hue. Accepted, because the alternative is worse and the loss is
+   small: the terminal columns are also the ones that carry a word beside the ring
+   (the lane header on the Board, the status word in the calendar popover, the
+   relative time on a List row), and unread is the fact a person is scanning FOR.
+   A page of settled work where everything is settled does not need the ring to
+   keep repeating it.
+
+   Only the terminal columns are offered the dot at all, which is not a
+   restriction so much as a definition: the server marks nothing unread until it
+   has finished, so a filled In Progress ring is a state that cannot occur, and
+   writing the selectors this way keeps it that way. */
+.schedule-ring--failed.schedule-ring--unread::after,
+.schedule-ring--done.schedule-ring--unread::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -3015,22 +3040,15 @@ input.schedule-when-field {
   min-width: 0;
 }
 
-/* The unread mark as an inline atom, riding in the title's own text flow so it
-   follows the last word onto whichever line that word ends up on. It was a numeric
-   pill here until 2026-08-17 and is now the page's single `.tasks-dot` (tasks.css);
-   the two declarations it needs are the same two either atom needed, which is why
-   this rule survived the swap.
-
-   `vertical-align: middle` so it rides the ink rather than the baseline — on a 7px
-   dot against a 12.5px line that is the difference between "after the word" and
-   "hanging below it". The gap is a `margin` and not a parent `gap` because there is
-   no flex parent any more; that wrapper was the bug this arrangement replaced.
-   Scoped to the board card: the List row keeps the mark as a flex sibling and takes
-   its spacing from the row's own `gap`. */
-.schedule-tv-card-title .tasks-dot {
-  margin-left: 6px;
-  vertical-align: middle;
-}
+/* No `.schedule-tv-card-title .tasks-dot` any more (2026-08-18). It placed the
+   unread mark as an inline atom in the title's own text flow — a numeric pill
+   until 2026-08-17, then a 7px dot — with `vertical-align: middle` and a leading
+   margin, so it followed the last word onto whichever line that word ended on. The
+   arrangement was hard-won and it is gone with the mark: read-state is the status
+   ring's filled centre now (`.schedule-ring--unread`), and the ring lives in the
+   card's HEAD, one line up, where it needs no text-flow trickery at all. The
+   clamp's removal that made the flow work stays — see `.schedule-tv-card-title`
+   above, which still needs `overflow-wrap` for its own sake. */
 
 .schedule-tv-card-next {
   font-size: 10.5px;
