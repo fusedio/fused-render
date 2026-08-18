@@ -855,17 +855,25 @@ export function mkdir(path: string): Promise<StatResult> {
 
 // Remove a file or directory. A non-empty directory needs recursive=true (the
 // context menu passes it only after the confirm dialog spells that out).
-// With trash=true the entry is moved to the user's Trash instead (macOS only);
-// where that's unsupported the server replies 501 "trash unsupported" and the
-// caller falls back to a hard delete.
+// With trash=true the entry is moved to the OS bin instead — ~/.Trash on macOS,
+// the freedesktop XDG trash on Linux, the Recycle Bin on Windows. Where THIS PATH
+// cannot use the bin (a Linux cross-device move, a remote mount, a platform with
+// no backend) the server replies 501 "trash unsupported" and the caller falls
+// back to the irreversible hard delete.
+//
+// `trashed_to` is WHERE a trash move landed — present only when the server
+// chose that path itself (its own os.rename into ~/.Trash), absent when Finder
+// did the move and therefore picked the location. It is what makes a trash
+// delete undoable: with it the delete is a rename pair like any other
+// relocation (explorer/lib/fs-undo). Never present on a hard delete.
 export function deleteEntry(
   path: string,
   recursive = false,
   trash = false
-): Promise<{ deleted: string; trashed?: boolean }> {
+): Promise<{ deleted: string; trashed?: boolean; trashed_to?: string }> {
   return noteAfter(
     path,
-    postJson<{ deleted: string; trashed?: boolean }>("/api/fs/delete", {
+    postJson<{ deleted: string; trashed?: boolean; trashed_to?: string }>("/api/fs/delete", {
       path,
       recursive,
       trash,
@@ -877,6 +885,20 @@ export function deleteEntry(
 // 409 unless overwrite=true.
 export function renameEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {
   return noteAfter([src, dst], postJson<StatResult>("/api/fs/rename", { src, dst, overwrite }));
+}
+
+// Move an entry INTO or OUT OF the OS bin. Same guards and same error contract
+// as renameEntry (it delegates to the very same handler server-side), plus one
+// thing a plain rename cannot do: it keeps the bin's own bookkeeping straight —
+// on Linux the freedesktop `.trashinfo` sidecar is written when the entry moves
+// into the trash and removed when it moves back out.
+//
+// This is the primitive undo/redo uses for a `"delete"` op, and the only reason
+// it is separate from renameEntry: the sidecar is server-side knowledge, so the
+// undo stack stays a list of plain path pairs and picks a primitive by kind
+// (explorer/lib/fs-undo's applyFsOp) rather than learning what a trash is.
+export function trashMove(from: string, to: string): Promise<StatResult> {
+  return noteAfter([from, to], postJson<StatResult>("/api/fs/trash-move", { from, to }));
 }
 
 // Copy src -> dst (paste-of-a-copy, and Duplicate). Same 409-on-existing-dst
