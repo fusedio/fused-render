@@ -1221,8 +1221,15 @@
 
 /* The native disclosure marker is the platform's, not ours: a black WebKit
    triangle sat outdented beside an accent text-button and read as debris
-   (audit 2026-08-16). Hidden, and replaced by our own ▸/▾ in the accent, so
-   the row is one object that rotates. */
+   (audit 2026-08-16). Hidden, and replaced by the app's own chevron mark
+   (ICON_CHEVRON, the one the task list opens its threads with), so the row is
+   one object that rotates.
+
+   QUIET, not accent (Akshil, 2026-08-18). This is the least-used control on the
+   card and it was the loudest thing on it — the accent is Save's, and a yellow
+   text-button beside a muted form read as an alert. Muted text that comes
+   forward on hover says "there is more here" without competing with the fields
+   above it. */
 .schedule-form-more summary {
   display: flex;
   align-items: center;
@@ -1238,19 +1245,37 @@
   display: none;
 }
 
-.schedule-form-more summary::before {
-  content: "▸";
-  font-size: 10px;
-  line-height: 1;
+/* A BOX, not a glyph on the baseline. The old ▸ was text: it sat on the
+   baseline while the label sat on its x-height, and its optical centre moved as
+   it rotated. A fixed square with the mark centred in it keeps the chevron on
+   the label's centre line in both states, and gives the rotation something
+   square to turn inside. */
+.schedule-form-more-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  flex: none;
+  /* transform alone: the summary's colour transitions on hover, and one rule
+     owning both smears the mark. */
   transition: transform 0.12s ease-out;
 }
 
-.schedule-form-more[open] summary::before {
+.schedule-form-more[open] .schedule-form-more-caret {
   transform: rotate(90deg);
 }
 
 .schedule-form-more summary:hover {
   color: var(--fg);
+}
+
+/* Keyboard focus has to be visible on a row with no chrome of its own — the
+   summary is the control, and Tab must land somewhere the eye can find. */
+.schedule-form-more summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .schedule-form-more[open] summary {
@@ -1270,11 +1295,10 @@
   border-color: var(--accent);
 }
 
-/* "More options" as the reference card's text-button: accent, no chrome. */
-.schedule-form-more summary {
-  color: var(--accent);
-  font-weight: 500;
-}
+/* The accent override that used to sit here is GONE (2026-08-18). "More
+   options" was styled as the reference card's accent text-button, and on this
+   card that made the one control the user rarely needs the brightest mark in
+   the panel. Its whole treatment is the muted disclosure block above. */
 
 /* The Inbox-style row list this section once styled is gone — the List view is
    now the flow-app tree (see "-- Task views" below). Only the calendar

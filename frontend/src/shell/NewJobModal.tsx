@@ -141,6 +141,16 @@ const ICON_CHECK = (
   </svg>
 );
 
+// lucide "chevron-right", at the size the task list's disclosure uses — the
+// same mark, so the two read as one pattern. Points right when closed and is
+// rotated a quarter turn by CSS when the block opens.
+const ICON_CHEVRON = (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="9 18 15 12 9 6" />
+  </svg>
+);
+
 // lucide "trash-2", at the footer buttons' glyph scale. Carries the destructive
 // reading before the label is read, and stays through both press states so the
 // button does not change shape under the cursor.
@@ -2869,7 +2879,22 @@ export default function NewJobModal({
         )}
 
         <details className="schedule-form-more">
-          <summary>More options</summary>
+          {/* The disclosure is a QUIET row, not a button: secondary text and a
+              chevron, the same object the task list opens its threads with
+              (`tasks-caret`). It used to be accent yellow, which made the one
+              thing on the card the user rarely needs the loudest thing on it —
+              and the accent belongs to Save. The chevron is drawn here rather
+              than as a CSS glyph so it is the app's own mark at the app's own
+              weight: a text triangle sat on the baseline while the label sat on
+              its x-height, which is the misalignment no amount of nudging fixed.
+              It rotates 90° on open (▸ → ▾), so the row is one object that
+              turns. */}
+          <summary>
+            <span className="schedule-form-more-caret" aria-hidden="true">
+              {ICON_CHEVRON}
+            </span>
+            More options
+          </summary>
           {/* Inside the same 26px icon gutter every other control hangs from —
               the details block was flush with the card edge, so the one control
               behind it was the only one in the form that did not line up
