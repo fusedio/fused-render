@@ -31,6 +31,11 @@
 //    never blanks the list, never flashes a spinner, fires the first keystroke
 //    without a debounce, and answers a backspace from memory — which is what
 //    the pieces below are for.
+//
+// The pieces that make a per-query round trip feel instant — the leading-edge
+// debounce, the pending threshold, the backspace memo — are NOT here: they are
+// shared with the listing's in-folder box, which is now the same kind of box,
+// and they live in platform/lib/instant-search.
 import type { IndexRankResult } from "@platform/lib/api";
 import { fuzzyMatch } from "@platform/lib/fuzzy";
 
@@ -44,25 +49,6 @@ import { fuzzyMatch } from "@platform/lib/fuzzy";
 // what is not shown); past ten rows the useful move is a better query or the AI
 // row, not more scrolling.
 export const HOME_RESULT_CAP = 10;
-
-// How long a burst of keystrokes coalesces into one request. This is a
-// TRAILING window only — see `searchDelay`: the first keystroke after a pause
-// fires immediately, because a selective query answers in ~40 ms and making it
-// sit behind a timer is the whole difference between "instant" and "hesitant".
-export const INSTANT_DEBOUNCE_MS = 120;
-
-// How long a request may run before the box admits to being busy. Under this,
-// the answer arrives before a spinner would have been readable, and painting
-// one is a flicker that reads as slower than doing nothing.
-export const PENDING_INDICATOR_MS = 200;
-
-// Queries whose answers are remembered for the session. Backspacing must be
-// instant: deleting a character and re-adding it walks back through queries
-// that were just answered, and re-hitting the server for those is a round trip
-// the user can feel for information the page already had. Small on purpose —
-// this is a typing trail, not a cache with a coherence story (the index moving
-// clears it wholesale; see FilesHome).
-export const QUERY_MEMO_LIMIT = 20;
 
 // Hits asked of the server per query. The list renders HOME_RESULT_CAP of
 // them; the rest are what makes the count note ("Showing top 10 of 137") true
@@ -128,67 +114,6 @@ export function answerFrom(res: IndexRankResult, query: string, home: string): H
     total: res.total,
     covered: res.covered,
   };
-}
-
-/**
- * Milliseconds to wait before issuing the request for a freshly typed query.
- *
- * ZERO on the leading edge, and that is the point. The debounce exists to
- * coalesce fast typing, not to delay the first request: a selective query
- * answers in ~40 ms, and parking that behind a timer is exactly how a box that
- * does less total work ends up feeling more hesitant. So the first keystroke
- * after any pause fires now, and only a burst waits — for the REMAINDER of the
- * window, so a fast typist's requests land one debounce apart rather than one
- * per letter.
- */
-export function searchDelay(
-  now: number,
-  lastIssuedAt: number,
-  debounceMs: number = INSTANT_DEBOUNCE_MS,
-): number {
-  const since = now - lastIssuedAt;
-  return since >= debounceMs ? 0 : debounceMs - since;
-}
-
-/**
- * The last few `query -> answer` pairs, so backspacing is instant.
- *
- * Deleting a character walks back through queries that were answered seconds
- * ago; re-asking the server for those is a round trip the user can feel for
- * rows the page already had. Insertion-ordered and capped — the OLDEST entry
- * goes, which for a typing trail is the query least likely to be typed next.
- *
- * Deliberately not a coherence-managed cache: the index moving (a scan
- * finishing, the store being deleted) makes every remembered answer suspect at
- * once, and the caller clears the whole thing on that signal rather than
- * trying to reason per entry.
- */
-export class QueryMemo {
-  private readonly entries = new Map<string, HomeAnswer>();
-
-  constructor(private readonly limit: number = QUERY_MEMO_LIMIT) {}
-
-  get(query: string): HomeAnswer | undefined {
-    return this.entries.get(query);
-  }
-
-  put(query: string, answer: HomeAnswer): void {
-    this.entries.delete(query);
-    this.entries.set(query, answer);
-    while (this.entries.size > this.limit) {
-      const oldest = this.entries.keys().next();
-      if (oldest.done) break;
-      this.entries.delete(oldest.value);
-    }
-  }
-
-  clear(): void {
-    this.entries.clear();
-  }
-
-  get size(): number {
-    return this.entries.size;
-  }
 }
 
 /**

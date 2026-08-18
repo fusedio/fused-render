@@ -25,10 +25,25 @@ export interface IndexCaveat {
 // behind). That trade is only defensible if it is stated, which is what this
 // says. A running scan outranks it: "indexing…" already implies the same
 // caveat and names the reason.
+// `rescanPending` is the third input and the one with no poll behind it: this
+// app just changed a file, the server has been told to rescan that folder
+// (server/index_touch.py), and until a status poll catches the run, `scanning`
+// is still false while the rows on screen are the ones that are wrong. It
+// reads as the same "indexing…" because it is the same claim — results come
+// from an index that is being put right — and it outranks `behind`, which says
+// nothing is coming.
 export function indexCaveat(
   status: IndexStatus | null | undefined,
   behind = false,
+  rescanPending = false,
 ): IndexCaveat | null {
+  if (rescanPending && !(status && status.scanning)) {
+    return {
+      note: "indexing…",
+      title:
+        "This folder was just changed here, so it is being re-indexed. Results may still show it as it was a moment ago.",
+    };
+  }
   if (status && status.scanning) {
     if (status.has_index) {
       return {

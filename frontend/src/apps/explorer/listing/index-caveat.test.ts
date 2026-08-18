@@ -52,6 +52,26 @@ describe("indexCaveat", () => {
   it("prefers the running-scan message, which already implies the same thing", () => {
     expect(indexCaveat(status(), true)!.note).toBe("indexing…");
   });
+
+  it("says indexing… for a rescan this app triggered but nobody has seen yet", () => {
+    // The gap the old freshness gate used to cover by disqualifying the folder
+    // outright: between the rename and the rescan appearing in a status poll,
+    // the index still spells the old name and `scanning` is still false. The
+    // rows on screen are the ones that are wrong, so the caption has to be up
+    // before the poller catches the scan, not after.
+    const c = indexCaveat(status({ scanning: false }), false, true)!;
+    expect(c.note).toBe("indexing…");
+  });
+
+  it("still says nothing once the rescan has landed", () => {
+    expect(indexCaveat(status({ scanning: false }), false, false)).toBeNull();
+  });
+
+  it("a pending rescan outranks being a generation behind", () => {
+    // Both are true after an in-app change; "indexing…" is the one that says
+    // something is coming.
+    expect(indexCaveat(status({ scanning: false }), true, true)!.note).toBe("indexing…");
+  });
 });
 
 describe("withCaveat", () => {

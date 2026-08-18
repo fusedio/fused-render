@@ -31,6 +31,9 @@ import { useIndexStatus } from "@platform/lib/index-status";
 import {
   PENDING_INDICATOR_MS,
   QueryMemo,
+  searchDelay,
+} from "@platform/lib/instant-search";
+import {
   RANK_FETCH_LIMIT,
   activeRow,
   answerFrom,
@@ -41,7 +44,6 @@ import {
   positionsWithin,
   rankingSettled,
   redirectsToSearch,
-  searchDelay,
   stepHighlight,
   submitRow,
   type HomeAnswer,
@@ -292,7 +294,7 @@ export function FilesSearch({
   // Pending for long enough that saying so is information rather than a
   // flicker. The common answer lands well inside PENDING_INDICATOR_MS.
   const [slow, setSlow] = useState(false);
-  const memo = useRef(new QueryMemo());
+  const memo = useRef(new QueryMemo<HomeAnswer>());
   const inflight = useRef<AbortController | null>(null);
   const issuedAt = useRef(0);
   // Bumped by a real gesture (typing) to re-run a failed request. Without it a
@@ -386,7 +388,7 @@ export function FilesSearch({
       );
     };
     // Zero on the leading edge — the first keystroke after a pause must not sit
-    // behind a timer (lib/home-search, `searchDelay`).
+    // behind a timer (lib/instant-search, `searchDelay`).
     const delay = searchDelay(Date.now(), issuedAt.current);
     if (delay === 0) {
       run();

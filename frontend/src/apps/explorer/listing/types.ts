@@ -87,18 +87,22 @@ export const URL_SYNC_MS = 200;
 // flushes immediately (lastFlush starts at 0), so first paint isn't delayed.
 export const STREAM_FLUSH_MS = 200;
 
-// How long the index gets to answer before the live walk is started alongside
-// it (listing/source-race). Short: it is a budget, not a timeout — the index
-// usually answers well inside it, and when it does not, the walk is already
-// streaming rows by the time the index arrives. Long enough that the common
-// fast answer does not pay for a second request the user will never see.
-export const INDEX_RACE_MS = 150;
+// Hits asked of the server per ranked query. The list renders at most
+// SEARCH_RESULT_CAP of them; the rest are what makes the count chip ("top 100
+// of 200+") true without a second request. 200 rows is a few KB.
+export const SEARCH_RANK_LIMIT = 200;
 
-// How still the query must be before a BIG corpus is re-scored. The index
-// answers a covered folder instantly and whole (up to MAX_CORPUS entries), so
-// unlike a streamed walk there is no ramp-up: the first keystroke already has
-// the full corpus to scan, and every keystroke after it would re-scan the lot.
-// Only the scan waits — the input echoes `query` immediately, as always.
+// How often the box re-asks while a scan covering the open folder is running.
+// Results trickle in as the scan lands rows, which is the closest thing to the
+// streamed walk this replaced; a finer poll would mostly re-read an index that
+// has not changed, since a scan writes its rows in one compaction at the end.
+export const SCAN_POLL_MS = 1_500;
+
+// How still the query must be before a BIG corpus is re-scored. Only the live
+// walk is scored in the browser now, and only for the folders no scan can
+// cover — but a walk of a large tree still hands over hundreds of thousands of
+// entries, and every keystroke would otherwise re-scan the lot. Only the scan
+// waits — the input echoes `query` immediately, as always.
 export const SCAN_DEBOUNCE_MS = 150;
 
 // Corpora at or below this size skip the debounce entirely: the scan is a few
@@ -137,9 +141,8 @@ export type ListingState =
 // `key` names the CONTENT this corpus is: same key ⇒ same entries, whoever
 // asked and however many times. It is not the same claim as `forRefresh`,
 // which only says which generation the fetch was tagged with — a retry inside
-// one generation builds a brand-new array holding the same rows, and the index
-// and the live walk can each answer for one generation (listing/useWalkSearch
-// races them). Two things read it: the corpus hold (listing/corpus-hold) and
+// one generation builds a brand-new array holding the same rows. Two things
+// read it: the corpus hold (listing/corpus-hold) and
 // the incremental scorer's resume check (listing/useRankedScan), both of which
 // need "is this the same corpus?" and cannot get that from array identity.
 export type WalkState =

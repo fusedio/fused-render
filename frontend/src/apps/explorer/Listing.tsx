@@ -209,6 +209,9 @@ export default function Listing({
     isStale,
     behind,
     scanPending,
+    spinner,
+    rescanPending,
+    source,
     validWalk,
     prefetchWalk,
     hits,
@@ -1482,7 +1485,7 @@ export default function Listing({
   // The chip's reserved width covers a match count; the scan caveat makes it
   // longer, so the input reserves more while one is running.
   let widePin = false;
-  if (searching && validWalk.status === "streaming") {
+  if (searching && validWalk.status === "streaming" && validWalk.count > 0) {
     // Live progress while the walk streams: match count so far + how much of
     // the tree has been scanned. Updates in place, no layout shift. The scan
     // total is the digit-hungry half and the one nobody reads precisely, so it
@@ -1503,7 +1506,12 @@ export default function Listing({
         ? `top ${visibleHits.length} of ${compact(hits.length)}${suffix}`
         : `${compact(hits.length)}${suffix}`;
     searchCountFull = resultCountLabel(hits.length, validWalk.truncated);
-    if (validWalk.truncated)
+    // The entry cap is the WALK's — it stops after so many entries of the
+    // tree. A truncated ranked answer means something else entirely (more
+    // matched than the server returns per query), and `total` there is the
+    // number of hits, not of entries scanned, so this sentence would be a
+    // confident lie about a number that means something else.
+    if (validWalk.truncated && source === "walk")
       searchCountFull += ` — search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
   }
 
@@ -1514,7 +1522,7 @@ export default function Listing({
   // facts are about the same search, and one line says both. Which message
   // appears is a claim about how far the results can be trusted, so it lives
   // in a pure, tested helper (listing/index-caveat).
-  const caveat = searching ? indexCaveat(indexScan, behind) : null;
+  const caveat = searching ? indexCaveat(indexScan, behind, rescanPending) : null;
   if (caveat) {
     searchCount = withCaveat(searchCount, caveat);
     searchCountFull = caveat.title;
@@ -1525,7 +1533,7 @@ export default function Listing({
   // chip conditions in the render below; drives the input's right padding, so
   // an idle box gives its whole width to the placeholder.
   const hasPin =
-    (searching && (validWalk.status === "idle" || validWalk.status === "streaming")) ||
+    (searching && spinner) ||
     searchCount !== null ||
     sel.paths.length > 1;
 
@@ -1653,14 +1661,14 @@ export default function Listing({
                     }
                   }}
                 />
-                {searching &&
-                  (validWalk.status === "idle" ||
-                    validWalk.status === "streaming") && (
-                    <span
-                      className="listing-search-spinner"
-                      aria-hidden="true"
-                    />
-                  )}
+                {/* Only once being busy is information rather than a flicker
+                    (listing/useWalkSearch's `spinner`): the common ranked
+                    answer lands well inside the threshold, and a spinner that
+                    appears and vanishes per keystroke reads as slower than
+                    one that never appears at all. */}
+                {searching && spinner && (
+                  <span className="listing-search-spinner" aria-hidden="true" />
+                )}
                 {searchCount !== null && (
                   <span
                     className="listing-search-count"
