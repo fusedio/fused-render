@@ -184,10 +184,10 @@ describe("replies that outlive what they were asked for", () => {
 
 describe("running out of patience with a scan", () => {
   test("gives up after a bounded number of TICKS, whatever the replies do", async () => {
-    // The ceiling is counted in ticks, not answers, because a tick used to
-    // abort the request in flight: a rank that never beat the interval
-    // produced no answers, and a ceiling counted in answers is one the loop
-    // can starve. Here every reply is simply left hanging.
+    // The ceiling is counted in ticks, not answers, and this is the case that
+    // decides it: every reply here is left hanging, as they would be if rank
+    // consistently outlasted the poll interval. A ceiling counted in answers
+    // is one this loop can starve.
     const box = await search("widget");
     await flush(() => rankCalls[0].reply.resolve(
       answer({ covered: false, reason: "uncovered" })));

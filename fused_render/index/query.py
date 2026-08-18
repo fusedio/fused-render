@@ -413,12 +413,24 @@ _ORACLE_RELS: dict = {}
 
 
 def _remember_oracle_rels(key, value) -> None:
-    """Insertion-ordered, oldest evicted — the folder least recently searched
-    is the one least likely to be searched next."""
+    """Insert or refresh, evicting the least recently USED."""
     _ORACLE_RELS.pop(key, None)
     _ORACLE_RELS[key] = value
     while len(_ORACLE_RELS) > ORACLE_CACHE_MAX:
         _ORACLE_RELS.pop(next(iter(_ORACLE_RELS)))
+
+
+def _recall_oracle_rels(key):
+    """Read, and count the read as use.
+
+    Recency has to move on the READ or the policy is first-in-first-out with
+    an LRU's name on it: the folder somebody searches all day would be evicted
+    by thirty-two others they opened once, and re-pay the path-column scan
+    that this cache exists to skip."""
+    cached = _ORACLE_RELS.pop(key, None)
+    if cached is not None:
+        _ORACLE_RELS[key] = cached
+    return cached
 
 
 def _ignore_roots(con, cfg: IndexConfig, parts, root: str, prefix: str,
@@ -436,7 +448,7 @@ def _ignore_roots(con, cfg: IndexConfig, parts, root: str, prefix: str,
     the filter. This is only the discovery half, moved to the one place that
     can see the whole tree cheaply."""
     key = (cfg.dir, root)
-    cached = _ORACLE_RELS.get(key)
+    cached = _recall_oracle_rels(key)
     if cached is not None and cached[0] == updated:
         return cached[1]
     rels = []

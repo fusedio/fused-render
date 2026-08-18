@@ -121,6 +121,34 @@ def test_a_folder_on_the_home_filesystem_is_scanned(client, tmp_path, monkeypatc
     assert calls == [runner.canonical_root(str(folder))]
 
 
+def test_a_mount_backed_root_is_refused_without_a_kernel_stat(client, home, tmp_path,
+                                                              monkeypatch):
+    """Order matters more than the answer here.
+
+    Both refusals end in the same 200, but one of them may not touch the path
+    first: a stat under a wedged rclone mount blocks the calling thread
+    indefinitely, which is why MountGuard is pure string work and why every
+    other entry into the scanner checks it before any syscall. The device
+    check stats, so it has to come second."""
+    import os
+
+    from fused_render.server import index_touch
+
+    stats = []
+    real_stat = os.stat
+
+    def watching_stat(path, *a, **k):
+        stats.append(str(path))
+        return real_stat(path, *a, **k)
+
+    folder = home / "mounts" / "s3"
+    os.makedirs(folder, exist_ok=True)
+    monkeypatch.setattr(index_touch.os, "stat", watching_stat)
+    body = _ask(client, folder)
+    assert body["started"] is False and body["why"] == "refused"
+    assert not [p for p in stats if str(folder) in p]
+
+
 def test_the_route_is_guarded(client, tmp_path):
     resp = client.post("/api/index/scan-folder", json={"path": str(tmp_path)})
     assert resp.status_code == 403

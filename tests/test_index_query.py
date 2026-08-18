@@ -221,3 +221,19 @@ def test_the_ignore_root_cache_cannot_grow_without_limit(tmp_path):
     # the most recent survive; the oldest are the ones dropped
     assert ("/ix", f"/root{q.ORACLE_CACHE_MAX * 3 - 1}") in q._ORACLE_RELS
     assert ("/ix", "/root0") not in q._ORACLE_RELS
+
+
+def test_the_ignore_root_cache_evicts_the_least_recently_USED(tmp_path):
+    """Refreshing recency only on write is FIFO with an LRU's name on it: the
+    folder somebody searches all day gets evicted by the ones they opened
+    once."""
+    from fused_render.index import query as q
+
+    q._ORACLE_RELS.clear()
+    for i in range(q.ORACLE_CACHE_MAX):
+        q._remember_oracle_rels(("/ix", f"/root{i}"), (1.0, []))
+    hot = ("/ix", "/root0")
+    assert q._recall_oracle_rels(hot) is not None      # used again...
+    q._remember_oracle_rels(("/ix", "/newcomer"), (1.0, []))
+    assert hot in q._ORACLE_RELS                        # ...so it survives
+    assert ("/ix", "/root1") not in q._ORACLE_RELS      # the truly oldest went

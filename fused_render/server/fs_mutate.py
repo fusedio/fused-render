@@ -82,7 +82,18 @@ def _snapshot_refusal(*paths: str | None):
     return None
 
 
-def _fs_write(body: dict, x_fused: str | None):
+def _fs_write(body: dict, x_fused: str | None, out: dict | None = None):
+    """Write `content` to `path`.
+
+    `out`, when given, is filled with `{"created": bool}` — whether this write
+    ADDED a path rather than replacing one. The file index needs that and
+    cannot work it out for itself afterwards (the file exists either way), and
+    it must not be approximated by the `create` flag: that flag means "409
+    rather than clobber", so `fused.writeFile("out.csv", data)` — the
+    documented page pattern, with create unset — creates a file and would
+    report nothing. Only the two branches below know, each having asked the
+    question in the way that is safe for its kind of path.
+    """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -124,6 +135,8 @@ def _fs_write(body: dict, x_fused: str | None):
             return _error(f"path is a directory: {path}")
         if not pr.parent_is_dir:
             return _error(f"parent directory does not exist: {parent}", status=404)
+        if out is not None:
+            out["created"] = not pr.exists
         if create and pr.exists:
             return JSONResponse({"error": "conflict"}, status_code=409)
         if expected_mtime is not None:
@@ -195,6 +208,8 @@ def _fs_write(body: dict, x_fused: str | None):
     # clobber someone else's write. Compare against the raw st_mtime float
     # that /api/fs/stat returns, with a tolerance for float round-tripping.
     exists = os.path.exists(path)
+    if out is not None:
+        out["created"] = not exists
     if create and exists:
         return JSONResponse({"error": "conflict"}, status_code=409)
     if expected_mtime is not None:
@@ -1440,7 +1455,10 @@ def _note_index_mutation(result, *paths: str | None) -> None:
     """
     if getattr(result, "status_code", 200) != 200:
         return
-    note_index_mutation(*paths)
+    named = [p for p in paths if isinstance(p, str) and p]
+    if not named:
+        return
+    note_index_mutation(*named)
 
 
 # Every mutation endpoint invalidates the /api/fs/stat cache for the paths it
@@ -1458,18 +1476,26 @@ def _note_index_mutation(result, *paths: str | None) -> None:
 @router.post("/api/fs/write")
 def api_fs_write(request: Request, body: dict = Body(...),
                  x_fused: str | None = Header(default=None)):
-    result = _fs_write(body, x_fused)
+    wrote: dict = {}
+    result = _fs_write(body, x_fused, wrote)
     _invalidate_stat_cache(body.get("path"))
-    # Only a write that can ADD a path is news to the index, which stores
-    # names: overwriting a file changes its bytes, and the size and mtime
-    # stored beside the name are not what search ranks on. This matters
-    # because the markdown editor autosaves every 2 seconds (AUTOSAVE_MS) and
-    # a rescan ends in a full compaction — reporting every write means
-    # rewriting the whole store for as long as somebody is typing a note.
-    # A create=false write to a path that does not exist yet is missed, and
-    # keeps the guarantee it had before this mechanism existed: the next scan,
-    # or the freshness check when its folder is opened.
-    _note_index_mutation(result, body.get("path") if body.get("create") else None)
+    # Only a write that ADDED a path is news to the index, which stores names:
+    # overwriting a file changes its bytes, and the size and mtime stored
+    # beside the name are not what search ranks on. This matters because the
+    # markdown editor autosaves every 2 seconds (AUTOSAVE_MS) and a rescan ends
+    # in a full compaction — reporting every write would rewrite the whole
+    # store for as long as somebody is typing a note.
+    #
+    # `wrote["created"]`, never the `create` flag: that one means "409 rather
+    # than clobber", and the documented page pattern
+    # `fused.writeFile("out.csv", data)` leaves it unset while creating a file.
+    _note_index_mutation(result, body.get("path") if wrote.get("created") else None)
+    # ...and tell the CLIENT the same thing. Its "indexing…" caption is a claim
+    # about a rescan the server may or may not have scheduled, and without this
+    # it has to guess: every overwrite claimed a rescan for a minute, which
+    # also suppressed the "not refreshed" caveat that was the true one.
+    if isinstance(result, dict):
+        result["created"] = bool(wrote.get("created"))
     # What the app wrote and how big — never the content (calls.py).
     # `_fs_write` returns a stat payload on success and a JSONResponse on
     # every refusal, so the status has to come off the response object.

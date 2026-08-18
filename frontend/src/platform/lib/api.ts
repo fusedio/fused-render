@@ -98,6 +98,11 @@ export interface StatResult {
   remote?: boolean;
   // False for a file on a read-only mount (or any path the user can't write).
   writable?: boolean;
+  // /api/fs/write only: whether that write ADDED this path rather than
+  // replacing one. The index stores names, so it is only re-scanned for the
+  // first kind, and the search box's "indexing…" caption follows the same
+  // rule rather than guessing (lib/index-freshness).
+  created?: boolean;
   templates: TemplateEntry[];
   template_error?: string;
 }
@@ -869,11 +874,20 @@ export function revealPath(fsPath: string): Promise<void> {
 //
 // This is the one choke point for the mutations in this module — going through
 // it is what stops a NEW wrapper from silently skipping either bookkeeping.
-function noteAfter<T>(paths: string | string[], p: Promise<T>): Promise<T> {
+// `rescans` is asked of the RESULT, because whether the index will be
+// rebuilt for a mutation is the server's decision and not always predictable
+// from the request: a write creates a file or replaces one, and only the
+// server knows which (see `created` in the /api/fs/write response).
+function noteAfter<T>(
+  paths: string | string[],
+  p: Promise<T>,
+  rescans: (out: T) => boolean = () => true,
+): Promise<T> {
   return p.then((out) => {
     clearListPrefetch();
+    const indexed = rescans(out);
     for (const path of Array.isArray(paths) ? paths : [paths]) {
-      if (path) noteFsMutation(path);
+      if (path) noteFsMutation(path, { rescans: indexed });
     }
     return out;
   });
@@ -884,7 +898,14 @@ function noteAfter<T>(paths: string | string[], p: Promise<T>): Promise<T> {
 // With create=true the write refuses (409 "conflict") when the path already
 // exists, so "New File" can't silently clobber an existing file.
 export function writeFile(path: string, content = "", create = false): Promise<StatResult> {
-  return noteAfter(path, postJson<StatResult>("/api/fs/write", { path, content, create }));
+  return noteAfter(
+    path,
+    postJson<StatResult>("/api/fs/write", { path, content, create }),
+    // An overwrite is not re-indexed (the index stores names), so the box must
+    // not claim it is. An older server that does not answer `created` is
+    // treated as having created something, which errs toward the caption.
+    (out) => out.created !== false,
+  );
 }
 
 // Create a single directory (no mkdir -p — a missing parent is a 400).

@@ -72,22 +72,33 @@ test("a rescan nobody ever runs stops being claimed", () => {
   // its own, or mutating a file on a mounted bucket shows "indexing…" for the
   // rest of the session AND suppresses the `behind` caveat that is the true
   // one there.
-  noteFsMutation("/home/me/proj/a.txt", 0);
+  noteFsMutation("/home/me/proj/a.txt", { now: 0 });
   expect(indexRescanPending(0)).toBe(true);
   expect(indexRescanPending(RESCAN_PENDING_MAX_MS - 1)).toBe(true);
   expect(indexRescanPending(RESCAN_PENDING_MAX_MS + 1)).toBe(false);
 });
 
 test("a later mutation renews the claim", () => {
-  noteFsMutation("/home/me/proj/a.txt", 0);
-  noteFsMutation("/home/me/proj/b.txt", RESCAN_PENDING_MAX_MS - 1);
+  noteFsMutation("/home/me/proj/a.txt", { now: 0 });
+  noteFsMutation("/home/me/proj/b.txt", { now: RESCAN_PENDING_MAX_MS - 1 });
   expect(indexRescanPending(RESCAN_PENDING_MAX_MS + 1)).toBe(true);
 });
 
 test("a completed scan still clears it outright, whatever the clock says", () => {
-  noteFsMutation("/home/me/proj/a.txt", 0);
+  noteFsMutation("/home/me/proj/a.txt", { now: 0 });
   noteIndexLifecycle();
   expect(indexRescanPending(0)).toBe(false);
+});
+
+test("a change the server will not re-index claims no rescan", () => {
+  // Overwriting a file changes bytes, not names, so the server schedules
+  // nothing for it (server/index_touch.py). Claiming "indexing…" anyway left
+  // the caption up for a minute and suppressed the "not refreshed" caveat
+  // that was the honest one.
+  noteFsMutation("/home/me/proj/note.md", { rescans: false, now: 0 });
+  expect(indexRescanPending(0)).toBe(false);
+  // ...but the listing still owes the user their own edit.
+  expect(fsMutationCount()).toBe(1);
 });
 
 test("the lifecycle count still moves for the fetch keys that ride it", () => {

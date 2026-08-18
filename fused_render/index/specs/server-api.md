@@ -330,8 +330,11 @@ keystroke-rate retry loop.
   the root it is given (`index-store.md`), so a folder-sized scan merges into the store.
 - `SCAN_DEBOUNCE_S` — the startup scheduler's own floor, not a second one — stops a
   folder that stays uncovered after a scan from being rescanned on the next keystroke.
-- `runner.start` refuses a mount before any kernel syscall on the path, and that refusal
-  comes back as `refused` rather than a 500.
+- **Mount-backed is refused first, before any kernel syscall on the path** —
+  `MountGuard.blocks` is string work against the mount records, and a stat
+  under a wedged rclone mount blocks the request thread indefinitely. Answering
+  `refused` a moment later is worth nothing if getting there hangs. The
+  device check below stats, so it is ordered after this one, at both doors.
 - **A scan root on a different filesystem than the user's home is refused**
   (`index_touch.foreign_device`). `MountGuard` only knows fused-render's own
   mounts dir, so a user's SMB/NFS volume at `/Volumes/share` is not
@@ -343,12 +346,15 @@ keystroke-rate retry loop.
   permanently wedged a mount here more than once. A refused folder falls back
   to the live walk exactly as it did before this phase.
 
-The poll gives up after `MAX_SCANNING_POLLS` ticks — counted in ticks issued,
-not answers received, since a tick aborts the request in flight and a rank that
-outlasts the interval would otherwise starve the ceiling. What giving up means
-depends on the answer: a COVERED folder settles for the rows it has, an
-uncovered one goes to the live walk rather than reporting an empty list for a
-folder the walk searches fine.
+The poll gives up after `MAX_SCANNING_POLLS` ticks — counted in ticks ISSUED,
+not answers received. A tick used to abort the request in flight, so a rank
+that outlasted the interval produced no answers at all and a ceiling counted in
+answers was one the loop could starve; a tick now leaves a live request alone
+and simply counts itself, which bounds the loop in wall-clock time whatever the
+server does. What giving up means depends on the answer: a COVERED folder
+settles for the rows it has, an uncovered one goes to the live walk rather than
+reporting an empty list for a folder the walk searches fine. The count is per
+polling EPISODE, so the next scan of the same folder starts with full patience.
 
 The client polls `/api/index/rank` every `SCAN_POLL_MS` (1.5 s) while `reason` is
 `scanning`, and repaints. Rows therefore appear when the scan COMPACTS, not gradually: a
@@ -369,10 +375,15 @@ keeping the rows outside the scan root is a query predicate, not an incremental
 write — so the cost of any rescan is a function of the whole index rather than
 of the folder:
 
-- **only a mutation that can change the NAME SET reports.** `/api/fs/write`
-  reports a create, not an overwrite: the index stores names, and the markdown
-  editor autosaves every 2 s, so reporting every write rewrote a 571k-row store
-  for as long as somebody was typing a note.
+- **only a mutation that changed the NAME SET reports.** `/api/fs/write`
+  reports a write that ADDED a path, not one that replaced a file's bytes: the
+  index stores names, and the markdown editor autosaves every 2 s, so reporting
+  every write rewrote a 571k-row store for as long as somebody was typing a
+  note. That is decided by whether the path existed, never by the request's
+  `create` flag — which means "409 rather than clobber", so the documented page
+  pattern `fused.writeFile("out.csv", data)` creates a file with it unset. The
+  response carries `created` so the client's "indexing…" caption can follow the
+  same rule instead of guessing.
 - **a 20 s floor per folder** (`MUTATION_SCAN_FLOOR_S`), which DEFERS rather
   than drops — the scheduler's 15-minute `SCAN_DEBOUNCE_S` would be a refusal,
   and a refused rescan leaves a renamed file unfindable, which is the failure

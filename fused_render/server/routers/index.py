@@ -613,10 +613,23 @@ def api_index_scan_folder(body: dict = Body(default={}),
 
     cfg = load_config()
     root = runner.canonical_root(path)
-    # A scan ROOT on another filesystem is refused — see index_touch.
-    # foreign_device for the argument. Checked here as well as there because
-    # these are the two doors an arbitrary folder can arrive through, and the
-    # refusal has to be the same at both.
+    # THE MOUNT GUARD FIRST, and the order is the point rather than a
+    # preference: `blocks` is pure string work against the mount records,
+    # while `foreign_device` stats the path — and a stat under a wedged rclone
+    # mount blocks this thread indefinitely, which is the failure mode every
+    # other entry into the scanner is ordered around (`runner.start`,
+    # `index_touch._real_blocked`). Answering "refused" a moment later is
+    # worth nothing if getting there hangs the request.
+    if MountGuard(mounts_dir=runner._mounts_dir()).blocks(root):
+        logger.info("index: not scanning %s on demand (mount-backed)", root)
+        return {"ok": True, "started": False, "why": "refused",
+                "error": f"{root} is mount-backed; indexing remote mounts is "
+                         "not supported",
+                "run_id": None, "root": root}
+    # ...and then the filesystem it lives on — see index_touch.foreign_device
+    # for that argument. Checked here as well as in the queue because these are
+    # the two doors an arbitrary folder arrives through, and the refusal has to
+    # be the same at both.
     if index_touch.foreign_device(root):
         return {"ok": True, "started": False, "why": "refused",
                 "error": f"{root} is on a different filesystem than your home; "

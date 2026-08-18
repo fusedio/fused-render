@@ -95,11 +95,25 @@ export function noteIndexLifecycle(): void {
   for (const fn of lifecycleListeners) fn();
 }
 
-/** Record that this app changed `path` (created, deleted, renamed, written). */
-export function noteFsMutation(path: string, now: number = Date.now()): void {
+/**
+ * Record that this app changed `path` (created, deleted, renamed, written).
+ *
+ * `rescans` says whether the SERVER will re-index that folder for this change,
+ * and the two signals part company there. The count moves either way — the
+ * listing owes the user their own edit immediately, whatever the index does
+ * (listing/revalidate) — while the "indexing…" claim is only made for a change
+ * the server actually acts on. Overwriting a file is the case: it changes
+ * bytes, not names, so the server deliberately schedules nothing
+ * (server/index_touch.py), and claiming a rescan for it left the caption up
+ * for a minute AND suppressed the "not refreshed" caveat that was true.
+ */
+export function noteFsMutation(
+  path: string,
+  opts: { rescans?: boolean; now?: number } = {},
+): void {
   const p = String(path || "").replace(/\/+$/, "");
   if (!p || p === "/") return;
-  mutatedAt = now;
+  if (opts.rescans !== false) mutatedAt = opts.now ?? Date.now();
   mutations++;
   for (const fn of listeners) fn();
 }

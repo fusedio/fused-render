@@ -285,16 +285,100 @@ def test_a_folder_the_scan_rules_exclude_is_never_rescanned():
 #
 # The route half of the same argument.
 
-def test_a_plain_write_does_not_schedule_a_rescan():
-    """The index stores NAMES. Overwriting a file changes its bytes, not the
-    name set, and the markdown editor autosaves every 2 seconds — so reporting
-    every write means rewriting the entire store for as long as somebody is
-    typing a note."""
-    import inspect
+def _spy_on_the_index(monkeypatch):
+    """Watch what the routes report. The autouse fixture in conftest stubs the
+    real entry point (a mutation must not spawn a scan from a test), so a test
+    that is ABOUT what gets reported has to put its own spy in its place."""
+    seen = []
 
     from fused_render.server import fs_mutate
 
-    src = inspect.getsource(fs_mutate.api_fs_write)
-    assert "_note_index_mutation" in src
-    # ...but only for a write that can add a path.
-    assert "create" in src.split("_note_index_mutation")[1].split("\n")[0]
+    monkeypatch.setattr(fs_mutate, "note_index_mutation",
+                        lambda *paths: seen.extend(paths))
+    return seen
+
+
+def test_overwriting_a_file_reports_nothing(tmp_path, monkeypatch):
+    """The index stores NAMES. Overwriting a file changes its bytes, and the
+    markdown editor autosaves every 2 seconds — so reporting every write means
+    rewriting the whole store for as long as somebody is typing a note."""
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+
+    seen = _spy_on_the_index(monkeypatch)
+    target = tmp_path / "note.md"
+    target.write_text("before", encoding="utf-8")
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    resp = client.post("/api/fs/write",
+                       json={"path": str(target), "content": "after"},
+                       headers={"X-Fused": "1"})
+    assert resp.status_code == 200
+    assert seen == []
+
+
+def test_a_write_that_creates_the_file_DOES_report(tmp_path, monkeypatch):
+    """`create` is the caller's "409 rather than clobber" flag, not a
+    statement about the name set: `fused.writeFile("out.csv", data)` — the
+    documented page pattern — creates a file with create unset. What decides
+    is whether the path was there before."""
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+
+    seen = _spy_on_the_index(monkeypatch)
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    fresh = tmp_path / "out.csv"
+    resp = client.post("/api/fs/write",
+                       json={"path": str(fresh), "content": "a,b\n"},
+                       headers={"X-Fused": "1"})
+    assert resp.status_code == 200 and fresh.exists()
+    assert seen == [str(fresh)]
+
+
+def test_an_explicit_create_reports_too(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+
+    seen = _spy_on_the_index(monkeypatch)
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    fresh = tmp_path / "new.md"
+    client.post("/api/fs/write",
+                json={"path": str(fresh), "content": "hi", "create": True},
+                headers={"X-Fused": "1"})
+    assert seen == [str(fresh)]
+
+
+def test_a_refused_write_reports_nothing(tmp_path, monkeypatch):
+    """A 409 or a 403 changed nothing, so there is nothing to rescan."""
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+
+    seen = _spy_on_the_index(monkeypatch)
+    target = tmp_path / "note.md"
+    target.write_text("before", encoding="utf-8")
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    resp = client.post("/api/fs/write",
+                       json={"path": str(target), "content": "x", "create": True},
+                       headers={"X-Fused": "1"})
+    assert resp.status_code == 409
+    assert seen == []
+
+
+def test_the_write_response_says_whether_it_created(tmp_path, monkeypatch):
+    """The client's caption has to match the server's decision, and it cannot
+    work this out for itself — the file exists either way by the time it
+    looks."""
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+
+    _spy_on_the_index(monkeypatch)
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    fresh = tmp_path / "out.csv"
+    assert client.post("/api/fs/write", json={"path": str(fresh), "content": "a"},
+                       headers={"X-Fused": "1"}).json()["created"] is True
+    assert client.post("/api/fs/write", json={"path": str(fresh), "content": "b"},
+                       headers={"X-Fused": "1"}).json()["created"] is False
