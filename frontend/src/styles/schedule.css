@@ -1613,11 +1613,20 @@ input.schedule-when-field {
 /* The menus mirror the TIME LIST exactly (Akshil, 2026-08-16): hover wash
    follows the pointer; the selection is lit when nothing is hovered and
    yields while something is. The keyboard cursor resets on mouse-leave in
-   the component, so the two sources never light two rows. */
+   the component, so the two sources never light two rows.
+
+   THE WASH IS NEUTRAL (Akshil, 2026-08-18). It was the accent at 14%, and the
+   accent is a yellow: over the popover's surface it came out olive, so the row
+   under the pointer read as a WARNING about that option rather than as "this is
+   the one you are on". Hovering a list is the most ordinary thing on the card
+   and it was the most coloured. `rgba(var(--tint), 0.08)` is the wash every
+   other menu in the app uses (context-menu.css) and it flips with the theme —
+   white over dark, black over light. The accent still belongs to what is
+   COMMITTED: the Save button, a focused field's border, the selected date. */
 .schedule-menu-item:hover:not(:disabled),
 .deploy-body .schedule-menu-item:hover:not(:disabled),
 .prefs-section .schedule-menu-item:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: rgba(var(--tint), 0.08);
   border-color: transparent;
 }
 
@@ -1630,7 +1639,10 @@ input.schedule-when-field {
 .schedule-menu-item.is-selected,
 .deploy-body .schedule-menu-item.is-selected,
 .prefs-section .schedule-menu-item.is-selected {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  /* Quieter than the hover wash above, and under it in the same neutral: what
+     is CHOSEN is said mostly by weight, and the faint plate is only there so the
+     current choice can be found in a long list without reading every row. */
+  background: rgba(var(--tint), 0.05);
   font-weight: 600;
 }
 
@@ -1650,7 +1662,10 @@ input.schedule-when-field {
 .schedule-menu-item.is-active,
 .deploy-body .schedule-menu-item.is-active,
 .prefs-section .schedule-menu-item.is-active {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  /* The SAME wash the pointer paints, deliberately: arrowing to a row and
+     hovering it are one state to the user, and two different colours for it
+     would be two answers to "where am I". */
+  background: rgba(var(--tint), 0.08);
   color: var(--fg);
 }
 
@@ -1797,17 +1812,21 @@ input.schedule-when-field {
   width: 100%;
 }
 
+/* The time list and the menus are ONE pattern — rows of text in a floating
+   panel, picked with the pointer or the arrow keys — and the rule above says so
+   out loud. So the neutral wash lands here too: two option lists in one card,
+   one grey and one olive, would be the inconsistency this change is fixing. */
 .schedule-time-slot:hover:not(:disabled),
 .deploy-body .schedule-time-slot:hover:not(:disabled),
 .prefs-section .schedule-time-slot:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: rgba(var(--tint), 0.08);
   border-color: transparent;
 }
 
 .schedule-time-slot.is-selected,
 .deploy-body .schedule-time-slot.is-selected,
 .prefs-section .schedule-time-slot.is-selected {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: rgba(var(--tint), 0.05);
   font-weight: 600;
 }
 
@@ -2215,9 +2234,13 @@ input.schedule-when-field {
   cursor: pointer;
 }
 
+/* Browse's folder rows are the third list in this card, and they take the same
+   neutral wash for the same reason. (The month grid below keeps the accent: a
+   DATE disc is a mark, not a row — hover there previews the accent-filled
+   selection it is about to become, alongside is-today.) */
 .schedule-form .schedule-picker-row:hover,
 .deploy-body .schedule-form .schedule-picker-row:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: rgba(var(--tint), 0.08);
   border-color: transparent;
 }
 
