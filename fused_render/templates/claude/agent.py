@@ -579,10 +579,9 @@ def _system_prompt(file: str) -> str:
     # `origin` is None only when there is no server to ask (e.g. a bare test).
     custom_env = _custom_env(origin, file) if origin else None
     env_note = (
-        f" If asked which Python interpreter produced {name}'s preview: this "
-        f"session's own interpreter IS it — {sys.executable} (Python "
-        f"{sys.version.split()[0]}) — ground truth, not a guess from a shell "
-        "probe of this session's own PATH."
+        f" For Python-based inspection of {name}, invoke the exact executable "
+        f"`{sys.executable}`. Do not substitute `python` or `python3` from "
+        "PATH; they may refer to a different environment."
     ) if custom_env is False else ""
     return (
         f"You are embedded in a local file viewer, opened on {file}. "
