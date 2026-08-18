@@ -688,45 +688,27 @@
   color: var(--error);
 }
 
-/* -- Show more -----------------------------------------------------------------
-   Only ever drawn when the server's own `message_count` says there IS more, so
-   it is never a button that does nothing. Dashed, like the board's own reveal:
-   both mean "there is more behind this". */
-.tasks-more,
-.prefs-section .tasks-more {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  align-self: flex-start;
-  margin: 4px 0 0 12px;
-  padding: 4px 10px;
-  font: inherit;
+/* -- The rest of the thread, on its way ----------------------------------------
+   There was a "Show N more" BUTTON here: dashed, quiet, drawn whenever the
+   server's `message_count` said the three the listing carried were not all of
+   them. It is gone (Akshil, 2026-08-18) — reading a thread of twenty-six was two
+   gestures for one intention, and a person who expands a task has asked for the
+   task rather than for a sample of it. The chevron fetches the whole thread now
+   (ScheduleTaskViews.TasksList.toggle).
+
+   What stands in its place is not a control, so it is not styled as one: a plain
+   muted line in the thread's own register, indented to the message rows it is
+   waiting to be joined by, and gone the moment they arrive. No dashes and no
+   border — those said "press me", which is the one thing this must not say.
+
+   The trip is short and the three newest are already on screen while it happens,
+   so there is no spinner and no skeleton: a moving glyph for a sub-second wait is
+   more motion than information. */
+.tasks-thread-loading {
+  margin: 4px 0 0;
+  padding-left: var(--tasks-msg-indent);
   font-size: 11.5px;
-  font-weight: 500;
   color: var(--fg-muted);
-  background: transparent;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-  transition: color 0.08s ease, border-color 0.08s ease;
-}
-
-.tasks-more:hover:not(:disabled),
-.prefs-section .tasks-more:hover:not(:disabled) {
-  color: var(--fg);
-  background: transparent;
-  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
-}
-
-.tasks-more:disabled,
-.prefs-section .tasks-more:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.tasks-more-icon {
-  display: inline-flex;
-  align-items: center;
 }
 
 /* -- The filter popovers -------------------------------------------------------
@@ -820,9 +802,7 @@
 .tasks-row:focus-visible,
 .tasks-msg:focus-visible,
 .tasks-act:focus-visible,
-.tasks-more:focus-visible,
-.prefs-section .tasks-act:focus-visible,
-.prefs-section .tasks-more:focus-visible {
+.prefs-section .tasks-act:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }

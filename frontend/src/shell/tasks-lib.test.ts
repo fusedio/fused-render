@@ -142,14 +142,14 @@ function thread(n: number, over: Partial<TaskMessage> = {}): TaskMessage[] {
 // ---- the accordion: 1 / 3 / 12 messages --------------------------------------
 
 describe("threadView", () => {
-  it("shows one sub-item and no Show more for a one-message task", () => {
+  it("shows one sub-item and owes no fetch for a one-message task", () => {
     const view = threadView(task({}, 1));
     expect(view.messages.length).toBe(1);
     expect(view.more).toBe(false);
     expect(view.hidden).toBe(0);
   });
 
-  it("shows three and no Show more at exactly three", () => {
+  it("shows three and owes no fetch at exactly three", () => {
     const view = threadView(task({}, 3));
     expect(view.messages.map((m) => m.message_id)).toEqual([
       "MSG-003", "MSG-002", "MSG-001",
@@ -157,7 +157,12 @@ describe("threadView", () => {
     expect(view.more).toBe(false);
   });
 
-  it("offers Show more at twelve, and says how many are hidden", () => {
+  it("owes a fetch at twelve, and says how many are still missing", () => {
+    // `more` used to mean "draw the Show more button" and now means "send for the
+    // rest" — same question, same answer, different reader (there is no button
+    // since 2026-08-18). `hidden` is what the loading line names while the trip
+    // is in flight, so three rows of a twelve-message thread do not read as all
+    // of it.
     const view = threadView(task({}, 12));
     expect(view.messages.length).toBe(PREVIEW_MESSAGES);
     expect(view.more).toBe(true);
@@ -2428,6 +2433,87 @@ describe("the In Progress ring", () => {
 // `--tasks-rail-x`, which every indent on the page is derived from, so a chevron
 // removed by deleting its element takes that row's status ring and the whole rail
 // with it and turns a column of rings into a zigzag.
+
+// ---- expanding a task shows the WHOLE thread -----------------------------------
+// There was a dashed "Show N more" button under the first three messages, so
+// reading a thread of twenty-six was two gestures for one intention (Akshil,
+// 2026-08-18). The cap was never a rendering choice — the listing endpoint sends
+// three per row because it runs for every task on the page — so removing it is a
+// FETCH moved onto the disclosure, not a slice widened. These claims are about
+// where that trip is triggered, which no pure function can hold.
+
+describe("expanding a task", () => {
+  it("has no Show more button left, in markup or stylesheet", () => {
+    expect(VIEWS).not.toContain("onShowMore");
+    expect(VIEWS).not.toContain("tasks-more");
+    // Its glyph goes with it rather than lingering as an unused constant. The
+    // row's OWN disclosure chevron is a different icon and is untouched.
+    expect(VIEWS).not.toContain("const ICON_CHEVRON_DOWN");
+    expect(VIEWS).toContain("const ICON_CHEVRON = icon(");
+    // The rules go too — an orphan button skin is how a control comes back by
+    // accident. Read stripped, because the headstone explaining it stays.
+    expect(TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(".tasks-more");
+  });
+
+  it("fetches the rest on the way OPEN, exactly once", () => {
+    const fn = VIEWS.slice(
+      VIEWS.indexOf("const toggle = (task: Task) => {"),
+      VIEWS.indexOf("const showMore = async (task: Task) => {"),
+    );
+    expect(fn).toBeTruthy();
+    // Opening only — collapsing sends for nothing.
+    expect(fn).toContain("const opening = !expanded.has(task.key);");
+    // Three guards, and all three are needed: the server's own count says whether
+    // the window is even short, and neither an in-flight nor an already-landed
+    // fetch may be repeated. A closed-and-reopened task re-reads nothing.
+    expect(fn).toContain(
+      "if (opening && threadView(task).more && !loaded[task.key] && !loading[task.key])",
+    );
+    expect(fn).toContain("void showMore(task);");
+    // It is the SAME fetch the button used to make — one endpoint, one merge path.
+    expect(VIEWS).toContain("const r = await getTaskMessages(task.key);");
+    expect(VIEWS).toContain("setLoaded((cur) => ({ ...cur, [task.key]: thread }));");
+    // ...and the row is handed the toggle for the whole task, not just its key,
+    // because the fetch needs the task the count lives on.
+    expect(VIEWS).toContain("onToggle={() => toggle(task)}");
+  });
+
+  it("says what is still coming instead of offering a press", () => {
+    // The tail of the thread — after the last message row and its error line,
+    // which is exactly where the button used to stand.
+    const tail = VIEWS.slice(
+      VIEWS.indexOf('{error && <p className="tasks-thread-error">'),
+      VIEWS.indexOf("// ---- Board view"),
+    );
+    expect(tail).toBeTruthy();
+    // A line, not a button: there is nothing left to decide.
+    expect(tail).toContain('<p className="tasks-thread-loading" aria-live="polite">');
+    expect(tail).not.toContain("<button");
+    const thread = tail;
+    // It names the NUMBER still missing — the three newest are already drawn, so a
+    // bare "Loading…" would let a long thread look like a finished short one.
+    expect(thread).toContain('`Loading ${view.hidden} more…`');
+    // Quiet, indented to the rows it is waiting on, and carrying none of the
+    // dashes or borders that used to say "press me".
+    const rule = block(TASKS_CSS, ".tasks-thread-loading");
+    expect(rule).toContain("color: var(--fg-muted)");
+    expect(rule).toContain("padding-left: var(--tasks-msg-indent)");
+    expect(rule).not.toContain("border");
+    expect(rule).not.toContain("cursor");
+  });
+
+  it("still draws every message it holds once the fetch lands", () => {
+    // The pure half of the same promise: nothing slices the loaded thread. A
+    // twelve-message task expanded shows twelve.
+    const t = task({}, 12);
+    expect(threadView(t).messages.length).toBe(PREVIEW_MESSAGES);
+    expect(threadView(t).more).toBe(true);
+    const full = threadView(t, thread(12));
+    expect(full.messages.length).toBe(12);
+    expect(full.more).toBe(false);
+    expect(full.hidden).toBe(0);
+  });
+});
 
 describe("the one-message row's missing chevron", () => {
   /** The task row's markup, head to thread. */

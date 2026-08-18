@@ -38,7 +38,9 @@ import type { Task, TaskMessage } from "@platform/lib/api";
 import { BOARD_COLUMNS, explorerUrl, isProjected, turnPhase } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 
-// How many messages a collapsed-then-expanded task shows before Show more.
+// How many messages the LISTING carries per task — the server's window, not a
+// display cap: an expanded task draws every message it has (there is no Show more
+// button since 2026-08-18), and this is how many arrive before the fetch does.
 // The server sends exactly this many in `task.messages`; the constant is here
 // so the cap and the "is there more?" test cannot drift apart.
 export const PREVIEW_MESSAGES = 3;
@@ -774,9 +776,16 @@ export function isUpcomingTask(task: Task, now: number = Date.now()): boolean {
 export interface ThreadView {
   /** What the expanded task actually lists, newest first. */
   messages: TaskMessage[];
-  /** Whether Show more is on offer — i.e. the thread has more than we hold. */
+  /** Whether the thread is longer than what we hold — i.e. a fetch is OWED.
+   *
+   * This used to mean "offer the Show more button". There is no button since
+   * 2026-08-18; expanding a task fetches the rest by itself, and this is the
+   * predicate that decides whether the trip is needed at all. Same question, same
+   * answer — only the thing that reads it changed. */
   more: boolean;
-  /** How many are still unlisted, for the button's own wording. */
+  /** How many are still missing. The loading line names it, so a reader looking at
+   * three rows of a twenty-six-message thread can see that the other twenty-three
+   * are on their way rather than absent. */
   hidden: number;
 }
 
@@ -816,11 +825,21 @@ export function heldMessages(task: Task, loaded?: TaskMessage[]): TaskMessage[] 
 /**
  * What an expanded task shows.
  *
- * Before Show more that is `task.messages` — the three newest, already ordered
+ * Until the fetch lands that is `task.messages` — the three newest, already ordered
  * by the server. After it, the full thread REPLACES those three rather than
  * appending to them, so a message can never appear twice: heldMessages merges
  * them by id, taking the listing's fresher copy of anything in both and leading
  * with whatever arrived after the fetch.
+ *
+ * THE THREE ARE A DATA WINDOW, NOT A DISPLAY CAP, and that distinction is the whole
+ * of why this function still slices. The listing endpoint sends three messages per
+ * row because it runs for every task on the page and a full transcript parse per
+ * task would not survive a few hundred of them (server routers/tasks.py `_row`);
+ * the rest are not in the client's hands to draw. Until 2026-08-18 a dashed
+ * "Show N more" button was the press that went and got them, and it is gone —
+ * expanding a task makes that trip by itself (ScheduleTaskViews.TasksList.toggle).
+ * So this still reports a short list for the moment before the reply arrives, and
+ * `more` is what sends for the rest rather than what draws a button.
  *
  * `message_count` is the server's total, and the honest source for "is there
  * more?": the preview list alone cannot tell a thread of exactly three from a

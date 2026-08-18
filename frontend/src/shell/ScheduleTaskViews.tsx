@@ -189,7 +189,10 @@ const icon = (paths: React.ReactNode, size = 14) => (
 
 const ICON_SEARCH = icon(<><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></>, 13);
 const ICON_CHEVRON = icon(<polyline points="9 18 15 12 9 6" />, 13);
-const ICON_CHEVRON_DOWN = icon(<polyline points="6 9 12 15 18 9" />, 12);
+// There is no ICON_CHEVRON_DOWN any more (2026-08-18). It was the down-chevron on
+// the thread's dashed "Show N more" button, and that button is gone — expanding a
+// task fetches the whole thread by itself. ICON_CHEVRON, the row's own disclosure,
+// is a different glyph and is untouched.
 const ICON_CHECK = icon(<polyline points="20 6 9 17 4 12" />, 13);
 const ICON_CIRCLE_DOT = icon(
   <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="1.5" /></>, 13);
@@ -826,7 +829,36 @@ export function TaskList({
   // on every keystroke of the search box.
   const showProject = useMemo(() => spansProjects(tasks), [tasks]);
 
-  const toggle = (key: string) => setExpanded((cur) => toggleExpanded(cur, key));
+  /**
+   * Open or close a task — and, on the way OPEN, fetch the rest of its thread.
+   *
+   * There is no "Show 23 more" button any more (Akshil, 2026-08-18). The chevron
+   * showed three messages and then a dashed button under them, so reading a thread
+   * of twenty-six was two gestures for one intention: a person who expanded a task
+   * asked for the task, not for a sample of it.
+   *
+   * THE CAP WAS NEVER A RENDERING CHOICE, which is why removing it is a fetch and
+   * not a slice. The listing endpoint sends three messages per row on purpose — it
+   * runs for every task on the page, and a full transcript parse per task would not
+   * survive a few hundred of them (server routers/tasks.py `_row`) — so the other
+   * twenty-three genuinely are not in the client's hands when the row is drawn.
+   * The button was the press that went and got them. The press is gone; the trip
+   * still happens, now triggered by the disclosure itself.
+   *
+   * Guarded three ways so it is exactly one trip: only when OPENING, only when the
+   * server's own count says the window is short (threadView `more`, asked without
+   * `loaded` so it means "is the listing truncated?"), and never while a fetch for
+   * this task is already in flight or already landed. A closed-and-reopened task
+   * re-reads nothing — `loaded` outlives the expansion, deliberately, because the
+   * thread it holds is still the thread.
+   */
+  const toggle = (task: Task) => {
+    const opening = !expanded.has(task.key);
+    setExpanded((cur) => toggleExpanded(cur, task.key));
+    if (opening && threadView(task).more && !loaded[task.key] && !loading[task.key]) {
+      void showMore(task);
+    }
+  };
 
   const showMore = async (task: Task) => {
     setLoading((cur) => ({ ...cur, [task.key]: true }));
@@ -871,11 +903,10 @@ export function TaskList({
           home={home}
           showProject={showProject}
           open={expanded.has(task.key)}
-          onToggle={() => toggle(task.key)}
+          onToggle={() => toggle(task)}
           loaded={loaded[task.key]}
           loading={!!loading[task.key]}
           error={errors[task.key]}
-          onShowMore={() => void showMore(task)}
           onEditEntry={onEditEntry}
           onReload={onReload}
           read={read}
@@ -898,7 +929,6 @@ function TaskNode({
   loaded,
   loading,
   error,
-  onShowMore,
   onEditEntry,
   onReload,
   read,
@@ -919,7 +949,6 @@ function TaskNode({
   loaded?: TaskMessage[];
   loading: boolean;
   error?: string;
-  onShowMore: () => void;
   onEditEntry?: (entryId: string) => void;
   onReload?: () => void;
   read: Set<string>;
@@ -1672,16 +1701,24 @@ function TaskNode({
 
           {error && <p className="tasks-thread-error">{error}</p>}
 
-          {view.more && (
-            <button
-              type="button"
-              className="tasks-more"
-              disabled={loading}
-              onClick={onShowMore}
-            >
-              <span className="tasks-more-icon" aria-hidden>{ICON_CHEVRON_DOWN}</span>
-              {loading ? "Loading…" : `Show ${view.hidden} more`}
-            </button>
+          {/* No "Show N more" button here any more (2026-08-18). Expanding a task
+              now fetches the whole thread by itself (TasksList.toggle), so what
+              stands in the button's place is a line saying the trip is happening —
+              not a control, because there is nothing left to decide.
+
+              It names the NUMBER still coming (`view.hidden`, the server's count
+              less what we hold) rather than saying a bare "Loading…": the three
+              rows above it are already drawn, so without the count a long thread
+              looks like a short thread that has finished. It disappears when the
+              rest arrives, which is the only signal a person needed from it.
+
+              `aria-live="polite"` because this is the one thing on the row that
+              changes without a press — a reader who expanded the task should hear
+              that more is coming, and then be left alone. */}
+          {loading && (
+            <p className="tasks-thread-loading" aria-live="polite">
+              {view.hidden > 0 ? `Loading ${view.hidden} more…` : "Loading…"}
+            </p>
           )}
         </div>
       )}
