@@ -3,13 +3,13 @@
 // one accent moment) over card grids for the two things worth jumping to:
 // bookmarks and recent files. Entering any target navigates into
 // /explorer/view/... (the explorer proper).
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { navigate, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
 import { indexCaveat } from "@apps/explorer/listing/index-caveat";
-import { getClaudeSessionFolders, getGitRepos, indexSearch, statPath } from "@platform/lib/api";
+import { getClaudeSessionFolders, getGitRepos, indexRank, statPath } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import {
   fsMutationCount,
@@ -29,24 +29,25 @@ import {
 } from "@apps/explorer/lib/repos";
 import { useIndexStatus } from "@platform/lib/index-status";
 import {
-  INSTANT_DEBOUNCE_MS,
+  PENDING_INDICATOR_MS,
+  QueryMemo,
+  RANK_FETCH_LIMIT,
   activeRow,
-  corpusFrom,
-  homeCorpusView,
+  answerFrom,
   homeCountNote,
-  homeHitsFrom,
   isAiRow,
-  nextHeldHomeCorpus,
+  nameStart,
   pathShortcut,
+  positionsWithin,
   rankingSettled,
   redirectsToSearch,
+  searchDelay,
   stepHighlight,
   submitRow,
-  type CorpusState,
-  type HeldHomeCorpus,
+  type HomeAnswer,
   type HomeHit,
 } from "@apps/explorer/lib/home-search";
-import { useRankedScan } from "@apps/explorer/listing/useRankedScan";
+import { renderHighlight } from "@apps/explorer/listing/bits";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 
 // How many cards a tab shows before "Show more" — flat count, not a row
@@ -80,6 +81,12 @@ type AiPhase =
   | { status: "failed"; query: string; message: string };
 
 const AI_OFF: AiPhase = { status: "off" };
+
+// What the on-mount idle warm asks for. Nothing renders it — it exists to pay
+// the server's cold cost (the duckdb import, the gitignore verdict pool) before
+// the first keystroke rather than on it. Selective enough to exercise the real
+// two-stage plan; `limit: 1` keeps the response a rounding error.
+const WARM_QUERY = "readme";
 
 function MagnifierIcon() {
   return (
@@ -117,6 +124,17 @@ function FileRow({
   onHover: () => void;
 }) {
   const display = hit.path.startsWith(home + "/") ? "~/" + hit.rel : hit.path;
+  // What matched, marked in both cells. Positions index the REL, so each cell
+  // rebases them: the name cell to its start inside the rel, the path cell past
+  // the "~/" the display adds (an absolute display path is not the rel at all,
+  // so it gets none). AI hits carry no positions and simply render plain.
+  const marks = hit.positions ?? [];
+  const from = nameStart(hit.rel);
+  const namePos = positionsWithin(marks, from, hit.rel.length - from);
+  const pathPos = display.endsWith(hit.rel)
+    ? positionsWithin(marks, 0, hit.rel.length).map((p) => p + display.length - hit.rel.length)
+    : [];
+  const name = basename(hit.path);
   return (
     <li role="option" id={id} aria-selected={active}>
       <a
@@ -132,10 +150,10 @@ function FileRow({
         }}
       >
         <span className="fh-result-icon" aria-hidden="true">
-          {iconForEntry(basename(hit.path), hit.is_dir)}
+          {iconForEntry(name, hit.is_dir)}
         </span>
-        <span className="fh-result-name">{basename(hit.path)}</span>
-        <span className="fh-result-path">{display}</span>
+        <span className="fh-result-name">{renderHighlight(name, namePos)}</span>
+        <span className="fh-result-path">{renderHighlight(display, pathPos)}</span>
         <span className="fh-result-meta">
           {hit.is_dir ? "" : formatSize(hit.size)}
           {hit.mtime !== null && (
@@ -252,113 +270,138 @@ export function FilesSearch({
   const active = q !== "";
   useEffect(() => onActiveChange(active), [active, onActiveChange]);
 
-  // -- the corpus ------------------------------------------------------------
-  // Fetched ONCE per index generation, not per keystroke: the index answers
-  // with the whole covered subtree, so re-asking on every letter would spend a
-  // round trip to receive the same rows. Ranking is what runs per query.
-  // A scan finishing or the index being deleted changes what the corpus IS,
-  // and no other signal reports it (the filesystem did not change) — see
-  // lib/index-freshness.
+  // -- the ranked answer -----------------------------------------------------
+  //
+  // ONE REQUEST PER QUERY. This page used to fetch the whole home corpus (19.8
+  // MB, 164k rows, silently capped so most of a large home was unfindable) and
+  // rank it in the browser; the server filters and ranks now (/api/index/rank)
+  // and answers a few KB from the WHOLE index.
+  //
+  // A round trip per keystroke can only be an improvement if it never feels
+  // like one, and every piece below is that and nothing else: fire on the
+  // leading edge, coalesce a burst, abort rather than queue, keep the previous
+  // rows on screen while the next answer is in flight, and answer a backspace
+  // from memory.
+  const [answer, setAnswer] = useState<HomeAnswer | null>(null);
+  const [failure, setFailure] = useState("");
+  const [pending, setPending] = useState(false);
+  // Pending for long enough that saying so is information rather than a
+  // flicker. The common answer lands well inside PENDING_INDICATOR_MS.
+  const [slow, setSlow] = useState(false);
+  const memo = useRef(new QueryMemo());
+  const inflight = useRef<AbortController | null>(null);
+  const issuedAt = useRef(0);
+  // Bumped by a real gesture (typing) to re-run a failed request. Without it a
+  // failure was terminal: none of the other deps is something a user can move,
+  // so search stayed dead until a reload.
+  const [retryNonce, setRetryNonce] = useState(0);
+
+  // A scan finishing or the index being deleted changes what a query ANSWERS
+  // to, and no other signal reports it — the filesystem did not change (see
+  // lib/index-freshness). An in-app rename or delete moves paths the index
+  // still spells the old way, so a remembered hit would 404 on click.
+  //
+  // Both invalidate every remembered answer at once, so the memo is dropped
+  // wholesale rather than reasoned about per entry, and the current query is
+  // re-asked. Neither DISABLES search: this page has no live walk to fall back
+  // on, so switching search off is the worst available outcome — an answer one
+  // rename stale beats no answer at all. (useWalkSearch keeps its gate; it has
+  // a walk that can answer the renamed folder correctly.)
   const [lifecycle, setLifecycle] = useState(indexLifecycleCount);
   useEffect(() => subscribeIndexLifecycle(() => setLifecycle(indexLifecycleCount())), []);
-  // ...but it is RECORDED, not applied. Scans complete often, and refetching on
-  // each one swapped the rows out from under whoever was reading them — the
-  // exact churn this page is being fixed to stop. A corpus in hand therefore
-  // pins the fetch generation and keeps answering, captioned "indexing…" and
-  // dimmed; only having nothing to lose lets the fetch follow the index, which
-  // is precisely the case this signal was added for (the first scan finishing
-  // while the page sits on "still building"). The same posture the in-folder
-  // search takes for its dir-watch bumps (listing/revalidate).
-  const [fetchLifecycle, setFetchLifecycle] = useState(lifecycle);
-  const [corpus, setCorpus] = useState<CorpusState>({ status: "idle" });
-  useEffect(() => {
-    // Two ways the pin comes off, and between them they are what stop it from
-    // being a one-way door — pinned on the session's first corpus with nothing
-    // to ever move it, the box would rank an hour-old corpus and caption it
-    // "not refreshed" forever.
-    //
-    //   * there is nothing to lose (no corpus yet), which is the first-scan
-    //     case this signal was added for;
-    //   * THE SEARCH ENDED. Nothing is on screen to be pulled out from under
-    //     anyone, so adopting costs the user nothing and the next search opens
-    //     on current data. This is exactly the boundary the in-folder search
-    //     already reconciles at (revalidate.shouldReconcile returns true the
-    //     moment `searching` goes false), and the two boxes should not disagree
-    //     about when a search is over.
-    if (corpus.status !== "ok" || !active) setFetchLifecycle(lifecycle);
-  }, [lifecycle, corpus.status, active]);
-  // Which generation the corpus IN HAND actually reflects, which is not the
-  // same question as when the fetch is allowed to re-run: a refetch forced by
-  // something else (an in-app rename, a retry) still comes back with current
-  // data and has to clear this, or the caveat would stick forever. Stamped
-  // from the moment the request was ISSUED, so a scan that completes while it
-  // is in flight leaves the answer marked behind rather than falsely current.
-  const corpusLifecycle = useRef(lifecycle);
-  const corpusBehind = corpusLifecycle.current !== lifecycle;
-  // An in-app rename/delete moves paths the fetched corpus already holds, so
-  // search would find the old name and the click would 404. It is a REFETCH
-  // trigger, not a gate: `indexMayAnswer(home)` used to disable instant search
-  // outright, and since `touched` is session-scoped and home is an ancestor of
-  // every mutation, one rename anywhere pinned this page to "still building"
-  // for the rest of the session — while the index was in fact built. The home
-  // page has no live walk to fall back on, so switching search OFF is the worst
-  // available outcome: a corpus one rename stale beats no corpus at all.
-  // (useWalkSearch keeps the gate: it has a live walk that can answer the
-  // renamed folder correctly, and racing the index against that walk does not
-  // change the calculus — the index would win the race with the wrong name.)
   const [mutations, setMutations] = useState(fsMutationCount);
   useEffect(() => subscribeFsMutations(() => setMutations(fsMutationCount())), []);
-  // Bumped by a real gesture (typing) to re-run a failed fetch. Without it a
-  // `setCorpus({status:"error"})` was terminal: none of the other deps is
-  // something a user can move, so search stayed dead until a reload.
-  const [retryNonce, setRetryNonce] = useState(0);
-  // Requested on the first keystroke and never unrequested: dropping the
-  // corpus when the box is cleared would re-fetch it on the next letter typed.
-  const [wanted, setWanted] = useState(active);
   useEffect(() => {
-    if (active) setWanted(true);
-  }, [active]);
+    memo.current.clear();
+  }, [lifecycle, mutations, home]);
+
+  // Warm at idle, once per mount. The first search of a fresh server process
+  // pays for the duckdb import and the gitignore verdict pool, and the whole
+  // point of this page is that the cost lands before the user types rather
+  // than on their first keystroke. It is a few KB now, not 20 MB.
   useEffect(() => {
-    if (!wanted) return;
-    const ctl = new AbortController();
-    const issuedAt = indexLifecycleCount();
-    setCorpus((prev) => (prev.status === "ok" ? prev : { status: "loading" }));
-    indexSearch(home, { signal: ctl.signal }).then(
-      (res) => {
-        if (ctl.signal.aborted) return;
-        corpusLifecycle.current = issuedAt;
-        setCorpus(corpusFrom(res));
-      },
-      (err: Error) => {
-        if (ctl.signal.aborted || err.name === "AbortError") return;
-        setCorpus({ status: "error", message: err.message });
-      },
-    );
-    return () => ctl.abort();
-  }, [home, wanted, fetchLifecycle, mutations, retryNonce]);
+    let cancelled = false;
+    const idle = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 300));
+    idle(() => {
+      // Errors are not the user's problem: nothing is on screen, and a real
+      // search will report a real failure.
+      if (!cancelled) void indexRank(home, WARM_QUERY, { limit: 1 }).catch(() => {});
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [home]);
 
-  // A corpus once in hand keeps answering while the next one is fetched. The
-  // rescan that republishes this fetch used to put the box back into `cold`
-  // for its duration — "The file index is still building", zero rows, for an
-  // index that was built. Only never having had a corpus may suppress rows;
-  // being a generation behind is a note, not a downgrade (lib/home-search,
-  // and lib/repos.ts for the same rule on the repo cards).
-  const heldCorpus = useRef<HeldHomeCorpus | null>(null);
-  heldCorpus.current = nextHeldHomeCorpus(corpus, heldCorpus.current);
-  const view = homeCorpusView(corpus, heldCorpus.current);
-  // Behind either because the fetch is deliberately pinned to an older index
-  // generation, or because the rows on screen are the held ones while a fetch
-  // the user's own action forced actually runs.
-  const behind = view.entries !== null && (corpusBehind || view.stale);
+  useEffect(() => () => inflight.current?.abort(), []);
 
-  // -- ranking ---------------------------------------------------------------
-  // The same sliced, cancellable scan the in-folder search runs — literally the
-  // same hook (listing/useRankedScan): a covered home root can be 200k entries,
-  // and scoring that synchronously on a keystroke is the typing freeze
-  // listing/scan-job exists to prevent.
-  const { ranked, pending } = useRankedScan(view.entries, q, INSTANT_DEBOUNCE_MS, view.key);
-  const hits = useMemo(() => homeHitsFrom(ranked, home), [ranked, home]);
-  const scanning = active && pending;
+  useEffect(() => {
+    if (!active) {
+      inflight.current?.abort();
+      setPending(false);
+      return;
+    }
+    const remembered = memo.current.get(q);
+    if (remembered) {
+      // Backspacing (or retyping) must not cost a round trip for rows the page
+      // already had — and must not leave a superseded request able to land.
+      inflight.current?.abort();
+      setAnswer(remembered);
+      setFailure("");
+      setPending(false);
+      return;
+    }
+    const run = () => {
+      // Abort, never queue: the answer to a query the user has already edited
+      // is worth nothing, and letting it land would repaint the list backwards.
+      inflight.current?.abort();
+      const ctl = new AbortController();
+      inflight.current = ctl;
+      issuedAt.current = Date.now();
+      setPending(true);
+      indexRank(home, q, { signal: ctl.signal, limit: RANK_FETCH_LIMIT }).then(
+        (res) => {
+          if (ctl.signal.aborted) return;
+          const next = answerFrom(res, q, home);
+          memo.current.put(q, next);
+          setAnswer(next);
+          setFailure("");
+          setPending(false);
+        },
+        (err: Error) => {
+          if (ctl.signal.aborted || err.name === "AbortError") return;
+          // The rows in hand STAY. They are the best answer available on a page
+          // with no live walk, and the banner below says the refresh failed.
+          setFailure(err.message);
+          setPending(false);
+        },
+      );
+    };
+    // Zero on the leading edge — the first keystroke after a pause must not sit
+    // behind a timer (lib/home-search, `searchDelay`).
+    const delay = searchDelay(Date.now(), issuedAt.current);
+    if (delay === 0) {
+      run();
+      return;
+    }
+    const timer = window.setTimeout(run, delay);
+    return () => window.clearTimeout(timer);
+  }, [home, q, active, lifecycle, mutations, retryNonce]);
+
+  useEffect(() => {
+    if (!pending) {
+      setSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSlow(true), PENDING_INDICATOR_MS);
+    return () => window.clearTimeout(timer);
+  }, [pending]);
+
+  // The rows on screen, whatever query they answer. Never blanked while the
+  // next answer is in flight: results → nothing → results is the single most
+  // visible way this can feel worse than ranking locally, which never had an
+  // empty frame. `behind` is what dims them and what the caveat chip explains.
+  const hits = answer?.hits ?? [];
+  const behind = answer !== null && answer.query !== q;
 
   // -- the box is where typing goes ------------------------------------------
   //
@@ -455,9 +498,11 @@ export function FilesSearch({
     // Editing the query retracts the address that was submitted from it, so a
     // stat still in flight for the old one must not navigate when it lands.
     statCtl.current?.abort();
-    // Typing is a user gesture, so it is also the retry for a failed corpus
-    // fetch — the same way useWalkSearch re-arms its stream from setQuery.
-    if (corpus.status === "error") setRetryNonce((n) => n + 1);
+    // Typing is a user gesture, so it is also the retry for a failed request —
+    // the same way useWalkSearch re-arms its stream from setQuery. (Editing to
+    // a query that was never asked re-runs anyway; this covers editing BACK to
+    // the one that failed.)
+    if (failure !== "") setRetryNonce((n) => n + 1);
     // Editing the query is how the user gets back from AI results to instant
     // ones, so it drops the AI phase — and the ?q= that a committed search set.
     if (ai.status !== "off") {
@@ -477,16 +522,16 @@ export function FilesSearch({
   }, []);
 
   const showingAi = ai.status === "done" && ai.query === q;
-  // Whether the instant list is a finished answer. Gates the AI row's
-  // pre-selection, so Enter during the corpus load or the scan debounce cannot
-  // spend a model call on a query that was about to answer itself.
-  const settled = rankingSettled(view.status, scanning);
+  // Whether the instant list is a finished answer FOR THIS QUERY. Gates the AI
+  // row's pre-selection, so Enter while the request is in flight cannot spend a
+  // model call on a query that was about to answer itself.
+  const settled = rankingSettled(answer, q, pending, failure !== "");
   // The indexing caveat, same helper and same two messages as the listing's
   // search chip (listing/index-caveat) so the two boxes make the same claim in
   // the same words. It is the piece that makes a lagging answer read as
-  // intentional: with rows on screen from a corpus a generation behind and
-  // nothing saying why, the box just looks wrong. The rows themselves dim
-  // while `view.stale`, the same treatment the listing gives held results.
+  // intentional: with the previous query's rows still on screen and nothing
+  // saying why, the box just looks wrong. The rows themselves dim while
+  // `behind`, the same treatment the listing gives held results.
   const caveat = active && !showingAi ? indexCaveat(indexScan, behind) : null;
   const current = activeRow(highlight, hits.length, settled);
 
@@ -576,9 +621,9 @@ export function FilesSearch({
           (`retryNonce`) and a retry that reports nothing leaves the user
           pressing keys into silence. The no-rows case is not this banner: it
           is the whole content of the result note below. */}
-      {active && !showingAi && view.entries !== null && view.message !== "" && (
+      {active && !showingAi && answer !== null && failure !== "" && (
         <ErrorBanner>
-          Couldn't refresh the file index ({view.message}) — showing the last results.
+          Couldn't search the file index ({failure}) — showing the last results.
         </ErrorBanner>
       )}
 
@@ -587,29 +632,36 @@ export function FilesSearch({
       ) : (
         <div className="fh-panel">
           <p className="fh-result-note">
-            {/* `view.status`, not `corpus.status`: a refetch (a rescan, an
-                in-app rename) puts the FETCH back into loading/cold while the
-                corpus we are still ranking sits in hand. Branching on the raw
-                fetch state meant a mid-rescan search claimed the index was
-                "still building" over the rows it was showing. */}
-            {view.status === "cold" ? (
+            {/* Branch on the ANSWER IN HAND, not on the request state: while a
+                new query is in flight the previous answer is what is on screen,
+                and a note that denies having rows over rows that are visibly
+                there is the mid-rescan "still building" bug in another costume.
+                Only having never had an answer may say so. */}
+            {answer === null && failure !== "" ? (
+              `The file index could not be searched: ${failure}`
+            ) : answer === null ? (
+              "Searching…"
+            ) : !answer.covered ? (
               // Never "no matches" for an index that has not been built: that
               // would blame the user's files for the app's state.
               "The file index is still building — AI search can answer in the meantime."
-            ) : view.status === "error" ? (
-              `The file index could not be searched: ${view.message}`
-            ) : view.status !== "ok" || scanning ? (
-              "Searching…"
-            ) : ranked.length === 0 ? (
+            ) : answer.hits.length === 0 && settled ? (
               `No file name matched “${q}” — AI search can look at dates, types and sizes.`
+            ) : answer.hits.length === 0 ? (
+              "Searching…"
             ) : (
               <>
-                {homeCountNote(ranked.length, view.truncated)}
+                {homeCountNote(answer.total, answer.truncated)}
                 {" · "}
                 <kbd>↑</kbd>
                 <kbd>↓</kbd> to pick · <kbd>esc</kbd> to clear
               </>
             )}
+            {/* Only once the wait is long enough to be worth mentioning: under
+                PENDING_INDICATOR_MS the answer beats the words onto the screen,
+                and a note that appears and vanishes reads as slower than one
+                that never appeared. */}
+            {slow && hits.length > 0 && <span className="fh-searching-note"> · Searching…</span>}
             {caveat && (
               <span className="fh-index-chip" title={caveat.title}>
                 {/* Only while a scan is actually running. The chip also carries

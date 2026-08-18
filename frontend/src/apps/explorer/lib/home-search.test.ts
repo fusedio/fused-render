@@ -1,44 +1,56 @@
 import { describe, expect, it } from "bun:test";
 import {
   HOME_RESULT_CAP,
+  INSTANT_DEBOUNCE_MS,
+  QUERY_MEMO_LIMIT,
+  QueryMemo,
   activeRow,
-  corpusFrom,
-  homeCorpusView,
+  answerFrom,
   homeCountNote,
-  homeHitsFrom,
-  nextHeldHomeCorpus,
+  nameStart,
   pathShortcut,
+  positionsWithin,
   rankingSettled,
   redirectsToSearch,
+  searchDelay,
   stepHighlight,
   submitRow,
-  type CorpusState,
+  type HomeAnswer,
 } from "./home-search";
-import type { IndexSearchResult, WalkEntry } from "@platform/lib/api";
-import type { SearchHit } from "@apps/explorer/listing/types";
+import type { IndexRankHit, IndexRankResult } from "@platform/lib/api";
 
 const HOME = "/Users/me";
 
-function walkEntry(rel: string, over: Partial<WalkEntry> = {}): WalkEntry {
-  return { rel, is_dir: false, size: 10, mtime: 1_800_000_000, ...over };
+function rankHit(rel: string, over: Partial<IndexRankHit> = {}): IndexRankHit {
+  return {
+    rel,
+    is_dir: false,
+    size: 10,
+    mtime: 1_800_000_000,
+    score: 1,
+    longest_run: 1,
+    tier: 1,
+    depth: 1,
+    ...over,
+  };
 }
 
-function hit(rel: string, over: Partial<WalkEntry> = {}): SearchHit {
-  return { entry: walkEntry(rel, over), positions: [], score: 1, longestRun: 1, tier: 1, depth: 1 };
-}
-
-function indexResult(over: Partial<IndexSearchResult> = {}): IndexSearchResult {
+function rankResult(over: Partial<IndexRankResult> = {}): IndexRankResult {
   return {
     covered: true,
     fresh: true,
     root: HOME,
-    entries: [walkEntry("Downloads/a.csv")],
+    hits: [rankHit("Downloads/a.csv")],
     truncated: false,
     total: 1,
     updated: null,
     age_s: null,
     ...over,
   };
+}
+
+function answer(over: Partial<HomeAnswer> = {}): HomeAnswer {
+  return { query: "a", hits: [], truncated: false, total: 0, covered: true, ...over };
 }
 
 describe("pathShortcut", () => {
@@ -69,23 +81,125 @@ describe("pathShortcut", () => {
   });
 });
 
-describe("homeHitsFrom", () => {
-  it("absolutizes rel paths against home and carries the entry's facts", () => {
-    const rows = homeHitsFrom([hit("Downloads/a.csv", { size: 42, is_dir: false })], HOME);
-    expect(rows).toEqual([
+describe("answerFrom", () => {
+  it("absolutizes rel paths against home and carries the row's facts", () => {
+    const res = rankResult({ hits: [rankHit("Downloads/a.csv", { size: 42 })] });
+    expect(answerFrom(res, "a.csv", HOME).hits).toEqual([
       {
         path: `${HOME}/Downloads/a.csv`,
         rel: "Downloads/a.csv",
         is_dir: false,
         size: 42,
         mtime: 1_800_000_000,
+        positions: [10, 11, 12, 13, 14],
       },
     ]);
   });
 
-  it("caps the rendered rows without touching the ranking behind them", () => {
-    const many = Array.from({ length: HOME_RESULT_CAP + 25 }, (_, i) => hit(`f${i}.txt`));
-    expect(homeHitsFrom(many, HOME)).toHaveLength(HOME_RESULT_CAP);
+  it("re-runs the matcher for highlights rather than trusting the wire", () => {
+    // fuzzy.ts is the single source of truth for what highlights; the server
+    // deliberately does not send positions (index/rank.py's docstring).
+    const [row] = answerFrom(rankResult({ hits: [rankHit("docs/README.md")] }), "readme", HOME).hits;
+    expect(row.positions!.map((i) => "docs/README.md"[i]).join("")).toBe("README");
+  });
+
+  it("caps the rendered rows but keeps the server's true total", () => {
+    const many = Array.from({ length: HOME_RESULT_CAP + 25 }, (_, i) => rankHit(`f${i}.txt`));
+    const out = answerFrom(rankResult({ hits: many, total: many.length }), "f", HOME);
+    expect(out.hits).toHaveLength(HOME_RESULT_CAP);
+    expect(out.total).toBe(HOME_RESULT_CAP + 25);
+  });
+
+  it("carries the query it answers, which is what stops the list blanking", () => {
+    expect(answerFrom(rankResult(), "down", HOME).query).toBe("down");
+  });
+
+  it("reports an uncovered root as such, never as zero matches", () => {
+    // The honest answer is "still building": the home page has no live walk to
+    // fall back on, so a miss here is the app's state, not the user's files.
+    const out = answerFrom(rankResult({ covered: false, hits: [], total: 0 }), "x", HOME);
+    expect(out.covered).toBe(false);
+    expect(out.hits).toEqual([]);
+  });
+});
+
+describe("highlight rebasing", () => {
+  it("keeps only the positions that land in the cell, rebased to it", () => {
+    const rel = "docs/readme.md";
+    const positions = [0, 1, 5, 6, 7]; // "do" in docs, "rea" in readme.md
+    expect(nameStart(rel)).toBe(5);
+    expect(positionsWithin(positions, 5, rel.length - 5)).toEqual([0, 1, 2]);
+  });
+
+  it("drops out-of-range positions instead of clamping them", () => {
+    // A match entirely on the parent directory has nothing to mark in the name
+    // cell, and marking the wrong character is worse than marking none.
+    expect(positionsWithin([0, 1], 5, 9)).toEqual([]);
+  });
+
+  it("has nothing to rebase for a name-only rel", () => {
+    expect(nameStart("file.txt")).toBe(0);
+    expect(positionsWithin([0, 1], 0, 8)).toEqual([0, 1]);
+  });
+});
+
+describe("searchDelay", () => {
+  it("is ZERO on the leading edge — the first keystroke does not wait", () => {
+    // The debounce coalesces fast typing; it is not a delay on the first
+    // request. A selective query answers in ~40ms and must not sit behind a
+    // timer, or the box feels hesitant while doing less work than before.
+    expect(searchDelay(10_000, 0)).toBe(0);
+    expect(searchDelay(10_000, 10_000 - INSTANT_DEBOUNCE_MS)).toBe(0);
+  });
+
+  it("waits out the REMAINDER of the window during a burst", () => {
+    // Not a fresh full window per keystroke: a fast typist's requests land one
+    // debounce apart rather than one per letter.
+    expect(searchDelay(10_000, 9_960)).toBe(INSTANT_DEBOUNCE_MS - 40);
+    expect(searchDelay(10_000, 10_000)).toBe(INSTANT_DEBOUNCE_MS);
+  });
+});
+
+describe("QueryMemo", () => {
+  it("answers a repeated query without a round trip", () => {
+    // Backspacing walks back through queries just answered; re-asking the
+    // server for those is a wait the user can feel for rows already in hand.
+    const memo = new QueryMemo();
+    const a = answer({ query: "read" });
+    memo.put("read", a);
+    expect(memo.get("read")).toBe(a);
+    expect(memo.get("reader")).toBeUndefined();
+  });
+
+  it("drops the OLDEST entry past the limit", () => {
+    const memo = new QueryMemo(3);
+    for (const q of ["a", "ab", "abc", "abcd"]) memo.put(q, answer({ query: q }));
+    expect(memo.size).toBe(3);
+    expect(memo.get("a")).toBeUndefined();
+    expect(memo.get("abcd")).toBeDefined();
+  });
+
+  it("refreshes an entry that is put again, rather than aging it out", () => {
+    const memo = new QueryMemo(2);
+    memo.put("a", answer({ query: "a" }));
+    memo.put("b", answer({ query: "b" }));
+    memo.put("a", answer({ query: "a", total: 2 }));
+    memo.put("c", answer({ query: "c" }));
+    expect(memo.get("b")).toBeUndefined();
+    expect(memo.get("a")?.total).toBe(2);
+  });
+
+  it("clears wholesale, which is how an index lifecycle change is handled", () => {
+    // A scan finishing makes every remembered answer suspect at once; there is
+    // no per-entry story to tell.
+    const memo = new QueryMemo();
+    memo.put("a", answer());
+    memo.clear();
+    expect(memo.size).toBe(0);
+  });
+
+  it("defaults to a small trail, not a cache", () => {
+    expect(QUERY_MEMO_LIMIT).toBe(20);
   });
 });
 
@@ -103,110 +217,6 @@ describe("homeCountNote", () => {
   });
 });
 
-describe("corpusFrom", () => {
-  it("is ok for a covered root", () => {
-    expect(corpusFrom(indexResult({ updated: 7 }))).toEqual({
-      status: "ok",
-      entries: [walkEntry("Downloads/a.csv")],
-      truncated: false,
-      key: `${HOME}|7`,
-    });
-  });
-
-  it("gives the same key to the same (root, generation) — a refetch is the same corpus", () => {
-    expect(corpusFrom(indexResult({ updated: 7 }))).toMatchObject({ key: `${HOME}|7` });
-    expect(corpusFrom(indexResult({ updated: 8 }))).toMatchObject({ key: `${HOME}|8` });
-  });
-
-  it("gives NO key when the response carries no generation, rather than a shared one", () => {
-    expect(corpusFrom(indexResult({ updated: null }))).toMatchObject({ key: "" });
-  });
-
-  it("is cold — not empty — when the index has not covered the root yet", () => {
-    // The honest answer is "still building", never "no matches": the home page
-    // has no live walk to fall back on, so a miss here is the app's state.
-    expect(corpusFrom(indexResult({ covered: false, entries: [] }))).toEqual({ status: "cold" });
-  });
-});
-
-describe("the home corpus hold", () => {
-  const A = [walkEntry("a.txt")];
-  const B = [walkEntry("b.txt")];
-  const okA: CorpusState = { status: "ok", entries: A, truncated: false, key: "k1" };
-  const okB: CorpusState = { status: "ok", entries: B, truncated: true, key: "k2" };
-
-  it("holds a real corpus and nothing else", () => {
-    expect(nextHeldHomeCorpus(okA, null)).toEqual({ entries: A, truncated: false, key: "k1" });
-    const held = nextHeldHomeCorpus(okA, null);
-    expect(nextHeldHomeCorpus({ status: "loading" }, held)).toBe(held!);
-    expect(nextHeldHomeCorpus({ status: "cold" }, held)).toBe(held!);
-    expect(nextHeldHomeCorpus({ status: "error", message: "x" }, held)).toBe(held!);
-  });
-
-  it("is identity-stable, and adopts a new corpus", () => {
-    const held = nextHeldHomeCorpus(okA, null);
-    expect(nextHeldHomeCorpus(okA, held)).toBe(held!);
-    expect(nextHeldHomeCorpus(okB, held)).toEqual({ entries: B, truncated: true, key: "k2" });
-  });
-
-  it("shows the fresh corpus when there is one", () => {
-    expect(homeCorpusView(okA, null)).toEqual({
-      entries: A, truncated: false, key: "k1", stale: false, status: "ok", message: "",
-    });
-  });
-
-  it("keeps the rows AND reports a failed refetch", () => {
-    // Holding the rows is right — dropping a working search to show an error
-    // would be the worse trade on a page with no live walk to fall back on.
-    // Swallowing the failure is not: `retryNonce` retries on a keystroke, and
-    // a retry that reports nothing at all leaves the user pressing keys into
-    // silence. So: both.
-    const held = nextHeldHomeCorpus(okA, null);
-    const view = homeCorpusView({ status: "error", message: "boom" }, held);
-    expect(view.entries).toBe(A);
-    expect(view.stale).toBe(true);
-    expect(view.status).toBe("ok");
-    expect(view.message).toBe("boom");
-  });
-
-  it("has nothing to report once a refetch succeeds", () => {
-    expect(homeCorpusView(okA, nextHeldHomeCorpus(okA, null)).message).toBe("");
-  });
-
-  it("keeps answering from the previous corpus while a refetch runs", () => {
-    // The whole point: a rescan republishes the fetch, and `cold`/`loading`
-    // mid-refetch must not take the rows away — only never having had a corpus
-    // may do that (lib/repos.ts applies the same rule to the repo cards).
-    const held = nextHeldHomeCorpus(okA, null);
-    for (const state of [
-      { status: "loading" } as CorpusState,
-      // `cold` too: the index being gone does not make the paths in hand
-      // untrue, and a cold state re-fetches on the next lifecycle bump, so
-      // this recovers on its own the moment an index exists again.
-      { status: "cold" } as CorpusState,
-    ]) {
-      expect(homeCorpusView(state, held)).toEqual({
-        entries: A, truncated: false, key: "k1", stale: true, status: "ok", message: "",
-      });
-    }
-  });
-
-  it("suppresses rows ONLY when no corpus has ever been in hand", () => {
-    expect(homeCorpusView({ status: "cold" }, null)).toEqual({
-      entries: null, truncated: false, key: "", stale: false, status: "cold", message: "",
-    });
-    expect(homeCorpusView({ status: "error", message: "x" }, null)).toMatchObject({
-      status: "error",
-      message: "x",
-    });
-    expect(homeCorpusView({ status: "loading" }, null).status).toBe("loading");
-  });
-
-  it("reads as settled while stale — held rows are a finished answer, not a pending one", () => {
-    const held = nextHeldHomeCorpus(okA, null);
-    expect(rankingSettled(homeCorpusView({ status: "loading" }, held).status, false)).toBe(true);
-  });
-});
 
 describe("keyboard rows", () => {
   // Rows are the file hits followed by ONE action row (Search with AI), so the
@@ -263,18 +273,24 @@ describe("submitRow", () => {
 });
 
 describe("rankingSettled", () => {
-  it("is false while the corpus or the scan is still in flight", () => {
-    expect(rankingSettled("idle", false)).toBe(false);
-    expect(rankingSettled("loading", false)).toBe(false);
-    expect(rankingSettled("ok", true)).toBe(false);
+  it("is false while a request for this query is in flight", () => {
+    expect(rankingSettled(null, "read", true, false)).toBe(false);
+    expect(rankingSettled(answer({ query: "read" }), "read", true, false)).toBe(false);
   });
 
-  it("is true once a scan finishes, and for a corpus that will never come", () => {
-    expect(rankingSettled("ok", false)).toBe(true);
-    // Nothing further is coming for these, and the AI row is the only content
-    // left — so Enter must reach it.
-    expect(rankingSettled("cold", false)).toBe(true);
-    expect(rankingSettled("error", false)).toBe(true);
+  it("is false while the rows on screen answer the PREVIOUS query", () => {
+    // The list is deliberately never blanked, so hits being present is not
+    // evidence that this query has been answered — and pre-arming the AI row
+    // here would spend a model call on a query that was about to answer itself.
+    expect(rankingSettled(answer({ query: "rea" }), "read", false, false)).toBe(false);
+    expect(rankingSettled(null, "read", false, false)).toBe(false);
+  });
+
+  it("is true for an answer to THIS query, and for one that will never come", () => {
+    expect(rankingSettled(answer({ query: "read" }), "read", false, false)).toBe(true);
+    // A failed request is settled: nothing further is coming, and the AI row is
+    // the only content left — so Enter must reach it.
+    expect(rankingSettled(null, "read", false, true)).toBe(true);
   });
 });
 

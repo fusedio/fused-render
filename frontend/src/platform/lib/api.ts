@@ -378,6 +378,59 @@ export async function indexSearch(
   return { ...rest, entries };
 }
 
+// GET /api/index/rank — the home search: the server filters AND ranks, and
+// answers with the top ~200 rows.
+//
+// The corpus route above is the other shape of the same index, and the
+// difference is the whole point: `indexSearch` hands the browser every entry
+// under the root (19.8 MB on a 164k-entry home, capped so most of a big home
+// was unfindable) and ranks locally; this is a few KB per query and can see
+// the whole index. The in-folder search keeps the corpus, because it also has
+// a live walk to rank and only a browser-side ranker can rank a stream.
+//
+// `positions` are NOT on the wire: the caller re-runs `fuzzyMatch(q, rel)`
+// over the rows it got back, so platform/lib/fuzzy.ts stays the single source
+// of truth for what highlights (and the server's port of it, index/rank.py,
+// stays free to change its internals). A miss is a normal 200 with
+// covered:false, same as the corpus.
+export interface IndexRankHit {
+  rel: string;
+  is_dir: boolean;
+  size: number | null;
+  mtime: number | null;
+  // The ranking that produced this order. Carried for debugging and for
+  // callers that want to group by tier; the ORDER is the contract.
+  score: number;
+  longest_run: number;
+  tier: number;
+  depth: number;
+}
+
+export interface IndexRankResult {
+  covered: boolean;
+  fresh: boolean;
+  root: string;
+  hits: IndexRankHit[];
+  // More matched than were returned — either more than `limit` survived
+  // ranking, or the server's candidate cap bit.
+  truncated: boolean;
+  total: number;
+  updated: number | null;
+  age_s: number | null;
+}
+
+export function indexRank(
+  fsPath: string,
+  query: string,
+  opts: { signal?: AbortSignal; limit?: number } = {},
+): Promise<IndexRankResult> {
+  const params = new URLSearchParams({ root: fsPath, q: query });
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  return getJson<IndexRankResult>("/api/index/rank?" + params.toString(), {
+    signal: opts.signal,
+  });
+}
+
 // GET /api/index/status with no run id — the state of the most recent scan,
 // which is what a page that just loaded can ask about (it has no run id, but
 // the startup scan may well be running).
