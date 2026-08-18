@@ -2444,18 +2444,24 @@ export function laneRolledUp(
 // navigable; grouping you can only feel is a claim about priority, which is what
 // this actually is.
 //
-// THE ORDER IS NOT THE BOARD'S, and that difference stays. A board is read left
-// to right as a pipeline; a list is read top to bottom as work owed. The two
-// SWAPPED Done and Failed on 2026-08-18 (Akshil, "swap places for failed and
-// done status in list and kanban board") — each away from what it had, so the
-// difference between the views survived the change:
+// THE ORDER IS THE BOARD'S — the same five words in the same sequence (Akshil,
+// 2026-08-18, the final ruling on "swap places for failed and done status in list
+// and kanban board"):
 //
-//   Upcoming → In Progress → Done → Failed → Archive
+//   Upcoming → In Progress → Failed → Done → Archive
 //
-// Done above Failed here: what a reader comes to this list for is the output
-// waiting to be read, and a failure is a thing to come back to rather than the
-// first thing in the way of everything else. Archive stays last either way —
-// it is not a status, it is where things go to stop being read.
+// It briefly was not, and the reason it is now is worth keeping. The List ranked
+// "work owed" and the Board ran a pipeline, and each argument was sound on its
+// own — but a reader moving between the two views carries ONE mental picture of
+// where a status sits, so two orders means that picture is wrong in whichever
+// view they are not looking at. One sequence for one set of statuses
+// (design-principles §1). The BOARD is the view that moved; this list kept the
+// rank it always had. Failed before Done in both: a failed run wants a person's
+// hands, a done one wants only their eyes. Archive is last in both — it is not a
+// status, it is where things go to stop being read.
+//
+// The test holds this array and BOARD_COLUMNS to the same sequence, so the two
+// cannot quietly drift apart again.
 //
 // WITHIN a rank nothing is re-sorted: the server's order is the list's order and
 // always has been (TaskList takes `tasks` "in the SERVER's order"). A stable
@@ -2469,8 +2475,8 @@ export function laneRolledUp(
 export const LIST_ORDER: BoardColumn[] = [
   "upcoming",
   "in_progress",
-  "done",
   "failed",
+  "done",
   "archived",
 ];
 

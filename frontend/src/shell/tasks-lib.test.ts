@@ -962,8 +962,8 @@ describe("taskColumn", () => {
     }
     // Lane order, left to right. Failed sits BEFORE Done (Akshil, 2026-08-18): a
     // lane that wants a person's hands comes before one that wants only their
-    // eyes. The List ranks the pair the other way round on purpose — see
-    // LIST_ORDER's own test.
+    // eyes. The List reads the SAME sequence — LIST_ORDER's own test holds the two
+    // arrays equal.
     expect(BOARD_COLUMNS.map((c) => c.key)).toEqual([
       "upcoming", "in_progress", "failed", "done", "archived",
     ]);
@@ -5788,19 +5788,26 @@ describe("the tasks toolbar", () => {
 
 describe("sortByLane", () => {
   it("names every lane exactly once, in the list's order", () => {
-    // Done above Failed (Akshil, 2026-08-18) — the reader comes to this list for
-    // the output waiting to be read, and a failure is something to come back to
-    // rather than the first thing in the way of everything else. The BOARD swapped
-    // the pair the other way in the same pass; the two views are not one order.
     expect(LIST_ORDER).toEqual([
       "upcoming",
       "in_progress",
-      "done",
       "failed",
+      "done",
       "archived",
     ]);
-    expect(LIST_ORDER).not.toEqual(BOARD_COLUMNS.map((c) => c.key));
-    // Same set as the Board's — a sixth lane cannot be silently unsortable.
+    // ONE ORDER FOR BOTH VIEWS (Akshil, 2026-08-18, the final ruling). The two
+    // briefly disagreed about Failed and Done — the List ranking work owed, the
+    // Board running a pipeline — and a reader moving between them carries one
+    // mental picture of where a status sits, so the disagreement was wrong in
+    // whichever view they were not looking at. The SEQUENCE is asserted identical,
+    // not merely the same set: that is what a drift would break.
+    expect(LIST_ORDER).toEqual(BOARD_COLUMNS.map((c) => c.key));
+    // And Failed is the one before Done in both — the pair this pass was about.
+    const failedFirst = (keys: readonly string[]) =>
+      keys.indexOf("failed") < keys.indexOf("done");
+    expect(failedFirst(LIST_ORDER)).toBe(true);
+    expect(failedFirst(BOARD_COLUMNS.map((c) => c.key))).toBe(true);
+    // Same set, so a sixth lane cannot be silently unsortable.
     expect([...LIST_ORDER].sort()).toEqual(
       BOARD_COLUMNS.map((c) => c.key).slice().sort(),
     );
@@ -5809,15 +5816,15 @@ describe("sortByLane", () => {
   it("returns ONE flat list, not groups", () => {
     const rows = [
       task({ key: "d", status: "archived" }),
-      task({ key: "c", status: FAILED }),
-      task({ key: "b", status: "done" }),
+      task({ key: "c", status: "done" }),
+      task({ key: "b", status: FAILED }),
       task({ key: "a", status: "upcoming" }),
     ];
     expect(sortByLane(rows).map((t) => t.key)).toEqual(["a", "b", "c", "d"]);
     expect(sortByLane([])).toEqual([]);
   });
 
-  it("puts Done above Failed and Archive last, whatever the input order", () => {
+  it("puts Failed above Done and Archive last, whatever the input order", () => {
     const rows = [
       task({ key: "done", status: "done" }),
       task({ key: "arch", status: "archived" }),
@@ -5826,7 +5833,7 @@ describe("sortByLane", () => {
       task({ key: "soon", status: "upcoming" }),
     ];
     expect(sortByLane(rows).map((t) => t.key))
-      .toEqual(["soon", "run", "done", "fail", "arch"]);
+      .toEqual(["soon", "run", "fail", "done", "arch"]);
   });
 
   it("keeps the server's order inside a rank, and never re-sorts", () => {
