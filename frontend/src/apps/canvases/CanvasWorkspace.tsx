@@ -17,7 +17,7 @@
 // workbench iframe — the hosted workbench refreshes itself on upstream
 // changes.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { embedUrlForFsPath, navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { embedUrlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   getAccessToken,
@@ -149,53 +149,15 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1`
       : null;
 
-  const pushLabel =
-    sync?.push_state === "pushing"
-      ? "Pushing…"
-      : sync?.push_state === "pending"
-        ? "Local changes — push queued"
-        : sync?.push_state === "error"
-          ? "Push failed"
-          : sync?.last_push_at || sync?.last_pull_at
-            ? "Synced"
-            : "Watching";
-
+  // No header strip (owner call): the workspace is the two panes, full
+  // height. What the strip used to carry is either redundant or surfaces
+  // elsewhere — back is the browser's Back button, the canvas name is the
+  // page title/URL, "Open local files" is the chat pane's own affordances
+  // over the same folder, and sync state only matters when it FAILS, which
+  // the error banner below still reports. The poll keeps running for the
+  // banner and the watcher self-heal.
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          padding: "6px 12px",
-          borderBottom: "1px solid rgba(128,128,128,0.25)",
-          fontSize: 13,
-        }}
-      >
-        <button onClick={() => navigateUrl("/canvases")}>← Canvases</button>
-        <strong>{name}</strong>
-        <span
-          style={{
-            padding: "2px 8px",
-            borderRadius: 10,
-            background:
-              sync?.push_state === "error"
-                ? "rgba(220,60,60,0.15)"
-                : "rgba(128,128,128,0.12)",
-          }}
-        >
-          {pushLabel}
-        </span>
-        {sync?.dir && (
-          <button onClick={() => navigateUrl(urlForFsPath(sync.dir))} title={sync.dir}>
-            Open local files
-          </button>
-        )}
-        <span style={{ marginLeft: "auto", opacity: 0.6 }}>
-          Local wins: edits made inside the embedded workbench are overwritten
-          by the next local push.
-        </span>
-      </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {sync?.push_state === "error" && sync.error && <ErrorBanner>{sync.error}</ErrorBanner>}
       <div

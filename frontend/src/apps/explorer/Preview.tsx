@@ -1388,7 +1388,14 @@ function TemplatePreview({
             className="preview-browse-chip"
             onClick={
               IS_FOREIGN_EMBED
-                ? () => window.top?.location.assign(viewUrlForFsPath(fsPath))
+                ? () =>
+                    window.top?.location.assign(
+                      // `?_mode=_listing` pins the folder's contents listing —
+                      // without it the directory opens on its default mode
+                      // (the registry's first entry), not the listing the chip
+                      // promises.
+                      viewUrlForFsPath(fsPath, "?_mode=_listing"),
+                    )
                 : toggleListing
             }
           >
