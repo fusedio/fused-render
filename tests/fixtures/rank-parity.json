@@ -1,0 +1,535 @@
+{
+  "_comment": "Generated from the JS ranker (listing/search.ts + platform/lib/fuzzy.ts), which is the authority because it is the only thing that can rank a live walk. Both the bun test and pytest assert against this. Regenerate with `bun scripts/gen-rank-fixture.ts` when the JS ranker's ordering changes on purpose.",
+  "entries": [
+    {
+      "rel": "README.md",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "docs/README.md",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "docs/index.md",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "docs/architecture/index.md",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "docs/LINUX_DESKTOP_SPEC.md",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "docs/export/EXPORT.md",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "index.md",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "index/specs/index-store.md",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "index/specs/server-api.md",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "index/store.py",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "src/index.ts",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "src/indexStore.ts",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "src/IndexStoreView.tsx",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "src/render/renderer.ts",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "src/render/RenderTarget.ts",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "src/myrender.ts",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "render/a/b/c/d/e/f/deep-thing.bin",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "Downloads",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "Downloads/report.pdf",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "DownloadStage/notes.txt",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "downloads-old/report.pdf",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": ".env",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": ".env.local",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": ".config/fused/settings.json",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "env/bin/activate",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "environment.yml",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "mycfgfile.txt",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "c/f/g/notes.txt",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "a/b/config.yaml",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "config.yaml",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "frontend/src/apps/explorer/FilesHome.tsx",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "frontend/src/apps/explorer/listing/search.ts",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "frontend/src/platform/lib/fuzzy.ts",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "fused_render/index/query.py",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "fused_render/server/routers/index.py",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "tests/test_index_api.py",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "Zarr v3 multiscale pyramid budget notes.md",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "project/sub/deep/nested/thing/file.txt",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "file.txt",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "FILE.TXT",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "notes/Alpha.txt",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "notes/alpha.txt",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "docs",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "docs/architecture",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "index",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "index/specs",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "src",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "src/render",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "Downloads",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "DownloadStage",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "downloads-old",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": ".config",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": ".config/fused",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "env",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "env/bin",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "frontend",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "a",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "a/b",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "c",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "c/f",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "c/f/g",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    },
+    {
+      "rel": "notes",
+      "is_dir": true,
+      "size": null,
+      "mtime": null
+    }
+  ],
+  "queries": [
+    "readme",
+    "README.md",
+    "index.md",
+    "index",
+    "indexstore",
+    "render",
+    "myrender",
+    "download",
+    "Downloads",
+    "env",
+    ".env",
+    ".py",
+    "cfg",
+    "fr/fe",
+    "search",
+    "zmp",
+    "file.txt",
+    "q",
+    "notafile",
+    "specs/",
+    "frontend/.",
+    "alpha",
+    "FILE.TXT",
+    "downloadstage"
+  ],
+  "expected": {
+    "readme": [
+      "README.md",
+      "docs/README.md"
+    ],
+    "README.md": [
+      "README.md",
+      "docs/README.md"
+    ],
+    "index.md": [
+      "index.md",
+      "docs/index.md",
+      "docs/architecture/index.md",
+      "index/specs/index-store.md",
+      "index/specs/server-api.md"
+    ],
+    "index": [
+      "index",
+      "index.md",
+      "docs/index.md",
+      "src/index.ts",
+      "src/indexStore.ts",
+      "src/IndexStoreView.tsx",
+      "docs/architecture/index.md",
+      "index/specs/index-store.md",
+      "fused_render/server/routers/index.py",
+      "tests/test_index_api.py",
+      "index/specs",
+      "index/store.py",
+      "fused_render/index/query.py",
+      "index/specs/server-api.md"
+    ],
+    "indexstore": [
+      "src/indexStore.ts",
+      "src/IndexStoreView.tsx",
+      "index/store.py",
+      "index/specs/index-store.md"
+    ],
+    "render": [
+      "src/render",
+      "src/render/renderer.ts",
+      "src/render/RenderTarget.ts",
+      "src/myrender.ts",
+      "fused_render/index/query.py",
+      "fused_render/server/routers/index.py",
+      "render/a/b/c/d/e/f/deep-thing.bin",
+      "frontend/src/apps/explorer/FilesHome.tsx",
+      "frontend/src/apps/explorer/listing/search.ts"
+    ],
+    "myrender": [
+      "src/myrender.ts"
+    ],
+    "download": [
+      "Downloads",
+      "Downloads",
+      "downloads-old",
+      "DownloadStage",
+      "downloads-old/report.pdf",
+      "Downloads/report.pdf",
+      "DownloadStage/notes.txt"
+    ],
+    "Downloads": [
+      "Downloads",
+      "Downloads",
+      "DownloadStage",
+      "downloads-old",
+      "DownloadStage/notes.txt",
+      "downloads-old/report.pdf",
+      "Downloads/report.pdf"
+    ],
+    "env": [
+      "env",
+      "environment.yml",
+      "env/bin",
+      "env/bin/activate",
+      "fused_render/server/routers/index.py"
+    ],
+    ".env": [
+      ".env",
+      ".env.local"
+    ],
+    ".py": [
+      "index/store.py",
+      "tests/test_index_api.py",
+      "fused_render/index/query.py",
+      "fused_render/server/routers/index.py"
+    ],
+    "cfg": [
+      "mycfgfile.txt",
+      "c/f/g",
+      "config.yaml",
+      "a/b/config.yaml",
+      "c/f/g/notes.txt"
+    ],
+    "fr/fe": [],
+    "search": [
+      "frontend/src/apps/explorer/listing/search.ts"
+    ],
+    "zmp": [],
+    "file.txt": [
+      "file.txt",
+      "FILE.TXT",
+      "project/sub/deep/nested/thing/file.txt",
+      "mycfgfile.txt"
+    ],
+    "q": [
+      "fused_render/index/query.py"
+    ],
+    "notafile": [],
+    "specs/": [
+      "index/specs/index-store.md",
+      "index/specs/server-api.md"
+    ],
+    "frontend/.": [
+      "frontend/src/apps/explorer/FilesHome.tsx",
+      "frontend/src/platform/lib/fuzzy.ts"
+    ],
+    "alpha": [
+      "notes/Alpha.txt",
+      "notes/alpha.txt"
+    ],
+    "FILE.TXT": [
+      "file.txt",
+      "FILE.TXT",
+      "project/sub/deep/nested/thing/file.txt",
+      "mycfgfile.txt"
+    ],
+    "downloadstage": [
+      "DownloadStage",
+      "DownloadStage/notes.txt"
+    ]
+  }
+}
