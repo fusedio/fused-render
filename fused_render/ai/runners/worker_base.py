@@ -71,9 +71,11 @@ STATE = {
     "loaded_at": None,
     #: "cuda" | "mps" | "cpu" — what the weights actually landed on, set by the
     #: runner's `load()`. Only the process holding them knows: the supervisor
-    #: can see that this machine HAS a GPU and not that torch was built to use
-    #: it, which on Windows is the common case rather than the exotic one (the
-    #: PyPI torch wheel there is CPU-only). Reported because a model answering
+    #: can see that this machine HAS a GPU and not that the runner's torch was
+    #: built to use it, and since D381 that is the COMMON case rather than the
+    #: exotic one on every platform — the default torch rows pin the `whl/cpu`
+    #: build, so a machine with a card runs on the CPU until its user opts into
+    #: the CUDA or ROCm row. Reported because a model answering
     #: at three tokens a second is working perfectly and looks broken, and the
     #: device is the whole of the explanation.
     #:

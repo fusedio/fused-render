@@ -213,9 +213,13 @@ def load(model_id, fetched):
     # which is what keeps this additive for every other pipeline.
     vae = getattr(pipe, "vae", None)
     _loaded["vae"] = None if vae is None else type(vae).__name__
-    # See `worker_base.STATE["device"]`: on Windows the PyPI torch wheel is
-    # CPU-only, so "this machine has a GPU" and "this pipeline is using one" are
-    # different facts and only this process knows the second.
+    # See `worker_base.STATE["device"]`: "this machine has a GPU" and "this
+    # pipeline is using one" are different facts, and only this process knows the
+    # second. Since D381 that gap is the ORDINARY case rather than a Windows
+    # quirk — the default image engine pins the `whl/cpu` torch on every
+    # platform, so a fitted NVIDIA or AMD card is unused here unless the user
+    # opted into the CUDA or ROCm row, while the same pin lands on `mps` on a
+    # Mac. Three outcomes from one folder, and none of them visible outside it.
     worker_base.set_state(device=device)
 
 

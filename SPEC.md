@@ -5535,7 +5535,12 @@ an AI Models page that could say what was on disk but not what was *running*.
   name is therefore the marker of a hardware variant, which leaves the
   Apple-only rows visually distinct from them. `(PyTorch)` is gone from the
   family: the library stopped being what distinguishes these rows from each
-  other, and the accelerator is what does.
+  other, and the accelerator is what does. **A qualifier names the BUILD, not a
+  prediction about the reader's device** (D382): "(CPU)" is the `whl/cpu` pin —
+  the install with no accelerator libraries in it — and that same pin runs on the
+  GPU on Apple Silicon, so the row keeps its name there and its `note` carries the
+  Mac case (AI-11b). Renaming it would break a stored preference, which keys on
+  `code`, and would leave the picker with two rows called the same thing.
 - **AI-3** **Four routes, and that is the whole worker contract.** `GET /health`
   (state, resident bytes), `POST /generate` (NDJSON for text), `POST /cancel`,
   `POST /quit`. Adding a capability is writing a worker, not extending the
@@ -5886,23 +5891,56 @@ an AI Models page that could say what was on disk but not what was *running*.
   CALL time** (D381). Every probe was a `platform` fact until the per-hardware
   torch rows (AI-2b) needed to know whether a device was actually there, so the
   contract is written out: a probe MAY read device nodes and sysfs — `/dev/kfd`,
-  a `/dev/dri/renderD*`, `/sys/class/kfd/kfd/topology/nodes/*/properties`,
-  `/dev/nvidiactl` and `/dev/nvidia-uvm`, and `/sys/class/drm/card*` to tell "no
-  such GPU" apart from "driver not loaded" — and permission is asked with
+  the AMD card's own `/dev/dri/renderD*`,
+  `/sys/class/kfd/kfd/topology/nodes/*/properties`, `/dev/nvidiactl`,
+  `/dev/nvidia[0-9]*`, `/dev/nvidia-uvm`, WSL2's `/dev/dxg` and its
+  `/usr/lib/wsl/lib/libcuda.so.1`, and `/sys/class/drm/{card,renderD}*` to tell
+  "no such GPU" apart from "driver not loaded" and to tell WHOSE render node a
+  `renderD*` is — and permission is asked with
   `os.access(R_OK|W_OK)` rather than modelled from a mode or a group, because
   both get real machines wrong in both directions (a `crw-rw-rw-` kfd on a user
   in neither `render` nor `video`, an ACL-carrying card node invisible to mode
   arithmetic). It MUST NOT shell out: `nvidia-smi` and `rocminfo` are system
   binaries this app does not ship, which is the rule AI-2 states about mlx and
   torch and AI-10 states about ffmpeg, and a cold `nvidia-smi` is 50-500 ms on a
-  path that runs per page render against ~22-41 µs for the whole sysfs walk. And
+  path that runs per page render against ~22-41 µs for the whole sysfs walk. **Nor
+  may it LOAD anything** (D382): dlopening `libcuda.so.1` would settle the WSL2
+  question outright and initialises a driver to do it, which is the same cost
+  `nvidia-smi` was refused for, on the same per-page-render path — so the WSL2
+  evidence is two `os.path.exists` and nothing more. And
   it MUST NOT cache: every failure a device probe reports is one the user fixes
-  WHILE THE APP RUNS — `modprobe amdgpu`, `modprobe nvidia-uvm`, an eGPU plugged
+  WHILE THE APP RUNS — `modprobe amdgpu`, an eGPU plugged
   in, a container restarted with `--device /dev/kfd`, a group joined — and a
   cached refusal that outlives the fix is the reason string telling somebody what
   to do and then the app declining to notice they did it. Stdlib only, and no
   `torch` import: this module is on the render path for `describe`,
   `describe_engines` and every `resolve`.
+  **Every path a probe touches is a module-level constant** so a test can repoint
+  it at a `tmp_path`, and a row's `available` and its `reason` come from ONE call
+  (D382): they were two, which was harmless while a probe was a `platform` fact
+  and became a race the moment it was a device read — two calls straddling a
+  `modprobe` serialise either `available: false` with `reason: null`, a disabled
+  option with nothing saying why, or an available row still carrying a refusal.
+- **AI-6a** **An ABSENCE only refuses when absence is evidence, and a refusal
+  names a fix that can work** (D382). A hard gate reads what the kernel has put
+  in front of it, and the failure mode is a node that is missing for an innocent
+  reason: `/dev/nvidia-uvm` is created LAZILY — `nvidia-modprobe` loads
+  `nvidia_uvm` the first time any process makes a CUDA context, and the display
+  path never needs it — so a freshly booted NVIDIA desktop whose `torch.cuda`
+  works has no such node, and gating on its existence greyed out both CUDA rows
+  there and blamed a driver update. It is therefore asked for PERMISSION only,
+  when it happens to exist. WSL2 is the same mistake in the other direction: it
+  has none of the Linux nodes and works anyway, so its shape is checked FIRST and
+  the Linux nodes' absence is not evidence against it. And a device must be the
+  RIGHT one: an Intel iGPU's `renderD128` is world-openable on most
+  distributions, so ROCm pins its render node to a `0x1002` card through the DRM
+  class rather than accepting whichever node opens — otherwise a hybrid box buys
+  the ~6 GB install and fails inside HIP, which is the outcome AI-2b's gate
+  exists to prevent, reached through the gate. Where a device is missing and
+  where it is present but closed are DIFFERENT SENTENCES (AI-10e): "add your user
+  to the `render` group" cannot fix a `/dev/dri` a container was never given, and
+  one sentence for both sent half its readers after a `usermod` that could not
+  have helped.
 - **AI-7** **Liveness is `poll()`, and stopping is platform-specific.** Never
   `os.kill(pid, 0)`: on POSIX an unreaped child is a zombie and signal 0 to a
   zombie succeeds, so the check answers "alive" for a model that crashed; on
@@ -6634,12 +6672,17 @@ an AI Models page that could say what was on disk but not what was *running*.
   broken model rather than an environment one version too old.
 - **AI-11b** **The device is reported, because a model on a CPU works and looks
   broken.** torch runs on whatever it can see, and what it can see is not
-  knowable from outside the process: **the PyPI torch wheel is CPU-only on
-  Windows** (its `nvidia-*` dependencies are all marked `platform_system ==
-  "Linux"`), so the ordinary outcome on a Windows machine with a graphics card
-  is a perfectly healthy model answering at a few words a second, with a green
-  LOADED card and a healthy memory figure and nothing on screen to explain the
-  speed. `worker_base.STATE` therefore carries a `device` that each runner sets
+  knowable from outside the process: **the default torch rows pin the `whl/cpu`
+  build on every platform** (AI-2b, D381), so the ordinary outcome on ANY machine
+  with a graphics card in it — not the Windows machine it used to be, back when
+  the PyPI wheel's `nvidia-*` dependencies were the only thing marked
+  `platform_system == "Linux"` — is a perfectly healthy model answering at a few
+  words a second, with a green LOADED card and a healthy memory figure and
+  nothing on screen to explain the speed. The one exception is what makes the
+  device worth reporting rather than assuming: that same CPU pin resolves darwin
+  to the ordinary macOS wheel, so the CPU row lands on `mps` on Apple Silicon and
+  the row's `note` says so (D382) — a picker printing a CPU speed claim beside a
+  card reporting `mps` is one page contradicting itself. `worker_base.STATE` therefore carries a `device` that each runner sets
   in its own `load()` — the same argument AI-8 makes about resident bytes: only
   the process holding the weights knows. It surfaces twice, and the two are
   different KINDS of statement: the loaded card shows a measurement (**on CPU**,

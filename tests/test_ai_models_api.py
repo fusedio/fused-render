@@ -22,6 +22,7 @@ Four things here are easy to get quietly wrong, so each is pinned:
 The layout the fixtures build is huggingface_hub's own CACHE_STRUCTURE:
 ``<hub>/models--org--name/{blobs,snapshots/<commit>,refs/<ref>}``.
 """
+import dataclasses
 import json
 import os
 
@@ -1607,6 +1608,56 @@ def test_an_mlx_text_checkpoint_reports_the_mlx_engine(client, hub, monkeypatch)
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
     engine = _engine(client, "mlx-community/Qwen3-8B-4bit")
     assert engine["code"] == "mlx-text" and engine["available"] is False
+
+
+@requires_symlinks
+def test_a_cards_engine_reason_comes_from_the_probe_that_PICKED_the_row(
+        client, hub, monkeypatch):
+    """One probe per candidate, and the row is described by ITS answer.
+
+    `_engine` asked `available()` twice — once to choose the row
+    (`next(r for r in candidates if r.available().ok)`) and again to read the
+    reason off it. That was free while every probe was a `platform` fact and
+    stopped being free when the per-hardware rows made a probe a live device read
+    (AI-6): the two calls can straddle a `modprobe`, a container restart or an
+    eGPU being unplugged, and the card then reports a row chosen by one answer and
+    explained by another — including "not available" beside the reason the machine
+    had a moment ago rather than the one it has.
+
+    Driven with a probe whose refusal is NUMBERED, so the assertion names the
+    call the reason came from instead of counting calls: `refusal 1` is the probe
+    that selected the row, and anything later is a second look.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    seen = []
+
+    def numbered():
+        seen.append(1)
+        return _ai_registry.Availability(False, f"refusal {len(seen)}")
+
+    runners = tuple(
+        dataclasses.replace(r, _available=numbered) if r.code == "mlx-text" else r
+        for r in _ai_registry.all_runners()
+    )
+    monkeypatch.setattr(_ai_registry, "_RUNNERS", runners)
+    # The SERVING engine is answered without probing, so the only calls left are
+    # the ones `_engine` makes about the candidate — otherwise this test would be
+    # counting the resolution's probes too and would pass for the wrong reason.
+    monkeypatch.setattr(_ai_registry, "for_capability",
+                        lambda capability: _ai_registry.by_code("transformers-text"))
+
+    # An MLX text checkpoint on Linux: the only runner that reads it is the one
+    # that cannot run here, which is the branch that does the double probe.
+    repo = _repo(hub, "models--mlx-community--Qwen3-8B-4bit", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps(
+        {"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3",
+         "quantization": {"group_size": 64, "bits": 4}}))
+    _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
+    engine = _engine(client, "mlx-community/Qwen3-8B-4bit")
+    assert engine["code"] == "mlx-text" and engine["available"] is False
+    assert engine["reason"] == "refusal 1", (engine["reason"], len(seen))
 
 
 @requires_symlinks

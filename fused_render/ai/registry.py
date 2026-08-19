@@ -171,8 +171,9 @@ class Runner:
 
         The fallback is for a Runner built somewhere that has no opinion about
         display — a test's stand-in, mostly. A REGISTERED runner must set it,
-        which `test_every_runner_has_both_names` requires: degrading to the long
-        name is a cosmetic wart, degrading to "" would be a blank tag.
+        which `test_every_runner_has_both_names_and_they_differ_only_by_the_qualifier`
+        requires: degrading to the long name is a cosmetic wart, degrading to ""
+        would be a blank tag.
         """
         return self.short_label or self.label
 
@@ -261,7 +262,10 @@ def _transformers_platform() -> Availability:
 KFD_NODES_DIR = "/sys/class/kfd/kfd/topology/nodes"
 KFD_DEVICE = "/dev/kfd"
 DRI_DIR = "/dev/dri"
-#: Only consulted when the KFD cannot answer — see `_amd_gpu_present`.
+#: The DRM class, which answers two questions: is there an AMD GPU at all when
+#: the KFD cannot say (`_amd_gpu_present`), and WHICH render node belongs to it
+#: (`_amd_render_nodes`) — both `card*` and `renderD*` appear here, and each
+#: carries the PCI `device/vendor` of the card behind it.
 DRM_CLASS_DIR = "/sys/class/drm"
 #: The PCI vendor id every AMD/ATI GPU reports.
 AMD_PCI_VENDOR = "0x1002"
@@ -281,14 +285,32 @@ ROCM_TARGETS = frozenset({
     "gfx1150", "gfx1151", "gfx1200", "gfx1201",
 })
 
-#: Where the CUDA probe looks on Linux. All three are needed: the control node,
-#: at least one per-GPU node, and unified memory — which is a separate module
-#: (`nvidia_uvm`) and the one that is realistically missing.
+#: Where the CUDA probe looks on Linux: the control node and at least one
+#: per-GPU node are REQUIRED, and unified memory is checked only for PERMISSION
+#: when it happens to exist.
+#:
+#: **`/dev/nvidia-uvm` is created LAZILY and its absence proves nothing** (D382).
+#: `nvidia-modprobe` loads `nvidia_uvm` and makes the node the first time any
+#: process creates a CUDA context; the display path needs only `nvidia` and
+#: `nvidia_drm`. So a freshly booted desktop that has not run a CUDA program yet
+#: has `/dev/nvidiactl` and `/dev/nvidia0` and NO `/dev/nvidia-uvm` while
+#: `torch.cuda` works perfectly — the machine this gate was meant to serve, and
+#: the one an existence check refused. When the node IS there, `os.access` on it
+#: still earns its place: a container given the nodes without the access is
+#: exactly the state it reports.
 NVIDIA_CONTROL_DEVICE = "/dev/nvidiactl"
 NVIDIA_UVM_DEVICE = "/dev/nvidia-uvm"
 #: Where `/dev/nvidia0`, `/dev/nvidia1`… live. A constant so the glob below is
 #: repointable with the rest.
 NVIDIA_DEVICE_DIR = "/dev"
+#: WSL2, which has NONE of the nodes above. GPU-PV exposes the card through
+#: `/dev/dxg` and ships the CUDA driver library out of `/usr/lib/wsl/lib`, so a
+#: WSL2 user whose `torch.cuda` works has no `/dev/nvidiactl` and no
+#: `/dev/nvidia0` to show for it (D382). Both are `os.path.exists` and nothing
+#: more: dlopening `libcuda.so.1` to be sure would initialise a driver on a page
+#: render, which AI-6 bars for the same reason it bars `nvidia-smi`.
+WSL_DXG_DEVICE = "/dev/dxg"
+WSL_CUDA_LIBRARY = "/usr/lib/wsl/lib/libcuda.so.1"
 #: Windows has no device nodes to ask, so the driver's own user-mode CUDA
 #: library is the cheapest evidence available. **A HINT, NOT PROOF** — it is
 #: installed by the display driver whether or not the GPU is CUDA-capable, and
@@ -383,10 +405,36 @@ def _amd_gpu_present() -> bool:
     return False
 
 
-def _usable_render_node() -> bool:
-    """A `/dev/dri/renderD*` this user can open — the second device HIP needs."""
-    return any(os.access(path, os.R_OK | os.W_OK)
-               for path in glob.glob(os.path.join(DRI_DIR, "renderD*")))
+def _amd_render_nodes() -> list[str]:
+    """The `/dev/dri/renderD*` nodes belonging to an AMD card — HIP's second device.
+
+    **Pinned to the AMD card, not to any render node that happens to open**
+    (D382). The first version accepted any readable `renderD*`, which is wrong on
+    every hybrid machine: an Intel iGPU's `renderD128` is world-openable on most
+    distributions, so a box with an open Intel node and a restricted AMD one
+    passed the gate on a device HIP will never touch, and the ~6GB install then
+    failed when HIP opened the node it actually needed. `_amd_gpu_present` already
+    reads `device/vendor` out of the DRM class; the render nodes are in the same
+    class and carry the same file, so the vendor answers WHICH node too.
+
+    Returns the device paths under `DRI_DIR` (sorted), not the sysfs entries —
+    the caller asks `os.access` of the thing HIP opens.
+    """
+    nodes = []
+    pattern = os.path.join(DRM_CLASS_DIR, "renderD*", "device", "vendor")
+    for path in sorted(glob.glob(pattern)):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                vendor = handle.read().strip().lower()
+        except OSError:
+            continue
+        if vendor != AMD_PCI_VENDOR:
+            continue
+        node = os.path.join(DRI_DIR, os.path.basename(os.path.dirname(
+            os.path.dirname(path))))
+        if os.path.exists(node):
+            nodes.append(node)
+    return nodes
 
 
 def _rocm() -> Availability:
@@ -441,12 +489,27 @@ def _rocm() -> Availability:
             "and writable by you (add your user to the group that owns it, "
             "usually `render`, then log out and back in)",
         )
-    if not _usable_render_node():
+    # HIP opens `/dev/kfd` AND the card's own render node, and the two failures
+    # here are DIFFERENT SENTENCES because they have different fixes. A node that
+    # is not THERE cannot be fixed by joining a group — that is a container
+    # started without `--device /dev/dri`, or a `/dev/dri` the amdgpu driver has
+    # not populated — while a node that is there and closed is precisely the
+    # group case. One sentence for both sent half its readers after a `usermod`
+    # that could not have helped.
+    render_nodes = _amd_render_nodes()
+    if not render_nodes:
         return Availability(
             False,
-            f"needs permission to use the GPU — no {DRI_DIR}/renderD* device is "
-            "readable and writable by you (add your user to the `render` group, "
-            "then log out and back in)",
+            f"needs the AMD GPU's render node — no {DRI_DIR}/renderD* device "
+            "belongs to an AMD card here, which is what a container started "
+            "without `--device /dev/dri` looks like",
+        )
+    if not any(os.access(path, os.R_OK | os.W_OK) for path in render_nodes):
+        return Availability(
+            False,
+            f"needs permission to use the GPU — {render_nodes[0]} is the AMD "
+            "card's render node and is not readable and writable by you (add "
+            "your user to the `render` group, then log out and back in)",
         )
     targets = _kfd_gfx_targets()
     if targets is None:
@@ -479,7 +542,15 @@ def _cuda() -> Availability:
     A HARD GATE, like `_rocm` and for the same reason — an accelerated row that
     is selectable on a machine with no NVIDIA GPU is a multi-gigabyte download
     that fails at load. Not cached, for `_rocm`'s reasons exactly (an eGPU, a
-    container restart, `modprobe nvidia-uvm` — all fixed while the app runs).
+    container restart, a driver reloaded — all fixed while the app runs).
+
+    **Three shapes of NVIDIA machine, and only one of them has device nodes.**
+    Ordinary Linux has `/dev/nvidiactl` + `/dev/nvidia[0-9]*`; WSL2 has neither
+    and works anyway (`/dev/dxg`, and the driver's `libcuda.so.1` under
+    `/usr/lib/wsl/lib`); Windows has no nodes at all and is gated on the
+    driver's own DLL. Absence of the Linux nodes is therefore not evidence
+    against WSL2, which is why that branch is asked FIRST rather than as a
+    fallback after a refusal has already been written.
 
     **No `nvidia-smi`.** SPEC.md's rule about system binaries the app does not
     ship, and a cold `nvidia-smi` is 50-500ms on a per-page-render path against
@@ -493,6 +564,14 @@ def _cuda() -> Availability:
     system = platform.system()
     machine = platform.machine()
     if system == "Linux":
+        # WSL2 FIRST, because it has none of the nodes below and torch.cuda
+        # works there anyway (D382). GPU-PV projects the Windows driver into the
+        # guest as `/dev/dxg` plus a `libcuda.so.1` under `/usr/lib/wsl/lib`, so
+        # a WSL2 user was told "there is no /dev/nvidiactl on this machine",
+        # which was true and beside the point, and could not select the engine
+        # at all. Two `os.path.exists` and no dlopen — see the constants.
+        if os.path.exists(WSL_DXG_DEVICE) and os.path.exists(WSL_CUDA_LIBRARY):
+            return Availability(True)
         gpus = glob.glob(os.path.join(NVIDIA_DEVICE_DIR, "nvidia[0-9]*"))
         if not os.path.exists(NVIDIA_CONTROL_DEVICE) or not gpus:
             return Availability(
@@ -510,20 +589,17 @@ def _cuda() -> Availability:
                 "readable and writable by you (this is usually a container "
                 "missing `--gpus all`, or a device-permission rule)",
             )
-        # …and unified memory, which is a SEPARATE kernel module and the one
-        # that is realistically absent: a driver package upgraded under a
-        # running kernel leaves `nvidia` loaded and `nvidia_uvm` not, and every
-        # CUDA context then fails at initialisation with an error that names
-        # neither the module nor the fix. Its own reason, because its own fix.
-        if not os.path.exists(NVIDIA_UVM_DEVICE):
-            return Availability(
-                False,
-                f"needs NVIDIA unified memory — {NVIDIA_UVM_DEVICE} is missing "
-                "even though the GPU is there, which is what a driver update "
-                "without a reboot leaves behind (`modprobe nvidia-uvm`, or "
-                "reboot)",
-            )
-        if not os.access(NVIDIA_UVM_DEVICE, os.R_OK | os.W_OK):
+        # …and unified memory, checked for PERMISSION and never for EXISTENCE
+        # (D382). `nvidia_uvm` is a separate module that `nvidia-modprobe` loads
+        # the first time a process creates a CUDA context, so a freshly booted
+        # desktop that has not run a CUDA program yet has the GPU nodes, no
+        # `/dev/nvidia-uvm`, and a working `torch.cuda`. Refusing on its absence
+        # greyed out both CUDA rows there and blamed "a driver update without a
+        # reboot" — the opposite of what had happened. A node that IS present and
+        # closed is still worth a sentence: that is a container handed the
+        # devices without the access, which no amount of waiting fixes.
+        if os.path.exists(NVIDIA_UVM_DEVICE) and not os.access(
+                NVIDIA_UVM_DEVICE, os.R_OK | os.W_OK):
             return Availability(
                 False,
                 f"needs permission to use the GPU — {NVIDIA_UVM_DEVICE} is not "
@@ -595,15 +671,30 @@ _RUNNERS: tuple[Runner, ...] = (
         # PyTorch — and the accelerator is, so the qualifier names the thing a
         # reader is choosing between. Both names carry it; see the table's
         # naming note above.
+        #
+        # **"(CPU)" names the BUILD, not a prediction about the device.** It is
+        # the `whl/cpu` pin — the install with no accelerator libraries in it —
+        # and on Apple Silicon that same pin resolves to the ordinary macOS wheel
+        # with MPS compiled in, so this row runs on the GPU there. What device a
+        # model actually got is the worker's to report and AI-11b's to show; the
+        # `note` says the Mac case out loud so the two never disagree.
         label="Transformers (CPU)",
         short_label="Transformers (CPU)",
         # ONE LINE, and that is a hard constraint rather than a summary: it sits
         # under this engine's row on the Engines tab, in the space between one
         # picker and the next, and anything that wraps twice is something nobody
-        # finishes. Everything that used to follow a dash here — that a CPU
-        # answers at a few words a second — lives in the loaded card's tooltip
-        # instead, where somebody has stopped to ask.
-        note="Runs on the CPU on any machine, at a few words a second — the "
+        # finishes.
+        #
+        # **It names the Apple Silicon GPU, because this row USES it** (D382).
+        # `torch_text._placement()` returns `("mps", float16)` on a Mac, which is
+        # the fallback path the `whl/cpu` pin was chosen to preserve — so the old
+        # wording ("Runs on the CPU on any machine, at a few words a second") had
+        # the Engines tab printing a CPU speed claim while the loaded card beside
+        # it reported device `mps`, one page contradicting itself. The speed
+        # figure went with it: "a few words a second" is a CPU measurement and
+        # the row is not always on a CPU, and the loaded card's tooltip is where
+        # somebody who has stopped to ask reads about speed anyway.
+        note="Runs on the CPU on any machine, or Apple Silicon's GPU — the "
              "CUDA and ROCm engines need a matching GPU.",
         # Deliberately BELOW the MLX row rather than instead of it. Apple Silicon
         # therefore gets MLX when it is present and this runner's working MPS
@@ -613,7 +704,7 @@ _RUNNERS: tuple[Runner, ...] = (
     ),
     # …and the accelerated variants, BELOW the CPU row so that nothing about the
     # default moves: a machine set to "auto" resolves to the CPU build even with
-    # a working GPU in it (`test_auto_stays_on_the_cpu_row_even_with_an_accelerator`
+    # a working GPU in it (`test_AUTO_STAYS_ON_THE_CPU_ROW_EVEN_WITH_AN_ACCELERATOR`
     # is that decision, named). Opting in is one radio on the Engines tab, and
     # the radio is disabled with the probe's own reason on a machine that cannot
     # take it — which is what makes offering these rows at all safe.
@@ -678,9 +769,13 @@ _RUNNERS: tuple[Runner, ...] = (
         # This row had no note while it was the only torch image engine and
         # there was nothing to distinguish it from. Now there is, and the thing
         # worth saying is the one that decides the choice: CPU diffusion is
-        # minutes per image, not seconds.
-        note="Renders on the CPU on any machine — minutes per image rather "
-             "than seconds.",
+        # minutes per image, not seconds — SAID OF THE CPU rather than of the
+        # row, because `torch_image._place()` moves the pipeline to `mps` on a
+        # Mac (D382), and a flat "minutes per image" contradicted the `mps` the
+        # loaded card reports on the very machine this row exists to catch when
+        # MLX FLUX is unavailable.
+        note="Renders on Apple Silicon's GPU, or on the CPU anywhere else at "
+             "minutes per image rather than seconds.",
         _available=_always,
     ),
     # The accelerated image variants, below the CPU row for the reason the text
@@ -1054,6 +1149,35 @@ def describe() -> list[dict]:
     return rows
 
 
+def _choice(runner: Runner) -> dict:
+    """One option under an engine picker, built from ONE probe (D382).
+
+    A function rather than two lines inside the comprehension below because the
+    bug this fixes was exactly that shape: `available` read `runner.available()`
+    and `reason` read it AGAIN. That was free while every probe was a `platform`
+    fact and stopped being free the moment a probe became a live device read
+    (AI-6) — two calls can straddle a `modprobe`, a container restart or an eGPU
+    being unplugged and disagree. Both disagreements reach the user and neither
+    is a crash: the option serialises as `available: false` with `reason: null`,
+    which the `<select>` renders as a disabled row with NOTHING saying why (the
+    page has no copy of the reason and must not), or as `available: true` still
+    carrying the refusal that has just stopped being true. Binding the status to
+    a name once makes the second read impossible rather than merely unlikely.
+    """
+    status = runner.available()
+    return {
+        "code": runner.code,
+        "label": runner.label,
+        "note": runner.note or None,
+        "available": status.ok,
+        # The registry's own words ("needs Apple Silicon — MLX runs on Metal
+        # only (this is windows/amd64)"), so the disabled radio explains itself
+        # with the same sentence the rest of the app uses. The page must not
+        # write its own copy of this, because the page cannot know it.
+        "reason": status.reason or None,
+    }
+
+
 def describe_engines() -> list[dict]:
     """One row per capability: what was asked for, what is serving, what was
     ignored.
@@ -1090,18 +1214,7 @@ def describe_engines() -> list[dict]:
                 # with nothing saying why, is the failure this field exists for.
                 "ignoredReason": resolution.ignored_reason or None,
                 "choices": [
-                    {
-                        "code": runner.code,
-                        "label": runner.label,
-                        "note": runner.note or None,
-                        "available": runner.available().ok,
-                        # The registry's own words ("needs Apple Silicon — MLX
-                        # runs on Metal only (this is windows/amd64)"), so the
-                        # disabled radio explains itself with the same sentence
-                        # the rest of the app uses. The page must not write its
-                        # own copy of this, because the page cannot know it.
-                        "reason": runner.available().reason or None,
-                    }
+                    _choice(runner)
                     for runner in _RUNNERS
                     if runner.capability == capability
                 ],

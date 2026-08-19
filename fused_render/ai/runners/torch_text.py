@@ -197,9 +197,10 @@ def _dtype_kwargs(dtype):
     """`{"dtype": …}` or `{"torch_dtype": …}`, whichever this transformers takes.
 
     `torch_dtype` was renamed to `dtype` in 4.56 and the old spelling deprecated
-    behind a warning; it is scheduled to go in v5. This runner declares
-    `transformers>=4.46` with no ceiling, so BOTH spellings are live options on
-    a machine somewhere, and the wrong one is not a loud failure: unknown
+    behind a warning; it is scheduled to go in v5. All three folders that share
+    this worker declare `transformers>=4.51,<6`, so BOTH spellings are live
+    options on a machine somewhere, and the wrong one is not a loud failure:
+    unknown
     keyword arguments to `from_pretrained` are forwarded into the config rather
     than rejected, so a stale spelling would silently load a 4B model at float32
     and OOM a laptop that had every right to run it.

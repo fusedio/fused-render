@@ -245,10 +245,12 @@ SUGGESTIONS: dict[str, list[dict]] = {
     #   who has done nothing wrong. The MLX list above gets away with gemma only
     #   because the `mlx-community` re-uploads are not gated.
     # * **Sized for the machine that will actually run them.** The accepted v1
-    #   trade is that torch from PyPI is CPU-only on Windows (see this runner's
-    #   `pyproject.toml`), so the list has to be usable with no GPU at all
-    #   rather than assuming one — which is why the smallest entry is here on
-    #   merit and not as an afterthought.
+    #   trade is that the default torch row installs the `whl/cpu` build on
+    #   every non-Apple machine (D381, see this runner's `pyproject.toml`), so
+    #   the list has to be usable with no GPU at all rather than assuming one —
+    #   which is why the smallest entry is here on merit and not as an
+    #   afterthought. The accelerated rows share this very list (`catalog.py`'s
+    #   `_SHARED_SUGGESTIONS`), so it is the CPU that sets its ceiling.
     #
     # Sizes sum every file in the Hub snapshot (2026-08-14) and round the byte
     # total to one decimal GB. That makes them download estimates rather than
