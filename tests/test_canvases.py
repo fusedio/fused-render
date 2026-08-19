@@ -2157,6 +2157,49 @@ def test_the_missing_skills_fallback_confines_the_session_to_its_folder():
     assert "canvas.toml" in tail and "conventions" in low
 
 
+def test_the_seeded_claude_md_puts_the_skills_before_everything_else():
+    """Position is the instruction. The section used to sit at line ~102 of ~130,
+    after every word of sync mechanics — a session skims a long file top-down and
+    an instruction it must act on BEFORE its first edit cannot live at the
+    bottom. Pinned as an ordering, not a line number, so the file can grow."""
+    text = canvases_mod._CLONE_CLAUDE_MD
+    skills_at = text.index("## Skills")
+    for later in ("## How the sync works", "## Publishing your work",
+                  "## Running the fused CLI", "## Keeping the canvas valid"):
+        assert skills_at < text.index(later), later
+
+
+def test_the_seeded_claude_md_names_the_tool_that_loads_a_skill():
+    """"Load these before editing" named no mechanism, so it read as a
+    suggestion. The instruction has to say what to CALL."""
+    text = canvases_mod._CLONE_CLAUDE_MD
+    head = text[text.index("## Skills"):text.index("## How the sync works")]
+    assert "`Skill` tool" in head
+    assert "invoke" in head.lower()
+    # Every skill the app actually hands over is listed, so none is left to
+    # guesswork about whether it applies.
+    for name in ("canvas-toml", "fused-udfs", "json-ui-schemas", "fused-cli",
+                 "canvas-comments"):
+        assert f"workbench:{name}" in head, name
+
+
+def test_the_seeded_claude_md_makes_the_workbench_prefix_win_over_a_stale_one():
+    """The old text said "if they are absent, OR LISTED UNDER A DIFFERENT PREFIX,
+    just search your available skills for the matching names" — which is exactly
+    the licence that let a stale `fused:*` plugin be used in place of the
+    `workbench:*` skills this app supplies. The plugin is disabled now, but the
+    text must not re-open the hole: `workbench:` is authoritative, a `fused:`
+    match is named as stale, and the folder-conventions fallback is reachable
+    ONLY when no `workbench:` skill exists at all."""
+    text = canvases_mod._CLONE_CLAUDE_MD
+    head = text[text.index("## Skills"):text.index("## How the sync works")]
+    assert "`fused:`" in head and "stale" in head
+    assert "or listed under a different prefix" not in head
+    # The fallback is conditional, and says so.
+    assert "only if" in head.lower()
+    assert "no `workbench:`-prefixed match exists" in head
+
+
 def test_the_seeded_claude_md_never_hands_the_user_a_shell_command():
     """The reader of this file is a Claude session in a chat pane. It cannot run
     an install command, and the user reading it there is the wrong person to

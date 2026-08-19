@@ -657,6 +657,47 @@ This folder is a live clone of the Fused canvas **{name}**, two-way synced by
 fused-render: a watcher pushes every quiet change set upstream and pulls
 remote edits (made in the hosted workbench) back down, merging per file.
 
+## Skills — invoke these FIRST
+
+**Before you read or edit anything in this folder, invoke the `Skill` tool for
+the skills below that apply to the task.** They carry the authoritative format
+references, and this folder's files cannot be edited correctly from their own
+appearance alone — a `canvas.toml` that looks obvious has required fields and
+node/edge rules that are not visible in an example, and getting them wrong is
+rejected at push time and surfaces to the user as a broken canvas.
+
+fused-render hands these to this session itself, so they are already in your
+available-skills list. Do not search for them, do not ask the user to install
+anything, and do not skip one because the change "looks small":
+
+| Skill | Invoke it when |
+|---|---|
+| `workbench:canvas-toml` | ALWAYS — before the first edit. canvas.toml format, folder layout |
+| `workbench:fused-udfs` | writing or changing any `.py` UDF |
+| `workbench:json-ui-schemas` | writing or changing any `.json` widget |
+| `workbench:fused-cli` | running any `fused` command |
+| `workbench:canvas-comments` | reading or resolving canvas comments |
+
+`workbench:` is the correct prefix. If you also see these skill names under a
+different prefix (`fused:` in particular), that is a stale copy from an older
+release — **ignore it and use the `workbench:` one**, which is the version this
+app supplied for this session.
+
+If, and only if, no `workbench:`-prefixed match exists at all, work from THIS
+FOLDER and nothing else: the existing `canvas.toml` and the files beside it are
+your format reference, and their conventions are the answer. Do not stop to ask
+for the skills, and do not try to install anything.
+
+**Do not search outside this folder for format references.** No `find`, `ls
+-R`, `grep -r`, glob or any other recursive walk over `/`, your home
+directory, `~/.fused-render`, or the fused-render source tree — the app's
+internal files are not documentation and looking through them is a detour
+that ends nowhere. In particular **never list, walk, glob or read anything
+under `~/.fused-render/mounts`**: those are network mounts, and a recursive
+walk wedges them permanently for every app on the machine, including this
+one. If this folder does not answer the question, say what you could not
+determine and stop there — do not go looking for it elsewhere on disk.
+
 ## How the sync works (know this before running sync commands yourself)
 
 A watcher in the fused-render app syncs this folder continuously:
@@ -752,35 +793,6 @@ stable *within* a change set and can differ *between* them. Consequences:
   rename that gets pushed or merged mid-way is exactly how invalid states
   happen.
 
-## Skills
-
-Load these before editing — they carry the format references and workflows
-for this folder. fused-render hands them to this session itself, so they
-should already be in your available-skills list:
-
-- `workbench:canvas-toml` — canvas.toml format and folder layout
-- `workbench:fused-udfs` — writing Fused UDFs
-- `workbench:json-ui-schemas` — widget JSON component props
-- `workbench:fused-cli` — the fused CLI reference
-- `workbench:canvas-comments` — reading and resolving canvas comments
-
-If they are absent, or listed under a different prefix, just search your
-available skills for the matching names.
-
-If they genuinely are not there, work from THIS FOLDER and nothing else: the
-existing `canvas.toml` and the files beside it are your format reference, and
-their conventions are the answer. Do not stop to ask for the skills, and do
-not try to install anything.
-
-**Do not search outside this folder for format references.** No `find`, `ls
--R`, `grep -r`, glob or any other recursive walk over `/`, your home
-directory, `~/.fused-render`, or the fused-render source tree — the app's
-internal files are not documentation and looking through them is a detour
-that ends nowhere. In particular **never list, walk, glob or read anything
-under `~/.fused-render/mounts`**: those are network mounts, and a recursive
-walk wedges them permanently for every app on the machine, including this
-one. If this folder does not answer the question, say what you could not
-determine and stop there — do not go looking for it elsewhere on disk.
 """
 
 
