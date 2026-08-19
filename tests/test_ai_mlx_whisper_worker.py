@@ -186,14 +186,19 @@ class FakeResampler:
     fraction of a second.
     """
 
-    def __init__(self, format=None, layout=None, rate=None):
+    def __init__(self, format=None, layout=None, rate=None, flush=160):
         self.args = {"format": format, "layout": layout, "rate": rate}
         self.flushed = False
+        #: How many samples the flush yields. A parameter rather than a constant
+        #: only so a recording of a few dozen samples can exist at all — see
+        #: `make_av`; `args` deliberately does not carry it, because it is this
+        #: fake's own knob and not one the runner passes.
+        self._flush = flush
 
     def resample(self, frame):
         if frame is None:
             self.flushed = True
-            return [FakeFrame(np.full(160, 0.5, dtype=np.float32))]
+            return [FakeFrame(np.full(self._flush, 0.5, dtype=np.float32))]
         return [frame]
 
 
@@ -221,19 +226,27 @@ class FakeContainer:
         return False
 
 
-def make_av(seconds=2.0, has_audio=True):
-    """An `av` module holding one recording of `seconds`, at 16 kHz."""
-    samples = np.zeros(int(16000 * seconds) - 160, dtype=np.float32)
+def make_av(seconds=2.0, has_audio=True, samples=None):
+    """An `av` module holding one recording of `seconds`, at 16 kHz.
+
+    `samples` overrides `seconds` for the case measured in a handful of them — a
+    file so short its duration rounds to zero, which is the shape that reached
+    the decode loop as `(0.0, None)`. Spelled the way `parakeet_mlx`'s harness
+    spells it, since it is the same file and the same bug.
+    """
+    count = int(16000 * seconds) if samples is None else int(samples)
+    flush = min(160, count)
+    body = np.zeros(max(0, count - flush), dtype=np.float32)
     module = types.ModuleType("av")
     module.resamplers = []
 
     def _resampler(**kwargs):
-        made = FakeResampler(**kwargs)
+        made = FakeResampler(flush=flush, **kwargs)
         module.resamplers.append(made)
         return made
 
     module.AudioResampler = _resampler
-    module.open = lambda path: FakeContainer([FakeFrame(samples)], has_audio=has_audio)
+    module.open = lambda path: FakeContainer([FakeFrame(body)], has_audio=has_audio)
     return module
 
 
@@ -1119,6 +1132,38 @@ def test_a_recording_with_no_speech_writes_an_empty_transcript(loaded, tmp_path)
 
     assert result["segments"] == 0 and result["duration"] == 42.0
     assert json.load(open(request["out"], encoding="utf-8"))["text"] == ""
+    assert open(request["outText"], encoding="utf-8").read() == "\n"
+
+
+@pytest.mark.parametrize("vad", [True, False])
+def test_a_file_too_SHORT_to_have_a_duration_writes_an_empty_transcript(
+        monkeypatch, loaded, tmp_path, vad):
+    """A clip of a few dozen samples rounds to 0.0 seconds, and the row's `total`
+    is then None — indeterminate, which is the honest thing to show. What must
+    not happen is that None reaching the decode arithmetic: it travelled as the
+    END of the only clip, and the speech sum over the clips raised `TypeError:
+    unsupported operand type(s) for -: 'NoneType' and 'float'`, so a file the
+    loop would have skipped in one line came back as a traceback on the job row
+    instead of an empty transcript.
+
+    `parakeet_mlx/worker.py` already fixed exactly this, with two names for the
+    same seconds; this is the same split ported, and this test is its twin
+    (`test_a_file_too_SHORT_to_have_a_duration_writes_an_empty_transcript` over
+    there). Both routes into the clip list are driven, because both produced the
+    same `(0.0, None)`: a `None` from the detector and the `vad: false` skip.
+    """
+    worker, transcribe = loaded(windows=(100,), samples=40,
+                                segments=[_segment(0.0, 1.0, "hi")])
+    monkeypatch.setattr(worker, "_speech_regions", lambda *a, **k: None)
+    request = _request(tmp_path, vad=vad)
+
+    result = worker.generate(request)
+
+    assert result["duration"] is None
+    assert result["segments"] == 0
+    assert transcribe.calls == [], "a clip of pure padding must not be decoded"
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert written["segments"] == [] and written["text"] == ""
     assert open(request["outText"], encoding="utf-8").read() == "\n"
 
 

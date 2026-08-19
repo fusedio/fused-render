@@ -903,9 +903,17 @@ def _speaker_turns(audio, speakers, job, row):
         raise worker_base.Cancelled()
 
 
-def _packs_to_decode(regions, total):
+def _packs_to_decode(regions, duration):
     """The clips to transcribe, each as a LIST of `(start, end)` regions in
     original-recording time whose speech travels in one `transcribe()` call.
+
+    `duration` is the NUMBER of seconds decoded, never the row's `total` — the
+    two differ for a recording so short it rounds to zero, where `total` is None
+    (indeterminate, which is what the row should show) and this arithmetic needs
+    0.0. The wording is `parakeet_mlx`'s because the split is: handing the None
+    on made the only pack `[(0.0, None)]`, and the speech sum over the packs then
+    raised a TypeError out of a file the loop below would have skipped in one
+    line.
 
     A list per clip rather than a single span, because the clip handed to the
     decoder is those regions CONCATENATED — the silence between them is dropped,
@@ -929,7 +937,7 @@ def _packs_to_decode(regions, total):
     handling is the better final word.
     """
     if not regions:
-        return [[(0.0, total)]]
+        return [[(0.0, duration)]]
     import vad as vad_module
 
     return vad_module.pack_regions(list(regions))
@@ -949,11 +957,19 @@ def _decode_clip(module, clip, fetched, task, language, initial_prompt):
 
 
 def _transcribe_regions(audio, packs, fetched, task, language, initial_prompt,
-                        job, row, total, transcribing_since, progressive=None):
+                        job, row, total, duration, transcribing_since,
+                        progressive=None):
     """Transcribe each clip and return `(segments, language)` in ORIGINAL time.
 
     `packs` is `_packs_to_decode`'s list: one entry per `transcribe()` call,
     each a list of regions whose speech that call is handed CONCATENATED.
+
+    **`total` and `duration` are the same seconds in two currencies**, and the
+    split is `parakeet_mlx/worker.py`'s, ported rather than reinvented: `total`
+    is what the ROW carries and is None for a recording too short to round to a
+    tenth of a second, because an indeterminate bar is the honest rendering of
+    "no length worth showing"; `duration` is the arithmetic, and is 0.0 there.
+    Only the reporting may see the None.
 
     `progressive` is the partial-transcript sink (`runners/partial.py`), fed
     from the one place in this file where a segment is finished AND already
@@ -1025,7 +1041,10 @@ def _transcribe_regions(audio, packs, fetched, task, language, initial_prompt,
     for index, pack in enumerate(packs):
         last = index == len(packs) - 1
         speech = _speech_seconds(pack)
-        clip = audio if pack == [(0.0, total)] else _clip_samples(audio, pack)
+        # `duration`, not `total`: this is arithmetic on the waveform, and it has
+        # to match what `_packs_to_decode` was handed or the whole-file clip stops
+        # being recognised as one and gets needlessly copied.
+        clip = audio if pack == [(0.0, duration)] else _clip_samples(audio, pack)
         if len(clip) < SAMPLE_RATE // 10:
             # Under a tenth of a second. Whisper pads anything shorter than its
             # 30s window anyway, so this is all padding and no signal — and a
@@ -1273,7 +1292,18 @@ def generate(body):
     # is exact rather than a container's declared length. It is also available
     # before the model sees a thing, which is what lets the very first
     # transcribing tick carry a `total`.
-    total = round(len(audio) / SAMPLE_RATE, 2) or None
+    #
+    # TWO names for it, ported from `parakeet_mlx/worker.py` (which fixed this
+    # first, and whose comment says the same thing) rather than solved a second
+    # way, because the difference is a real file: a clip of a few dozen samples
+    # rounds to 0.0, and `total` is what the ROW carries — where 0 would be a bar
+    # claiming a length nobody can see move, so None (indeterminate) is the
+    # honest value. `duration` is the arithmetic, and it stays a number: handing
+    # the None on made the only pack `[(0.0, None)]` and the speech sum over the
+    # packs raised a TypeError, turning a file the decode loop skips in one line
+    # into a traceback on the job row.
+    duration = round(len(audio) / SAMPLE_RATE, 2)
+    total = duration or None
 
     # PHASE ONE-AND-A-HALF — who is speaking, over the whole waveform. Before
     # the VAD and independent of it (see `_speaker_turns`). It gets its own
@@ -1306,7 +1336,7 @@ def generate(body):
     # One entry per `transcribe()` call, each carrying the regions whose speech
     # rides in it: the library pads every call to a 30-second window, so a call
     # per region is what made `vad: true` cost more than it saved.
-    packs = _packs_to_decode(regions, total)
+    packs = _packs_to_decode(regions, duration)
 
     # Everything from here to the final write happens inside the sink, because
     # its EXIT is the lifecycle: reaching the end means the real output landed
@@ -1319,7 +1349,8 @@ def generate(body):
         # inside, with every timestamp mapped back to original-recording time.
         segments, language = _transcribe_regions(
             audio, packs, fetched, task, language, initial_prompt,
-            job, row, total, transcribing_since, progressive=progressive)
+            job, row, total, duration, transcribing_since,
+            progressive=progressive)
 
         # PHASE FOUR — the join. Both engines call the SAME function on the same
         # two lists, which is what makes "identical labels" structural rather
