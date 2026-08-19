@@ -5738,13 +5738,18 @@ an AI Models page that could say what was on disk but not what was *running*.
   fallback to `snapshot_download` is **pinned to that sha** — a branch name resolved
   twice is two answers, and a repo that moves between the listing and the fallback
   would otherwise file a record under a snapshot directory that does not exist,
-  leaving that repo permanently cold. The fallback records only the predicted names that
-  actually LANDED, because hf filters with `filter_repo_objects` where
-  `_repo_files` filtered with `selects`: they are written to agree, and a record
-  naming a file hf never fetched would refuse the fast path for good. An
-  intersection rather than a walk of the snapshot, since `os.walk` does not follow
-  directory symlinks and would omit anything under a linked subdirectory — the
-  under-claiming direction. **Scoping is a property of the
+  leaving that repo permanently cold. **A fetch that landed LESS than its scope asked
+  for writes no record at all**, and the record's file list is therefore the
+  LISTING's rather than the disk's: a record is verified by looking its own names
+  up, so building it from what landed would make it self-certifying — a fallback
+  delivering 1 of 50 files would record one name, every check would pass, and an
+  incomplete snapshot would be served forever. Checked against the set the listing
+  asked for (the one thing there the fetch did not choose), a shortfall leaves the
+  repo cold and says so on stderr, which is where it was before this path existed.
+  The `.writing` temp a record is staged in is **unique per writer and never
+  deleted by anyone else**: two loads sharing one cache are separate processes, and
+  sweeping that name to save a round trip made the other's `os.replace` fail and
+  its record never appear — the very failure this prevents, caused by tidying. **Scoping is a property of the
   on-disk STATE, not of the call**, which is why refusing scoped CALLS was not
   enough: the same id reaches both kinds, because `diffusers_image` fetches
   `black-forest-labs/FLUX.2-klein-4B` scoped to `recipe["keep"]` while

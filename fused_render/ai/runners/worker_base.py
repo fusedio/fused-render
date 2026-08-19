@@ -1467,12 +1467,14 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
 #
 # **So this app records its own fetches, and the fast path answers only from that
 # record.** `_record_fetch` writes `<repo folder>/.fused-fetch-<commit>.json` when a
-# download completes, holding the SCOPE it was asked for and the FILE NAMES that
-# landed; `_cached_path` serves a request only when the record is for the commit hf
-# resolved, at the scope being asked for, and every recorded name is present and
-# settled. That makes "nothing would be downloaded" a claim about the disk rather
-# than an inference from it, and it is what the two earlier attempts were reaching
-# for:
+# download completes, holding the SCOPE it was asked for and the file names the
+# LISTING asked for — verified present at write time, and not written at all if they
+# are not (see `_record_fetch`: a list built from what happened to land would be
+# self-certifying). `_cached_path` serves a request only when the record is for the
+# commit hf resolved, at the scope being asked for, and every recorded name is
+# present and settled. That makes "nothing would be downloaded" a claim about the
+# disk rather than an inference from it, and it is what the two earlier attempts
+# were reaching for:
 #
 # * **Scoping is a property of the on-disk STATE, not of the call.** Refusing
 #   scoped CALLS — the previous rule — left the reachable half open, because the
@@ -1597,12 +1599,23 @@ def _has_cached_snapshot(folder):
 #: overwriting the answer for the first.
 _FETCH_RECORD = ".fused-fetch-%s.json"
 
-#: Where a record is written before it is `os.replace`d into place. Named here
-#: rather than spelled twice, because `_has_fetch_record` has to EXCLUDE it: a
-#: torn temp left by a crashed write is not a record, and reading the prefix
-#: alone made a record-less repo pay a hub resolve on every download, forever,
-#: since nothing cleaned it up.
+#: The suffix of the file a record is written to before it is `os.replace`d into
+#: place. `_has_fetch_record` has to EXCLUDE it: a half-written record is not a
+#: record, and reading the prefix alone made a record-less repo pay a hub resolve
+#: on every download.
+#:
+#: **Excluded, never deleted, and made unique per writer.** Two model loads sharing
+#: one HF cache are separate processes with no lock between them, and this name is
+#: what a fetch in flight is writing RIGHT NOW — so sweeping it to save a round trip
+#: made the other process's `os.replace` fail, its record never get written, and its
+#: repo stay permanently cold, which is the failure the record exists to prevent.
+#: The pid keeps two writers off each other's file; each cleans up only its own.
 _RECORD_TEMP = ".writing"
+
+
+def _temp_record(name):
+    """The name THIS process writes a record to before publishing it."""
+    return "%s.%d%s" % (name, os.getpid(), _RECORD_TEMP)
 
 
 def _scope_key(allow, ignore):
@@ -1617,46 +1630,83 @@ def _scope_key(allow, ignore):
 
 
 def _commit_of(snapshot):
-    """The commit a resolved snapshot directory IS — hf's cache lays it out as
-    `snapshots/<commit>`.
+    """The commit a resolved snapshot directory IS, or None — hf's cache lays it out
+    as `snapshots/<commit>`.
 
     One function for the reader and both writers, so a record can never be filed
     under a different name than the one the fast path looks up: that is exactly how
     the fallback used to file records under the listing's sha while hf had landed
-    somewhere else, leaving the repo permanently cold. If hf ever changes the
-    layout this returns something no record was written under, the lookup misses,
-    and the download takes the networked path. Slower, never wrong.
+    somewhere else, leaving the repo permanently cold.
+
+    **None for anything that is not a plausible commit, and that is not
+    defensiveness — the empty string is a key that READS BACK.** A path with no
+    basename made the writer file `.fused-fetch-.json` and the reader look up the
+    very same name, so a record written under nothing at all came back as a hit,
+    which is the opposite of the miss this promises. `_COMMIT_SHA` is the same
+    40-hex test `_segmented_fetch` already applies to a revision, so a `local_dir`
+    download or a layout change answers None here, nothing is recorded, and the
+    download takes the networked path. Slower, never wrong.
     """
-    return os.path.basename(os.path.normpath(snapshot or ""))
+    name = os.path.basename(os.path.normpath(snapshot or ""))
+    return name if _COMMIT_SHA.match(name) else None
 
 
-def _record_fetch(folder, commit, names, allow=None, ignore=None):
+def _record_fetch(folder, commit, names, snapshot, allow=None, ignore=None):
     """Write down that a fetch of `names` at this scope COMPLETED for `commit`.
 
     Called after a download returns, which is the only moment this is knowable:
-    `_write_ref` runs after the last file lands, so reaching there means the whole
-    requested set is on disk — and the request's own scope is what makes "the whole
-    set" mean anything at all.
+    `_write_ref` runs after the last file lands, so reaching there SHOULD mean the
+    whole requested set is on disk — and the request's own scope is what makes "the
+    whole set" mean anything at all. Should, not does: that is checked below rather
+    than trusted, because the two fetch paths filter the listing with different
+    matchers and a partial fallback is a real thing.
+
+    **A SHORTFALL writes nothing at all**, and that is the whole reason `names`
+    comes from the listing rather than from the disk. A record is verified by
+    looking its own names up, so building it out of "whatever landed" would make it
+    self-certifying: a fetch that delivered 1 of 50 files would record one name,
+    every later check would pass, and the fast path would serve an incomplete
+    snapshot forever. Checked against the set the LISTING asked for — the one thing
+    here the fetch did not choose — a fetch that fell short leaves no record, and a
+    repo with no record is merely cold, which is where it was before this existed.
+    The shortfall is named on stderr because silence is what would make it
+    invisible: a repo that never warms up is otherwise indistinguishable from one
+    nobody loaded twice.
 
     **Best-effort, and never in the way.** A finished download must not fail
     because a record could not be written: the weights are there either way, and
     the only cost of a missing record is a slower next bring-up. Written to a
-    temporary name and `os.replace`d, so a crash mid-write leaves either the old
-    record or none — never half of one that a later fast path would read as truth.
+    per-writer temporary name and `os.replace`d, so a crash mid-write leaves either
+    the old record or none — never half of one that a later fast path would read as
+    truth, and never another process's file (see `_RECORD_TEMP`).
     """
-    if not folder or not commit:
+    if not folder or not commit or not names:
+        return
+    # Presence only, deliberately: `_settled` is a READ-time question — a part file
+    # can appear beside a blob after this runs, and `_all_present` asks both at the
+    # moment the answer is used, which is the moment that matters.
+    missing = [name for name in names
+               if not os.path.exists(os.path.join(snapshot or "", name))]
+    if missing:
+        sys.stderr.write(
+            f"[fused] not recording a complete fetch of {commit[:12]}: "
+            f"{len(missing)} of {len(names)} listed files are not in the "
+            f"snapshot ({', '.join(missing[:3])}"
+            f"{', …' if len(missing) > 3 else ''})\n")
         return
     path = os.path.join(folder, _FETCH_RECORD % commit)
     payload = {"commit": commit, "scope": _scope_key(allow, ignore),
-               "files": sorted(names or ())}
+               "files": sorted(names)}
+    temporary = os.path.join(folder, _temp_record(_FETCH_RECORD % commit))
     try:
         os.makedirs(folder, exist_ok=True)
-        temporary = path + _RECORD_TEMP
         with open(temporary, "w", encoding="utf-8") as handle:
             json.dump(payload, handle)
         os.replace(temporary, path)
     except OSError:
-        pass
+        # Ours and ours alone — the pid is in the name — so cleaning it up here
+        # cannot take a record another process is in the middle of writing.
+        _remove(temporary)
 
 
 def _has_fetch_record(folder):
@@ -1669,25 +1719,13 @@ def _has_fetch_record(folder):
     here could vouch for anyway.
     """
     prefix = _FETCH_RECORD.split("%s")[0]
-    found = False
     try:
         with os.scandir(folder) as entries:
-            for entry in entries:
-                if not entry.name.startswith(prefix):
-                    continue
-                if entry.name.endswith(_RECORD_TEMP):
-                    # A crashed write, and always ours: this file is the only
-                    # thing that writes the name. Swept HERE rather than left for
-                    # a tidy-up pass nobody would write, because this is the one
-                    # place that already has the directory open and the name in
-                    # hand — and because an uncleaned temp is not inert, it is a
-                    # permanent hub round trip on a repo that has no record.
-                    _remove(entry.path)
-                    continue
-                found = True
+            return any(entry.name.startswith(prefix)
+                       and not entry.name.endswith(_RECORD_TEMP)
+                       for entry in entries)
     except OSError:
         return False
-    return found
 
 
 def _recorded_files(folder, commit, allow, ignore):
@@ -1713,29 +1751,6 @@ def _recorded_files(folder, commit, allow, ignore):
         return None
     files = record.get("files")
     return files if isinstance(files, list) and files else None
-
-
-def _landed_files(snapshot, names):
-    """Which of `names` actually LANDED in `snapshot` — the record's file list.
-
-    For the FALLBACK, where the prediction is not good enough on its own: the names
-    `_repo_files` produced come from `selects`, hf fetches with its own
-    `filter_repo_objects`, and the two are written to agree rather than guaranteed
-    to. A record naming a file hf never fetched would refuse the fast path for that
-    repo forever, so a predicted name that is not on disk is simply not recorded.
-
-    **An intersection rather than a walk of the snapshot**, and that is deliberate:
-    `os.walk` does not follow directory symlinks, so walking would silently omit
-    anything under a linked subdirectory — under-claiming, which is the unsafe
-    direction, where this only ever under-claims a file OUTSIDE the scope this
-    filter defines. What it does not cover is hf fetching LESS than `selects` says
-    the scope needs: that file is then absent from the snapshot and from the
-    record, and it was equally absent before this fast path existed — the fallback
-    completing without it is the pre-existing condition, not something recording
-    introduces.
-    """
-    return sorted(name for name in names
-                  if os.path.exists(os.path.join(snapshot, name)))
 
 
 def _all_present(snapshot, names):
@@ -1870,16 +1885,21 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         # PINNED when we have a commit, for `_segmented_fetch`'s reason (AI-5i): a
         # branch name resolved twice is two answers, and a repo that moved between
         # the listing and the fallback would land a different commit than the one
-        # the total, the file list and the fetch record all describe. Unpinned only
-        # where there is nothing to pin to — no listing, or a caller whose own
-        # `revision` is in `kwargs` and must win.
-        pinned = {"revision": revision} if revision else {}
+        # the total, the file list and the fetch record all describe.
+        #
+        # ONE dict that `kwargs` updates, not two splatted into one call: the
+        # caller's own `revision` has to win, and splatting both raised
+        # `TypeError: got multiple values for keyword argument 'revision'` instead
+        # — masked only because a call carrying `kwargs` returns before the pin is
+        # applied, which makes it a crash waiting on a reorder rather than a
+        # non-issue.
+        options = {"allow_patterns": allow_patterns,
+                   "ignore_patterns": ignore_patterns}
+        if revision:
+            options["revision"] = revision
+        options.update(kwargs)
         return fetch_with_progress(
-            model_id,
-            lambda: snapshot_download(model_id, allow_patterns=allow_patterns,
-                                      ignore_patterns=ignore_patterns,
-                                      **pinned, **kwargs),
-            total=total)
+            model_id, lambda: snapshot_download(model_id, **options), total=total)
 
     if kwargs or files is None or not sha:
         # An extra argument changes WHAT is fetched — `allow_patterns`, a
@@ -1896,25 +1916,25 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader
         _fallback(model_id, error)
     else:
-        # The one moment completeness is knowable: the fetch returned, so every
-        # name in the listing is on disk. Recorded WITH the scope that produced it
-        # — what a later fast path compares itself against — and keyed by the
-        # commit the returned snapshot IS rather than by the sha we asked for, so
-        # the record cannot be filed under a name the reader will not look up.
-        _record_fetch(repo_folder(model_id), _commit_of(fetched), names,
+        # The one moment completeness is knowable: the fetch returned, so the
+        # listing's names should all be on disk — `_record_fetch` checks that rather
+        # than taking it on trust, and writes nothing if they are not. Recorded WITH
+        # the scope that produced it (what a later fast path compares itself
+        # against) and keyed by the commit the returned snapshot IS rather than by
+        # the sha we asked for, so a record cannot be filed under a name the reader
+        # will not look up.
+        _record_fetch(repo_folder(model_id), _commit_of(fetched), names, fetched,
                       allow=allow_patterns, ignore=ignore_patterns)
         return fetched
     fell_back = hub(revision=sha)
-    # Recorded from what LANDED rather than from what was predicted, and at the
-    # commit hf was pinned to — the two halves of one point, which the previous
-    # "the record is just as true here" comment assumed instead of establishing.
+    # Same rule as above, and the same reason it is checked rather than assumed:
     # hf filters with `filter_repo_objects` where `_repo_files` filtered with
-    # `selects`; they are written to agree, and a record naming a file hf never
-    # fetched would refuse the fast path for that repo forever. Without any record
-    # a repo that ever fell back would never see the fast path again either, which
-    # is why this is here at all.
-    _record_fetch(repo_folder(model_id), _commit_of(fell_back),
-                  _landed_files(fell_back, names),
+    # `selects`, and the two are written to agree rather than guaranteed to. Where
+    # they disagree the listing's set is not all there, `_record_fetch` writes
+    # nothing, and this repo stays on the networked path — which is the safe
+    # direction, unlike recording whatever happened to land. Recording at all is
+    # what keeps a repo that ever fell back from being cold forever.
+    _record_fetch(repo_folder(model_id), _commit_of(fell_back), names, fell_back,
                   allow=allow_patterns, ignore=ignore_patterns)
     return fell_back
 
