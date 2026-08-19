@@ -3777,6 +3777,47 @@ describe("the archive action", () => {
     );
   });
 
+  it("hands the slot back to the ring on the press, until the pointer leaves", () => {
+    // The hover swap used to keep swapping THROUGH the press (Akshil,
+    // 2026-08-19): clicking Archive keeps the pointer on the row, the intent
+    // flips on the reload, and the slot instantly redrew the OPPOSITE verb — an
+    // icon flip where a confirmation should be. A spent press now returns the
+    // RING (drawing the new state, which is the feedback) and keeps the button
+    // down until the pointer leaves the row; leave and return, and the reveal
+    // re-arms with the now-opposite action.
+    //
+    // CSS cannot say "hovered, but the hover already spent its press", so the
+    // ROW says it: a flag set on the filing press — on the press, not on the
+    // answer, and for BOTH directions, because Unarchive flipped just as
+    // instantly — and cleared by the row's own mouseleave.
+    expect(NODE).toContain("const [refiled, setRefiled] = useState(false);");
+    const refileAt = NODE.indexOf("const refile = async (intent: FilingIntent)");
+    const refile = NODE.slice(refileAt, NODE.indexOf("\n  };", refileAt));
+    expect(refile).toContain("setRefiled(true);");
+    expect(ROW).toContain('(refiled ? " is-refiled" : "")');
+    expect(ROW).toContain("onMouseLeave={() => setRefiled(false)}");
+    // The suppression outranks the reveal, is scoped to the MARK SLOT's occupant
+    // only, and takes the events down with the ink — so the button's enlarged
+    // ::after zone (which inherits pointer-events) goes intangible with it.
+    const down = block(
+      TASKS_CSS,
+      ".tasks-row.is-refiled:hover .tasks-rowmark .tasks-act:not(:focus-visible)",
+    );
+    expect(down).toContain("opacity: 0");
+    expect(down).toContain("pointer-events: none");
+    // And the ring comes back where the fade above took it away.
+    const back = block(
+      TASKS_CSS,
+      ".tasks-row.is-refiled:hover .tasks-rowmark:not(:has(.tasks-act:focus-visible)) .schedule-ring",
+    );
+    expect(back).toContain("opacity: 1");
+    // NEITHER HALF TOUCHES THE KEYBOARD: both step aside for the button's own
+    // `:focus-visible` — the same arm the reveal and the handover honour — so a
+    // tabbed-to button is never invisible over a faded ring. (That the two
+    // selectors above RESOLVE at all, `:not(:focus-visible)` guards included, is
+    // the claim; `block` throws on a selector list it cannot find.)
+  });
+
   it("is bigger to aim at than it is to look at", () => {
     // 22px was a small target for a control the pointer arrives at sideways, so the
     // ZONE grows and the SKIN does not (Akshil, 2026-08-18). A pseudo-element and
