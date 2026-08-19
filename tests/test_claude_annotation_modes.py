@@ -156,8 +156,10 @@ def test_the_tool_picker_follows_the_recording(html):
     assert "annToolShow();" in begin
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert "annToolHide();" in end
-    # stopping the walkthrough puts the whole mode away, both exits
-    assert end.count("if (annOn) annSetMode(false);") == 2, end
+    # stopping the walkthrough puts the whole mode away, both exits — but only
+    # the SAME arming it stopped: the epoch guard leaves a mode the user
+    # re-armed during transcription alone (Bugbot, PR #644)
+    assert end.count("if (annOn && annArmEpoch === armed) annSetMode(false);") == 2, end
     # the cross-origin refusal lives in the one door that can raise the picker
     assert "if (annXO) return;" in _block(html, "function annToolShow()", "\n}\n")
 

@@ -5375,8 +5375,11 @@ let annOn = false;
 // the owner asked for the choice to be a visible tool, so a reader can decide
 // "now I'm pointing at spots" once and click away. Alt stays as the momentary
 // override of whichever tool is selected (a per-click exception, not a third
-// state). Session-local and sticky across arm/disarm; deliberately not a param
-// — which tool is in hand is a fact about the hand, not about the page.
+// state). Session-local, and reset to Element when a walkthrough ends
+// (annRecEnd): the picker only shows while recording now, so a Point left in
+// hand would steer every later TYPED comment with no picker on screen to say
+// so (Bugbot, PR #644). Alt still overrides one click either way. Deliberately
+// not a param — which tool is in hand is a fact about the hand, not the page.
 let annTool = "element";
 const annToolEl = document.getElementById("anntool");
 const annToolElBtn = document.getElementById("toolel");
@@ -6168,6 +6171,7 @@ function annToolHide() {
   }, 150);
 }
 
+let annArmEpoch = 0;
 // The one way in and out of annotate mode. Extracted because Escape leaves the
 // mode too, and a second copy of this would be a second chance for the banner's
 // text to disagree with `annOn`.
@@ -6196,6 +6200,10 @@ function annSetMode(on) {
     if (annRecOn) annRecEnd();
     return;
   }
+  // Every ARM gets a number, so a disarm decided long ago (annRecEnd's, after
+  // an await) can tell "the mode I armed" from "a mode the user re-armed
+  // while I was transcribing" and leave the second one alone (Bugbot, #644).
+  if (on) annArmEpoch += 1;
   annOn = on;
   // STILL THE ONE WRITER — but it does not write when the URL already MEANS
   // this. `annmode` is effectively-off: only an explicit "1" means armed, and
@@ -6551,8 +6559,11 @@ async function annRecEnd() {
   const blob = new Blob(annRecChunks, { type: recorder.mimeType || "" });
   annRecorder = null;
   annRecOn = false;
-  // Recording over, picker away — it belongs to recorded clicks only.
+  // Recording over, picker away — it belongs to recorded clicks only. The
+  // tool goes home with it: the next typed comment has no picker on screen,
+  // so it must not inherit this walkthrough's Point (Bugbot, PR #644).
   annToolHide();
+  annSetTool("element");
   annRecBtn.classList.remove("on");
   annRecBtn.setAttribute("aria-pressed", "false");
   annRecLbl.textContent = "";
@@ -6562,10 +6573,14 @@ async function annRecEnd() {
   // Ending a walkthrough puts the whole mode away (Akshil, 2026-08-19):
   // record → talk → stop is the complete gesture, and a comment layer left
   // armed after it swallows the reading clicks that usually come next. The
-  // guard keeps the disarm from echoing when annSetMode's own disarm is what
-  // called us (annOn is already false there). Nothing recorded: disarm and go.
+  // epoch pins WHICH arming this disarm belongs to: transcription is an await,
+  // and a user who re-armed Comment (or opened a draft) meanwhile owns a NEW
+  // arming this stale disarm must not close (Bugbot, PR #644). It also keeps
+  // the disarm from echoing when annSetMode's own disarm called us (annOn is
+  // already false there). Nothing recorded: disarm and go.
+  const armed = annArmEpoch;
   if (!blob.size || !ids.length) {  // nothing said, or nothing clicked: no transcript to fetch
-    if (annOn) annSetMode(false);
+    if (annOn && annArmEpoch === armed) annSetMode(false);
     return;
   }
   annRecBtn.disabled = true;
@@ -6602,8 +6617,8 @@ async function annRecEnd() {
   // The other half of the stop-disarms rule above: transcript fetched (or
   // failed — the notes stay in the transcript either way), walkthrough done,
   // mode off. After the auto-send, deliberately: annPrefillComposer needs the
-  // armed composer it seeds.
-  if (annOn) annSetMode(false);
+  // armed composer it seeds. Same-epoch only — see the guard's note above.
+  if (annOn && annArmEpoch === armed) annSetMode(false);
 }
 
 annRecBtn.addEventListener("click", () => (annRecOn ? annRecEnd() : annRecBegin()));
