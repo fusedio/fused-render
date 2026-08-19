@@ -200,7 +200,7 @@ def component(repo_id: str) -> dict | None:
 #: cheap header, which is why the page counts parameters only from safetensors.
 TORCH_WEIGHTS = (".safetensors", ".bin", ".pt")
 
-#: Quantizations `transformers_text/worker.py` refuses BY NAME, each with the
+#: Quantizations `runners/torch_text.py` refuses BY NAME, each with the
 #: sentence it refuses them with: what transformers raises for an AWQ repo with
 #: no autoawq installed is a bare ImportError several frames inside a loader,
 #: and the user reading it cannot tell that their repo was the wrong kind
@@ -224,6 +224,16 @@ UNLOADABLE_QUANT = {
 #: directory of safetensors says nothing about the modality — so a match there
 #: never implies a capability.
 DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
+            # Every hardware variant of the diffusers runner, because membership
+            # here is a statement about the FORMAT — a `model_index.json` is a
+            # diffusion pipeline whichever wheel opens it — and not about a
+            # machine. Listing only the CPU row would make capability inference
+            # depend on which build happens to be registered, so a build that
+            # ever shipped the accelerated rows alone would silently stop
+            # putting "text to image" on a cached FLUX card. The TEXT variants
+            # stay out for the same reason `transformers-text` is out: a
+            # directory of safetensors says nothing about the modality.
+            "diffusers-image-cuda", "diffusers-image-rocm",
             # A NeMo ASR `target` is as decisive as a `weights.npz`: the config
             # names an ASR class, and nothing else in this app can read it.
             "parakeet-mlx")
@@ -232,7 +242,7 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
 def is_mlx_checkpoint(config: dict) -> bool:
     """MLX's own quantization: bit-packed for Metal kernels, and meaningless to
     torch. The `group_size` is what distinguishes it from every other
-    `quantization` block — the same test `transformers_text` raises on."""
+    `quantization` block — the same test `torch_text` raises on."""
     block = config.get("quantization")
     return isinstance(block, dict) and "group_size" in block
 
@@ -313,6 +323,26 @@ def missing_mflux_components(snapshot_dir: str) -> list[str]:
             if not os.path.isdir(os.path.join(snapshot_dir, name))]
 
 
+#: **EVERY hardware variant of a torch runner, and this is the trap the split
+#: had to walk around.** `ai_models.py` filters the engine row for a cached repo
+#: on `r.code in meta.loaders`, so a code missing from here has no Load button
+#: and no engine tag on a repo that engine loads perfectly — and AI-11e's
+#: cached-model injection drops every such repo out of `models[]` as well. The
+#: failure therefore lands exactly when an accelerated engine is the one
+#: serving, and `test_ai_formats`'s original direction (every code named here is
+#: registered) cannot see it, because the drift is the other way round.
+#: `test_every_registered_runner_appears_in_loaders` closes that direction.
+#:
+#: A tuple per LIBRARY rather than four codes spelled into branches: the
+#: variants read the same files by definition — the wheel differs, the format
+#: does not — so a branch that could name three of them is a branch that can
+#: forget one.
+TRANSFORMERS_RUNNERS = ("transformers-text", "transformers-text-cuda",
+                        "transformers-text-rocm")
+DIFFUSERS_RUNNERS = ("diffusers-image", "diffusers-image-cuda",
+                     "diffusers-image-rocm")
+
+
 def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool) -> tuple[str, ...]:
     """Which runners' `load()` would accept this snapshot, by code.
 
@@ -338,7 +368,7 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool)
     if repo_id in MFLUX_VARIANTS and has_mflux_components(dirnames):
         found.append("mflux-image")
     if DIFFUSERS_INDEX in names:
-        found.append("diffusers-image")
+        found.extend(DIFFUSERS_RUNNERS)
     if is_parakeet_checkpoint(config) and PARAKEET_WEIGHTS in names:
         found.append("parakeet-mlx")
         # …and NOTHING else, which is the point of returning here. A Parakeet
@@ -355,5 +385,5 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool)
         if is_mlx_checkpoint(config):
             found.append("mlx-text")
         else:
-            found.extend(("mlx-text", "transformers-text"))
+            found.extend(("mlx-text", *TRANSFORMERS_RUNNERS))
     return tuple(found)

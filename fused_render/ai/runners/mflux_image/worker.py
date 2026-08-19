@@ -1,6 +1,6 @@
 """Text-to-image on mflux (MLX): one resident model, four routes (SPEC §40).
 
-The Apple Silicon counterpart of `diffusers_image/worker.py`, and deliberately
+The Apple Silicon counterpart of `runners/torch_image.py`, and deliberately
 its twin from the outside: the same `/generate` body, the same one-JSON reply,
 the same PNG written to the path the SERVER chose, the same denoising-step
 progress on the caller's job row, the same ✕. `fused.ai.image()` cannot tell
@@ -124,7 +124,7 @@ def _pin_stream():
 #: Repo id -> the mflux VARIANT class that loads it and the model config that
 #: describes its shape.
 #:
-#: A TABLE rather than a heuristic, for the reason `diffusers_image`'s recipe
+#: A TABLE rather than a heuristic, for the reason `runners/torch_image.py`'s recipe
 #: table gives: which class loads which checkpoint is an editorial judgement,
 #: not something to infer from a file listing. The difference here is that a
 #: model ABSENT from this table cannot fall back to "load it the ordinary way" —
@@ -319,7 +319,7 @@ def memory():
 
 
 def _eta(remaining):
-    """Wall-clock left. `diffusers_image/worker.py`'s, and it has to be — the
+    """Wall-clock left. `runners/torch_image.py`'s, and it has to be — the
     two runners' rows are rendered by the same job manager, and a user
     comparing engines reads these two strings against each other."""
     if remaining is None:
@@ -340,7 +340,7 @@ def _sigma_after(config, t):
 
     `config.scheduler.sigmas` is the whole schedule with a trailing zero, and
     the latents the callback is handed after step `t` are at `sigmas[t + 1]` —
-    the same indexing `diffusers_image/worker.py` documents against
+    the same indexing `runners/torch_image.py` documents against
     `pipeline.scheduler.sigmas`, because it is the same schedule.
 
     None when there is no schedule to read, which mflux always has — but a

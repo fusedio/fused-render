@@ -215,7 +215,7 @@ Take it from `catalog()`. For images the engines are stricter than anywhere else
 
 | Engine serving `text-to-image` | What it loads |
 |---|---|
-| **Diffusers (PyTorch)** — Windows, Linux, Macs switched to it | the curated FLUX.2 klein repo, plus any ordinary diffusers repo (a `model_index.json`), via `AutoPipelineForText2Image` |
+| **Diffusers (CPU)**, and its **(CUDA)** / **(ROCm)** variants — the default everywhere but Apple Silicon, and what a Mac switches to | the curated FLUX.2 klein repo, plus any ordinary diffusers repo (a `model_index.json`), via `AutoPipelineForText2Image`. The three read exactly the same repos — they differ only in which torch wheel is installed, so nothing about `model` changes between them |
 | **MLX FLUX** — the Apple Silicon default | the one MLX repo it names a variant class for, and **nothing else** |
 
 That second row is a hard limit, not a summary of the catalog: mflux has no `AutoPipeline`, so any other MLX diffusion repo is refused with a sentence pointing at the working id or at the Engines tab. **On a Mac, "let the user paste a Hub id" has exactly one valid answer** — `catalog()` is the only honest picker.
@@ -280,7 +280,7 @@ Everything else worth knowing:
 - `task`: `"transcribe"` (same language) or `"translate"` (into English). Anything else is a **400 naming both**, never a silent default.
 - `language` omitted means **auto-detect**. Pass one only if you know it.
 - **`model` omitted loads the SMALLEST model the active engine offers**, not the turbo one — the catalog is smallest-first and `default` is its first entry. If accuracy matters, pass a `model` from `catalog()`; the turbo entries are the ones to reach for.
-- `vad` (default `true`) runs a Silero speech detector and skips silence, the same filter on both engines. Because it does, `job.done` legitimately finishes short of `job.total` on a recording that trails off quietly — not an off-by-one to work around. Timestamps are always positions in the original file.
+- `vad` (default `true`) runs a Silero speech detector and skips silence, the same filter on all three transcription engines. Because it does, `job.done` legitimately finishes short of `job.total` on a recording that trails off quietly — not an off-by-one to work around. Timestamps are always positions in the original file.
 - **Hours, not minutes.** One transcription runs at a time; a second call **queues**, says so on its row, and its ✕ works while it waits.
 - Rejects `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` | `"bad_request"` (missing path, not a file, unknown `task`, or an unusable `speakers`).
 
@@ -333,7 +333,7 @@ rec.estimatedSpeakers;              // 3 — only on a run that had to work it o
 - **An estimate can be wrong** either way (one person across two mics can split; similar voices can merge), so pass the count when you know it. `estimatedSpeakers` is how a page shows what was assumed and offers a re-run.
 - `estimatedSpeakers` counts voices the **segmenter** heard, which can exceed `speakers.length`: someone who spoke where Whisper transcribed no words is in the first and not the second.
 - Every segment gains **`speaker`** and the reply gains **`speakers`** — the labels that actually landed, ready for a colour map without walking thousands of segments. **`speaker` is `null` where Whisper heard words but the segmenter heard nobody.**
-- **Default `false` and additive**: a call without it is unchanged, and a transcript written without it has no `speaker` and no `speakers` at all. Both engines run the same two models, so labels don't depend on which served you.
+- **Default `false` and additive**: a call without it is unchanged, and a transcript written without it has no `speaker` and no `speakers` at all. All three transcription engines run the same two models, so labels don't depend on which served you.
 - **It does not change what progress means.** `job.done`/`job.total` stay seconds of audio; diarization is a fast pre-pass with its own line on the row ("Finding speakers…") and an indeterminate bar.
 - **First use on a machine downloads ~33MB** (a speaker segmenter and a voice-embedding model), once, then works offline. Unlike the VAD these are *not* pre-fetched by a model Download.
 
@@ -350,13 +350,13 @@ Everything else — the result shape, the two files, `onSegment`, the speaker la
 
 ## What Actually Runs Locally Today
 
-Seven runners, three capabilities, all taking **Hugging Face repo ids**:
+Eleven runners, three capabilities, all taking **Hugging Face repo ids**:
 
 | Capability | Runners (default first) | Reality |
 |---|---|---|
-| `text-generation` | MLX, then Transformers (PyTorch) | **Everywhere.** MLX on Apple Silicon; torch on Windows, Linux, and as the Apple Silicon fallback. A CPU-only machine answers slowly but answers. |
-| `text-to-image` | MLX FLUX, then Diffusers (PyTorch) | **Everywhere.** MLX FLUX takes Apple Silicon (quicker, smaller download, much more memory); Diffusers serves Windows and Linux, and is one Preferences switch away on a Mac. |
-| `automatic-speech-recognition` | MLX Whisper, then Parakeet TDT, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (GPU) is the Apple Silicon default; Parakeet TDT is an Apple-Silicon opt-in — quicker and more accurate in English, but 25 European languages only; CTranslate2 serves both Mac architectures, Linux and Windows. |
+| `text-generation` | MLX, then Transformers (CPU), then Transformers (CUDA), then Transformers (ROCm) | **Everywhere.** MLX on Apple Silicon; the **CPU** torch build everywhere else, and as the Apple Silicon fallback — it answers slowly but it answers. The CUDA and ROCm builds are the same runner on a different wheel: opt-in from the Engines tab, and offered only where the app can see a usable NVIDIA or AMD GPU. |
+| `text-to-image` | MLX FLUX, then Diffusers (CPU), then Diffusers (CUDA), then Diffusers (ROCm) | **Everywhere.** MLX FLUX takes Apple Silicon (quicker, smaller download, much more memory); Diffusers (CPU) serves everywhere else and is one Engines-tab switch away on a Mac — minutes per image rather than seconds. The CUDA and ROCm variants are the same opt-in, hardware-gated arrangement as text generation. |
+| `automatic-speech-recognition` | MLX Whisper, then Parakeet TDT, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (GPU) is the Apple Silicon default; Parakeet TDT is an Apple-Silicon opt-in — quicker and more accurate in English, but 25 European languages only; CTranslate2 serves both Mac architectures, Linux and Windows. There is deliberately **no** GPU variant here off Apple Silicon, so transcription on an NVIDIA or AMD machine runs on the CPU. |
 
 Those three strings are the capability vocabulary — what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
 

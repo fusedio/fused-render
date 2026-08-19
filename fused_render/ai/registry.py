@@ -58,6 +58,7 @@ capability that has silently vanished is a bug report.
 
 from __future__ import annotations
 
+import glob
 import os
 import platform
 from dataclasses import dataclass, field
@@ -233,6 +234,319 @@ def _transformers_platform() -> Availability:
     )
 
 
+# -- the accelerator probes ------------------------------------------------------
+#
+# CUDA and ROCm are OPT-IN rows (the CPU torch runners sit above them and remain
+# the default), and both probes are HARD GATES: an accelerated row is selectable
+# only where it can actually run. That is not fastidiousness — picking one on a
+# machine with no matching device buys a multi-gigabyte wheel that then fails
+# several frames inside a runtime library, which is exactly the "advertising is
+# a claim" failure `Runner.available` was written for.
+#
+# **Everything below reads the KERNEL's answer, and reads it at CALL time.**
+# Every path is a module-level constant so a test can build a fake sysfs on a
+# tmp_path and repoint them — the filesystem analogue of the `registry.platform`
+# monkeypatching every other availability test does.
+#
+# **Stdlib only, no torch, no subprocess.** This module is imported on a page
+# render path (`describe`, `describe_engines`, and every `resolve`), so it may
+# not import a 2GB framework to ask a question sysfs answers in microseconds,
+# and it may not shell out: SPEC.md's ffmpeg rule bars relying on a system
+# binary the app does not ship, `nvidia-smi` is not shipped, and a cold one
+# costs 50-500ms against ~25µs for the sysfs walk.
+
+#: Where the ROCm probe looks. `/sys/class/kfd` is the amdkfd driver's own
+#: topology — the same thing ROCm's runtime enumerates — and `/dev/kfd` plus a
+#: render node are the two devices a HIP process opens.
+KFD_NODES_DIR = "/sys/class/kfd/kfd/topology/nodes"
+KFD_DEVICE = "/dev/kfd"
+DRI_DIR = "/dev/dri"
+#: Only consulted when the KFD cannot answer — see `_amd_gpu_present`.
+DRM_CLASS_DIR = "/sys/class/drm"
+#: The PCI vendor id every AMD/ATI GPU reports.
+AMD_PCI_VENDOR = "0x1002"
+
+#: The gfx targets the ROCm wheels these runners install were actually built
+#: for (torch 2.13 + rocm7.1).
+#:
+#: **TIED TO THE INDEX URL THE ROCm MANIFESTS PIN, so the two must move
+#: together.** A wheel from a different ROCm index has a different set, and the
+#: cost of getting this wrong is asymmetric: an unlisted card offered anyway is
+#: a ~6GB download that dies inside HIP with "no kernel image is available for
+#: execution", several frames below anything this app wrote. So an AMD GPU that
+#: is not named here is refused with a reason, not optimistically allowed.
+ROCM_TARGETS = frozenset({
+    "gfx900", "gfx906", "gfx908", "gfx90a", "gfx942", "gfx950",
+    "gfx1030", "gfx1100", "gfx1101", "gfx1102", "gfx1103",
+    "gfx1150", "gfx1151", "gfx1200", "gfx1201",
+})
+
+#: Where the CUDA probe looks on Linux. All three are needed: the control node,
+#: at least one per-GPU node, and unified memory — which is a separate module
+#: (`nvidia_uvm`) and the one that is realistically missing.
+NVIDIA_CONTROL_DEVICE = "/dev/nvidiactl"
+NVIDIA_UVM_DEVICE = "/dev/nvidia-uvm"
+#: Where `/dev/nvidia0`, `/dev/nvidia1`… live. A constant so the glob below is
+#: repointable with the rest.
+NVIDIA_DEVICE_DIR = "/dev"
+#: Windows has no device nodes to ask, so the driver's own user-mode CUDA
+#: library is the cheapest evidence available. **A HINT, NOT PROOF** — it is
+#: installed by the display driver whether or not the GPU is CUDA-capable, and
+#: proving it would mean loading it and calling `cuInit`, which is a DLL load
+#: and a driver initialisation on a page render. Documented as the weaker gate
+#: it is: on Windows a user can still pick a CUDA engine on a machine whose
+#: driver is installed but whose GPU is not usable, and finds out at load time
+#: with torch's own message. On Linux, where the nodes exist, the gate is real.
+NVCUDA_DLL = r"C:\Windows\System32\nvcuda.dll"
+
+
+def decode_gfx_target(raw: int) -> str | None:
+    """An amdkfd `gfx_target_version` -> the target name ROCm wheels are named for.
+
+    `major * 10000 + minor * 100 + step`, with **MINOR AND STEP RENDERED AS
+    SINGLE HEX DIGITS**: 90010 is `gfx90a` and not `gfx9010`, 90402 is `gfx942`,
+    120000 is `gfx1200`. A decimal render matches nothing in `ROCM_TARGETS`,
+    which would refuse every AMD GPU on the argument that it is unsupported —
+    the failure mode a wrong decoder has, and why the round-trip test over
+    `ROCM_TARGETS` exists.
+
+    None for 0, which is what a CPU node reports (see `_kfd_gfx_targets`).
+    """
+    if raw <= 0:
+        return None
+    major, rest = divmod(raw, 10000)
+    minor, step = divmod(rest, 100)
+    return f"gfx{major}{minor:x}{step:x}"
+
+
+def _kfd_gfx_targets() -> list[str] | None:
+    """Every GPU the amdkfd driver reports, decoded — None when unreadable.
+
+    **EVERY node, not node 0.** Node 0 is the CPU on a machine with a perfectly
+    working GPU (`cpu_cores_count 6, simd_count 0, gfx_target_version 0` on the
+    box this was written on), so a probe that read only the first node decodes
+    a zero target and concludes the machine has no supported GPU. A zero target
+    is skipped rather than counted, which is the same fact stated once.
+
+    An empty list means the driver is there and reports no GPU nodes — a
+    container without device passthrough. None means the topology itself could
+    not be read, which is a different sentence and gets one.
+    """
+    try:
+        entries = sorted(os.listdir(KFD_NODES_DIR))
+    except OSError:
+        return None
+    targets: list[str] = []
+    read_any = False
+    for entry in entries:
+        path = os.path.join(KFD_NODES_DIR, entry, "properties")
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        read_any = True
+        for line in text.splitlines():
+            key, _, value = line.partition(" ")
+            if key != "gfx_target_version":
+                continue
+            try:
+                raw = int(value.strip())
+            except ValueError:
+                continue
+            target = decode_gfx_target(raw)
+            if target:
+                targets.append(target)
+    if entries and not read_any:
+        return None
+    return targets
+
+
+def _amd_gpu_present() -> bool:
+    """Is there an AMD GPU at all — asked of the DRM class, not of the KFD.
+
+    The fallback for the branch where the KFD cannot answer, because a missing
+    `/dev/kfd` has two very different causes: the amdkfd half of amdgpu is not
+    loaded (an action — `modprobe amdgpu`, or reboot after a driver update), or
+    there is no AMD GPU in the machine (a fact). One reason string for both
+    would be wrong for whichever reader it was not written for.
+
+    ~41µs, and only on the failure branch — the ordinary answer never runs it.
+    """
+    for path in glob.glob(os.path.join(DRM_CLASS_DIR, "card*", "device", "vendor")):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                if handle.read().strip().lower() == AMD_PCI_VENDOR:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _usable_render_node() -> bool:
+    """A `/dev/dri/renderD*` this user can open — the second device HIP needs."""
+    return any(os.access(path, os.R_OK | os.W_OK)
+               for path in glob.glob(os.path.join(DRI_DIR, "renderD*")))
+
+
+def _rocm() -> Availability:
+    """The ROCm torch runners: Linux, an AMD GPU, and a gfx the wheel supports.
+
+    **Never cached, and that is deliberate.** Every failure below is one a user
+    FIXES WHILE THE APP IS RUNNING — `modprobe amdgpu`, plugging in an eGPU,
+    restarting a container with `--device /dev/kfd`, being added to the render
+    group and logging back in. A cached "no /dev/kfd" that survived the fix is
+    precisely the bug the reason string exists to prevent: the sentence tells
+    someone what to do and then the app refuses to notice they did it. The cost
+    is ~22µs for the whole probe on the machine it was written on (~40µs more
+    for the DRM fallback, which only runs on the failure branch), against a
+    resolution that happens per load, per download and per page render — not per
+    token. `_cuda` measures ~41µs the same way. An `lru_cache` would also make
+    test ORDER significant against the monkeypatch style every other
+    availability test here uses, which is a second reason of its own.
+    `preferred_code` declines caching on the same grounds.
+
+    **Permission is asked of the kernel, never modelled.** `os.access` with
+    `R_OK | W_OK`, because a group-membership or mode-arithmetic check gets real
+    machines wrong in BOTH directions: this box's `/dev/kfd` is `crw-rw-rw-`
+    while the user is in neither render nor video (a group check would refuse a
+    working machine), and its `card1` is `crw-rw----+` — a POSIX ACL, invisible
+    to mode arithmetic, which would refuse a machine the ACL permits.
+    """
+    system = platform.system()
+    machine = platform.machine()
+    if system != "Linux":
+        return Availability(
+            False,
+            "needs Linux — the ROCm PyTorch wheels are published for Linux "
+            f"only (this is {system.lower()}/{machine})",
+        )
+    if not os.path.exists(KFD_DEVICE):
+        if _amd_gpu_present():
+            return Availability(
+                False,
+                "needs the amdgpu kernel driver — an AMD GPU is here but "
+                f"{KFD_DEVICE} is missing, so ROCm cannot see it (load the "
+                "driver with `modprobe amdgpu`, or reboot after a driver update)",
+            )
+        return Availability(
+            False,
+            "needs an AMD GPU — this machine has none that the kernel reports "
+            f"(this is {system.lower()}/{machine})",
+        )
+    if not os.access(KFD_DEVICE, os.R_OK | os.W_OK):
+        return Availability(
+            False,
+            f"needs permission to use the GPU — {KFD_DEVICE} is not readable "
+            "and writable by you (add your user to the group that owns it, "
+            "usually `render`, then log out and back in)",
+        )
+    if not _usable_render_node():
+        return Availability(
+            False,
+            f"needs permission to use the GPU — no {DRI_DIR}/renderD* device is "
+            "readable and writable by you (add your user to the `render` group, "
+            "then log out and back in)",
+        )
+    targets = _kfd_gfx_targets()
+    if targets is None:
+        return Availability(
+            False,
+            f"needs the amdgpu driver's topology — {KFD_NODES_DIR} could not be "
+            "read, so the GPU cannot be identified",
+        )
+    if not targets:
+        return Availability(
+            False,
+            "needs an AMD GPU the kernel can see — the amdgpu driver reports "
+            "CPU nodes only, which is what a container started without "
+            "`--device /dev/kfd --device /dev/dri` looks like",
+        )
+    if not any(target in ROCM_TARGETS for target in targets):
+        found = ", ".join(sorted(set(targets)))
+        return Availability(
+            False,
+            f"needs a supported AMD GPU — {found} is not supported by the ROCm "
+            "build this runner installs (a wheel built for another target "
+            "downloads six gigabytes and then fails inside HIP)",
+        )
+    return Availability(True)
+
+
+def _cuda() -> Availability:
+    """The CUDA torch runners: an NVIDIA GPU whose driver is loaded and usable.
+
+    A HARD GATE, like `_rocm` and for the same reason — an accelerated row that
+    is selectable on a machine with no NVIDIA GPU is a multi-gigabyte download
+    that fails at load. Not cached, for `_rocm`'s reasons exactly (an eGPU, a
+    container restart, `modprobe nvidia-uvm` — all fixed while the app runs).
+
+    **No `nvidia-smi`.** SPEC.md's rule about system binaries the app does not
+    ship, and a cold `nvidia-smi` is 50-500ms on a per-page-render path against
+    ~25µs of `os.access`.
+
+    **No driver-version floor.** The floor belongs to the CUDA the runner's
+    wheel pins, this module cannot read that from a file it does not have, and
+    guessing high disables machines that work. The wheel's own error is the
+    better reporter of a driver that is genuinely too old.
+    """
+    system = platform.system()
+    machine = platform.machine()
+    if system == "Linux":
+        gpus = glob.glob(os.path.join(NVIDIA_DEVICE_DIR, "nvidia[0-9]*"))
+        if not os.path.exists(NVIDIA_CONTROL_DEVICE) or not gpus:
+            return Availability(
+                False,
+                "needs an NVIDIA GPU with its driver loaded — there is no "
+                f"{NVIDIA_CONTROL_DEVICE} or /dev/nvidia0 on this machine "
+                f"(this is {system.lower()}/{machine})",
+            )
+        unusable = [path for path in [NVIDIA_CONTROL_DEVICE, *sorted(gpus)]
+                    if not os.access(path, os.R_OK | os.W_OK)]
+        if unusable:
+            return Availability(
+                False,
+                f"needs permission to use the GPU — {unusable[0]} is not "
+                "readable and writable by you (this is usually a container "
+                "missing `--gpus all`, or a device-permission rule)",
+            )
+        # …and unified memory, which is a SEPARATE kernel module and the one
+        # that is realistically absent: a driver package upgraded under a
+        # running kernel leaves `nvidia` loaded and `nvidia_uvm` not, and every
+        # CUDA context then fails at initialisation with an error that names
+        # neither the module nor the fix. Its own reason, because its own fix.
+        if not os.path.exists(NVIDIA_UVM_DEVICE):
+            return Availability(
+                False,
+                f"needs NVIDIA unified memory — {NVIDIA_UVM_DEVICE} is missing "
+                "even though the GPU is there, which is what a driver update "
+                "without a reboot leaves behind (`modprobe nvidia-uvm`, or "
+                "reboot)",
+            )
+        if not os.access(NVIDIA_UVM_DEVICE, os.R_OK | os.W_OK):
+            return Availability(
+                False,
+                f"needs permission to use the GPU — {NVIDIA_UVM_DEVICE} is not "
+                "readable and writable by you (this is usually a container "
+                "missing `--gpus all`, or a device-permission rule)",
+            )
+        return Availability(True)
+    if system == "Windows":
+        if not os.path.isfile(NVCUDA_DLL):
+            return Availability(
+                False,
+                "needs an NVIDIA GPU with its driver installed — the driver's "
+                f"CUDA library is not at {NVCUDA_DLL} (this is "
+                f"{system.lower()}/{machine})",
+            )
+        return Availability(True)
+    return Availability(
+        False,
+        "needs an NVIDIA GPU — CUDA is published for Windows and Linux only "
+        f"(this is {system.lower()}/{machine})",
+    )
+
+
 # The table. Ordered, and first-match-wins per capability — which is what lets
 # TWO runners serve one: MLX takes Apple Silicon when available, and the row
 # below it serves Windows and Linux plus the Apple Silicon fallback. All three
@@ -241,6 +555,28 @@ def _transformers_platform() -> Availability:
 # not sorted alphabetically and must not be — it is also the DEFAULT that a
 # user's engine preference overrides, so a re-order silently re-decides every
 # machine set to "auto", which is all of them until somebody chooses otherwise.
+#
+# **The torch runners are split PER HARDWARE, and the CPU build is the default.**
+# One `transformers-text` row that installed whichever wheel index a manifest
+# happened to pin made the accelerator an invisible property of the build: a
+# machine got CUDA or it got the CPU and nothing on the page said which, so the
+# name was honest on exactly one class of hardware. There are now three rows per
+# torch library — CPU, CUDA, ROCm — the CPU one sits FIRST and is what every
+# "auto" machine resolves to, and the accelerated two are opt-in from the
+# Engines tab and gated on the device actually being there (`_cuda`, `_rocm`).
+# CPU-by-default is the conservative half of that decision: the accelerated
+# wheels are much larger downloads with a hardware requirement, and a default
+# that silently required one would fail on the machines least able to explain
+# why. `code` on the two original rows is UNCHANGED, so a stored preference
+# naming `transformers-text` or `diffusers-image` keeps meaning what it meant.
+#
+# **A hardware variant carries its accelerator in BOTH names**, so `label` and
+# `short_label` are equal on all six torch rows ("Diffusers (CUDA)"). The short
+# name is what the Local card and `servingLine` print, and three engines whose
+# short names are all "Diffusers" would render as one engine on every surface
+# but the picker. The MLX rows keep a PLATFORM qualifier on the long name only
+# — a bracketed qualifier in the SHORT name is therefore the marker of a
+# hardware variant, and the Apple-only rows stay visually distinct from them.
 _RUNNERS: tuple[Runner, ...] = (
     Runner(
         code="mlx-text",
@@ -254,21 +590,51 @@ _RUNNERS: tuple[Runner, ...] = (
         code="transformers-text",
         capability=TEXT_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "transformers_text"),
-        label="Transformers (PyTorch)",
-        short_label="Transformers",
+        # "(CPU)" rather than the old "(PyTorch)": the library is not what
+        # distinguishes this row from its neighbours any more — all three are
+        # PyTorch — and the accelerator is, so the qualifier names the thing a
+        # reader is choosing between. Both names carry it; see the table's
+        # naming note above.
+        label="Transformers (CPU)",
+        short_label="Transformers (CPU)",
         # ONE LINE, and that is a hard constraint rather than a summary: it sits
         # under this engine's row on the Engines tab, in the space between one
         # picker and the next, and anything that wraps twice is something nobody
-        # finishes. Everything that used to follow a dash here — that the
-        # Windows build is CPU-only, that a CPU answers at a few words a second
-        # — lives in the loaded card's tooltip instead, where somebody has
-        # stopped to ask.
-        note="Uses an NVIDIA GPU when PyTorch can see one, and the CPU otherwise.",
+        # finishes. Everything that used to follow a dash here — that a CPU
+        # answers at a few words a second — lives in the loaded card's tooltip
+        # instead, where somebody has stopped to ask.
+        note="Runs on the CPU on any machine, at a few words a second — the "
+             "CUDA and ROCm engines need a matching GPU.",
         # Deliberately BELOW the MLX row rather than instead of it. Apple Silicon
         # therefore gets MLX when it is present and this runner's working MPS
         # path when it is not; Windows and Linux come here directly. Intel macOS
         # is not a distribution target.
         _available=_transformers_platform,
+    ),
+    # …and the accelerated variants, BELOW the CPU row so that nothing about the
+    # default moves: a machine set to "auto" resolves to the CPU build even with
+    # a working GPU in it (`test_auto_stays_on_the_cpu_row_even_with_an_accelerator`
+    # is that decision, named). Opting in is one radio on the Engines tab, and
+    # the radio is disabled with the probe's own reason on a machine that cannot
+    # take it — which is what makes offering these rows at all safe.
+    Runner(
+        code="transformers-text-cuda",
+        capability=TEXT_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "transformers_text_cuda"),
+        label="Transformers (CUDA)",
+        short_label="Transformers (CUDA)",
+        note="Much quicker on an NVIDIA GPU, for a much larger download.",
+        _available=_cuda,
+    ),
+    Runner(
+        code="transformers-text-rocm",
+        capability=TEXT_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "transformers_text_rocm"),
+        label="Transformers (ROCm)",
+        short_label="Transformers (ROCm)",
+        note="Much quicker on a supported AMD GPU under Linux, for a much "
+             "larger download.",
+        _available=_rocm,
     ),
     # Image generation is arranged like the other two: MLX takes the Macs
     # (D310). One 4.6GB repo against the ~10.1GB two-repo split the torch
@@ -306,9 +672,37 @@ _RUNNERS: tuple[Runner, ...] = (
         code="diffusers-image",
         capability=IMAGE_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "diffusers_image"),
-        label="Diffusers (PyTorch)",
-        short_label="Diffusers",
+        # "(CPU)" for the reason the transformers row above states.
+        label="Diffusers (CPU)",
+        short_label="Diffusers (CPU)",
+        # This row had no note while it was the only torch image engine and
+        # there was nothing to distinguish it from. Now there is, and the thing
+        # worth saying is the one that decides the choice: CPU diffusion is
+        # minutes per image, not seconds.
+        note="Renders on the CPU on any machine — minutes per image rather "
+             "than seconds.",
         _available=_always,
+    ),
+    # The accelerated image variants, below the CPU row for the reason the text
+    # variants are below theirs.
+    Runner(
+        code="diffusers-image-cuda",
+        capability=IMAGE_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "diffusers_image_cuda"),
+        label="Diffusers (CUDA)",
+        short_label="Diffusers (CUDA)",
+        note="Seconds per image on an NVIDIA GPU, for a much larger download.",
+        _available=_cuda,
+    ),
+    Runner(
+        code="diffusers-image-rocm",
+        capability=IMAGE_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "diffusers_image_rocm"),
+        label="Diffusers (ROCm)",
+        short_label="Diffusers (ROCm)",
+        note="Seconds per image on a supported AMD GPU under Linux, for a much "
+             "larger download.",
+        _available=_rocm,
     ),
     # Speech to text, and the capability that finally USED the two-runner
     # ordering this table was built for. MLX takes the Macs; CTranslate2 below

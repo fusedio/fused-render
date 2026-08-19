@@ -14,6 +14,7 @@ machine and the disk-measured download behaves the way the supervisor assumes.
 import importlib.util
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -531,6 +532,35 @@ def test_every_registered_runner_ships_both_of_its_files():
         assert os.path.isfile(runner.pyproject), f"{runner.code}: no pyproject.toml"
 
 
+def _runner_source(runner):
+    """The module that actually IMPLEMENTS a runner, following a shell.
+
+    Six of the eleven runner folders — the CPU/CUDA/ROCm variants of the two
+    torch engines — hold a five-line `worker.py` that inserts `runners/` on the
+    path and calls `torch_text.main()` or `torch_image.main()`. The behaviour
+    lives one level up, so a source assertion made against the folder's file
+    would read a shell and pass on anything: the two tests below would have
+    stopped checking the torch runners entirely, silently, on the commit that
+    hoisted them.
+
+    The shell is recognised by what makes it one — it imports a module from the
+    runners root and CALLS ITS `main()`, which is the whole of its body — rather
+    than by a list of runner codes, so a future hoisted runner is covered without
+    an edit here. Recognising it by the import alone would follow every worker's
+    `import worker_base` into the base module instead.
+    """
+    with open(runner.worker, encoding="utf-8") as handle:
+        source = handle.read()
+    root = os.path.dirname(runner.folder)
+    for match in re.finditer(r"^import (\w+)", source, re.MULTILINE):
+        name = match.group(1)
+        hoisted = os.path.join(root, name + ".py")
+        if f"{name}.main()" in source and os.path.isfile(hoisted):
+            with open(hoisted, encoding="utf-8") as handle:
+                return handle.read()
+    return source
+
+
 def test_no_runner_reimplements_the_contract():
     """The whole point of the extraction (AI-9a).
 
@@ -542,7 +572,7 @@ def test_no_runner_reimplements_the_contract():
     from fused_render.ai import registry
 
     for runner in registry.all_runners():
-        source = open(runner.worker, encoding="utf-8").read()
+        source = _runner_source(runner)
         assert "import worker_base" in source, f"{runner.code} does not use the base"
         assert "worker_base.serve(" in source, f"{runner.code} does not serve through the base"
         for reimplemented in ("BaseHTTPRequestHandler", "X-Fused-Worker",
@@ -574,7 +604,7 @@ def test_every_runner_that_needs_a_memory_probe_supplies_one():
     ):
         runner = registry.by_code(code)
         assert runner is not None, code
-        source = open(runner.worker, encoding="utf-8").read()
+        source = _runner_source(runner)
         assert "def memory(" in source, f"{code} has no memory probe — {why}"
         assert "memory=memory" in source, (
             f"{code} does not pass its probe to serve(), so /health reports RSS: {why}"

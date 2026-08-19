@@ -161,7 +161,7 @@ def download(model_id):
     """The Whisper snapshot, and the 2MB speech detector beside it.
 
     The detector is fetched HERE rather than lazily on the first transcription,
-    for the reason `diffusers_image/worker.py` gives about its GGUF recipe: a
+    for the reason `runners/torch_image.py` gives about its GGUF recipe: a
     "Download" that leaves a cache which cannot work offline has not done the
     thing the button said it would. `vad` defaults to true, so a user who
     downloads a model on wifi and transcribes on a train would otherwise find

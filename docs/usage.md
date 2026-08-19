@@ -182,21 +182,35 @@ where a first model comes from.
     model — one labelled "image + text to text" — counts as a chat model: it is
     loaded for its text, and its picture-reading half simply goes unused.
   - **Every kind of model runs on every supported desktop platform**, on the
-    backend that suits it: chat models prefer MLX on Apple Silicon with PyTorch
-    as a fallback, while Windows and Linux use PyTorch directly; images use
-    PyTorch everywhere; transcription uses CTranslate2 everywhere. The Discover
-    tab names which backend a suggestion will load on, because the shortlists
-    differ — an MLX checkpoint is packed for Metal and will not load on a PC, so
-    you are never offered one there.
+    backend that suits it. On Apple Silicon that is MLX throughout — MLX LM for
+    chat, MLX FLUX for images, MLX Whisper for transcription (with Parakeet TDT
+    as an opt-in). Everywhere else, and on a Mac whose MLX backend is
+    unavailable, chat and images run on PyTorch and transcription on
+    CTranslate2. The Discover tab names which backend a suggestion will load on,
+    because the shortlists differ — an MLX checkpoint is packed for Metal and
+    will not load on a PC, so you are never offered one there.
+  - **The PyTorch backends come in three builds, and the default is the CPU
+    one.** Chat and images each offer Transformers/Diffusers (CPU), (CUDA) and
+    (ROCm). The CPU build is what you get without choosing: it is a small
+    install, it runs on any machine, and nothing about it can fail on hardware
+    you do not have. The CUDA build (NVIDIA) and the ROCm build (AMD, Linux
+    only) are much larger downloads and are offered on the Engines tab **only**
+    when the app can see a matching, usable GPU — otherwise the option is
+    greyed out with the reason, such as a driver that is not loaded or a
+    `/dev/kfd` your user cannot open. Transcription has no GPU build outside
+    Apple Silicon: CTranslate2's AMD wheels are not installable the way this app
+    installs things, so AMD transcribes on the CPU.
   - **A model may be running on your processor rather than a graphics card**, and
     the page says so: a loaded card carries **on CPU** beside its memory figure
     when it is, and Discover warns before the download. It works — expect a few
-    words a second rather than an instant answer. On Windows the standard PyTorch
-    build is CPU-only, so that is the usual case there whatever card is fitted.
+    words a second rather than an instant answer, and minutes rather than seconds
+    per image. That is the normal case unless you picked a CUDA or ROCm engine.
     The smaller suggestions exist for exactly this: Qwen3 1.7B answers at a
     readable speed with no GPU at all.
-  - The first use of a backend builds a several-GB environment, which shows as
-    its own row in the download manager before any weights are fetched.
+  - The first use of a backend builds its own environment, which shows as its own
+    row in the download manager before any weights are fetched. The CPU builds
+    are a few hundred MB; a CUDA or ROCm build is several GB before a single
+    weight arrives.
 - **Pages can use these models.** `fused.ai(prompt, {model: "org/name"})` runs a
   local chat model instead of Claude, `fused.ai.image({prompt})` renders a
   picture, and `fused.ai.transcribe({path})` turns a recording into text — all

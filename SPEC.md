@@ -5466,7 +5466,27 @@ an AI Models page that could say what was on disk but not what was *running*.
   must stay a file explorer's, and must not carry a Metal-only dependency into a
   Windows wheel — and it is built by the existing detached `uv sync` loader
   (PY-18), with the same progress record and the same verbatim uv errors any
-  declaring folder gets. No second install mechanism exists for AI.
+  declaring folder gets. No second install mechanism exists for AI. **One library
+  may occupy SEVERAL folders, one per hardware build of it, and then the shared
+  code lives at the runners ROOT and each folder's `worker.py` is a shell over
+  it** (D381). The torch backends are three folders each — `transformers_text`,
+  `transformers_text_cuda`, `transformers_text_rocm`, and the same trio for
+  `diffusers_image` — whose manifests are identical except for the index `torch`
+  is resolved from, and whose `worker.py` is a `sys.path` insert and a call into
+  `runners/torch_text.py` or `runners/torch_image.py`. Both halves of that are
+  forced rather than chosen. **The folder split is forced by PY-16**: a venv is
+  keyed on the folder, so two rows sharing one folder share one environment and
+  could not hold two different torch builds; and `_env_install_worker` runs a
+  BARE `uv sync` with cwd set to the runner folder, so there is no place a user
+  could pass an index or an extra from and everything about an environment must
+  be expressible in the `pyproject.toml` beside it. **The hoist is forced by the
+  rule `runners/preview.py` states**: shared logic lives at the root, because a
+  second copy under one of the variants would fail no test and drift. A shell
+  therefore carries a docstring and an import and nothing else — a `_placement()`
+  or a dtype rule inside one of them is a difference between variants that no
+  test can see. The declaration is still the only place mlx/torch are named; it
+  is now several declarations naming the same distributions at the same versions
+  and disagreeing only about where one of them comes from.
 - **AI-2a** **A runner declares WHEELS, and uv's children do not inherit this
   process's Python environment** (D266). Two halves of one failure. A dependency
   uv cannot download as a wheel is compiled by a build backend in an interpreter
@@ -5482,6 +5502,40 @@ an AI Models page that could say what was on disk but not what was *running*.
   built on a user's laptop the first time they press Download, and compiling
   from source there is minutes of their battery for something a release already
   answers. Held by a test over every runner's declaration.
+- **AI-2b** **CPU is what `auto` resolves to off Apple Silicon; an accelerated
+  build is an explicit choice, and a HARD GATE stands in front of it** (D381).
+  The registry's order is the default (AI-2, AI-10e), and it puts the Apple
+  Silicon rows first and unchanged, then the **CPU** variant of each torch
+  library, then that library's CUDA and ROCm variants. So `auto` on a non-Apple
+  machine reaches the CPU row even when a working accelerator is fitted — named
+  in a test, because it is a decision and not a fallthrough. An accelerated row
+  is reachable only by picking it on the Engines tab, and its `available()` is
+  gated on the DEVICE being present and usable, not on the platform: offering
+  one where it cannot run buys a multi-gigabyte wheel that then fails several
+  frames inside a runtime library, which is exactly what AI-6's reason exists to
+  prevent. The conservative default is the point of the split: before it, the
+  unlabelled torch row silently installed the CUDA build on Linux, so every
+  Linux user paid gigabytes of `nvidia-*` wheels whether or not they owned a
+  card, while every Windows user got a CPU-only build with no way to opt out —
+  both wrong, and neither visible. macOS is unaffected by the CPU pin: the CPU
+  index resolves darwin to the ordinary wheel PyPI ships, MPS compiled in, which
+  matters because this runner is what a Mac falls back to when its MLX runner is
+  unavailable.
+- **AI-2c** **A HARDWARE variant carries its accelerator in BOTH names;
+  everything else keeps its qualifier on the long name only** (D381). A runner
+  has a `label` for the picker and a `short_label` for everywhere else — the
+  loaded card, the job row, the "Using …" line under the picker — and the split
+  exists because on the picker a reader is choosing between backends while
+  everywhere else they are being told what is happening on the machine they are
+  sitting at. A platform qualifier ("(Apple Silicon)") and a library one
+  ("(CTranslate2)") are both that second kind of fact and drop. "(CUDA)" is not:
+  it is the engine's IDENTITY, and dropping it makes three rows print one name on
+  every surface but the picker. So `label` and `short_label` are EQUAL on all
+  six torch rows ("Diffusers (CUDA)"), and a bracketed qualifier in the SHORT
+  name is therefore the marker of a hardware variant, which leaves the
+  Apple-only rows visually distinct from them. `(PyTorch)` is gone from the
+  family: the library stopped being what distinguishes these rows from each
+  other, and the accelerator is what does.
 - **AI-3** **Four routes, and that is the whole worker contract.** `GET /health`
   (state, resident bytes), `POST /generate` (NDJSON for text), `POST /cancel`,
   `POST /quit`. Adding a capability is writing a worker, not extending the
@@ -5544,7 +5598,7 @@ an AI Models page that could say what was on disk but not what was *running*.
 - **AI-5d** **A bring-up thread reports its own death, and the environment
   wait polls the key the INSTALLER named.** Two failures of the same kind — work
   that stops without saying so — seen as one card reading "Preparing Diffusers
-  (PyTorch)…" beside a manager row reading "no longer reporting". (a) `_bring_up`
+  (CPU)…" beside a manager row reading "no longer reporting". (a) `_bring_up`
   and `_fetch_only` run on threads, so an exception that is not a
   `SupervisorError` is raised to NOBODY: it kills the only thing reporting and
   the row sits at its last detail until the manager gives up and blames the
@@ -5828,7 +5882,27 @@ an AI Models page that could say what was on disk but not what was *running*.
   it and failing at load time — which would report "the model failed to load" for
   a machine that was never going to load it. A capability this machine cannot
   serve is still listed, with its reason: hiding it leaves a user hunting for a
-  feature that was never there.
+  feature that was never there. **A probe may ask the KERNEL, and it asks at
+  CALL time** (D381). Every probe was a `platform` fact until the per-hardware
+  torch rows (AI-2b) needed to know whether a device was actually there, so the
+  contract is written out: a probe MAY read device nodes and sysfs — `/dev/kfd`,
+  a `/dev/dri/renderD*`, `/sys/class/kfd/kfd/topology/nodes/*/properties`,
+  `/dev/nvidiactl` and `/dev/nvidia-uvm`, and `/sys/class/drm/card*` to tell "no
+  such GPU" apart from "driver not loaded" — and permission is asked with
+  `os.access(R_OK|W_OK)` rather than modelled from a mode or a group, because
+  both get real machines wrong in both directions (a `crw-rw-rw-` kfd on a user
+  in neither `render` nor `video`, an ACL-carrying card node invisible to mode
+  arithmetic). It MUST NOT shell out: `nvidia-smi` and `rocminfo` are system
+  binaries this app does not ship, which is the rule AI-2 states about mlx and
+  torch and AI-10 states about ffmpeg, and a cold `nvidia-smi` is 50-500 ms on a
+  path that runs per page render against ~22-41 µs for the whole sysfs walk. And
+  it MUST NOT cache: every failure a device probe reports is one the user fixes
+  WHILE THE APP RUNS — `modprobe amdgpu`, `modprobe nvidia-uvm`, an eGPU plugged
+  in, a container restarted with `--device /dev/kfd`, a group joined — and a
+  cached refusal that outlives the fix is the reason string telling somebody what
+  to do and then the app declining to notice they did it. Stdlib only, and no
+  `torch` import: this module is on the render path for `describe`,
+  `describe_engines` and every `resolve`.
 - **AI-7** **Liveness is `poll()`, and stopping is platform-specific.** Never
   `os.kill(pid, 0)`: on POSIX an unreaped child is a zombie and signal 0 to a
   zombie succeeds, so the check answers "alive" for a model that crashed; on
@@ -6389,12 +6463,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   between them, and different the moment one can.
 - **AI-10f** **What a backend is LIKE reads under the picker that chooses it**
   (D315). A runner's `note` — MLX FLUX's memory ceiling, MLX Whisper's GPU
-  speed, PyTorch's NVIDIA-or-CPU — renders as a muted line beneath its
+  speed, the CPU torch rows' speed-per-download trade — renders as a muted line beneath its
   capability's row on the Engines tab, for the **effective** runner only, the
   same discipline the "Using MLX LM." line above it follows. It used to head
   the matching capability section on Discover, which was wrong twice: three of
   six runners have a note, so those sections were blotchy and the sentences
-  read as noise; and the FLUX one is not a fact but the **instruction AI-9c's
+  read as noise (three of six runners then; nine of eleven since the
+  per-hardware split, D381, which makes the sentence a caption on almost every
+  section rather than a signal on a few); and the FLUX one is not a fact but the **instruction AI-9c's
   accepted risk depends on** — the sentence that tells a 16GB Mac to switch
   back to Diffusers — which has to be beside the control that switches. The
   rows are uneven, and here that is information: this engine has a caveat, that
@@ -6571,15 +6647,27 @@ an AI Models page that could say what was on disk but not what was *running*.
   fact about the backend above the cards, before any download, since that is
   when it can still change a decision. All three runners report it — the image
   runner has had the same Windows CPU-only problem since D257 and never said so.
-  **Windows CUDA was deferred, deliberately**: reaching it means pulling torch
-  from `download.pytorch.org` through a `[[tool.uv.index]]`, which costs EVERY
-  Windows user a ~3GB CUDA runtime to serve the ones with an NVIDIA card. The
-  trade is stated rather than hidden, which is what the device reporting is for.
+  **Windows CUDA IS offered as of D381, and the objection that used to block it
+  is void.** That objection — pulling torch from `download.pytorch.org` through a
+  `[[tool.uv.index]]` would cost EVERY Windows user a ~3GB CUDA runtime to serve
+  the ones with an NVIDIA card — died the moment an accelerated build became a
+  row of its own that nobody installs by accident (AI-2b). PyPI still publishes
+  no CUDA-enabled Windows torch, so reaching one does mean a per-toolkit URL
+  (`whl/cu130`); what makes that acceptable rather than a third source to keep in
+  step everywhere is that the override is asked PER PLATFORM —
+  `torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32'" }]` —
+  so Linux keeps resolving from PyPI, whose wheel already IS the CUDA build, and
+  the mirror is consulted only where PyPI has nothing to offer. The lock carries
+  two torch entries as a result, and the CUDA row means the same thing on both
+  platforms. **A CUDA row that installed a CPU wheel would be the one outcome
+  AI-2b's hard gate exists to prevent**: `_cuda()` admits Windows, so the row is
+  genuinely offered there, and offering it while silently resolving to CPU would
+  charge a user a multi-gigabyte install for a name that was not true.
 - **AI-11c** **No text has ever been generated by this runner, and AI-10b's
   disclaimer applies verbatim.** torch cannot run on CI, so the registry, the
   catalog, the resolution across four platforms and the API are exercised
   against fakes, and the runner's OWN logic is tested a level down —
-  `transformers_text/worker.py` is stdlib-only at import time, so its format
+  `runners/torch_text.py` is stdlib-only at import time, so its format
   refusals, its dtype-keyword choice, its device placement and its two
   prompt-encoding paths are all driven on CI with stubs. What no test touches is
   torch itself: the actual generation, the streaming, the real speed on a CPU,

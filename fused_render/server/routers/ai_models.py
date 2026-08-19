@@ -589,7 +589,7 @@ def _has_torch_weights(snapshot_dir: str) -> bool:
     A WALK, like `_weight_files`, and for the same reason: a diffusers pipeline
     keeps its weights per component. The suffixes are `formats.TORCH_WEIGHTS`
     rather than a list spelled here — this is the page's copy of the question
-    `transformers_text/worker.py` asks before it refuses a repo.
+    `runners/torch_text.py` asks before it refuses a repo.
     """
     for _dirpath, _dirnames, filenames in os.walk(snapshot_dir):
         if any(name.endswith(formats.TORCH_WEIGHTS) for name in filenames):

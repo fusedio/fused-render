@@ -16,6 +16,17 @@ def _codes():
     return {r.code for r in registry.all_runners()}
 
 
+#: The runners a plain directory of torch safetensors belongs to, and the ones a
+#: `model_index.json` belongs to — spelled once here because the per-hardware
+#: split made them three codes apiece, and a test that listed them by hand in
+#: every case would be the same drift `loaders()` itself avoids by extending a
+#: tuple. Read from the module under test on purpose: what these tests pin is
+#: the BRANCHES (which format reaches which family), and the membership of a
+#: family is pinned by `test_every_registered_runner_appears_in_loaders` below.
+_TEXT = set(formats.TRANSFORMERS_RUNNERS) | {"mlx-text"}
+_IMAGE = set(formats.DIFFUSERS_RUNNERS)
+
+
 def test_every_runner_code_named_here_is_a_registered_runner():
     """`formats` says "faster-whisper" as a bare string, because it is imported
     by interpreters that have no `fused_render` on their path (see its module
@@ -38,14 +49,63 @@ def test_every_runner_code_named_here_is_a_registered_runner():
     assert named <= _codes(), sorted(named - _codes())
 
 
+def test_every_registered_runner_appears_in_loaders():
+    """The DRIFT IN THE OTHER DIRECTION, and it is the silent one.
+
+    The test above pins that every code named in `formats` is registered — a
+    rename in the registry breaks it. Nothing pinned the converse, and the
+    converse is what a new runner gets wrong: `ai_models.py` builds a cached
+    repo's engine row by filtering `r.code in meta.loaders`, and AI-11e's
+    cached-model injection admits a repo to `models[]` only if the resolved
+    runner is among that repo's loaders. So a registered runner missing from
+    every branch here has NO engine tag, NO Load button and NO cached repos
+    offered — precisely on the machines that chose it — while every format test
+    in this file still passes, because `loaders()` is internally consistent and
+    only the registry knows the code exists.
+
+    That is exactly what the four per-hardware torch variants would have done,
+    and it is what the next variant would do too, which is why this is a rule
+    rather than four assertions.
+
+    A runner is exercised by throwing the union of every format signal at
+    `loaders()` — the same trick the test above uses — plus the two returns that
+    short-circuit (an MLX whisper snapshot and a Parakeet one), because a code
+    reachable only from a branch below one of those would otherwise look absent.
+    """
+    seen = set()
+    for repo_id in formats.MFLUX_VARIANTS:
+        seen |= set(formats.loaders(
+            repo_id=repo_id, names=set(), dirnames=set(formats.MFLUX_COMPONENTS),
+            config={}, torch_weights=True))
+    seen |= set(formats.loaders(
+        repo_id="x/y", names={formats.CT2_WEIGHTS, formats.DIFFUSERS_INDEX},
+        dirnames=set(), config={}, torch_weights=True))
+    seen |= set(formats.loaders(
+        repo_id="x/y", names={formats.MLX_WHISPER_WEIGHTS[0]}, dirnames=set(),
+        config={}, torch_weights=False))
+    seen |= set(formats.loaders(
+        repo_id="x/y", names={formats.PARAKEET_WEIGHTS}, dirnames=set(),
+        config={"target": formats.NEMO_ASR_TARGET + "rnnt_bpe_models.X"},
+        torch_weights=True))
+    seen |= set(formats.loaders(
+        repo_id="x/y", names=set(), dirnames=set(),
+        config={"quantization": {"group_size": 64, "bits": 4}}, torch_weights=True))
+    missing = _codes() - seen
+    assert not missing, (
+        f"{sorted(missing)} are registered runners that `loaders()` never "
+        f"names, so a cached repo they can load gets no engine tag and no Load "
+        f"button on the machines that resolve to them (see this test's "
+        f"docstring). Add the code to the branch for the format it reads.")
+
+
 @pytest.mark.parametrize("names,dirnames,config,torch,expected", [
     # One filename each, and each is the check the runner itself makes.
     ({"model.bin"}, set(), {}, False, {"faster-whisper"}),
     ({"weights.npz"}, set(), {}, False, {"mlx-whisper"}),
-    ({"model_index.json"}, set(), {}, False, {"diffusers-image"}),
-    # A directory of plain safetensors is BOTH text runners' — which of them
+    ({"model_index.json"}, set(), {}, False, _IMAGE),
+    # A directory of plain safetensors is EVERY text runner's — which of them
     # gets it is the registry's question, not the format's.
-    (set(), set(), {}, True, {"mlx-text", "transformers-text"}),
+    (set(), set(), {}, True, _TEXT),
     # …unless the checkpoint is MLX's own, which torch cannot read at all.
     (set(), set(), {"quantization": {"group_size": 64, "bits": 4}}, True, {"mlx-text"}),
     # A quantization this build ships no package for is nobody's.
@@ -79,7 +139,7 @@ def test_a_SHARED_weight_name_needs_the_whisper_config_beside_it():
         repo_id="openai/whisper-tiny.en",
         names={"model.safetensors", "config.json"}, dirnames=set(),
         config={"model_type": "whisper", "num_mel_bins": 80, "d_model": 384},
-        torch_weights=True)) == {"mlx-text", "transformers-text"}
+        torch_weights=True)) == _TEXT
 
 
 def test_an_mlx_whisper_snapshot_is_NOT_offered_to_the_text_runners():
@@ -92,7 +152,7 @@ def test_an_mlx_whisper_snapshot_is_NOT_offered_to_the_text_runners():
         codes = formats.loaders(
             repo_id="mlx-community/whisper-large-v3-turbo", names=names,
             dirnames=set(), config=_MLX_WHISPER_CONFIG, torch_weights=True)
-        assert "mlx-text" not in codes and "transformers-text" not in codes
+        assert not (_TEXT & set(codes)), codes
         assert "mlx-whisper" in codes
 
 
@@ -122,7 +182,7 @@ def test_a_parakeet_snapshot_is_NOT_offered_to_the_text_runners():
         repo_id="mlx-community/parakeet-tdt-0.6b-v3",
         names={formats.PARAKEET_WEIGHTS}, dirnames=set(),
         config=_PARAKEET_CONFIG, torch_weights=True)
-    assert "mlx-text" not in codes and "transformers-text" not in codes
+    assert not (_TEXT & set(codes)), codes
 
 
 def test_a_nemo_config_with_no_weights_beside_it_loads_nowhere():
@@ -147,6 +207,21 @@ def test_a_parakeet_repo_SETTLES_what_the_model_is():
     modality, and a NeMo ASR config does: it cannot be anything but speech
     recognition, so the page's tag does not have to hedge."""
     assert "parakeet-mlx" in formats.DECISIVE
+
+
+def test_DECISIVE_follows_the_FORMAT_and_not_the_hardware():
+    """Membership in `DECISIVE` is a claim about the format, so every hardware
+    variant of a decisive runner is decisive.
+
+    A `model_index.json` is a diffusion pipeline whichever wheel opens it, and
+    `ai_models.py` infers a cached repo's capability from the first decisive
+    runner among its loaders — so listing only the CPU row would make that
+    inference depend on which builds happen to be registered. The text runners
+    are the counter-case in the same assertion: a directory of safetensors says
+    nothing about the modality on any wheel.
+    """
+    assert set(formats.DIFFUSERS_RUNNERS) <= set(formats.DECISIVE)
+    assert not set(formats.TRANSFORMERS_RUNNERS) & set(formats.DECISIVE)
 
 
 def test_mflux_needs_the_variant_table_as_well_as_the_layout():

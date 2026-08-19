@@ -1,4 +1,4 @@
-# The transformers text runner's environment (SPEC §40, PY-16).
+# The transformers text runner's environment — the CPU variant (SPEC §40, PY-16).
 #
 # The cross-platform half of text generation. `mlx_text` is Metal-only, so on a
 # Windows or Linux machine the app's flagship local capability was something to
@@ -6,13 +6,44 @@
 # and answers with CTranslate2. This answers it with torch, which is the one
 # runtime that publishes wheels for every platform this app ships on.
 #
-# **Deliberately the stack `diffusers_image` already proves.** torch and
-# transformers are named in one more place, not a new one: the image runner has
-# been building this pair on users' machines since D257, so the install path, the
-# wheel availability and the failure modes are known rather than guessed at. A
-# second folder means a second venv, but uv hardlinks from its own cache, so a
-# machine that has already built the image runner pays almost nothing in disk for
-# this one.
+# **This is one of THREE folders that install the same runner.** `torch` is the
+# only line that differs between them: here it comes from
+# `download.pytorch.org/whl/cpu`, in `transformers_text_cuda/` from PyPI (whose
+# torch IS the CUDA build), in `transformers_text_rocm/` from
+# `download.pytorch.org/whl/rocm7.1`. The code they run is `runners/torch_text.py`
+# — one file, shared, because a token loop does not know what it is multiplying on.
+#
+# **Why three folders and not one manifest with a switch.** `_env_install_worker`
+# runs a BARE `uv sync --no-default-groups --python <exe>` with cwd set to the
+# runner folder, and that is deliberate (PY-18): a user never types a uv command,
+# so there is no place to pass `--index` or `--extra` from. Everything about an
+# environment must be expressible in the `pyproject.toml` beside it — which makes
+# "three ways to install torch" mean literally three folders, each a whole
+# declaration, each with its own venv key. The Engines tab is where the user picks.
+#
+# **CPU is the DEFAULT, and that is the change this folder carries.** Before the
+# split, torch came from PyPI for everyone: a Linux machine got the CUDA build and
+# paid several GB of `nvidia-*` wheels whether or not it owned a card, while a
+# Windows machine got the 122MB CPU build and could not use its card at all. Both
+# halves were wrong, and neither was something the user could see, let alone
+# choose. Now the default install is small and works everywhere, and a GPU is an
+# opt-in that says what it costs.
+#
+# `whl/cpu` and not merely "PyPI minus the extras": the CPU index is where PyTorch
+# publishes the `+cpu` local-version wheels that have no `nvidia-*` requirements
+# at all, so this resolution is small because nothing large is in the graph —
+# rather than large-but-unused. On macOS that index carries the ordinary
+# `2.13.0` wheel (no local version), which is the same file PyPI ships and has MPS
+# compiled in: Apple Silicon keeps its GPU here, which matters because this runner
+# is the MPS fallback for a Mac whose MLX runner is unavailable (`_placement`).
+#
+# **`explicit = true` is the whole of the confinement.** Without it the CPU index
+# becomes a candidate for EVERY requirement, and transformers, accelerate, numpy
+# and the rest would be resolved from a mirror that only mirrors what PyTorch
+# builds. With it the override reaches exactly the names listed under
+# `[tool.uv.sources]` and nothing else — verified against a real resolution: of
+# the 45 packages locked here, 42 come from PyPI and only torch comes from the
+# mirror (as two entries, `2.13.0+cpu` and the darwin `2.13.0`).
 #
 # **Every dependency here must be installable as a WHEEL** (AI-2a), and that rule
 # is what ruled out llama.cpp: `llama-cpp-python` publishes an sdist and nothing
@@ -20,19 +51,11 @@
 # and the Download button — on Windows, MSVC. Its prebuilt wheels live on a
 # private index, which is a second thing to trust and a second thing to go down.
 #
-# **torch from PyPI is CPU-only on Windows, and that is not a mistake here.** Its
-# `nvidia-*` dependencies are all marked `platform_system == "Linux"`, so a Linux
-# machine gets CUDA (and pays several GB for it whether or not it owns a card)
-# while a Windows machine gets a 122MB CPU build. CUDA on Windows means pulling
-# torch from `download.pytorch.org` through a `[[tool.uv.index]]`, which would
-# cost EVERY Windows user a ~3GB CUDA runtime to serve the ones with an NVIDIA
-# card. The trade was taken deliberately for v1: the runner reports the device
-# it actually got, the AI Models page shows it, and the suggested models are
-# curated so the CPU case is a real option rather than a consolation. The same
-# constraint already applies to `diffusers_image` and is simply not stated there.
-#
-# That report is `worker.py`'s `load()` calling `worker_base.set_state(device=…)`
-# — the field `/health` carries and the page draws (see `worker_base.STATE`).
+# The device this environment actually got is reported by `torch_text.load()`
+# calling `worker_base.set_state(device=…)` — the field `/health` carries and the
+# page draws (see `worker_base.STATE`). Which is not redundant with the variant the
+# user picked: a CUDA install on a machine whose driver is too old still runs, on
+# the CPU, and the only honest source for that is the process holding the weights.
 #
 # **The runtime lines carry CEILINGS**, for the reason
 # `mflux_image/pyproject.toml` states at length: no lockfile is committed beside
@@ -77,3 +100,13 @@ dependencies = [
 # Not a distribution — a folder of scripts, not something to build and install.
 [tool.uv]
 package = false
+
+# The CPU wheels. `explicit` keeps this index out of every other requirement's
+# candidate list — see the header.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
