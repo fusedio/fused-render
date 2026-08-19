@@ -13919,7 +13919,15 @@ for (const [name, id] of [["recent", "tab-recent"], ["artifacts", "tab-artifacts
   };
 }
 
+let recentSeq = 0;
 async function loadRecent() {
+  // Reads overlap by design now (the back handler retries over a just-left
+  // run's spawn window), so only the NEWEST call may write: a slower older
+  // read finishing late would clobber the fresher list — including the very
+  // row the retry existed to add (Bugbot, PR #653). Same seat idiom as
+  // sendSeq/loopSeq: take a number, and prove it is still the latest before
+  // touching anything after the await.
+  const seat = ++recentSeq;
   const list = document.getElementById("recentlist");
   // The skeleton stands in for rows we do not have yet — never for rows that
   // are already up. A re-read over a drawn list (the back handler's mid-turn
@@ -13929,6 +13937,7 @@ async function loadRecent() {
   syncLists();  // the skeleton needs its section shown
   try {
     const { sessions, error } = await fused.runPython(AGENT, { action: "sessions", file: FILE }, { key: null });
+    if (recentSeq !== seat) return;  // a newer read owns the list now
     if (error) throw new Error(error);
     list.innerHTML = "";  // drop the skeleton now that we know the real state
     // Name the snapshot runs from the SAME strings these rows are labelled with,
@@ -13968,6 +13977,10 @@ async function loadRecent() {
     recentCount = sessions.length;
     for (const s of sessions) addChatRow(list, s);
   } catch (err) {
+    // The seat check above never runs when the read itself REJECTS, so a
+    // stale retry that died late must be caught here too — its failure says
+    // nothing about the list a newer read already drew (Bugbot, PR #653).
+    if (recentSeq !== seat) return;
     list.innerHTML = "";
     // A list that could not be read is not a list with nothing in it, but it
     // renders the same way here: no heading, no empty state, no error.
