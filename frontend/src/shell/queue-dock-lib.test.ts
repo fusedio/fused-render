@@ -21,6 +21,7 @@ import {
   roleText,
   rowCancelKind,
   scheduleRunsEnded,
+  scheduleRunsStarted,
   showCancelAll,
   withdrawableCount,
   type QueueRow,
@@ -650,5 +651,28 @@ describe("the live row's shimmer", () => {
     const reduced = CSS.slice(CSS.lastIndexOf(".q-status.is-running"));
     expect(reduced).toContain("animation: none;");
     expect(reduced).toContain("-webkit-text-fill-color: var(--status-progress);");
+  });
+});
+
+// PR #647: a run STARTING is news the same way one ending is (Akshil,
+// 2026-08-19: the popover said "thinking" while the Tasks list sat on
+// Upcoming until a reload) — same prefix rule, opposite transition.
+describe("scheduleRunsStarted", () => {
+  it("reads a schedule job newly running as a start", () => {
+    const prev = [{ id: "sys:schedule:9", state: "queued" }] as never;
+    const next = [{ id: "sys:schedule:9", state: "running" }] as never;
+    expect(scheduleRunsStarted(prev, next)).toBe(true);
+  });
+
+  it("counts a job the registry only just learned about", () => {
+    const next = [{ id: "sys:schedule:9", state: "running" }] as never;
+    expect(scheduleRunsStarted([], next)).toBe(true);
+  });
+
+  it("stays quiet for still-running and for non-schedule jobs", () => {
+    const running = [{ id: "sys:schedule:9", state: "running" }] as never;
+    expect(scheduleRunsStarted(running, running)).toBe(false);
+    const other = [{ id: "dl:1", state: "running" }] as never;
+    expect(scheduleRunsStarted([], other)).toBe(false);
   });
 });

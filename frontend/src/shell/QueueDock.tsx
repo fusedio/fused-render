@@ -61,6 +61,7 @@ import {
   roleText,
   rowCancelKind,
   scheduleRunsEnded,
+  scheduleRunsStarted,
   showCancelAll,
   type QueueRow,
 } from "@shell/queue-dock-lib";
@@ -316,8 +317,28 @@ export default function QueueDock() {
   // running→terminal flip on a sys:schedule:* job pokes the shared tasks store
   // (which re-reads, or asks the open Tasks page to): "if finished in one,
   // finished in the other" (Akshil, 2026-08-19).
+  // …and the earliest that one STARTED (Akshil, 2026-08-19: the popover read
+  // "thinking" while the Tasks list sat on Upcoming until a reload). The first
+  // REAL snapshot is exempt: with nothing to compare against, every already-
+  // running job would read as news, and the Tasks surfaces fetch on their own
+  // mount. DownloadManager's slot effect also echoes useJobs' initial [] once
+  // before any poll answers — that echo is not a snapshot and must not spend
+  // the exemption, or the true first response gets compared against [] and an
+  // in-flight run pokes on every shell mount (Bugbot, PR #648).
+  const sawEcho = useRef(false);
+  const sawJobs = useRef(false);
   const onJobs = useCallback((next: Job[]) => {
-    if (scheduleRunsEnded(prevJobs.current, next)) pokeTasks();
+    if (!sawEcho.current) {
+      sawEcho.current = true;
+      setJobs(next);
+      return;
+    }
+    const news =
+      sawJobs.current &&
+      (scheduleRunsEnded(prevJobs.current, next) ||
+        scheduleRunsStarted(prevJobs.current, next));
+    if (news) pokeTasks();
+    sawJobs.current = true;
     prevJobs.current = next;
     setJobs(next);
   }, []);

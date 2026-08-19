@@ -486,12 +486,14 @@ describe("pokeTasks", () => {
     expect(SCHEDULED).toMatch(/window\.removeEventListener\(TASKS_POKE_EVENT, reload\)/);
   });
 
-  it("the queue card pokes when a scheduled run's job goes terminal", () => {
-    // Compared snapshot-to-snapshot (scheduleRunsEnded) so mounting onto a
-    // registry full of old terminal rows fires nothing.
-    expect(QUEUE_DOCK).toMatch(
-      /if \(scheduleRunsEnded\(prevJobs\.current, next\)\) pokeTasks\(\);/,
-    );
+  it("the queue card pokes when a scheduled run's job starts or goes terminal", () => {
+    // Compared snapshot-to-snapshot (scheduleRunsEnded / scheduleRunsStarted)
+    // so mounting onto a registry full of old rows fires nothing — including
+    // the slot's initial [] echo, which must not become the baseline.
+    expect(QUEUE_DOCK).toMatch(/scheduleRunsEnded\(prevJobs\.current, next\)/);
+    expect(QUEUE_DOCK).toMatch(/scheduleRunsStarted\(prevJobs\.current, next\)/);
+    expect(QUEUE_DOCK).toMatch(/if \(news\) pokeTasks\(\);/);
+    expect(QUEUE_DOCK).toMatch(/sawEcho\.current = true;/);
   });
 
   it("a done/failed schedule event pokes too — handed down from the shell", () => {
