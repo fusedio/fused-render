@@ -663,6 +663,199 @@ def test_progress_never_exceeds_a_scoped_total(base, monkeypatch):
 # check could see.
 
 
+# -- the cached path does not touch the network ---------------------------------
+#
+# Measured on this machine for `mlx-community/whisper-tiny.en-8bit`, fully
+# cached: `worker_base.download_snapshot` cost 483ms and `download_file` 456ms,
+# every millisecond of it Hub round-trips — `HfApi().model_info(files_metadata=
+# True)` is 228ms on its own and the segmented fetch's own requests are another
+# ~230ms. The same answers off the cache alone are 0.13ms and 0.14ms. That is why
+# a bring-up of a model already on disk waited about a second before the ~14ms of
+# actual weight loading, and it is what produced the "You are sending
+# unauthenticated requests to the HF Hub" line in every worker log.
+
+
+class _LocalHub:
+    """`huggingface_hub`, recording which calls were LOCAL and which networked.
+
+    The distinction is the whole subject: a cached model must be resolved with
+    `local_files_only=True` and nothing else, and an absent one must still take
+    exactly the path it took before.
+    """
+
+    class LocalEntryNotFoundError(OSError):
+        """hf's own name for "the cache cannot answer this"."""
+
+    def __init__(self, cached=(), snapshot="/cache/snap"):
+        self.cached = set(cached)
+        self.snapshot = snapshot
+        #: (function, local_files_only) in order.
+        self.calls = []
+
+    def snapshot_download(self, model_id, allow_patterns=None,
+                          ignore_patterns=None, local_files_only=False, **kw):
+        self.calls.append(("snapshot", local_files_only))
+        if local_files_only and model_id not in self.cached:
+            raise self.LocalEntryNotFoundError(model_id)
+        return self.snapshot
+
+    def hf_hub_download(self, repo_id=None, filename=None,
+                        local_files_only=False, **kw):
+        self.calls.append(("file", local_files_only))
+        if local_files_only and repo_id not in self.cached:
+            raise self.LocalEntryNotFoundError(repo_id)
+        return os.path.join(self.snapshot, filename or "f")
+
+    class HfApi:
+        def model_info(self, model_id, revision=None, files_metadata=False):
+            raise AssertionError(
+                "a cached model must not cost a Hub metadata call")
+
+
+def _local_hub(monkeypatch, base, hub):
+    """Install the fake library, and give the fetch nothing else to lean on.
+
+    The paths it hands back are REAL directories under `tmp_path`, because
+    whether the resolved path exists is part of what the fast path decides — a
+    stubbed `os.path.exists` would prove nothing about it and would lie to pytest
+    at the same time.
+    """
+    import types
+    module = types.SimpleNamespace(
+        snapshot_download=hub.snapshot_download,
+        hf_hub_download=hub.hf_hub_download,
+        HfApi=hub.HfApi)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", module)
+    # No cache folder to inspect by default: the partial-download guard is its
+    # own test below.
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": None)
+
+
+def _snapshot_dir(tmp_path, *files):
+    """A cache directory that really is there, with `files` in it."""
+    folder = tmp_path / "snap"
+    folder.mkdir(exist_ok=True)
+    for name in files:
+        path = folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"weights")
+    return str(folder)
+
+
+def test_a_CACHED_snapshot_is_resolved_with_NO_network_call(base, monkeypatch,
+                                                            tmp_path):
+    """The whole point: 483ms of Hub round-trips before ~14ms of weight loading,
+    on every bring-up of a model already on disk. `_LocalHub.HfApi` asserts
+    rather than returns, so a metadata call here fails the test by name."""
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub)
+
+    assert base.download_snapshot("u/x") == snapshot
+    assert hub.calls == [("snapshot", True)]
+
+
+def test_a_cached_FILE_is_resolved_with_NO_network_call(base, monkeypatch,
+                                                        tmp_path):
+    """The component fetches — the 2MB speech detector, the two diarization
+    models — happen INSIDE a transcription, so their 456ms each was latency on
+    the way to a transcript whose bytes were already on the disk."""
+    snapshot = _snapshot_dir(tmp_path, "onnx/model.onnx")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub)
+
+    assert base.download_file("u/x", "onnx/model.onnx") == os.path.join(
+        snapshot, "onnx/model.onnx")
+    assert hub.calls == [("file", True)]
+
+
+def test_a_model_that_is_NOT_cached_downloads_exactly_as_before(base, monkeypatch,
+                                                                tmp_path):
+    """The hard constraint: first-download behaviour is untouched. The local
+    attempt fails on the cache alone, and then the networked path runs — the
+    metadata call, the total, the progress reporting, all of it."""
+    hub = _LocalHub(cached=[], snapshot=_snapshot_dir(tmp_path))
+    _local_hub(monkeypatch, base, hub)
+    listed = []
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: listed.append(a) or (None, None))
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    assert base.download_snapshot("u/x") == hub.snapshot
+
+    assert hub.calls == [("snapshot", True), ("snapshot", False)]
+    assert listed, "the networked path must still list the repo"
+    assert ticks, "the networked path must still report progress"
+
+
+def test_a_PARTIAL_download_is_not_mistaken_for_a_cached_one(base, monkeypatch,
+                                                             tmp_path):
+    """An interrupted download leaves hf's `.incomplete` blobs and our own
+    `.fusedpart` segments in the cache folder. Recent huggingface_hub verifies
+    snapshot completeness against its own tree listing and raises — but that
+    check is not something this file gets to assume of every version a runner
+    venv might resolve, and the consequence of trusting a partial cache is a
+    load that fails on a missing weight file instead of a download that
+    finishes. Cheap to rule out: the marker files are right there."""
+    hub = _LocalHub(cached=["u/x"], snapshot=_snapshot_dir(tmp_path))
+    _local_hub(monkeypatch, base, hub)
+    folder = tmp_path / "models--u--x" / "blobs"
+    folder.mkdir(parents=True)
+    (folder / "abc123.incomplete").write_bytes(b"half a shard")
+    monkeypatch.setattr(
+        base, "repo_folder",
+        lambda model_id, repo_type="model": str(tmp_path / "models--u--x"))
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
+def test_a_local_answer_that_is_not_actually_THERE_is_not_trusted(
+        base, monkeypatch, tmp_path):
+    """The path comes from a call we did not make ourselves, so it is checked
+    before it is returned: a cache directory removed under a resolved ref would
+    otherwise be handed to `load()` as a snapshot."""
+    hub = _LocalHub(cached=["u/x"], snapshot=str(tmp_path / "went-away"))
+    _local_hub(monkeypatch, base, hub)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
+def test_the_fast_path_is_SCOPED_like_the_download_it_replaces(base, monkeypatch,
+                                                               tmp_path):
+    """`allow_patterns`/`ignore_patterns` change WHAT is fetched, and they reach
+    the local attempt too — so a repo cached whole still answers locally for a
+    scoped request, and one cached only outside the scope does not. A local
+    attempt that dropped them could hand back a snapshot missing exactly the
+    files the caller asked for."""
+    hub = _LocalHub(cached=["u/x"], snapshot=_snapshot_dir(tmp_path))
+    seen = {}
+    real = hub.snapshot_download
+
+    def spy(model_id, allow_patterns=None, ignore_patterns=None, **kw):
+        seen.update(allow=allow_patterns, ignore=ignore_patterns)
+        return real(model_id, allow_patterns=allow_patterns,
+                    ignore_patterns=ignore_patterns, **kw)
+
+    hub.snapshot_download = spy
+    _local_hub(monkeypatch, base, hub)
+
+    base.download_snapshot("u/x", allow_patterns=["*.json"],
+                           ignore_patterns=["*.bin"])
+
+    assert seen == {"allow": ["*.json"], "ignore": ["*.bin"]}
+
+
 # -- the heartbeat --------------------------------------------------------------
 
 

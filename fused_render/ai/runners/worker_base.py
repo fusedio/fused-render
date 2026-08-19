@@ -1425,6 +1425,88 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     return result["value"]
 
 
+# ------------------------------------------------------- the already-cached path
+#
+# **A model already complete on disk is resolved WITHOUT touching the network**,
+# and the reason is that "Fetching weights…" for a cached model was costing about
+# a second of wall clock before any weight was read. Measured on this machine for
+# `mlx-community/whisper-tiny.en-8bit`, fully cached: `download_snapshot` 483ms
+# and `download_file` 456ms, against ~14ms for the actual `load()` inside
+# mlx-whisper. All of it is Hub round-trips — `HfApi().model_info(files_metadata=
+# True)` is 228ms on its own and hf's own `snapshot_download` spends another
+# ~220ms revalidating etags — and it is also the source of the "You are sending
+# unauthenticated requests to the HF Hub" line in every worker log. The same two
+# answers off the cache alone are 0.13ms and 0.14ms.
+#
+# **The trade, stated so the next reader does not have to rediscover it: a model
+# already complete on disk will NOT pick up a newer Hub revision.** Nothing here
+# re-checks `main` once the cache can answer, so a repo that was re-uploaded
+# under the same branch keeps serving the bytes this machine already has until
+# something else forces a re-check (a cache clear, a fetch of a file this
+# snapshot does not have, or a caller that scopes the download differently).
+# That is deliberate (D356): bring-up latency and working offline are worth more
+# here than revision freshness, because these are pinned model snapshots a user
+# downloaded on purpose rather than a moving dependency — and a silently changing
+# set of weights under a name the user chose would be the worse surprise anyway.
+#
+# What must NOT change is a first download, and that is the whole shape of this:
+# the local attempt either answers completely or it is discarded, and everything
+# below it — the metadata call, the total, the segmented fetch, the progress
+# reporting — runs exactly as it did before.
+
+#: hf's own marker for a blob it is still writing. Ours is `PART_SUFFIX`.
+_HF_PART_SUFFIX = ".incomplete"
+
+
+def _has_partial_files(folder):
+    """Whether an interrupted download left anything behind in `folder`.
+
+    Recent `huggingface_hub` verifies snapshot completeness against its own
+    cached tree listing and raises `LocalEntryNotFoundError` for a partial one —
+    but a runner venv resolves `huggingface_hub` unpinned, so this file does not
+    get to assume that check exists, and the cost of trusting a partial cache is
+    a `load()` that fails on a missing shard instead of a download that finishes.
+    The marker files are right there, so ruling it out is one cheap walk of a
+    folder that holds tens of files.
+    """
+    if not folder:
+        return False
+    for _dirpath, _dirs, files in os.walk(folder):
+        for name in files:
+            if name.endswith(_HF_PART_SUFFIX) or name.endswith(PART_SUFFIX):
+                return True
+    return False
+
+
+def _cached_path(model_id, resolve):
+    """`resolve()`'s answer if the cache can serve it with NO network, else None.
+
+    `resolve` is the hf call with `local_files_only=True` — the same function and
+    the same arguments the networked path uses, so the local answer cannot be a
+    differently-scoped one.
+
+    **Every failure is a None**, deliberately broad: hf raises
+    `LocalEntryNotFoundError` for a cache that cannot answer (verified against
+    huggingface_hub 1.28 — an absent repo comes back in 0.08ms), an `OSError` for
+    a cache directory it cannot read, and an `ImportError` is what a venv without
+    the library looks like. None of those is a failure worth reporting, because
+    the answer to all of them is the networked path this returns to — which does
+    its own error handling and its own degradation. Catching narrowly here would
+    turn a new hub error type into a broken bring-up instead of a slow one.
+
+    The path is checked before it is trusted: it comes from a call this file did
+    not make itself, and a cache directory removed under a resolved ref would
+    otherwise be handed to `load()` as a snapshot.
+    """
+    if _has_partial_files(repo_folder(model_id)):
+        return None
+    try:
+        path = resolve()
+    except Exception:  # noqa: BLE001 - see the docstring: the answer is always the networked path
+        return None
+    return path if path and os.path.exists(path) else None
+
+
 def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwargs):
     """The repo, with progress. What most runners mean by "download".
 
@@ -1439,6 +1521,22 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     `snapshot_download` would fetch a tenth of a repo behind a bar priced at all
     of it.
     """
+    def local():
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(model_id, allow_patterns=allow_patterns,
+                                 ignore_patterns=ignore_patterns,
+                                 local_files_only=True, **kwargs)
+
+    # Already on disk, in scope and complete? Then there is nothing to download
+    # and nothing to report: no metadata call, no etag revalidation, no bar that
+    # fills in one tick. See the note above this function for what that costs in
+    # revision freshness. The patterns and any extra kwargs go through unchanged,
+    # so what the cache is asked for is exactly what would have been fetched.
+    cached = _cached_path(model_id, local)
+    if cached:
+        return cached
+
     # ONE listing, serving the bar's total, the list to fetch AND the revision
     # to fetch it at. Asking twice is a second round trip before any byte moves;
     # deciding the revision separately is how a list from one revision comes to
@@ -1492,6 +1590,21 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
     and reopened as a running download of something the user never asked for
     while the row they ARE watching says nothing. See `fetch_with_progress`.
     """
+    def local():
+        from huggingface_hub import hf_hub_download
+
+        return hf_hub_download(repo_id=repo_id, filename=filename,
+                               local_files_only=True)
+
+    # The same fast path `download_snapshot` takes, and it matters most for the
+    # SMALL components: the 2MB speech detector and the two diarization models
+    # are fetched inside a transcription, so on a warm cache their 456ms each was
+    # latency a user waits through on the way to a transcript they already had
+    # the bytes for.
+    cached = _cached_path(repo_id, local)
+    if cached:
+        return cached
+
     # One listing here too, for the revision as much as for the total: a GGUF
     # fetched at a revision its listing never described is the same bug as a
     # whole snapshot fetched that way, one file wide.

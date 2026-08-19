@@ -5698,6 +5698,29 @@ an AI Models page that could say what was on disk but not what was *running*.
   rather than destructive), no per-segment UI, and no cache lock — the etag names
   the content, so two instances write identical bytes at identical offsets and
   the loser of a rename race falls back rather than corrupting anything.
+- **AI-5k** **A model already complete on disk is resolved WITHOUT the network**
+  (D356). "Fetching weights…" for a cached model was about a second of pure
+  latency in front of every bring-up: measured on an Apple Silicon machine for
+  `mlx-community/whisper-tiny.en-8bit`, fully cached, `worker_base.
+  download_snapshot` took **483ms** and `download_file` **456ms**, against **~14ms**
+  for the weight load itself inside mlx-whisper — all of it Hub round-trips
+  (`HfApi().model_info(files_metadata=True)` is 228ms on its own, hf's
+  `snapshot_download` spends another ~220ms revalidating etags), and also the
+  source of the "You are sending unauthenticated requests to the HF Hub" line in
+  every worker log. Both helpers now try `local_files_only=True` FIRST — 0.13ms
+  and 0.14ms for the same two answers — and fall through to the whole networked
+  path (metadata call, total, segmented fetch, progress) on any failure. **First
+  download behaviour is unchanged, and a partial cache must never be mistaken for
+  a complete one**: three layers say so — the local attempt is made with the same
+  patterns and arguments the real fetch would use, an interrupted download's
+  markers (hf's `.incomplete`, our `.fusedpart`) in the repo folder disqualify the
+  cache outright, and huggingface_hub ≥1.27 independently verifies snapshot
+  completeness against its cached tree listing. **The trade is stated rather than
+  discovered: a complete cached model does not pick up a newer Hub revision under
+  the same branch** until something forces a re-check. That is chosen — bring-up
+  latency and offline operation over revision freshness — because these are
+  snapshots a user downloaded on purpose, and weights silently changing under a
+  name they picked would be the worse surprise.
 - **AI-5j** **A load that omits `capability` INFERS it, and refuses rather than
   guessing when it cannot.** The omitted argument used to mean text generation
   unconditionally, which is a wrong-runner dispatch wearing a library error:
