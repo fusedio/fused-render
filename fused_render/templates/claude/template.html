@@ -2839,20 +2839,6 @@
     white-space: nowrap;
     flex: 1;
   }
-  /* The provenance tag on a row this chat did not start (source "cli"). Quiet
-     on purpose: it is a footnote about where a chat came from, not a category
-     the reader is meant to sort by — the rows are ONE list, which is the point
-     of merging them. Only those rows carry the span at all (addChatRow), so
-     there is no "template" styling for it to be consistent with. */
-  .chat-row .row-tag {
-    color: var(--faint);
-    font-size: 10.5px;
-    letter-spacing: .04em;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0 4px;
-    flex-shrink: 0;
-  }
   .chat-row .row-sub { color: var(--faint); font-size: 12px; flex-shrink: 0; }
 
   /* ── skeleton loading placeholders ── */
@@ -13462,7 +13448,7 @@ box.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitChat(); }
 });
 
-// ── home: big input + this file's sidecar sessions ──
+// ── home: big input + this file's past sessions ──
 document.getElementById("card").onsubmit = (e) => {
   e.preventDefault();
   if (activeRun) { stopRun(); return; }
@@ -13592,38 +13578,19 @@ function sessionTitle(s) {
   return text || carried.join(MARKER_JOIN) || (s && s.id) || "";
 }
 
-// One row for one past chat, from EITHER store (agent.py `_sessions` merges
-// them and stamps `source`). There is deliberately no second row shape and no
-// second section: a chat about this folder is a chat about this folder, and
-// splitting the list by which surface started it would ask the reader to
-// remember something they have no reason to have kept.
-//
-// What the two do NOT share is the click, and only because they cannot: a
-// "cli" row is resumable when its transcript is in this cwd's project dir,
+// One row for one past chat — every transcript in this cwd's project dir,
+// whether it started in this page or in a terminal (agent.py `_sessions`).
+// A row is resumable because its transcript is in this cwd's project dir,
 // which is precisely where `_cli_sessions` found it — so the SAME `history`
-// read and the same `--resume` on the next send work on it untouched, and the
-// row needs no special case at all. See `_cli_sessions` for why that is true
-// rather than lucky.
+// read and the same `--resume` on the next send work on it untouched.
 function addChatRow(list, s) {
   const row = document.createElement("div");
   row.className = "chat-row";
   row.setAttribute("role", "button");
   row.tabIndex = 0;
   row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span>' +
-                  '<span class="row-tag" hidden></span><span class="row-sub"></span>';
+                  '<span class="row-sub"></span>';
   row.querySelector(".row-title").textContent = sessionTitle(s);
-  if (s.source === "cli") {
-    const tag = row.querySelector(".row-tag");
-    tag.hidden = false;
-    tag.textContent = "cli";
-    // The tag says three letters; the title says what they mean. All the
-    // sidecar can actually prove is that THIS chat did not start the session —
-    // a terminal run is the usual reason, a chat about a sibling file under the
-    // same cwd is the other one — so the wording claims only that. "here", not
-    // a noun, for the same reason the footnote says it: this sink derives no
-    // kind (setTargetNoun is the only writer that may name one).
-    tag.title = "Started outside this chat — a Claude Code session here";
-  }
   row.querySelector(".row-sub").textContent = ago(s.last_used || s.created_at || 0);
   const open = async () => {
     fused.params.set("session_id", s.id);
@@ -13719,9 +13686,10 @@ async function loadRecent() {
     if (error) throw new Error(error);
     list.innerHTML = "";  // drop the skeleton now that we know the real state
     // Name the snapshot runs from the SAME strings these rows are labelled with,
-    // even for an empty list: a file can have chains in the store and no chats in
-    // its sidecar, and the reverse — an empty session list is still an answer the
-    // snapshots panel wants (it means "name nothing"), not a reason to skip.
+    // even for an empty list: a file can have chains in the store and no chats
+    // in its project dir, and the reverse — an empty session list is still an
+    // answer the snapshots panel wants (it means "name nothing"), not a reason
+    // to skip.
     let named = false;
     for (const s of sessions) {
       // The SAME string the row is labelled with (sessionTitle, not the raw
@@ -14013,8 +13981,8 @@ function snapAgo(sec) {
 // timeline the write returned and both facts have to survive that.
 let snapTimeline = null;
 let snapOpenId = null;
-// sessionId → the name that session's chat goes by, filled from the sidecar by
-// `loadRecent` and read by `snapRunHead`. A Map rather than a lookup through the
+// sessionId → the name that session's chat goes by, filled from the session
+// list by `loadRecent` and read by `snapRunHead`. A Map rather than a lookup through the
 // session list itself, because the snapshots panel must not depend on that list
 // having been fetched, or on its order.
 const snapNames = new Map();
@@ -14124,7 +14092,7 @@ function snapRuns(versions) {
 
 // The heading over one run: WHOSE chain this is, and how long.
 //
-// The name comes from the sidecar's session list — the very same `preview` string
+// The name comes from the session list — the very same `preview` string
 // the "Recent chats" rows above are labelled with (`addChatRow`), so a chain the
 // user had in this app is named by what they asked for in it, and the two sections
 // agree. `loadRecent()` fills that map, and because it RACES this panel's read
@@ -14132,10 +14100,10 @@ function snapRuns(versions) {
 // (see there). This function therefore never waits for anything: it names what is
 // known at paint time and gets called again if that changes.
 //
-// A MISS is ordinary rather than a bug:
-// this store records every Claude Code session that touched the file, including
-// ones started from a terminal or from another file's page, and those were never
-// in this file's sidecar. So the fallback says only what is certain — that it was
+// A MISS is ordinary rather than a bug: the file-history store records every
+// Claude Code session that touched the file, including ones from another
+// folder's page, whose transcripts are not in this cwd's project dir. So the
+// fallback says only what is certain — that it was
 // another chat — and puts the session's short id beside the count, because that id
 // is the one handle that distinguishes two unnamed chains.
 function snapRunHead(run) {
@@ -14144,8 +14112,8 @@ function snapRunHead(run) {
   const name = document.createElement("span");
   name.className = "snap-run-name";
   const known = snapNames.get(run.session);
-  // "chat", not "another chat": on a file whose chains all come from outside this
-  // app — the common case, since the sidecar only knows chats started here — that
+  // "chat", not "another chat": on a file whose chains all come from outside
+  // this app — a common case — that
   // word repeats down the whole panel, and five headings saying "another chat" is
   // noise pretending to be information. The distinguishing fact is the id, and it
   // sits in the quiet half of the line beside the count.
@@ -14239,17 +14207,14 @@ function snapDiff(plan) {
 // One button, armed by a click rather than acting on it. The confirm is inline
 // so the diff being confirmed stays on screen underneath it, and the cost is
 // stated BEFORE the click: when the bytes on disk are in no snapshot this write
-// destroys the only copy, and whether a copy is kept is the plan's `stash`
-// answer rather than a permanent hedge.
+// destroys the only copy.
 function snapAction(plan) {
   const bar = document.createElement("div");
   bar.className = "snap-act";
   const gone = plan.action === "delete";
   const risk = !plan.unique_current ? ""
-    : plan.stash
-      ? "What is on disk now is in no snapshot — a copy of it is kept for you."
-      : "What is on disk now is in no snapshot, and "
-        + (plan.stash_note || "no copy of it can be kept") + ".";
+    : "What is on disk now is in no snapshot — going back destroys the only "
+      + "copy of it.";
   const arm = document.createElement("button");
   arm.type = "button";
   arm.className = "snap-go";
@@ -14304,9 +14269,7 @@ async function snapGoBack(plan, bar) {
     document.getElementById("snapsnote").textContent =
       (out.action === "delete"
         ? "Removed — that is how it was at this snapshot."
-        : "Back at this snapshot.")
-      + (out.stashed ? " The previous content was kept, in case."
-                     : out.stash_note ? " " + out.stash_note : "");
+        : "Back at this snapshot.");
   } catch (err) {
     bar.textContent = "";
     bar.append(snapErr(err.message));

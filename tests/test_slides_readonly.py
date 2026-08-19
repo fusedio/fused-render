@@ -2,7 +2,7 @@
 
 slides.py is a runPython target (not a package module) that does `import engine`
 at module top; engine.py needs python-pptx, which isn't in the test venv. So —
-like test_annotate_comments.py — slides.py is loaded via importlib, but with a
+like test_annotate_revert.py — slides.py is loaded via importlib, but with a
 stub `engine` module injected into sys.modules first. Every gated path must
 raise BEFORE any engine call, so the stub's build/parse functions raise if
 touched: the tests prove both the PermissionError and the ordering.
@@ -11,25 +11,15 @@ Gates under test:
   * action="save" refuses a chmod -w .pptx up front (before _load_model /
     mkstemp — the atomic tempfile+os.replace would silently bypass the file's
     read-only bit via the parent directory).
-  * action="set_title" refuses when its sidecar (home_dir()/sidecar/<mapped
-    path>.json, D83-reversal) isn't writable: an EXISTING sidecar needs W_OK
-    on itself, a fresh one W_OK on its nearest existing ancestor dir (same
-    rule as annotate's _sidecar_writable).
   * _editability(file) is the RO-4 verdict the open action folds into its
     response (editable / readonly_message / readonly_tooltip).
 Read-only never blocks viewing or the cache-model autosave — only the explicit
-overwrite of the .pptx and the sidecar title write are gated.
-
-FUSED_RENDER_HOME is pinned to an isolated tmp dir for every test (autouse
-_home fixture) so sidecar_path never touches the developer's real
-~/.fused-render.
+overwrite of the .pptx is gated.
 """
 import importlib.util
-import json
 import os
 import sys
 import types
-from pathlib import Path
 
 import pytest
 
@@ -85,10 +75,6 @@ def _deck(tmp_path):
     return f
 
 
-def _sidecar(mod, f) -> Path:
-    return Path(mod._sidecar_path(str(f)))
-
-
 # --------------------------------------------------------------- save gate
 def test_save_on_readonly_pptx_raises_before_engine(slides, tmp_path):
     f = _deck(tmp_path)
@@ -103,44 +89,6 @@ def test_save_on_readonly_pptx_raises_before_engine(slides, tmp_path):
         os.chmod(f, 0o644)
 
 
-# ------------------------------------------------------------ sidecar gate
-def test_set_title_readonly_sidecar_raises_and_preserves_bytes(slides, tmp_path):
-    f = _deck(tmp_path)
-    sidecar = _sidecar(slides, f)
-    sidecar.parent.mkdir(parents=True, exist_ok=True)
-    original = b'{"slides": {"title": "Old"}}'
-    sidecar.write_bytes(original)
-    os.chmod(sidecar, 0o444)
-    try:
-        with pytest.raises(PermissionError, match="read-only"):
-            slides.main(action="set_title", file=str(f), title="New")
-        assert sidecar.read_bytes() == original
-    finally:
-        os.chmod(sidecar, 0o644)
-
-
-def test_set_title_readonly_dir_without_sidecar_raises(slides, tmp_path):
-    # The sidecar's home-dir subtree doesn't exist yet, so writability walks up
-    # to the nearest existing ancestor (nearest_existing_dir) — tmp_path itself
-    # here, since FUSED_RENDER_HOME (tmp_path/home) hasn't been created.
-    f = _deck(tmp_path)
-    os.chmod(tmp_path, 0o555)
-    try:
-        with pytest.raises(PermissionError, match="read-only"):
-            slides.main(action="set_title", file=str(f), title="New")
-        assert not _sidecar(slides, f).exists()
-    finally:
-        os.chmod(tmp_path, 0o755)
-
-
-def test_set_title_creates_sidecar_in_writable_dir(slides, tmp_path):
-    f = _deck(tmp_path)
-    res = slides.main(action="set_title", file=str(f), title="My Deck")
-    assert res == {"ok": True, "title": "My Deck"}
-    data = json.loads(_sidecar(slides, f).read_text())
-    assert data["slides"]["title"] == "My Deck"
-
-
 # --------------------------------------------------------- open verdict (RO-4)
 def test_editability_verdict(slides, tmp_path):
     f = _deck(tmp_path)
@@ -153,16 +101,3 @@ def test_editability_verdict(slides, tmp_path):
         assert "read-only" in tooltip
     finally:
         os.chmod(f, 0o644)
-
-
-def test_sidecar_writable_helper(slides, tmp_path):
-    f = _deck(tmp_path)
-    assert slides._sidecar_writable(str(f)) is True   # fresh sidecar, writable dir
-    sidecar = _sidecar(slides, f)
-    sidecar.parent.mkdir(parents=True, exist_ok=True)
-    sidecar.write_text("{}")
-    os.chmod(sidecar, 0o444)
-    try:
-        assert slides._sidecar_writable(str(f)) is False
-    finally:
-        os.chmod(sidecar, 0o644)

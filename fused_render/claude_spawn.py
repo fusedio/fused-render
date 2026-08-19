@@ -4,7 +4,7 @@ Two features now do this — the apps API's scaffolding turn
 (`server/routers/apps.py`) and scheduled messages (`schedule.py`) — and both
 have to know the same three awkward things: that `agent._start` cannot be
 called in this process at all, where the agent backend lives, and that a run
-nobody polls never reaches its sidecar. That is why this module exists rather
+nobody polls never gets its finished turn committed. That is why this module exists rather
 than a second copy of the comment block below: the fork-safety reasoning is the
 kind that gets paraphrased into something false on the second telling.
 
@@ -33,9 +33,8 @@ _RECORD_POLL_INTERVAL = 2
 
 def agent_path() -> str:
     """The claude template backend (agent.py) — the STAGED core copy, the same
-    file the split app view executes, so the runs dir, sidecar shape
-    (`.claude-split.json`) and permission_server path stay in step with what the
-    page will poll when the user opens the chat.
+    file the split app view executes, so the runs dir and permission_server
+    path stay in step with what the page will poll when the user opens the chat.
 
     Staging is idempotent (a marker compare, memoized per process), so calling
     it per spawn is a path lookup, not a tree copy."""
@@ -59,15 +58,13 @@ def load_agent():
 def record_session_when_ready(agent, run_id: str, on_tick=None) -> None:
     """Poll the detached run until it finishes.
 
-    `agent._poll` is what writes the sidecar (the first poll that sees the
-    session id records it, one-shot via the run's `recorded` marker) AND what
-    commits the finished turn into the folder's repo (one-shot via
-    `committed`) — but nobody is polling until the user opens that folder's
-    claude chat, which may be never. This background loop polls all the way to
-    `done` so both happen regardless: the session is listed when the user does
-    look, and the turn's work is committed.
+    `agent._poll` is what records the run's session id (one-shot via the run's
+    `recorded` marker) AND what commits the finished turn into the folder's
+    repo (one-shot via `committed`) — but nobody is polling until the user
+    opens that folder's claude chat, which may be never. This background loop
+    polls all the way to `done` so both happen regardless.
 
-    Bookkeeping only. Every failure here is swallowed: a run whose sidecar entry
+    Bookkeeping only. Every failure here is swallowed: a run whose bookkeeping
     never lands still did its work, and this thread must never be the reason a
     request or a scheduler tick fails.
 
@@ -77,7 +74,7 @@ def record_session_when_ready(agent, run_id: str, on_tick=None) -> None:
     False from it to stop polling early; a caller with nothing to observe passes
     nothing and gets the loop this always was. Its exceptions are swallowed for
     the same reason the poll's are: an observer is not allowed to abandon a run
-    whose sidecar has not been written yet."""
+    whose turn has not been committed yet."""
     for _ in range(_RECORD_POLL_TICKS):
         try:
             data = agent._poll(run_id)

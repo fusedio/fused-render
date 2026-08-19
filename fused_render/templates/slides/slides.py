@@ -18,11 +18,6 @@ caches. The original .pptx is never mutated except by an explicit ``save``
 Since the hash is content-derived, every ``save`` moves the doc to a new
 cache dir; ``save`` removes the prior dir once the new one lands so re-saves
 don't leak one orphaned ``model.json``/``media/`` folder per save.
-A per-document display-name override (renaming the deck without renaming the
-file) lives in the shared JSON sidecar under ``home_dir()/sidecar/`` (D83-
-reversal — see shared/appenv.py's ``sidecar_path``), namespaced under the
-"slides" key, alongside whatever other templates keep there (e.g.
-claudeSessions).
 
 AI-native surface (call these directly to edit a deck without the browser):
   get_model, update_element, set_text, add_text, add_image, delete_element,
@@ -124,55 +119,6 @@ def _save_model(doc, model, expected_mtime=None):
     return {"ok": True, "mtime": os.path.getmtime(mp), "model": model}
 
 
-# --------------------------------------------------------------------------- #
-#  sidecar store (shared with other templates — see templates/claude/agent.py) #
-# --------------------------------------------------------------------------- #
-def _sidecar_path(file):
-    from appenv import sidecar_path
-    return sidecar_path(file)
-
-
-def _load_sidecar(file):
-    try:
-        with open(_sidecar_path(file), encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        data = None
-    if not isinstance(data, dict):
-        data = {}
-    return data
-
-
-def _save_sidecar(file, data):
-    path = _sidecar_path(file)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-        os.replace(tmp, path)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def _sidecar_writable(file):
-    """True iff _save_sidecar would succeed (SPEC RO-3, annotate's rule): an
-    existing sidecar needs W_OK on itself (the mkstemp + os.replace above would
-    otherwise bypass its read-only bit via the directory), a fresh one needs
-    W_OK on its nearest existing ancestor dir (mkstemp+replace land in the
-    parent once created — D83-reversal, the sidecar's subtree under
-    home_dir()/sidecar/ usually doesn't exist yet)."""
-    path = _sidecar_path(os.path.abspath(file))
-    if os.path.exists(path):
-        return os.access(path, os.W_OK)
-    from appenv import nearest_existing_dir
-    return os.access(nearest_existing_dir(os.path.dirname(path)), os.W_OK)
-
-
 _READONLY_TOOLTIP = ("The file is read-only — its permissions don't allow "
                      "writing, so it can't be edited here.")
 
@@ -185,23 +131,6 @@ def _editability(file):
     if os.path.exists(file) and not os.access(file, os.W_OK):
         return False, "Read-only", _READONLY_TOOLTIP
     return True, "", ""
-
-
-def _get_title(file):
-    return _load_sidecar(file).get("slides", {}).get("title") or None
-
-
-def _set_title(file, title):
-    data = _load_sidecar(file)
-    ns = data.get("slides")
-    if not isinstance(ns, dict):
-        ns = {}
-    if title:
-        ns["title"] = title
-    else:
-        ns.pop("title", None)
-    data["slides"] = ns
-    _save_sidecar(file, data)
 
 
 # --------------------------------------------------------------------------- #
@@ -299,8 +228,7 @@ def main(action: str = "open",
          background: str = "",
          model_json: str = "", expected_mtime: str = "",
          token: str = "", data: str = "", fmt: str = "pptx",
-         row: int = -1, col: int = -1, path: str = "", directory: str = "",
-         title: str = ""):
+         row: int = -1, col: int = -1, path: str = "", directory: str = ""):
 
     os.makedirs(CACHE_ROOT, exist_ok=True)
 
@@ -328,10 +256,9 @@ def main(action: str = "open",
         library = os.path.dirname(os.path.abspath(file)) == os.path.abspath(LIBRARY)
         return {"doc": d, "model": model, "mtime": os.path.getmtime(mp),
                 "media_dir": _media_dir(d).replace(os.sep, "/"),
-                "title": _get_title(file), "library": library,
+                "library": library,
                 "editable": editable, "readonly_message": ro_msg,
-                "readonly_tooltip": ro_tip,
-                "sidecar_writable": _sidecar_writable(file)}
+                "readonly_tooltip": ro_tip}
 
     # --------------------------------------------- new blank deck (home screen)
     if action == "new_deck":
@@ -352,7 +279,7 @@ def main(action: str = "open",
                 continue
             full = os.path.join(LIBRARY, nm)
             decks.append({"file": full.replace(os.sep, "/"),
-                          "name": _get_title(full) or os.path.splitext(nm)[0],
+                          "name": os.path.splitext(nm)[0],
                           "mtime": os.path.getmtime(full)})
         decks.sort(key=lambda r: -r["mtime"])
         return {"decks": decks}
@@ -677,7 +604,7 @@ def main(action: str = "open",
     # ------------------------------------------------- download / export as fmt
     if action == "export":
         model = _load_model(doc)
-        base = _get_title(file) or (os.path.splitext(os.path.basename(file))[0] if file else "deck")
+        base = os.path.splitext(os.path.basename(file))[0] if file else "deck"
         safe = re.sub(r"[^a-zA-Z0-9._-]", "_", base)
         os.makedirs(EXPORTS, exist_ok=True)
         media_dir = _media_dir(doc)
@@ -729,46 +656,32 @@ def main(action: str = "open",
         return {"path": file, "doc": new_doc, "mtime": os.path.getmtime(_model_path(new_doc))}
 
     # --------- first save of a new/untitled draft: write the .pptx to the chosen
-    # location, carry the deck's title over, and drop the library scratch draft.
+    # location and drop the library scratch draft.
     if action == "save_new":
         model = _load_model(doc)
         dst = _resolve_save_dest(name or "Untitled", directory)
         engine.build_pptx(model, dst, _media_dir(doc))
         src_file = _to_native_path(file) if file else ""
         if src_file:
-            title_carry = _get_title(src_file)
-            if title_carry:
-                _set_title(dst, title_carry)
-            # Drop the scratch draft + its sidecar — but never when the user saved
-            # back onto the scratch itself (browsing into LIBRARY under the same
-            # name), which would delete the deck (and title) we just wrote.
+            # Drop the scratch draft — but never when the user saved back onto
+            # the scratch itself (browsing into LIBRARY under the same name),
+            # which would delete the deck we just wrote.
             saved_onto_scratch = (os.path.normcase(os.path.abspath(dst))
                                   == os.path.normcase(os.path.abspath(src_file)))
             if (not saved_onto_scratch
                     and os.path.dirname(os.path.abspath(src_file)) == os.path.abspath(LIBRARY)):
-                for p in (os.path.abspath(src_file), _sidecar_path(src_file)):
-                    with contextlib.suppress(OSError):
-                        os.remove(p)
+                with contextlib.suppress(OSError):
+                    os.remove(os.path.abspath(src_file))
         return {"path": dst.replace(os.sep, "/"), "name": os.path.basename(dst)}
 
     # --------- Save as = write a NEW .pptx elsewhere; the open document is unchanged
     if action == "save_as":
         model = _load_model(doc)
-        default = _get_title(file) or (os.path.splitext(os.path.basename(file))[0] if file else "deck")
+        default = os.path.splitext(os.path.basename(file))[0] if file else "deck"
         dst = _resolve_save_dest(name or f"{default} copy", directory,
                                  default_dir=os.path.dirname(_to_native_path(file)) or None)
         engine.build_pptx(model, dst, _media_dir(doc))
         return {"path": dst.replace(os.sep, "/"), "name": os.path.basename(dst)}
-
-    # ---------------------------------------------------------------- sidecar
-    if action == "set_title":
-        file = _to_native_path(file)
-        # RO-3 gate on the actual write target (RO-6): the title lives in the
-        # <file>.json sidecar, so it's the sidecar's writability that counts.
-        if not _sidecar_writable(file):
-            raise PermissionError(f"{_sidecar_path(file)!r} is read-only")
-        _set_title(file, title)
-        return {"ok": True, "title": title or None}
 
     raise ValueError(f"unknown action: {action}")
 
@@ -796,7 +709,7 @@ SCHEMA_DOC = {
     },
 }
 ACTIONS = {
-    "open": "file -> {doc, model, mtime, media_dir, title}: parse (or reuse the "
+    "open": "file -> {doc, model, mtime, media_dir}: parse (or reuse the "
            "cached) model for a .pptx",
     "new_deck": "name? -> {file}: write a new blank .pptx into the library dir, "
                 "then open it via `open`",
@@ -825,7 +738,6 @@ ACTIONS = {
     "save": "doc, file -> materialize model to `file` itself (atomic overwrite). Returns new doc id.",
     "save_as": "doc, file, name, directory? -> write a NEW .pptx (default: file's dir), doesn't repoint `file`",
     "listdir": "path? -> {path,parent,dirs,files(.pptx),home} for the Save-as browser",
-    "set_title": "file, title -> rename the deck's display title (stored in the file's .json sidecar)",
 }
 
 

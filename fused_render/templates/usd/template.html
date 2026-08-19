@@ -200,7 +200,6 @@
   ::-webkit-scrollbar-thumb { background: #3a3a40; border-radius: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
 </style>
-<script src="/template-shared/ro-badge.js"></script>
 </head>
 <body>
   <div id="topbar">
@@ -352,7 +351,6 @@
 
   <div id="statusbar">
     <span id="statusMsg">booting…</span>
-    <span id="ro" hidden></span>
     <div id="statusProg"><div id="statusProgFill"></div></div>
     <span id="fps"></span>
   </div>
@@ -427,12 +425,8 @@
     grid: "1", bbox: "0", exp: "1", key: "1.6", amb: "0.7", shadow: "0",
     sscale: "1",
   };
-  // Per-asset defaults from the sidecar (see loadSidecar below), applied only
-  // where the URL doesn't already say otherwise — a bookmarked/edited URL
-  // always wins over the asset's remembered settings.
-  const ASSET_DEFAULTS = {};
   const P = {
-    get: (k) => fused.params.get(k) ?? ASSET_DEFAULTS[k] ?? DEFAULTS[k],
+    get: (k) => fused.params.get(k) ?? DEFAULTS[k],
     set: (k, v) => { if (String(v) !== P.get(k)) fused.params.set(k, String(v)); },
   };
   // "files" comes straight from the URL once anything has touched it; on a
@@ -445,86 +439,6 @@
     return raw.split("\n").map((s) => s.trim()).filter(Boolean);
   };
   const setFiles = (arr) => P.set("files", arr.join("\n"));
-
-  // ---- sidecar: per-asset settings that survive a fresh dispatch open -----
-  // URL params are the source of truth for the CURRENT tab (bookmarkable),
-  // but a preview template is re-opened with a bare _file each time — so the
-  // render/lighting choices and camera framing the user left this asset in
-  // are remembered in a JSON sidecar (home_dir()/sidecar/<mapped path>.json,
-  // "usd" key, D83-reversal) and seeded back as ASSET_DEFAULTS the next time
-  // it's opened fresh.
-  const SIDECAR_FIELDS = ["mode", "shade", "budget", "crop", "bg", "grid",
-                          "bbox", "exp", "key", "amb", "shadow", "sscale"];
-  let pendingCamera = null;
-  let initialCameraApplied = false;
-
-  // Resolved once (window._fusedSidecarPath needs a round trip the first time) and
-  // cached — every sidecar function below awaits this instead of a plain
-  // constant.
-  let _sidecarLoc = null;
-  async function resolvedSidecarPath() {
-    if (_sidecarLoc === null) {
-      // _fusedSidecarPath rejects when sidecarRoot never resolved (a
-      // failed/pending /api/config fetch) — the boot's `await loadSidecar()`
-      // has no catch of its own, so an uncaught rejection here used to crash
-      // the whole viewer instead of just leaving settings/camera unremembered
-      // (RO-6's own posture: a missing sidecar never blocks viewing) (Bugbot).
-      try {
-        _sidecarLoc = FILE ? await window._fusedSidecarPath(FILE) : "";
-      } catch (e) {
-        _sidecarLoc = "";
-      }
-    }
-    return _sidecarLoc;
-  }
-
-  // Read-only sidecar (SPEC §13.5 RO-6): the viewed asset is never written,
-  // so read-onlyness never blocks viewing — settings/camera just stop being
-  // remembered, with a visible warning instead of doomed 403 writes.
-  let sidecarWritable = true;
-  async function markSidecarReadonly() {
-    sidecarWritable = false;
-    const name = (await resolvedSidecarPath()).split(/[\\/]/).pop();
-    fusedRoBadge.update(document.getElementById("ro"), "Settings not saved",
-      "The file's settings sidecar (" + name + ") is read-only, so viewer " +
-      "settings and camera position won't be remembered.");
-  }
-
-  async function loadSidecar() {
-    const path = await resolvedSidecarPath();
-    if (!path) return;
-    let saved;
-    try { saved = JSON.parse(await fused.readFile(path)).usd; }
-    catch (e) { return; }               // no sidecar yet, or unreadable
-    if (!saved) return;
-    for (const k of SIDECAR_FIELDS) if (saved[k] !== undefined) ASSET_DEFAULTS[k] = String(saved[k]);
-    if (saved.camera) pendingCamera = saved.camera;
-  }
-
-  let sidecarSaveTimer = null;
-  function scheduleSidecarSave() {
-    clearTimeout(sidecarSaveTimer);
-    sidecarSaveTimer = setTimeout(saveSidecar, 800);
-  }
-  async function saveSidecar() {
-    const path = await resolvedSidecarPath();
-    if (!path || !sidecarWritable) return;
-    let doc = {};
-    try { doc = JSON.parse(await fused.readFile(path)) || {}; }
-    catch (e) { /* new sidecar */ }
-    doc.usd = { camera: {
-      pos: camera.position.toArray().map((v) => +v.toFixed(3)),
-      target: controls.target.toArray().map((v) => +v.toFixed(3)),
-    } };
-    for (const k of SIDECAR_FIELDS) doc.usd[k] = P.get(k);
-    try { await fused.writeFile(path, JSON.stringify(doc, null, 2)); }
-    catch (e) {
-      // Mid-session chmod: the server's 403 backstop (RO-2) surfaces as a
-      // typed error — flip the badge on and stop retrying doomed saves.
-      if (e.type === "readonly") await markSidecarReadonly();
-      else console.warn("usd sidecar save failed:", e.message);
-    }
-  }
 
   // ------------------------------------------------------------ three.js ---
   const renderer = new THREE.WebGLRenderer({
@@ -545,7 +459,6 @@
   controls.screenSpacePanning = true;
   controls.zoomToCursor = true;          // wheel dives toward the pointer
   controls.minDistance = 0.05;           // allow going deep inside the splat
-  controls.addEventListener("end", scheduleSidecarSave);  // drag/zoom settled
 
   // data is Z-up (USD); rotate the whole content root into three's Y-up
   const root = new THREE.Group();
@@ -1108,9 +1021,6 @@
     catch (e) { setOverlay("Inspect failed", e.message, 0); removeScene(s); return; }
     if (token !== loadToken) { removeScene(s); return; }
     if (info.error) { setOverlay("Cannot load", info.error, 0); removeScene(s); return; }
-    // Only the target file's inspect speaks for the sidecar (window._fusedSidecarPath(FILE))
-    // — extra imported scenes don't gate settings persistence.
-    if (file === FILE && info.sidecar_writable === false) await markSidecarReadonly();
     s.kind = info.kind;
 
     // .splat/.ksplat: feed straight to the splat renderer
@@ -1207,18 +1117,7 @@
   function finishScene(s, hadLayers, t0) {
     s.worldBox = computeSceneBox(s);
     recomputeBounds();
-    if (!hadLayers && !suppressFrame) {
-      // first scene: resume the sidecar-remembered framing if this is the
-      // freshly-booted view, else frame it fresh like every later addition
-      if (!initialCameraApplied && pendingCamera) {
-        camera.position.fromArray(pendingCamera.pos);
-        controls.target.fromArray(pendingCamera.target);
-        controls.update();
-      } else {
-        fitView();
-      }
-    }
-    initialCameraApplied = true;
+    if (!hadLayers && !suppressFrame) fitView();
     hideOverlay(); buildTree(); updateStats(); rebuildNav();
     updateExport(s);
     setStatus(`loaded ${s.name} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
@@ -1290,7 +1189,6 @@
     if (k >= 1) {
       camAnim = null;
       syncWalkAngles();
-      scheduleSidecarSave();            // programmatic move (view/gizmo) settled
     }
   }
 
@@ -1877,8 +1775,7 @@
     const k = P.get("files") + "|" + P.get("budget") + "|" + P.get("crop");
     if (k !== lastLoadKey) { lastLoadKey = k; reconcile(); }
   }
-  fused.params.onChange(() => { drawFromParams(); scheduleSidecarSave(); });
-  await loadSidecar();    // seed ASSET_DEFAULTS/pendingCamera before first draw
+  fused.params.onChange(drawFromParams);
   drawFromParams();
 
   // debug/test hook: capture a frame without preserveDrawingBuffer

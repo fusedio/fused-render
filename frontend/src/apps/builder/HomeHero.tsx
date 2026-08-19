@@ -17,8 +17,8 @@ import { TextArea } from "@platform/ui/field/fields";
 // run, so a session started server-side is picked up exactly like one the
 // page started itself). Folder-scoped on purpose: the server starts the
 // scaffolding session via the claude agent on the app FOLDER, so the
-// re-attach must land in the same template — same runs dir, same
-// .claude-split.json sidecar. (There is only one chat template now, so "which
+// re-attach must land in the same template — same runs dir.
+// (There is only one chat template now, so "which
 // chat" is no longer a question at all; the `_mode` still has to be spelled out
 // because the folder's default mode is the app itself, not the chat.)
 // An ORDINARY explorer URL for the folder. It used to be the builder route

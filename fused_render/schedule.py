@@ -1155,15 +1155,15 @@ def _send(entry: dict) -> None:
     # run (agent._cancel), so the manager's ✕ is an action.
     _report(entry["id"], title=_job_title(entry), kind="task",
             detail=entry["target"], state="running", cancellable=True)
-    # Nothing else will poll the run, so without this thread the session never
-    # reaches its sidecar and the finished turn is never committed — and, since
+    # Nothing else will poll the run, so without this thread the finished
+    # turn is never committed — and, since
     # this feature added an observer, nobody would ever learn how the turn went.
     try:
         threading.Thread(
             target=_watch_turn, args=(dict(entry), str(run_id)),
             daemon=True, name="fused-schedule-session-record").start()
     except Exception:  # noqa: BLE001
-        logger.debug("could not start the sidecar-recording thread", exc_info=True)
+        logger.debug("could not start the turn-recording thread", exc_info=True)
         # Nothing is watching and nothing will, so say so now rather than leave the
         # sweep to notice a turn it cannot distinguish from one abandoned by a dead
         # process — this one is abandoned in a live process, and immediately.
@@ -1309,7 +1309,7 @@ def _watch_turn(entry: dict, run_id: str) -> None:
     """Thread body: follow one sent message's turn to its end.
 
     Wraps `record_session_when_ready` rather than replacing it — that function
-    owns the sidecar write and the commit, which must happen whether or not
+    owns the run bookkeeping and the commit, which must happen whether or not
     anything is watching. This only adds the observer.
 
     **The watch can end without a verdict**, and every one of those paths used to

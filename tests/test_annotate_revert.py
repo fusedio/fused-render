@@ -1,22 +1,18 @@
 """Tests for annotate.py's revert actions — the seam between the annotate view
 and the Claude-file-history reader (SPEC §34, D194).
 
-`file_history.py` owns the store and the write; annotate.py owns two things it
-cannot: turning every failure into an `{"error": ...}` DICT (a raised exception
-would become the red traceback overlay, which is not an acceptable answer to
-"this file has no history"), and stashing the pre-restore content into the
-sidecar (home_dir()/sidecar/<mapped path>.json, D83-reversal) it already
-read-merge-writes.
+`file_history.py` owns the store and the write; annotate.py owns the one thing
+it cannot: turning every failure into an `{"error": ...}` DICT (a raised
+exception would become the red traceback overlay, which is not an acceptable
+answer to "this file has no history").
 
-The stash is the answer to the sharpest hazard in the feature: current on-disk
-content is frequently in NO checkpoint, so a restore can vaporize work that
-exists nowhere else. The UI's confirm step is the first line of defence; this is
-the second.
+The sharpest hazard in the feature: current on-disk content is frequently in NO
+checkpoint, so a restore can vaporize work that exists nowhere else. The UI's
+confirm step (driven by `unique_current`) is the whole defence — no copy is
+kept anywhere (D359 removed the sidecar stash).
 """
 import importlib.util
-import json
 import os
-from pathlib import Path
 
 import pytest
 
@@ -38,8 +34,7 @@ def _load_annotate():
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path, monkeypatch):
-    # The sidecar (and its revertStash) now live under home_dir()/sidecar/
-    # (D83-reversal), never beside the target — pin FUSED_RENDER_HOME so these
+    # The mounts dir hangs off home_dir() — pin FUSED_RENDER_HOME so these
     # tests never touch a real ~/.fused-render.
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
 
@@ -48,10 +43,6 @@ def _target(tmp_path, content="a\nb\nc\n", name="page.html"):
     f = tmp_path / name
     f.write_text(content)
     return str(f)
-
-
-def _sidecar(ann, target):
-    return ann._sidecar_path(target)
 
 
 # ------------------------------------------------------------- history action
@@ -120,7 +111,7 @@ def test_revert_plan_with_nothing_to_revert(claude_home, tmp_path):
 
 # ------------------------------------------------------------- revert action
 
-def test_revert_restores_and_stashes_the_previous_content(claude_home, tmp_path):
+def test_revert_restores_the_previous_content(claude_home, tmp_path):
     ann = _load_annotate()
     f = _target(tmp_path, "unsaved work\n")
     write_version(claude_home, "s", f, "wanted\n")
@@ -128,16 +119,8 @@ def test_revert_restores_and_stashes_the_previous_content(claude_home, tmp_path)
     out = ann.main(action="revert", file=f, version_id="s@v1",
                    confirm_unique=True)
     assert out["ok"] is True and out["action"] == "restore"
-    assert out["stashed"] is True
     with open(f, encoding="utf-8") as h:
         assert h.read() == "wanted\n"
-
-    stash = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())["revertStash"]
-    assert len(stash) == 1
-    assert stash[0]["content"] == "unsaved work\n"
-    assert stash[0]["version_id"] == "s@v1"
-    assert stash[0]["size"] == len("unsaved work\n")
-    assert stash[0]["at"] > 0
 
 
 def test_the_plan_chooses_and_the_revert_only_applies(claude_home, tmp_path):
@@ -156,65 +139,18 @@ def test_the_plan_chooses_and_the_revert_only_applies(claude_home, tmp_path):
         assert h.read() == "older\n"
 
 
-def test_the_stash_preserves_every_key_it_does_not_own(claude_home, tmp_path):
-    """Same read-merge-write contract as `_record`: the sidecar is shared with
-    the claude chat template and the bookmark mirror, so a revert must round-trip
-    their keys instead of clobbering them off disk."""
+def test_a_large_file_is_reverted(claude_home, tmp_path):
     ann = _load_annotate()
-    f = _target(tmp_path, "before\n")
-    write_version(claude_home, "s", f, "after\n")
-    sess = [{"id": "s1", "preview": "hi", "created_at": 1, "last_used": 1,
-             "cwd": "/x"}]
-    sidecar = Path(_sidecar(ann, f))
-    sidecar.parent.mkdir(parents=True, exist_ok=True)
-    with open(sidecar, "w", encoding="utf-8") as h:
-        json.dump({"claudeSessions": sess, "lastSession": "s1",
-                   "comments": [{"id": "c1", "content": "keep me"}]}, h)
-
-    ann.main(action="revert", file=f, version_id="s@v1", confirm_unique=True)
-    data = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())
-    assert data["claudeSessions"] == sess
-    assert data["lastSession"] == "s1"
-    assert data["comments"][0]["content"] == "keep me"
-    assert len(data["revertStash"]) == 1
-
-
-def test_the_stash_is_bounded(claude_home, tmp_path):
-    """A sidecar is a small JSON file the claude template rewrites constantly;
-    an unbounded stash of file copies would grow it without limit."""
-    ann = _load_annotate()
-    f = _target(tmp_path, "gen0\n")
-    for i in range(1, 7):
-        write_version(claude_home, "s", f, "gen%d\n" % i)
-    for i in range(1, 7):
-        ann.main(action="revert", file=f, version_id="s@v%d" % i,
-                 confirm_unique=True)
-    stash = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())["revertStash"]
-    assert len(stash) == ann.STASH_KEEP
-    # Newest last: the entries kept are the most recent ones.
-    assert stash[-1]["content"] == "gen5\n"
-
-
-def test_a_large_file_is_reverted_without_being_copied_into_the_sidecar(
-        claude_home, tmp_path, monkeypatch):
-    """Better a revert with no stash than a multi-megabyte sidecar — and the
-    caller is TOLD, so the UI can make the confirm step firmer."""
-    ann = _load_annotate()
-    monkeypatch.setattr(ann, "STASH_BYTE_CAP", 8)
-    f = _target(tmp_path, "far too much content to stash\n")
+    f = _target(tmp_path, "x" * 2_000_000 + "\n")
     write_version(claude_home, "s", f, "small\n")
     out = ann.main(action="revert", file=f, version_id="s@v1",
                    confirm_unique=True)
     assert out["ok"] is True
-    assert out["stashed"] is False
-    assert out["stash_note"]
-    assert not os.path.exists(_sidecar(ann, f))  # nothing written at all
     with open(f, encoding="utf-8") as h:
         assert h.read() == "small\n"
 
 
-def test_binary_content_is_not_stashed_but_is_still_reverted(claude_home,
-                                                             tmp_path):
+def test_binary_content_is_still_reverted(claude_home, tmp_path):
     ann = _load_annotate()
     f = str(tmp_path / "blob.bin")
     with open(f, "wb") as h:
@@ -226,15 +162,14 @@ def test_binary_content_is_not_stashed_but_is_still_reverted(claude_home,
 
     out = ann.main(action="revert", file=f, version_id="s@v1",
                    confirm_unique=True)
-    assert out["ok"] is True and out["stashed"] is False
-    assert out["stash_note"]
+    assert out["ok"] is True
     with open(f, "rb") as h:
         assert h.read() == b"\xff\xfe\x00wanted"
 
 
-def test_a_delete_revert_stashes_the_whole_file_first(claude_home, tmp_path):
-    """Reverting across a did-not-exist boundary removes the file outright, so
-    the stash is the ONLY copy of what was there."""
+def test_a_revert_across_the_creation_boundary_deletes_the_file(claude_home,
+                                                                tmp_path):
+    """Reverting across a did-not-exist boundary removes the file outright."""
     ann = _load_annotate()
     f = _target(tmp_path, "claude wrote this\n")
     write_version(claude_home, "s", f, "claude wrote this\n", mtime=1785479788)
@@ -245,10 +180,7 @@ def test_a_delete_revert_stashes_the_whole_file_first(claude_home, tmp_path):
     out = ann.main(action="revert", file=f, version_id="s@none0",
                    confirm_unique=True)
     assert out["ok"] is True and out["action"] == "delete"
-    assert out["stashed"] is True
     assert not os.path.exists(f)
-    stash = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())["revertStash"]
-    assert stash[0]["content"] == "claude wrote this\n"
 
 
 # ------------------------------------------------------- failures stay data
@@ -420,20 +352,19 @@ def test_the_confirm_sheet_states_what_the_write_costs(source):
     body = source[source.index("async function askRevert"):]
     body = body[:body.index('getElementById("confirmgo").addEventListener')]
     assert "plan.unique_current" in body
-    assert "revertStash" in body           # says where the backstop lives
     assert "current.size" in body and "target.size" in body  # byte counts
     assert "plan.added" in body            # and the line delta
 
 
-def test_the_sheet_knows_whether_a_copy_will_be_kept(source):
-    """The hedge was the bug: "a copy is kept unless too large or not text" made
-    the one unrecoverable case — content in no checkpoint AND no stash — read
-    exactly like the safe one, and the user found out in the past tense. The
-    sheet now reads `plan.stash`, the same predicate the write runs."""
+def test_the_sheet_knows_no_copy_is_kept(source):
+    """D359 removed the sidecar stash, so the warning is driven by
+    `plan.unique_current` alone and must not hedge about a copy being kept —
+    there is none, anywhere."""
+    assert "plan.stash" not in source
+    assert "revertStash" not in source
     body = source[source.index("async function askRevert"):]
     body = body[:body.index('getElementById("confirmgo").addEventListener')]
-    assert "plan.stash === false" in body
-    assert "plan.stash_note" in body
+    assert "warn.hidden = !plan.unique_current" in body
     assert "unless it is too large" not in source  # the old hedge is gone
 
 
@@ -642,140 +573,7 @@ def test_a_version_identical_to_disk_is_not_clickable(source):
     assert 'if (v.differs && timeline.writable !== false) {' in body
 
 
-def test_the_comments_log_and_the_stash_coexist(claude_home, tmp_path):
-    """Both writers go through the same read-merge-write, so recording a comment
-    after a revert must not drop the stash, and vice versa."""
-    ann = _load_annotate()
-    f = _target(tmp_path, "before\n")
-    write_version(claude_home, "s", f, "after\n")
-    ann._record(f, [{"id": "c1", "content": "hi", "createdAt": 1}], [])
-    ann.main(action="revert", file=f, version_id="s@v1", confirm_unique=True)
-    ann._record(f, [{"id": "c2", "content": "there", "createdAt": 2}], [])
-
-    data = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())
-    assert sorted(c["id"] for c in data["comments"]) == ["c1", "c2"]
-    assert len(data["revertStash"]) == 1
-
-
 # ============================================================ review findings
-
-# --- C2: the stash must be byte-faithful ----------------------------------
-# It opened the target in TEXT mode, so universal-newline translation silently
-# rewrote CRLF and lone-CR files: b"line one\r\nline two\r\n" stashed as
-# 'line one\nline two\n' while the sibling `size` recorded 20 against 18 chars.
-# The sidecar contradicted itself and a hand-recovery restored different bytes
-# than were lost. This repo ships a `windows/` dir, so CRLF is a live case.
-
-@pytest.mark.parametrize("raw", [
-    b"line one\r\nline two\r\n",
-    b"old mac\rstyle\r",
-    b"mixed\r\nunix\nand\rcr\r\n",
-])
-def test_the_stash_is_byte_faithful(claude_home, tmp_path, raw):
-    ann = _load_annotate()
-    f = str(tmp_path / "crlf.txt")
-    with open(f, "wb") as h:
-        h.write(raw)
-    write_version(claude_home, "s", f, "reverted\n")
-
-    out = ann.main(action="revert", file=f, version_id="s@v1",
-                   confirm_unique=True)
-    assert out["stashed"] is True
-    entry = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())["revertStash"][0]
-    assert entry["content"].encode("utf-8") == raw
-    assert entry["size"] == len(raw)          # and the two agree
-
-
-def test_the_stashed_size_is_the_byte_count_not_the_character_count(claude_home,
-                                                                    tmp_path):
-    ann = _load_annotate()
-    f = str(tmp_path / "utf8.txt")
-    raw = "nö — ünïcode\r\n".encode("utf-8")
-    with open(f, "wb") as h:
-        h.write(raw)
-    write_version(claude_home, "s", f, "x\n")
-    ann.main(action="revert", file=f, version_id="s@v1", confirm_unique=True)
-    entry = json.loads(open(_sidecar(ann, f), encoding="utf-8").read())["revertStash"][0]
-    assert entry["size"] == len(raw)
-    assert entry["content"].encode("utf-8") == raw
-
-
-# --- C3: the confirm sheet must know whether a stash will be kept ---------
-# The skip decision used to be computed inside `_revert`, AFTER the click, and
-# surfaced only post-hoc. So the sheet showed a permanent hedge ("a copy is kept
-# ... unless too large or not text") and the WORST combination — unique_current
-# plus a stash skip, i.e. genuinely unrecoverable — read exactly like the safe
-# case. os.replace then destroyed the only copy and the user learned about it in
-# the past tense, beside "Reverted to v3."
-
-def test_the_plan_reports_whether_a_stash_will_be_kept(claude_home, tmp_path):
-    ann = _load_annotate()
-    f = _target(tmp_path, "unsaved\n")
-    write_version(claude_home, "s", f, "old\n")
-    plan = ann.main(action="revert_plan", file=f)
-    assert plan["stash"] is True
-    assert plan["stash_note"] == ""
-
-
-def test_the_plan_reports_a_stash_skip_for_a_large_file(claude_home, tmp_path,
-                                                        monkeypatch):
-    ann = _load_annotate()
-    monkeypatch.setattr(ann, "STASH_BYTE_CAP", 8)
-    f = _target(tmp_path, "far too much content to stash\n")
-    write_version(claude_home, "s", f, "small\n")
-    plan = ann.main(action="revert_plan", file=f)
-    assert plan["stash"] is False
-    assert "too large" in plan["stash_note"]
-    # ...and this is the unrecoverable combination the sheet must escalate.
-    assert plan["unique_current"] is True
-
-
-def test_the_plan_reports_a_stash_skip_for_binary(claude_home, tmp_path):
-    ann = _load_annotate()
-    f = str(tmp_path / "blob.bin")
-    with open(f, "wb") as h:
-        h.write(b"\xff\xfe\x00current")
-    d = os.path.join(str(claude_home), "file-history", "s")
-    os.makedirs(d)
-    with open(os.path.join(d, path_hash(f) + "@v1"), "wb") as h:
-        h.write(b"\xff\xfe\x00wanted")
-    plan = ann.main(action="revert_plan", file=f)
-    assert plan["stash"] is False
-    assert "UTF-8" in plan["stash_note"]
-
-
-@skip_root
-def test_the_plan_reports_a_stash_skip_for_an_unwritable_sidecar(claude_home,
-                                                                 tmp_path):
-    ann = _load_annotate()
-    f = _target(tmp_path, "unsaved\n")
-    write_version(claude_home, "s", f, "old\n")
-    sidecar = Path(_sidecar(ann, f))
-    sidecar.parent.mkdir(parents=True, exist_ok=True)
-    sidecar.write_text("{}")
-    os.chmod(sidecar, 0o444)
-    try:
-        plan = ann.main(action="revert_plan", file=f)
-        assert plan["stash"] is False
-        assert "read-only" in plan["stash_note"]
-    finally:
-        os.chmod(sidecar, 0o644)
-
-
-def test_the_plan_predicate_agrees_with_what_the_revert_actually_does(
-        claude_home, tmp_path, monkeypatch):
-    """The two must be one computation, or the sheet promises something the write
-    does not deliver."""
-    ann = _load_annotate()
-    monkeypatch.setattr(ann, "STASH_BYTE_CAP", 8)
-    f = _target(tmp_path, "far too much content to stash\n")
-    write_version(claude_home, "s", f, "small\n")
-    plan = ann.main(action="revert_plan", file=f)
-    out = ann.main(action="revert", file=f, version_id=plan["id"],
-                   confirm_unique=True)
-    assert out["stashed"] == plan["stash"]
-    assert out["stash_note"] == plan["stash_note"]
-
 
 # --- I4: the bridge must not write on an unconfirmed plan -----------------
 # The confirm gate lived only in the page; `_revert` never consulted
@@ -845,37 +643,6 @@ def test_a_stale_version_id_is_refused_after_the_file_moves_on(claude_home,
     assert "error" in out
     with open(f, encoding="utf-8") as h:
         assert h.read() == "v2\n"
-
-
-# --- I5: a stash failure must not be reported as a false claim -----------
-
-@skip_root
-def test_an_unreadable_target_is_not_reported_as_not_being_text(claude_home,
-                                                                tmp_path):
-    """`except (OSError, UnicodeDecodeError)` reported an EACCES on the target as
-    "previous content is not UTF-8 text", and a getsize failure as "nothing on
-    disk to stash" — which reads as "the file is absent". Both are cases the user
-    could actually fix, described as something else."""
-    ann = _load_annotate()
-    f = _target(tmp_path, "secret\n")
-    write_version(claude_home, "s", f, "old\n")
-    os.chmod(f, 0o000)
-    try:
-        ok, note = ann._stash_plan(f)[:2]
-        assert ok is False
-        assert "UTF-8" not in note
-        assert "13" in note or "Permission" in note
-    finally:
-        os.chmod(f, 0o644)
-
-
-def test_an_absent_target_says_absent(claude_home, tmp_path):
-    ann = _load_annotate()
-    f = str(tmp_path / "gone.txt")
-    write_version(claude_home, "s", f, "old\n")
-    ok, note = ann._stash_plan(f)[:2]
-    assert ok is False
-    assert "nothing on disk" in note
 
 
 # --- M3: an import-time bug is not a missing sibling ---------------------
@@ -1038,7 +805,10 @@ def test_the_irreversible_warning_is_what_remains_and_carries_weight(source):
     """It is now the only thing between a click and unrecoverable loss."""
     body = source[source.index("async function askRevert"):]
     body = body[:body.index('getElementById("confirmgo").addEventListener')]
-    assert "cannot be recovered from anywhere" in body
+    # The phrase is line-wrapped across JS string concatenation, so it is
+    # asserted on the source with the quoting stripped.
+    joined = body.replace('" +\n        "', "").replace('"', "")
+    assert "cannot be recovered from anywhere" in joined
     assert 'warn.classList.toggle("hard", irreversible)' in body
     assert "#confirmwarn.hard" in source
     # ...and the button says what it does, since its label is the last word.
@@ -1468,12 +1238,12 @@ def test_the_panel_and_the_plan_cannot_disagree_about_availability(claude_home,
         assert tl["offer"] == bool(plan.get("ok")), f
 
 
-# --- N2: a symlink must not reach the sheet or the stash -----------------
+# --- N2: a symlink must not reach the sheet -------------------------------
 
 def test_a_symlink_is_refused_at_the_plan_layer(claude_home, tmp_path):
     """`apply_revert` refused symlinks correctly and refused them ALONE, one layer
     below the decision to offer — so the sheet opened on a target that could not
-    succeed and the stash ran first."""
+    succeed."""
     ann = _load_annotate()
     real = tmp_path / "real.txt"
     real.write_text("real content\n")
@@ -1490,10 +1260,9 @@ def test_a_symlink_is_refused_at_the_plan_layer(claude_home, tmp_path):
     assert "symlink" in plan["error"]
 
 
-def test_a_failed_symlink_revert_does_not_write_the_stash(claude_home, tmp_path):
-    """The damage the missing plan-layer check actually did: `_stash` read THROUGH
-    the link, so a revert that then raised had already put the WRONG file's content
-    into the sidecar."""
+def test_a_failed_symlink_revert_touches_nothing(claude_home, tmp_path):
+    """A symlink revert is refused at the plan layer, and the refusal must leave
+    the link and the real file exactly as they were."""
     ann = _load_annotate()
     real = tmp_path / "real.txt"
     real.write_text("real content\n")
@@ -1505,8 +1274,6 @@ def test_a_failed_symlink_revert_does_not_write_the_stash(claude_home, tmp_path)
                    confirm_unique=True)
     assert "error" in out
     assert "symlink" in out["error"]
-    assert not os.path.exists(link + ".json")        # no sidecar at all
-    assert not os.path.exists(str(real) + ".json")
     assert os.path.islink(link)
     with open(str(real), encoding="utf-8") as h:
         assert h.read() == "real content\n"          # untouched
@@ -1524,26 +1291,6 @@ def test_the_symlink_reason_is_not_the_read_only_wording(claude_home, tmp_path):
     reason = ann.main(action="history", file=link)["writable_reason"]
     assert "symlink" in reason
     assert "read-only" not in reason
-
-
-@skip_root
-def test_no_unwritable_target_reaches_the_stash(claude_home, tmp_path):
-    """Generalized past the symlink: `_stash` runs BEFORE the write by design, so
-    ANY target the write will reject has to be refused before it — a chmod'd file
-    used to stash and then raise."""
-    ann = _load_annotate()
-    f = _target(tmp_path, "keep\n")
-    write_version(claude_home, "s", f, "other\n")
-    os.chmod(f, 0o444)
-    try:
-        out = ann.main(action="revert", file=f, version_id="s@v1",
-                       confirm_unique=True)
-        assert "error" in out
-        assert not os.path.exists(_sidecar(ann, f))
-        with open(f, encoding="utf-8") as h:
-            assert h.read() == "keep\n"
-    finally:
-        os.chmod(f, 0o644)
 
 
 def test_a_directory_target_is_refused_the_same_way(claude_home, tmp_path):
@@ -1567,9 +1314,9 @@ def test_a_directory_target_is_refused_the_same_way(claude_home, tmp_path):
 
 def test_the_bridge_passes_the_plans_diff_through_untouched(claude_home,
                                                            tmp_path):
-    """`_plan` completes the plan with the stash predicate and nothing else, so
-    the diff reaches the sheet exactly as file_history computed it — no second
-    scan, no second framing to keep in step with `_delta`'s."""
+    """The bridge is a bare pass-through, so the diff reaches the sheet exactly
+    as file_history computed it — no second scan, no second framing to keep in
+    step with `_delta`'s."""
     ann = _load_annotate()
     f = _target(tmp_path, "a\nb\n")
     write_version(claude_home, "s", f, "a\n")
@@ -1577,8 +1324,6 @@ def test_the_bridge_passes_the_plans_diff_through_untouched(claude_home,
     assert plan["diff"]["reason"] == ""
     assert "-b" in plan["diff"]["lines"]
     assert plan["diff"]["changed"] == 1
-    # ...and the bridge's own two additions are still the only ones.
-    assert plan["stash"] is True and plan["stash_note"] == ""
 
 
 def _const_line(src, name):
@@ -1846,7 +1591,7 @@ def test_no_close_path_can_fire_while_the_write_is_in_flight(source, tmp_path):
 
 
 def test_the_sheet_stays_up_with_an_in_flight_button_until_the_call_returns(source):
-    """It closed BEFORE the await, so a stash write, an os.replace and a full
+    """It closed BEFORE the await, so an os.replace and a full
     re-enumeration of the store all happened with nothing on screen changing — the
     click read as having done nothing."""
     handler = source[source.index('getElementById("confirmgo").addEventListener'):]
