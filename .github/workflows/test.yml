@@ -12,6 +12,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Every job below sets timeout-minutes. GitHub's default with none set is 360
+# (6 hours) — and a stalled `apt-get update` against the Ubuntu archive mirror
+# has actually hit that ceiling more than once (multiple jobs across two
+# separate runs, each stuck for the full 360 minutes on nothing but "Install
+# rclone"/"Install desktop-file-utils"). Without a job-level timeout that kind
+# of hang doesn't fail — it just sits there until GitHub kills it 6 hours
+# later, silently blocking the PR the whole time. Each value below is picked
+# with headroom over that job's observed successful duration, not a guess.
+
 permissions:
   contents: read
   pull-requests: read # for dorny/paths-filter on pull_request
@@ -19,6 +28,7 @@ permissions:
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       app: ${{ steps.filter.outputs.app }}
       linux_desktop: ${{ steps.filter.outputs.linux_desktop }}
@@ -105,6 +115,7 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.app == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
 
@@ -156,6 +167,7 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
@@ -167,6 +179,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install fused-render (dev extra)
         run: pip install -e ".[dev]"
@@ -174,10 +188,27 @@ jobs:
       # shell/mounts.py shells out to rclone (D102/D103); not bundled outside
       # the packaged macOS app, so CI installs the real binary like a dev
       # machine would (README's "Remote storage (mounts)" section).
+      #
+      # Downloaded directly rather than `apt-get install rclone`: that needs a
+      # full `apt-get update` against the Ubuntu archive mirror just to install
+      # one package, and that mirror has hung outright (see the timeout-minutes
+      # note above) rather than erroring. Same pinned version + published
+      # SHA256 the desktop builds bundle (scripts/build_linux_appimage.sh) —
+      # verified before use, so a bad download fails in seconds, not silently.
       - name: Install rclone
         run: |
-          sudo apt-get update
-          sudo apt-get install -y rclone
+          set -euo pipefail
+          RCLONE_VERSION="1.74.4"
+          RCLONE_SHA256="fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d"
+          RCLONE_ZIP="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+          curl -fsSL --max-time 120 --retry 2 \
+            "https://downloads.rclone.org/v${RCLONE_VERSION}/${RCLONE_ZIP}" \
+            -o "$RCLONE_ZIP"
+          echo "${RCLONE_SHA256}  ${RCLONE_ZIP}" | sha256sum --check --status \
+            || { echo "::error::rclone zip SHA256 mismatch"; exit 1; }
+          sudo unzip -jo "$RCLONE_ZIP" "*/rclone" -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/rclone
+          rclone version
 
       - name: Run tests
         run: >
@@ -238,6 +269,7 @@ jobs:
     needs: [detect-changes, frontend]
     if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
@@ -280,11 +312,23 @@ jobs:
       - name: Install fused-render (dev + fused extras)
         run: pip install -e ".[dev,fused]"
 
-      # shell/mounts.py shells out to rclone (D102/D103), as in test-python.
+      # shell/mounts.py shells out to rclone (D102/D103), as in test-python —
+      # same pinned-zip install as that job (see its comment for why apt is
+      # avoided here).
       - name: Install rclone
         run: |
-          sudo apt-get update
-          sudo apt-get install -y rclone
+          set -euo pipefail
+          RCLONE_VERSION="1.74.4"
+          RCLONE_SHA256="fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d"
+          RCLONE_ZIP="rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+          curl -fsSL --max-time 120 --retry 2 \
+            "https://downloads.rclone.org/v${RCLONE_VERSION}/${RCLONE_ZIP}" \
+            -o "$RCLONE_ZIP"
+          echo "${RCLONE_SHA256}  ${RCLONE_ZIP}" | sha256sum --check --status \
+            || { echo "::error::rclone zip SHA256 mismatch"; exit 1; }
+          sudo unzip -jo "$RCLONE_ZIP" "*/rclone" -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/rclone
+          rclone version
 
       - name: Prove the engine tests run rather than skip
         # The failure mode this job exists to avoid is looking like coverage
@@ -348,6 +392,7 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.app == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
 
@@ -380,6 +425,7 @@ jobs:
     needs: [detect-changes, frontend]
     if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
@@ -391,6 +437,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - uses: astral-sh/setup-uv@v9.0.0
 
@@ -458,12 +506,15 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.windows_desktop == 'true'
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install fused-render (dev + windows-desktop extras)
         run: python -m pip install -e ".[dev,windows-desktop]"
@@ -518,6 +569,7 @@ jobs:
     needs: [detect-changes, frontend]
     if: needs.detect-changes.outputs.macos_desktop == 'true' && needs.frontend.result == 'success'
     runs-on: macos-14
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
@@ -536,6 +588,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install fused-render (dev extra)
         run: pip install -e ".[dev]"
@@ -561,6 +615,7 @@ jobs:
   test-status:
     name: Test Status
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [detect-changes, frontend, test-python, fused-engine, bundle-contents, linux-desktop, windows-desktop, macos-desktop]
     if: always()
     steps:
