@@ -8768,6 +8768,14 @@ function sentPopWire(sum, payload) {
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sentPopOpen(payload); }
     };
   });
+  // The receipt's screenshot thumbs open the SAME popup when comments ride the
+  // message: the picture belongs to the comments there, and the popup already
+  // shows it (with a click-through to the full-size viewer). A send with no
+  // comments never gets wired here, so a lone picture keeps the plain viewer.
+  sum.querySelectorAll(".annsum-pane").forEach((btn) => {
+    btn.title = "Click to see exactly what was sent to the agent";
+    btn.onclick = () => sentPopOpen(payload);
+  });
 }
 
 // One comment row in a receipt — the same rendering for a live send and a turn
@@ -12619,11 +12627,15 @@ async function sendMessage(message) {
     for (const pic of pics) shotReceipt(sum, pic);
     // One row per comment, through the same builder a restored turn uses.
     for (const c of pending) sum.appendChild(annReceiptRow(c));
-    // The full story, on demand: clicking any comment row opens the popup with
+    // The full story, on demand: clicking any comment row — or, when comments
+    // ride the message, any of its screenshot thumbs — opens the popup with
     // exactly what went to the agent — the composed text, the pictures, every
-    // comment with its context.
-    sentPopWire(sum, { outgoing, overview, pics,
-                       notes: pending.map((c) => ({ ...c })) });
+    // comment with its context. A picture-only send is NOT wired: its thumb
+    // keeps the plain full-size viewer, there being no comments to show.
+    if (pending.length) {
+      sentPopWire(sum, { outgoing, overview, pics,
+                         notes: pending.map((c) => ({ ...c })) });
+    }
     turn.appendChild(sum);
     scrollBottom();
   }

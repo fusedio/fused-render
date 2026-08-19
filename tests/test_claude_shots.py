@@ -1499,6 +1499,21 @@ console.log(JSON.stringify({
     assert out["mangled"] == []
 
 
+def test_a_screenshot_beside_comments_opens_the_popup_not_the_bare_viewer(html):
+    """When comments ride the message the picture belongs to them: clicking its
+    thumb opens the "what was sent" popup (which shows the picture, with a
+    click-through to the full-size viewer). Only a comment-less send keeps the
+    plain viewer on its thumb — sentPopWire is simply never called for one."""
+    wire = _between(html, "function sentPopWire(sum, payload)", "\n}\n")
+    assert '".annsum-pane"' in wire
+    assert "sentPopOpen(payload)" in wire
+    live = _between(html, "async function sendMessage(message)", "\n}\n")
+    assert "if (pending.length) {\n      sentPopWire(sum," in live, \
+        "a picture-only send must not be wired to the popup"
+    restore = _between(html, "function shotRestoreReceipt(turn, text)", "\n}\n")
+    assert "if (notes.length) {" in restore
+
+
 def test_a_restored_turn_rebuilds_the_receipt_rows_from_the_wire(html):
     """The restore path draws through the same builders the live send uses —
     annReceiptRow for the rows, sentPopWire for the popup — so the two receipt
