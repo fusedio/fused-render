@@ -878,7 +878,6 @@
     applyBtn.addEventListener("click", () => { if (!isDirty()) applyFilter(); });
     resetBtn.addEventListener("click", () => { if (!isDirty()) clearSortFilters(); });
 
-    fused.params.onChange(load);
     // Stamp the two true defaults so the grid's URL is a complete, copyable
     // record from the first paint — and as replaces, so the stamp costs no
     // history entry and leaves the visit's one push for the reader's first real
@@ -886,6 +885,30 @@
     // to the value the reader is actually looking at.
     fused.params.set("sort", fused.params.get("sort") || "", { history: "replace" });
     fused.params.set("offset", String(currentOffset()), { history: "replace" });
+
+    // Reload on a param this grid's query is actually built from, and NOTHING
+    // else. `params.onChange` fires for every visible param on the host URL, and
+    // that URL is not this pane's alone: in the file view the content pane and
+    // the `claude` sidebar write to the SAME shell URL (no param boundary between
+    // them), so the sidebar's `annotations` write — one per note the reader makes,
+    // templates/claude/template.html's annSave — reached an unconditional
+    // `onChange(load)` here as a full reload of the table. Same guard, and the
+    // same shape, as templates/duckdb and templates/las.
+    //
+    // Registered AFTER the stamps above, and keyed off the params as they stand
+    // once they have landed: the stamp is a normalisation of what the first
+    // load() below is about to read anyway, so it must not spend a load of its
+    // own — which is exactly what it did while the listener sat above it.
+    const QUERY_PARAMS = ["_file", "table", "offset", "sort", "filters"];
+    const queryKey = () =>
+      QUERY_PARAMS.map((k) => fused.params.get(k) ?? "").join("\u0000");
+    let loadedParams = queryKey();
+    fused.params.onChange(() => {
+      const key = queryKey();
+      if (key === loadedParams) return;
+      loadedParams = key;
+      load();
+    });
     load();
   </script>
 </body>
