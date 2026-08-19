@@ -32,7 +32,6 @@ import {
   decideLock,
   lockMessage,
   nextAckState,
-  reengagedWithinGrace,
   type AckState,
   type LockHold,
 } from "./canvas-lock-lib";
@@ -62,9 +61,7 @@ const FAILED_POLLS_BEFORE_RELEASE = 3;
 // warning that the lock is advisory only.
 const LOCK_ACK_TIMEOUT_MS = 2000;
 
-// How long the lock is HELD after a sync operation has settled — and, with the
-// same number, how long a re-engagement still counts as the SAME engagement
-// (canvas-lock-lib's `reengagedWithinGrace`).
+// How long the lock is HELD after a sync operation has settled.
 //
 // Releasing the instant the agent's process exits re-opens the very window the
 // lock exists to close, for two reasons that compound: on unlock the workbench
@@ -125,11 +122,6 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // window can tell "a hold just ended" from "nothing was holding" (see
   // decideLock's `prevHold`).
   const prevHoldRef = useRef<LockHold | null>(null);
-  // When the lock last RELEASED, in local time. Only the ack handshake reads
-  // it: a lock re-engaging within one grace window of the release is the same
-  // episode against the same frame, and re-arming the capability probe there is
-  // what flashes the fallback scrim mid-publish.
-  const releasedAtRef = useRef<number | null>(null);
   // When the session's work first looked settled, in LOCAL time. Deliberately
   // not `last_push_at`: that is the server's clock, and comparing it to
   // Date.now() makes the grace window wrong by whatever the skew is.
@@ -228,9 +220,6 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       now,
       LOCK_RELEASE_GRACE_MS,
     );
-    if (prevHoldRef.current !== null && decision.hold === null) {
-      releasedAtRef.current = now;
-    }
     prevHoldRef.current = decision.hold;
     settledAtRef.current = decision.settledAt;
     setLockHold(decision.hold);
@@ -242,7 +231,6 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       setLockHold((h) => {
         if (h !== "settling") return h;
         prevHoldRef.current = null;
-        releasedAtRef.current = Date.now();
         return null;
       });
     }, Math.max(0, remaining));
@@ -255,19 +243,17 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // flipping false→true), so the fallback scrim this drives defaults to "on"
   // for a brand new lock rather than inheriting a previous engagement's answer.
   //
-  // The exception is a re-engagement inside the release grace window: that is
-  // the next leg of the same publish against the same frame, and re-probing
-  // there flashes the scrim for a second in the middle of work that never
-  // really let go.
+  // No "same episode" exemption: the reset is unconditional. What removes the
+  // mid-publish flicker is decideLock's coalescing (consecutive operations stay
+  // inside one engagement, so this effect does not re-run), and an engagement
+  // that DOES start fresh — after a full release, a dropped watcher, or a
+  // failed push the user then fixes — may be facing a frame that reloaded in
+  // between. Inheriting "acked" there would show a lock with nothing enforcing
+  // it and no fallback scrim either.
   useEffect(() => {
     sendLock(locked);
     if (!locked) return;
-    const sameEngagement = reengagedWithinGrace(
-      releasedAtRef.current,
-      Date.now(),
-      LOCK_RELEASE_GRACE_MS,
-    );
-    setAckState((a) => nextAckState(a, "engage", sameEngagement));
+    setAckState((a) => nextAckState(a, "engage"));
     // No ack yet: give the workbench a moment, then treat silence as "this
     // deployment does not support the lock" and fall back to the translucent
     // scrim. Silence is the expected answer until the workbench ships its

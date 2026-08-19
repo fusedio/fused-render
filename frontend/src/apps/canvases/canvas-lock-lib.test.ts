@@ -3,7 +3,6 @@ import {
   decideLock,
   lockMessage,
   nextAckState,
-  reengagedWithinGrace,
   type AckState,
   type LockHold,
   type LockInput,
@@ -228,25 +227,19 @@ describe("the enforcement ack handshake", () => {
     expect(nextAckState("waiting", "engage")).toBe("waiting");
   });
 
-  it("a re-engagement inside the grace window keeps the ack it already had", () => {
-    // Otherwise the fallback scrim flashes back on for LOCK_ACK_TIMEOUT_MS in
-    // the middle of a publish whose lock never really let go — the same
-    // flicker the coalescing rule removes, one layer up.
-    expect(nextAckState("acked", "engage", true)).toBe("acked");
-    expect(nextAckState("unacked", "engage", true)).toBe("unacked");
-    expect(nextAckState("waiting", "engage", true)).toBe("waiting");
-  });
-
-  it("an ack or a timeout is unaffected by the grace flag", () => {
-    expect(nextAckState("waiting", "ack", true)).toBe("acked");
-    expect(nextAckState("waiting", "timeout", true)).toBe("unacked");
-  });
-
-  it("what counts as the same engagement is one grace window from the release", () => {
-    expect(reengagedWithinGrace(null, T, GRACE)).toBe(false);
-    expect(reengagedWithinGrace(T, T, GRACE)).toBe(true);
-    expect(reengagedWithinGrace(T, T + GRACE - 1, GRACE)).toBe(true);
-    expect(reengagedWithinGrace(T, T + GRACE, GRACE)).toBe(false);
+  it("an engagement after a failed push still re-probes the capability", () => {
+    // The one re-engagement that really happens: a push fails, the error
+    // branch releases at once, the user hits Fix with Claude and a new push
+    // engages seconds later. The frame may have reloaded in between, so an
+    // inherited "acked" would mean a lock the page shows and nothing enforces —
+    // no scrim either. The anti-flicker property comes from coalescing, which
+    // keeps consecutive operations inside ONE engagement so this reset is not
+    // reached at all; there is nothing left for an exemption to protect.
+    const failed = decideLock(st({ push_state: "error" }), "publishing", null, T, GRACE);
+    expect(failed.hold).toBeNull();
+    const refixed = decideLock(st({ push_state: "pushing" }), failed.hold, failed.settledAt, T + 3000, GRACE);
+    expect(refixed.hold).toBe("publishing");
+    expect(nextAckState("acked", "engage")).toBe("waiting");
   });
 
   it("an ack always wins, including upgrading an unacked fallback", () => {

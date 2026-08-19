@@ -161,15 +161,17 @@ export type AckState = "waiting" | "acked" | "unacked";
 /** One transition in the ack handshake, kept pure so the reset-per-engagement
  *  rule is testable without a timer or postMessage in the loop.
  *
- *  "engage": a NEW lock engagement started (the previous hold was null).
- *  Resets to "waiting" — the capability is a fact about the deployed workbench
- *  that this page assumes nothing about until it has just been told — UNLESS
- *  `withinGrace`, i.e. the re-engagement landed inside the release grace window
- *  of the engagement that just ended. That is the same episode of activity
- *  against the same frame: resetting there re-flashes the fallback scrim for a
- *  second or two in the middle of a publish that never actually let go, which
- *  is the flicker this whole change removes. Past the window it is a genuinely
- *  new engagement and nothing carries over.
+ *  "engage": a NEW lock engagement started (the previous hold was null) —
+ *  ALWAYS resets to "waiting", with no "same episode" exemption. The capability
+ *  is a fact about the deployed workbench that this page must never assume: the
+ *  frame may have reloaded between two engagements (which is why the ready
+ *  message re-asserts the lock), and inheriting a stale "acked" there means no
+ *  fallback scrim AND no workbench enforcement — a lock the page displays and
+ *  nothing provides. There is no flicker left for an exemption to fix, either:
+ *  `decideLock`'s coalescing already keeps consecutive operations inside ONE
+ *  engagement, so `locked` can only go false->true after a full release or one
+ *  of the two unconditional escapes (dropped watcher, failed push), and every
+ *  one of those genuinely is a new engagement.
  *  "ack": the workbench's `fused-embed-lock-ack` arrived — always wins,
  *  including over an "unacked" fallback already showing (a late ack upgrades
  *  to pass-through instead of leaving the fallback scrim up needlessly).
@@ -179,24 +181,8 @@ export type AckState = "waiting" | "acked" | "unacked";
 export function nextAckState(
   prev: AckState,
   event: "engage" | "ack" | "timeout",
-  withinGrace = false,
 ): AckState {
   if (event === "ack") return "acked";
-  if (event === "engage") return withinGrace ? prev : "waiting";
+  if (event === "engage") return "waiting";
   return prev === "waiting" ? "unacked" : prev;
-}
-
-/** Whether a lock engaging NOW continues the one that just released, rather
- *  than starting a fresh one: it engaged within one grace window of the
- *  release. `releasedAt` is when the hold last went null (null before the
- *  first release, i.e. a first-ever engagement is always new).
- *
- *  Kept here, beside `nextAckState`, so the "same engagement" rule is one
- *  testable definition rather than an inline comparison in the component. */
-export function reengagedWithinGrace(
-  releasedAt: number | null,
-  now: number,
-  graceMs: number,
-): boolean {
-  return releasedAt !== null && now - releasedAt < graceMs;
 }
