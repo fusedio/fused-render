@@ -728,6 +728,14 @@ class _LocalHub:
                 "a cached model must not cost a Hub metadata call")
 
 
+def _raiser(error):
+    """A stand-in for a call that fails — the segmented fetch, usually, whose every
+    failure degrades to hf's downloader."""
+    def fail(*_args, **_kwargs):
+        raise error
+    return fail
+
+
 def _cache_folder(tmp_path, name="models--u--x", snapshot=True, partial=False):
     """A folder shaped like hf's cache entry for one repo.
 
@@ -1008,6 +1016,102 @@ def _fetched(base, folder, commit="c0mm1t", names=("config.json",),
              allow=None, ignore=None):
     """Record a completed fetch the way `download_snapshot` does after one."""
     base._record_fetch(str(folder), commit, list(names), allow, ignore)
+
+
+def test_the_FALLBACK_records_the_commit_hf_actually_landed(base, monkeypatch,
+                                                            tmp_path):
+    """The listing's sha and hf's own answer are two resolutions of one branch
+    name, and a repo that moves between them lands a different commit.
+
+    Filed under the listing's sha, the record would name a snapshot directory that
+    does not exist — cold forever for that repo, since every later fast path looks
+    up a commit nothing wrote. So hf is PINNED to the commit the listing resolved,
+    which is the rule `_segmented_fetch` already follows (AI-5i: the fetch is
+    pinned to the commit the name resolved to, never to the name), and the record
+    is then true by construction rather than by assumption.
+    """
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=[], snapshot=snapshot)
+    asked = {}
+    real = hub.snapshot_download
+
+    def spy(model_id, allow_patterns=None, ignore_patterns=None,
+            local_files_only=False, revision=None, **kw):
+        if not local_files_only:
+            asked["revision"] = revision
+        return real(model_id, allow_patterns=allow_patterns,
+                    ignore_patterns=ignore_patterns,
+                    local_files_only=local_files_only, **kw)
+
+    hub.snapshot_download = spy
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: ("c0mm1t", [("config.json", 7)]))
+    monkeypatch.setattr(base, "_segmented_fetch", _raiser(RuntimeError("no ranges")))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert asked == {"revision": "c0mm1t"}, asked
+
+
+def test_the_FALLBACK_records_what_LANDED_not_what_was_predicted(
+        base, monkeypatch, tmp_path):
+    """`_repo_files` filters the listing with `selects`; hf filters with its own
+    `filter_repo_objects`. They are written to agree, and where they do not the
+    predicted list names a file hf never fetched — so the record would demand a
+    file that is not there and the fast path would be refused forever.
+
+    The fallback therefore records only the predicted names that are actually
+    THERE. An intersection rather than a walk of the snapshot, because `os.walk`
+    does not follow directory symlinks and would omit anything under a linked
+    subdirectory — under-claiming, which is the unsafe direction.
+    """
+    folder = _cache_folder(tmp_path)
+    # hf landed `config.json` plus a `README.md` the prediction never mentioned,
+    # and did NOT land the `weights.safetensors` the prediction did.
+    snapshot = _snapshot_dir(tmp_path, "config.json", "README.md")
+    hub = _LocalHub(cached=[], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (
+        "c0mm1t", [("config.json", 7), ("weights.safetensors", 9)]))
+    monkeypatch.setattr(base, "_segmented_fetch", _raiser(RuntimeError("no ranges")))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    recorded = base._recorded_files(str(folder), os.path.basename(snapshot),
+                                    None, None)
+    # The predicted-but-absent `weights.safetensors` is gone from the record — the
+    # whole point — and the unpredicted `README.md` is not invented into it.
+    assert recorded == ["config.json"], recorded
+
+
+def test_a_TORN_record_left_by_a_crashed_write_is_not_read_as_a_record(
+        base, monkeypatch, tmp_path):
+    """`_record_fetch` writes `<record>.writing` and `os.replace`s it, so a crash
+    mid-write leaves the temp behind. Matching that as a record made a record-LESS
+    repo pay a hub resolve on every single download — the cold path plus a round
+    trip, forever, since nothing ever cleaned it up.
+
+    So the temp is excluded from the match AND removed when it is seen: this file
+    is the only thing that writes the name, so a stale one is always ours and
+    always garbage.
+    """
+    folder = _cache_folder(tmp_path)
+    torn = folder / (base._FETCH_RECORD % "c0mm1t" + base._RECORD_TEMP)
+    torn.write_text('{"commit": "c0mm1t", "sco')
+    hub = _LocalHub(cached=["u/x"], snapshot=_snapshot_dir(tmp_path, "config.json"))
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    assert base._has_fetch_record(str(folder)) is False
+    assert not torn.exists(), "a stale temp must be cleaned up, not left to rot"
+
+    base.download_snapshot("u/x")
+    assert [call for call in hub.calls if call[1] is True] == [], hub.calls
 
 
 def test_a_snapshot_fetched_at_a_NARROWER_scope_does_not_answer_a_WIDER_request(

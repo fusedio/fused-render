@@ -5733,7 +5733,18 @@ an AI Models page that could say what was on disk but not what was *running*.
   landed, written after the fetch returns (which is the one moment completeness is
   knowable, since `_write_ref` runs after the last file), and a request is served
   only when the record is for the commit hf resolved, at the scope being asked for,
-  with every recorded name present and settled. **Scoping is a property of the
+  with every recorded name present and settled. **Every record is keyed by the
+  commit the returned snapshot IS**, never by the sha that was asked for, and the
+  fallback to `snapshot_download` is **pinned to that sha** — a branch name resolved
+  twice is two answers, and a repo that moves between the listing and the fallback
+  would otherwise file a record under a snapshot directory that does not exist,
+  leaving that repo permanently cold. The fallback records only the predicted names that
+  actually LANDED, because hf filters with `filter_repo_objects` where
+  `_repo_files` filtered with `selects`: they are written to agree, and a record
+  naming a file hf never fetched would refuse the fast path for good. An
+  intersection rather than a walk of the snapshot, since `os.walk` does not follow
+  directory symlinks and would omit anything under a linked subdirectory — the
+  under-claiming direction. **Scoping is a property of the
   on-disk STATE, not of the call**, which is why refusing scoped CALLS was not
   enough: the same id reaches both kinds, because `diffusers_image` fetches
   `black-forest-labs/FLUX.2-klein-4B` scoped to `recipe["keep"]` while
