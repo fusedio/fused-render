@@ -258,7 +258,7 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_MOUNTS_DIR",
                 # otherwise leave a previous test's plugin path on every later
                 # spawn's argv in the same worker.
                 "FUSED_RENDER_SKILL_PLUGIN_DIR",
-                # D355: the workbench skills root, published the same way and
+                # D360: the workbench skills root, published the same way and
                 # leaking the same way — and it is published from a BACKGROUND
                 # thread (canvases._kick_workbench_skills), so a leak here would
                 # also arrive at an unpredictable moment in a later test.
@@ -313,7 +313,7 @@ def _pin_the_script_interpreter_resolution():
 
 @pytest.fixture(autouse=True)
 def _no_real_workbench_skills_clone(monkeypatch):
-    """No test may clone the workbench skills repo for real (D355).
+    """No test may clone the workbench skills repo for real (D360).
 
     The canvas paths kick `skill_plugin.fetch_workbench_skills()` off-thread, and
     it is genuinely reachable from the tests: several of them POST
