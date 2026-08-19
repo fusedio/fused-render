@@ -511,9 +511,29 @@ def _shim_list_command(cli) -> list[str] | None:
     return [sys.executable, shim]
 
 
-# The shim pays the fused import cost, one list call, and one sign-image call
-# per canvas that has an uploaded preview.
+# The shim pays the fused import cost and one list call. Preview signing is
+# NOT in here any more (D360) — see _shim_previews_command.
 LIST_SHIM_TIMEOUT = 60.0
+
+
+def _shim_previews_command(cli) -> list[str] | None:
+    """argv for the batch preview-signing shim, or None for an external CLI
+    (which never produced previews at all — the `canvas list` fallback prints
+    bare names, so there is nothing to sign)."""
+    if cli.external:
+        return None
+    shim = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "_fused_canvas_previews.py"
+    )
+    return [sys.executable, shim]
+
+
+# The shim signs the whole batch on a thread pool, so this is the fused import
+# cost plus roughly ONE control-plane round trip, not one per id.
+PREVIEWS_SHIM_TIMEOUT = 60.0
+# Bound on one request's work. Far above any real account; it exists so a
+# malformed or hostile body can't ask the server for unbounded signing.
+PREVIEWS_MAX_IDS = 500
 
 
 def _shim_manifest_command(cli) -> list[str] | None:
@@ -781,6 +801,10 @@ def _list_entries():
                             "name": name,
                             "id": entry.get("id"),
                             "preview_url": entry.get("preview_url"),
+                            # Sentinel preview: the URL has to be signed, which
+                            # the client asks for separately (D360).
+                            "preview_pending": bool(entry.get("preview_pending"))
+                            and entry.get("id") is not None,
                             "updated_at": _iso_epoch(entry.get("last_updated")),
                         }
                     )
@@ -802,12 +826,16 @@ def _list_entries():
     if isinstance(raw, list):
         for entry in raw:
             if isinstance(entry, str):
-                entries.append({"name": entry, "id": None, "preview_url": None, "updated_at": None})
+                entries.append(
+                    {"name": entry, "id": None, "preview_url": None,
+                     "preview_pending": False, "updated_at": None}
+                )
             elif isinstance(entry, dict):
                 name = entry.get("name") or entry.get("slug")
                 if isinstance(name, str) and name:
                     entries.append(
-                        {"name": name, "id": entry.get("id"), "preview_url": None, "updated_at": None}
+                        {"name": name, "id": entry.get("id"), "preview_url": None,
+                         "preview_pending": False, "updated_at": None}
                     )
     return entries, None
 
@@ -857,6 +885,84 @@ def api_canvases_list(x_fused: str | None = Header(default=None)):
         canvas["n_udfs"] = n_udfs
         canvas["mtime"] = mtime
     return {"canvases": canvases}
+
+
+@router.post("/api/canvases/previews")
+def api_canvases_previews(
+    body: dict = Body(...), x_fused: str | None = Header(default=None)
+):
+    """Presigned preview-image URLs for the collection ids asked for (D360).
+
+    POST rather than a guarded GET for one reason: the ids are a list, and an
+    account with hundreds of canvases would push a comma-joined query string
+    past what proxies are willing to carry. It EXECUTES control-plane calls, so
+    it carries the same X-Fused guard the other executing endpoints do.
+
+    Never an error when a signature can't be had: the response simply has no
+    entry (or a null one) for that id, and the card keeps its letter thumb.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if not _logged_in():
+        return _error("not signed in to Fused — sign in first", 409)
+    ids = body.get("ids")
+    if not isinstance(ids, list):
+        return _error("'ids' must be a list of collection ids")
+    wanted = [i for i in ids if isinstance(i, str) and i][:PREVIEWS_MAX_IDS]
+    if not wanted:
+        return {"previews": {}}
+    cli = fused_cli()
+    if cli is None:
+        return _no_cli_error()
+    shim_cmd = _shim_previews_command(cli)
+    if shim_cmd is None:
+        # External CLI: that path never reports a pending preview in the first
+        # place, so an empty answer is the truthful one, not a failure.
+        return {"previews": {}}
+    try:
+        proc = subprocess.run(
+            shim_cmd,
+            input=json.dumps(wanted),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=PREVIEWS_SHIM_TIMEOUT,
+            env=_cli_env(cli),
+        )
+    except subprocess.TimeoutExpired:
+        return _error(
+            f"signing canvas previews timed out after {int(PREVIEWS_SHIM_TIMEOUT)}s",
+            502,
+        )
+    except OSError as e:
+        return _error(f"could not run the canvas previews helper: {e}")
+    if proc.returncode != 0:
+        message = cli_error(proc.stderr or proc.stdout, "signing canvas previews failed")
+        # Same expired-credentials sniff as _list_entries.
+        if (
+            "re-authenticate" in message.lower()
+            or "refresh your fused credentials" in message.lower()
+        ):
+            return _error(message, 401)
+        return _error(message, 502)
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError:
+        return _error(
+            f"the canvas previews helper printed something that wasn't JSON: "
+            f"{proc.stdout.strip()[-200:]!r}",
+            502,
+        )
+    if not isinstance(data, dict):
+        return _error("the canvas previews helper printed a non-object", 502)
+    previews = {
+        k: v
+        for k, v in data.items()
+        if isinstance(k, str) and (v is None or isinstance(v, str))
+    }
+    return {"previews": previews}
 
 
 @router.post("/api/canvases/create")

@@ -298,6 +298,124 @@ def test_list_external_cli_entries_have_null_preview_fields(harness):
     canvases = {c["name"]: c for c in res.json()["canvases"]}
     assert canvases["alpha"]["preview_url"] is None
     assert canvases["alpha"]["updated_at"] is None
+    assert canvases["alpha"]["preview_pending"] is False
+
+
+# Preview signing off the listing's critical path (D360): the list shim reports
+# an uploaded preview as pending, and POST /api/canvases/previews signs the
+# whole batch afterwards.
+def _wire_previews_shim(tmp_path, monkeypatch, body: str) -> None:
+    shim = tmp_path / "previews_shim.py"
+    shim.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(
+        canvases_mod, "_shim_previews_command", lambda cli: [sys.executable, str(shim)]
+    )
+
+
+def test_list_reports_a_pending_preview_without_signing_it(harness, tmp_path, monkeypatch):
+    harness.log_in()
+    _wire_list_shim(
+        tmp_path,
+        monkeypatch,
+        "import json, sys\n"
+        "json.dump([\n"
+        "  {'name': 'alpha', 'id': 'id-a', 'preview_url': None,\n"
+        "   'preview_pending': True, 'last_updated': None},\n"
+        "  {'name': 'beta', 'id': None, 'preview_url': None,\n"
+        "   'preview_pending': True, 'last_updated': None},\n"
+        "], sys.stdout)\n",
+    )
+    res = harness.client.get("/api/canvases/list", headers=GUARD)
+    assert res.status_code == 200
+    canvases = {c["name"]: c for c in res.json()["canvases"]}
+    assert canvases["alpha"]["preview_pending"] is True
+    assert canvases["alpha"]["preview_url"] is None
+    # No id means nothing to sign, so it is not advertised as pending.
+    assert canvases["beta"]["preview_pending"] is False
+
+
+def test_previews_endpoint_signs_the_batch_it_is_given(harness, tmp_path, monkeypatch):
+    harness.log_in()
+    # The shim reads the ids as JSON on stdin — assert that, not just the output.
+    _wire_previews_shim(
+        tmp_path,
+        monkeypatch,
+        "import json, sys\n"
+        "ids = json.load(sys.stdin)\n"
+        "json.dump({i: None if i == 'id-none' else 'https://s3/%s.png' % i for i in ids},\n"
+        "          sys.stdout)\n",
+    )
+    res = harness.client.post(
+        "/api/canvases/previews", json={"ids": ["id-a", "id-none"]}, headers=GUARD
+    )
+    assert res.status_code == 200
+    assert res.json()["previews"] == {
+        "id-a": "https://s3/id-a.png",
+        "id-none": None,
+    }
+
+
+def test_previews_endpoint_is_guarded_and_validates_its_input(harness):
+    harness.log_in()
+    assert harness.client.post("/api/canvases/previews", json={"ids": []}).status_code == 403
+    bad = harness.client.post("/api/canvases/previews", json={"ids": "id-a"}, headers=GUARD)
+    assert bad.status_code == 400
+    # An empty batch is answered without running anything at all.
+    empty = harness.client.post("/api/canvases/previews", json={"ids": []}, headers=GUARD)
+    assert empty.status_code == 200
+    assert empty.json() == {"previews": {}}
+
+
+def test_previews_endpoint_caps_the_batch_size(harness, tmp_path, monkeypatch):
+    harness.log_in()
+    _wire_previews_shim(
+        tmp_path,
+        monkeypatch,
+        "import json, sys\n"
+        "json.dump({'n': str(len(json.load(sys.stdin)))}, sys.stdout)\n",
+    )
+    over = canvases_mod.PREVIEWS_MAX_IDS + 10
+    res = harness.client.post(
+        "/api/canvases/previews",
+        json={"ids": [f"id-{i}" for i in range(over)]},
+        headers=GUARD,
+    )
+    assert res.status_code == 200
+    assert res.json()["previews"]["n"] == str(canvases_mod.PREVIEWS_MAX_IDS)
+
+
+def test_previews_endpoint_on_an_external_cli_answers_empty(harness):
+    # The stub CLI is an external FUSED_RENDER_FUSED_BIN: that path never
+    # reports a pending preview, so there is nothing to sign — and no error.
+    harness.log_in()
+    res = harness.client.post(
+        "/api/canvases/previews", json={"ids": ["id-a"]}, headers=GUARD
+    )
+    assert res.status_code == 200
+    assert res.json() == {"previews": {}}
+
+
+def test_previews_endpoint_maps_expired_credentials_to_401(harness, tmp_path, monkeypatch):
+    harness.log_in()
+    _wire_previews_shim(
+        tmp_path,
+        monkeypatch,
+        "import sys\n"
+        "sys.stderr.write('Error: please re-authenticate with fused login\\n')\n"
+        "sys.exit(1)\n",
+    )
+    res = harness.client.post(
+        "/api/canvases/previews", json={"ids": ["id-a"]}, headers=GUARD
+    )
+    assert res.status_code == 401
+
+
+def test_previews_endpoint_requires_a_login(harness, tmp_path, monkeypatch):
+    _wire_previews_shim(tmp_path, monkeypatch, "import sys\nsys.exit(1)\n")
+    res = harness.client.post(
+        "/api/canvases/previews", json={"ids": ["id-a"]}, headers=GUARD
+    )
+    assert res.status_code == 409
 
 
 def test_create_canvas_runs_cli(harness):

@@ -14,6 +14,7 @@ import {
   cloneCanvas,
   createCanvas,
   getCanvasesStatus,
+  getCanvasPreviews,
   listCanvases,
   logout,
   startLogin,
@@ -54,6 +55,43 @@ export default function Canvases() {
   // present store never flips logged_in, so completion = the stamp changing.
   const loginStampRef = useRef<number | null | undefined>(undefined);
 
+  // Presigned preview URLs, keyed by collection id — the second, slower half
+  // of the listing (D360). Kept beside `canvases` rather than merged into it so
+  // a refresh that re-lists doesn't drop thumbs we already resolved.
+  const [previews, setPreviews] = useState<Record<string, string>>({});
+  // Ids already asked about (resolved OR came back empty), so a re-list doesn't
+  // re-sign what we have. A ref, not the `previews` state: reading the state
+  // here would make `fillPreviews` — and through it `refresh` — a new function
+  // on every thumb that lands, and refresh's own effect would re-run forever.
+  const previewsAskedRef = useRef<Set<string>>(new Set());
+
+  // Sign the pending previews for a listing that has already been painted.
+  // Failures are silent by design: a card without a thumb shows its monogram,
+  // which is exactly what a canvas with no preview shows anyway — not worth
+  // an error banner over the listing that did load.
+  const fillPreviews = useCallback(async (entries: CanvasEntry[]) => {
+    const ids = entries
+      .filter((c) => c.preview_pending && c.id)
+      .map((c) => c.id as string)
+      .filter((id) => !previewsAskedRef.current.has(id));
+    if (ids.length === 0) return;
+    for (const id of ids) previewsAskedRef.current.add(id);
+    try {
+      const { previews: signed } = await getCanvasPreviews(ids);
+      const resolved: Record<string, string> = {};
+      for (const [id, url] of Object.entries(signed)) {
+        if (typeof url === "string" && url) resolved[id] = url;
+      }
+      if (Object.keys(resolved).length > 0) {
+        setPreviews((prev) => ({ ...prev, ...resolved }));
+      }
+    } catch {
+      // No thumbs this time; monograms stand in. Un-mark them so the next
+      // refresh retries — a transient 502 shouldn't cost thumbs until reload.
+      for (const id of ids) previewsAskedRef.current.delete(id);
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
     try {
       const s = await getCanvasesStatus();
@@ -62,6 +100,9 @@ export default function Canvases() {
         setLoggingIn(false);
         const { canvases } = await listCanvases();
         setCanvases(canvases);
+        // Deliberately NOT awaited: the cards render on the line above, and
+        // the thumbs pop in when the signing batch lands.
+        void fillPreviews(canvases);
       }
       setError(null);
     } catch (e) {
@@ -75,7 +116,7 @@ export default function Canvases() {
       }
       setError(err.message);
     }
-  }, []);
+  }, [fillPreviews]);
 
   useEffect(() => {
     void refresh();
@@ -133,6 +174,9 @@ export default function Canvases() {
     try {
       await logout();
       setCanvases(null);
+      // Signed URLs belong to the account that just signed out.
+      setPreviews({});
+      previewsAskedRef.current = new Set();
       setQuery("");
       setCreating(false);
       await refresh();
@@ -294,7 +338,12 @@ export default function Canvases() {
         )}
         {status?.logged_in && filtered !== null && filtered.length > 0 && (
           <div className="canvases-grid">
-            {filtered.map((canvas) => (
+            {filtered.map((canvas) => {
+              // Either the free public URL from the listing, or the signed one
+              // the previews batch filled in afterwards (D360).
+              const thumb =
+                canvas.preview_url ?? (canvas.id ? previews[canvas.id] : undefined) ?? null;
+              return (
               <button
                 key={canvas.name}
                 className="canvas-card"
@@ -302,16 +351,16 @@ export default function Canvases() {
                 disabled={busy !== null || createBusy}
               >
                 <span className="canvas-card-thumb">
-                  {canvas.preview_url && !brokenPreviews.has(canvas.preview_url) ? (
+                  {thumb && !brokenPreviews.has(thumb) ? (
                     <img
                       className="canvas-card-img"
-                      src={canvas.preview_url}
+                      src={thumb}
                       alt=""
                       loading="lazy"
                       onError={() =>
                         setBrokenPreviews((prev) => {
                           const next = new Set(prev);
-                          next.add(canvas.preview_url!);
+                          next.add(thumb);
                           return next;
                         })
                       }
@@ -338,7 +387,8 @@ export default function Canvases() {
                   </span>
                 </span>
               </button>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
