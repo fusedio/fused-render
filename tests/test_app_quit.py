@@ -1049,7 +1049,7 @@ def test_begin_quit_starts_one_teardown_and_flags_ready_before_terminating(
 
 def test_begin_quit_runs_the_claim_hook_before_the_teardown_can_start(
         quit_state):
-    """The ordering guarantee `begin_relaunch` needs (D355 took away the one it
+    """The ordering guarantee `begin_relaunch` needs (D357 took away the one it
     used to get for free).
 
     The quit now ends in os._exit off a watchdog thread with no main-thread hop,
@@ -1360,7 +1360,7 @@ def test_the_duckdb_reader_no_longer_explains_the_quit_by_nsapplication():
     """The structural test above parses app.py only, and the same claim is made
     in prose one file away: reader.py's `close_http_connection` justified itself
     with "interpreter finalization never runs on macOS: `rumps.quit_application()`
-    -> `NSApplication.terminate:` -> C `exit()`". After D355 that is not why, and
+    -> `NSApplication.terminate:` -> C `exit()`". After D357 that is not why, and
     it is the first thing anyone debugging the next duckdb-at-exit report will
     read. A plain text check is enough for THIS file — unlike app.py, reader.py
     has no legitimate reason to name the symbol at all."""

@@ -601,7 +601,7 @@ def begin_quit(state: dict, *, terminate=None, start=None,
 
     `on_claim` (optional) runs INSIDE the claim — after the pidfile is gone,
     before the teardown is started — for work that must be finished before this
-    process can die. That ordering has to be enforced here now: since D355 the
+    process can die. That ordering has to be enforced here now: since D357 the
     quit ends in `os._exit` on the watchdog thread with no main-thread hop, so
     "after begin_quit returns" is no longer safely before the exit. An instance
     with nothing mounted and a server that drains on its first poll can complete
@@ -718,7 +718,7 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
     _quit_lock, and begin_quit already owns that critical section.
 
     The spawn is handed to the quit as its `on_claim` hook rather than run after
-    it returns, and that is load-bearing, not tidiness: since D355 the quit ends
+    it returns, and that is load-bearing, not tidiness: since D357 the quit ends
     in `os._exit` off a watchdog thread, so an instance with nothing to unmount
     can be dead before a statement after `quit_action()` finishes — and a
     relauncher that was never spawned means the app quits with no successor.

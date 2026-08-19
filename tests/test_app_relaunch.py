@@ -98,7 +98,7 @@ def test_begin_relaunch_spawns_inside_the_claimed_quit():
 
 
 def test_the_relauncher_is_parked_before_anything_can_terminate(monkeypatch):
-    """The regression D355 could have introduced, pinned deterministically.
+    """The regression D357 could have introduced, pinned deterministically.
 
     Before the hard exit, death was `AppHelper.callAfter(rumps.quit_application)`
     — queued onto the main run loop, so it could not possibly run until

@@ -365,14 +365,14 @@ def close_http_connection() -> bool:
     a bad reason and is now true by design, and the difference matters to anyone
     debugging the next duckdb-at-exit report:
 
-      * until D355, quit ended in `NSApplication.terminate:` -> C `exit()`, and
+      * until D357, quit ended in `NSApplication.terminate:` -> C `exit()`, and
         pyobjc releases the GIL for the duration of that ObjC call, so the C++
         static destructors `exit()` runs executed with no GIL — a surviving
         `DuckDBPyConnection` destructs there, calls `PyEval_SaveThread`, and
         Py_FatalError aborts the process (SIGABRT crash dialog, INCIDENT
         2026-07-29: preview one mounted parquet file and every later quit
         crashed; and again 2026-08-19 on a connection this close cannot reach).
-      * since D355 the app dies by `os._exit` (`app.hard_exit`) and no longer
+      * since D357 the app dies by `os._exit` (`app.hard_exit`) and no longer
         reaches those destructors at all — no code path calls into AppKit's
         termination any more (app.py's own structural test pins that).
 
