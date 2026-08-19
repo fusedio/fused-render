@@ -54,6 +54,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 # ------------------------------------------------------------------- the state
 #
@@ -1425,6 +1426,476 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     return result["value"]
 
 
+# ------------------------------------------------------- the already-cached path
+#
+# **A model already complete on disk is resolved WITHOUT touching the network**,
+# and the reason is that "Fetching weights…" for a cached model was costing about
+# a second of wall clock before any weight was read. Measured on this machine for
+# `mlx-community/whisper-tiny.en-8bit`, fully cached: `download_snapshot` 483ms
+# and `download_file` 456ms, against ~14ms for the actual `load()` inside
+# mlx-whisper. All of it is Hub round-trips — `HfApi().model_info(files_metadata=
+# True)` is 228ms on its own and hf's own `snapshot_download` spends another
+# ~220ms revalidating etags — and it is also the source of the "You are sending
+# unauthenticated requests to the HF Hub" line in every worker log. The same two
+# answers off the cache alone are 0.13ms and 0.14ms.
+#
+# **The trade, stated so the next reader does not have to rediscover it: a model
+# already complete on disk will NOT pick up a newer Hub revision.** Nothing here
+# re-checks `main` once the cache can answer, so a repo that was re-uploaded
+# under the same branch keeps serving the bytes this machine already has until
+# something else forces a re-check (a cache clear, a fetch of a file this
+# snapshot does not have, or a caller that scopes the download differently).
+# That is deliberate (D367): bring-up latency and working offline are worth more
+# here than revision freshness, because these are pinned model snapshots a user
+# downloaded on purpose rather than a moving dependency — and a silently changing
+# set of weights under a name the user chose would be the worse surprise anyway.
+#
+# What must NOT change is a first download, and that is the whole shape of this:
+# the local attempt either answers completely or it is discarded, and everything
+# below it — the metadata call, the total, the segmented fetch, the progress
+# reporting — runs exactly as it did before.
+#
+# **What "complete" can and cannot mean without a listing** — this is the part a
+# code review corrected, and the correction is the reason for the two rules
+# below. hf's own completeness check (`_raise_if_incomplete_snapshot`) verifies
+# the snapshot against `trees/<commit>.json`, and hf's own comment says that with
+# no tree listing cached "we cannot tell, so we do nothing". `_segmented_fetch`
+# never writes one: it publishes blobs and hand-writes `refs/<branch>`
+# (`_write_ref`), and it is the NORMAL path — hf's downloader runs only on
+# fallback. So for essentially every repo this app fetched itself, hf's check is a
+# no-op, and it must not be counted as evidence. It was, in the first cut of this,
+# and the claim that the gap was unreachable was simply wrong.
+#
+# **So this app records its own fetches, and the fast path answers only from that
+# record.** `_record_fetch` writes `<repo folder>/.fused-fetch-<commit>.json` when a
+# download completes, holding the SCOPE it was asked for and the file names the
+# LISTING asked for — verified present at write time, and not written at all if they
+# are not (see `_record_fetch`: a list built from what happened to land would be
+# self-certifying). `_cached_path` serves a request only when the record is for the
+# commit hf resolved, at the scope being asked for, and every recorded name is
+# present and settled. That makes "nothing would be downloaded" a claim about the
+# disk rather than an inference from it, and it is what the two earlier attempts
+# were reaching for:
+#
+# * **Scoping is a property of the on-disk STATE, not of the call.** Refusing
+#   scoped CALLS — the previous rule — left the reachable half open, because the
+#   same repo id reaches BOTH kinds of call: `diffusers_image` fetches
+#   `black-forest-labs/FLUX.2-klein-4B` scoped to `recipe["keep"]`, and
+#   `mflux_image.download` fetches whatever id it is given unscoped, with
+#   `/api/ai/runtime/download` choosing between them from the user's image-engine
+#   preference and `weights_only=True` stopping before the `load()` that would
+#   refuse the format. A download on the MLX engine after one on the Diffusers
+#   engine would have been answered from a cache holding a tenth of the repo,
+#   reporting success having fetched nothing. The same flip needs no user at all if
+#   a recipe is ever REMOVED: `download()` takes its unscoped branch against a
+#   still-scoped cache, and `from_pretrained` fails on a component nobody fetched.
+#   A recorded scope answers both — and lets a scoped call USE the fast path when
+#   the scope on disk is its own.
+# * **A file that went away has to be DETECTABLE.** A blob pruned together with its
+#   snapshot entry leaves nothing for a walk of the snapshot to trip over; only a
+#   list of what should be there catches it. Before this path existed, pressing
+#   Download again re-listed and re-fetched exactly that, so short-circuiting
+#   without the list quietly removed the app's only repair route. Checking recorded
+#   NAMES also makes the verification exact instead of structural: nothing depends
+#   on `os.walk`, which does not follow directory symlinks by default and so used
+#   to refuse a snapshot whose files sit under a linked subdirectory — a fast path
+#   wrongly declined rather than wrongly taken, but wrong.
+# * **`_settled` per name**, which is where an interrupted download's part files
+#   are ruled out — per BLOB rather than per repo, for the reason `_settled` gives.
+#
+# A cache with no record — every machine that already holds models when this ships
+# — takes the networked path exactly as before and gains one on the way out, so the
+# next bring-up is the fast one. No migration step, and no cache is ever served on
+# the strength of a record this app did not write.
+#
+# **Two further rules the first cut got wrong, both about not doing MORE than
+# looking.** (1) A repo the cache has never held must not reach a hub download
+# function at all, not even with `local_files_only=True`: `tests/test_ai_hub_
+# fetch.py` states the invariant that pressing Stop must not start a download,
+# and it enforces it by counting `snapshot_download`/`hf_hub_download` calls —
+# correctly, because "we only passed local_files_only" is precisely the kind of
+# claim that stops being true when an argument gets dropped in a refactor. So the
+# gate is a plain filesystem look FIRST (`_has_cached_snapshot`,
+# `try_to_load_from_cache`), and hf is consulted only once the cache is known to
+# hold something for this repo. (2) `Cancelled` must never be read as "not
+# cached". It is an ordinary `Exception`, so a bare `except Exception` here turned
+# a ✕ into "fall back to the network" — which is the one degradation this file
+# forbids everywhere else, because it starts a fresh multi-gigabyte download out
+# of pressing Stop. `_NOT_CACHED` is therefore an explicit tuple, and every hub
+# answer that means "the cache cannot serve this" is inside it.
+
+#: What "the cache cannot answer" arrives as, and nothing else.
+#:
+#: Both of hf's own verdicts are `OSError` subclasses, checked against
+#: huggingface_hub 1.28: `LocalEntryNotFoundError` is
+#: `(EntryNotFoundError, FileNotFoundError)` and `IncompleteSnapshotError` — a
+#: snapshot its tree listing says is missing files — derives from that. A cache
+#: directory this process cannot read is an `OSError` too, and an `ImportError` is
+#: what a venv without the library looks like.
+#:
+#: **Named as a tuple rather than caught broadly on purpose**: `Cancelled` is a
+#: plain `Exception` and is exactly what must NOT be swallowed here (see above),
+#: and neither is a `KeyboardInterrupt` or a bug in this file. A hub version that
+#: invents a new not-cached error outside this tuple costs a slow bring-up; a
+#: `Cancelled` inside it costs the user a download they pressed Stop on.
+_NOT_CACHED = (OSError, ImportError)
+
+#: hf's own marker for a blob it is still writing. Ours is `PART_SUFFIX`.
+_HF_PART_SUFFIX = ".incomplete"
+
+
+def _settled(path):
+    """Whether the file at `path` is finished rather than mid-download.
+
+    **Per BLOB, deliberately, and this replaced a repo-wide scan.** A leftover
+    part file is not a fact about a repo, it is a fact about one blob — and it
+    persists BY DESIGN, because it is the resume state (AI-5i). Scanning the whole
+    repo folder therefore let one cancelled download disable the fast path for
+    every unrelated, fully-cached file in the same repo, forever: a multi-GGUF repo
+    where the user stopped one quantization kept paying the ~450ms this exists to
+    remove for the dozen it already had.
+
+    The three names are spelled out rather than matched by suffix, which also
+    settles an old inconsistency (`endswith(PART_SUFFIX)` here against
+    `PART_SUFFIX in name` in `_clear_parts`): our part file, its offsets sidecar
+    — `<part>.json`, which a suffix test misses — and hf's own marker. hf 1.x also
+    writes uuid-named `.incomplete` blobs that no per-blob name can predict, and
+    that is covered from the other side: an unfinished blob is not a file
+    `try_to_load_from_cache` or a snapshot symlink resolves to at all.
+
+    `realpath` first, because the caller holds a snapshot entry and the markers sit
+    beside the BLOB it links into.
+    """
+    blob = os.path.realpath(path)
+    return not any(os.path.lexists(blob + suffix) for suffix in
+                   (PART_SUFFIX, PART_SUFFIX + ".json", _HF_PART_SUFFIX))
+
+
+def _has_cached_snapshot(folder):
+    """Whether the cache holds ANY snapshot directory for this repo.
+
+    The purely-local gate in front of every hub call on the fast path, and the
+    reason it exists is the invariant above: a repo this machine has never
+    downloaded must not reach `snapshot_download` at all. `snapshots/` is hf's own
+    layout — the same one `bytes_on_disk` and `_clear_parts` already walk — and if
+    hf ever moves it this answers False, which costs the fast path and takes the
+    networked one. Slower, never wrong.
+    """
+    if not folder:
+        return False
+    try:
+        with os.scandir(os.path.join(folder, "snapshots")) as entries:
+            return any(entry.is_dir() for entry in entries)
+    except OSError:
+        return False
+
+
+#: One completed fetch, per commit, in the repo's own cache folder.
+#:
+#: In hf's cache directory rather than beside the app's other state, because it
+#: describes THAT cache and has to die with it: `hf cache delete` and a manual
+#: `rm -rf` of the repo folder both take it, which is the only correct lifetime for
+#: a record of "what is on this disk". Dot-prefixed so it cannot be mistaken for
+#: repo content, and per-commit so a second revision writes its own rather than
+#: overwriting the answer for the first.
+_FETCH_RECORD = ".fused-fetch-%s.json"
+
+#: The suffix of the file a record is written to before it is `os.replace`d into
+#: place. `_has_fetch_record` has to EXCLUDE it: a half-written record is not a
+#: record, and reading the prefix alone made a record-less repo pay a hub resolve
+#: on every download.
+#:
+#: **Excluded, never deleted, and made unique per writer.** Two model loads sharing
+#: one HF cache are separate processes with no lock between them, and this name is
+#: what a fetch in flight is writing RIGHT NOW — so sweeping it to save a round trip
+#: made the other process's `os.replace` fail, its record never get written, and its
+#: repo stay permanently cold, which is the failure the record exists to prevent.
+#: A pid AND a random token keep two writers off each other's file; each cleans up
+#: only its own.
+#:
+#: **A temp left by a HARD KILL is therefore permanent, and that is the accepted
+#: trade rather than an oversight.** With the token, no other writer can tell a
+#: leftover from a live stage, so the only safe automatic reclamation would be by
+#: AGE — and the thing being reclaimed is a few hundred bytes written inside a
+#: window of about a millisecond (one `json.dump` of a name list, then `os.replace`),
+#: invisible to `_all_present`, `_recorded_files`, `_has_fetch_record` and
+#: `_clear_parts`, and counted by `bytes_on_disk` only as its own length. So the
+#: exposure is one file per crash that lands inside that window per repo, against a
+#: delete that can strike a live writer and cost exactly the permanently cold repo
+#: this record exists to prevent. The user's own reaper takes them either way:
+#: `hf cache delete` and an `rm -rf` of the repo folder remove the temp with the
+#: record and the weights.
+_RECORD_TEMP = ".writing"
+
+
+def _temp_record(name):
+    """The name THIS writer stages a record in before publishing it.
+
+    **The pid is not enough, and the failure it leaves is worse than the one this
+    design replaced.** Two containers sharing a mounted HF cache have their own pid
+    namespaces, and a pid is reused after a crash in any case — so a pid-only name
+    can be one file that two writers interleave into, and `os.replace` then publishes
+    mixed JSON as TRUTH. The sweep this replaced only ever cost a cold repo. The
+    random token is what makes "a temp is distinguishable from another writer's"
+    actually true; the pid stays because it makes a leftover attributable when
+    somebody is looking at the directory wondering where it came from.
+    """
+    return "%s.%d-%s%s" % (name, os.getpid(), uuid.uuid4().hex[:8], _RECORD_TEMP)
+
+
+def _scope_key(allow, ignore):
+    """A fetch's scope, as one comparable value.
+
+    Sorted, because `allow_patterns` is a list whose ORDER means nothing to
+    `fnmatch` — two callers naming the same patterns in a different order must not
+    read as two different scopes. `None` and `[]` both come out as "unscoped",
+    which is what `selects` already treats them as.
+    """
+    return {"allow": sorted(allow or ()), "ignore": sorted(ignore or ())}
+
+
+def _commit_of(snapshot):
+    """The commit a resolved snapshot directory IS, or None — hf's cache lays it out
+    as `snapshots/<commit>`.
+
+    One function for the reader and both writers, so a record can never be filed
+    under a different name than the one the fast path looks up: that is exactly how
+    the fallback used to file records under the listing's sha while hf had landed
+    somewhere else, leaving the repo permanently cold.
+
+    **None for anything that is not a plausible commit, and that is not
+    defensiveness — the empty string is a key that READS BACK.** A path with no
+    basename made the writer file `.fused-fetch-.json` and the reader look up the
+    very same name, so a record written under nothing at all came back as a hit,
+    which is the opposite of the miss this promises. `_COMMIT_SHA` is the same
+    40-hex test `_segmented_fetch` already applies to a revision, so a `local_dir`
+    download or a layout change answers None here, nothing is recorded, and the
+    download takes the networked path. Slower, never wrong.
+    """
+    name = os.path.basename(os.path.normpath(snapshot or ""))
+    return name if _COMMIT_SHA.match(name) else None
+
+
+def _record_fetch(folder, commit, names, snapshot, allow=None, ignore=None):
+    """Write down that a fetch of `names` at this scope COMPLETED for `commit`.
+
+    Called after a download returns, which is the only moment this is knowable:
+    `_write_ref` runs after the last file lands, so reaching there SHOULD mean the
+    whole requested set is on disk — and the request's own scope is what makes "the
+    whole set" mean anything at all. Should, not does: that is checked below rather
+    than trusted, because the two fetch paths filter the listing with different
+    matchers and a partial fallback is a real thing.
+
+    **A SHORTFALL writes nothing at all**, and that is the whole reason `names`
+    comes from the listing rather than from the disk. A record is verified by
+    looking its own names up, so building it out of "whatever landed" would make it
+    self-certifying: a fetch that delivered 1 of 50 files would record one name,
+    every later check would pass, and the fast path would serve an incomplete
+    snapshot forever. Checked against the set the LISTING asked for — the one thing
+    here the fetch did not choose — a fetch that fell short leaves no record, and a
+    repo with no record is merely cold, which is where it was before this existed.
+    The shortfall is named on stderr because silence is what would make it
+    invisible: a repo that never warms up is otherwise indistinguishable from one
+    nobody loaded twice. **That applies to the two ANOMALIES — a shortfall, and a
+    fetch that returned no snapshot path — and deliberately not to the ordinary
+    nothings** (no cache folder, a revision that is not a commit, a listing that
+    selected nothing), which are shapes the world produces rather than signs
+    something went wrong, and which would be noise on every `local_dir` download.
+
+    **Best-effort, and never in the way.** A finished download must not fail
+    because a record could not be written: the weights are there either way, and
+    the only cost of a missing record is a slower next bring-up. Written to a
+    per-writer temporary name and `os.replace`d, so a crash mid-write leaves either
+    the old record or none — never half of one that a later fast path would read as
+    truth, and never another process's file (see `_RECORD_TEMP`).
+    """
+    if not folder or not commit or not names:
+        # Three ORDINARY nothings, and silent for that reason: no folder is a venv
+        # with no huggingface_hub, no commit is `_commit_of` refusing a path that is
+        # not a sha (a `local_dir` download, say), and no names is a listing that
+        # selected nothing. None of them is a fetch that went wrong.
+        return
+    if not snapshot:
+        # An ANOMALY, unlike the three above: both callers reach here only after a
+        # fetch returned, so a fetch that returned no path at all is a bug in this
+        # file rather than a shape the world produces — and it is named for the same
+        # reason the shortfall below is, that a repo which never warms up is
+        # otherwise indistinguishable from one nobody loaded twice.
+        #
+        # It cannot be defaulted to `""` and joined: every presence check would
+        # become CWD-relative, and a process whose working directory happens to hold
+        # a matching name — `config.json` is not far-fetched — would pass the
+        # shortfall check and record a fetch whose snapshot nobody had located.
+        sys.stderr.write(
+            f"[fused] the download of {commit[:12]} succeeded but reported no "
+            f"snapshot path, so it is not recorded for the cached-model fast path. "
+            f"This is not a failure: the next load re-resolves over the network.\n")
+        return
+    # Presence only, deliberately: `_settled` is a READ-time question — a part file
+    # can appear beside a blob after this runs, and `_all_present` asks both at the
+    # moment the answer is used, which is the moment that matters.
+    missing = [name for name in names
+               if not os.path.exists(os.path.join(snapshot, name))]
+    if missing:
+        # **Worded as the diagnostic it is, because it fires on a download that
+        # WORKED.** `selects` and hf's `filter_repo_objects` disagreeing by one name
+        # is the real possibility this whole check exists for, and when it happens
+        # the weights are on disk and the load is about to succeed — so a line
+        # shaped like an error had a user reading a perfect download as a broken
+        # one. Silence was the original problem, so the line stays and says what is
+        # true: nothing failed, only the shortcut was declined.
+        sys.stderr.write(
+            f"[fused] the download of {commit[:12]} succeeded; not recording it "
+            f"for the cached-model fast path, because {len(missing)} of "
+            f"{len(names)} listed files are not in the snapshot "
+            f"({', '.join(missing[:3])}{', …' if len(missing) > 3 else ''}). "
+            f"This is not a failure: the next load re-resolves over the network, "
+            f"exactly as it did before that shortcut existed.\n")
+        return
+    path = os.path.join(folder, _FETCH_RECORD % commit)
+    payload = {"commit": commit, "scope": _scope_key(allow, ignore),
+               "files": sorted(names)}
+    temporary = os.path.join(folder, _temp_record(_FETCH_RECORD % commit))
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        os.replace(temporary, path)
+    except OSError:
+        # Ours and ours alone — the random TOKEN in the name is what makes that
+        # true, not the pid, which two containers over one mounted cache can share
+        # (see `_temp_record`) — so cleaning it up here cannot take a record
+        # another writer is in the middle of staging.
+        _remove(temporary)
+
+
+def _has_fetch_record(folder):
+    """Whether this repo folder holds ANY fetch record.
+
+    Asked BEFORE hf is consulted, so a cache filled before this existed — or by
+    somebody else's tooling — costs one `scandir` and no hub call at all on its way
+    to the networked path. The per-commit lookup still has to happen afterwards;
+    this only avoids asking hf to resolve a snapshot whose completeness nothing
+    here could vouch for anyway.
+    """
+    prefix = _FETCH_RECORD.split("%s")[0]
+    try:
+        with os.scandir(folder) as entries:
+            return any(entry.name.startswith(prefix)
+                       and not entry.name.endswith(_RECORD_TEMP)
+                       for entry in entries)
+    except OSError:
+        return False
+
+
+def _recorded_files(folder, commit, allow, ignore):
+    """The file list a completed fetch of THIS scope recorded, or None.
+
+    None for every way of not knowing — no record, a record for another commit or
+    another scope, a record this process cannot read or cannot parse. They all mean
+    the same thing to the caller (take the networked path), and none of them is
+    worth a warning: no record is the normal state of every cache filled before
+    this existed.
+    """
+    if not folder or not commit:
+        return None
+    try:
+        with open(os.path.join(folder, _FETCH_RECORD % commit),
+                  encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if record.get("commit") != commit:
+        return None
+    if record.get("scope") != _scope_key(allow, ignore):
+        return None
+    files = record.get("files")
+    return files if isinstance(files, list) and files else None
+
+
+def _all_present(snapshot, names):
+    """Whether every recorded name is in the snapshot, resolved and settled.
+
+    `os.path.exists` FOLLOWS symlinks, which is the point: a snapshot entry is a
+    link into `blobs/`, and a blob pruned or never copied leaves the link behind.
+    Checked by NAME rather than by walking the directory, so a file that vanished
+    WITH its entry is caught — the case a walk cannot see at all — and nothing
+    depends on how `os.walk` treats a linked subdirectory.
+    """
+    for name in names:
+        entry = os.path.join(snapshot, name)
+        if not os.path.exists(entry) or not _settled(entry):
+            return False
+    return True
+
+
+def _cached_path(model_id, resolve, allow=None, ignore=None):
+    """`resolve()`'s answer if the cache can serve it with NO network, else None.
+
+    `resolve` is the hf call with `local_files_only=True` — the same function and
+    the same arguments the networked path uses, so the local answer cannot be a
+    differently-scoped one. It is reached only once the cache is known to hold a
+    snapshot for this repo and to carry no interrupted download's leftovers,
+    because on the fast path hf is asked to CONFIRM something the filesystem
+    already suggested rather than asked to go and look.
+
+    Failures come back as None so the caller takes the networked path — but only
+    the ones in `_NOT_CACHED`. Anything else propagates, `Cancelled` above all:
+    the whole point of this file's degradation rules is that a ✕ is the one
+    failure that must not be answered by starting a download.
+
+    The answer is verified against this app's OWN record of what it fetched (see
+    the note above this section): the record has to be for the commit hf resolved,
+    at the scope being asked for, and every name in it has to be present and
+    settled. A repo with no record is never served, which is what makes "nothing
+    would be downloaded" a fact rather than an inference.
+
+    The commit comes from the resolved path's own basename — hf's cache puts a
+    snapshot at `snapshots/<commit>` — and if that ever stops being true the lookup
+    finds no record and the download takes the networked path. Slower, never wrong.
+    """
+    folder = repo_folder(model_id)
+    if not _has_cached_snapshot(folder) or not _has_fetch_record(folder):
+        return None
+    try:
+        path = resolve()
+    except _NOT_CACHED:
+        return None
+    if not path or not os.path.isdir(path):
+        return None
+    names = _recorded_files(folder, _commit_of(path), allow, ignore)
+    return path if names and _all_present(path, names) else None
+
+
+def _cached_file(repo_id, filename):
+    """One file's path if the cache already holds it, else None.
+
+    `try_to_load_from_cache` rather than `hf_hub_download(local_files_only=True)`,
+    because it is hf's own read-only cache lookup: it resolves the ref and the
+    blob off the disk and CANNOT download, so the "pressing Stop starts a
+    download" invariant holds by construction rather than by an argument that a
+    later edit might drop. Measured at 0.6ms for a hit and 0.1ms for a repo the
+    cache has never seen.
+
+    It has three answers and only one of them is a path: a `str`, `None` for "not
+    cached", and a `_CACHED_NO_EXIST` sentinel for "the Hub said this file does
+    not exist and that was cached too". The `isinstance` check covers the
+    sentinel without importing a private name, and the `isfile` covers a blob
+    deleted under a ref that still points at it.
+    """
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except ImportError:
+        return None
+    try:
+        path = try_to_load_from_cache(repo_id, filename)
+    except _NOT_CACHED:
+        return None
+    if not isinstance(path, str) or not os.path.isfile(path):
+        return None
+    return path if _settled(path) else None
+
+
 def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwargs):
     """The repo, with progress. What most runners mean by "download".
 
@@ -1439,6 +1910,23 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     `snapshot_download` would fetch a tenth of a repo behind a bar priced at all
     of it.
     """
+    def local():
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(model_id, local_files_only=True)
+
+    # Already on disk, at this scope, and complete? Then there is nothing to
+    # download and nothing to report: no metadata call, no etag revalidation, no
+    # bar that fills in one tick. See the note above this section for what
+    # "complete" is allowed to mean here and what it costs in revision freshness.
+    # `kwargs` is excluded outright — an argument this function does not know about
+    # changes what a download IS, and no record describes it.
+    if not kwargs:
+        cached = _cached_path(model_id, local, allow=allow_patterns,
+                              ignore=ignore_patterns)
+        if cached:
+            return cached
+
     # ONE listing, serving the bar's total, the list to fetch AND the revision
     # to fetch it at. Asking twice is a second round trip before any byte moves;
     # deciding the revision separately is how a list from one revision comes to
@@ -1451,14 +1939,27 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(model_id, error)
 
-    def hub():
+    def hub(revision=None):
         from huggingface_hub import snapshot_download
 
+        # PINNED when we have a commit, for `_segmented_fetch`'s reason (AI-5i): a
+        # branch name resolved twice is two answers, and a repo that moved between
+        # the listing and the fallback would land a different commit than the one
+        # the total, the file list and the fetch record all describe.
+        #
+        # ONE dict that `kwargs` updates, not two splatted into one call: the
+        # caller's own `revision` has to win, and splatting both raised
+        # `TypeError: got multiple values for keyword argument 'revision'` instead
+        # — masked only because a call carrying `kwargs` returns before the pin is
+        # applied, which makes it a crash waiting on a reorder rather than a
+        # non-issue.
+        options = {"allow_patterns": allow_patterns,
+                   "ignore_patterns": ignore_patterns}
+        if revision:
+            options["revision"] = revision
+        options.update(kwargs)
         return fetch_with_progress(
-            model_id,
-            lambda: snapshot_download(model_id, allow_patterns=allow_patterns,
-                                      ignore_patterns=ignore_patterns, **kwargs),
-            total=total)
+            model_id, lambda: snapshot_download(model_id, **options), total=total)
 
     if kwargs or files is None or not sha:
         # An extra argument changes WHAT is fetched — `allow_patterns`, a
@@ -1466,15 +1967,36 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         # download the wrong thing. Ours honours exactly the two it knows about.
         # A listing with no sha is the same problem: nothing to pin to.
         return hub()
+    names = [name for name, _size in files]
     try:
-        names = [name for name, _size in files]
-        return fetch_with_progress(
+        fetched = fetch_with_progress(
             model_id, lambda: _segmented_fetch(model_id, names, sha), total=total)
     except Cancelled:
         raise
     except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader
         _fallback(model_id, error)
-    return hub()
+    else:
+        # The one moment completeness is knowable: the fetch returned, so the
+        # listing's names should all be on disk — `_record_fetch` checks that rather
+        # than taking it on trust, and writes nothing if they are not. Recorded WITH
+        # the scope that produced it (what a later fast path compares itself
+        # against) and keyed by the commit the returned snapshot IS rather than by
+        # the sha we asked for, so a record cannot be filed under a name the reader
+        # will not look up.
+        _record_fetch(repo_folder(model_id), _commit_of(fetched), names, fetched,
+                      allow=allow_patterns, ignore=ignore_patterns)
+        return fetched
+    fell_back = hub(revision=sha)
+    # Same rule as above, and the same reason it is checked rather than assumed:
+    # hf filters with `filter_repo_objects` where `_repo_files` filtered with
+    # `selects`, and the two are written to agree rather than guaranteed to. Where
+    # they disagree the listing's set is not all there, `_record_fetch` writes
+    # nothing, and this repo stays on the networked path — which is the safe
+    # direction, unlike recording whatever happened to land. Recording at all is
+    # what keeps a repo that ever fell back from being cold forever.
+    _record_fetch(repo_folder(model_id), _commit_of(fell_back), names, fell_back,
+                  allow=allow_patterns, ignore=ignore_patterns)
+    return fell_back
 
 
 def download_file(repo_id, filename, detail=None, job=None, row=None):
@@ -1492,6 +2014,17 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
     and reopened as a running download of something the user never asked for
     while the row they ARE watching says nothing. See `fetch_with_progress`.
     """
+    # The same fast path `download_snapshot` takes, and it matters most for the
+    # SMALL components: the 2MB speech detector and the two diarization models
+    # are fetched inside a transcription, so on a warm cache their 456ms each was
+    # latency a user waits through on the way to a transcript they already had
+    # the bytes for. One file needs no snapshot completeness question, so this is
+    # hf's read-only cache lookup rather than a download function told not to
+    # download — see `_cached_file`.
+    cached = _cached_file(repo_id, filename)
+    if cached:
+        return cached
+
     # One listing here too, for the revision as much as for the total: a GGUF
     # fetched at a revision its listing never described is the same bug as a
     # whole snapshot fetched that way, one file wide.
