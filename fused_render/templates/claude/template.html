@@ -213,7 +213,12 @@
     transition: color .12s, background .12s, border-color .12s;
   }
   #anncta button + button { border-left: 1px solid var(--border); }
-  #anncta button:hover:not(:disabled) { color: var(--fg); background: var(--surface); }
+  /* Hover must not outrank a STATE (Bugbot, PR #644): the bare hover rule beat
+     #annbtn.on and #annrec.on on order, so crossing the armed Comment seat
+     wiped the accent fill — the mode's only on-screen signal — on the way to
+     the click that ends it. :not(.on) keeps hover a resting-seat affair; the
+     armed looks below stay put under the pointer. */
+  #anncta button:hover:not(:disabled):not(.on) { color: var(--fg); background: var(--surface); }
   /* Armed comment mode fills the word seat with the accent — same voice as
      the picker's selected seat: a mode you are in, not a button you pressed. */
   #annbtn { padding: 0 10px; }
