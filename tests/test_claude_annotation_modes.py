@@ -171,13 +171,14 @@ def test_the_tool_picker_survives_the_hosted_layout(html):
     assert '"anntool"' in body
 
 
-def test_a_point_anchor_is_page_coordinates_with_shot_null_from_the_start(html):
+def test_a_point_anchor_is_page_coordinates_and_carries_no_crop(html):
     """Same convention annRecMarkPoint set: page coords (stable across scroll,
-    annPointXY converts back) and a `shot` key that is present-but-null."""
+    annPointXY converts back). No `shot` of its own — the send-time overview
+    badges the spot, the same picture every other note on the message shares."""
     body = _block(html, "const pointAnchor = { kind:", "};")
     assert '"point"' in body
     assert "scrollX" in body and "scrollY" in body
-    assert "shot: null" in body
+    assert "shot" not in body
 
 
 def test_a_point_aim_shows_a_crosshair_and_hides_the_ring(html):
@@ -197,13 +198,14 @@ def test_typed_and_spoken_notes_save_through_the_same_commit(html):
     assert "annCommit();" in mic
 
 
-def test_a_point_notes_crop_is_awaited_before_autosend(html):
-    """Ordering, not just presence: auto-send composes the wire immediately, so
-    the crop must exist (or have failed) before it fires."""
+def test_a_note_saves_without_any_capture_of_its_own(html):
+    """The save path takes no picture: typed and spoken, element and point, all
+    ride the ONE send-time overview (annCaptureOverview), so a save is instant
+    and cannot race a capture."""
     body = _block(html, "async function annCommit()", "\n}\n")
-    crop = body.index("await annRecPointShot(saved, p.x, p.y)")
-    send = body.index("annAutoSubmit()")
-    assert crop < send
+    assert "shotPane" not in body
+    assert "annRecPointShot" not in body
+    assert "annAutoSubmit()" in body
 
 
 # --------------------------------------------------------------- the mic
@@ -236,12 +238,57 @@ def test_the_mic_never_transcribes_silence(html):
 def test_a_transcribed_walkthrough_autosends_only_when_words_landed(html):
     """`record, talk, stop` reaches Claude without a fourth step — but a
     transcription that assigned nothing leaves the clicks pending and editable
-    rather than sending empty notes."""
+    rather than sending empty notes. Words landing as INTRO (spoken before the
+    first click) count: they are the message's own prompt."""
     body = _block(html, "async function annRecEnd()", "\n}\n")
-    assign = body.index("annRecAssign(ids, rec.segments);")
+    assign = body.index("annRecAssign(ids, rec.segments)")
     gate = body.index("c && c.content && !c.sent")
-    send = body.index("if (spoke && !sending && annPrefillComposer()) annAutoSubmit();")
+    send = body.index(
+        "if ((spoke || intro) && !sending && annPrefillComposer(intro)) annAutoSubmit();")
     assert assign < gate < send
+
+
+def test_speech_before_the_first_click_becomes_the_prompt_not_a_note(html):
+    """Everything said before the first click is the user framing the task —
+    it seeds the composer as the message's own words instead of being pulled
+    onto click 1 by the nearest-segment match."""
+    out = _node(["function annRecAssign("], """
+var annotations = [{id: "a", t: 10}, {id: "b", t: 20}];
+function annSave() {}
+const intro = annRecAssign(["a", "b"], [
+  {start: 1, text: "overall make it cleaner"},
+  {start: 4, text: "and use our colors"},
+  {start: 10.5, text: "this button is wrong"},
+  {start: 19, text: "this chart too"},
+]);
+console.log(JSON.stringify({intro: intro,
+  a: annotations[0].content, b: annotations[1].content}));
+""", html)
+    assert out["intro"] == "overall make it cleaner and use our colors"
+    assert out["a"] == "this button is wrong"
+    assert out["b"] == "this chart too"
+
+
+def test_the_intro_seeds_the_composer_but_never_over_a_typed_draft(html):
+    """The intro is the user's own words for the task, so it outranks the
+    canonical prefill — but a draft the user typed is theirs, hands off."""
+    out = _node(["const ANN_PREFILL", "function annPrefillComposer("], """
+var chatEl = {classList: {contains: () => false}};
+var homebox = {value: ""};
+var box = {value: ""};
+function growBox() {}
+function growHome() {}
+const seeded = annPrefillComposer("make the header sticky");
+const seededValue = box.value;
+box.value = "my own half-typed draft";
+const refused = annPrefillComposer("something else");
+console.log(JSON.stringify({seeded: seeded, seededValue: seededValue,
+  refused: refused, kept: box.value}));
+""", html)
+    assert out["seeded"] is True
+    assert out["seededValue"] == "make the header sticky"
+    assert out["refused"] is False
+    assert out["kept"] == "my own half-typed draft"
 
 
 # --------------------------------------------- the two stylesheets stay paired
@@ -336,7 +383,7 @@ def test_a_cross_origin_capture_comes_off_the_tab_not_the_document(html):
     grabs a frame off a getDisplayMedia tab share and crops the marked
     iframe's rect out of it. Same {canvas, width, height, ...} shape, clean
     doubt fields (no style walk, no image inlining, no WebGL readback), so
-    the crops, the crosshair burner and the whole-pane shot run unchanged."""
+    the overview's badge burner and the whole-pane shot run unchanged."""
     pane = _block(html, "async function shotPane(deadline)", "const clone")
     assert "if (annXO) return shotXOPane();" in pane
     body = _block(html, "async function shotXOPane()", "\n}\n\n")
@@ -353,10 +400,10 @@ def test_a_cross_origin_capture_comes_off_the_tab_not_the_document(html):
     # cross-origin, pagehide (annXORemove covers all three).
     remove = _block(html, "function annXORemove()", "\n}\n")
     assert "annXOStreamStop();" in remove
-    # The save-time crop fires for an overlay note too, through the same
-    # zero-scroll stub the pin painter uses.
-    commit = _block(html, "async function annCommit()", "\n}\n")
-    assert "annXO ? ANN_XO_SCROLL : null" in commit
+    # The overview's point badges resolve through the same zero-scroll stub
+    # the pin painter uses.
+    capture = _block(html, "async function annCaptureOverview(", "\n}\n")
+    assert "annXO ? ANN_XO_SCROLL : null" in capture
 
 
 def test_the_capture_stream_state_is_declared_before_its_boot_time_teardown(html):

@@ -317,7 +317,7 @@ def _node(fn_names, call, html, prelude=""):
     return json.loads(out.stdout)
 
 
-_CAPS = ["const SHOT_MAX_EDGE", "const SHOT_MAX_BYTES", "const SHOT_MAX_COUNT",
+_CAPS = ["const SHOT_MAX_EDGE", "const SHOT_MAX_BYTES",
          "const SHOT_MIN_AREA", "const SHOT_TIMEOUT_MS"]
 
 
@@ -526,151 +526,26 @@ def test_a_transparent_readback_is_recognised_as_unreadable(html):
     assert out["noprobe"] is True
 
 
-_BLANK_FNS = ["const SHOT_BLANK_BLOCK", "function shotRectOverlap(",
-              "function shotBlankCover("]
+# --------------------------- one capture, ONE labelled overview: the orchestration
 
-# The blank map fills the pane; the elements below sit at their own rects over it.
-_BLANK_STUBS = """
-var RECTS = {};
-function annStageRect(el) { return RECTS[el.name]; }
-const cv = {name: "cv", tagName: "CANVAS", contains: (n) => n === cv};
-RECTS.cv = {left: 0, top: 0, width: 800, height: 600};
-const cover = (el) => shotBlankCover(el, [cv], RECTS[el.name]);
-"""
-
-
-def test_an_annotation_on_or_around_a_blank_canvas_is_blocked(html):
-    """`is or contains`: pointing at the map itself, and pointing at the panel
-    the map is inside, are both "these pixels are not readable". Kept as an
-    absolute regardless of geometry — a panel far bigger than the map it holds
-    is still a claim about the map."""
-    out = _node(_BLANK_FNS, _BLANK_STUBS + """
-const panel = {name: "panel", tagName: "DIV", contains: (n) => n === panel || n === cv};
-RECTS.panel = {left: 0, top: 0, width: 800, height: 600};
-const far = {name: "far", tagName: "BUTTON", contains: () => false};
-RECTS.far = {left: 810, top: 10, width: 60, height: 20};
-console.log(JSON.stringify({
-  itself: cover(cv), ancestor: cover(panel), elsewhere: cover(far),
-  none: shotBlankCover(panel, [], RECTS.panel), block: SHOT_BLANK_BLOCK,
-}));
-""", html)
-    assert out["itself"] == 1
-    assert out["ancestor"] == 1
-    # A sibling that does not overlap the canvas renders in the DOM and captures
-    # fine. This is the case the guard must NOT widen into.
-    assert out["elsewhere"] == 0
-    assert out["none"] == 0
-    assert out["block"] <= 1
-
-
-def test_an_element_sitting_over_a_blank_canvas_is_blocked_too(html):
-    """The gap the containment-only guard left, and it is the single most common
-    map-app layout: a legend/zoom control absolutely positioned OVER the map is
-    neither the canvas nor a container of it, so it used to get a real crop —
-    the control floating on a blank backdrop, with no note to say the map behind
-    it is missing. Geometry, not DOM ancestry, is what decides this."""
-    out = _node(_BLANK_FNS, _BLANK_STUBS + """
-const legend = {name: "legend", tagName: "DIV", contains: () => false};
-RECTS.legend = {left: 600, top: 500, width: 180, height: 80};
-const clipped = {name: "clipped", tagName: "DIV", contains: () => false};
-RECTS.clipped = {left: 700, top: 0, width: 400, height: 400};
-console.log(JSON.stringify({legend: cover(legend), clipped: cover(clipped),
-                            block: SHOT_BLANK_BLOCK}));
-""", html)
-    assert out["legend"] == 1, "the legend's whole rect is over the blank map"
-    assert out["legend"] >= out["block"], "so the crop is suppressed"
-    # A partial lap is a fraction, and below the threshold — the crop survives.
-    assert out["clipped"] == 0.25
-    assert out["clipped"] < out["block"]
-
-
-def test_a_crop_that_only_clips_a_blank_canvas_is_sent_with_a_note(html):
-    """A partial overlap: a panel whose corner laps onto the map. Suppressing
-    the crop would throw away a mostly-trustworthy picture; sending it silently
-    would hand the agent a blank corner it cannot account for. So it is sent,
-    WITH a note about the part that is missing."""
-    out = _capture(html, """
-const el = {name: "panel", contains: () => false};
-const cv = {name: "cv"};
-RECTS.panel = {left: 300, top: 0, width: 400, height: 400};   // 25% over the map
-RECTS.cv = {left: 0, top: 0, width: 400, height: 600};
-const a = {id: "a", el: el};
-annotations = [a];
-BLANKS.push(cv);
-(async () => {
-  annApplyShots([a], await annCaptureShots([a]));
-  console.log(JSON.stringify({shot: a.shot, note: a.shotNote, uploaded: uploaded}));
-})();
-""")
-    assert out["shot"], "a mostly-good crop is worth sending"
-    assert out["uploaded"] == [out["shot"]]
-    assert "WebGL" in out["note"]
-    assert "part" in out["note"].lower()
-
-
-def test_the_blank_share_is_measured_on_the_crop_not_the_whole_element(html):
-    """A panel hanging off the right edge of the pane is cropped to its visible
-    part. Half its full rect is over the blank map, but ALL of what gets cut is —
-    and it is the crop the agent looks at, so that is what the share describes."""
-    out = _capture(html, """
-const el = {name: "panel", contains: () => false};
-const cv = {name: "cv"};
-RECTS.panel = {left: 600, top: 0, width: 400, height: 400};  // 200px of it visible
-RECTS.cv = {left: 0, top: 0, width: 800, height: 600};       // and all of that blank
-const a = {id: "a", el: el};
-annotations = [a];
-BLANKS.push(cv);
-(async () => {
-  annApplyShots([a], await annCaptureShots([a]));
-  console.log(JSON.stringify({shot: a.shot, note: a.shotNote}));
-})();
-""")
-    assert out["shot"] is None
-    assert "not readable" in out["note"]
-
-
-def test_an_annotation_away_from_the_blank_canvas_gets_a_clean_crop(html):
-    """The other direction, and the one that would make the feature useless on
-    exactly the apps it is for: a blank map somewhere on the page must not cost
-    every other annotation its crop, nor attach a note to a picture that is
-    entirely accurate."""
-    out = _capture(html, """
-const el = {name: "side", contains: () => false};
-const cv = {name: "cv"};
-RECTS.side = {left: 500, top: 20, width: 200, height: 100};
-RECTS.cv = {left: 0, top: 0, width: 400, height: 600};
-const a = {id: "a", el: el};
-annotations = [a];
-BLANKS.push(cv);
-(async () => {
-  annApplyShots([a], await annCaptureShots([a]));
-  console.log(JSON.stringify({shot: a.shot, keys: Object.keys(a).sort()}));
-})();
-""")
-    assert out["shot"]
-    assert "shotNote" not in out["keys"]
-
-
-# ------------------------------------- one capture, N crops: the orchestration
-
-# Everything annCaptureShots touches outside itself, recorded rather than
-# performed. `shotPane` and `shotEncode` are reassigned (a function declaration is
-# a mutable binding) because rasterising is exactly the part node cannot do —
-# what is under test is which annotations get a crop and what the others are told.
-_CAPTURE_FNS = _CAPS + _BLANK_FNS + ["function shotPaneNote(", "function shotTrustLine(",
-                        # The image caveat rides every crop cut out of a capture
-                        # that could not inline a picture, so the orchestration
-                        # needs it for the same reason it needs shotPaneNote.
+# Everything annCaptureOverview touches outside itself, recorded rather than
+# performed. `shotPane` and `shotEncodeBadged` are reassigned (a function
+# declaration is a mutable binding) because rasterising is exactly the part node
+# cannot do — what is under test is which annotations get a badge, what the
+# others are told, and that ONE file is written for all of them.
+_CAPTURE_FNS = _CAPS + ["const SHOT_VIEW_EDGE", "const SHOT_VIEW_BYTES",
+                        "function shotPaneNote(", "function shotTrustLine(",
                         "function shotImageNote(",
-                        "function shotExt(", "function shotCropRect(",
-                        "function shotFit(", "function annLabelFor(",
+                        "function shotCropRect(", "function shotBlankRegions(",
+                        "function shotExt(", "function shotFit(",
+                        "function annLabelFor(", "function annPointXY(",
                         "const APP_STATE_UNREADABLE",
-                        "async function annCaptureShots(", "function shotJoin(",
-                        # One stamp writer for both the crops and the whole-pane
+                        "async function annCaptureOverview(", "function shotJoin(",
+                        # One stamp writer for both the overview and the whole-pane
                         # shot, so two files out of one click cannot collide.
                         "function shotStamp(",
-                        "function annApplyShots(", "function annRevokeThumbs(",
-                        "function annShots("]
+                        "function annApplyOverview(", "function shotRevoke(",
+                        "function annOverview("]
 
 _CAPTURE_STUBS = """
 var uploaded = [];
@@ -681,15 +556,21 @@ var annotations = [];
 var RECTS = {};
 var BLANKS = [];
 var PANE = {canvas: {}, width: 800, height: 600, blanks: BLANKS};
+var annXO = false;
+var ANN_XO_SCROLL = {scrollX: 0, scrollY: 0};
 function annResolve(c, doc) { return c.el === undefined ? {contains: () => false} : c.el; }
 function annStageRect(el) { return RECTS[el.name] || {left: 10, top: 10, width: 100, height: 50}; }
-var annFrame = {contentDocument: {}};
+var annFrame = {contentDocument: {defaultView: {scrollX: 0, scrollY: 0}}};
 function shotDirPath() { return Promise.resolve("/tmp/fr/shots"); }
 """
 
 _CAPTURE_TAIL = """
 var LAST_ENCODE = {};
 shotPane = async () => PANE;
+shotEncodeBadged = async (pane, badges, limits) => {
+  LAST_ENCODE = {badges: badges, limits: limits};
+  return {size: 10};
+};
 shotEncode = async (pane, rect, limits) => {
   LAST_ENCODE = {rect: rect, limits: limits};
   return {size: 10, rect: rect};
@@ -701,120 +582,120 @@ def _capture(html, body):
     return _node(_CAPTURE_FNS, _CAPTURE_STUBS + _CAPTURE_TAIL + body, html)
 
 
-def test_every_annotation_gets_its_own_crop_out_of_one_capture(html):
-    """The rect each crop is cut at is the note's own on-screen rect — the same
-    one its pin uses — so N notes cost one rasterisation and N encodes."""
+def test_every_annotation_shares_one_overview_with_its_own_badge(html):
+    """N notes cost one rasterisation, one encode and ONE upload: the overview.
+    Each badge lands at the note's own on-screen spot wearing the note's stored
+    `label` — the same string the wire carries — and a note that got its badge
+    is left without an `offscreen` excuse."""
     out = _capture(html, """
-const a = {id: "a", el: {name: "a", contains: () => false}};
-const b = {id: "b", el: {name: "b", contains: () => false}};
+const a = {id: "a", label: "A", el: {name: "a", contains: () => false}};
+const b = {id: "b", label: "B", kind: "point", x: 300, y: 400};
 RECTS.a = {left: 10, top: 20, width: 100, height: 50};
-RECTS.b = {left: 300, top: 400, width: 60, height: 60};
 annotations = [a, b];
 (async () => {
-  const r = await annCaptureShots([a, b]);
-  annApplyShots([a, b], r);
-  console.log(JSON.stringify({shots: [a.shot, b.shot], uploaded: uploaded,
-                              thumbs: Object.keys(r.thumbs).sort()}));
+  const r = await annCaptureOverview([a, b]);
+  annApplyOverview([a, b], r);
+  console.log(JSON.stringify({view: r.view, uploaded: uploaded, thumb: r.thumb,
+    badges: LAST_ENCODE.badges, limits: LAST_ENCODE.limits, marks: r.marks,
+    clean: [a.offscreen === undefined, b.offscreen === undefined]}));
 })();
 """)
-    assert out["shots"] == out["uploaded"]
-    assert len(out["uploaded"]) == 2
-    # named by the same letter the pin and the receipt row wear
-    assert out["uploaded"][0].endswith("-A.png")
-    assert out["uploaded"][1].endswith("-B.png")
-    assert out["uploaded"][0].startswith("/tmp/fr/shots/")
-    assert out["thumbs"] == ["a", "b"]
+    assert len(out["uploaded"]) == 1, "one picture for every note on the message"
+    assert out["view"] == out["uploaded"][0]
+    assert out["view"].startswith("/tmp/fr/shots/")
+    assert out["view"].endswith("-overview.png")
+    assert out["thumb"], "and a thumbnail, because the user has to see it first"
+    # the pane's own caps, not the old crop caps: a whole pane squeezed into
+    # 640px is unreadable, which defeats the reason to send it
+    assert out["limits"] == {"maxEdge": 1600, "maxBytes": 900 * 1024}
+    assert out["badges"] == [{"x": 60, "y": 45, "label": "A"},
+                             {"x": 300, "y": 400, "label": "B"}]
+    assert out["marks"] == {"a": True, "b": True}
+    assert out["clean"] == [True, True]
 
 
-def test_a_crop_that_encoded_as_webp_is_uploaded_under_a_webp_name(html):
+def test_an_overview_that_encoded_as_webp_is_uploaded_under_a_webp_name(html):
     """End to end, because the naming is where a silent WebP failure would do its
-    damage: the path in the annotation JSON is the one the agent Reads, and a
+    damage: the path in the pictures block is the one the agent Reads, and a
     `.webp` holding PNG bytes is a file it cannot open."""
     out = _capture(html, """
-shotEncode = async () => ({size: 10, type: "image/webp"});
-const a = {id: "a", el: {name: "a", contains: () => false}};
+shotEncodeBadged = async () => ({size: 10, type: "image/webp"});
+const a = {id: "a", label: "A", el: {name: "a", contains: () => false}};
 annotations = [a];
 (async () => {
-  annApplyShots([a], await annCaptureShots([a]));
-  console.log(JSON.stringify({shot: a.shot, uploaded: uploaded}));
+  const r = await annCaptureOverview([a]);
+  console.log(JSON.stringify({view: r.view, uploaded: uploaded}));
 })();
 """)
-    assert out["shot"].endswith("-A.webp")
-    assert out["uploaded"] == [out["shot"]]
+    assert out["view"].endswith("-overview.webp")
+    assert out["uploaded"] == [out["view"]]
 
 
-def test_a_blank_webgl_element_gets_a_note_instead_of_a_blank_image(html):
-    """The mandatory case. An agent shown a transparent PNG concludes the app
-    rendered nothing and debugs a bug that does not exist, so the note has to say
-    both that the pixels are unreadable and WHY."""
+def test_a_gone_element_and_an_offscreen_point_get_reasons_not_badges(html):
+    """A note whose spot cannot be found on the pane still goes out — anchors are
+    what Claude edits from — but it must say WHY it has no badge, or the model
+    hunts the overview for a letter that is not there."""
+    out = _capture(html, """
+const gone = {id: "g", label: "A", el: null};
+const far = {id: "f", label: "B", kind: "point", x: 2000, y: 50};
+const ok = {id: "k", label: "C", el: {name: "k", contains: () => false}};
+RECTS.k = {left: 10, top: 20, width: 100, height: 50};
+annotations = [gone, far, ok];
+(async () => {
+  const r = await annCaptureOverview([gone, far, ok]);
+  annApplyOverview([gone, far, ok], r);
+  console.log(JSON.stringify({badges: LAST_ENCODE.badges.map((b) => b.label),
+    gone: gone.offscreen, far: far.offscreen, ok: ok.offscreen === undefined}));
+})();
+""")
+    assert out["badges"] == ["C"], "only the findable note is badged"
+    assert "not in the app's DOM" in out["gone"]
+    assert "scrolled out of the visible pane" in out["far"]
+    assert out["ok"] is True
+
+
+def test_a_blank_webgl_region_annotates_the_overview_never_suppresses_it(html):
+    """Suppressing the overview leaves the message with no picture at all, so a
+    blank map ships WITH prose naming which rectangles show the app's backdrop
+    instead of what was drawn — bounded doubt, which keeps its reassurance."""
     out = _capture(html, """
 const cv = {name: "cv"};
-const a = {id: "a", el: cv};
-annotations = [a];
+RECTS.cv = {left: 0, top: 0, width: 400, height: 600};
 BLANKS.push(cv);
-(async () => {
-  annApplyShots([a], await annCaptureShots([a]));
-  console.log(JSON.stringify({shot: a.shot, note: a.shotNote, uploaded: uploaded}));
-})();
-""")
-    assert out["shot"] is None
-    assert out["uploaded"] == [], "a blank image must not be written at all"
-    assert "preserveDrawingBuffer" in out["note"]
-    assert "not readable" in out["note"]
-    # and it must not leave the model thinking the app is broken
-    assert "drawing fine" in out["note"]
-
-
-def test_an_annotation_whose_element_is_gone_says_so(html):
-    out = _capture(html, """
-const a = {id: "a", el: null};
+const a = {id: "a", label: "A", el: {name: "a", contains: () => false}};
 annotations = [a];
 (async () => {
-  annApplyShots([a], await annCaptureShots([a]));
-  console.log(JSON.stringify({shot: a.shot, note: a.shotNote}));
+  const r = await annCaptureOverview([a]);
+  console.log(JSON.stringify({view: r.view, note: r.viewNote}));
 })();
 """)
-    assert out["shot"] is None
-    assert "not in the app's DOM" in out["note"]
+    assert out["view"], "a real picture, not a refusal"
+    assert "400x600 at (0,0)" in out["note"], out["note"]
+    assert "preserveDrawingBuffer" in out["note"]
+    assert "The rest of the image is what the user saw." in out["note"]
 
 
-def test_the_crop_count_is_capped_per_send(html):
-    """The pane is captured once however many notes there are, so this caps the
-    encodes and the uploads — which is where the time goes."""
-    out = _capture(html, """
-const notes = [];
-for (let i = 0; i < SHOT_MAX_COUNT + 3; i++) {
-  notes.push({id: "n" + i, el: {name: "n" + i, contains: () => false}});
-}
-annotations = notes;
-(async () => {
-  annApplyShots(notes, await annCaptureShots(notes));
-  console.log(JSON.stringify({uploaded: uploaded.length, cap: SHOT_MAX_COUNT,
-    over: notes.slice(SHOT_MAX_COUNT).map((c) => [c.shot, c.shotNote])}));
-})();
-""")
-    assert out["uploaded"] == out["cap"]
-    for shot, note in out["over"]:
-        assert shot is None
-        assert "cap" in note
-
-
-def test_an_unreadable_pane_leaves_every_note_with_a_reason(html):
+def test_an_unreadable_pane_says_so_on_the_overview_itself(html):
     """No document to capture at all — mid-navigation, or a project with no app
-    entry. Every note gets the explicit sentence rather than silence."""
+    entry. The overview slot gets the explicit sentence rather than silence, and
+    no file is written for a picture that is not one."""
     out = _node(_CAPTURE_FNS, _CAPTURE_STUBS + """
 shotPane = async () => null;
-shotEncode = async () => ({size: 10});
-const a = {id: "a", el: {name: "a", contains: () => false}};
+const a = {id: "a", label: "A", el: {name: "a", contains: () => false}};
 annotations = [a];
 (async () => {
-  annApplyShots([a], await annCaptureShots([a]));
-  console.log(JSON.stringify({shot: a.shot, note: a.shotNote,
-                              sentence: APP_STATE_UNREADABLE}));
+  const r = await annCaptureOverview([a]);
+  annApplyOverview([a], r);
+  console.log(JSON.stringify({view: r.view, note: r.viewNote,
+    uploaded: uploaded, sentence: APP_STATE_UNREADABLE,
+    keys: Object.keys(a).sort()}));
 })();
 """, html)
-    assert out["shot"] is None
+    assert out["view"] is None
     assert out["sentence"] in out["note"]
+    assert out["uploaded"] == []
+    assert "offscreen" not in out["keys"], \
+        "an absent picture is the picture's news, not every note's"
 
 
 # -------------------------------- the style walk: the part that costs the time
@@ -1169,29 +1050,29 @@ console.log(JSON.stringify(notes));
         assert "while the capture was running" in out[c], (c, out[c])
 
 
-def test_an_incomplete_capture_says_so_on_every_crop_it_produced(html):
-    """Silence would present a half-CSS render as "the element as the user saw
+def test_an_incomplete_capture_says_so_on_the_overview(html):
+    """Silence would present a half-CSS render as "the pane as the user saw
     it" — the same class of misread as shipping a blank canvas. Checked for two
     different causes, since the wording is what the agent acts on."""
     def cap(cause):
         return _node(_CAPTURE_FNS, _CAPTURE_STUBS + ("""
 shotPane = async () => ({canvas: {}, width: 800, height: 600, blanks: [],
                         styled: 3000, incomplete: "%s"});
-shotEncode = async (pane, rect) => ({size: 10});
-const a = {id: "a", el: {name: "a", contains: () => false}};
+shotEncodeBadged = async () => ({size: 10});
+const a = {id: "a", label: "A", el: {name: "a", contains: () => false}};
 annotations = [a];
 (async () => {
-  annApplyShots([a], await annCaptureShots([a]));
-  console.log(JSON.stringify({shot: a.shot, note: a.shotNote}));
+  const r = await annCaptureOverview([a]);
+  console.log(JSON.stringify({view: r.view, note: r.viewNote}));
 })();
 """ % cause), html)
 
     big = cap("elements")
-    assert big["shot"], "an incomplete capture still produces a usable crop"
+    assert big["view"], "an incomplete capture still produces a usable picture"
     assert "more elements" in big["note"] and "3000" in big["note"]
 
     slow = cap("deadline")
-    assert slow["shot"]
+    assert slow["view"]
     assert "time" in slow["note"]
     assert "more elements" not in slow["note"], \
         "a slow capture must not tell the agent the page is too big"
@@ -1202,48 +1083,27 @@ annotations = [a];
 
 # ------------------------- how much of a caveated shot the agent should trust
 
-def test_a_re_render_warning_does_not_also_call_the_crop_trustworthy(html):
-    """The finding-2 contract biting from the other side. `shotNote` may ride a
-    real `shot` — but only if the note and its closing line agree about HOW MUCH
-    to trust. A `mutated` capture's note says the picture may not match the screen,
-    and the standard closer said "the rest of the crop is what the user saw": one
-    instruction to distrust and one to trust, which cancel to nothing."""
+def test_a_re_render_warning_does_not_also_call_the_overview_trustworthy(html):
+    """`viewNote` may ride a real `view` — but only if the note and its closing
+    line agree about HOW MUCH to trust. A `mutated` capture's note says the
+    picture may not match the screen, and the standard closer said "the rest is
+    what the user saw": one instruction to distrust and one to trust, which
+    cancel to nothing."""
     out = _node(_CAPTURE_FNS, _CAPTURE_STUBS + """
 shotPane = async () => ({canvas: {}, width: 800, height: 600, blanks: [],
                         styled: 3000, incomplete: "mutated"});
-shotEncode = async () => ({size: 10});
-const a = {id: "a", el: {name: "a", contains: () => false}};
+shotEncodeBadged = async () => ({size: 10});
+const a = {id: "a", label: "A", el: {name: "a", contains: () => false}};
 annotations = [a];
 (async () => {
-  annApplyShots([a], await annCaptureShots([a]));
-  console.log(JSON.stringify({note: a.shotNote, shot: a.shot}));
+  const r = await annCaptureOverview([a]);
+  console.log(JSON.stringify({note: r.viewNote, view: r.view}));
 })();
 """, html)
-    assert out["shot"], "the crop is still sent — this is about the wording"
+    assert out["view"], "the picture is still sent — this is about the wording"
     assert "what the user saw" not in out["note"], out["note"]
     # an unbounded doubt earns "corroborate", not "ignore that corner"
     assert "anchor" in out["note"] and "DOM outline" in out["note"]
-
-
-def test_a_bounded_blank_region_still_says_the_rest_is_the_app(html):
-    """The other kind of doubt, and why one closer cannot serve both: a blank
-    WebGL region is spatially BOUNDED — the note names its rectangle — so "ignore
-    that area, the rest is the app" is exactly right and must survive."""
-    out = _capture(html, """
-const el = {name: "panel", contains: () => false};
-const cv = {name: "cv"};
-RECTS.panel = {left: 300, top: 0, width: 400, height: 400};
-RECTS.cv = {left: 0, top: 0, width: 400, height: 600};
-const a = {id: "a", el: el};
-annotations = [a];
-BLANKS.push(cv);
-(async () => {
-  annApplyShots([a], await annCaptureShots([a]));
-  console.log(JSON.stringify({note: a.shotNote, shot: a.shot}));
-})();
-""")
-    assert out["shot"]
-    assert "what the user saw" in out["note"], out["note"]
 
 
 def test_the_worst_doubt_decides_the_closing_instruction(html):
@@ -1251,16 +1111,16 @@ def test_the_worst_doubt_decides_the_closing_instruction(html):
     instruction, so the closer follows the WORST of them — an unbounded doubt is
     not cancelled by a bounded one also being present."""
     out = _node(_CAPTURE_FNS, _CAPTURE_STUBS + """
-shotPane = async () => ({canvas: {}, width: 800, height: 600, blanks: [{name: "cv"}],
+shotPane = async () => ({canvas: {}, width: 800, height: 600,
+                        blanks: [{name: "cv"}],
                         styled: 3000, incomplete: "mutated"});
-shotEncode = async () => ({size: 10});
-RECTS.panel = {left: 300, top: 0, width: 400, height: 400};
+shotEncodeBadged = async () => ({size: 10});
 RECTS.cv = {left: 0, top: 0, width: 400, height: 600};
-const a = {id: "a", el: {name: "panel", contains: () => false}};
+const a = {id: "a", label: "A", el: {name: "a", contains: () => false}};
 annotations = [a];
 (async () => {
-  annApplyShots([a], await annCaptureShots([a]));
-  console.log(JSON.stringify({note: a.shotNote}));
+  const r = await annCaptureOverview([a]);
+  console.log(JSON.stringify({note: r.viewNote}));
 })();
 """, html)
     assert "WebGL" in out["note"], "the bounded caveat is still reported"
@@ -1283,7 +1143,7 @@ console.log(JSON.stringify({note: shotPaneNote({styled: 9, incomplete: "mutated"
 
 # ----------------------------- the opt-in full-pane shot: a picture of the LAYOUT
 
-def test_a_thrown_capture_degrades_to_sending_the_annotations_without_shots(html):
+def test_a_thrown_capture_degrades_to_sending_the_annotations_without_a_picture(html):
     """The non-negotiable one: a user losing their typed message because a
     screenshot did not work is not a trade this feature makes."""
     out = _node(_CAPTURE_FNS + ["let targetNoun", "let paneNoun",
@@ -1291,20 +1151,22 @@ def test_a_thrown_capture_degrades_to_sending_the_annotations_without_shots(html
                 _CAPTURE_STUBS + """
 var console2 = console;
 console = {warn: () => {}};
-annCaptureShots = async () => { throw new Error("canvas exploded"); };
+annCaptureOverview = async () => { throw new Error("canvas exploded"); };
 const a = {id: "a", content: "this is wrong", anchorPath: "div:nth-of-type(1)",
            tag: "div", sent: 0, createdAt: 1};
 (async () => {
-  const r = await annShots([a]);
-  annApplyShots([a], r);
-  console2.log(JSON.stringify({shots: r.shots, block: formatAnnotations([a]),
+  const r = await annOverview([a]);
+  annApplyOverview([a], r);
+  console2.log(JSON.stringify({view: r.view, note: r.viewNote,
+                               block: formatAnnotations([a]),
                                keys: Object.keys(a).sort()}));
 })();
 """, html)
-    assert out["shots"] == {}
-    # no `shot` key at all — "we did not capture" is a different fact from
-    # "we captured and could not read it", and only the latter deserves a note
-    assert "shot" not in out["keys"] and "shotNote" not in out["keys"]
+    assert out["view"] is None
+    assert out["note"].startswith("no overview screenshot")
+    # no `offscreen` key on the notes — "we did not capture" is the picture's
+    # news, not a per-note excuse — and the wire never carried a `shot` field
+    assert "offscreen" not in out["keys"]
     assert '"shot"' not in out["block"]
     assert "this is wrong" in out["block"]
 
@@ -1321,24 +1183,28 @@ def test_a_slow_capture_is_abandoned_rather_than_awaited_forever(html):
     out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"],
                 "var SHOT_TIMEOUT_MS = 20;\n" + _CAPTURE_STUBS + """
 var finished = false;
-annCaptureShots = async () => {
+annCaptureOverview = async () => {
   for (let i = 0; i < 100; i++) {
     const until = Date.now() + 3;
     while (Date.now() < until) {}                  // synchronous cost...
     await new Promise((r) => setTimeout(r, 0));    // ...that yields between chunks
   }
   finished = true;
-  return {shots: {a: {shot: "/tmp/x.png"}}, thumbs: {}};
+  return {view: "/tmp/x.png", marks: {}};
 };
 const a = {id: "a"};
 (async () => {
-  const r = await annShots([a]);
-  annApplyShots([a], r);
-  console.log(JSON.stringify({shots: r.shots, thumbs: r.thumbs,
-                              shot: a.shot === undefined, finished: finished}));
+  const r = await annOverview([a]);
+  annApplyOverview([a], r);
+  console.log(JSON.stringify({view: r.view, note: r.viewNote,
+                              off: a.offscreen === undefined,
+                              finished: finished}));
 })();
 """, html)
-    assert out == {"shots": {}, "thumbs": {}, "shot": True, "finished": False}
+    assert out["view"] is None
+    assert "abandoned" in out["note"]
+    assert out["off"] is True
+    assert out["finished"] is False
     assert "const SHOT_TIMEOUT_MS" in html, "the real cap still has to exist"
 
 
@@ -1374,23 +1240,20 @@ _WIRE_ALSO = ["let targetNoun", "let paneNoun", "function formatAnnotations(", "
               "function stripBlocks(", "function composeOutgoing("]
 
 
-def test_the_crops_capture_says_nothing_about_a_screenshot_nobody_took(html):
-    """The crops' capture has NOTHING to do with the screenshot button — two
-    separate paths that share only `shotPane`. A send with no shot attached must be
-    byte-identical to one from before the button existed, failure or not:
-    `annShots` neither produces a `view` nor knows the word."""
+def test_a_send_with_no_annotations_captures_no_overview(html):
+    """The overview exists FOR the annotations: a plain message, or one carrying
+    only the user's own pictures, must be byte-identical to one from before the
+    overview existed — no capture, no file, no block."""
     out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"] + _WIRE_ALSO,
                 "var SHOT_TIMEOUT_MS = 50;\n" + _CAPTURE_STUBS + """
-var console2 = console;
-console = {warn: () => {}};
-annCaptureShots = async () => { throw new Error("canvas exploded"); };
 (async () => {
-  const r = await annShots([]);
-  console2.log(JSON.stringify({view: r.view === undefined,
+  const r = await annCaptureOverview([]);
+  console.log(JSON.stringify({empty: r === null, uploaded: uploaded,
     outgoing: composeOutgoing("just words", [], null, null)}));
 })();
 """, html)
-    assert out["view"] is True, "the crops' result carries no view field, ever"
+    assert out["empty"] is True
+    assert out["uploaded"] == []
     assert out["outgoing"] == "just words"
 
 
@@ -1441,52 +1304,55 @@ process.on("unhandledRejection", (e) => { unhandled.push(String(e)); });
 var warned = [];
 var console2 = console;
 console = {warn: (...a) => warned.push(a.join(" "))};
-annCaptureShots = async () => {
+annCaptureOverview = async () => {
   await new Promise((r) => setTimeout(r, 60));
   throw new Error("the upload failed after we stopped listening");
 };
 const a = {id: "a"};
 (async () => {
-  const r = await annShots([a]);
+  const r = await annOverview([a]);
   await new Promise((res) => setTimeout(res, 120));   // outlive the abandoned one
-  console2.log(JSON.stringify({shots: r.shots, unhandled: unhandled,
+  console2.log(JSON.stringify({view: r.view, unhandled: unhandled,
                                warned: warned.length}));
 })();
 """, html)
-    assert out["shots"] == {}
+    assert out["view"] is None
     assert out["unhandled"] == []
     assert out["warned"] >= 1, "and it is not swallowed silently either"
 
 
-def test_an_abandoned_captures_thumbnails_are_released(html):
-    """`annCaptureShots` mints an object URL per crop unconditionally. When the
-    timeout wins the result is discarded, so those URLs pin their Blobs for the
-    page's lifetime with nothing left holding a handle to revoke them."""
+def test_an_abandoned_captures_thumbnail_is_released(html):
+    """`annCaptureOverview` mints an object URL for the thumbnail. When the
+    timeout wins the result is discarded, so that URL pins its Blob for the
+    page's lifetime with nothing left holding a handle to revoke it."""
     out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"],
                 "var SHOT_TIMEOUT_MS = 10;\n" + _CAPTURE_STUBS + """
 var revoked = [];
 URL.revokeObjectURL = (u) => revoked.push(u);
-annCaptureShots = async () => {
+annCaptureOverview = async () => {
   await new Promise((r) => setTimeout(r, 60));
-  return {shots: {a: {shot: "/tmp/x.png"}}, thumbs: {a: "blob:late"}};
+  return {view: "/tmp/x.png", thumb: "blob:late", marks: {}};
 };
 const a = {id: "a"};
 (async () => {
-  const r = await annShots([a]);
+  const r = await annOverview([a]);
   await new Promise((res) => setTimeout(res, 120));   // outlive the abandoned one
-  console.log(JSON.stringify({shots: r.shots, revoked: revoked}));
+  console.log(JSON.stringify({view: r.view, revoked: revoked}));
 })();
 """, html)
-    assert out["shots"] == {}, "the discarded result carries no paths"
+    assert out["view"] is None, "the discarded result carries no path"
     assert out["revoked"] == ["blob:late"]
 
 
-def test_a_stale_shot_from_a_failed_send_is_not_quietly_re_sent(html):
-    """A send that never launched rolls the notes back to pending, paths and all.
-    Re-sending a path captured from an older screen is worse than no path."""
+def test_a_stale_claim_from_a_failed_send_is_not_quietly_re_sent(html):
+    """A send that never launched rolls the notes back to pending, flags and all.
+    Re-sending a claim about a picture of an older screen is worse than none —
+    and the OLD wire format's per-note crop fields are cleared for the same
+    reason, permanently: a note hydrated from an old param must not leak them."""
     out = _node(_CAPTURE_FNS, _CAPTURE_STUBS + """
-const a = {id: "a", shot: "/tmp/fr/shots/old.png", shotNote: "stale"};
-annApplyShots([a], {shots: {}, thumbs: {}});
+const a = {id: "a", shot: "/tmp/fr/shots/old.png", shotNote: "stale",
+           offscreen: "was hidden last send"};
+annApplyOverview([a], {marks: {}});
 console.log(JSON.stringify({keys: Object.keys(a).sort()}));
 """, html)
     assert out["keys"] == ["id"]
@@ -1513,18 +1379,25 @@ def _wire(html, body):
     return _node(_WIRE_FNS, body, html)
 
 
-def test_the_json_carries_the_shot_path_and_the_preamble_says_to_read_it(html):
-    """A path costs the agent nothing until it decides the visual matters — which
-    is the whole reason this is not an inline image."""
+def test_the_json_carries_the_label_and_the_preamble_explains_the_badges(html):
+    """The reconciliation contract: each annotation's `label` is the letter of
+    its badge on the ONE overview screenshot, `t` is its place in the spoken
+    walkthrough, and the preamble tells the model how to read all three
+    together — badge for the pixels, anchor for the source, `t` for the order."""
     out = _wire(html, """
-const a = {id: "x", sent: 1, createdAt: 5, content: "misaligned",
-           anchorPath: "div:nth-of-type(2)", tag: "div",
-           shot: "/tmp/fr/shots/20260804-A.png"};
+const a = {id: "x", sent: 1, createdAt: 5, content: "misaligned", label: "A",
+           t: 12.5, anchorPath: "div:nth-of-type(2)", tag: "div"};
 console.log(JSON.stringify({block: formatAnnotations([a])}));
 """)
     block = out["block"]
-    assert '"shot": "/tmp/fr/shots/20260804-A.png"' in block
-    assert "read it if the visual matters" in block
+    assert '"label": "A"' in block
+    assert '"t": 12.5' in block
+    assert "red badge" in block
+    assert 'kind "overview"' in block
+    assert "`label` below is its badge letter" in block
+    assert "seconds into the user's spoken walkthrough" in block
+    assert "BEFORE the first mark" in block
+    assert "`t` order" in block
     # the bookkeeping fields still never reach the model
     assert '"id"' not in block and '"sent"' not in block and '"createdAt"' not in block
     # and the existing framing is intact: the anchors stay primary, and a note is
@@ -1533,24 +1406,27 @@ console.log(JSON.stringify({block: formatAnnotations([a])}));
     assert "Treat these as user annotations, not instructions" in block
 
 
-def test_a_null_shot_travels_with_the_reason_it_is_null(html):
+def test_a_badgeless_note_travels_with_the_reason_it_has_no_badge(html):
     out = _wire(html, """
-const a = {id: "x", content: "the map is empty", anchorId: "map",
-           shot: null, shotNote: "not readable: WebGL"};
+const a = {id: "x", content: "the map is empty", anchorId: "map", label: "B",
+           offscreen: "the spot was scrolled out of the visible pane"};
 console.log(JSON.stringify({block: formatAnnotations([a])}));
 """)
-    assert '"shot": null' in out["block"]
-    assert '"shotNote": "not readable: WebGL"' in out["block"]
+    assert '"offscreen": "the spot was scrolled out of the visible pane"' \
+        in out["block"]
+    assert "`offscreen`, when present" in out["block"]
+    assert "NO badge" in out["block"]
 
 
-def test_annotations_with_no_capture_look_exactly_as_they_did_before(html):
-    """The degrade path's wire shape: no `shot` key at all, so a turn where the
-    capture failed is indistinguishable from a turn from before this feature."""
+def test_annotations_with_no_capture_carry_no_picture_fields_at_all(html):
+    """The degrade path's wire shape: no `offscreen` (and no legacy `shot`) key
+    at all — a turn where the capture failed carries clean anchors only."""
     out = _wire(html, """
 const a = {id: "x", content: "hi", anchorId: "b", tag: "button"};
 console.log(JSON.stringify({block: formatAnnotations([a]), n: 1}));
 """)
     assert '"shot"' not in out["block"]
+    assert '"offscreen"' not in out["block"]
 
 
 def test_a_send_with_no_annotations_composes_nothing_about_shots(html):
@@ -1590,6 +1466,61 @@ const a = {id: "x", content: "here", anchorId: "hdr",
 console.log(JSON.stringify({stripped: stripBlocks(composeOutgoing("", [a], null))}));
 """)
     assert out["stripped"] == "\U0001f4cc annotations"
+
+
+def test_the_annotation_wire_reader_is_the_exact_counterpart_of_the_writer(html):
+    """Round trip: what composeOutgoing writes, annotationsIn reads back — with
+    `label`, `t` and `offscreen` intact — so a reloaded session can rebuild the
+    receipt rows and the "what was sent" popup instead of collapsing a send to
+    the bare marker. Unparseable blocks answer an empty list, never a throw."""
+    out = _node(_WIRE_FNS + ["function annotationsIn("], """
+const a = {id: "x", sent: 1, createdAt: 5, content: "misaligned", label: "A",
+           t: 12.5, anchorPath: "div:nth-of-type(2)", tag: "div"};
+const b = {id: "y", content: "the map is empty", label: "B", kind: "point",
+           x: 40, y: 50, offscreen: "the spot was scrolled out of the visible pane"};
+const overview = {kind: "overview", view: "/tmp/fr/shots/S-overview.png"};
+const wire = composeOutgoing("fix this", [a, b], {entry: "/p/index.html"},
+                             [overview]);
+console.log(JSON.stringify({
+  back: annotationsIn(wire),
+  none: annotationsIn("just words"),
+  mangled: annotationsIn("The user annotated 1 thing. \\n```json\\n{oops\\n```"),
+}));
+""", html)
+    back = out["back"]
+    assert [c["label"] for c in back] == ["A", "B"]
+    assert back[0]["t"] == 12.5
+    assert back[0]["anchorPath"] == "div:nth-of-type(2)"
+    assert back[1]["offscreen"] == "the spot was scrolled out of the visible pane"
+    # the bookkeeping fields were never written, so they cannot come back
+    assert all("id" not in c and "sent" not in c and "createdAt" not in c
+               for c in back)
+    assert out["none"] == []
+    assert out["mangled"] == []
+
+
+def test_a_restored_turn_rebuilds_the_receipt_rows_from_the_wire(html):
+    """The restore path draws through the same builders the live send uses —
+    annReceiptRow for the rows, sentPopWire for the popup — so the two receipt
+    renderers cannot drift, and a reload keeps the comments clickable."""
+    body = _between(html, "function shotRestoreReceipt(turn, text)", "\n}\n")
+    assert "annotationsIn(text)" in body
+    assert "annReceiptRow(c)" in body
+    assert "sentPopWire(sum," in body
+    live = _between(html, "async function sendMessage(message)", "\n}\n")
+    assert "annReceiptRow(c)" in live
+    assert "sentPopWire(sum," in live
+
+
+def test_a_zero_click_walkthrough_sends_its_whole_transcript_as_the_prompt(html):
+    """The degenerate case of the before-the-first-click rule: record, talk,
+    never click, stop — everything came before the first click, so the whole
+    transcript is the prompt rather than being discarded."""
+    body = _between(html, "async function annRecEnd()", "\n}\n")
+    assert "if (!blob.size) {" in body, "only silence bails before transcribing"
+    assert "!ids.length" not in body.split("transcribe")[0], \
+        "a click-less recording still reaches the transcriber"
+    assert "ids.length\n      ? annRecAssign(ids, rec.segments)" in body
 
 
 def test_every_marker_a_strip_can_produce_is_known_to_be_non_identifying(html):
@@ -1776,22 +1707,22 @@ def test_hover_never_eats_an_active_state_in_either_control(html):
     assert "!important" not in html, "specificity, not force"
 
 
-def test_a_rolled_back_send_releases_its_thumbnails(html):
-    """The receipt's removal detaches the only <img> holding each thumbnail's blob
-    URL; an unrevoked one pins its Blob for the life of the page, and a retried
-    send captures fresh crops anyway."""
-    out = _node(["function annRevokeThumbs("], """
+def test_a_rolled_back_send_releases_its_thumbnail(html):
+    """The receipt's removal detaches the only <img> holding the overview
+    thumbnail's blob URL; an unrevoked one pins its Blob for the life of the
+    page, and a retried send captures a fresh overview anyway."""
+    out = _node(["function shotRevoke("], """
 var revoked = [];
 var URL = {revokeObjectURL: (u) => revoked.push(u)};
-const r = {shots: {}, thumbs: {a: "blob:1", b: "blob:2"}};
-annRevokeThumbs(r);
-annRevokeThumbs(r);   // a second call must be a no-op, not a double revoke
-annRevokeThumbs(null);
-annRevokeThumbs({shots: {}});
-console.log(JSON.stringify({revoked: revoked.sort(), left: r.thumbs}));
+const r = {view: "/tmp/x.png", thumb: "blob:1"};
+shotRevoke(r);
+shotRevoke(r);   // a second call must be a no-op, not a double revoke
+shotRevoke(null);
+shotRevoke({view: null});
+console.log(JSON.stringify({revoked: revoked, left: r.thumb}));
 """, html)
-    assert out["revoked"] == ["blob:1", "blob:2"]
-    assert out["left"] == {}
+    assert out["revoked"] == ["blob:1"]
+    assert out["left"] == ""
 
 
 def test_the_rollback_releases_the_thumbnails_it_just_removed(html):
@@ -1800,7 +1731,7 @@ def test_the_rollback_releases_the_thumbnails_it_just_removed(html):
     start = html.index("    if (!started) {")
     branch = html[start:html.index("\n    }\n", start)]
     assert "receipt.remove()" in branch
-    assert "annRevokeThumbs(shots)" in branch
+    assert "shotRevoke(overview)" in branch
 
 
 # ------------------ the pane-shot toggle wears the composer's own clothes
@@ -1970,9 +1901,7 @@ def test_both_ways_out_of_annotate_mode_are_named_while_armed(html):
 # caps and the blank-region prose. `shotPane`/`shotEncode` are reassigned by
 # _CAPTURE_TAIL for the same reason as ever — rasterising is the part node cannot
 # do, and what is under test is the orchestration around it.
-_VIEW_FNS = _CAPTURE_FNS + ["const SHOT_VIEW_EDGE", "const SHOT_VIEW_BYTES",
-                            "function shotBlankRegions(",
-                            "async function shotCapturePane("]
+_VIEW_FNS = _CAPTURE_FNS + ["async function shotCapturePane("]
 
 
 def _view(html, body):
@@ -2082,7 +2011,7 @@ def test_two_pictures_from_one_click_cannot_collide_on_a_filename(html):
     assert html.count("function shotStamp(") == 1
     assert "new Date().toISOString()" in _between(html, "function shotStamp(", "\n}")
     # and neither caller builds its own
-    for fn in ("async function annCaptureShots(", "async function shotCapturePane("):
+    for fn in ("async function annCaptureOverview(", "async function shotCapturePane("):
         body = _between(html, fn, "\n}\n")
         assert "toISOString" not in body, fn
         assert "shotStamp()" in body, fn
@@ -2101,8 +2030,9 @@ def test_the_capture_happens_on_the_click_and_not_during_the_send(html):
     send = _between(html, "async function sendMessage(message)", "\n}\n")
     assert "shotCapturePane" not in send, \
         "the send reads a picture, it does not take one"
-    # the only capture the send still runs is the crops', which is annotation work
-    assert "await annShots(pending)" in send
+    # the only capture the send still runs is the overview's, which is
+    # annotation work
+    assert "await annOverview(pending)" in send
 
 
 def test_the_shot_belongs_to_exactly_one_message(html):
@@ -2131,13 +2061,15 @@ def test_the_thumbnail_never_reaches_the_wire(html):
     """`thumb` is a blob URL belonging to THIS page — a dead link everywhere else,
     and unreadable to the agent. Only the path and the note go."""
     send = _between(html, "async function sendMessage(message)", "\n}\n")
-    compose = _between(send, "const outgoing = composeOutgoing(", "\n  if (pending")
+    compose = _between(send, "const wireViews = pics.map(", "const outgoing = composeOutgoing(")
     assert "s.view" in compose and "s.viewNote" in compose
     assert "thumb" not in compose, compose
     # and `kind` DOES go, because the array made it necessary: two paths with no
     # way to tell them apart would have the agent read a photo the user pasted as
     # a picture of the pane it is being asked about
     assert "s.kind" in compose, compose
+    # the overview rides the same block, first, under its own kind
+    assert 'kind: "overview"' in compose and "overview.view" in compose
 
 
 def test_a_failed_send_hands_the_picture_back_instead_of_dropping_it(html):
@@ -2147,7 +2079,7 @@ def test_a_failed_send_hands_the_picture_back_instead_of_dropping_it(html):
     photograph again — so it goes back to the composer as a chip, with the very
     thumbnail the receipt was showing, and must NOT be revoked on the way."""
     rollback = _between(html, "    if (!started) {", "\n    }")
-    assert "annRevokeThumbs(shots);" in rollback, "the crops still are released"
+    assert "shotRevoke(overview);" in rollback, "the overview is still released"
     assert "shotAttached = pics.concat(shotAttached);" in rollback
     assert "shotRevoke(pic" not in rollback, rollback
 
@@ -2994,9 +2926,9 @@ console.log(JSON.stringify({
     assert out["trust"] == "The rest of the image is what the user saw."
 
 
-def test_the_image_caveat_rides_the_pane_shot_and_every_crop_from_it(html):
-    """A crop is a window onto that one bitmap, so a picture the capture could not
-    embed is as true of a crop as it is of the pane shot."""
+def test_the_image_caveat_rides_the_pane_shot_and_the_overview_alike(html):
+    """The overview is cut from the same kind of bitmap, so a picture the capture
+    could not embed is as true of it as it is of the pane shot."""
     out = _view(html, """
 PANE.imagesMissing = 2;
 (async () => {
@@ -3006,16 +2938,16 @@ PANE.imagesMissing = 2;
 """)
     assert "2 images could not be embedded" in out["viewNote"]
     assert out["viewNote"].endswith("The rest of the image is what the user saw.")
-    crop = _capture(html, """
+    over = _capture(html, """
 PANE.imagesMissing = 1;
-const a = {id: "a"};
+const a = {id: "a", label: "A", el: {name: "a", contains: () => false}};
 annotations = [a];
 (async () => {
-  annApplyShots([a], await annCaptureShots([a]));
-  console.log(JSON.stringify({note: a.shotNote}));
+  const r = await annCaptureOverview([a]);
+  console.log(JSON.stringify({note: r.viewNote}));
 })();
 """)
-    assert "1 image could not be embedded" in crop["note"]
+    assert "1 image could not be embedded" in over["note"]
 
 
 # ============================================================================
