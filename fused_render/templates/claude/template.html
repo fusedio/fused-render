@@ -289,10 +289,13 @@
   #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annbtn .cmt-word { display: none; }
   #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annbtn .cmt-done { display: block; }
   #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annbtn .done-word { display: var(--annlbl, inline); }
-  /* The discard seat exists only while a walkthrough records — an outline
+  /* The discard seat exists ONLY while a walkthrough records — an outline
      trash beside the stop, for throwing the recording away instead of
-     sending it. Derived from the same state class as every other face. */
-  #anndiscard { display: none; }
+     sending it. Derived from the same state class as every other face.
+     `#anncta #anndiscard`, two ids, because a bare `#anndiscard` LOSES to
+     the base `#anncta button` display rule on specificity and the trash sat
+     on the strip in every state (Akshil, 2026-08-19). */
+  #anncta #anndiscard { display: none; }
   #anncta:has(#annrec.on) #anndiscard { display: inline-flex; padding: 0 8px; }
   #anndiscard:hover { color: var(--error); border-color: var(--error); }
   /* Recording: the seat is ■ plus the live clock, in the recording's own

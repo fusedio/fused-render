@@ -242,7 +242,11 @@ def test_discard_throws_the_walkthrough_away(html):
     no-ops after it, so a stop click racing the discard cannot resurrect the
     walkthrough."""
     assert "#anncta:has(#annrec.on) #anndiscard { display: inline-flex;" in html
-    assert "#anndiscard { display: none; }" in html
+    # two ids on the hide: a bare #anndiscard loses to the base
+    # `#anncta button` display rule on specificity, and the trash sat on the
+    # strip in every state
+    assert "#anncta #anndiscard { display: none; }" in html
+    assert "\n  #anndiscard { display: none; }" not in html
     view = _block(html, '<div id="anncta">', "</div>")
     assert view.index('id="anndiscard"') < view.index('id="annbtn"')
     body = _block(html, "async function annRecDiscard()", "\n}\n")
