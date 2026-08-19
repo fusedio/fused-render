@@ -155,6 +155,27 @@ def session(path):
     # so the pool would only be threads to create and tear down — and
     # onnxruntime's default is to size it to the machine, which on a laptop
     # means spinning up performance cores for a 2MB model.
+    #
+    # **Measured, after `diarize.NUM_THREADS` turned out to be worth 2.3x, so
+    # that nobody has to re-open it: there is nothing here to win.** Same
+    # 216-second recording, 10-core Apple Silicon, one process per setting (the
+    # settings interfere inside one process — a run that reused four sessions'
+    # thread pools reported 6-7s for every configuration), best of 5-7 passes,
+    # and all four found the same 31 regions:
+    #
+    #     threads=1   0.94s / 0.62s      threads=4   0.79s / 0.98s
+    #     threads=2   1.15s              threads=8   0.89s
+    #
+    # Two samples for 1 and 4 because one sample would have looked like a win in
+    # either direction: the spread WITHIN a setting (0.6-1.9s) is wider than the
+    # gap between settings, and which setting "wins" flips between samples. So
+    # there is no win to take, at any thread count — not a small win being
+    # declined. (The pass is around a second for 3.6 minutes of audio, against
+    # 8.3s to decode that file on `large-v3-turbo` and 1.5s on `tiny.en-8bit`, so
+    # on the smallest model it is NOT a rounding error — which is exactly why it
+    # was measured rather than assumed either way.) What one thread does buy is
+    # the property this line is about: a detector that runs on one core while
+    # nothing else in the process wants any.
     options.intra_op_num_threads = 1
     options.inter_op_num_threads = 1
     return onnxruntime.InferenceSession(
