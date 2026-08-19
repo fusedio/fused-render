@@ -7654,6 +7654,22 @@ the installation, and the mark that says so.
   the only thing that knows the current answer — and the cached value only picks
   the verb, with `recheck` re-reading afterwards so the wording catches up on the
   same interaction rather than at the next page load.
+  **And the server's own answer must not be a cache when it is about to
+  REFUSE.** "Ask the server" is only worth the round trip if the server
+  measures. The gate reads `claude_health`, whose snapshot is disk-cached for a
+  minute, so the rule above held for the browser and failed one layer down. A
+  cached YES is taken — being wrong costs one spawn that fails and says why in
+  its own words, the answer this route gave before the gate existed. A cached NO
+  re-measures first: being wrong there refuses the very click this feature
+  exists to invite, and the cache is blindest at exactly that moment. It
+  invalidates on the resolved binary's mtime, and a snapshot that resolved
+  NOTHING has no path to stat — an install into a directory already on PATH
+  moves no path, changes no PATH string, and touches no file it knows about, so
+  only age ever clears it, which makes the minute after the install precisely
+  the window this button is clicked in. The probe costs seconds, is paid only
+  where the answer would otherwise be no, on a route about to start a Claude
+  session; and it writes the cache, so the label catches up on its next read
+  without a second endpoint.
   **The machine's answer outranks the request's**, which is where the pre-check
   lands server-side: `/api/selffix/start` refuses a missing CLI BEFORE it
   validates the body. Preferences offers *Set up Claude Code* with the

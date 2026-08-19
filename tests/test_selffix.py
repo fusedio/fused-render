@@ -1161,19 +1161,80 @@ def test_the_gate_asks_claude_health_and_nothing_else(client, install, monkeypat
     """
     from fused_render import claude_health
 
+    # BOTH reads are pinned, because a miss re-measures (see below) and an
+    # unpinned re-measure would resolve THIS container's real CLI and answer
+    # the opposite of what the case is about.
+    def pin(found):
+        for name in ("summary", "summary_refreshed"):
+            monkeypatch.setattr(claude_health, name, lambda: dict(found))
+
     # The REAL resolver (the module fixture pins a stand-in for every other
     # test), reading nothing but claude_health.
-    monkeypatch.setattr(claude_health, "summary", lambda: {"found": False})
+    pin({"found": False})
     assert REAL_CLAUDE_FOUND() is False
 
-    monkeypatch.setattr(claude_health, "summary", lambda: {"found": True})
+    pin({"found": True})
     assert REAL_CLAUDE_FOUND() is True
 
     # ...and a snapshot that could not tell reads as "no CLI", which is the
     # refusal direction: claude_health never raises, it degrades, so an absent
     # `found` must not be mistaken for a usable install.
-    monkeypatch.setattr(claude_health, "summary", lambda: {})
+    pin({})
     assert REAL_CLAUDE_FOUND() is False
+
+
+def test_a_cached_MISS_is_re_measured_before_it_may_refuse(client, install,
+                                                           monkeypatch):
+    """THE BUTTON'S OWN INSTRUCTION, OBEYED. It says "Set up Claude Code"; the
+    user goes and installs it and clicks again — and the snapshot behind the
+    gate is up to 60s old and says no.
+
+    The cache cannot notice that install by itself. It invalidates on the
+    resolved binary's mtime, and a snapshot that resolved nothing has no path to
+    stat: an install into a directory already on PATH moves no path, changes no
+    PATH string, and touches no file the snapshot knows about, so the
+    fingerprint still matches. Age is the only thing that clears it, which makes
+    the minute after the install exactly the window this button is clicked in.
+
+    So a miss re-measures, and only a miss: the cost lands on the click that
+    would otherwise be refused.
+    """
+    from fused_render import claude_health
+
+    reads = []
+
+    def stale_summary():
+        reads.append("cached")
+        return {"found": False}            # the snapshot from before the install
+
+    def fresh_summary():
+        reads.append("measured")
+        return {"found": True}             # what a probe would see now
+
+    monkeypatch.setattr(claude_health, "summary", stale_summary)
+    monkeypatch.setattr(claude_health, "summary_refreshed", fresh_summary)
+
+    assert REAL_CLAUDE_FOUND() is True
+    assert reads == ["cached", "measured"]
+
+
+def test_a_cached_HIT_costs_no_probe(client, install, monkeypatch):
+    """The other direction, which is why the re-measure can be afforded at all.
+
+    A cached yes is taken as read. Being wrong about it costs one spawn that
+    fails and says so in its own words — the answer this route gave before the
+    gate existed — whereas re-probing every start would pay seconds on every
+    machine to catch the rare disappearance of a binary that reports itself.
+    """
+    from fused_render import claude_health
+
+    def refuse_to_probe():
+        raise AssertionError("a cached yes must not spend a probe")
+
+    monkeypatch.setattr(claude_health, "summary", lambda: {"found": True})
+    monkeypatch.setattr(claude_health, "summary_refreshed", refuse_to_probe)
+
+    assert REAL_CLAUDE_FOUND() is True
 
 
 def test_clear_endpoint(client, install):
