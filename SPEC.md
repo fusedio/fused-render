@@ -5749,7 +5749,12 @@ an AI Models page that could say what was on disk but not what was *running*.
   The `.writing` temp a record is staged in is **unique per writer and never
   deleted by anyone else**: two loads sharing one cache are separate processes, and
   sweeping that name to save a round trip made the other's `os.replace` fail and
-  its record never appear — the very failure this prevents, caused by tidying. **Scoping is a property of the
+  its record never appear — the very failure this prevents, caused by tidying. The
+  name carries a random token as well as the pid, because two containers over one
+  mounted cache have their own pid namespaces and a reused pid would let two writers
+  interleave into one file and `os.replace` publish mixed JSON as truth. **The
+  skipped-record line is a diagnostic, not an error**: it fires on a download that
+  succeeded, so it says so, and says the next load re-resolves over the network. **Scoping is a property of the
   on-disk STATE, not of the call**, which is why refusing scoped CALLS was not
   enough: the same id reaches both kinds, because `diffusers_image` fetches
   `black-forest-labs/FLUX.2-klein-4B` scoped to `recipe["keep"]` while

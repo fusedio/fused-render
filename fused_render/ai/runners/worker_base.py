@@ -54,6 +54,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 # ------------------------------------------------------------------- the state
 #
@@ -1609,13 +1610,24 @@ _FETCH_RECORD = ".fused-fetch-%s.json"
 #: what a fetch in flight is writing RIGHT NOW — so sweeping it to save a round trip
 #: made the other process's `os.replace` fail, its record never get written, and its
 #: repo stay permanently cold, which is the failure the record exists to prevent.
-#: The pid keeps two writers off each other's file; each cleans up only its own.
+#: A pid AND a random token keep two writers off each other's file; each cleans up
+#: only its own.
 _RECORD_TEMP = ".writing"
 
 
 def _temp_record(name):
-    """The name THIS process writes a record to before publishing it."""
-    return "%s.%d%s" % (name, os.getpid(), _RECORD_TEMP)
+    """The name THIS writer stages a record in before publishing it.
+
+    **The pid is not enough, and the failure it leaves is worse than the one this
+    design replaced.** Two containers sharing a mounted HF cache have their own pid
+    namespaces, and a pid is reused after a crash in any case — so a pid-only name
+    can be one file that two writers interleave into, and `os.replace` then publishes
+    mixed JSON as TRUTH. The sweep this replaced only ever cost a cold repo. The
+    random token is what makes "a temp is distinguishable from another writer's"
+    actually true; the pid stays because it makes a leftover attributable when
+    somebody is looking at the directory wondering where it came from.
+    """
+    return "%s.%d-%s%s" % (name, os.getpid(), uuid.uuid4().hex[:8], _RECORD_TEMP)
 
 
 def _scope_key(allow, ignore):
@@ -1680,19 +1692,33 @@ def _record_fetch(folder, commit, names, snapshot, allow=None, ignore=None):
     the old record or none — never half of one that a later fast path would read as
     truth, and never another process's file (see `_RECORD_TEMP`).
     """
-    if not folder or not commit or not names:
+    if not folder or not commit or not names or not snapshot:
+        # `snapshot` belongs in this list rather than defaulted below: joined onto a
+        # falsy path, every presence check becomes CWD-relative, and a process whose
+        # working directory happens to hold a matching name — `config.json` is not
+        # far-fetched — would pass the shortfall check and record a fetch whose
+        # snapshot nobody had located.
         return
     # Presence only, deliberately: `_settled` is a READ-time question — a part file
     # can appear beside a blob after this runs, and `_all_present` asks both at the
     # moment the answer is used, which is the moment that matters.
     missing = [name for name in names
-               if not os.path.exists(os.path.join(snapshot or "", name))]
+               if not os.path.exists(os.path.join(snapshot, name))]
     if missing:
+        # **Worded as the diagnostic it is, because it fires on a download that
+        # WORKED.** `selects` and hf's `filter_repo_objects` disagreeing by one name
+        # is the real possibility this whole check exists for, and when it happens
+        # the weights are on disk and the load is about to succeed — so a line
+        # shaped like an error had a user reading a perfect download as a broken
+        # one. Silence was the original problem, so the line stays and says what is
+        # true: nothing failed, only the shortcut was declined.
         sys.stderr.write(
-            f"[fused] not recording a complete fetch of {commit[:12]}: "
-            f"{len(missing)} of {len(names)} listed files are not in the "
-            f"snapshot ({', '.join(missing[:3])}"
-            f"{', …' if len(missing) > 3 else ''})\n")
+            f"[fused] the download of {commit[:12]} succeeded; not recording it "
+            f"for the cached-model fast path, because {len(missing)} of "
+            f"{len(names)} listed files are not in the snapshot "
+            f"({', '.join(missing[:3])}{', …' if len(missing) > 3 else ''}). "
+            f"This is not a failure: the next load re-resolves over the network, "
+            f"exactly as it did before that shortcut existed.\n")
         return
     path = os.path.join(folder, _FETCH_RECORD % commit)
     payload = {"commit": commit, "scope": _scope_key(allow, ignore),

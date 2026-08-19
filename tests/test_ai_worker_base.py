@@ -1157,6 +1157,75 @@ def test_a_temp_from_ANOTHER_writer_is_left_ALONE(base, monkeypatch, tmp_path):
     assert base._temp_record(base._FETCH_RECORD % COMMIT) != theirs.name
 
 
+def test_two_writers_in_one_pid_still_get_DIFFERENT_temp_names(base):
+    """The pid is not enough on its own, and the failure it leaves is worse than the
+    one it replaced.
+
+    Two containers sharing a mounted HF cache have their own pid namespaces, and a
+    pid is reused after a crash anyway — so `.fused-fetch-<sha>.json.<pid>.writing`
+    can name one file that two writers interleave into, and `os.replace` then
+    publishes mixed JSON as TRUTH. The sweep this design replaced only ever cost a
+    cold repo; that would cost a record the fast path believes. A random token per
+    call makes "a temp is distinguishable from another writer's" actually true.
+    """
+    record = base._FETCH_RECORD % ("a" * 40)
+    names = {base._temp_record(record) for _ in range(50)}
+
+    assert len(names) == 50, "temp names must not collide"
+    assert all(name.startswith(record) for name in names)
+    assert all(name.endswith(base._RECORD_TEMP) for name in names)
+
+
+def test_a_SKIPPED_record_reads_as_a_diagnostic_not_as_a_failed_download(
+        base, tmp_path, capsys):
+    """The shortfall line fires on a download that WORKED.
+
+    `selects` and hf's `filter_repo_objects` disagreeing by one name is the very
+    thing this file calls a real possibility, and when it happens the weights are on
+    disk and the load is about to succeed — so a message shaped like an error had a
+    user reading a perfect download as a broken one. The silence it replaced was the
+    original problem, so the line stays and says what is true instead: the download
+    is fine, only the fast-path record was skipped, and the next load re-resolves
+    over the network.
+    """
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+
+    base._record_fetch(str(folder), COMMIT, ["config.json", "absent.bin"], snapshot)
+
+    said = capsys.readouterr().err
+    assert "absent.bin" in said, "the diagnostic must name what it could not find"
+    assert "download" in said.lower()
+    for reassurance in ("succeeded", "not a failure"):
+        assert reassurance in said.lower(), said
+    assert not base._has_fetch_record(str(folder))
+
+
+def test_a_record_is_never_written_for_a_snapshot_with_NO_path(
+        base, tmp_path, monkeypatch, capsys):
+    """`os.path.join(snapshot or "", name)` made every check CWD-relative when the
+    path was falsy, so a process whose working directory happened to hold a matching
+    name — `config.json` is not far-fetched — passed the shortfall check and wrote a
+    record for a snapshot whose location was never known.
+
+    A missing path is missing, and belongs in the early return beside a missing
+    folder or commit rather than papered over with a default.
+    """
+    elsewhere = tmp_path / "cwd"
+    elsewhere.mkdir()
+    (elsewhere / "config.json").write_bytes(b"{}")
+    monkeypatch.chdir(elsewhere)
+    folder = _cache_folder(tmp_path)
+
+    base._record_fetch(str(folder), COMMIT, ["config.json"], None)
+    base._record_fetch(str(folder), COMMIT, ["config.json"], "")
+
+    assert not base._has_fetch_record(str(folder)), \
+        "a record was written for a snapshot nobody located"
+    assert capsys.readouterr().err == "", \
+        "and it is not a shortfall to report — there was nothing to look in"
+
+
 def test_a_caller_supplied_REVISION_wins_over_the_pin(base, monkeypatch, tmp_path):
     """The pin is this file's default, not an override of the caller.
 
