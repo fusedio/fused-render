@@ -238,15 +238,29 @@ def _kick_workbench_skills() -> None:
     Rate limiting stays in `skill_plugin` (`_attempt_due`), so repeated opens
     cost a lock check and nothing else. Nothing here can fail a canvas open:
     the thread swallows everything and the caller never waits on it.
+
+    Also retires the pre-rename `fused` plugin, on this thread and this trigger —
+    see the call below for why supplying the new skills is only half the fix.
     """
     if not _SKILLS_FETCH_LOCK.acquire(blocking=False):
         return  # one already running — its result serves this caller too
 
     def run() -> None:
         try:
-            from fused_render.skill_plugin import sync_workbench_plugin
+            from fused_render.skill_plugin import (retire_legacy_fused_plugin,
+                                                   sync_workbench_plugin)
 
             sync_workbench_plugin()
+            # Same thread and the same trigger, because it is the same problem
+            # from the other side: supplying the current `workbench:*` skills
+            # does nothing while the pre-rename `fused` plugin is still enabled
+            # globally and shadowing them with stale copies under the prefix an
+            # old seeded CLAUDE.md names. Gated on the canvas path like the fetch
+            # — a user who never opens a canvas gets their config left alone —
+            # and idempotent, so the repeat opens that re-arm the watcher cost a
+            # settings read. Ordered AFTER the fetch on purpose: the flip removes
+            # the fallback answer, so do it once the real one is on disk.
+            retire_legacy_fused_plugin()
         except Exception:  # noqa: BLE001 — never surface out of a helper thread
             logger.debug("workbench skills sync failed", exc_info=True)
         finally:
@@ -643,6 +657,47 @@ This folder is a live clone of the Fused canvas **{name}**, two-way synced by
 fused-render: a watcher pushes every quiet change set upstream and pulls
 remote edits (made in the hosted workbench) back down, merging per file.
 
+## Skills — invoke these FIRST
+
+**Before you read or edit anything in this folder, invoke the `Skill` tool for
+the skills below that apply to the task.** They carry the authoritative format
+references, and this folder's files cannot be edited correctly from their own
+appearance alone — a `canvas.toml` that looks obvious has required fields and
+node/edge rules that are not visible in an example, and getting them wrong is
+rejected at push time and surfaces to the user as a broken canvas.
+
+fused-render hands these to this session itself, so they are already in your
+available-skills list. Do not search for them, do not ask the user to install
+anything, and do not skip one because the change "looks small":
+
+| Skill | Invoke it when |
+|---|---|
+| `workbench:canvas-toml` | ALWAYS — before the first edit. canvas.toml format, folder layout |
+| `workbench:fused-udfs` | writing or changing any `.py` UDF |
+| `workbench:json-ui-schemas` | writing or changing any `.json` widget |
+| `workbench:fused-cli` | running any `fused` command |
+| `workbench:canvas-comments` | reading or resolving canvas comments |
+
+`workbench:` is the correct prefix. If you also see these skill names under a
+different prefix (`fused:` in particular), that is a stale copy from an older
+release — **ignore it and use the `workbench:` one**, which is the version this
+app supplied for this session.
+
+If, and only if, no `workbench:`-prefixed match exists at all, work from THIS
+FOLDER and nothing else: the existing `canvas.toml` and the files beside it are
+your format reference, and their conventions are the answer. Do not stop to ask
+for the skills, and do not try to install anything.
+
+**Do not search outside this folder for format references.** No `find`, `ls
+-R`, `grep -r`, glob or any other recursive walk over `/`, your home
+directory, `~/.fused-render`, or the fused-render source tree — the app's
+internal files are not documentation and looking through them is a detour
+that ends nowhere. In particular **never list, walk, glob or read anything
+under `~/.fused-render/mounts`**: those are network mounts, and a recursive
+walk wedges them permanently for every app on the machine, including this
+one. If this folder does not answer the question, say what you could not
+determine and stop there — do not go looking for it elsewhere on disk.
+
 ## How the sync works (know this before running sync commands yourself)
 
 A watcher in the fused-render app syncs this folder continuously:
@@ -738,35 +793,6 @@ stable *within* a change set and can differ *between* them. Consequences:
   rename that gets pushed or merged mid-way is exactly how invalid states
   happen.
 
-## Skills
-
-Load these before editing — they carry the format references and workflows
-for this folder. fused-render hands them to this session itself, so they
-should already be in your available-skills list:
-
-- `workbench:canvas-toml` — canvas.toml format and folder layout
-- `workbench:fused-udfs` — writing Fused UDFs
-- `workbench:json-ui-schemas` — widget JSON component props
-- `workbench:fused-cli` — the fused CLI reference
-- `workbench:canvas-comments` — reading and resolving canvas comments
-
-If they are absent, or listed under a different prefix, just search your
-available skills for the matching names.
-
-If they genuinely are not there, work from THIS FOLDER and nothing else: the
-existing `canvas.toml` and the files beside it are your format reference, and
-their conventions are the answer. Do not stop to ask for the skills, and do
-not try to install anything.
-
-**Do not search outside this folder for format references.** No `find`, `ls
--R`, `grep -r`, glob or any other recursive walk over `/`, your home
-directory, `~/.fused-render`, or the fused-render source tree — the app's
-internal files are not documentation and looking through them is a detour
-that ends nowhere. In particular **never list, walk, glob or read anything
-under `~/.fused-render/mounts`**: those are network mounts, and a recursive
-walk wedges them permanently for every app on the machine, including this
-one. If this folder does not answer the question, say what you could not
-determine and stop there — do not go looking for it elsewhere on disk.
 """
 
 
@@ -2272,6 +2298,19 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
     # those sessions with no workbench skills at all. Rate-limited and
     # off-thread; see _kick_workbench_skills.
     _kick_workbench_skills()
+    # Re-seed CLAUDE.md for the same reason, and it is the other half of the same
+    # bug: seeding otherwise runs at /clone and after a CLI force pull only, so a
+    # canvas cloned before a text change keeps the OLD file forever. Concretely,
+    # clones from before D360 still name the pre-rename `fused:*` skills — and a
+    # user who once ran the `fused claude plugin add` that the older text told
+    # them to has that stale plugin installed globally, so the session finds
+    # `fused:canvas-toml` in its skill list, uses it, and never touches the
+    # current `workbench:*` root we hand it per-run. Nothing warns: stale skills
+    # load cleanly. Invisible to the sync — both basenames are excluded from the
+    # fingerprint, hash and merge-base walks (_SYNC_IGNORED_BASENAMES) and from
+    # every push (.fusedignore) — and shim-gated inside the helper, so the
+    # external-CLI leg still cannot churn on it.
+    _seed_clone_claude_files(_canvas_dir(name), name)
     manager = _sync_manager(name, create=True)
     return manager.status()
 
