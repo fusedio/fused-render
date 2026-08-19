@@ -463,6 +463,10 @@ const EVENTS = readFileSync(
   "utf8",
 );
 const APP = readFileSync(join(SHELL, "App.tsx"), "utf8");
+const CHAT_TEMPLATE = readFileSync(
+  join(SHELL, "../../../fused_render/templates/claude/template.html"),
+  "utf8",
+);
 
 describe("pokeTasks", () => {
   it("forwards to the feeder page instead of fetching over it", () => {
@@ -504,5 +508,36 @@ describe("pokeTasks", () => {
     );
     expect(EVENTS).not.toContain("@shell/");
     expect(APP).toContain("useScheduleEvents(pokeTasks)");
+  });
+
+  it("an interactive chat turn pokes too — through the storage stamp", () => {
+    // Interactive turns create no sys:schedule job and no schedule event, so
+    // neither producer above fires for them (Akshil, 2026-08-19: "the task's
+    // unread status does not update"). The chat template stamps a localStorage
+    // key at turn start and turn end; the chat is its own iframe document, so
+    // every OTHER document — the shell around it, a Tasks page in another
+    // window — receives the `storage` event and pokes.
+    expect(STORE).toContain('CHAT_ACTIVITY_KEY = "fused-render:chat-activity"');
+    expect(STORE).toMatch(/if \(key === CHAT_ACTIVITY_KEY\) pokeTasks\(\);/);
+    expect(APP).toMatch(/pokeOnChatActivity\(e\.key\)/);
+    expect(APP).toMatch(/window\.addEventListener\("storage", onStorage\)/);
+    expect(APP).toMatch(/window\.removeEventListener\("storage", onStorage\)/);
+    // The template's half: one key, stamped at both ends of pollLoop — the one
+    // place a turn is ever in flight, which covers re-attached runs for free.
+    expect(CHAT_TEMPLATE).toContain('"fused-render:chat-activity"');
+    expect(CHAT_TEMPLATE).toMatch(
+      // Not adjacent any more: #653's generation comment sits between the
+      // chrome write and the stamp — the invariant is "stamps at loop START,
+      // before the first poll", not "on the very next line".
+      /setRunningUi\(true\);[\s\S]{0,700}noteChatActivity\(\);[\s\S]*?await fused\.runPython/,
+    );
+    expect(CHAT_TEMPLATE).toMatch(
+      // The end stamp sits after #653's seat-guarded chrome block — outside
+      // the guard, deliberately: the turn ended whichever loop owns the UI.
+      /setRunningUi\(false\);\s*\n\s*\}[\s\S]{0,300}noteChatActivity\(\);/,
+    );
+    // A changed value every time, or the second of two same-millisecond turn
+    // ends fires no event at all.
+    expect(CHAT_TEMPLATE).toMatch(/Date\.now\(\) \+ ":" \+ Math\.random\(\)/);
   });
 });
