@@ -1,9 +1,12 @@
 """Claude Code session transcripts, read off disk for the Explorer.
 
-Two endpoints, same on-disk source (~/.claude/projects/<encoded-cwd>/*.jsonl):
+Three endpoints, same on-disk source (~/.claude/projects/<encoded-cwd>/*.jsonl):
 
 * ``GET /api/claude-sessions`` — one row per real project *folder*, for the
-  homepage's "Claude sessions" tab.
+  exhaustive folder listing.
+* ``GET /api/claude-sessions/home`` — the newest project folders for Home. It
+  orders candidates by transcript mtime first, then opens only enough
+  transcripts to fill Home's single row.
 * ``GET /api/claude-sessions/summaries`` — one row per *session*, for the
   React shell's Schedule page. Mirrors the bundled sessions inbox app
   (core_apps/sessions/sessions/sessions.py + core_apps/sessions/inbox.py):
@@ -111,6 +114,52 @@ def api_claude_sessions():
         for path, mtime in latest.items()
     ]
     folders.sort(key=lambda e: e["lastActive"], reverse=True)
+    return {"folders": folders}
+
+
+HOME_SESSION_LIMIT = 12
+
+
+def _transcripts_newest_first() -> list[tuple[float, str]]:
+    """All transcript paths ordered by mtime without opening their contents.
+
+    Establishing the true newest folders requires seeing every transcript's
+    cheap filesystem timestamp. The Home saving is after this pass: JSONL files
+    are opened newest-first and parsing stops as soon as the row is full.
+    """
+    candidates: list[tuple[float, str]] = []
+    if not os.path.isdir(PROJECTS_DIR):
+        return candidates
+    for jsonl_path in glob.iglob(os.path.join(PROJECTS_DIR, "*", "*.jsonl")):
+        try:
+            candidates.append((os.path.getmtime(jsonl_path), jsonl_path))
+        except OSError:
+            continue
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates
+
+
+@router.get("/api/claude-sessions/home")
+def api_home_claude_sessions(limit: int = HOME_SESSION_LIMIT):
+    """The newest unique, existing Claude project folders needed by Home."""
+    limit = max(1, min(limit, HOME_SESSION_LIMIT))
+    folders = []
+    seen: set[str] = set()
+    for mtime, jsonl_path in _transcripts_newest_first():
+        cwd = _session_cwd(jsonl_path)
+        if not cwd or cwd in seen:
+            continue
+        # Mark before the probe: repeated sessions for a stale folder cannot
+        # become valid during this one request and should not repeat the syscall.
+        seen.add(cwd)
+        if not os.path.isdir(cwd):
+            continue
+        folders.append({
+            "path": canonical_fs_path(cwd),
+            "lastActive": datetime.fromtimestamp(mtime, timezone.utc).isoformat(),
+        })
+        if len(folders) >= limit:
+            break
     return {"folders": folders}
 
 

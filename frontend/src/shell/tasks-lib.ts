@@ -34,7 +34,7 @@
 // This is a presentation of the same data, not a second opinion about it: no
 // status is re-derived, no lane membership is re-decided (taskColumn still asks
 // the server), and every key is a time the server itself sent.
-import type { Task, TaskMessage } from "@platform/lib/api";
+import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 import { BOARD_COLUMNS, explorerUrl, isProjected, turnPhase } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 
@@ -358,7 +358,7 @@ export function threadRunning(messages: TaskMessage[]): boolean {
  * Done. Read as a plain string on purpose: the union this file was compiled
  * against is a snapshot of what the server said LAST time.
  */
-export function taskColumn(task: Task): BoardColumn {
+export function taskColumn(task: Pick<Task, "status">): BoardColumn {
   return statusColumn(task.status);
 }
 
@@ -2829,7 +2829,7 @@ export function parseTasksSeen(raw: string | null): TasksSeen {
  * prints, and it falls only when the work is actually read — visiting the page
  * does not make a number about unread work untrue.
  */
-export function isDoneUnread(task: Task): boolean {
+export function isDoneUnread(task: TaskPulseTask): boolean {
   return taskColumn(task) === "done" && task.unread > 0;
 }
 
@@ -2845,7 +2845,7 @@ export function isDoneUnread(task: Task): boolean {
  * clears on the visit and the expanded row's chip does not, and neither is a bug
  * in the other (Akshil, 2026-08-18).
  */
-export function isUnseenCompletion(task: Task, seen: TasksSeen): boolean {
+export function isUnseenCompletion(task: TaskPulseTask, seen: TasksSeen): boolean {
   return isDoneUnread(task) && seen[task.key] !== task.last_active;
 }
 
@@ -2863,7 +2863,7 @@ export interface TasksPulse {
 export const EMPTY_TASKS_PULSE: TasksPulse = { running: 0, doneUnread: 0, unseen: 0 };
 
 /** The whole sidebar signal, from the rows the page already has. */
-export function tasksPulse(tasks: Task[], seen: TasksSeen): TasksPulse {
+export function tasksPulse(tasks: TaskPulseTask[], seen: TasksSeen): TasksPulse {
   let running = 0;
   let doneUnread = 0;
   let unseen = 0;
@@ -2904,7 +2904,7 @@ export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
  * this before the first fetch has landed, because an empty store and an empty
  * machine are not the same fact.
  */
-export function seenAfterVisit(tasks: Task[], prev: TasksSeen = {}): TasksSeen {
+export function seenAfterVisit(tasks: TaskPulseTask[], prev: TasksSeen = {}): TasksSeen {
   const next: TasksSeen = {};
   for (const t of tasks) {
     if (taskColumn(t) === "done") next[t.key] = t.last_active;

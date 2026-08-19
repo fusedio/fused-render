@@ -1474,20 +1474,20 @@ describe("the when-row's default", () => {
 
 // ---- "recent" means one thing -------------------------------------------------
 // The app had two recents. The home page shows the folders this machine has
-// Claude sessions in, newest session first (`/api/claude-sessions`, its "Claude
-// Sessions" strip); this form showed a localStorage array only it ever wrote, so
+// Claude sessions in, newest session first (the Claude Sessions strip); this
+// form showed a localStorage array only it ever wrote, so
 // a person who had spent the morning in a repo opened New task and was offered
 // folders the form happened to remember. One noun per concept
 // (design-principles §1), and recents are exactly the "recognition over recall"
 // affordance §4 asks for — so the home page's list leads this one.
 describe("the folder recents come from the app's own recents", () => {
-  test("the leading tier is the home page's Claude sessions call, top five", () => {
+  test("the leading tier is the Claude sessions source, top five", () => {
     const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
-    // The SAME call Home.tsx makes, not a second endpoint that happens to
-    // answer something similar.
+    // Both surfaces use the same server-side ordering. Home takes its bounded
+    // endpoint; the form retains the exhaustive API and slices its five rows.
     expect(src).toContain("getClaudeSessionFolders()");
     expect(readFileSync(join(import.meta.dir, "Home.tsx"), "utf8"))
-      .toContain("getClaudeSessionFolders()");
+      .toContain("getHomeClaudeSessionFolders(MAX_ROW)");
     // Five, and the server already answers newest-session-first, so the slice
     // is the whole of the ordering — the folders reach the list in the order
     // they arrived in, with no client-side re-sort to disagree with the strip.
