@@ -27,14 +27,15 @@ from geo_paths import (
     is_http_url,
     is_managed_mount,
     is_remote_path,
+    multidim_suffix,
     normalize_remote_path,
     resolve_source,
+    zarr_store,
 )
 from optional_runtime import require
 from raster_engine import MAX_TILE_CACHE, band_ranges, error_descriptor, transparent_tile
 
 
-MULTIDIM_SUFFIXES = {".nc", ".nc4", ".zarr", ".h5", ".hdf5", ".he5", ".hdf"}
 MULTIDIM_RUNTIME = {
     "xarray": "xarray",
     "rioxarray": "rioxarray",
@@ -60,64 +61,6 @@ MAX_DIMS_META = 32
 
 _Y_NAMES = {"lat", "latitude", "y"}
 _X_NAMES = {"lon", "longitude", "x"}
-
-
-def multidim_suffix(target: str) -> str:
-    """The store format *target* names, or "" when it is not a multidim store.
-
-    A zarr store shows up under several names — a ``.zarr`` directory or URL, a
-    versioned suffix like ``.zarr-v3``, or a path to the store's own
-    ``.zmetadata``/``zarr.json`` metadata object — all of which mean the same
-    store.
-    """
-    path = urlsplit(target).path if is_http_url(target) else target
-    name = Path(path.replace("\\", "/")).name.lower()
-    if name.endswith(".zarr") or ".zarr-" in name:
-        return ".zarr"
-    if name == ".zmetadata" or (name == "zarr.json" and _is_zarr_metadata(target)):
-        return ".zarr"
-    suffix = Path(name).suffix
-    return suffix if suffix in MULTIDIM_SUFFIXES else ""
-
-
-def _is_zarr_metadata(target: str) -> bool:
-    """Whether a file named ``zarr.json`` really is zarr v3 store metadata.
-
-    Any ordinary JSON file can carry that name, and claiming one here would
-    steal it from the vector/JSON path for good — an error descriptor is not
-    ``None``, so nothing after this engine would ever see it. A remote URL is
-    claimed on the name alone (fetching it to sniff costs a network round
-    trip, and a remote GeoJSON named exactly ``zarr.json`` is not a real
-    case); a local file must actually say ``zarr_format``.
-    """
-    if is_remote_path(target) or not os.path.isfile(target):
-        return True
-    try:
-        with open(target, "rb") as handle:
-            metadata = json.loads(handle.read(1 << 16))
-        return isinstance(metadata, dict) and "zarr_format" in metadata
-    except (OSError, ValueError):
-        return False
-
-
-def _zarr_store(source: str) -> str:
-    """The store a metadata-object locator points at: its parent directory.
-
-    Trimming the tail off the whole locator would eat into a query string —
-    a signed URL ends in its signature, not in the object name — so a URL is
-    taken apart and put back together around the shortened path.
-    """
-    if is_http_url(source):
-        parts = urlsplit(source)
-        name = Path(parts.path).name.lower()
-        if name not in {".zmetadata", "zarr.json"}:
-            return source
-        parent = parts.path[: -(len(name) + 1)]
-        return urlunsplit(parts._replace(path=parent))
-    name = Path(source.replace("\\", "/")).name.lower()
-    if name in {".zmetadata", "zarr.json"}:
-        return source[: -(len(name) + 1)]
-    return source
 
 
 def _spatial_dims(da: Any) -> tuple[str, str] | None:
@@ -307,7 +250,6 @@ def _source_fingerprint(
 @dataclass
 class MultidimSource:
     source_id: str
-    target: str
     store: str
     suffix: str
     engine: str
@@ -325,7 +267,6 @@ class MultidimSource:
     colormap: str
     rescale: list[list[float]]
     auto_rescale: bool = True
-    lazy: bool = False
 
 
 class MultidimEngine:
@@ -717,7 +658,7 @@ class MultidimEngine:
     ) -> dict[str, Any]:
         from rio_tiler.io.xarray import XarrayReader
 
-        store = _zarr_store(source) if suffix == ".zarr" else source
+        store = zarr_store(source) if suffix == ".zarr" else source
         ds, engine = self._open_dataset(store, suffix)
         variable, variables, dims_template = self._variable_meta(
             ds, store, str(opts.get("var") or "")
@@ -762,7 +703,6 @@ class MultidimEngine:
         fingerprint = _source_fingerprint(target, store, variable, sel)
         record = MultidimSource(
             source_id=fingerprint,
-            target=target,
             store=store,
             suffix=suffix,
             engine=engine,
@@ -780,7 +720,6 @@ class MultidimEngine:
             colormap=str(opts.get("colormap") or "viridis"),
             rescale=rescale,
             auto_rescale=auto_rescale,
-            lazy=lazy,
         )
         with self.lock:
             existing = self.sources.get(fingerprint)
@@ -860,7 +799,6 @@ class MultidimEngine:
                     "variables": record.variables,
                     "dims": record.dims,
                     "engine": record.engine,
-                    "store": record.store,
                 },
             },
             "style": {

@@ -1,11 +1,12 @@
 """Path classification shared by the map raster, vector, and multidim engines."""
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 
 REMOTE_PREFIXES = ("http://", "https://", "s3://", "/vsi")
@@ -45,6 +46,23 @@ def normalize_remote_path(value: str) -> str:
             return lowered
         return lowered[:slash] + "/" + normalize_remote_path(value[slash + 1:])
     return value
+
+
+def locator_name(value: str) -> str:
+    """The final path segment of *value*, whatever kind of locator it is.
+
+    A URL's name lives in its path — reading it off the whole string would
+    pick up the query — and a Windows path uses the separator `Path` only
+    understands on Windows, so both are normalized here rather than in each
+    engine that asks.
+    """
+    path = urlsplit(value).path if is_http_url(value) else value
+    return Path(path.replace("\\", "/")).name
+
+
+def locator_suffix(value: str) -> str:
+    """The lowercased extension of *value*, query strings excluded."""
+    return Path(locator_name(value)).suffix.lower()
 
 
 def raw_url(origin: str, path: str) -> str:
@@ -89,6 +107,67 @@ def resolve_source(request: dict[str, Any], target: str) -> str:
         return target
     origin = str(request.get("source_origin") or "")
     return raw_url(origin, target) if origin else os.path.abspath(target)
+
+
+# Formats read through xarray rather than GDAL. Named here, beside the
+# other locator classification, so the light callers that only need to
+# ROUTE a target do not import the engine that reads one.
+MULTIDIM_SUFFIXES = {".nc", ".nc4", ".zarr", ".h5", ".hdf5", ".he5", ".hdf"}
+def multidim_suffix(target: str) -> str:
+    """The store format *target* names, or "" when it is not a multidim store.
+
+    A zarr store shows up under several names — a ``.zarr`` directory or URL, a
+    versioned suffix like ``.zarr-v3``, or a path to the store's own
+    ``.zmetadata``/``zarr.json`` metadata object — all of which mean the same
+    store.
+    """
+    name = locator_name(target).lower()
+    if name.endswith(".zarr") or ".zarr-" in name:
+        return ".zarr"
+    if name == ".zmetadata" or (name == "zarr.json" and _is_zarr_metadata(target)):
+        return ".zarr"
+    suffix = Path(name).suffix
+    return suffix if suffix in MULTIDIM_SUFFIXES else ""
+
+
+def _is_zarr_metadata(target: str) -> bool:
+    """Whether a file named ``zarr.json`` really is zarr v3 store metadata.
+
+    Any ordinary JSON file can carry that name, and claiming one here would
+    steal it from the vector/JSON path for good — an error descriptor is not
+    ``None``, so nothing after this engine would ever see it. A remote URL is
+    claimed on the name alone (fetching it to sniff costs a network round
+    trip, and a remote GeoJSON named exactly ``zarr.json`` is not a real
+    case); a local file must actually say ``zarr_format``.
+    """
+    if is_remote_path(target) or not os.path.isfile(target):
+        return True
+    try:
+        with open(target, "rb") as handle:
+            metadata = json.loads(handle.read(1 << 16))
+        return isinstance(metadata, dict) and "zarr_format" in metadata
+    except (OSError, ValueError):
+        return False
+
+
+def zarr_store(source: str) -> str:
+    """The store a metadata-object locator points at: its parent directory.
+
+    Trimming the tail off the whole locator would eat into a query string —
+    a signed URL ends in its signature, not in the object name — so a URL is
+    taken apart and put back together around the shortened path.
+    """
+    if is_http_url(source):
+        parts = urlsplit(source)
+        name = Path(parts.path).name.lower()
+        if name not in {".zmetadata", "zarr.json"}:
+            return source
+        parent = parts.path[: -(len(name) + 1)]
+        return urlunsplit(parts._replace(path=parent))
+    name = locator_name(source).lower()
+    if name in {".zmetadata", "zarr.json"}:
+        return source[: -(len(name) + 1)]
+    return source
 
 
 def _base_home() -> Path:

@@ -29,6 +29,7 @@ from geo_paths import (
     resolve_source,
 )
 from optional_runtime import require
+from raster_engine import error_descriptor
 
 
 VECTOR_SUFFIXES = {
@@ -84,21 +85,6 @@ VECTOR_RUNTIME = {
 
 def _vector_dependency_error() -> str | None:
     return require("Streamed vector layers", VECTOR_RUNTIME)
-
-
-def _dependency_descriptor(artifact_id: str, message: str) -> dict[str, Any]:
-    return {
-        "id": artifact_id,
-        "status": "error",
-        "kind": None,
-        "bounds": None,
-        "data": {},
-        "stats": {},
-        "style": {},
-        "warnings": [],
-        "detected_type": "vector",
-        "message": message,
-    }
 
 
 def _suffix(value: str) -> str:
@@ -312,7 +298,7 @@ class VectorEngine:
         if source_size is None or source_size >= VECTOR_TILE_MIN_BYTES:
             dependency_error = _vector_dependency_error()
             if dependency_error:
-                return _dependency_descriptor(artifact_id, dependency_error)
+                return error_descriptor(artifact_id, dependency_error, detected_type="vector")
         try:
             locator = self.locator(source, target)
             return self._describe(
@@ -374,7 +360,7 @@ class VectorEngine:
 
         dependency_error = _vector_dependency_error()
         if dependency_error:
-            return _dependency_descriptor(artifact_id, dependency_error)
+            return error_descriptor(artifact_id, dependency_error, detected_type="vector")
         if "w" not in str(pyogrio.list_drivers().get("MVT", "")):
             raise RuntimeError(
                 "the installed GDAL runtime does not provide the MVT writer"

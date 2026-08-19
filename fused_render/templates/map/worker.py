@@ -19,7 +19,7 @@ import time
 import traceback
 from typing import Any
 
-from multidim_engine import multidim_suffix
+from geo_paths import multidim_suffix
 
 
 ENTRYPOINTS = ("main", "run", "udf", "fn")

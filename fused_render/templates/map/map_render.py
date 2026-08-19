@@ -30,8 +30,12 @@ for _path in (str(HERE), str(SHARED)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from geo_paths import is_managed_mount, is_remote_path, normalize_remote_path
-from multidim_engine import multidim_suffix
+from geo_paths import (
+    is_managed_mount,
+    is_remote_path,
+    multidim_suffix,
+    normalize_remote_path,
+)
 from procutil import clean_env, file_lock, pid_alive, spawn_python
 
 CACHE_DIR = Path(
@@ -61,10 +65,11 @@ BACKEND_FILES = (
     HERE / "blob_tokens.py",
     HERE / "optional_runtime.py",
 )
+# The GDAL-read formats only. Multidim stores are recognized by
+# `multidim_suffix`, which is the one list that knows their spellings.
 RASTER_SUFFIXES = (
     ".tif", ".tiff", ".cog", ".vrt", ".jp2", ".j2k", ".img", ".ntf",
-    ".nitf", ".dem", ".dt0", ".dt1", ".dt2", ".hgt", ".grd", ".nc",
-    ".nc4", ".hdf", ".hdf5", ".he5", ".h5", ".zarr",
+    ".nitf", ".dem", ".dt0", ".dt1", ".dt2", ".hgt", ".grd",
 )
 VECTOR_SUFFIXES = (
     ".geojson", ".json", ".shp", ".gpkg", ".fgb", ".kml", ".gml",

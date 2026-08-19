@@ -297,7 +297,7 @@ def test_rewritten_file_serves_fresh_pixels_after_eviction(eng, tmp_path):
 def test_plain_json_named_zarr_json_is_not_claimed(eng, tmp_path):
     # Regression: any file literally named zarr.json was treated as a zarr
     # store, and the error descriptor blocked the vector/JSON fallback.
-    me = sys.modules["multidim_engine"]
+    me = _load("geo_paths", "geo_paths.py")
     plain = tmp_path / "zarr.json"
     plain.write_text('{"type": "FeatureCollection", "features": []}', encoding="utf-8")
     assert me.multidim_suffix(str(plain)) == ""
@@ -471,9 +471,9 @@ def test_degree_unit_spellings_pass_the_geographic_gate(eng, tmp_path):
 def test_zarr_metadata_locator_keeps_its_query_string(eng):
     # Regression: trimming the object name off the whole locator ate into a
     # signed URL's query, leaving a store path that could never open.
-    me = sys.modules["multidim_engine"]
-    assert me._zarr_store("https://h/s.zarr/zarr.json?sig=a&se=b") == "https://h/s.zarr?sig=a&se=b"
-    assert me._zarr_store("https://h/s.zarr/.zmetadata?sig=a") == "https://h/s.zarr?sig=a"
-    assert me._zarr_store("https://h/s.zarr/zarr.json") == "https://h/s.zarr"
-    assert me._zarr_store("https://h/s.zarr") == "https://h/s.zarr"
-    assert me._zarr_store(os.path.join("C:", "d", "s.zarr", "zarr.json")).endswith("s.zarr")
+    me = _load("geo_paths", "geo_paths.py")
+    assert me.zarr_store("https://h/s.zarr/zarr.json?sig=a&se=b") == "https://h/s.zarr?sig=a&se=b"
+    assert me.zarr_store("https://h/s.zarr/.zmetadata?sig=a") == "https://h/s.zarr?sig=a"
+    assert me.zarr_store("https://h/s.zarr/zarr.json") == "https://h/s.zarr"
+    assert me.zarr_store("https://h/s.zarr") == "https://h/s.zarr"
+    assert me.zarr_store(os.path.join("C:", "d", "s.zarr", "zarr.json")).endswith("s.zarr")
