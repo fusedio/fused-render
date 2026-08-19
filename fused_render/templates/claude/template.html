@@ -165,35 +165,37 @@
     padding: 8px 16px;
     border-bottom: 1px solid var(--border);
   }
-  /* The split pill: mic seat + "Comment" seat in one bordered control (the
-     old track-and-knob switch is gone — Akshil, 2026-08-19). It carries the
-     row's ONE auto margin, the strip's right-hand anchor: everything before
-     it (#back, the picker when it appears) sits left of the slack, everything
-     after (the kebab) rides right with it — see #leftbar #leftmode for why a
-     row gets exactly one. The picker unfolds to this pill's LEFT, into the
-     slack, so the pill holds still under the pointer that just pressed it. */
+  /* Two separate buttons — Comment on the left, Record on the right (the
+     split pill is gone — Akshil, 2026-08-19). Exactly one mode is ever on,
+     and the OTHER button always shows the way out of it: arming Comment turns
+     the mic seat into ✓ Done (send the notes, leave the mode); starting a
+     recording turns the Comment seat into ■ plus the live clock (stop it).
+     The wrapper carries the row's ONE auto margin, the strip's right-hand
+     anchor: everything before it (#back, the picker when it appears) sits
+     left of the slack, everything after (the kebab) rides right with it — see
+     #leftbar #leftmode for why a row gets exactly one. The picker unfolds to
+     the buttons' LEFT, into the slack, so they hold still under the pointer. */
   #anncta {
     margin-left: auto;
     display: flex;
+    align-items: center;
     flex-shrink: 0;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    overflow: hidden;
-    height: 26px;
+    gap: 8px;
   }
-  /* The pill hides itself when it has no visible button: both seats are gated
+  /* The wrapper hides itself when it has no visible button: both are gated
      alike (annPollTarget's [hidden], enterNoPane's removal), and an empty
-     bordered sliver is not a control. :has, so the wrapper needs no writer of
-     its own — the seats' state is already the answer. */
+     wrapper still holding the auto margin would shove the kebab around. :has,
+     so the wrapper needs no writer of its own. */
   #anncta:not(:has(#annbtn:not([hidden]))) { display: none; }
   /* One auto margin per row: `body.nopane #kebab` grants the kebab its own
-     when the pane's controls are gone — but when the pill IS here (the hosted
-     sidebar keeps it), two auto margins split the slack and parked the pill
-     mid-strip (Akshil, 2026-08-19: "why is this in the middle?"). A visible
-     pill revokes the kebab's grant, so the pill sits right, beside ⋮. */
+     when the pane's controls are gone — but when the buttons ARE here (the
+     hosted sidebar keeps them), two auto margins split the slack and parked
+     the control mid-strip (Akshil, 2026-08-19: "why is this in the middle?").
+     A visible button revokes the kebab's grant, so the pair sits right, beside ⋮. */
   #anncta:has(#annbtn:not([hidden])) ~ #kebab { margin-left: 0; }
   #anncta button {
-    border: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
     background: transparent;
     /* `--dim` is THIS file's muted ink (see the palettes at the top). It read
        `var(--muted, var(--fg))` for a long time, and `--muted` is defined nowhere
@@ -206,24 +208,24 @@
     font: inherit;
     font-size: 12px;
     white-space: nowrap;
-    height: 100%;
+    height: 26px;
+    padding: 0 10px;
     display: inline-flex;
     align-items: center;
+    gap: 6px;
     cursor: pointer;
     transition: color .12s, background .12s, border-color .12s;
   }
-  #anncta button + button { border-left: 1px solid var(--border); }
   /* Hover must not outrank a STATE (Bugbot, PR #644): the bare hover rule beat
      #annbtn.on and #annrec.on on order, so crossing the armed Comment seat
      wiped the accent fill — the mode's only on-screen signal — on the way to
      the click that ends it. :not(.on) keeps hover a resting-seat affair; the
      armed looks below stay put under the pointer. */
   #anncta button:hover:not(:disabled):not(.on) { color: var(--fg); background: var(--surface); }
-  /* Armed comment mode fills the word seat with the accent — same voice as
-     the picker's selected seat: a mode you are in, not a button you pressed. */
-  #annbtn { padding: 0 10px; }
-  #annbtn.on { color: var(--on-accent); background: var(--accent); }
-  /* The seats are HIDDEN, not disabled, when there is nothing to annotate —
+  /* Armed comment mode fills the Comment button with the accent — same voice
+     as the picker's selected seat: a mode you are in, not a button you pressed. */
+  #annbtn.on { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+  /* The buttons are HIDDEN, not disabled, when there is nothing to annotate —
      the sidebar layout's case, where the target is the host's content pane and
      the host may be showing something unmarked (annPollTarget). Same rule the
      narrow layout follows for the controls of a hidden pane: absent beats
@@ -231,16 +233,15 @@
      `[hidden] { display: none }`, exactly as #leftbar[hidden] does. */
   #annbtn[hidden] { display: none; }
   #annrec[hidden] { display: none; }
-  #annrec { padding: 0 9px; gap: 6px; }
-  #annrec:disabled { opacity: .55; cursor: default; }
+  #anncta button:disabled { opacity: .55; cursor: default; }
   /* The recording state borrows --error, the one token already meant for
      "something the user should notice is live" (it colours a failed run) —
      no new token to keep in step across the two palettes. */
-  #annrec.on { color: var(--error); animation: annrecpulse 1.1s infinite; }
+  #annrec.on { color: var(--error); border-color: var(--error); animation: annrecpulse 1.1s infinite; }
   /* The icons: stroke glyphs in the button's own ink, so state colours (the
      hover brighten, the recording --error) reach them for free. `.fill` seats
      are the solid parts — the picker's inner square, the stop block. */
-  #annrec svg, #anntool svg {
+  #anncta svg, #anntool svg {
     width: 14px;
     height: 14px;
     fill: none;
@@ -249,38 +250,80 @@
     stroke-linecap: round;
     flex-shrink: 0;
   }
-  #annrec svg .fill, #anntool svg .fill { fill: currentColor; stroke: none; }
-  /* One mic seat, two glyphs: the .on class swaps mic for stop, so no writer
-     ever has to rebuild the icon (textContent would erase an inline SVG —
-     #annreclbl is the only text the writers touch). */
-  #annrec .rec-stop { display: none; }
-  #annrec.on .rec-mic { display: none; }
-  #annrec.on .rec-stop { display: block; }
+  #anncta svg .fill, #anntool svg .fill { fill: currentColor; stroke: none; }
+  /* Icon-plus-word buttons keep their words only while the strip has room —
+     COLLISION-detected, not a breakpoint (Akshil, 2026-08-19: a fixed width
+     dropped the words while there was still space for them). annFitStrip
+     measures the row with the words ON — plus the off-screen picker's
+     reserved width, so arming can never flip the words under the click — and
+     stamps `.tight` on #anntools only when that content truly would not fit,
+     whatever the divider, the picker or the seats' current faces are doing. The words are spans marked .lbl reading
+     `var(--annlbl, inline)`; a tight strip sets the token to none and every
+     word yields at once. The clock (#annreclbl) is state, not a label, and
+     never hides. The var, not a plain `.tight .lbl { display: none }`: the
+     face-swap rules below SHOW their words through higher-specificity :has
+     selectors, and only a token they all read wins without a specificity
+     war. This blanket rule sits ABOVE the face swaps on purpose: the idle
+     hide of .done-word ties it on specificity and must win by order. */
+  #anntools.tight #anncta, #anntools.tight #anntool { --annlbl: none; }
+  #anncta .lbl, #anntool .lbl { display: var(--annlbl, inline); }
+  /* Each button is a seat with swappable glyphs and words, all baked into the
+     markup so no writer ever rebuilds an icon (textContent would erase an
+     inline SVG — #annreclbl is the only text the writers touch). Which face a
+     seat wears is DERIVED from the two state classes the JS already maintains
+     (#annbtn.on = mode armed, #annrec.on = recording live), via :has on the
+     wrapper — no third writer to fall out of step.
+
+     Idle faces: 💬 Comment · 🎙 Record. */
+  #annbtn .cmt-stop { display: none; }
+  #annrec .rec-done, #annrec .done-word { display: none; }
+  /* Comment armed (and no recording): the mic seat is the way out — ✓ Done. */
+  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annrec .rec-mic,
+  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annrec .rec-word { display: none; }
+  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annrec .rec-done { display: block; }
+  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annrec .done-word { display: var(--annlbl, inline); }
+  /* Recording: the Comment seat is the way out — ■ plus the live clock, in
+     the recording's own --error ink rather than the armed accent (the accent
+     says "commenting", and what this seat says now is "stop"). The mic keeps
+     its own red pulse; clicking either button stops. */
+  #anncta:has(#annrec.on) #annbtn .cmt-bubble,
+  #anncta:has(#annrec.on) #annbtn .cmt-word { display: none; }
+  #anncta:has(#annrec.on) #annbtn .cmt-stop { display: block; }
+  #anncta:has(#annrec.on) #annbtn.on {
+    color: var(--error);
+    background: transparent;
+    border-color: var(--error);
+  }
+  /* Transcribing (recording over, words on their way): the Comment seat
+     carries the one word of status in #annreclbl; the word "Comment" yields
+     to it. annRecEnd owns the .busy class. */
+  #anncta.busy #annbtn .cmt-word { display: none; }
   /* Empty label must not hold a gap seat open beside the icon. */
   #annreclbl:empty { display: none; }
 
   /* The tool picker: a two-seat segmented pill in #anncta's own idiom. The
-     selected seat wears the accent the way the armed Comment seat does — it is
-     a mode within the mode, and the two controls should read as one family.
-     On screen only while a walkthrough records (annRecBegin/annRecEnd): a
-     typed comment pins the default tool and never asks. While visible it
+     selected seat wears the accent the way the armed Comment button does — it
+     is a mode within the mode, and the two controls should read as one family.
+     On screen whenever the mode is armed — typed comment AND recording alike
+     (Akshil, 2026-08-19: the picker used to follow the recording only, and a
+     typed comment pinned the default tool with no say). While visible it
      takes the row's auto margin from #anncta (the `~` rule outweighs
-     #anncta's own single-id grant), so it unfolds beside the pill, into the
-     slack, and the pill holds still. */
+     #anncta's own single-id grant), so it unfolds beside the buttons, into
+     the slack, and they hold still. */
   #anntool {
     display: flex;
     flex-shrink: 0;
     border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
-    /* 26px like #anncta, same reason: a seat taller than the row makes the
-       row jump when recording starts. */
+    /* 26px like #anncta's buttons, same reason: a seat taller than the row
+       makes the row jump when the picker appears. */
     height: 26px;
   }
   #anntool:not([hidden]) { margin-left: auto; }
   #anntool:not([hidden]) ~ #anncta { margin-left: 0; }
   #anntool[hidden] { display: none; }
-  /* The picker slides out of the pill and back into it (Akshil, 2026-08-19):
+  /* The picker slides out of the buttons and back into them (Akshil, 2026-08-19):
      its seat's WIDTH lands instantly — nothing else may move — and the glyphs
      glide the last 10px into place. Entry rides the display flip (an element
      leaving display:none restarts its animation, so un-hiding IS the trigger);
@@ -627,40 +670,8 @@
     outline: none;
   }
   #annpop .hint { color: var(--faint); font-size: 11px; margin-top: 5px; display: flex; align-items: center; }
-  /* The anchor chip: one line naming the note's target, above the words. */
-  #annanchor {
-    display: block;
-    max-width: 100%;
-    margin: 0 0 6px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--bg);
-    color: var(--faint);
-    font: inherit;
-    font-size: 11px;
-    padding: 2px 9px;
-    cursor: pointer;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  #annanchor:disabled { cursor: default; opacity: .75; }
-  /* The composer's own mic — one note spoken instead of typed. Same red-pulse
-     treatment #annrec wears while live, because it is the same state. */
-  #annmic {
-    margin-left: auto;
-    border: 0;
-    background: transparent;
-    color: var(--faint);
-    font: inherit;
-    font-size: 11px;
-    cursor: pointer;
-    padding: 0 2px;
-  }
-  #annmic.on { color: var(--error); animation: annrecpulse 1.1s infinite; }
-  #annmic:disabled { opacity: .55; cursor: default; }
   #anndel {
-    margin-left: 8px;
+    margin-left: auto;
     border: 0;
     background: transparent;
     color: var(--error);
@@ -1168,7 +1179,7 @@
   .turn { margin: 0 0 20px; animation: rise .18s ease-out; }
   @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   @keyframes annrecpulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
-  @media (prefers-reduced-motion: reduce) { .turn, #annrec.on, #annmic.on { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .turn, #annrec.on { animation: none; } }
 
   /* The turn a `?msg=` link asked for (see MESSAGE_ANCHOR). A HALO that fades,
      not a selection state: the flare answers "this one" and then leaves, where
@@ -3109,19 +3120,14 @@
       <div id="annhl"></div>
       <div id="annpins"></div>
       <div id="annpop">
-        <!-- What the note is pinned to, named BEFORE the words are committed —
-             an element ("<button> Save") or an exact spot ("⌖ exact spot").
-             A real <button> because it is also the flip: when the click could
-             have meant either target (an element under the pointer AND a spot
-             on it), pressing it swaps to the other reading. Disabled when
-             there is only one reading (background click, or editing a saved
-             note, whose anchor is already in the chip/pin the user came from). -->
-        <button id="annanchor" type="button"></button>
+        <!-- Just the words (Akshil, 2026-08-19): the anchor chip and the
+             per-note mic left this card. What a click pins is chosen up front
+             in the strip's Element/Point picker (Alt still overrides for one
+             click), and speaking is the walkthrough's job — the card is for
+             typing. The placeholder still names the target's KIND, so the
+             one line of context the chip carried survives. -->
         <textarea rows="2" placeholder="What about this element?" spellcheck="false"></textarea>
         <div class="hint">Enter to save · Esc to cancel
-          <button id="annmic" type="button" aria-pressed="false"
-                  aria-label="Speak this note"
-                  title="Speak this note — stop to transcribe and send">🎙</button>
           <button id="anndel" type="button" hidden>Delete</button></div>
       </div>
     </div><!-- /leftview -->
@@ -3147,16 +3153,16 @@
       <button id="back" type="button" aria-label="Back to chats">← Chats</button>
       <!-- The picker sits FIRST in the right cluster so that arming reveals it
            at the cluster's LEFT, growing into the row's elastic middle: the
-           mic, the switch under the pointer, the back button and the kebab all
-           hold still (Akshil, 2026-08-19 — it used to appear between Record
-           and ⋮ and shuffled the whole right cluster on every toggle).
-           At rest the strip is [← Chats … 🎙 Comment ⋮]. -->
+           two mode buttons under the pointer, the back button and the kebab
+           all hold still (Akshil, 2026-08-19 — it used to appear between
+           Record and ⋮ and shuffled the whole right cluster on every toggle).
+           At rest the strip is [← Chats … 💬 Comment 🎙 Record ⋮]. -->
       <!-- WHAT a click pins, chosen up front: the element under it, or the
-           exact spot. Appears only while comment mode (or a recording, which
-           arms it) is on — it is a property of the armed click, and a picker
-           for a click that cannot happen is noise. Alt stays as the momentary
-           override of whichever tool is selected. A radiogroup, not two
-           toggles: exactly one is ever the answer. -->
+           exact spot. Appears while the mode is armed — typed comment and
+           recording alike (Akshil, 2026-08-19) — it is a property of the
+           armed click, and a picker for a click that cannot happen is noise.
+           Alt stays as the momentary override of whichever tool is selected.
+           A radiogroup, not two toggles: exactly one is ever the answer. -->
       <div id="anntool" role="radiogroup" aria-label="What a click pins" hidden>
         <button id="toolel" type="button" role="radio" aria-checked="true"
                 aria-label="Element"
@@ -3165,26 +3171,27 @@
                 aria-label="Point"
                 title="Clicks pin the exact spot, with a marked screenshot"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.25"/><line x1="8" y1="1.5" x2="8" y2="4"/><line x1="8" y1="12" x2="8" y2="14.5"/><line x1="1.5" y1="8" x2="4" y2="8"/><line x1="12" y1="8" x2="14.5" y2="8"/></svg><span class="lbl">Point</span></button>
       </div>
-      <!-- ONE control, two doors (Akshil, 2026-08-19): a split pill, mic on
-           the left, the word "Comment" on the right. The word arms plain
-           comment mode — click-then-type, no tool picker, clicks pin what the
-           default tool says (Alt still overrides for one click). The mic is
-           the spoken walkthrough: it arms the mode, starts recording, and only
-           THEN does the Element/Point picker appear (it is a property of
-           recorded clicks now); ending the recording puts the whole mode away
-           by itself. Both halves are gated and hidden exactly like the old
-           switch (annCapable() / annPollTarget / enterNoPane's removal list) —
-           the wrapper hides itself when it has no visible button. The mic's
-           glyph and the stop square are baked-in SVGs the .on class swaps, and
-           #annreclbl is the one text the writers touch — the clock while
-           recording, "Transcribing…" after — so no writer ever overwrites the
-           icon. -->
+      <!-- TWO buttons, one mode at a time (Akshil, 2026-08-19): Comment on
+           the left, Record on the right, each an icon plus a word (the strip's
+           container query drops the words when the row runs out of room). The
+           OTHER button is always the way out of whichever mode is on: arming
+           Comment turns the mic seat into ✓ Done — send the notes, leave the
+           mode — and starting a recording turns the Comment seat into ■ plus
+           the live clock, so stopping is one click on either button. Ending a
+           recording still puts the whole mode away by itself. Both buttons
+           are gated and hidden exactly like the old pill's seats (annCapable()
+           / annPollTarget / enterNoPane's removal list) — the wrapper hides
+           itself when it has no visible button. Every glyph and word is baked
+           into the markup; the stylesheet swaps faces off the two state
+           classes (#annbtn.on, #annrec.on), and #annreclbl is the one text
+           the writers touch — the clock while recording, "Transcribing…"
+           after — so no writer ever overwrites an icon. -->
       <div id="anncta">
+        <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
+                title="Comment on the preview, then send the notes to Claude"><svg class="cmt-bubble" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z"/></svg><svg class="cmt-stop" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="4" y="4" width="8" height="8" rx="1.5"/></svg><span class="lbl cmt-word">Comment</span><span id="annreclbl"></span></button>
         <button id="annrec" type="button" aria-pressed="false"
                 aria-label="Record a spoken walkthrough"
-                title="Record a spoken walkthrough — talk while you click, and each click becomes a note"><svg class="rec-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg><svg class="rec-stop" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="4" y="4" width="8" height="8" rx="1.5"/></svg><span id="annreclbl"></span></button>
-        <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
-                title="Comment on the preview, then send the notes to Claude">Comment</button>
+                title="Record a spoken walkthrough — talk while you click, and each click becomes a note"><svg class="rec-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg><svg class="rec-done" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl rec-word">Record</span><span class="lbl done-word">Done</span></button>
       </div>
       <!-- More options (⋮), beside the annotate switch. One item today: hand
            this session to a real terminal. The LABEL is decided at open time
@@ -4889,8 +4896,13 @@ document.getElementById("divider").addEventListener("mousedown", (e) => {
 // rewritten — the posture every other stale param gets (see enterNoPane).
 const annBtn = document.getElementById("annbtn");
 const annRecBtn = document.getElementById("annrec");
-// The mic button's one writable text seat — the icon SVGs beside it are baked
-// into the markup, and writing the button's textContent would erase them.
+// The buttons' wrapper: annRecEnd stamps `.busy` on it while a transcription
+// runs, the one state the two buttons' own classes cannot express (recording
+// over, mode still armed, words on their way).
+const annCta = document.getElementById("anncta");
+// The Comment button's one writable text seat — the clock while a recording
+// runs, "Transcribing…" after. The icon SVGs and word spans beside it are
+// baked into the markup, and writing the button's textContent would erase them.
 const annRecLbl = document.getElementById("annreclbl");
 const annPop = document.getElementById("annpop");
 const annTa = annPop.querySelector("textarea");
@@ -5143,7 +5155,7 @@ function annXOLayer() {
       // Overlay-relative from birth, `win` deliberately null: there is no
       // scroll to fold in (see ANN_XO_SCROLL above).
       if (annRecOn) { annRecMarkPoint(x, y, null); return; }
-      annOpenComposer(x, y, { kind: "point", x, y, shot: null }, null);
+      annOpenComposer(x, y, { kind: "point", x, y, shot: null });
     });
     pdoc.body.appendChild(host);
     annXOHost = host;
@@ -5251,28 +5263,9 @@ const ANN_LAYER_CSS = [
   + " padding: 7px 9px; margin: 0; resize: none; outline: none; }",
   "#annpop .hint { color: #8a8f99; font-size: 11px; margin-top: 5px;"
   + " display: flex; align-items: center; }",
-  "#annpop #anndel { margin-left: 8px; border: 0; background: transparent;"
+  "#annpop #anndel { margin-left: auto; border: 0; background: transparent;"
   + " color: #f26d6d; font: inherit; font-size: 11px; cursor: pointer;"
   + " padding: 0 2px; }",
-  // The anchor chip and the composer's mic, restated for the portaled copy —
-  // same shapes and sizes as the page's own rules above, literal colours for
-  // the same reason every other rule in this sheet carries them.
-  "#annpop #annanchor { display: block; max-width: 100%; margin: 0 0 6px;"
-  + " border: 1px solid #34363e; border-radius: 999px; background: #191a1e;"
-  + " color: #8a8f99; font: inherit; font-size: 11px; padding: 2px 9px;"
-  + " cursor: pointer; overflow: hidden; text-overflow: ellipsis;"
-  + " white-space: nowrap; }",
-  "#annpop #annanchor:disabled { cursor: default; opacity: .75; }",
-  "#annpop #annmic { margin-left: auto; border: 0; background: transparent;"
-  + " color: #8a8f99; font: inherit; font-size: 11px; cursor: pointer;"
-  + " padding: 0 2px; }",
-  "#annpop #annmic.on { color: #f26d6d; animation: annmicpulse 1.1s infinite; }",
-  "#annpop #annmic:disabled { opacity: .55; cursor: default; }",
-  // Its own keyframes name: the page's `annrecpulse` lives in a stylesheet a
-  // shadow tree cannot see, so the animation has to travel with the rule.
-  "@keyframes annmicpulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }",
-  "@media (prefers-reduced-motion: reduce) {"
-  + " #annpop #annmic.on { animation: none; } }",
 ].join("\n");
 // The marker attribute is on the HOST element, so one `closest()` tells the
 // frame's own handlers that a click or a hover landed on our layer rather than
@@ -5392,12 +5385,6 @@ function annSetTool(t) {
 annToolElBtn.addEventListener("click", () => annSetTool("element"));
 annToolPtBtn.addEventListener("click", () => annSetTool("point"));
 let annDraft = null;    // anchor of a NEW note being composed
-// The OTHER reading of the same click, when there was one: a click on an
-// element also names an exact spot, so the composer's anchor chip can flip the
-// draft between the element anchor and a point anchor without a second click.
-// Null when the click had only one reading (background — no element to offer)
-// and while editing a saved note (its anchor is settled).
-let annDraftAlt = null;
 let annEditing = null;  // id of an existing pending note being edited
 // Pins follow the mode: annotating shows the comment pins over the app, leaving
 // the mode hides them. Chips above the composer are the send payload and stay
@@ -5738,41 +5725,16 @@ function shotThumbBtn(cls, shot, alt) {
 }
 
 const annDelBtn = document.getElementById("anndel");
-const annMicBtn = document.getElementById("annmic");
-const annAnchorBtn = document.getElementById("annanchor");
 
-// ── the anchor chip: what this note is pinned to, said before it is saved ──
-// One writer for the chip's words, called by every path that changes what the
-// composer is about (open, flip, edit). The label is the same digest the wire
-// carries — a point is "⌖ exact spot", an element is its tag plus its leading
-// text — so what the chip says is what Claude will be told.
-function annAnchorLabel(a) {
-  if (!a) return "";
-  if (a.kind === "point") return "⌖ exact spot";
-  let s = "<" + (a.tag || "element") + ">";
-  if (a.text) s += " " + (a.text.length > 40 ? a.text.slice(0, 40) + "…" : a.text);
-  return s;
-}
-function annPaintAnchor(anchor, flippable) {
-  annAnchorBtn.textContent = annAnchorLabel(anchor);
-  annAnchorBtn.disabled = !flippable;
-  annAnchorBtn.title = flippable
-    ? "Pinned to " + (anchor && anchor.kind === "point"
-        ? "this exact spot — click to pin to the element instead"
-        : "this element — click to pin to the exact spot instead")
-    : "What this note is pinned to";
-  // Point notes describe a spot, not a box — the placeholder follows the chip.
+// The composer's one line of context: the placeholder names the KIND of thing
+// the note is pinned to. The anchor chip that used to spell the target out —
+// and flip a click between its two readings — left the card (Akshil,
+// 2026-08-19): the strip's Element/Point picker owns that choice up front
+// now, and Alt is still the one-click override, so the card is just the words.
+function annPaintPlaceholder(anchor) {
   annTa.placeholder = anchor && anchor.kind === "point"
     ? "What about this spot?" : "What about this element?";
 }
-annAnchorBtn.addEventListener("click", () => {
-  if (!annDraft || !annDraftAlt) return;
-  const t = annDraft;
-  annDraft = annDraftAlt;
-  annDraftAlt = t;
-  annPaintAnchor(annDraft, true);
-  annTa.focus();
-});
 
 // ── the composer's two seats ──────────────────────────────────────────────
 // Is #annpop currently living in someone else's document? OWNERSHIP is the
@@ -5885,12 +5847,11 @@ function annPlacePop(x, y) {
   // textarea they are about to type in is now a node of that pane's document.
   annTa.focus();
 }
-function annOpenComposer(x, y, anchor, altAnchor) {
+function annOpenComposer(x, y, anchor) {
   annDraft = anchor;
-  annDraftAlt = altAnchor || null;
   annEditing = null;
   annDelBtn.hidden = true;
-  annPaintAnchor(anchor, !!altAnchor);
+  annPaintPlaceholder(anchor);
   annTa.value = "";
   annPlacePop(x, y);
 }
@@ -5904,10 +5865,9 @@ function annOpenEditor(c, x, y) {
     return;
   }
   annDraft = null;
-  annDraftAlt = null;
   annEditing = c.id;
   annDelBtn.hidden = false;
-  annPaintAnchor(c, false);
+  annPaintPlaceholder(c);
   annTa.value = c.content;
   annPlacePop(x, y);
   // Cursor at the end, nothing selected — a stray keypress must append, not
@@ -5917,11 +5877,7 @@ function annOpenEditor(c, x, y) {
 function annCloseComposer() {
   annPop.style.display = "none";
   annDraft = null;
-  annDraftAlt = null;
   annEditing = null;
-  // A mic still running belongs to the note that just went away — its words
-  // have nowhere to land, so the recording is discarded, not transcribed.
-  annMicCancel();
   // Home before the next open, always — including the closes that are not the
   // reader's (annSetMode's disarm, a chip deleted out from under the editor,
   // annSyncTarget noticing the pane it was lent to is gone). An idle composer
@@ -5961,7 +5917,13 @@ function annPrefillComposer() {
 document.addEventListener("mousedown", (e) => {
   if (annPop.style.display !== "block") return;
   const t = e.target;
-  if (annPop.contains(t) || (t.closest && (t.closest(".annpin") || t.closest(".annchip")))) return;
+  // The strip's own controls are exempt alongside the pins and chips: a
+  // mousedown on ✓ Done used to close the composer HERE, before the click
+  // could reach annDone, silently dropping the words the user was about to
+  // send (Bugbot, PR #664). The Element/Point picker rides along — choosing
+  // the next click's tool is not walking away from this note.
+  if (annPop.contains(t) || (t.closest && (t.closest(".annpin") || t.closest(".annchip")
+      || t.closest("#anncta") || t.closest("#anntool")))) return;
   annCloseComposer();
 });
 annDelBtn.addEventListener("click", () => {
@@ -5969,9 +5931,8 @@ annDelBtn.addEventListener("click", () => {
   annSave();
   annCloseComposer();
 });
-// Save whatever the composer holds — the one commit path, shared by the Enter
-// key and the mic's transcription so the two ways of producing the words can
-// never save differently. Async because a POINT note's crosshair crop is taken
+// Save whatever the composer holds — the one commit path, the Enter key's.
+// Async because a POINT note's crosshair crop is taken
 // here, awaited: auto-send fires the moment this returns, and a fire-and-forget
 // capture would race the send and put `shot: null` on the wire for a picture
 // that was a beat away from existing. (annRecPointShot never throws and is
@@ -6023,122 +5984,6 @@ annTa.addEventListener("keydown", (e) => {
   }
 });
 
-// ── the composer's mic: ONE note spoken instead of typed ───────────────────
-// The walkthrough's little sibling. Same recorder, same temp dir, same
-// transcriber — but scoped to the note the composer is open for: tap, talk,
-// tap again, and the words land in the textarea and commit through the same
-// annCommit the Enter key uses, auto-send included. State is identity-checked
-// on the way back: a composer that closed, or moved to another note, while the
-// audio was being transcribed discards the words rather than writing them into
-// whatever the user is looking at now.
-let annMicRecorder = null;
-let annMicChunks = [];
-let annMicTimerId = null;
-let annMicStartedAt = 0;
-
-function annMicReset() {
-  clearInterval(annMicTimerId);
-  annMicTimerId = null;
-  annMicBtn.disabled = false;
-  annMicBtn.classList.remove("on");
-  annMicBtn.setAttribute("aria-pressed", "false");
-  annMicBtn.textContent = "🎙";
-  annMicBtn.title = "Speak this note — stop to transcribe and send";
-}
-function annMicPaint() {
-  if (!annMicRecorder) return;
-  annMicBtn.textContent = "⏹ " + annRecClock((performance.now() - annMicStartedAt) / 1000);
-}
-// Discard, never transcribe: every caller of this is a path where the note the
-// words were meant for is gone (composer closed, editor moved on) or the user
-// started typing instead — and typed words win over spoken ones mid-flight.
-function annMicCancel() {
-  if (!annMicRecorder) return;
-  const r = annMicRecorder;
-  annMicRecorder = null;
-  annMicChunks = [];
-  try { r.stop(); } catch (err) { /* already stopped with the document */ }
-  annMicReset();
-}
-async function annMicBegin() {
-  if (annMicRecorder) return;
-  annWarmTranscriber();
-  // Disabled for the width of the permission prompt, same as annRecBegin —
-  // a second tap before the browser answers would open two mic streams.
-  annMicBtn.disabled = true;
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (err) {
-    annMicBtn.disabled = false;
-    alert("Microphone unavailable — " + (err.message || err.name)
-          + "\n\nAllow microphone access for this app and try again.");
-    return;
-  }
-  annMicBtn.disabled = false;
-  // The prompt can outlive the composer: permission granted for a note that
-  // was dismissed while the browser was asking records nothing.
-  if (annPop.style.display !== "block") {
-    stream.getTracks().forEach((t) => t.stop());
-    return;
-  }
-  annMicChunks = [];
-  annMicRecorder = new MediaRecorder(stream);
-  annMicRecorder.ondataavailable = (e) => { if (e.data.size) annMicChunks.push(e.data); };
-  annMicRecorder.onstop = () => stream.getTracks().forEach((t) => t.stop());
-  annMicStartedAt = performance.now();
-  annMicRecorder.start();
-  annMicBtn.classList.add("on");
-  annMicBtn.setAttribute("aria-pressed", "true");
-  annMicBtn.title = "Stop — the words are transcribed into this note and sent";
-  annMicPaint();
-  annMicTimerId = setInterval(annMicPaint, 250);
-}
-async function annMicStop() {
-  const recorder = annMicRecorder;
-  if (!recorder) return;
-  annMicRecorder = null;   // cancel paths no-op from here on
-  const stopped = new Promise((res) => recorder.addEventListener("stop", res, { once: true }));
-  recorder.stop();
-  await stopped;
-  clearInterval(annMicTimerId);
-  annMicTimerId = null;
-  const blob = new Blob(annMicChunks, { type: recorder.mimeType || "" });
-  annMicChunks = [];
-  if (!blob.size) { annMicReset(); return; }
-  // WHICH note the words belong to, captured before the slow part. The draft
-  // may legitimately be swapped by the anchor chip while transcription runs —
-  // same click, other reading — so both readings count as "still this note".
-  const draft = annDraft, alt = annDraftAlt, editing = annEditing;
-  annMicBtn.disabled = true;
-  annMicBtn.textContent = "Transcribing…";
-  let text = "";
-  try {
-    // Same temp dir and pruning the walkthrough's audio uses (see annRecEnd) —
-    // and like it, the file never reaches Claude: only the words do.
-    const dir = await shotDirPath();
-    const path = shotJoin(dir, shotStamp() + "-note" + annRecExt(blob.type));
-    await fused.uploadFile(path, blob);
-    const rec = await fused.ai.transcribe({ path });
-    text = (rec.segments || []).map((s) => s.text).join(" ").replace(/\s+/g, " ").trim();
-  } catch (err) {
-    console.warn("spoken note transcription failed:", err.message);
-  }
-  annMicReset();
-  const sameNote = annPop.style.display === "block"
-    && (editing ? annEditing === editing
-                : !!draft && (annDraft === draft || annDraft === alt));
-  if (!text || !sameNote) return;
-  // Append, never clobber: a half-typed thought plus its spoken finish is one
-  // note. Then commit — the same save-and-autosend the Enter key runs.
-  const typed = annTa.value.trim();
-  annTa.value = typed ? typed + " " + text : text;
-  annCommit();
-}
-annMicBtn.addEventListener("click", () => (annMicRecorder ? annMicStop() : annMicBegin()));
-// Typing while the mic is live cancels it — the user changed their mind about
-// which mouth to use, and the typed words are the ones they mean.
-annTa.addEventListener("input", () => annMicCancel());
 
 // The idle tooltip, as a function because it has TWO writers — applyPaneNoun sets
 // it when the target's kind resolves, and annSetMode restores it on every disarm.
@@ -6146,10 +5991,16 @@ annTa.addEventListener("input", () => annMicCancel());
 // written was thrown away by the first toggle-off. One definition, two callers.
 const annIdleTitle = () =>
   "Comment on the " + paneNoun + ", then send the notes to Claude";
+// The armed tooltip, a const for the same reason: annSetMode writes it on
+// every arm and annRecEnd restores it when the stop face leaves the Comment
+// seat — two writers, one string.
+const ANN_ARMED_TITLE = "Comment mode on — clicks pin what the Element/Point"
+  + " tool says (Alt overrides for one click, empty space is always a spot)"
+  + " · Esc or click this button to stop";
 
 // The picker's two doors, sharing the exit animation: showing is the display
 // flip itself (leaving display:none restarts the CSS entry animation), hiding
-// holds the flip up for the .out glide back into the pill. The timer is kept
+// holds the flip up for the .out glide back into the buttons. The timer is kept
 // so a show that lands mid-exit (stop, then instantly record again) cancels
 // the pending hide instead of being hidden by it.
 let annToolHideTimer = null;
@@ -6170,6 +6021,79 @@ function annToolHide() {
     annToolEl.classList.remove("out");
   }, 150);
 }
+
+// ── the strip's words fit or fold: real collision detection ────────────────
+// The buttons' words hide only when the row ACTUALLY overflows (Akshil,
+// 2026-08-19: a fixed breakpoint dropped them while there was still room).
+// Measure with the words ON — take `.tight` off, ask whether content exceeds
+// the box — then stamp it back if they truly do not fit. Both steps run
+// synchronously inside observer callbacks, which fire before paint, so the
+// probe never flashes on screen. The stylesheet does the rest through the
+// --annlbl token every .lbl span reads.
+//
+// Two observers, one verdict function. ResizeObserver: the row's box changes
+// (the divider drags, the window resizes, the narrow layout flips). Mutation
+// observers on #anntool and #anncta: the CONTENT changes width with the box
+// standing still — the picker slides in ([hidden]), a seat swaps faces (.on),
+// the clock ticks wider ("0:59 · 12" — characterData). Deliberately NOT on
+// #anntools itself: annFitStrip writes #anntools's own class list, and
+// observing the node it writes would make every verdict schedule the next.
+const annToolsEl = document.getElementById("anntools");
+// The picker's width while it is OFF screen — RESERVED in the verdict below,
+// so arming Comment (which slides the picker in) can never flip the words to
+// icons under the click (Akshil, 2026-08-19: "it should remain consistent").
+// The row collapses a little early instead: words stay only where they would
+// still fit WITH the picker. Probed by giving the hidden node one out-of-flow
+// layout pass via inline style — not [hidden], which the observers watch, so
+// a probe never schedules a re-probe — inside a pre-paint callback, so
+// nothing flashes. No reservation for a picker that can never arrive: a
+// removed node (enterNoPane), a cross-origin target (annXO — annToolShow
+// refuses it), or no target at all (the buttons themselves are hidden).
+function annToolReserve() {
+  if (!annToolEl.hidden) return 0;   // already in the row, already measured
+  if (annXO || !annToolEl.isConnected || annBtn.hidden) return 0;
+  annToolEl.style.cssText = "display: flex; visibility: hidden; position: absolute;";
+  const w = annToolEl.offsetWidth;
+  annToolEl.style.cssText = "";
+  return w;
+}
+// NOT scrollWidth: a flex row's scrollWidth is floored at clientWidth, so
+// slack is invisible to it and adding the reserve would read as overflow on
+// a half-empty strip. The need is summed by hand — visible children, the
+// row's gaps between them, its padding, the reserve — and compared to the
+// box.
+function annFitStrip() {
+  annToolsEl.classList.remove("tight");
+  const cs = getComputedStyle(annToolsEl);
+  let need = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  let kids = 0;
+  for (const c of annToolsEl.children) {
+    if (!c.offsetWidth) continue;   // a hidden child holds no seat
+    need += c.offsetWidth;
+    kids += 1;
+  }
+  const reserve = annToolReserve();
+  if (reserve) { need += reserve; kids += 1; }
+  if (kids > 1) need += (parseFloat(cs.columnGap) || 0) * (kids - 1);
+  if (need > annToolsEl.clientWidth) annToolsEl.classList.add("tight");
+}
+new ResizeObserver(annFitStrip).observe(annToolsEl);
+{
+  const mo = new MutationObserver(annFitStrip);
+  for (const el of [annToolEl, annCta]) {
+    mo.observe(el, { subtree: true, childList: true, characterData: true,
+                     attributes: true, attributeFilter: ["class", "hidden"] });
+  }
+  // #back is content of this row too, and it comes and goes by CLASS on the
+  // chat column (`#chat.home`) and on <body> (the narrow views, nopane) —
+  // width the box observer cannot see and the clusters above do not contain
+  // (Bugbot, PR #664). Attributes only, no subtree: the columns' insides
+  // churn constantly and none of it changes the strip.
+  for (const el of [document.body, chatEl]) {
+    mo.observe(el, { attributes: true, attributeFilter: ["class"] });
+  }
+}
+annFitStrip();
 
 let annArmEpoch = 0;
 // The one way in and out of annotate mode. Extracted because Escape leaves the
@@ -6225,24 +6149,35 @@ function annSetMode(on) {
   }
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
-  // The tool picker follows the RECORDING, not the mode (Akshil, 2026-08-19):
-  // a typed comment pins the default tool and never asks, so plain comment
-  // mode shows no picker — annRecBegin reveals it, annRecEnd puts it away.
-  // This call only ever HIDES (mode off implies recording over, annSetMode's
-  // disarm below ends a live one); it must not show the picker on arm. A
-  // cross-origin target (annXO, D355) has no choice to offer either — no
-  // element can be resolved over there, every click is a spot — so it hides
-  // here too, and annToolShow refuses to raise the picker over one.
-  if (!(annOn && annRecOn) || annXO) annToolHide();
+  // The tool picker follows the MODE (Akshil, 2026-08-19): typed comments and
+  // recorded walkthroughs both pin what it says, so arming slides it in and
+  // disarming puts it away — whichever door armed the mode. A cross-origin
+  // target (annXO, D355) has no choice to offer — no element can ever be
+  // resolved over there, every click is a spot — so it hides there instead,
+  // and annToolShow's own refusal backs this up.
+  if (!annOn || annXO) annToolHide();
+  else annToolShow();
+  // The mic seat is the mode's other door, and it always names the way OUT of
+  // the state the strip is in: Done while a typed comment mode is armed (send
+  // the notes, leave the mode), Record otherwise. A live recording writes its
+  // own labels (annRecBegin/annRecEnd), so it is left alone here.
+  if (!annRecOn) {
+    annRecBtn.setAttribute("aria-label", annOn
+      ? "Done — send the notes and finish commenting"
+      : "Record a spoken walkthrough");
+    annRecBtn.title = annOn
+      ? "Send the notes to Claude and finish commenting"
+      : "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+  }
   // Arming over a cross-origin target is the natural moment to raise the ONE
   // share prompt the tab-capture screenshots need (annXOStreamGet keeps the
   // stream after it): the click that armed the mode is the user activation
-  // getDisplayMedia requires, where a later capture — a mic commit, a
-  // walkthrough click's fire-and-forget crop — may have none. Swallowed
+  // getDisplayMedia requires, where a later capture (a walkthrough click's
+  // fire-and-forget crop) may have none. Swallowed
   // whole: a declined prompt just means notes without pictures, and each
   // capture path already degrades to exactly that.
   if (annOn && annXO) annXOStreamGet().catch(() => { /* declined: words only */ });
-  // The label is the static markup "Comment" in BOTH states — the track's
+  // The word is the static markup "Comment" in BOTH states — the button's
   // accent fill is what says armed. It used to flip to "Commenting", but a
   // label that changes width makes the whole right-anchored row shuffle on
   // every toggle, and one mode wearing two names reads as two features.
@@ -6254,8 +6189,7 @@ function annSetMode(on) {
   // and the highlight box that tracks the pointer over the app (the strongest
   // of the two: it only appears in comment mode and it follows what the user
   // is aiming at).
-  annBtn.title = annOn ? "Comment mode on — clicks pin what the Element/Point tool says (Alt overrides for one click, empty space is always a spot) · Esc or click this button to stop"
-                       : annIdleTitle();
+  annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
   // The ring can be gone rather than merely hidden: hosted, it lives in the
   // target's document and that document may have been replaced (or unmarked)
   // since it was drawn. Nothing to hide is the same outcome as hidden.
@@ -6269,7 +6203,39 @@ function annSetMode(on) {
   }
 }
 
-annBtn.addEventListener("click", () => annSetMode(!annOn));
+// While a recording runs the Comment seat IS the stop control (■ plus the
+// clock) — same exit annRecEnd gives the mic — so its click stops the
+// walkthrough instead of toggling a mode the stop is about to close anyway.
+annBtn.addEventListener("click", () => (annRecOn ? annRecEnd() : annSetMode(!annOn)));
+// Done: the typed-comment mode's exit that also delivers. A composer still
+// open with words in it is committed FIRST — Done means "send what I said",
+// and the mousedown exemption above is what kept that draft alive this far —
+// through the same annCommit the Enter key uses (save, crop, auto-send).
+// Then any notes the auto-send guards left pending (a turn in flight, a
+// typed draft the prefill refused to touch) flush with the same
+// prefill-and-submit, and the mode goes away.
+//
+// One at a time (Bugbot, PR #664): annCommit's await spans a point note's
+// save-time crop, and annCloseComposer has already run by then — a second
+// Done click landing in that window would see no open composer, read the
+// just-saved note as merely pending, and auto-send it before its `shot` is
+// filled. The guard makes the second click a no-op; the first call's own
+// flush and disarm are seconds away at worst.
+let annDoneBusy = false;
+async function annDone() {
+  if (annDoneBusy) return;
+  annDoneBusy = true;
+  try {
+    if (annPop.style.display === "block" && annTa.value.trim()) {
+      await annCommit();
+    }
+    const pending = annotations.some((a) => a.content && !a.sent);
+    if (pending && !sending && annPrefillComposer()) annAutoSubmit();
+    annSetMode(false);
+  } finally {
+    annDoneBusy = false;
+  }
+}
 // Annotate mode is OFF by default: reading the pane is the common case and an
 // armed comment layer swallows the clicks that reading needs, so only an
 // explicit `annmode=1` (the user slid it on) starts it armed.
@@ -6361,13 +6327,23 @@ async function annRecBegin() {
   annRecStartedAt = performance.now();
   annRecorder.start();
   annRecOn = true;
-  // The picker appears WITH the recording (and only with it — see annSetMode):
-  // Element/Point is a property of the clicks the walkthrough is about to
-  // capture; a typed comment never sees it.
+  // The picker usually arrived with annSetMode(true) above; this direct call
+  // covers the one path where the mode was ALREADY armed when the mic was
+  // pressed — a pending exit animation must be cancelled, which annToolShow
+  // also does.
   annToolShow();
   annRecBtn.classList.add("on");
   annRecBtn.setAttribute("aria-pressed", "true");
-  annRecBtn.title = "Stop the recording · Esc also stops it";
+  // Both buttons are exits now: the Comment seat has become the ■/clock stop
+  // control (the stylesheet swaps its face off `.on`), and the pulsing mic
+  // stops too — either click ends the walkthrough. The aria-label too, not
+  // just the tooltip: annSetMode(true) a moment ago named this seat Done
+  // (annRecOn was still false there), and a live recording announced as
+  // "Done" reads as finished (Bugbot, PR #664).
+  annRecBtn.setAttribute("aria-label", "Stop the recording");
+  annRecBtn.title = "Recording — click to stop · Esc also stops it";
+  annBtn.setAttribute("aria-label", "Stop the recording");
+  annBtn.title = "Stop the recording · Esc also stops it";
   annRecPaint();
   annRecTimerId = setInterval(annRecPaint, 250);
 }
@@ -6559,15 +6535,20 @@ async function annRecEnd() {
   const blob = new Blob(annRecChunks, { type: recorder.mimeType || "" });
   annRecorder = null;
   annRecOn = false;
-  // Recording over, picker away — it belongs to recorded clicks only. The
-  // tool goes home with it: the next typed comment has no picker on screen,
-  // so it must not inherit this walkthrough's Point (Bugbot, PR #644).
-  annToolHide();
-  annSetTool("element");
+  // The picker stays: it follows the MODE now (see annSetMode), and the mode
+  // is still armed until the disarm below. The selected tool stays too — it
+  // is on screen in both flavours of the mode, so carrying a walkthrough's
+  // Point into the next typed comment is a visible fact, not a trap.
   annRecBtn.classList.remove("on");
   annRecBtn.setAttribute("aria-pressed", "false");
   annRecLbl.textContent = "";
+  annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");
   annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+  // The Comment seat stops being the ■/clock stop control the moment `.on`
+  // leaves the mic (the stylesheet swap keys off it); its labels go back to
+  // naming the mode, which is still armed until the disarm below.
+  annBtn.setAttribute("aria-label", "Comment on the " + paneNoun);
+  annBtn.title = ANN_ARMED_TITLE;
   const ids = annRecIds;
   annRecIds = [];
   // Ending a walkthrough puts the whole mode away (Akshil, 2026-08-19):
@@ -6584,6 +6565,10 @@ async function annRecEnd() {
     return;
   }
   annRecBtn.disabled = true;
+  // `.busy` is the one state the buttons' own classes cannot say (recording
+  // over, mode still armed, words on their way): it yields the word "Comment"
+  // to the "Transcribing…" status in #annreclbl.
+  annCta.classList.add("busy");
   annRecLbl.textContent = "Transcribing…";
   try {
     // The same 0700 temp dir the pane crops use (shotDirPath/shotJoin/shotStamp,
@@ -6612,6 +6597,7 @@ async function annRecEnd() {
     console.warn("spoken annotation transcription failed:", err.message);
   } finally {
     annRecBtn.disabled = false;
+    annCta.classList.remove("busy");
     annRecLbl.textContent = "";   // "Transcribing…" only ever describes now
   }
   // The other half of the stop-disarms rule above: transcript fetched (or
@@ -6621,7 +6607,11 @@ async function annRecEnd() {
   if (annOn && annArmEpoch === armed) annSetMode(false);
 }
 
-annRecBtn.addEventListener("click", () => (annRecOn ? annRecEnd() : annRecBegin()));
+// The mic seat's three answers: stop a live recording, act as ✓ Done while a
+// typed comment mode is armed (its face already says so — see the stylesheet
+// swap), or start a walkthrough from rest.
+annRecBtn.addEventListener("click",
+  () => (annRecOn ? annRecEnd() : annOn ? annDone() : annRecBegin()));
 
 // ── hosted only: keeping up with a target this document cannot hear ────────
 // The split layout is told about its pane by the pane itself — one iframe, one
@@ -6861,12 +6851,12 @@ function annWireTarget() {
     const win = doc.defaultView;
     // The click's OTHER meaning: an exact spot, in page coordinates (stable
     // across scrolling — annPointXY converts back). Built for every click,
-    // because every click names one: it is the note when there is no element
-    // to anchor to (background, a shadow tree annPathOf cannot walk), when
-    // the reader forces it (Alt — "this spot, not this box"), and the anchor
-    // chip's flip target when the element reading wins. `shot: null` from the
-    // start, filled by annCommit's save-time crop — same convention the
-    // recording's point notes follow (annRecMarkPoint).
+    // because every click can name one: it is the note when there is no
+    // element to anchor to (background, a shadow tree annPathOf cannot walk)
+    // and when the reader forces it (Alt, or the Point tool — "this spot, not
+    // this box"). `shot: null` from the start, filled by annCommit's
+    // save-time crop — same convention the recording's point notes follow
+    // (annRecMarkPoint).
     const pointAnchor = { kind: "point",
       x: Math.round(e.clientX + (win ? win.scrollX : 0)),
       y: Math.round(e.clientY + (win ? win.scrollY : 0)), shot: null };
@@ -6876,14 +6866,14 @@ function annWireTarget() {
     if (!el || el === doc.body || el === doc.documentElement) {
       if (annRecOn) { annRecMarkPoint(e.clientX, e.clientY, win); return; }
       if (annHl) annHl.style.display = "none";
-      annOpenComposer(e.clientX, e.clientY, pointAnchor, null);
+      annOpenComposer(e.clientX, e.clientY, pointAnchor);
       return;
     }
     const anchor = el.id ? { anchorId: el.id } : { anchorPath: annPathOf(el, doc) };
     if (!anchor.anchorId && !anchor.anchorPath) {
       if (annRecOn) { annRecMarkPoint(e.clientX, e.clientY, win); return; }
       if (annHl) annHl.style.display = "none";
-      annOpenComposer(e.clientX, e.clientY, pointAnchor, null);
+      annOpenComposer(e.clientX, e.clientY, pointAnchor);
       return;
     }
     if (annIntrinsic(el)) {
@@ -6911,19 +6901,18 @@ function annWireTarget() {
       annRecMark(anchor);
       return;
     }
-    // A point click over an element: the element reading exists (it is the
-    // chip's flip target), but the note leads with the spot — no ring, the
+    // A point click over an element: the note is the spot — no ring, the
     // crosshair cursor the reader was just shown (mousemove) said as much.
     if (wantPoint) {
       if (annHl) annHl.style.display = "none";
-      annOpenComposer(e.clientX, e.clientY, pointAnchor, anchor);
+      annOpenComposer(e.clientX, e.clientY, pointAnchor);
       return;
     }
     // Re-anchor the ring to what was CLICKED before freezing on it: the hover
     // follow stops while a composer is open, so on a click that moves the
     // popover the last-painted ring belongs to the previous element.
     annPlaceHl(el);
-    annOpenComposer(e.clientX, e.clientY, anchor, pointAnchor);
+    annOpenComposer(e.clientX, e.clientY, anchor);
   }, true);
   // Scroll storms coalesce to one re-render per frame. A per-DOCUMENT listener,
   // so it belongs in this run-once block; the mutation half does NOT and lives

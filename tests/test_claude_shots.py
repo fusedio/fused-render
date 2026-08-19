@@ -1805,25 +1805,26 @@ def test_the_rollback_releases_the_thumbnails_it_just_removed(html):
 
 # ------------------ the pane-shot toggle wears the composer's own clothes
 
-def test_the_annotate_control_is_a_split_pill(html):
-    """The annotate control is ONE split pill (Akshil, 2026-08-19): mic seat on
-    the left, the word "Comment" on the right, sharing #anncta's single border —
-    the old track-and-knob switch is gone. The word seat is plain text (no icon)
-    and static in BOTH states — a label that changed width made the
-    right-anchored row shuffle on every toggle — and armed is the accent
-    filling that seat, the same voice as the picker's selected seat. The old
-    second switch (#annvis, pin visibility) stays gone: pins follow the mode."""
-    pill = _between(html, "#anncta {", "}")
-    assert "height: 26px" in pill, pill
-    assert "margin-left: auto" in pill, "the pill anchors the row's right: " + pill
-    assert "border: 1px solid var(--border)" in pill, pill
-    # seats are quiet by construction: borderless, transparent, muted ink
+def test_the_annotate_control_is_two_buttons(html):
+    """TWO separate buttons (Akshil, 2026-08-19; the split pill is gone):
+    Comment on the left, Record on the right, each its own bordered control —
+    an icon plus a word, the word a .lbl span the strip's container query can
+    drop. The wrapper carries the row's auto margin and a gap, no border of
+    its own. Armed is the accent filling the Comment button, the same voice as
+    the picker's selected seat. The old second switch (#annvis, pin
+    visibility) stays gone: pins follow the mode."""
+    wrap = _between(html, "#anncta {", "}")
+    assert "margin-left: auto" in wrap, "the wrapper anchors the row's right: " + wrap
+    assert "gap: 8px" in wrap, wrap
+    assert "border" not in wrap, "two buttons, not one pill: " + wrap
+    # each button is its own bordered 26px control
     seat = _between(html, "#anncta button {", "}")
-    assert "border: 0" in seat, seat
-    assert "background: transparent" in seat, seat
+    assert "border: 1px solid var(--border)" in seat, seat
+    assert "border-radius: 8px" in seat, seat
+    assert "height: 26px" in seat, seat
     assert "white-space: nowrap" in seat, seat
-    assert "var(--accent)" not in seat, "idle seats carry no accent: " + seat
-    # armed = the word seat wears the accent, on-accent ink for contrast
+    assert "var(--accent)" not in seat, "idle buttons carry no accent: " + seat
+    # armed = the Comment button wears the accent, on-accent ink for contrast
     on = _between(html, "#annbtn.on {", "}")
     assert "background: var(--accent)" in on, on
     assert "color: var(--on-accent)" in on, on
@@ -1831,17 +1832,18 @@ def test_the_annotate_control_is_a_split_pill(html):
     assert "#annbtn .track {" not in html
     assert "#annbtn .knob {" not in html
     # named, announced, and labelled in the markup. The strip is sliced to the
-    # kebab, not the first </div>: the tool picker sits BEFORE the pill (it
-    # unfolds to its left), and its own </div> would end the slice early.
+    # kebab, not the first </div>: the tool picker sits BEFORE the buttons (it
+    # unfolds to their left), and its own </div> would end the slice early.
     view = _between(html, '<div id="anntools">', '<div id="kebab">')
     assert 'id="annbtn"' in view and 'aria-label="' in view, view
-    # mic seat left, word seat right — reading order inside the pill
-    pill_markup = _between(view, '<div id="anncta">', "</div>")
-    assert pill_markup.index('id="annrec"') < pill_markup.index('id="annbtn"'), pill_markup
-    # The WORD seat is text-only; the mic seat carries the SVG glyphs.
+    # Comment left, Record right — reading order inside the wrapper
+    cta_markup = _between(view, '<div id="anncta">', "</div>")
+    assert cta_markup.index('id="annbtn"') < cta_markup.index('id="annrec"'), cta_markup
+    # both buttons carry an icon AND a word
     annbtn_markup = _between(view, '<button id="annbtn"', "</button>")
-    assert "<svg" not in annbtn_markup, "plain word seat, no glyph: " + annbtn_markup
-    assert ">Comment</button>" in view, view
+    assert "<svg" in annbtn_markup and 'class="lbl cmt-word"' in annbtn_markup, annbtn_markup
+    annrec_markup = _between(view, '<button id="annrec"', "</button>")
+    assert "<svg" in annrec_markup and 'class="lbl rec-word"' in annrec_markup, annrec_markup
     assert 'annBtn.querySelector(".lbl").textContent' not in html
     # the second switch is gone entirely
     assert "annvis" not in html and "annVisBtn" not in html
@@ -1889,8 +1891,8 @@ def test_the_annotation_switch_is_a_layout_row_not_an_overlay(html):
     row = _between(html, "#leftbar {", "}")
     assert "display: flex" in row, row
     assert "flex-shrink: 0" in row, row
-    # the switch itself is a plain flow child — no absolute anchoring left
-    btn = _between(html, "#annbtn {", "}")
+    # the buttons themselves are plain flow children — no absolute anchoring left
+    btn = _between(html, "#anncta button {", "}")
     assert "position" not in btn, btn
     assert "top:" not in btn and "right:" not in btn, btn
     # the row is a child of the chat pane, above the topbar, and hidden in
@@ -1945,12 +1947,11 @@ def test_both_ways_out_of_annotate_mode_are_named_while_armed(html):
     asserted here; it names no kind and belongs to this function alone."""
     mode = _between(html, "function annSetMode(on) {", "\nannBtn.addEventListener")
     title = _between(mode, "annBtn.title =", ";")
-    assert "Esc" in title and "click this button" in title, title
-    # the armed tooltip is the one that names them
-    armed = title.split(":")[0]
-    assert "Esc" in armed, title
-    # ...and the idle half is the shared builder, not a second literal.
-    assert "annIdleTitle()" in title
+    # the armed tooltip is the shared const (annRecEnd restores it too), and
+    # the idle half is the shared builder — one definition each, two writers
+    assert "ANN_ARMED_TITLE" in title and "annIdleTitle()" in title, title
+    armed = _between(html, "const ANN_ARMED_TITLE =", ";")
+    assert "Esc" in armed and "click this button" in armed, armed
     assert html.count('+ ", then send the notes to Claude"') == 1, \
         "the idle tooltip has one definition, annIdleTitle"
 
