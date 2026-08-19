@@ -1370,6 +1370,17 @@ function TaskNode({
   // row would leave the reader working out which press each answered.
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
+  // THE FILING PRESS'S RECEIPT (Akshil, 2026-08-19). Clicking Archive keeps the
+  // pointer on the row, and the hover swap above kept right on swapping: the slot
+  // instantly redrew the OPPOSITE verb (Unarchive), so the press's only visible
+  // outcome was an icon flip — no sign the action landed at all. CSS cannot say
+  // "hovered, but the hover already spent its press", so the row says it: this
+  // flag goes up on the press and comes down when the pointer LEAVES the row
+  // (`onMouseLeave` below), and while it is up `.is-refiled` (tasks.css) hands
+  // the mark slot back to the STATUS RING — now drawing the new state, which is
+  // the confirmation — instead of the reveal. Leave and return, and the hover
+  // offers the (now opposite) action again, exactly like any other row.
+  const [refiled, setRefiled] = useState(false);
 
   const runNow = async (intent: TaskRunIntent) => {
     setActing(true);
@@ -1403,6 +1414,12 @@ function TaskNode({
   const refile = async (intent: FilingIntent) => {
     setActing(true);
     setNote("");
+    // On the PRESS, not on the answer: the ring under the suppressed button is
+    // this press's feedback either way — the new state when the call lands, the
+    // unchanged one (plus the note below) when the server refuses. Both
+    // directions, deliberately: Unarchive under a resting pointer flipped to
+    // Archive just as instantly.
+    setRefiled(true);
     try {
       if (intent.kind === "archive") {
         await archiveTask(task.key);
@@ -1646,7 +1663,8 @@ function TaskNode({
     <div className="tasks-node">
       <div
         className={"tasks-row" + (open ? " is-open" : "")
-          + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")}
+          + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")
+          + (refiled ? " is-refiled" : "")}
         // The row is a CONTAINER now, not a control: when it has somewhere to go
         // the stretched `<a>` below is the button, the tab stop and the
         // accessible name, and hanging a second role and a second tab stop on
@@ -1669,6 +1687,11 @@ function TaskNode({
                 }
               }
         }
+        // The other half of the filing receipt (Akshil, 2026-08-19): leaving the
+        // row is what re-arms its hover reveal. Handled — not conditional — even
+        // while the flag is down, because a handler that appears and disappears
+        // with the state it clears is a re-render race waiting to be read about.
+        onMouseLeave={() => setRefiled(false)}
       >
         {/* The disclosure gutter is drawn WHETHER OR NOT there is a chevron in it.
             `--tasks-caret-w` is the first term of `--tasks-rail-x`, which every
