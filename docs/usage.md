@@ -200,6 +200,13 @@ where a first model comes from.
     `/dev/kfd` your user cannot open. Transcription has no GPU build outside
     Apple Silicon: CTranslate2's AMD wheels are not installable the way this app
     installs things, so AMD transcribes on the CPU.
+  - **On an AMD card that also drives your screen, a long render can freeze the
+    desktop.** The render and the display share one queue on a single-GPU
+    machine, so a big generation can starve the compositor until the driver
+    resets it — the graphics card recovers on its own, but your session may not,
+    and on Linux that looks like the whole machine locking up. Short renders are
+    normally fine. If it bites, render smaller or with fewer steps, or keep a
+    second card for the display; nothing in the app can prevent it for you.
   - **A model may be running on your processor rather than a graphics card**, and
     the page says so: a loaded card carries **on CPU** beside its memory figure
     when it is, and Discover warns before the download. It works — expect a few

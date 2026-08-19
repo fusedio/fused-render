@@ -789,14 +789,44 @@ _RUNNERS: tuple[Runner, ...] = (
         note="Seconds per image on an NVIDIA GPU, for a much larger download.",
         _available=_cuda,
     ),
+    # THE SHARED RING, and why the ROCm image row warns about the desktop.
+    #
+    # On a single-GPU machine the render and the compositor submit to the SAME
+    # ring, so a sustained submission starves the screen until the driver gives
+    # up on it. Measured, not feared — an RX 9060 XT (gfx1200), kernel 7.1.4-zen:
+    #
+    #     amdgpu: ring gfx_0.0.0 timeout, signaled seq=6239674, emitted 6239675
+    #     amdgpu:  Process Hyprland pid 832655 thread Hyprland:cs0
+    #     amdgpu: Starting gfx_0.0.0 ring reset / Ring gfx_0.0.0 reset succeeded
+    #     amdgpu: [drm] device wedged, but no recovery needed
+    #
+    # Note WHICH process the kernel named: the compositor, not the renderer. The
+    # GPU recovered without a reboot and the session did not — the desktop went
+    # down and the ring came back.
+    #
+    # **Honest about what produced it:** a continuous matmul loop, not a render.
+    # A large 100-step render submits the same class of work, and a ~90s FLUX.2
+    # klein render on that card finished without a stall — which is why the note
+    # says a long render CAN stall the desktop rather than will.
+    #
+    # Nothing mitigates it here, deliberately. The fixes that exist are outside
+    # this app — CU masking, queue priority, rendering on a card that is not
+    # driving the display — none verified, and an unverified mitigation is a
+    # promise made on the driver's behalf. Naming the cost and letting the user
+    # choose is the bargain the download size already gets (D383). It is
+    # documented HERE and not in the manifest on purpose: `state_digest` hashes
+    # `pyproject.toml` whole, so a comment there would mark every already-built
+    # ROCm env stale and charge existing users a resync for a paragraph.
     Runner(
         code="diffusers-image-rocm",
         capability=IMAGE_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "diffusers_image_rocm"),
         label="Diffusers (ROCm)",
         short_label="Diffusers (ROCm)",
-        note="Seconds per image on a supported AMD GPU under Linux, for a much "
-             "larger download.",
+        # The desktop clause is not padding — see THE SHARED RING above for the
+        # kernel log that proved it. One line, so "much larger" pays for it.
+        note="Seconds per image on a supported AMD GPU under Linux — larger "
+             "download; a long render can stall the desktop.",
         _available=_rocm,
     ),
     # Speech to text, and the capability that finally USED the two-runner

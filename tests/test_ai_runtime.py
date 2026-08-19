@@ -1498,6 +1498,25 @@ def test_the_cpu_torch_rows_name_the_apple_silicon_GPU_they_run_on(monkeypatch):
         assert len(note) <= 110, (code, len(note), note)
 
 
+def test_the_rocm_image_row_warns_that_a_render_can_stall_the_desktop():
+    """The ROCm note names the desktop risk, and stays one line while doing it.
+
+    Observed rather than theorised (D383): a sustained submission on an RX 9060
+    XT (gfx1200) starved `gfx_0.0.0` until the driver reset the ring, and the
+    process the kernel named was the COMPOSITOR — the desktop died while the GPU
+    itself recovered without a reboot. Compute and display share that ring on a
+    single-GPU machine, so "seconds per image" was true and incomplete: the row
+    promised the speed and said nothing about what paying for it can cost.
+
+    Pinned because it is the kind of clause a later tidy-up deletes as hedging.
+    The length assertion is the same one-line budget the CPU rows are held to —
+    the warning had to be paid for out of the sentence, not appended to it.
+    """
+    runner = registry.by_code("diffusers-image-rocm")
+    assert "desktop" in runner.note, runner.note
+    assert len(runner.note) <= 110, (len(runner.note), runner.note)
+
+
 def test_every_test_this_module_cites_by_name_exists(monkeypatch):
     """The registry's comments name tests as their evidence, and a rename is silent.
 
