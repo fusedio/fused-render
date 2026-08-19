@@ -1,7 +1,7 @@
 /* -- Apps hub (/apps) -------------------------------------------------------
-   Chrome-free page like Home: scrolling column, centered inner. Tiles reuse
-   .home-app / .home-apps; the page adds its own header, search, and tag
-   chips. All colors via tokens so both themes hold. */
+   Chrome-free page like Home: scrolling column, centered inner. The cards are
+   .app-pcard, defined below and shared with Home's grid; the page adds its own
+   header, search, and tag chips. All colors via tokens so both themes hold. */
 .apps-page {
   flex: 1 1 auto;
   min-height: 0;
@@ -133,7 +133,8 @@
   gap: 18px;
 }
 
-/* An <a>, like .home-recent — see the note there. */
+/* An <a>, not a button: middle-click / Cmd-click / "Open in new tab" have to
+   work on a card, and the open rule itself lives in appEntry. */
 .app-pcard {
   display: flex;
   flex-direction: column;
@@ -199,18 +200,6 @@
 .app-pcard-shield {
   position: absolute;
   inset: 0;
-}
-
-.app-pcard-monogram {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 44px;
-  font-weight: 700;
-  background: color-mix(in srgb, currentColor 9%, transparent);
 }
 
 .app-pcard-body {
