@@ -1123,6 +1123,14 @@ def _transcribe_regions(audio, packs, fetched, task, language, initial_prompt,
             # hallucination in the padding can START there too. Unclamped, either
             # one places speech inside the silence that was removed and reorders
             # it against the next clip.
+            #
+            # **A segment that DOES span a join keeps its real interval, and that
+            # is deliberate**: the words genuinely sit either side of the pause,
+            # and a page seeking a player wants where they are in the recording.
+            # What must not treat the interval as solid is the SPEAKER scoring —
+            # diarization ran on the full waveform and routinely has turns inside
+            # the gap — which is why `generate` hands `assign_speakers` the region
+            # list as a mask (D355).
             at = _original_start(pack, float(segment.get("start") or 0.0))
             until = _original_end(pack, float(segment.get("end") or 0.0))
             if at >= until:
@@ -1355,7 +1363,19 @@ def generate(body):
         # PHASE FOUR — the join. Both engines call the SAME function on the same
         # two lists, which is what makes "identical labels" structural rather
         # than a thing to keep testing (AI-10c).
-        speaker_list = (diarize.assign_speakers(segments, turns)
+        #
+        # `spans` is the one thing this engine adds, and it is a SCORING mask
+        # rather than a different join: packing lets a segment straddle a dropped
+        # pause (see `_transcribe_regions`), the diarizer saw the whole waveform
+        # including that pause, and unmasked the label went to whoever spoke in
+        # the silence instead of to whoever said the words. `regions or None`
+        # because an EMPTY region list is the detector finding no speech at all —
+        # the whole file is then decoded, nothing is dropped, and a mask of no
+        # intervals would score every segment against nobody and unlabel the
+        # entire transcript. None (the other engines' value) is the honest mask
+        # for "no silence was removed".
+        speaker_list = (diarize.assign_speakers(segments, turns,
+                                                spans=regions or None)
                         if turns is not None else None)
 
         text = " ".join(s["text"] for s in segments).strip()

@@ -405,13 +405,33 @@ def label(speaker_index):
     return "Speaker %d" % (int(speaker_index) + 1)
 
 
-def speaker_for(start, end, turns):
+def speaker_for(start, end, turns, spans=None):
     """Which speaker `[start, end)` overlaps MOST, or None if it overlaps none.
 
     Overlap in TIME, not nearest-turn or midpoint-containment, because a
     Whisper segment is a sentence and a sentence routinely straddles a
     hand-over: "…yeah — no, I think" can begin in one person's turn and end in
     another's, and the person who said most of it is the honest label.
+
+    **`spans` masks the SCORING to the intervals where speech actually was**, and
+    it exists because a segment can now straddle time that was never transcribed.
+    `mlx_whisper` concatenates VAD regions into one `transcribe()` call (AI-10f,
+    D355), so Whisper hears one continuous sentence across a pause that is not in
+    the clip it was given and can emit a segment whose remapped start and end sit
+    in different regions. Its published start and end are RIGHT — the words
+    really do sit either side of the pause, and a page seeking a player wants the
+    real interval — but scoring the whole span is not: diarization runs on the
+    FULL waveform (deliberately, see the module docstring) and routinely has
+    turns inside the gap, so the label went to whoever the segmenter heard during
+    the silence rather than to whoever said the words. Masked, time inside a
+    dropped silence contributes zero to every speaker's total, and the segment is
+    labelled by its words.
+
+    **None means "score the whole span", and that is the default on purpose.**
+    `faster_whisper`, `parakeet_mlx` and a non-VAD `mlx_whisper` run drop no
+    silence out of the middle of a segment, so for them a span is contiguous and
+    a mask could only be a no-op with a risk attached. They pass nothing and are
+    byte-identical to before this argument existed.
 
     **Summed PER SPEAKER, not per turn.** One speaker can hold several turns
     inside one segment (a short interjection splits theirs in two), and taking
@@ -433,7 +453,7 @@ def speaker_for(start, end, turns):
     totals = {}
     earliest = {}
     for turn_start, turn_end, speaker in turns:
-        overlap = min(end, turn_end) - max(start, turn_start)
+        overlap = _overlap(max(start, turn_start), min(end, turn_end), spans)
         if overlap <= 0:
             continue
         totals[speaker] = totals.get(speaker, 0.0) + overlap
@@ -447,8 +467,32 @@ def speaker_for(start, end, turns):
     return min(tied, key=lambda speaker: (earliest[speaker], speaker))
 
 
-def assign_speakers(segments, turns):
+def _overlap(low, high, spans):
+    """How much of `[low, high)` counts, in seconds — never negative.
+
+    `spans` is `speaker_for`'s mask: the intervals where speech actually was, or
+    None for "all of it". Intersecting per span and summing is correct for the
+    only shape this is ever handed — `speech_regions`' output, which is ordered
+    and non-overlapping (`vad.py` merges anything the padding makes touch, and
+    everything downstream of it relies on that) — so no interval is counted
+    twice. An unordered or overlapping mask would over-count, which is why the
+    guarantee lives at the source rather than in a sort here.
+    """
+    if high <= low:
+        return 0.0
+    if spans is None:
+        return high - low
+    return sum(max(0.0, min(high, span_end) - max(low, span_start))
+               for span_start, span_end in spans)
+
+
+def assign_speakers(segments, turns, spans=None):
     """Put a `speaker` on every segment, and return the labels that landed.
+
+    `spans` is `speaker_for`'s scoring mask and is passed straight down, so a
+    caller that drops silence out of the middle of its clips says so ONCE rather
+    than reimplementing this loop. None — the default — is every engine that
+    drops nothing, scoring exactly as it did before the mask existed.
 
     Mutates in place, because the segments ARE the transcript both engines are
     about to write and copying them would leave two lists to keep in step.
@@ -463,7 +507,8 @@ def assign_speakers(segments, turns):
     """
     used = set()
     for segment in segments:
-        speaker = speaker_for(segment["start"], segment["end"], turns)
+        speaker = speaker_for(segment["start"], segment["end"], turns,
+                              spans=spans)
         segment["speaker"] = None if speaker is None else label(speaker)
         if speaker is not None:
             used.add(speaker)

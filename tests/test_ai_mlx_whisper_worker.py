@@ -964,6 +964,51 @@ def test_every_segment_is_LABELLED_and_the_json_gains_the_legend(
     assert result["speakers"] == ["Speaker 1", "Speaker 2"]
 
 
+def test_a_segment_spanning_a_join_is_labelled_by_the_WORDS_not_by_the_silence(
+        monkeypatch, loaded, tmp_path):
+    """The two features meeting: packing makes a segment able to straddle a
+    dropped pause, and the diarizer ran on the whole waveform, so it has turns
+    inside that pause.
+
+    Scored over the published span, the label went to whoever the segmenter
+    heard during the silence Silero discarded — ten seconds of speaker 2 in the
+    gap outvoting the two-plus-one seconds of speaker 1 who actually said the
+    words. The published start and end stay as they are (the segment really does
+    straddle the pause, and a page seeking a player wants the real interval);
+    only the scoring is masked to where the speech was.
+    """
+    worker, _ = loaded(windows=(100,), audio_seconds=40.0,
+                       segments=[_segment(3.0, 6.0, "either side of the pause")])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
+    _diarizes(monkeypatch, worker, [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)])
+    request = _request(tmp_path, diarize=True, speakers=2)
+
+    worker.generate(request)
+
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    # The clip is 0-5 and 30-35 concatenated, so 3.0-6.0 in clip time is
+    # 3.0-31.0 in the recording — unchanged, and straddling the pause.
+    assert [(s["start"], s["end"]) for s in written["segments"]] == [(3.0, 31.0)]
+    assert [s["speaker"] for s in written["segments"]] == ["Speaker 1"]
+    assert written["speakers"] == ["Speaker 1"]
+
+
+def test_the_speaker_mask_is_NOT_applied_when_there_is_no_VAD(
+        monkeypatch, loaded, tmp_path):
+    """`vad: false` drops no silence, so there is nothing to mask and the label
+    must be the one this runner produced before the mask existed — the same one
+    `faster_whisper` produces from the same two lists (AI-10c)."""
+    worker, _ = loaded(windows=(100,), audio_seconds=40.0,
+                       segments=[_segment(3.0, 31.0, "straight through")])
+    _diarizes(monkeypatch, worker, [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)])
+    request = _request(tmp_path, diarize=True, speakers=2, vad=False)
+
+    worker.generate(request)
+
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert [s["speaker"] for s in written["segments"]] == ["Speaker 2"]
+
+
 def test_the_pre_pass_does_NOT_inflate_the_progress_total(
         monkeypatch, loaded, tmp_path, base):
     """`done`/`total` are SECONDS OF AUDIO of the TRANSCRIPT (AI-10a, and

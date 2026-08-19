@@ -6235,8 +6235,16 @@ an AI Models page that could say what was on disk but not what was *running*.
   concatenated into clips of at most 29 seconds and each clip is one
   `transcribe()` call, with `vad.original_start`/`original_end` inverting the concatenation for
   every timestamp — each endpoint mapped on its own, since a segment can span a
-  join. **This is the one place AI-10f claims a speed benefit, and it is
-  measured**, on a 216-second recording that is 92% speech (31 regions, min
+  join. **A segment that spans a join keeps its real interval but is SCORED for
+  its speaker only where speech was**: `assign_speakers`/`speaker_for` take an
+  optional `spans` mask, and the packed path passes the region list. Diarization
+  runs on the full waveform (§40, deliberately) and routinely has turns inside a
+  dropped pause, so summing overlap across the whole span handed the label to
+  whoever the segmenter heard during the silence rather than to whoever said the
+  words. The published `start`/`end` are unchanged — the words really do sit
+  either side of the pause — and every engine that drops no silence passes no
+  mask and scores exactly as before. **This is the one place AI-10f claims a
+  speed benefit, and it is measured**, on a 216-second recording that is 92% speech (31 regions, min
   0.8s, median 5.8s, max 14.0s), against the same file decoded whole:
   `large-v3-turbo` 8.32s whole, 23.30s as 31 raw regions, 9.31s packed;
   `tiny.en-8bit` 1.48s / 2.42s / 2.05s. Before packing, `vad: true` therefore
