@@ -176,14 +176,21 @@ export default function Home({ config }: { config: Config }) {
         try {
           const local = await runCommunity<{ status?: string }>({ action: "catalog" });
           if (!alive) return;
+          // A "no-cache" status means the clone is still missing — wait for
+          // it. But the clone can just as easily land in the gap between the
+          // first empty getHomeApps and this very check, which reports it
+          // "ok" already: that walk never re-ran, so its emptiness is just as
+          // stale. Either way, one more walk is needed before the row really
+          // is empty — retry unconditionally, only waiting on refresh first
+          // when the clone genuinely hasn't landed yet.
           if (local.status === "no-cache") {
             await runCommunity({ action: "refresh" });
             if (!alive) return;
-            const retry = await getHomeApps(Math.min(limit, MAX_ROW));
-            if (!alive) return;
-            setApps(retry.apps.slice(0, MAX_ROW));
-            return;
           }
+          const retry = await getHomeApps(Math.min(limit, MAX_ROW));
+          if (!alive) return;
+          setApps(retry.apps.slice(0, MAX_ROW));
+          return;
         } catch {
           // Community backend unreachable — fall through to the empty state.
         }
