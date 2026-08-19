@@ -153,13 +153,14 @@ def test_the_tool_picker_survives_the_hosted_layout(html):
     assert '"anntool"' in body
 
 
-def test_a_point_anchor_is_page_coordinates_with_shot_null_from_the_start(html):
+def test_a_point_anchor_is_page_coordinates_and_carries_no_crop(html):
     """Same convention annRecMarkPoint set: page coords (stable across scroll,
-    annPointXY converts back) and a `shot` key that is present-but-null."""
+    annPointXY converts back). No `shot` of its own — the send-time overview
+    badges the spot, the same picture every other note on the message shares."""
     body = _block(html, "const pointAnchor = { kind:", "};")
     assert '"point"' in body
     assert "scrollX" in body and "scrollY" in body
-    assert "shot: null" in body
+    assert "shot" not in body
 
 
 def test_a_point_aim_shows_a_crosshair_and_hides_the_ring(html):
@@ -176,13 +177,14 @@ def test_typed_notes_save_through_the_one_commit_path(html):
     assert "annCommit();" in enter
 
 
-def test_a_point_notes_crop_is_awaited_before_autosend(html):
-    """Ordering, not just presence: auto-send composes the wire immediately, so
-    the crop must exist (or have failed) before it fires."""
+def test_a_note_saves_without_any_capture_of_its_own(html):
+    """The save path takes no picture: typed and spoken, element and point, all
+    ride the ONE send-time overview (annCaptureOverview), so a save is instant
+    and cannot race a capture."""
     body = _block(html, "async function annCommit()", "\n}\n")
-    crop = body.index("await annRecPointShot(saved, p.x, p.y)")
-    send = body.index("annAutoSubmit()")
-    assert crop < send
+    assert "shotPane" not in body
+    assert "annRecPointShot" not in body
+    assert "annAutoSubmit()" in body
 
 
 # ------------------------------------------ two buttons, one mode at a time
@@ -301,12 +303,71 @@ def test_the_words_yield_only_when_they_truly_collide(html):
 def test_a_transcribed_walkthrough_autosends_only_when_words_landed(html):
     """`record, talk, stop` reaches Claude without a fourth step — but a
     transcription that assigned nothing leaves the clicks pending and editable
-    rather than sending empty notes."""
+    rather than sending empty notes. Words landing as INTRO (spoken before the
+    first click) count: they are the message's own prompt."""
     body = _block(html, "async function annRecEnd()", "\n}\n")
-    assign = body.index("annRecAssign(ids, rec.segments);")
+    assign = body.index("annRecAssign(ids, rec.segments)")
     gate = body.index("c && c.content && !c.sent")
-    send = body.index("if (spoke && !sending && annPrefillComposer()) annAutoSubmit();")
+    send = body.index(
+        "if ((spoke || intro) && !sending) { annPrefillComposer(intro); annAutoSubmit(); }")
     assert assign < gate < send
+
+
+def test_speech_before_the_first_click_becomes_the_prompt_not_a_note(html):
+    """Everything said before the first click is the user framing the task —
+    it seeds the composer as the message's own words instead of being pulled
+    onto click 1 by the nearest-segment match."""
+    out = _node(["function annRecAssign("], """
+var annotations = [{id: "a", t: 10}, {id: "b", t: 20}];
+function annSave() {}
+const intro = annRecAssign(["a", "b"], [
+  {start: 1, text: "overall make it cleaner"},
+  {start: 4, text: "and use our colors"},
+  {start: 10.5, text: "this button is wrong"},
+  {start: 19, text: "this chart too"},
+]);
+console.log(JSON.stringify({intro: intro,
+  a: annotations[0].content, b: annotations[1].content}));
+""", html)
+    assert out["intro"] == "overall make it cleaner and use our colors"
+    assert out["a"] == "this button is wrong"
+    assert out["b"] == "this chart too"
+
+
+def test_the_intro_joins_a_typed_draft_and_no_canned_prefill_exists(html):
+    """An annotation-only send needs no prompt — the comments are the content,
+    so the old "apply the comments" prefill is gone. What the user adds rides
+    along: the spoken intro seeds an empty composer, and joins (never clobbers)
+    a draft they already typed."""
+    out = _node(["function annPrefillComposer("], """
+var chatEl = {classList: {contains: () => false}};
+var homebox = {value: ""};
+var box = {value: ""};
+function growBox() {}
+function growHome() {}
+annPrefillComposer("make the header sticky");
+const seededValue = box.value;
+box.value = "my own half-typed draft";
+annPrefillComposer("and the intro too");
+const joined = box.value;
+annPrefillComposer("");
+console.log(JSON.stringify({seededValue: seededValue, joined: joined,
+  untouched: box.value}));
+""", html)
+    assert out["seededValue"] == "make the header sticky"
+    assert out["joined"] == "my own half-typed draft\n\nand the intro too"
+    assert out["untouched"] == "my own half-typed draft\n\nand the intro too", \
+        "no seed means the composer is left exactly as the user had it"
+
+
+def test_a_new_note_autosends_bare_with_no_canned_message(html):
+    """Saving a note fires the send even with an empty composer: the message
+    may be empty, the annotations carry the content, and whatever the user had
+    typed is theirs and goes along as the message's own words."""
+    body = _block(html, "async function annCommit()", "\n}\n")
+    assert "if (isNew && !sending) annAutoSubmit();" in body
+    assert "annPrefillComposer" not in body, \
+        "the save path seeds nothing — there is no canned prompt to seed"
 
 
 # ------------------------------------------------ warming the transcriber
@@ -385,7 +446,7 @@ def test_a_cross_origin_capture_comes_off_the_tab_not_the_document(html):
     grabs a frame off a getDisplayMedia tab share and crops the marked
     iframe's rect out of it. Same {canvas, width, height, ...} shape, clean
     doubt fields (no style walk, no image inlining, no WebGL readback), so
-    the crops, the crosshair burner and the whole-pane shot run unchanged."""
+    the overview's badge burner and the whole-pane shot run unchanged."""
     pane = _block(html, "async function shotPane(deadline)", "const clone")
     assert "if (annXO) return shotXOPane();" in pane
     body = _block(html, "async function shotXOPane()", "\n}\n\n")
@@ -402,10 +463,10 @@ def test_a_cross_origin_capture_comes_off_the_tab_not_the_document(html):
     # cross-origin, pagehide (annXORemove covers all three).
     remove = _block(html, "function annXORemove()", "\n}\n")
     assert "annXOStreamStop();" in remove
-    # The save-time crop fires for an overlay note too, through the same
-    # zero-scroll stub the pin painter uses.
-    commit = _block(html, "async function annCommit()", "\n}\n")
-    assert "annXO ? ANN_XO_SCROLL : null" in commit
+    # The overview's point badges resolve through the same zero-scroll stub
+    # the pin painter uses.
+    capture = _block(html, "async function annCaptureOverview(", "\n}\n")
+    assert "annXO ? ANN_XO_SCROLL : null" in capture
 
 
 def test_the_capture_stream_state_is_declared_before_its_boot_time_teardown(html):

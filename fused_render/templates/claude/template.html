@@ -878,6 +878,50 @@
     color: var(--dim);
   }
   #shotview-note:empty { display: none; }
+
+  /* ── the "what was sent" popup: same overlay family as the viewer ─────── */
+  #sentpop { position: fixed; inset: 0; z-index: 1000;
+             display: flex; align-items: center; justify-content: center; }
+  #sentpop[hidden] { display: none; }
+  #sentpop-scrim { position: absolute; inset: 0; background: var(--scrim); }
+  #sentpop-box {
+    position: relative; display: flex; flex-direction: column;
+    width: min(720px, calc(100vw - 48px)); max-height: calc(100vh - 64px);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 12px 40px var(--shadow); overflow: hidden;
+  }
+  #sentpop-bar {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    border-bottom: 1px solid var(--border); font-weight: 600; font-size: 13px;
+  }
+  #sentpop-bar .spacer { flex: 1; }
+  #sentpop-body { overflow: auto; padding: 14px; display: flex;
+                  flex-direction: column; gap: 12px; }
+  #sentpop-body .sent-shot { max-width: 100%; border: 1px solid var(--border);
+                             border-radius: 6px; cursor: zoom-in; }
+  #sentpop-body .sent-note-row { display: flex; gap: 8px; align-items: baseline;
+                                 font-size: 13px; }
+  #sentpop-body .sent-note-lbl {
+    flex: none; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px;
+    background: var(--accent); color: var(--on-accent); font-weight: 700;
+    font-size: 12px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  #sentpop-body .sent-note-meta { color: var(--dim); font-size: 12px; }
+  #sentpop-body .sent-caveat { color: var(--dim); font-size: 12px; }
+  #sentpop-body h4 { margin: 6px 0 0; font-size: 12px; text-transform: uppercase;
+                     letter-spacing: .04em; color: var(--dim); }
+  #sentpop-body pre.sent-wire {
+    margin: 0; padding: 10px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px;
+    font-size: 11px; line-height: 1.45; white-space: pre-wrap;
+    word-break: break-word; max-height: 40vh; overflow: auto;
+  }
+  /* A comment row in a receipt IS the door into the "what was sent" popup —
+     no separate button, the row itself is clickable. */
+  .annsum-note { cursor: pointer; border-radius: 4px; }
+  .annsum-note:hover .annsum-txt { text-decoration: underline;
+                                   text-underline-offset: 2px; }
   #divider:hover, body.dragging #divider { background: var(--handle-hover); }
   body.dragging #leftview iframe { pointer-events: none; }
   #msg { margin: auto; color: var(--dim); text-align: center; padding: 24px; }
@@ -3541,6 +3585,21 @@
     </figure>
   </div>
 
+  <!-- What was sent: the composed message a receipt stands for, on demand —
+       the overview screenshot with its badges, every comment with its label,
+       anchor, timing and caveats, and the exact text the agent was handed. -->
+  <div id="sentpop" hidden>
+    <div id="sentpop-scrim"></div>
+    <div id="sentpop-box" role="dialog" aria-label="What was sent to the agent">
+      <div id="sentpop-bar">
+        <span>What was sent</span>
+        <span class="spacer"></span>
+        <button id="sentpop-close" type="button" class="pill">Close</button>
+      </div>
+      <div id="sentpop-body"></div>
+    </div>
+  </div>
+
 <script>
 // THE chat: ./agent.py behind it
 // (start/poll/decide/history/sessions), permission cards, run/session params,
@@ -3723,9 +3782,6 @@ const SHOT_MAX_EDGE = 640;
 // no quality dial) — and if it is STILL over, no crop is better than one that
 // dominates the turn.
 const SHOT_MAX_BYTES = 300 * 1024;
-// Crops per send. The pane is captured once however many notes there are, so this
-// caps the ENCODING and the uploads, which is where the time goes.
-const SHOT_MAX_COUNT = 6;
 // px² below which there is nothing to look at — a 0x0 rect (display:none), or a
 // hairline border. Cheaper to say so than to write a file nobody can read.
 const SHOT_MIN_AREA = 64;
@@ -3776,23 +3832,16 @@ const SHOT_IMG_MS = 1500;
 // here more than anywhere else (see shotEncode).
 const SHOT_VIEW_EDGE = 1600;
 const SHOT_VIEW_BYTES = 900 * 1024;
-// Fraction of an annotated element's own area that may sit over an unreadable
-// canvas before the crop is suppressed instead of annotated. Half is the line
-// between "a picture of the thing, with a hole in a corner" (worth sending, with
-// a note) and "a picture of blank backdrop with a control floating on it" (worth
-// refusing — see shotBlankCover).
-const SHOT_BLANK_BLOCK = 0.5;
 // The block's delimiter, duplicated in agent.py (which strips it back out of
 // everything user-facing) and in stripAppStateBlock below — a test holds the
 // three together, because a drift is invisible until the chat starts showing
 // the user a screenful of JSON they never typed (D146).
 const APP_STATE_TAG = "live-app-state";
 // The whole-pane screenshot's block delimiter. A separate, tag-delimited block
-// rather than a field on the annotation JSON for two reasons: `shot`/`shotNote`
-// are per-anchor and the pane belongs to no anchor (hanging it off one annotation
-// would be a category error, and repeating it on all of them a lie), and a pane
-// shot can ride a message with NO annotations, where there is no annotation block
-// to put it in. Tag-delimited like the app-state block so its strip is
+// rather than a field on the annotation JSON for two reasons: a picture of the
+// whole pane belongs to the MESSAGE, not to any one anchor (the overview badges
+// all of them at once), and a pane shot can ride a message with NO annotations,
+// where there is no annotation block to put it in. Tag-delimited like the app-state block so its strip is
 // position-independent — the annotation block's is not, and only one such fragile
 // strip is affordable.
 //
@@ -5650,12 +5699,17 @@ function renderShotChips() {
 function shotNoun(shot) {
   if (!shot) return "picture";
   if (shot.kind === "image") return shot.name || "pasted image";
+  if (shot.kind === "overview") return "annotated overview";
   return paneNoun + " screenshot";
 }
 function shotAlt(shot) {
-  return shot && shot.kind === "image"
-    ? "image attached to this message" + (shot.name ? ": " + shot.name : "")
-    : "screenshot of the whole " + paneNoun + " pane";
+  if (shot && shot.kind === "image") {
+    return "image attached to this message" + (shot.name ? ": " + shot.name : "");
+  }
+  if (shot && shot.kind === "overview") {
+    return "overview of the " + paneNoun + " pane with a badge at each comment";
+  }
+  return "screenshot of the whole " + paneNoun + " pane";
 }
 
 // One attached picture's chip: an annotation chip's pill with the picture where
@@ -5885,22 +5939,21 @@ function annCloseComposer() {
   // this is the single choke point every close already goes through.
   annUnportalPop();
 }
-// A fresh note usually precedes a "go apply it" message: seed the visible
-// composer so sending is one keypress. Only when it's empty — never clobber
-// typed text. Auto-send (always on) then submits it.
-const ANN_PREFILL = "apply the comments";
-function annPrefillComposer() {
+// A message needs no prompt to carry annotations: the comments ARE the
+// content, so an annotation-only send goes out with an EMPTY message (the old
+// "apply the comments" prefill is gone — canned words told the model nothing
+// the notes did not). What DOES ride along is anything the user chose to add:
+// `seed` is a walkthrough's spoken intro (everything said before the first
+// click), and a draft already typed in the composer is theirs and goes too —
+// appended-to rather than clobbered when both exist.
+function annPrefillComposer(seed) {
   const home = chatEl.classList.contains("home");
   const el = home ? homebox : box;
-  // A typed draft is the user's — hands off. But the composer holding exactly
-  // the canonical prefill is OUR text (a previous note left it, e.g. one saved
-  // while a turn was in flight), not a draft: it still counts as fillable, so
-  // the next note's auto-send can fire and carry every pending note with it.
-  const v = el.value.trim();
-  if (v && v !== ANN_PREFILL) return false;
-  el.value = ANN_PREFILL;
+  if (seed) {
+    const v = el.value.trim();
+    el.value = v ? v + "\n\n" + seed : seed;
+  }
   (home ? growHome : growBox)();
-  return true;
 }
 // Click anywhere outside the popover dismisses it. mousedown, not click, so
 // it fires before the target's own handlers; pins and chips are exempt — their
@@ -5932,45 +5985,26 @@ annDelBtn.addEventListener("click", () => {
   annCloseComposer();
 });
 // Save whatever the composer holds — the one commit path, the Enter key's.
-// Async because a POINT note's crosshair crop is taken
-// here, awaited: auto-send fires the moment this returns, and a fire-and-forget
-// capture would race the send and put `shot: null` on the wire for a picture
-// that was a beat away from existing. (annRecPointShot never throws and is
-// internally deadline-bounded, so the await cannot hang the save.)
+// Nothing here awaits any more: a note's picture is the send-time overview
+// screenshot (annCaptureOverview), taken once for the whole message rather
+// than per note at save time.
 async function annCommit() {
   const content = annTa.value.trim();
   const isNew = !!(content && annDraft);
-  let filled = false;
-  let saved = null;
   if (isNew) {
-    saved = { id: crypto.randomUUID(), content, createdAt: Date.now(), ...annDraft };
-    annotations.push(saved);
+    annotations.push({ id: crypto.randomUUID(), content, createdAt: Date.now(), ...annDraft });
     annSave();
-    filled = annPrefillComposer();
   } else if (content && annEditing) {
     const c = annotations.find((a) => a.id === annEditing);
     if (c && !c.sent) { c.content = content; annSave(); }
   }
   annCloseComposer();
-  // A manual point note's crop, at save time rather than click time: the page
-  // coordinates convert back through the CURRENT scroll (annPointXY's own
-  // rule), so a pane the reader scrolled while typing still crops the spot the
-  // note is about — and a composer that was cancelled costs no capture at all.
-  if (saved && saved.kind === "point" && !saved.shot) {
-    // The cross-origin overlay's zero-scroll stand-in, exactly as the pin
-    // painter uses it: the coords are overlay-relative and the crop comes off
-    // the tab capture (shotXOPane), which shares that coordinate space.
-    const win = (annTargetDoc() && annTargetDoc().defaultView)
-      || (annXO ? ANN_XO_SCROLL : null);
-    const p = annPointXY(saved, win);
-    if (p) await annRecPointShot(saved, p.x, p.y);
-  }
   // Auto-send fires for NEW notes only — editing an existing pending note must
   // not send. Skipped while a turn is in flight (the note stays pending and
-  // rides the next message) and when the composer holds a typed draft — the
-  // prefill refused to touch it, and sending a half-typed message is worse
-  // than leaving the note as a chip.
-  if (isNew && filled && !sending) annAutoSubmit();
+  // rides the next message). The message may be EMPTY — an annotation-only
+  // send is the normal case — and whatever the user already typed in the
+  // composer is theirs and rides along as the message's own words.
+  if (isNew && !sending) annAutoSubmit();
 }
 annTa.addEventListener("keydown", (e) => {
   // stopPropagation, because the document-level Escape binding also kills a live
@@ -6363,30 +6397,20 @@ function annRecMark(anchor) {
 }
 
 // A note with no element under it: PAGE coordinates (client + scroll), so it
-// still means something after the app scrolls, plus a screenshot taken RIGHT
-// NOW — for a point there is no anchor for Claude to read the app's source
-// through, so the picture is not an attachment on the side, it is the whole
-// reason the note is findable at all. `content` fills in the same way an
+// still means something after the app scrolls. No picture of its own — the
+// send-time OVERVIEW screenshot (annCaptureOverview) badges the spot, the same
+// way it badges an element note, so a point is findable through the one picture
+// every annotation on the message shares. `content` fills in the same way an
 // element note's does, from the transcript once recording stops.
 function annRecMarkPoint(clientX, clientY, win) {
   const c = { id: crypto.randomUUID(), kind: "point", content: "", createdAt: Date.now(),
               t: (performance.now() - annRecStartedAt) / 1000,
               x: Math.round(clientX + (win ? win.scrollX : 0)),
-              y: Math.round(clientY + (win ? win.scrollY : 0)),
-              // Present from the start, same convention an element note's
-              // send-time `shot` follows (annApplyShots) — a key that is
-              // there-but-null reads as "no picture (yet, or ever)"; one that
-              // is simply absent from the JSON reads as a shape Claude has
-              // to guess at.
-              shot: null };
+              y: Math.round(clientY + (win ? win.scrollY : 0)) };
   annotations.push(c);
   annRecIds.push(c.id);
   annSave();
   annRecPaint();
-  // Fire-and-forget: a failed capture still leaves a perfectly usable note
-  // (page coordinates, and whatever gets said about it) — see the catch
-  // inside annRecPointShot.
-  annRecPointShot(c, clientX, clientY);
 }
 
 // Viewport-relative pixels for a point note, RIGHT NOW — c.x/c.y are page
@@ -6400,48 +6424,49 @@ function annPointXY(c, win) {
   return { x: c.x - (win.scrollX || 0), y: c.y - (win.scrollY || 0) };
 }
 
-// A crosshair burned into the crop itself, in CANVAS pixel space — legible
-// however small the picture ends up, unlike an overlay the picture cannot
-// carry. White halo first so it reads on light and dark app backgrounds
-// alike; only the point's OWN spot is marked, so a small crop is never
-// ambiguous about where "here" was.
-function annPointCrosshair(ctx, x, y) {
-  const r = 8, gap = 4;
+// A labeled badge burned into the overview screenshot itself, in CANVAS pixel
+// space — legible however small the picture ends up, unlike an overlay the
+// picture cannot carry. White ring under a red disc so it reads on light and
+// dark app backgrounds alike; the LETTER is the payload — it is the same
+// string the annotation's `label` field carries on the wire, which is what
+// lets the model reconcile a comment with the spot it points at.
+function annBadgeDraw(ctx, x, y, label) {
+  const r = 11;
   ctx.save();
-  ctx.lineCap = "round";
-  for (const pass of [{ w: 5, c: "#fff" }, { w: 2.5, c: "#ff2d55" }]) {
-    ctx.strokeStyle = pass.c;
-    ctx.lineWidth = pass.w;
-    ctx.beginPath();
-    ctx.moveTo(x - r - gap, y); ctx.lineTo(x - gap, y);
-    ctx.moveTo(x + gap, y); ctx.lineTo(x + r + gap, y);
-    ctx.moveTo(x, y - r - gap); ctx.lineTo(x, y - gap);
-    ctx.moveTo(x, y + gap); ctx.lineTo(x, y + r + gap);
-    ctx.stroke();
-  }
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = "#ff2d55";
+  ctx.fill();
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = "#fff";
+  ctx.stroke();
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold " + (label && label.length > 1 ? 11 : 13) + "px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label || "?", x, y + 0.5);
   ctx.restore();
 }
 
 // shotEncode's own budget ladder (quality first, resolution last — see there
-// for why), plus the crosshair: drawn AFTER the crop is scaled into the
-// output canvas and BEFORE encoding, at `atX,atY` scaled the same way the
-// crop was, so it lands on the exact spot at every size this loop tries
-// rather than needing its own retry.  Not folded into shotEncode itself —
-// that function has one caller today per crop and no notion of "mark this
-// pixel"; forking here is one extra function, not a parameter every other
-// caller would have to pass `null` for.
-async function shotEncodeMarked(pane, rect, atX, atY, limits) {
+// for why), plus the badges: drawn AFTER the pane is scaled into the output
+// canvas and BEFORE encoding, at each badge's `x,y` scaled the same way the
+// pane was, so every badge lands on its exact spot at every size this loop
+// tries rather than needing its own retry. Not folded into shotEncode itself —
+// that function has no notion of "mark these pixels"; forking here is one
+// extra function, not a parameter every other caller would pass `null` for.
+async function shotEncodeBadged(pane, badges, limits) {
   const maxEdge = (limits && limits.maxEdge) || SHOT_MAX_EDGE;
   const maxBytes = (limits && limits.maxBytes) || SHOT_MAX_BYTES;
-  let fit = shotFit(rect.width, rect.height, maxEdge);
+  let fit = shotFit(pane.width, pane.height, maxEdge);
   for (let attempt = 0; attempt < 3; attempt++) {
     const c = document.createElement("canvas");
     c.width = fit.width;
     c.height = fit.height;
     const ctx = c.getContext("2d");
-    ctx.drawImage(pane.canvas, rect.left, rect.top, rect.width, rect.height,
+    ctx.drawImage(pane.canvas, 0, 0, pane.width, pane.height,
                    0, 0, fit.width, fit.height);
-    annPointCrosshair(ctx, atX * fit.scale, atY * fit.scale);
+    for (const b of badges) annBadgeDraw(ctx, b.x * fit.scale, b.y * fit.scale, b.label);
     if (shotWebpOk !== false) {
       for (const q of SHOT_WEBP_QUALITY) {
         const webp = await shotBlob(c, "image/webp", q);
@@ -6460,34 +6485,6 @@ async function shotEncodeMarked(pane, rect, atX, atY, limits) {
   return null;
 }
 
-// A close-up around the click — not the whole pane, the same reasoning
-// shotCapturePane's crops already follow: a picture the size of the thing it
-// is about. Independent of the send-time capture (annCaptureShots) entirely:
-// that function crops PENDING notes by resolving their element, a point has
-// none, and by the time a message sends the click that produced this crop
-// may be long gone from view. Captured once, now, while the pane is exactly
-// as the reader was looking at it.
-async function annRecPointShot(c, clientX, clientY) {
-  try {
-    const pane = await shotPane(Date.now() + SHOT_TIMEOUT_MS);
-    if (!pane) return;
-    const W = 480, H = 360;
-    const rect = shotCropRect(
-      { left: clientX - W / 2, top: clientY - H / 2, width: W, height: H },
-      pane.width, pane.height);
-    if (!rect) return;
-    const blob = await shotEncodeMarked(pane, rect, clientX - rect.left, clientY - rect.top);
-    if (!blob) return;
-    const dir = await shotDirPath();
-    const path = shotJoin(dir, shotStamp() + "-point" + shotExt(blob));
-    await fused.uploadFile(path, blob);
-    c.shot = path;
-    annSave();
-  } catch (err) {
-    console.warn("point capture failed:", err.message);
-  }
-}
-
 // Each SEGMENT goes to exactly one click — OpenPointer's fixed lead window
 // (each click owns "LEAD seconds before it until the next click") looked
 // right but double-counts by construction: click i's window reaches forward
@@ -6501,12 +6498,18 @@ async function annRecPointShot(c, clientX, clientY) {
 // tuned constant — narrating right after a click (the common case) and
 // narrating just before one (also common) both resolve correctly because
 // "closest" means the same thing either direction.
+// It returns the INTRO: everything said before the first click is the user
+// framing the task, not a comment on any one spot, so those segments become
+// the message's own prompt text (annRecEnd seeds the composer with it) rather
+// than being pulled onto click 1 by the nearest-match below.
 function annRecAssign(ids, segments) {
   const timed = ids.map((id) => annotations.find((a) => a.id === id))
                    .filter(Boolean).sort((a, b) => a.t - b.t);
-  if (!timed.length || !segments || !segments.length) return;
+  if (!timed.length || !segments || !segments.length) return "";
+  const intro = [];
   const words = new Map(timed.map((c) => [c.id, []]));
   for (const s of segments) {
+    if (s.start < timed[0].t) { intro.push(s.text); continue; }
     let best = timed[0], bestDist = Math.abs(s.start - timed[0].t);
     for (const c of timed) {
       const dist = Math.abs(s.start - c.t);
@@ -6518,6 +6521,7 @@ function annRecAssign(ids, segments) {
     c.content = words.get(c.id).join(" ").replace(/\s+/g, " ").trim();
   }
   annSave();
+  return intro.join(" ").replace(/\s+/g, " ").trim();
 }
 
 // Stop, transcribe, fill the notes in. Never throws: a failed upload or a
@@ -6560,7 +6564,7 @@ async function annRecEnd() {
   // the disarm from echoing when annSetMode's own disarm called us (annOn is
   // already false there). Nothing recorded: disarm and go.
   const armed = annArmEpoch;
-  if (!blob.size || !ids.length) {  // nothing said, or nothing clicked: no transcript to fetch
+  if (!blob.size) {   // nothing said: no transcript to fetch
     if (annOn && annArmEpoch === armed) annSetMode(false);
     return;
   }
@@ -6581,18 +6585,29 @@ async function annRecEnd() {
     const path = shotJoin(dir, shotStamp() + "-walkthrough" + annRecExt(blob.type));
     await fused.uploadFile(path, blob);
     const rec = await fused.ai.transcribe({ path });
-    annRecAssign(ids, rec.segments);
+    // Everything said BEFORE the first click is the main prompt, not a note:
+    // it seeds the composer as the message's own words, so the send reads as
+    // "here is the task, and here are the spots" rather than a first comment
+    // that swallowed the framing. A walkthrough with NO clicks is the
+    // degenerate case of the same rule — everything came before the first
+    // click, so the whole transcript is the prompt.
+    const intro = ids.length
+      ? annRecAssign(ids, rec.segments)
+      : (rec.segments || []).map((s) => s.text).join(" ")
+          .replace(/\s+/g, " ").trim();
     // Auto-send, the same way a typed note sends itself: the walkthrough is
     // finished the moment its words land, and "record, talk, stop" should
     // reach Claude without a fourth step. Only when words actually landed —
-    // a transcription that assigned nothing leaves the clicks pending and
-    // editable rather than sending empty notes — and never over a live run
-    // or a typed draft (annPrefillComposer's own refusal).
+    // on a note OR as intro; a transcription that assigned nothing leaves the
+    // clicks pending and editable rather than sending empty notes — and never
+    // over a live run. The intro joins whatever is already typed (the user's
+    // extras ride along, never get clobbered), and no words at all is fine:
+    // the comments are the content.
     const spoke = ids.some((id) => {
       const c = annotations.find((a) => a.id === id);
       return c && c.content && !c.sent;
     });
-    if (spoke && !sending && annPrefillComposer()) annAutoSubmit();
+    if ((spoke || intro) && !sending) { annPrefillComposer(intro); annAutoSubmit(); }
   } catch (err) {
     console.warn("spoken annotation transcription failed:", err.message);
   } finally {
@@ -6854,12 +6869,12 @@ function annWireTarget() {
     // because every click can name one: it is the note when there is no
     // element to anchor to (background, a shadow tree annPathOf cannot walk)
     // and when the reader forces it (Alt, or the Point tool — "this spot, not
-    // this box"). `shot: null` from the start, filled by annCommit's
-    // save-time crop — same convention the recording's point notes follow
+    // this box"). No picture of its own — the send-time overview badges the
+    // spot, same convention the recording's point notes follow
     // (annRecMarkPoint).
     const pointAnchor = { kind: "point",
       x: Math.round(e.clientX + (win ? win.scrollX : 0)),
-      y: Math.round(e.clientY + (win ? win.scrollY : 0)), shot: null };
+      y: Math.round(e.clientY + (win ? win.scrollY : 0)) };
     // No element to anchor to, or the reader held Alt to say "the spot, not
     // the element": a point note — narration about whitespace, layout, or
     // something missing deserves a note as much as a button does.
@@ -7177,7 +7192,7 @@ function shotDirPath() {
 
 // Always "/", never a guessed platform separator: agent.py hands this directory
 // back through `_wire_path`, which spells it with forward slashes on every
-// platform, and spells the `Read(//.../**)` allow-rule from the SAME
+// platform, and spells the double-slash Read allow-rule from the SAME
 // normalisation. The CLI matches that rule as text, so a path this function
 // joined with a backslash on Windows would sit outside its own pre-approval and
 // card every crop. Windows takes "/" for both the upload and a Read, so one
@@ -7723,48 +7738,6 @@ function shotRasterise(src, dst) {
   return blanks;
 }
 
-// Overlapping area of two stage rects, in px². 0 when they do not meet.
-function shotRectOverlap(a, b) {
-  const w = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left);
-  const h = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top);
-  return w > 0 && h > 0 ? w * h : 0;
-}
-
-// How much of an annotated element's crop is NOT what the user saw, as a fraction
-// of the element's own on-screen area. 0 is a wholly trustworthy crop, 1 an
-// entirely blank one.
-//
-// GEOMETRY, not DOM ancestry, is the test. A blank canvas is deliberately left in
-// the clone (it serialises to nothing), so the pane bitmap carries the app's
-// backdrop wherever the map should be — and that hole falls under whatever
-// OVERLAPS the canvas, not only under the canvas' own ancestors. A legend or zoom
-// control absolutely positioned over a map is the most common map-app layout
-// there is, and containment alone called it clean.
-//
-// `is` and `contains` stay absolute (cover 1) irrespective of rects: pointing at
-// the map and pointing at the panel the map fills are the same claim, even when
-// the panel is much bigger than the canvas inside it.
-//
-// The worst single canvas rather than the union of all of them: a real union of
-// arbitrary rects is far more machinery than this decision is worth, and two
-// blank canvases under one element is vanishingly rare. The max is an honest
-// LOWER bound on the damage, which is the safe direction for a partial note.
-// `rect` is the region actually being cut — the CROP rect, not the element's full
-// stage rect, because an element half off-screen is cropped to its visible part
-// and it is that part's blankness the agent will be looking at.
-function shotBlankCover(el, blanks, rect) {
-  for (const cv of blanks || []) {
-    if (el === cv || (el.contains && el.contains(cv))) return 1;
-  }
-  const area = rect.width * rect.height;
-  if (!(area > 0)) return 0;
-  let worst = 0;
-  for (const cv of blanks || []) {
-    worst = Math.max(worst, shotRectOverlap(rect, annStageRect(cv)) / area);
-  }
-  return Math.min(1, worst);
-}
-
 // Integer crop rect inside the pane bitmap, or null when there is nothing to cut.
 // Origin floors and the far edge ceils — rounding both the same way shaves the
 // element's last row of pixels, which on a 1px border is the entire point of the
@@ -7806,7 +7779,7 @@ function shotExt(blob) {
 }
 
 // Quality steps tried before any resolution is given up. Claude Code's Read tool
-// accepts .webp (verified against the real CLI under the real Read(//<abs>/**)
+// accepts .webp (verified against the real CLI under the real double-slash Read
 // rule), and small text in a UI stays legible down to q60 — so this is a much
 // better knob than shrinking. JPEG is deliberately not here: measured on this very
 // UI it LOST to PNG (13477 → 13945 bytes on a card, 18173 → 91579 on a canvas
@@ -7905,7 +7878,7 @@ async function annXOStreamGet() {
   return annXOStream;
 }
 // Same answer shape as shotPane, so every consumer — shotEncode's crops,
-// shotEncodeMarked's crosshair, shotCapturePane's whole-pane shot and the
+// shotEncodeBadged's badges, shotCapturePane's whole-pane shot and the
 // three caveat writers — runs unchanged: a capture off live pixels has no
 // style walk, no image inlining and no WebGL readback to caveat, so the
 // doubt fields are simply clean. Null (not a throw) for every "cannot":
@@ -8098,10 +8071,8 @@ async function shotCapturePane(deadline) {
   const path = shotJoin(dir, shotStamp() + "-view" + shotExt(blob));
   await fused.uploadFile(path, blob);
   const out = { view: path, thumb: URL.createObjectURL(blob) };
-  // Never suppressed for a blank canvas, only annotated — the divergence from a
-  // crop, and the same shotNote-beside-a-real-shot contract the crops already use.
-  // Suppressing a blank CROP leaves the other crops; suppressing the pane leaves
-  // nothing at all.
+  // Never suppressed for a blank canvas, only annotated: suppressing the pane
+  // leaves nothing at all, so the caveat rides beside the real picture.
   const caveats = [];
   const blanks = shotBlankRegions(pane);
   if (blanks) caveats.push(blanks);
@@ -8115,104 +8086,82 @@ async function shotCapturePane(deadline) {
   return out;
 }
 
-// One crop per pending annotation, uploaded, as {shots: {id: {shot, shotNote}},
-// thumbs: {id: objectUrl}}.
+// ── the overview screenshot: ONE picture per send, badges burned in ────────
+// One labeled overview per send, as {view, viewNote, thumb, marks: {id: true|reason}}.
+//
+// Where every pending note used to get its OWN crop, the message now carries a
+// single screenshot of the whole pane with a red badge burned in at each note's
+// spot — the badge letter is the note's `label`, so the model reconciles words
+// with pixels through one picture instead of N. Typed and spoken comments are
+// deliberately identical here: one capture, at send time, for all of them.
 //
 // Deliberately does NOT mutate the annotations: the caller races this against a
-// timeout, and a half-applied capture would leave some notes carrying paths from
-// a capture that never finished. The caller applies the result or nothing.
-async function annCaptureShots(pending, deadline) {
-  const out = { shots: {}, thumbs: {} };
-  if (!pending || !pending.length) return out;
-  const dir = await shotDirPath();
+// timeout, and a half-applied capture would leave notes describing a picture
+// that never finished. The caller applies the result or nothing (annApplyOverview).
+async function annCaptureOverview(pending, deadline) {
+  if (!pending || !pending.length) return null;
   const pane = await shotPane(deadline === undefined
                               ? Date.now() + SHOT_TIMEOUT_MS : deadline);
   if (!pane) {
-    for (const c of pending || []) {
-      out.shots[c.id] = { shot: null,
-        shotNote: "no crop: " + APP_STATE_UNREADABLE };
-    }
-    return out;
+    return { view: null, viewNote: "no overview screenshot: " + APP_STATE_UNREADABLE,
+             marks: {} };
   }
   // Whatever `annFrame` currently points at — our pane, or the host's marked
   // one — and it may be null in the sidebar layout, where the shotPane above has
   // already answered "nothing to capture" for the same reason.
   const doc = annFrame && annFrame.contentDocument;
-  const stamp = shotStamp();
-  // A capture the walk could not finish — or could not trust — is a real picture
-  // of the page with pieces of it wrong or missing. Every crop out of it says so,
-  // and says WHICH: silence would present a half-CSS render as "the element as
-  // the user saw it", the same class of misread as shipping a blank canvas.
-  const paneNote = shotPaneNote(pane);
-  const imageNote = shotImageNote(pane);
-  let made = 0;
-  for (const c of pending || []) {
-    // Point notes carry their own shot from click time (annRecPointShot) —
-    // nothing here to resolve, and annApplyShots never reads this batch's
-    // answer for one anyway.
-    if (c.kind === "point") continue;
-    const note = (why) => { out.shots[c.id] = { shot: null, shotNote: why }; };
-    if (made >= SHOT_MAX_COUNT) {
-      note("no crop: this message already carries " + SHOT_MAX_COUNT
-           + ", which is the cap");
-      continue;
-    }
-    const el = doc ? annResolve(c, doc) : null;
-    if (!el) {
-      note("no crop: the annotated element was not in the app's DOM when this "
-           + "message was sent (the app may have re-rendered since)");
-      continue;
-    }
-    const rect = shotCropRect(annStageRect(el), pane.width, pane.height);
-    if (!rect) {
-      note("no crop: the element has (near-)zero area on screen, or is scrolled "
-           + "out of the visible pane");
-      continue;
-    }
-    const cover = shotBlankCover(el, pane.blanks, rect);
-    if (cover >= SHOT_BLANK_BLOCK) {
-      note("not readable: this element is, contains, or sits over a WebGL canvas. "
-           + "A map/3D library (maplibre, deck.gl) creates its context with "
-           + "preserveDrawingBuffer:false, so reading the pixels back returns a "
-           + "blank image rather than what is on screen. The app is very likely "
-           + "drawing fine — use the anchor and the DOM outline, not a picture.");
-      continue;
-    }
-    try {
-      const blob = await shotEncode(pane, rect);
-      if (!blob) {
-        note("no crop: it did not fit the " + SHOT_MAX_BYTES + "-byte budget");
+  // The cross-origin overlay's zero-scroll stand-in, exactly as the pin painter
+  // uses it: point coords are overlay-relative there and the capture comes off
+  // the tab (shotXOPane), which shares that coordinate space.
+  const win = (doc && doc.defaultView) || (annXO ? ANN_XO_SCROLL : null);
+  const badges = [];
+  const marks = {};
+  for (const c of pending) {
+    let pt = null;
+    if (c.kind === "point") {
+      pt = annPointXY(c, win);
+    } else {
+      const el = doc ? annResolve(c, doc) : null;
+      if (!el) {
+        marks[c.id] = "the annotated element was not in the app's DOM when this "
+          + "message was sent (the app may have re-rendered since)";
         continue;
       }
-      const path = shotJoin(dir, stamp + "-" + annLabelFor(annotations.indexOf(c))
-                                 + shotExt(blob));
-      await fused.uploadFile(path, blob);
-      out.shots[c.id] = { shot: path };
-      // What this crop does NOT show, if anything. A crop that only laps onto a
-      // blank canvas, or comes out of a truncated capture, is worth sending — but
-      // never silently: otherwise the agent gets a picture with an unexplained
-      // hole in it and is told it is "the element as the user saw it".
-      const caveats = [];
-      if (cover > 0) {
-        caveats.push("part of this crop (about " + Math.round(cover * 100)
-          + "% of the element) overlaps a WebGL canvas whose pixels could not be "
-          + "read back, so that area shows the app's background instead of what "
-          + "was drawn there");
-      }
-      // Whole-capture news, said on every crop cut out of it — a crop is a window
-      // onto that one bitmap, so a picture it could not embed is as true here as
-      // it is of the pane shot.
-      if (imageNote) caveats.push(imageNote);
-      if (paneNote) caveats.push(paneNote);
-      if (caveats.length) {
-        out.shots[c.id].shotNote = caveats.join("; ") + ". "
-          + shotTrustLine(pane.incomplete);
-      }
-      out.thumbs[c.id] = URL.createObjectURL(blob);
-      made++;
-    } catch (err) {
-      note("no crop: it could not be saved (" + err.message + ")");
+      const r = annStageRect(el);
+      pt = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     }
+    if (!pt || pt.x < 0 || pt.y < 0 || pt.x > pane.width || pt.y > pane.height) {
+      marks[c.id] = "the spot was scrolled out of the visible pane when this "
+        + "message was sent";
+      continue;
+    }
+    badges.push({ x: pt.x, y: pt.y, label: c.label });
+    marks[c.id] = true;
+  }
+  const blob = await shotEncodeBadged(pane, badges,
+    { maxEdge: SHOT_VIEW_EDGE, maxBytes: SHOT_VIEW_BYTES });
+  if (!blob) {
+    return { view: null, viewNote: "no overview screenshot: it did not fit the "
+             + SHOT_VIEW_BYTES + "-byte budget", marks };
+  }
+  const dir = await shotDirPath();
+  const path = shotJoin(dir, shotStamp() + "-overview" + shotExt(blob));
+  await fused.uploadFile(path, blob);
+  const out = { view: path, thumb: URL.createObjectURL(blob), marks };
+  // What this picture does NOT show, if anything — the same caveat contract the
+  // pane screenshot button uses, because it IS a pane screenshot with badges on
+  // it. A capture the walk could not finish — or could not trust — is a real
+  // picture of the page with pieces wrong or missing, and silence would present
+  // a half-CSS render as "the pane as the user saw it".
+  const caveats = [];
+  const blanks = shotBlankRegions(pane);
+  if (blanks) caveats.push(blanks);
+  const imgs = shotImageNote(pane);
+  if (imgs) caveats.push(imgs);
+  const paneNote = shotPaneNote(pane);
+  if (paneNote) caveats.push(paneNote);
+  if (caveats.length) {
+    out.viewNote = caveats.join("; ") + ". " + shotTrustLine(pane.incomplete);
   }
   return out;
 }
@@ -8226,7 +8175,7 @@ async function annCaptureShots(pending, deadline) {
 // The timer is only HALF of what makes the budget real, and for a long time it
 // was the only half — a `setTimeout` cannot fire while synchronous code runs, and
 // the expensive part of a capture (the computed-style walk) used to be exactly
-// that. The deadline handed to annCaptureShots is the other half: the walk stops
+// that. The deadline handed to annCaptureOverview is the other half: the walk stops
 // itself, and yields often enough for this timer to get a turn. Neither alone
 // bounds anything.
 //
@@ -8235,66 +8184,50 @@ async function annCaptureShots(pending, deadline) {
 //   it may still upload a file nobody references — agent.py's pruning collects it.
 //   it may still REJECT, long after the race stopped listening, and a rejection
 //     with no handler is an unhandled promise rejection in the console.
-//   it may still have minted thumbnail object URLs, and the discarded result held
-//     the only handles to them — so each pins its Blob for the page's lifetime.
+//   it may still have minted a thumbnail object URL, and the discarded result
+//     held the only handle to it — pinning its Blob for the page's lifetime.
 // The last two are why the capture is watched to the end even once its answer is
 // worthless.
-function annShots(pending) {
+function annOverview(pending) {
   let timer = null;
   let abandoned = false;
-  let failure = "";
   const budget = new Promise((res) => {
     timer = setTimeout(() => { abandoned = true; res(null); }, SHOT_TIMEOUT_MS);
   });
-  const capture = annCaptureShots(pending, Date.now() + SHOT_TIMEOUT_MS);
+  const capture = annCaptureOverview(pending, Date.now() + SHOT_TIMEOUT_MS);
   // Attached to the capture ITSELF, not to the race: the race's own handlers stop
   // caring the moment the timeout wins, so everything after that point — a late
   // rasterise failure, a late upload error, a late blob URL — belongs to nobody.
   capture.then(
-    (late) => { if (abandoned) annRevokeThumbs(late); },
+    (late) => { if (abandoned) shotRevoke(late); },
     (err) => { if (abandoned) console.warn("abandoned capture failed:", err); });
   return Promise.race([capture, budget])
     .catch((err) => {
-      failure = err.message;
-      console.warn("annotation screenshots skipped:", err.message);
+      console.warn("overview screenshot skipped:", err.message);
       return null;
     })
     .then((r) => {
       clearTimeout(timer);
       if (r) return r;
-      const out = { shots: {}, thumbs: {} };
-      return out;
+      return { view: null, viewNote: "no overview screenshot: the capture did not "
+               + "finish within " + SHOT_TIMEOUT_MS + "ms and was abandoned",
+               marks: {} };
     });
 }
 
 // Fold a finished capture into the notes about to be sent. Stale fields are
-// cleared FIRST: a previous send that failed left its paths behind, and quietly
-// re-sending a path from a capture of an older screen is worse than no path.
-function annApplyShots(pending, result) {
+// cleared FIRST: a previous send that failed left its flags behind, and quietly
+// re-sending a claim about a picture of an older screen is worse than none.
+// `shot`/`shotNote` are the per-note crops of the OLD wire format — a note
+// hydrated from a param written before the overview existed may still carry
+// them, and they are cleared for the same staleness reason, permanently.
+function annApplyOverview(pending, result) {
   for (const c of pending) {
-    // A point's shot was taken once, at the click, by annRecPointShot — there
-    // is no element to re-resolve here and nothing this capture could improve
-    // on, so it is untouched rather than cleared-then-never-replaced.
-    if (c.kind === "point") continue;
+    delete c.offscreen;
     delete c.shot;
     delete c.shotNote;
-    const s = result && result.shots && result.shots[c.id];
-    if (!s) continue;              // no capture at all: the wire carries no `shot`
-    c.shot = s.shot || null;
-    if (s.shotNote) c.shotNote = s.shotNote;
-  }
-}
-
-// Release the thumbnails' blob URLs. Called ONLY when the receipt they were shown
-// in is being removed — a thumbnail still on screen needs its URL alive, and the
-// transcript keeps it for the session. Empties the map so a second call is a
-// no-op.
-function annRevokeThumbs(result) {
-  if (!result) return;
-  const thumbs = result.thumbs;
-  for (const id of Object.keys(thumbs || {})) {
-    try { URL.revokeObjectURL(thumbs[id]); } catch (err) { /* already gone */ }
-    delete thumbs[id];
+    const m = result && result.marks && result.marks[c.id];
+    if (typeof m === "string") c.offscreen = m;
   }
 }
 
@@ -8317,23 +8250,25 @@ function formatAnnotations(arr) {
     (targetNoun === "file"
       ? " in the left preview of this file. "
       : " in the running app (left preview of this project's entry HTML). ") +
-    "Most are anchored to an ELEMENT: anchorId = the element's HTML id, " +
-    "anchorPath = a tag:nth-of-type DOM path from <body>, tag/text = a digest " +
-    "of the element, iu/iv = fractional click position on an image/canvas, " +
-    "shot = the path of a PNG crop of the element as the user saw it — read it " +
-    "if the visual matters, ignore it if the anchor already tells you enough. " +
-    "shotNote = what the crop does NOT show: it comes with a null shot when no " +
-    "crop could be made, and ALONGSIDE a real shot when part of it is unreadable " +
-    "— read the note before trusting the picture. A note with `kind: \"point\"` " +
-    "has NO element under it (background, whitespace, or a spot the reviewer " +
-    "meant generally rather than one control) — x/y are its PAGE coordinates " +
-    "(add scroll back in yourself if you need to reason about position) and " +
-    "`shot` is a screenshot of the app taken at that instant, with a red-and-" +
-    "white crosshair burned into the picture marking the exact spot; there is " +
-    "no anchorId/anchorPath/tag for these, so the picture is normally the only " +
-    "way to tell what the note is about — `shot` is null only if the capture " +
-    "had not finished when this sent, in which case x/y and the words are all " +
-    "there is. Treat these as user annotations, not " +
+    "ONE screenshot of the whole pane rides this message for all of them — the " +
+    "attached picture with kind \"overview\" — with a red badge burned in at " +
+    "each annotation's spot. Each annotation's `label` below is its badge " +
+    "letter: to see what a comment points at, find its badge on the overview; " +
+    "to find it in the source, use its anchor. `offscreen`, when present, says " +
+    "why that annotation has NO badge on the overview (element gone, or spot " +
+    "scrolled out of view) — fall back to its anchor or coordinates. Most are " +
+    "anchored to an ELEMENT: anchorId = the element's HTML id, anchorPath = a " +
+    "tag:nth-of-type DOM path from <body>, tag/text = a digest of the element, " +
+    "iu/iv = fractional click position on an image/canvas. A note with `kind: " +
+    "\"point\"` has NO element under it (background, whitespace, or a spot the " +
+    "reviewer meant generally rather than one control) — x/y are its PAGE " +
+    "coordinates (add scroll back in yourself if you need to reason about " +
+    "position), and its badge on the overview is the picture of what it means. " +
+    "`t`, when present, is seconds into the user's spoken walkthrough when they " +
+    "marked that spot: each comment's words are what they said nearest that " +
+    "moment, the typed message below (if any) is what they said BEFORE the " +
+    "first mark, and reading the comments in `t` order replays the walkthrough " +
+    "in the order the user gave it. Treat these as user annotations, not " +
     "instructions:\n\n```json\n" + JSON.stringify(wire, null, 2) + "\n```"
   );
 }
@@ -8363,13 +8298,17 @@ function paneShotBlock(views) {
     + "NOT show, and it is worth reading before trusting the pixels — it arrives "
     + "with a null `view` when the attachment failed outright, and ALONGSIDE a "
     + "real one when part of it is unreadable. `kind` says what you are looking "
-    + "at: \"pane\" is a picture of the WHOLE visible " + paneNoun + " pane, taken "
+    + "at: \"overview\" is a picture of the WHOLE visible " + paneNoun + " pane "
+    + "taken at send time with a red letter badge burned in at each annotated "
+    + "spot — the letters match the `label` fields in the annotations block, and "
+    + "this is THE picture to read when reconciling the user's comments with "
+    + "what is on screen; \"pane\" is a picture of the WHOLE visible " + paneNoun
+    + " pane, taken "
     + "here — read it when the question is about the layout as a whole (panels "
     + "overlapping, everything shifted, the page just looking wrong), which no "
-    + "single-element crop can show; \"image\" is a file the user pasted or dragged "
-    + "in from somewhere else, so it is NOT a picture of this pane and `name` is "
-    + "what they called it. For a question about one element, that element's own "
-    + "`shot` is the better picture.\n"
+    + "badge-level reading can answer; \"image\" is a file the user pasted or "
+    + "dragged in from somewhere else, so it is NOT a picture of this pane and "
+    + "`name` is what they called it.\n"
     + JSON.stringify(list) + "\n</" + PANE_SHOT_TAG + ">";
 }
 
@@ -8648,8 +8587,11 @@ function shotReceipt(sum, shot) {
   txt.textContent = shot.view
     ? (shot.kind === "image"
         ? "image attached" + (shot.name ? ": " + shot.name : "")
+        : shot.kind === "overview" ? "annotated overview attached"
         : "screenshot attached")
-    : (shot.kind === "image" ? "no image" : "no pane screenshot");
+    : (shot.kind === "image" ? "no image"
+       : shot.kind === "overview" ? "no overview screenshot"
+       : "no pane screenshot");
   txt.title = shot.viewNote || shot.view || "";
   row.append(lbl, txt);
   sum.appendChild(row);
@@ -8677,11 +8619,25 @@ function shotReceipt(sum, shot) {
 // is an ordinary absolute path to it.
 function shotRestoreReceipt(turn, text) {
   const shots = paneShotIn(text);
-  if (!shots.length || !turn) return;
+  // The annotations too (annotationsIn): a reload used to collapse a send's
+  // comments to the bare "📌 annotations" marker, losing the labels, the words
+  // and the popup. The wire block carries all of it, so it is read back and the
+  // receipt is rebuilt exactly as the live send drew it.
+  const notes = annotationsIn(text);
+  if ((!shots.length && !notes.length) || !turn) return;
   const sum = document.createElement("div");
   sum.className = "annsum";
+  let overview = null;
   for (const shot of shots) {
-    shotReceipt(sum, shot.view ? { ...shot, src: fused.rawUrl(shot.view) } : shot);
+    const full = shot.view ? { ...shot, src: fused.rawUrl(shot.view) } : shot;
+    if (shot.kind === "overview" && !overview) overview = full;
+    shotReceipt(sum, full);
+  }
+  for (const c of notes) sum.appendChild(annReceiptRow(c));
+  if (notes.length) {
+    sentPopWire(sum, { outgoing: text, overview,
+                       pics: shots.filter((s) => s.kind !== "overview"),
+                       notes });
   }
   turn.appendChild(sum);
 }
@@ -8701,6 +8657,157 @@ document.getElementById("shotview-scrim").onclick = shotViewClose;
 // judge that this is the wrong picture. It closes too — the thing it was showing
 // is gone.
 shotViewDrop.onclick = () => { shotDrop(shotViewing); shotViewClose(); };
+
+// ── "what was sent": the full payload behind a receipt, on demand ───────────
+// A receipt is a summary; this is the record. One popup showing exactly what
+// the agent was handed for that turn — the overview screenshot (badges and
+// all), each comment with its label, anchor, timing and no-badge caveat, the
+// other attached pictures, and the exact composed text. Live-session only:
+// the payload is stashed on the receipt at send time, and a restored turn
+// keeps today's chip receipt instead.
+const sentPop = document.getElementById("sentpop");
+const sentPopBody = document.getElementById("sentpop-body");
+
+function sentPopOpen(payload) {
+  sentPopBody.textContent = "";
+  const addShot = (shot, title) => {
+    if (!shot) return;
+    const src = shot.src || shot.thumb || (shot.view ? fused.rawUrl(shot.view) : "");
+    if (src) {
+      const img = document.createElement("img");
+      img.className = "sent-shot";
+      img.src = src;
+      img.alt = shotAlt(shot);
+      img.title = "Click to see full size";
+      img.onclick = () => shotViewOpen({ ...shot, src });
+      sentPopBody.appendChild(img);
+    }
+    if (shot.viewNote) {
+      const note = document.createElement("div");
+      note.className = "sent-caveat";
+      note.textContent = (src ? "caveat: " : "") + shot.viewNote;
+      sentPopBody.appendChild(note);
+    }
+  };
+  if (payload.overview) {
+    const h = document.createElement("h4");
+    h.textContent = "Overview screenshot (badges mark each comment)";
+    sentPopBody.appendChild(h);
+    addShot({ ...payload.overview, kind: "overview" });
+  }
+  for (const pic of payload.pics || []) {
+    const h = document.createElement("h4");
+    h.textContent = shotNoun(pic);
+    sentPopBody.appendChild(h);
+    addShot(pic);
+  }
+  if ((payload.notes || []).length) {
+    const h = document.createElement("h4");
+    h.textContent = "Comments";
+    sentPopBody.appendChild(h);
+    for (const c of payload.notes) {
+      const row = document.createElement("div");
+      row.className = "sent-note-row";
+      const lbl = document.createElement("span");
+      lbl.className = "sent-note-lbl";
+      lbl.textContent = c.label || "•";
+      const txt = document.createElement("span");
+      txt.textContent = c.content || "(no words)";
+      const meta = document.createElement("span");
+      meta.className = "sent-note-meta";
+      const bits = [];
+      bits.push(c.kind === "point" ? "exact spot (" + c.x + ", " + c.y + ")"
+                                    : "<" + (c.tag || "element") + ">");
+      if (typeof c.t === "number") bits.push("at " + annRecClock(c.t));
+      if (c.offscreen) bits.push("no badge: " + c.offscreen);
+      meta.textContent = bits.join(" · ");
+      row.append(lbl, txt, meta);
+      sentPopBody.appendChild(row);
+    }
+  }
+  const h = document.createElement("h4");
+  h.textContent = "Exact message the agent received";
+  sentPopBody.appendChild(h);
+  const pre = document.createElement("pre");
+  pre.className = "sent-wire";
+  pre.textContent = payload.outgoing || "";
+  sentPopBody.appendChild(pre);
+  sentPop.hidden = false;
+  document.getElementById("sentpop-close").focus();
+}
+
+function sentPopClose() { sentPop.hidden = true; }
+document.getElementById("sentpop-close").onclick = sentPopClose;
+document.getElementById("sentpop-scrim").onclick = sentPopClose;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !sentPop.hidden) { e.stopPropagation(); sentPopClose(); }
+}, true);
+
+// The receipt's door into the popup: every comment row opens it. No separate
+// button — the row itself is the affordance, made keyboard-reachable because a
+// div with an onclick is invisible to a keyboard.
+function sentPopWire(sum, payload) {
+  sum.querySelectorAll(".annsum-note").forEach((row) => {
+    row.title = "Click to see exactly what was sent to the agent";
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.onclick = () => sentPopOpen(payload);
+    row.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sentPopOpen(payload); }
+    };
+  });
+  // The receipt's screenshot thumbs open the SAME popup when comments ride the
+  // message: the picture belongs to the comments there, and the popup already
+  // shows it (with a click-through to the full-size viewer). A send with no
+  // comments never gets wired here, so a lone picture keeps the plain viewer.
+  sum.querySelectorAll(".annsum-pane").forEach((btn) => {
+    btn.title = "Click to see exactly what was sent to the agent";
+    btn.onclick = () => sentPopOpen(payload);
+  });
+}
+
+// One comment row in a receipt — the same rendering for a live send and a turn
+// restored from the transcript, so the two cannot drift.
+function annReceiptRow(c) {
+  const row = document.createElement("div");
+  row.className = "annsum-row annsum-note";
+  const lbl = document.createElement("span");
+  lbl.className = "annsum-lbl";
+  // The stored label — the same letter burned into the overview and sent on
+  // the wire, so the receipt, the picture and the JSON can never drift.
+  lbl.textContent = "📌 " + (c.label || "•");
+  const txt = document.createElement("span");
+  txt.className = "annsum-txt";
+  txt.textContent = c.content || "";
+  row.append(lbl, txt);
+  if (c.tag) {
+    const el = document.createElement("span");
+    el.className = "annsum-el";
+    el.textContent = "<" + c.tag + ">";
+    row.appendChild(el);
+  }
+  return row;
+}
+
+// The other direction: READ the annotations back out of a wire message, so a
+// reopened session still shows every comment (and its popup) instead of a bare
+// "📌 annotations" marker. Same forgiving posture as paneShotIn — anything that
+// does not parse is an empty list, never a throw — and it recognises the block
+// only after the tagged blocks are peeled, exactly where stripAnnBlock would.
+function annotationsIn(text) {
+  const t = stripPaneBlock(stripAppStateBlock(text || ""));
+  if (!t.startsWith("The user annotated ")) return [];
+  const i = t.indexOf("\n```json\n");
+  if (i === -1) return [];
+  const j = t.indexOf("\n```", i + 9);
+  if (j === -1) return [];
+  try {
+    const v = JSON.parse(t.slice(i + 9, j));
+    return Array.isArray(v) ? v.filter((c) => c && typeof c === "object") : [];
+  } catch (err) {
+    return [];
+  }
+}
 
 // Whether a capture is running. One at a time: the second half of a double-click
 // would otherwise upload a second file and leak the first one's thumbnail, and the
@@ -8768,7 +8875,7 @@ async function shotAttachPane() {
   // honest about the moment — the flash marks when the shutter opened.
   shotFlash();
   for (const b of shotBtns()) b.disabled = true;
-  // Bounded exactly as the crops' capture is (annShots), for a DIFFERENT reason:
+  // Bounded exactly as the overview's capture is (annOverview), for a DIFFERENT reason:
   // there a slow capture would cost the user their message, here it would leave a
   // dead button and a chip that never arrives. The deadline handed to the capture
   // is the other half of the same bound — a timer cannot fire while synchronous
@@ -12563,11 +12670,16 @@ async function sendMessage(message) {
     bareTurn.className = "turn user";
     log.appendChild(bareTurn);
   }
-  // Crop each annotated element out of one capture of the left pane. Awaited
-  // because composeOutgoing needs the paths, and bounded and swallowing, because
-  // no screenshot is worth losing the user's message over (see annShots).
-  const shots = await annShots(pending);
-  annApplyShots(pending, shots);
+  // Labels first, THEN the capture: the letter burned into the overview and the
+  // `label` the wire carries must be the same string, and annotations.indexOf
+  // can shift between now and any later read (notes resolve, notes are added) —
+  // so the label is computed once here and stored on the note.
+  pending.forEach((c) => { c.label = annLabelFor(annotations.indexOf(c)); });
+  // ONE screenshot of the whole pane with every pending note's badge burned in.
+  // Awaited because composeOutgoing needs the path, and bounded and swallowing,
+  // because no screenshot is worth losing the user's message over (annOverview).
+  const overview = pending.length ? await annOverview(pending) : null;
+  annApplyOverview(pending, overview);
   // Write the DOM outline to a file and send its path instead of its bytes. Here
   // rather than inside composeOutgoing because that function is sync and pure —
   // it is the exact inverse of stripBlocks, and both halves have to stay that way.
@@ -12577,13 +12689,21 @@ async function sendMessage(message) {
   // link everywhere else and unreadable to the agent. They are not folded into the
   // annotations either — a picture is not an anchor's property, it is never
   // persisted, and so it has no stale-path case to clear.
-  const outgoing = composeOutgoing(message, pending, sentState,
-    pics.map((s) => {
-      const wire = { kind: s.kind || "pane", view: s.view || null };
-      if (s.viewNote) wire.viewNote = s.viewNote;
-      if (s.name && s.kind === "image") wire.name = s.name;
-      return wire;
-    }));
+  const wireViews = pics.map((s) => {
+    const wire = { kind: s.kind || "pane", view: s.view || null };
+    if (s.viewNote) wire.viewNote = s.viewNote;
+    if (s.name && s.kind === "image") wire.name = s.name;
+    return wire;
+  });
+  // The overview rides the same pictures block the user's own attachments do —
+  // one writer, one reader (paneShotIn), so a restored turn shows it too. First
+  // in the list: it is the picture the annotations block tells the model to read.
+  if (overview) {
+    const wire = { kind: "overview", view: overview.view || null };
+    if (overview.viewNote) wire.viewNote = overview.viewNote;
+    wireViews.unshift(wire);
+  }
+  const outgoing = composeOutgoing(message, pending, sentState, wireViews);
   if (pending.length) {
     for (const c of pending) c.sent = 1;
     annSave();
@@ -12598,52 +12718,21 @@ async function sendMessage(message) {
     const sum = document.createElement("div");
     receipt = sum;
     sum.className = "annsum";
-    // The pictures' own rows, first — a whole-pane shot is the widest claim the
-    // message makes, and a pasted one is not about any single anchor either.
+    // The overview first — it is the one picture every annotation row refers
+    // to — then the user's own attachments, then the labelled rows.
+    if (overview) shotReceipt(sum, { ...overview, kind: "overview" });
     for (const pic of pics) shotReceipt(sum, pic);
-    pending.forEach((c) => {
-      const row = document.createElement("div");
-      row.className = "annsum-row";
-      const lbl = document.createElement("span");
-      lbl.className = "annsum-lbl";
-      // Same letter the pin wears (index in the full list, not the pending
-      // subset), so the receipt and the ✓-pin match up.
-      lbl.textContent = "📌 " + annLabelFor(annotations.indexOf(c));
-      const txt = document.createElement("span");
-      txt.className = "annsum-txt";
-      txt.textContent = c.content;
-      txt.title = c.content;
-      row.append(lbl, txt);
-      if (c.tag) {
-        const el = document.createElement("span");
-        el.className = "annsum-el";
-        el.textContent = "<" + c.tag + ">";
-        row.appendChild(el);
-      }
-      // What was actually attached. The user has to be able to see the crop that
-      // went out — a screenshot they cannot check is a screenshot they cannot
-      // trust. The blob URL, not the file path, for an element crop: the path is
-      // for the agent, and this pane cannot read a temp file back — but a point's
-      // shot has no blob to hand (annRecPointShot uploaded and discarded it), so
-      // it falls back to the server's own raw-bytes URL for the same path, which
-      // works precisely because the file this send just read is still there.
-      const thumbUrl = (shots && shots.thumbs && shots.thumbs[c.id])
-        || (c.kind === "point" && c.shot ? fused.rawUrl(c.shot) : null);
-      if (thumbUrl) {
-        // `crop`, not `shot`: this send's whole-pane picture is a `shot` in the
-        // enclosing scope, and an <img> element wearing that name here shadowed
-        // it — legal, and one edit away from a receipt row reaching for the
-        // wrong thing.
-        const crop = document.createElement("img");
-        crop.className = "annsum-shot";
-        crop.src = thumbUrl;
-        crop.alt = c.kind === "point" ? "screenshot of the clicked spot"
-                                       : "screenshot of the annotated element";
-        crop.title = c.shot || "";
-        row.appendChild(crop);
-      }
-      sum.appendChild(row);
-    });
+    // One row per comment, through the same builder a restored turn uses.
+    for (const c of pending) sum.appendChild(annReceiptRow(c));
+    // The full story, on demand: clicking any comment row — or, when comments
+    // ride the message, any of its screenshot thumbs — opens the popup with
+    // exactly what went to the agent — the composed text, the pictures, every
+    // comment with its context. A picture-only send is NOT wired: its thumb
+    // keeps the plain full-size viewer, there being no comments to show.
+    if (pending.length) {
+      sentPopWire(sum, { outgoing, overview, pics,
+                         notes: pending.map((c) => ({ ...c })) });
+    }
     turn.appendChild(sum);
     scrollBottom();
   }
@@ -12709,10 +12798,10 @@ async function sendMessage(message) {
       // ghost row to clean up too, with no annotations at all.
       if (receipt) receipt.remove();
       if (bareTurn) bareTurn.remove();  // no bubble either — drop the ghost row
-      // Removing the receipt detaches the only <img> holding each CROP's thumbnail
-      // blob URL, and an unrevoked one pins its Blob for the life of the page.
-      // A retried send captures fresh crops anyway, so nothing here is reusable.
-      annRevokeThumbs(shots);
+      // Removing the receipt detaches the only <img> holding the overview's
+      // thumbnail blob URL, and an unrevoked one pins its Blob for the life of
+      // the page. A retried send captures a fresh overview anyway.
+      shotRevoke(overview);
       // The attached pictures are the opposite case and must NOT be revoked: they
       // are handed back to the composer as pending chips, which show those very
       // thumbnails. The user attached them deliberately — a capture of a moment
