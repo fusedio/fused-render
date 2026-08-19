@@ -2142,7 +2142,8 @@ def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(defaul
     (routers/apps.py): the fork-safe helper, permission mode "auto" for the
     same reason given there (nobody is polling `decide` until the page
     attaches, so "prompt" would park the first tool call for an hour), and a
-    recorder thread so the run lands in the folder's session sidecar. The
+    recorder thread so the run's session id and its commit land even though
+    nobody is polling the chat. The
     caller attaches its chat iframe with the returned run_id.
 
     `active_fix_run_id` guards against a concurrent second fixer on the same

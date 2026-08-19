@@ -6,7 +6,7 @@ Two directions, and neither exists in the `claude` template:
 * **push** — `template.html` snapshots the left iframe (console errors, params,
   a bounded DOM outline) at send time and prepends it to the message inside a
   `<live-app-state>` block. The block is for the model, not for the user, so
-  everything user-facing (the chat log, the sidecar preview, the commit
+  everything user-facing (the chat log, the session-list preview, the commit
   subject, a re-attach match) has to see the message WITHOUT it.
 * **pull** — a second MCP tool on the same server (`app_state`) lets the agent
   re-read the page after an edit, over the same file round trip the approval
@@ -570,7 +570,7 @@ def test_the_state_block_reaches_the_cli_but_not_the_users_transcript(
         agent, tmp_path, monkeypatch):
     """The user typed the message, not the block. So the model gets the whole
     thing on the command line, while everything replayed back to the page —
-    the re-attach match, the sidecar preview, the commit subject — gets the
+    the re-attach match, the session-list preview, the commit subject — gets the
     message the user actually typed."""
     agent.RUNS = str(tmp_path / "runs")
     project = tmp_path / "proj"
@@ -588,7 +588,7 @@ def test_history_hides_the_state_block_from_the_restored_transcript(agent,
                                                                     tmp_path):
     """The transcript on disk holds what claude was SENT, so the block comes
     back on every restore. Stripped in one place — here — rather than in the
-    page, so the sidecar preview, the commit subject and the restored log
+    page, so the session-list preview, the commit subject and the restored log
     cannot disagree about what the user said."""
     project = tmp_path / "proj"
     project.mkdir()

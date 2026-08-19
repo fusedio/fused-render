@@ -260,8 +260,7 @@ def test_the_pane_has_exactly_one_master(source):
 def test_the_selection_is_not_a_param(source):
     # THE HARD CONSTRAINT. A param written by this template mirrors into the
     # explorer's own URL, and up there a revision is carried onto the next file by
-    # a path change, saved into the file's session sidecar and replayed on the next
-    # bare open, and stored in bookmarks. So the pane's subject is memory, and
+    # a path change and stored in bookmarks. So the pane's subject is memory, and
     # `structural()` — the URL-derived repaint key — must not mention it.
     key = source[source.index("const structural = ()"):]
     key = key[:key.index(";")]

@@ -460,7 +460,7 @@ def test_an_unreachable_appenv_refuses_the_clone_instead_of_crashing(
         reader, bundle, tmp_path, monkeypatch):
     # The fail-CLOSED branch, the one no happy path covers. A copy of the
     # template folder taken WITHOUT its `shared/` sibling (the degradation
-    # test_annotate_comments.py documents for the same helper) must produce the
+    # test_template_appenv.py documents for the same helper) must produce the
     # readable "can't tell whether that folder is on a mount" refusal — not an
     # ImportError the page shows as a stuck spinner.
     real_import = builtins.__import__

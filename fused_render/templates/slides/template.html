@@ -503,7 +503,7 @@
   // ---------------- state ----------------
   const S={ doc:null, title:null, model:null, mediaDir:"", mtime:0, cur:0, sel:null, selIds:[],
             tcell:null, scale:1, mode:"view", undo:[], redo:[], dirty:false,
-            editable:true, sidecarWritable:true };
+            editable:true };
   window.__S=S;   // exposed for programmatic / AI-driven inspection of live state
 
   // ---------------- small utils ----------------
@@ -1119,7 +1119,7 @@
   // ========================================================= load the bound file
   function load(p){
     hideLoadingSkeleton();
-    S.doc=p.doc; S.model=p.model; S.mtime=p.mtime; S.mediaDir=p.media_dir; S.title=p.title||null;
+    S.doc=p.doc; S.model=p.model; S.mtime=p.mtime; S.mediaDir=p.media_dir; S.title=null;
     untitled=!!p.library;
     S.cur=Math.min(Math.max(0,parseInt(fused.params.get("slide")||"0",10)),S.model.slides.length-1);
     S.selIds=[]; S.sel=null; S.undo.length=0; S.redo.length=0; refreshUndoBtns();
@@ -1128,15 +1128,15 @@
     $("deckName").textContent=S.title||DEFAULT_TITLE;
     // Read-only verdict (SPEC RO-4/RO-5): viewing and model editing (cache
     // autosave) stay live; only the explicit .pptx overwrite is refused.
-    S.editable=p.editable!==false; S.sidecarWritable=p.sidecar_writable!==false;
+    S.editable=p.editable!==false;
     fusedRoBadge.update($("ro"), S.editable?"":(p.readonly_message||"Read-only"),
       S.editable?"":((p.readonly_tooltip||"")+" Changes can be saved to a new file via File ▸ Save as."));
     document.querySelector('#fileMenu [data-file="save"]').disabled=!S.editable;
     // Rename only applies to a new/untitled draft, where the name seeds the
     // first-save file name. Once the deck is a real saved file, its name is its
     // identity — Save won't rename it, so relabelling the title here is
-    // confusing; keep it fixed. (Also gated on sidecar writability, RO-6.)
-    const canRename=untitled&&S.sidecarWritable;
+    // confusing; keep it fixed.
+    const canRename=untitled;
     $("deckName").contentEditable=canRename?"true":"false";
     $("deckName").title=canRename?"Name this deck — used as the file name when you first save":"";
     $("saved").textContent=untitled?"Draft — Save to name & choose a location":"All changes saved";
@@ -1370,14 +1370,10 @@
       if(e.key==="Enter"){ e.preventDefault(); $("deckName").blur(); }
       else if(e.key==="Escape"){ e.preventDefault(); $("deckName").textContent=S.title||DEFAULT_TITLE; $("deckName").blur(); }
     };
-    $("deckName").onblur=async()=>{ const n=$("deckName").textContent.trim();
-      if(!S.sidecarWritable){ // belt-and-braces: contentEditable is already off
-        $("deckName").textContent=S.title||DEFAULT_TITLE;
-        if(n!==(S.title||DEFAULT_TITLE)) toast("Read-only — the deck can't be renamed");
-        return; }
-      const t=(n&&n!==DEFAULT_TITLE)?n:"";
-      try{ await py({action:"set_title",file:FILE,title:t}); S.title=t||null; }
-      catch(e){ toast("Rename failed: "+e.message); } };
+    $("deckName").onblur=()=>{ const n=$("deckName").textContent.trim();
+      // In-page only: the name seeds the first-save file name, nothing persists.
+      S.title=(n&&n!==DEFAULT_TITLE)?n:null;
+      $("deckName").textContent=S.title||DEFAULT_TITLE; };
     // keyboard
     document.addEventListener("keydown",e=>{
       if(P.on){ // present mode owns the keyboard

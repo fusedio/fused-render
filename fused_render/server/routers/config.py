@@ -11,7 +11,6 @@ from fused_render.server.common import get_start_dir
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import prefs as shell_prefs
-from fused_render.shell import storage as shell_storage
 from fused_render.shell.seed import fused_dir
 
 router = APIRouter()
@@ -81,13 +80,6 @@ def api_config(
         # behaviour change and belongs with the mount code, not here.)
         "calls_dir": canonical_fs_path(os.path.abspath(shell_calls.store_dir())),
         "calls_suffix": shell_calls.SUFFIX,
-        # Root of the per-file sidecar subtree (~/.fused-render/sidecar,
-        # D83-reversal — see shell/storage.py's sidecar_path). The runtime
-        # (static/runtime.js) mirrors sidecar_path's mapping algorithm so
-        # every template can compute a sidecar location client-side without a
-        # round trip per lookup; only this root has to come from the server.
-        # Canonicalized for the same reason as calls_dir above.
-        "sidecar_root": canonical_fs_path(os.path.join(shell_storage.home_dir(), "sidecar")),
         # Whether POST /api/fs/pick-folder can raise a REAL OS folder dialog
         # here (server/dirpicker.py). A template asking the user where to write
         # something uses the native chooser when this is true and its own in-page

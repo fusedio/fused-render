@@ -19,12 +19,15 @@ subprocess + stream-json log + poll loop).
 >   exists and is still the chat, but it is a **different template** from the one
 >   below: split layout, both kinds of target (file *and* directory), a
 >   `condition.py` gate, annotation tools, screenshots and message queueing.
+> - **D359** deleted the per-file sidecar outright, so the `claudeSessions`
+>   shape described below (and the `<file>.json` file it lived in, which **D205**
+>   had already moved under `home_dir()`) no longer exists anywhere: the surviving
+>   template's session list is a scan of `~/.claude/projects` alone.
 >
 > What below is still **true of the surviving template**, because it was inherited
 > rather than rewritten: the `_file` param contract, `cwd = dirname(target)` and
 > the `~/.claude/projects/<munged-cwd>` consequence, the detached `claude -p`
-> stream-json + poll design, the sidecar's `claudeSessions` shape (though the
-> sidecar itself moved out of the target's directory — **D205**), copy-on-resume,
+> stream-json + poll design, copy-on-resume,
 > the one-tool stdio MCP **permission bridge**, the `fused_render_claude-<uid>`
 > run-dir root and its per-uid reasoning, and the Windows notes. What is **stale**:
 > the `.html`/`.htm`-only binding and the `["_render", "code", "claude"]` mode
@@ -402,7 +405,6 @@ claude (headless)                    agent.py / browser
     `session_id` is meaningless to other templates but harmless).
 11. **Tests stop at the CLI boundary.** `agent.py` shells out to a
     user-installed binary, so nothing here runs `claude`:
-    `test_claude_agent_sidecar.py` covers the sidecar,
     `test_claude_permission_bridge.py` drives `permission_server.py` over its
     own stdio JSON-RPC and asserts the spawn line, and the registry test pins
     resolution (`.html` → `_render, code, claude`). What no test can catch is

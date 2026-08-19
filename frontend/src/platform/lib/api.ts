@@ -682,20 +682,6 @@ export function putBookmarks(bookmarks: unknown[]): Promise<void> {
   return putJson<unknown>("/api/bookmarks", bookmarks).then(() => undefined);
 }
 
-export interface BookmarkHistoryEntry {
-  id: string;
-  url: string;
-  name?: string;
-  created_at?: number;
-  icon?: string;
-}
-
-// Best-effort: append/refresh this bookmark in its target file's .html.json
-// sidecar (bookmarkHistory). Server no-ops for sentinel/dir-gone/non-file urls.
-export function recordBookmarkHistory(entry: BookmarkHistoryEntry): Promise<void> {
-  return postJson<unknown>("/api/bookmarks/history", entry).then(() => undefined);
-}
-
 // Write a portable `<name>.bookmark` file next to the bookmark's target(s)
 // (SB-8). The frontend computes dir/filename/content (lib/bookmark-file.ts);
 // the server validates and writes, overwriting any previous save.

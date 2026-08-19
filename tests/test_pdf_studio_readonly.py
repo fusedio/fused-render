@@ -1,7 +1,7 @@
 """Read-only-file gating for the pdf_studio template (SPEC §13.5, RO-3).
 
 pdf.py is a stdlib-at-import runPython target (pikepdf/pymupdf are lazy
-imports), so — like test_annotate_comments.py — these load it via importlib and
+imports), so — like test_annotate_revert.py — these load it via importlib and
 drive `_save`/`main` directly. The write model: edits go to a working copy
 under WORKDIR; only save/rename touch the ORIGINAL, and both do it via
 parent-directory-level ops (`os.replace`, `os.rename`) that silently succeed on
