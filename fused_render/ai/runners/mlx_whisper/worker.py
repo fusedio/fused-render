@@ -1130,7 +1130,7 @@ def _transcribe_regions(audio, packs, fetched, task, language, initial_prompt,
             # What must not treat the interval as solid is the SPEAKER scoring —
             # diarization ran on the full waveform and routinely has turns inside
             # the gap — which is why `generate` hands `assign_speakers` the region
-            # list as a mask (D358).
+            # list as a mask (D364).
             at = _original_start(pack, float(segment.get("start") or 0.0))
             until = _original_end(pack, float(segment.get("end") or 0.0))
             if at >= until:

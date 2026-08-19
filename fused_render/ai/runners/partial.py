@@ -120,7 +120,7 @@ class Sink:
         # label a page renders now is the one the final file will carry.
         #
         # **`spans` is part of "the same arithmetic", not a refinement of it.**
-        # `mlx_whisper` packs VAD regions into one decode (AI-10f, D358), so a
+        # `mlx_whisper` packs VAD regions into one decode (AI-10f, D364), so a
         # segment can straddle a pause that was never transcribed, and the final
         # `assign_speakers` masks its scoring to where the speech actually was.
         # Without the same mask here the two labellings disagree on exactly those

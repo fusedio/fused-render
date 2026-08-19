@@ -416,7 +416,7 @@ def speaker_for(start, end, turns, spans=None):
     **`spans` masks the SCORING to the intervals where speech actually was**, and
     it exists because a segment can now straddle time that was never transcribed.
     `mlx_whisper` concatenates VAD regions into one `transcribe()` call (AI-10f,
-    D358), so Whisper hears one continuous sentence across a pause that is not in
+    D364), so Whisper hears one continuous sentence across a pause that is not in
     the clip it was given and can emit a segment whose remapped start and end sit
     in different regions. Its published start and end are RIGHT — the words
     really do sit either side of the pause, and a page seeking a player wants the
