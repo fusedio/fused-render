@@ -12,15 +12,16 @@
 // The cadence follows the state, not the clock: while something is running the
 // dot's colour can change on any tick, and while nothing is running the only
 // thing that can move is a completion nobody is waiting on this second. An idle
-// machine costs one `GET /api/tasks` every 30 seconds.
+// machine costs one compact `GET /api/tasks/pulse` every 30 seconds. Only the
+// Tasks page itself asks for titles, paths, descriptions, and message previews.
 //
 // WHAT IS NOT HERE: the route. "The reader has landed on /tasks" is the
 // sidebar's fact, not this module's — it calls markTasksSeen() — because a store
 // that reads location.pathname is a store that has to be told when the pathname
 // changes.
 import { useEffect, useState } from "react";
-import { getTasks } from "@platform/lib/api";
-import type { Task } from "@platform/lib/api";
+import { getTasksPulse } from "@platform/lib/api";
+import type { TaskPulseTask } from "@platform/lib/api";
 import {
   EMPTY_TASKS_PULSE,
   TASKS_SEEN_KEY,
@@ -37,7 +38,7 @@ import type { TasksPulse, TasksSeen } from "./tasks-lib";
 const ACTIVE_MS = 10_000;
 const IDLE_MS = 30_000;
 
-let tasks: Task[] = [];
+let tasks: TaskPulseTask[] = [];
 let seen: TasksSeen = readSeen();
 let pulse: TasksPulse = EMPTY_TASKS_PULSE;
 let timer: number | null = null;
@@ -94,7 +95,7 @@ async function poll() {
   inFlight = true;
   const departed = generation;
   try {
-    const answer = (await getTasks()).tasks ?? [];
+    const answer = (await getTasksPulse()).tasks ?? [];
     // A feeder took over, or a fresher publish landed, while this request was
     // in the air: this answer is already history. Drop it.
     if (feeders === 0 && generation === departed) publishTasks(answer);
@@ -126,7 +127,7 @@ function schedule() {
 }
 
 /** Hand over a known-fresh answer — what the Tasks page's own poll returned. */
-export function publishTasks(next: Task[]) {
+export function publishTasks(next: TaskPulseTask[]) {
   generation += 1;
   tasks = next;
   loaded = true;
