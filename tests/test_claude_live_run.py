@@ -124,6 +124,32 @@ def test_a_forked_session_id_still_matches(agent, target):
     assert agent._live_run(target, "sess-other") == {"run_id": ""}
 
 
+def test_an_unpolled_new_chat_is_still_found_by_its_cli_minted_id(agent, target):
+    """The Back-mid-start blind spot (Akshil, 2026-08-19): a NEW chat left
+    before its first poll has an empty `resumed_from` AND no `session` file —
+    the first poll is what writes that file, and no poll ever ran. The id the
+    reopened page holds (the transcript's filename) is sitting in out.jsonl's
+    first system row, so the lookup falls back to reading it there; without the
+    fallback this run was invisible and the reopened chat never streamed."""
+    d = _run_dir(agent, "20260819-090000-abc", file=target, resumed_from="")
+    with open(os.path.join(d, "out.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "system", "subtype": "init",
+                            "session_id": "sess-minted"}) + "\n")
+    assert agent._live_run(target, "sess-minted") == {"run_id": "20260819-090000-abc"}
+    # The fallback widens what can MATCH, never what matches anything: an id
+    # that is neither still finds no run.
+    assert agent._live_run(target, "sess-other") == {"run_id": ""}
+
+
+def test_an_unpolled_run_with_no_output_yet_stays_invisible_by_id(agent, target):
+    """The narrowest honest answer for a run whose CLI has not spoken: no
+    out.jsonl (or an unparsable head) yields no id, so a session-scoped lookup
+    finds nothing — while the target-only form still can."""
+    _run_dir(agent, "20260819-091500-def", file=target, resumed_from="")
+    assert agent._live_run(target, "sess-minted") == {"run_id": ""}
+    assert agent._live_run(target, "") == {"run_id": "20260819-091500-def"}
+
+
 def test_the_newest_live_run_wins(agent, target):
     _run_dir(agent, "20260817-090000-old", file=target, resumed_from="sess-A")
     _run_dir(agent, "20260817-150000-new", file=target, resumed_from="sess-A")
@@ -240,20 +266,33 @@ def test_the_first_poll_records_the_session_the_cli_minted(agent):
 
 
 # adoptLiveRun touches no DOM — it is a lookup, a param write and a handoff — so
-# it runs under node against stubs that record the order of all three.
+# it runs under node against stubs that record the order of all three. Since
+# the one-shot became a WATCH (Akshil, 2026-08-19: a reopened mid-turn chat has
+# to show its streaming row even when the gate is briefly held or the run is
+# still spawning), the stubs also carry the watch's world: `logGen` (leaving
+# bumps it), a `sleep` collapsed to a real 0ms timer so a test can change the
+# world "one lap later", and a param STORE — the watch reads `run` back to tell
+# a completed resumeRun from one that bailed, and the resumeRun stub clears it
+# the way the real one's done-branch does.
 _ADOPT_STUBS = """
 const calls = [];
-let sending = false, activeRun = null, answer = { run_id: "run-1" }, boom = false;
+let sending = false, activeRun = null, logGen = 0,
+    answer = { run_id: "run-1" }, boom = false;
 const AGENT = "agent.py", FILE = "/proj/index.html";
+const sleep = () => new Promise((r) => setTimeout(r, 0));
+const store = {};
 const fused = {
   runPython: async (agent, args) => {
     calls.push(["ask", args.action, args.file, args.session_id]);
     if (boom) throw new Error("python is down");
     return answer;
   },
-  params: { set: (k, v, o) => calls.push(["param", k, v, (o || {}).history]) },
+  params: {
+    set: (k, v, o) => { store[k] = v; calls.push(["param", k, v, (o || {}).history]); },
+    get: (k) => store[k] || "",
+  },
 };
-const resumeRun = async (id) => { calls.push(["resume", id]); };
+const resumeRun = async (id) => { calls.push(["resume", id]); store.run = ""; };
 """
 
 
@@ -286,7 +325,9 @@ console.log(JSON.stringify(calls));
 
 def test_a_frame_that_owns_a_turn_never_adopts_another(html_pane):
     """Two attachments to one run would double every streamed chunk, and the
-    guard is cheaper than the lookup it skips."""
+    guard is cheaper than the lookup it skips. `activeRun` ends the watch for
+    good; a `sending` that never releases spends the whole budget looking at
+    the gate and still asks the server nothing."""
     for setup in ("sending = true;", "activeRun = 'run-9';"):
         calls = _adopt(html_pane, setup + """
 await adoptLiveRun("sess-A");
@@ -297,9 +338,60 @@ console.log(JSON.stringify(calls));
 
 def test_nothing_running_leaves_the_transcript_alone(html_pane):
     """An empty answer is the common case — most chats are opened cold — so it
-    must not write a param or start a loop."""
+    must not write a param or start a loop. It IS asked again for a few laps
+    (the same "" also comes back while a just-left run is still spawning — see
+    the watch's comment), so the pin is on the shape: only asks, a bounded
+    number of them, and then quiet."""
     calls = _adopt(html_pane, """
 answer = { run_id: "" };
+await adoptLiveRun("sess-A");
+console.log(JSON.stringify(calls));
+""")
+    assert calls, "an idle chat is still asked at least once"
+    assert set(map(tuple, calls)) == {
+        ("ask", "live_run", "/proj/index.html", "sess-A")}
+    assert len(calls) <= 8, "the watch is a budget, not a poll loop"
+
+
+def test_a_briefly_held_gate_is_looked_past_not_obeyed(html_pane):
+    """The reopen race itself (Akshil, 2026-08-19): `sending` is held at the one
+    instant the adoption fires — a second click's loadHistory mid-flight, an
+    abandoned turn's finally a tick from releasing — and the one-shot read
+    "held right now" as "nothing to do, ever". The watch looks again: the gate
+    clears a lap later and the run is adopted."""
+    calls = _adopt(html_pane, """
+sending = true;
+setTimeout(() => { sending = false; }, 0);
+await adoptLiveRun("sess-A");
+console.log(JSON.stringify(calls));
+""")
+    assert calls[-2:] == [["param", "run", "run-1", "replace"],
+                          ["resume", "run-1"]]
+
+
+def test_a_run_still_spawning_is_caught_by_a_later_look(html_pane):
+    """Back landed during `start`: the server honestly answers "" until the run
+    dir has its pid, moments after the reopen asks. The watch's later laps are
+    what turn that from a chat that never streams again into a working row one
+    tick late."""
+    calls = _adopt(html_pane, """
+answer = { run_id: "" };
+setTimeout(() => { answer = { run_id: "run-1" }; }, 0);
+await adoptLiveRun("sess-A");
+console.log(JSON.stringify(calls));
+""")
+    assert calls[-2:] == [["param", "run", "run-1", "replace"],
+                          ["resume", "run-1"]]
+
+
+def test_leaving_ends_the_watch(html_pane):
+    """The watch is gen-guarded like every loop that outlives an await: Back
+    bumps logGen, and a watch still looking for a run must die with the
+    transcript it was watching — its lookups are not the landing page's to
+    spend, and its adoption would write a run param the leave just cleared."""
+    calls = _adopt(html_pane, """
+answer = { run_id: "" };
+setTimeout(() => { logGen += 1; answer = { run_id: "run-1" }; }, 0);
 await adoptLiveRun("sess-A");
 console.log(JSON.stringify(calls));
 """)
