@@ -463,8 +463,8 @@
    Google Calendar puts its all-day band — was removed on 2026-08-17: queued
    work is a MESSAGE, its siblings are listed in the task's popover thread, and
    a band across the whole week said otherwise. The queue's two states now mark
-   the thread rows they belong to (.schedule-cal-msg-note), with the cancel
-   there as well. */
+   the thread rows they belong to — since 2026-08-19 as the row tooltip's note
+   (schedule-lib.msgNote); the per-row cancel is hidden for now (Akshil). */
 
 .schedule-cal-scroll {
   overflow-y: auto;
@@ -828,10 +828,9 @@
   color: var(--fg-muted);
 }
 
-.schedule-cal-pop-rep {
-  font-size: 12px;
-  color: var(--fg-muted);
-}
+/* No `.schedule-cal-pop-rep` any more (Akshil, 2026-08-19): the ↻ beside the
+   task id was decorative on its own admission, and the recurrence it hinted at
+   is spelled out in the meta line below the title. */
 
 /* The pill sits at the head's right edge — its ONE auto margin. */
 .schedule-cal-pop-head .schedule-state {
@@ -859,47 +858,38 @@
   overflow: hidden;
 }
 
-/* Icon-labelled fact rows, one per line — the Google event-card shape. The
-   icon column is fixed so the text edges align down the list. Pinned like the
-   head: these are the task's identity, not its history. */
-.schedule-pop-rows {
+/* The task's two facts — how often, and where — as ONE muted line: "Every 2
+   weeks on Monday · /path/to/folder" (Akshil, 2026-08-19). They were icon-led
+   rows, one per line, the Google event-card shape; in a 360px panel that shape
+   read as a form, and the icons only repeated what the words already said.
+   Pinned like the head: this is the task's identity, not its history.
+
+   The recurrence keeps its whole words (`flex: none` — it is READ, and "Every 2
+   wee…" says nothing); the folder path is the side that gives, ellipsizing from
+   a single line, because a path is RECOGNISED and its head outlives its tail.
+   The "·" is markup, not string-joined, so each side can be dropped cleanly
+   when absent. */
+.schedule-pop-meta {
   flex: none;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
   font-size: 12px;
   color: var(--fg-muted);
 }
 
-.schedule-pop-row {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-}
-
-.schedule-pop-row svg {
+.schedule-pop-meta-rep,
+.schedule-pop-meta-sep {
   flex: none;
-  transform: translateY(2px);
-  opacity: 0.75;
 }
 
-.schedule-pop-row code {
+.schedule-pop-meta code {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The prose rows wrap instead — they are read, not recognised — but an
-   unbroken token must not push the popover wide, and a description written as
-   an essay must not take the card: three lines, then an ellipsis. */
-.schedule-pop-row span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
 /* -- The thread inside the popover ---------------------------------------------
@@ -1034,13 +1024,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-.schedule-cal-msg-body {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
+/* No `.schedule-cal-msg-body` any more (Akshil, 2026-08-19). A popover row is
+   ring + time now, nothing else: the body's first line was most often the
+   panel's own title echoed — and when it genuinely wasn't, the transcript the
+   row opens is one click away. The row stopped being a sentence. */
 
 /* No `.schedule-cal-msg-unread` any more (2026-08-18). It was a 6px accent disc
    after the body, and it was this view speaking its OWN dialect: the List and the
@@ -1048,100 +1035,24 @@
    different element. Unread is the status ring's filled centre now, everywhere
    (see `.schedule-ring--unread` below and ScheduleTaskViews.StatusIcon). */
 
-/* The row's second fact, when it has one: "ran 2 days late" for a catch-up
-   (`at` vs `ran_at` — the chip never moves for it), "queued" for a message that
-   is past due and waiting to be claimed, which the word "Upcoming" alone does
-   not say, and "too late to cancel" for one already claimed. Never a status: the
-   status is the four words beside it. schedule-lib.msgNote picks which. */
-.schedule-cal-msg-note {
-  flex: none;
-  color: var(--warning-strong);
-  font-size: 11px;
-  white-space: nowrap;
-}
+/* No `.schedule-cal-msg-note` in the ink either (Akshil, 2026-08-19). Its
+   words — "queued", "ran 2 days late", "too late to cancel" — still exist and
+   schedule-lib.msgNote still writes them; they moved into the row's title
+   tooltip, next to the exact time and the status word that already lived there.
+   The fact survives, the row's third column does not.
 
-/* "too late to cancel" is a plain fact, not the amber that "queued" and "ran 2
-   days late" are: those flag something about the run, this one only explains why
-   the row's cancel is not there. Amber would read as a fault in a state that is
-   ordinary and lasts seconds. */
-.schedule-cal-msg-note.is-held {
-  color: var(--fg-muted);
-}
+   `.schedule-cal-msg-state` (the printed status word) went the same way on
+   2026-08-18 — the ring carries it — and its orphaned rule left with this
+   batch. */
 
-/* One of Upcoming / In Progress / Done / Archive, and nothing else. */
-.schedule-cal-msg-state {
-  flex: none;
-  color: var(--fg-muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-/* The per-row write (cancel a waiting message, skip a run). Quiet until the row
-   is pointed at — the same posture the tree's actions take. */
-.schedule-cal-popover .schedule-cal-msg-act {
-  /* Declared, not inherited: `.prefs-section button` pins every unarmoured
-     button to align-self:flex-start, and a per-property cascade means a more
-     specific block that stays silent about it still gets it. */
-  align-self: center;
-
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition: color 0.1s ease;
-}
-
-.schedule-cal-popover .schedule-cal-msg-act:hover:not(:disabled),
-.schedule-cal-popover .schedule-cal-msg-act:focus-visible {
-  background: var(--row-bg-hover);
-  border: none;
-  color: var(--error);
-}
-
-.schedule-cal-popover .schedule-cal-msg-act:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* Where the cancel would be on a CLAIMED row (`sending`), which gets none: the
-   server refuses that state on purpose, so the row offers nothing rather than a
-   button whose only possible outcome is a refusal (schedule-lib.msgCancelKind).
-
-   The SAME 24px box as .schedule-cal-msg-act above, and that is the point: a row
-   flips queued → sending while it is being looked at, and without the matching
-   slot the note and the status word beside it jump 24px sideways at the moment a
-   button disappears — which is exactly what makes a deliberate absence read as a
-   glitch. It turns, because standing here has to say "brief, in hand" rather
-   than "stuck, control missing".
-
-   Not a button: nothing to press, no hover, not in the tab order. The words are
-   .schedule-cal-msg-note (is-held above), reachable without a pointer. Full
-   turns, so the blanket prefers-reduced-motion rule (styles/reduced-motion.css)
-   parks it back at 0deg instead of mid-tilt. */
-.schedule-cal-msg-held {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  color: var(--fg-muted);
-  animation: schedule-cal-held-spin 0.8s linear infinite;
-}
-
-@keyframes schedule-cal-held-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
+/* The per-row ⊗ skip / ✕ cancel is HIDDEN for now (Akshil, 2026-08-19: "let
+   us hide skip for now") — `.schedule-cal-msg-act` and its hover/disabled rules
+   left with the button. `.schedule-cal-msg-held`, the turning glyph on a
+   claimed row, left with them: its whole argument was holding the SAME 24px box
+   so the row did not jump sideways when the button vanished queued → sending,
+   and there is no box to hold any more. Sending itself was never the spinner's
+   fact to carry — the ring and the tooltip's note still say it. The List still
+   offers both cancels; a popover row's only press is the row itself. */
 
 /* The action row: pinned to the foot of the card, never scrolled with the
    thread. `.schedule-card-actions` already carries `margin-top: auto`; what it
@@ -2362,7 +2273,6 @@ input.schedule-when-field {
    page and the modal each ship a `button` skin these have to outrank. */
 .schedule-cal-chip:focus-visible,
 .schedule-cal-msg-open:focus-visible,
-.schedule-cal-msg-act:focus-visible,
 .schedule-picker-row:focus-visible,
 .schedule-time-slot:focus-visible,
 .schedule-menu-item:focus-visible,
@@ -2373,7 +2283,6 @@ input.schedule-when-field {
 .schedule-when-field:focus-visible,
 .deploy-body .schedule-cal-chip:focus-visible,
 .deploy-body .deploy-body .schedule-cal-msg-open:focus-visible,
-.deploy-body .schedule-cal-msg-act:focus-visible,
 .deploy-body .schedule-picker-row:focus-visible,
 .deploy-body .schedule-time-slot:focus-visible,
 .deploy-body .schedule-menu-item:focus-visible,
@@ -2384,7 +2293,6 @@ input.schedule-when-field {
 .deploy-body .schedule-when-field:focus-visible,
 .prefs-section .schedule-cal-chip:focus-visible,
 .prefs-section .prefs-section .schedule-cal-msg-open:focus-visible,
-.prefs-section .schedule-cal-msg-act:focus-visible,
 .prefs-section .schedule-picker-row:focus-visible,
 .prefs-section .schedule-time-slot:focus-visible,
 .prefs-section .schedule-menu-item:focus-visible,
@@ -3516,7 +3424,9 @@ input.schedule-when-field {
    value to be recognised, so it does not belong in the icon column — and
    without an icon it needs no indent either. Clamped like the title, because a
    long description must not push the thread and the actions out of a panel
-   whose height is capped at 70vh. */
+   whose height is capped at 70vh. TWO lines, not the title's three (Akshil,
+   2026-08-19): the description is context, and the slimmed thread rows below
+   earn their room only if the prose above them stays short too. */
 .schedule-pop-desc {
   margin: 0;
   font-size: 12px;
@@ -3524,7 +3434,7 @@ input.schedule-when-field {
   color: var(--fg-muted);
   overflow-wrap: anywhere;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }

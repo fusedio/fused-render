@@ -1725,6 +1725,68 @@ const REDUCED_MOTION_CSS = readFileSync(
   "utf8",
 );
 
+describe("the calendar popover's slim rows", () => {
+  // 2026-08-19 (Akshil). The popover was carrying four things per occurrence —
+  // ring, time, the body's first line, a queue/late note — plus a per-row
+  // skip/cancel button and a ↻ in the header. A row is ring + time now, and
+  // these pins hold each removal so a well-meaning "restore the preview" edit
+  // has to argue with the design rather than just re-typing a className. The
+  // stylesheets are read stripped of comments: each mark's history is
+  // deliberately still written down where its rule used to live.
+  const css = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "");
+
+  it("prints no message body and no note in the row's ink", () => {
+    // The body was most often the panel's own title echoed; the note's words
+    // still exist — schedule-lib.msgNote feeds the row's title tooltip — so
+    // msgNote must stay CALLED even though its class is gone from the markup.
+    expect(CALENDAR).not.toContain('"schedule-cal-msg-body"');
+    expect(CALENDAR).not.toContain('"schedule-cal-msg-note"');
+    expect(CALENDAR).toContain("msgNote(m, kind)");
+    expect(CALENDAR).toMatch(/title=\{\[t\.toLocaleString\(\), status\.label, note\]/);
+    for (const src of [SCHEDULE_CSS, TASKS_CSS]) {
+      expect(css(src)).not.toContain("schedule-cal-msg-body");
+      expect(css(src)).not.toContain("schedule-cal-msg-note");
+    }
+  });
+
+  it("offers no per-row skip/cancel, and no held spinner standing in for one", () => {
+    // "let us hide skip for now." The spinner's only argument was holding the
+    // button's 24px box so the row did not jump queued → sending — no button,
+    // no box. The row's one press is the row itself, which must survive.
+    expect(CALENDAR).not.toContain("schedule-cal-msg-act");
+    expect(CALENDAR).not.toContain('"schedule-cal-msg-held"');
+    expect(CALENDAR).not.toContain("ICON_STARTING");
+    expect(CALENDAR).toContain('className={"schedule-cal-msg-open"');
+    for (const src of [SCHEDULE_CSS, TASKS_CSS]) {
+      expect(css(src)).not.toContain("schedule-cal-msg-act");
+      expect(css(src)).not.toContain("schedule-cal-msg-held");
+    }
+  });
+
+  it("says the recurrence and the folder as ONE muted line, not icon rows", () => {
+    // "Every 2 weeks on Monday · /path/to/folder" — the separator is markup, so
+    // it can be omitted when either side is absent, and the header's ↻ is gone
+    // because this line already says it in words.
+    expect(CALENDAR).toContain('className="schedule-pop-meta"');
+    expect(CALENDAR).not.toContain("schedule-pop-rows");
+    expect(CALENDAR).not.toContain("schedule-cal-pop-rep");
+    expect(CALENDAR).not.toContain("ICON_REPEAT");
+    expect(css(SCHEDULE_CSS)).not.toContain("schedule-cal-pop-rep");
+    expect(css(SCHEDULE_CSS)).toContain(".schedule-pop-meta");
+  });
+
+  it("keeps the thread as one continuous list under the one day header", () => {
+    // "Earlier in this thread" was a second labelled block; with rows slimmed
+    // to ring + time the label outweighed what it introduced. The day split
+    // itself survives in threadForDay (tested in schedule-lib.test.ts) and in
+    // the ink: the day's rows print clock times, the rest print dates.
+    expect(CALENDAR).not.toContain("Earlier in this thread");
+    expect(CALENDAR).toMatch(
+      /\{today\.map\(\(m\) => row\(m, true\)\)\}\s*\{rest\.map\(\(m\) => row\(m, false\)\)\}/,
+    );
+  });
+});
+
 describe("laneUnread", () => {
   const withUnread = (n: number, key: string) =>
     task({ key, unread: n, messages: [msg({ unread: n > 0 })] });

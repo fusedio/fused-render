@@ -100,8 +100,6 @@ import {
   useState,
 } from "react";
 import {
-  cancelQueued,
-  cancelScheduledMessage,
   getTaskMessages,
   getTasksScheduled,
   markTaskMessageRead,
@@ -113,7 +111,6 @@ import { navigateUrl } from "@platform/lib/router";
 import {
   assignLanes,
   calendarThreads,
-  cancelOutcome,
   chipAccessibleName,
   folderHref,
   groupScheduled,
@@ -141,7 +138,7 @@ import {
   threadForDay,
   windowBounds,
 } from "./schedule-lib";
-import type { CalendarChip, CalendarRange, MsgCancelKind, QueueRole } from "./schedule-lib";
+import type { CalendarChip, CalendarRange, QueueRole } from "./schedule-lib";
 // Where a click GOES is owned by tasks-lib, and by nothing else: taskHref opens
 // the thread, messageHref opens the one turn inside it. The calendar used to
 // build that url itself out of explorerUrl, which silently dropped the message
@@ -207,12 +204,13 @@ const icon = (paths: React.ReactNode) => (
 );
 
 export const ICON_CLOCK = icon(<><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></>);
-export const ICON_REPEAT = icon(<><path d="M17 2l4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" /><path d="M7 22l-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" /></>);
 export const ICON_FOLDER = icon(<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />);
 export const ICON_SHIELD = icon(<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />);
 export const ICON_EDIT = icon(<><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" /></>);
-export const ICON_SKIP = icon(<><polygon points="5 4 15 12 5 20 5 4" /><line x1="19" y1="5" x2="19" y2="19" /></>);
-export const ICON_CANCEL = icon(<><circle cx="12" cy="12" r="9" /><path d="M8 8l8 8M16 8l-8 8" /></>);
+// No repeat / skip / cancel glyphs any more (Akshil, 2026-08-19). The repeat
+// arrows doubled the recurrence sentence they sat next to, and the skip/cancel
+// pair left with the per-row actions they decorated — see the popover's thread
+// rows for where they went and why.
 export const ICON_NOTES = icon(<><line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="14" y2="17" /></>);
 export const ICON_RESTORE = icon(<><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /></>);
 // The three views, as marks — the List / Board / Calendar switcher in
@@ -258,11 +256,6 @@ const ICON_RERUN = icon(
   <><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
     <path d="M3 3v5h5" /></>,
 );
-// lucide `loader-circle`, same recipe as the rest. It stands where a cancel
-// cannot: a claimed entry is a brief state the server will not withdraw, and
-// that slot has to look occupied on purpose rather than empty by accident.
-const ICON_STARTING = icon(<path d="M21 12a9 9 0 1 1-6.219-8.56" />);
-
 const clockTime = (d: Date) =>
   d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
@@ -349,10 +342,6 @@ function ChipPopover({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [thread, setThread] = useState<TaskMessage[] | null>(null);
-  const [busy, setBusy] = useState("");
-  // Its own flag rather than a share of `busy`: that one is a MESSAGE id, and it
-  // greys one thread row's cancel. This greys a footer button, and the two can
-  // legitimately be about different messages at once.
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
   useDismiss(ref, onClose);
@@ -490,40 +479,13 @@ function ChipPopover({
     }
   };
 
-  // Two cancels, one button, and msgCancelKind says which. A QUEUED entry goes
-  // through the queue endpoint, which is the only one that can answer honestly
-  // when the race is lost: an entry claimed for sending between paint and press
-  // comes back `refused`, and that sentence goes up rather than the popover
-  // closing as if it had worked. Everything still in the future is a plain
-  // schedule cancel.
-  const cancelMessage = async (m: TaskMessage, kind: MsgCancelKind) => {
-    // Nothing is drawn for `held` or `none`, so nothing should reach here — and
-    // if it somehow does, do nothing rather than ask the server for the refusal
-    // it would certainly give. The row already says why it has no control.
-    if (kind !== "queued" && kind !== "scheduled") return;
-    setBusy(m.message_id);
-    setError("");
-    try {
-      if (kind === "queued") {
-        const r = await cancelQueued([m.entry_id]);
-        const said = cancelOutcome(r.cancelled ?? [], r.refused ?? []);
-        setError(said);
-        onReload();
-        if (!said) onClose();
-      } else {
-        await cancelScheduledMessage(m.entry_id);
-        onReload();
-        onClose();
-      }
-    } catch (e) {
-      // The likeliest failure is the honest race — it fired while the popover
-      // was open — so the server's words go up and the page refreshes anyway.
-      setError((e as Error).message);
-      onReload();
-    } finally {
-      setBusy("");
-    }
-  };
+  // NO PER-ROW CANCEL ANY MORE (Akshil, 2026-08-19: "let us hide skip for
+  // now"). The two cancels this panel used to make — queue endpoint for a
+  // QUEUED entry, schedule cancel for a future one — left with the ⊗/✕ buttons
+  // that fired them; the List still offers both, and schedule-lib.msgCancelKind
+  // (which decided per row, and is still tested) keeps feeding msgNote so the
+  // row's tooltip goes on saying "queued" and "too late to cancel". If the
+  // buttons come back, the handler is in git history at this spot.
 
   const dayLabel = chip.time.toLocaleDateString(undefined, {
     weekday: "long",
@@ -555,28 +517,16 @@ function ChipPopover({
 
   const nowSec = Math.floor(Date.now() / 1000);
 
-  // What the popover's own title says, so a row that would only repeat it can
-  // stay quiet. See `showBody` in `row`.
-  const headline = firstLine(task.title || chip.anchor.body);
-
   const row = (m: TaskMessage, sameDayRow: boolean) => {
     const status = runStatus(m, taskMessageTone(m));
     const role = queueRole(m, roles, nowSec);
     const t = new Date(m.at * 1000);
-    // ONE decision, recomputed every render from the freshly-polled queue, so
-    // the row's control follows the entry through scheduled → queued → held
-    // instead of being reasoned out again beside the markup. schedule-lib owns
-    // the rule — and the tests for it — including the one that used to be wrong
-    // here: a `sending` entry gets no cancel, because the server refuses that
-    // state every single time and a button that can only fail is worse than
-    // none. The RACE still keeps its button (`queued`), and its refusal still
-    // comes back through cancelOutcome; a row we already know is claimed when we
-    // draw it is a different situation, and only the race justifies the offer.
+    // schedule-lib's per-row decision, still recomputed from the freshly-polled
+    // queue — not for a control any more (the cancel button is gone, see below)
+    // but for the NOTE, which is the words for the states the ring cannot
+    // spell: "queued", "ran 2 days late", "too late to cancel".
     const kind = msgCancelKind(m, role);
     const note = msgNote(m, kind);
-    // Empty when this row's prompt is the title again — see the JSX below.
-    const body = firstLine(m.body);
-    const showBody = body && body !== headline ? body : "";
     return (
       <li key={m.message_id} className="schedule-cal-msg">
         <button
@@ -608,75 +558,28 @@ function ChipPopover({
               ? clockTime(t)
               : t.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
           </span>
-          {/* THE BODY, ONLY WHEN IT SAYS SOMETHING THE PANEL HAS NOT (Akshil,
-              2026-08-18). This popover is about ONE task, and a scheduled
-              occurrence carries the task's own message verbatim — so on the
-              common row the body was the title printed a second time, four
-              lines under the title.
+          {/* RING AND TIME, AND NOTHING ELSE (Akshil, 2026-08-19). The row used
+              to carry two more things, and both are gone:
 
-              It is not dropped outright, because a THREAD is not always one
-              message repeated: a chat prompt typed into the same session, or a
-              re-sent message that was edited, genuinely distinguishes its row
-              from the others. So the row keeps whatever the panel has not
-              already said, and drops the echo. */}
-          {showBody && (
-            <span className="schedule-cal-msg-body">{showBody}</span>
-          )}
-          {/* No `.schedule-cal-msg-unread` dot here any more (2026-08-18). It was
-              a 6px accent disc after the body and it was this view's OWN unread
-              vocabulary — the List and the Board said the same thing with a
-              different mark in a different place. The ring above says it for all
-              three now. */}
-          {note && (
-            <span
-              className={
-                "schedule-cal-msg-note" + (kind === "held" ? " is-held" : "")
-              }
-            >
-              {note}
-            </span>
-          )}
-          {/* NO STATUS WORD HERE ANY MORE (Akshil, 2026-08-18). The header's
-              pill already says the task's state in the app's own vocabulary,
-              and on a one-occurrence popover — which is most of them — the row
-              was printing that same word a second time, at the other end of the
-              same small panel.
+              THE BODY's first line — already trimmed on 2026-08-18 to only rows
+              that said something new — is out entirely: this popover is about
+              ONE task, its title is the headline above, and even a genuinely
+              different prompt is one click away in the transcript the row opens.
 
-              The RING is what carries it now, which is not a downgrade: it is
-              the same mark the List's thread rows and the Board's cards use for
-              exactly this fact, its hue IS the status, and the word is still
-              one hover away in the row's own title. What distinguishes one
-              occurrence from another is the TIME and whether it can still be
-              stopped — and those are what is left. */}
+              THE NOTE ("queued", "ran 2 days late", "too late to cancel") is
+              out of the ink too. schedule-lib.msgNote still writes it and the
+              row's title above still carries it — the fact survives as a
+              tooltip, the row just stops being a sentence. What distinguishes
+              one occurrence from another is the ring's state and the TIME, and
+              those are what is left. */}
         </button>
-        {kind === "held" ? (
-          // A claimed entry has no cancel, so the slot holds a turning glyph
-          // rather than a dead button: the same 24px box, so the note and the
-          // status word beside it do not slide sideways the instant the entry
-          // moves queued → sending, and it moves, because standing here has to
-          // say "brief, in hand" and not "stuck, control missing". Nothing to
-          // press and nothing to tab to — the WORDS are the note above
-          // (schedule-lib.msgNote), because a title tooltip is not reachable by
-          // keyboard and this is the only explanation the row gets.
-          <span className="schedule-cal-msg-held" aria-hidden="true">
-            {ICON_STARTING}
-          </span>
-        ) : kind !== "none" ? (
-          <button
-            type="button"
-            className="schedule-cal-msg-act"
-            disabled={busy === m.message_id}
-            aria-label={
-              m.template_id
-                ? `Skip the ${clockTime(t)} run`
-                : `Cancel the ${clockTime(t)} message`
-            }
-            title={m.template_id ? "Skip this run" : "Cancel this message"}
-            onClick={() => cancelMessage(m, kind)}
-          >
-            {m.template_id ? ICON_SKIP : ICON_CANCEL}
-          </button>
-        ) : null}
+        {/* NO ⊗ SKIP / ✕ CANCEL BUTTON, AND NO HELD SPINNER (Akshil,
+            2026-08-19: "let us hide skip for now"). The per-row cancel left,
+            and the turning glyph left with it: its whole argument was holding
+            the SAME 24px box so the note did not jump sideways when the button
+            vanished queued → sending — a slot-stability fix for a slot that no
+            longer exists. Sending itself was never the spinner's fact to carry;
+            the ring and the tooltip's note still say it. */}
       </li>
     );
   };
@@ -696,11 +599,10 @@ function ChipPopover({
           aria-hidden="true"
         />
         <span className="schedule-cal-pop-id">{task.task_id}</span>
-        {chip.recurring && (
-          // Decorative: the recurrence is spelled out in the rows below, and a
-          // glyph carrying its own label only ever repeats a word.
-          <span className="schedule-cal-pop-rep" aria-hidden="true">↻</span>
-        )}
+        {/* No ↻ glyph beside the id any more (Akshil, 2026-08-19). It was
+            decorative by its own admission — the recurrence is spelled out in
+            words two lines down — and a glyph whose label is already printed
+            only ever repeats it. */}
         <span
           className={
             `schedule-state schedule-state--${pill.column}` +
@@ -734,30 +636,36 @@ function ChipPopover({
         )}
       </div>
 
-      {/* Then the facts that are recognised rather than read — where it runs,
-          and how often — each led by its icon. */}
-      <div className="schedule-pop-rows">
-        {repeat && (
-          <span className="schedule-pop-row">
-            {ICON_REPEAT}
-            <span>{repeat}</span>
-          </span>
-        )}
-        <span className="schedule-pop-row">
-          {ICON_FOLDER}
-          <code title={task.target}>{task.target}</code>
-        </span>
-      </div>
+      {/* THE TWO FACTS AS ONE MUTED LINE (Akshil, 2026-08-19): "Every 2 weeks
+          on Monday · /path/to/folder". They were two icon-led rows — the Google
+          event-card shape — but in a panel this small two single-fact rows read
+          as a form, and the icons were carrying labels the words already carry.
+          The recurrence keeps whole words (it is read); the folder ellipsizes
+          (it is recognised, and its tail matters less than its head); the "·"
+          exists only when both sides do. */}
+      {(repeat || task.target) && (
+        <p className="schedule-pop-meta">
+          {repeat && <span className="schedule-pop-meta-rep">{repeat}</span>}
+          {repeat && task.target && (
+            <span className="schedule-pop-meta-sep" aria-hidden="true">·</span>
+          )}
+          {task.target && <code title={task.target}>{task.target}</code>}
+        </p>
+      )}
 
+      {/* ONE CONTINUOUS LIST (Akshil, 2026-08-19). The "Earlier…" header made
+          the rest of the thread a second labelled block, and with the rows
+          slimmed to ring + time the label was bigger than what it introduced.
+          The split itself stays —
+          threadForDay still puts the day's runs first, then the rest newest-
+          first — and the seam is already visible without a header: the day's
+          rows print clock times, everything after prints dates. */}
       <div className="schedule-cal-thread">
         <p className="schedule-cal-thread-head">{dayLabel}</p>
-        <ul className="schedule-cal-msgs">{today.map((m) => row(m, true))}</ul>
-        {rest.length > 0 && (
-          <>
-            <p className="schedule-cal-thread-head">Earlier in this thread</p>
-            <ul className="schedule-cal-msgs">{rest.map((m) => row(m, false))}</ul>
-          </>
-        )}
+        <ul className="schedule-cal-msgs">
+          {today.map((m) => row(m, true))}
+          {rest.map((m) => row(m, false))}
+        </ul>
       </div>
 
       {error && <p className="schedule-card-why">{error}</p>}
