@@ -458,15 +458,24 @@ def _sync_root(project_dir, venv_dir):
     by `os.access` — see `_writable_dir` for why that distinction is the
     difference between working and not on Windows.
     """
-    if _writable_dir(project_dir):
+    # A folder that is not there is not a read-only folder, and mirroring it would
+    # answer "no pyproject.toml in an empty directory" where the direct sync says
+    # the project path does not exist. The probe cannot tell those apart — nothing
+    # can be created in either — so the question is asked separately.
+    if not os.path.isdir(project_dir) or _writable_dir(project_dir):
         return project_dir
     mirror = os.path.abspath(venv_dir) + _MIRROR_SUFFIX
     os.makedirs(mirror, exist_ok=True)
 
     # Before any copying, while the mirror's manifest still describes the build
-    # its lock came from.
-    if _read_bytes(os.path.join(project_dir, "pyproject.toml")) != _read_bytes(
-            os.path.join(mirror, "pyproject.toml")):
+    # its lock came from. A mirror with no manifest copy is not a mirror whose
+    # lock can be vouched for, so the lock goes: `_read_bytes` cannot tell absent
+    # from unreadable, and treating both as "matches an unreadable source" is the
+    # one direction that would keep a lock nothing has been compared against.
+    mirror_manifest = _read_bytes(os.path.join(mirror, "pyproject.toml"))
+    if (mirror_manifest is None
+            or mirror_manifest != _read_bytes(
+                os.path.join(project_dir, "pyproject.toml"))):
         _unlink_quietly(os.path.join(mirror, _MIRROR_OWN_OUTPUT))
 
     for name in _MIRRORED_NAMES:

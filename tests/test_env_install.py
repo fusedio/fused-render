@@ -2527,6 +2527,68 @@ def test_a_CHANGED_manifest_expires_the_mirrors_lock(tmp_path, monkeypatch):
 
 
 @requires_fused
+def test_a_MISSING_project_folder_still_reports_itself_and_builds_no_mirror(tmp_path):
+    """"Not there" must not be diagnosed as "read-only".
+
+    The probe answers the same False for both — nothing can be created in a folder
+    that does not exist either — so without a separate question a vanished runner
+    folder would be mirrored, uv would run in an empty directory, and the verbatim
+    error PY-18 shows the user would complain about a missing `pyproject.toml`
+    instead of naming the path that is gone. The direct sync root puts the real
+    path on `cwd` and lets the spawn say so.
+    """
+    missing = str(tmp_path / "gone")
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_missing_project")
+
+    assert worker._sync_root(missing, venv_dir) == missing
+    assert not os.path.exists(venv_dir + ".src"), (
+        "a folder that does not exist was mirrored"
+    )
+
+
+@requires_fused
+def test_an_UNREADABLE_source_manifest_does_not_leave_a_vouched_for_lock(tmp_path, monkeypatch):
+    """The gate must not read "I could not read either file" as "they agree".
+
+    `_read_bytes` answers `None` for a file that is absent and for one it could not
+    read, and conflating those on the KEEPING side is the dangerous direction: an
+    unreadable source manifest compared against a mirror holding no record at all
+    would come out equal, and the lock nothing had ever been compared against would
+    be carried forward.
+
+    The build fails either way — the copy loop cannot read the manifest either — so
+    what this pins is that the failure does not leave a blessed lock behind for
+    whatever runs next. An absent record fails the gate on its own, before any
+    comparison, so the lock is gone before the copy is attempted.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    mirror = venv_dir + ".src"
+    os.makedirs(mirror, exist_ok=True)
+    lock = os.path.join(mirror, "uv.lock")
+    with open(lock, "w", encoding="utf-8") as fh:
+        fh.write("version = 1  # resolved against nobody knows what\n")
+    worker = _worker_module("_env_install_worker_unreadable_manifest")
+
+    manifest = os.path.join(proj, "pyproject.toml")
+    os.chmod(manifest, 0o000)
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj) or worker._read_bytes(manifest) is not None:
+            pytest.skip("running as root: read-only and unreadable are still readable")
+        with pytest.raises(OSError):
+            worker._sync_root(proj, venv_dir)
+    finally:
+        os.chmod(proj, 0o755)
+        os.chmod(manifest, 0o644)
+
+    assert not os.path.exists(lock), (
+        "an unreadable manifest was taken as agreement and the lock survived"
+    )
+
+
+@requires_fused
 def test_the_mirror_drops_a_file_the_source_STOPPED_shipping(tmp_path, monkeypatch):
     """A withdrawn `.python-version` must not govern every later build forever.
 

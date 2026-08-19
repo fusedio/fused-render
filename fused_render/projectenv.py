@@ -799,8 +799,14 @@ def gc() -> int:
     alone: it holds the lock that venv was resolved from.
 
     That does mean a mirror can be taken out from under a FIRST install running
-    right now, whose venv directory does not exist yet — `gc` runs once at server
-    startup, so the window is a sync that began seconds before the server booted.
+    right now, for as long as its venv directory does not exist yet. The worker
+    only creates the venv's PARENT before spawning uv, so what closes the window
+    is uv itself creating the environment — which it does before it resolves, so
+    the exposure is the sliver between the mirror appearing and uv getting that
+    far, not the resolve and download the user actually waits through. `gc` runs
+    once at server startup, so hitting it means a first read-only install began
+    within about a second of the server booting.
+
     The cost is bounded at what the mirror is worth: uv writes its lock into an
     unlinked directory and the next build re-resolves. The venv itself, and
     therefore the install the user is waiting on, is unaffected.
