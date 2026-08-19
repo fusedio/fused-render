@@ -9774,7 +9774,14 @@ function consumeAnchor() {
 // Clear the session param so a reload lands on the landing page,
 // wipe the visible transcript, and rebuild the session list.
 document.getElementById("back").onclick = () => {
-  if (sending) return;  // mid-turn reset would orphan the streaming run's UI
+  // Live even mid-turn (Akshil, 2026-08-19 — "when it is working I can't
+  // click back"). The old `if (sending) return` guarded against orphaning the
+  // streaming run's UI, but the architecture already survives leaving: the
+  // run id rides in `?run=`, the subprocess keeps going, and resumeRun
+  // re-attaches from the session list. Bumping the log generation is what
+  // actually retires the streaming loop — it bails on the next poll instead
+  // of writing into the wiped transcript below.
+  logGen += 1;
   // `{default: ""}`, because this button is live on a chat that has no session
   // yet — "New chat" enters the chat view and `session_id` is not written until
   // the first turn's poll answers. Clearing an already-absent param is a
@@ -12280,6 +12287,11 @@ function unqueueAll(entries) {
 // One turn at a time: concurrent turns would share the session_id param and
 // launch parallel claude runs against the same resumed session.
 let sending = false;
+// The generation of the visible log. The back button bumps it when it wipes
+// the transcript, and a streaming pollLoop that wakes to a bumped number
+// bails before touching the DOM or the URL params — the run itself keeps
+// going server-side, and resumeRun re-attaches to it from the session list.
+let logGen = 0;
 
 // Stream one run into the log. The `run` URL param marks the run as in-flight
 // for the page's whole life — if this frame dies mid-loop, the subprocess
@@ -12291,6 +12303,12 @@ async function pollLoop(run_id) {
   activeRun = run_id;
   activeWorking = w;
   setRunningUi(true);
+  // The log this loop is allowed to write. The back button bumps the number
+  // when it wipes the transcript; this loop notices on its next poll and
+  // bails through the finally below — BEFORE any effect, because its first
+  // effects re-write the very params (session_id) the back button just
+  // cleared, which would march the page straight back into the chat it left.
+  const gen = logGen;
   let reply = null;
   let typer = null;
   let segBody = null;    // the element the segment views are rendered into
@@ -12303,6 +12321,7 @@ async function pollLoop(run_id) {
   try {
     while (true) {
       const data = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
+      if (logGen !== gen) break;  // the reader left; the run continues without this page
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
       // Not awaited, for the same reason the app-state answer below is not: a
       // strip of chips may never hold up the streaming reply by a single frame.
