@@ -1021,7 +1021,13 @@ a.bookmark-name::after {
 }
 
 .update-badge-command code {
-  flex: 1;
+  /* Not flex:1 — that stretched the plate to fill the row (the trouble card
+     is up to 640px wide) leaving the copy button stranded far past the end
+     of a short command. Sized to its own content instead, shrinking with
+     min-width:0 so a command too long for the row scrolls inside the plate
+     rather than pushing the button off it. */
+  flex: 0 1 auto;
+  min-width: 0;
   padding: 4px 6px;
   border-radius: 4px;
   background: rgba(var(--tint), 0.09);
