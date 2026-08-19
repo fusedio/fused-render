@@ -189,6 +189,51 @@ def test_a_partial_label_is_the_SAME_one_the_final_json_lands_on(partial, diariz
                           "Speaker 2"]
 
 
+def test_a_JOIN_SPANNING_segment_is_labelled_the_same_LIVE_as_it_is_finally(
+        partial, diarize, tmp_path):
+    """The same "one arithmetic" promise as above, at the one place the two
+    labellings could still diverge: a segment that straddles a dropped silence.
+
+    `mlx_whisper` packs VAD regions into one `transcribe()` call (AI-10f, D366),
+    so a segment can span a pause that was never transcribed, and the FINAL
+    labelling masks its scoring to the speech (`spans=`, D366) — otherwise the
+    turn living inside the pause outvotes the words. The sink has to be handed
+    the same mask or the page watches the speaker and its colour flip the moment
+    the run finishes, which is exactly the failure the comment above
+    `Sink.add`'s call claims cannot happen.
+
+    Here speaker 2 holds ten seconds inside a 25-second pause and said nothing
+    that was transcribed; speaker 1 said the words either side of it.
+    """
+    out = str(tmp_path / "t.partial.jsonl")
+    turns = [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)]
+    spans = [(0.0, 5.0), (30.0, 35.0)]
+    segments = [{"start": 3.0, "end": 31.0, "text": "either side of the pause"}]
+
+    with partial.sink(out, turns=turns, spans=spans) as sink:
+        sink.add(segments[0])
+        live = [line["speaker"] for line in _lines(out)]
+    diarize.assign_speakers(segments, turns, spans=spans)
+
+    assert live == [s["speaker"] for s in segments] == ["Speaker 1"]
+    # And the unmasked reading is genuinely different, or this test would pass
+    # for the wrong reason — it is the mask being threaded through that makes
+    # the two agree, not the two happening to agree anyway.
+    assert diarize.speaker_for(3.0, 31.0, turns) == 1
+
+
+def test_NO_spans_scores_the_whole_span_exactly_as_before(partial, tmp_path):
+    """The default every other engine keeps: `faster_whisper`, `parakeet_mlx` and
+    a non-VAD `mlx_whisper` run drop no silence out of the middle of a segment,
+    pass no mask, and must label exactly as they did before `spans` existed."""
+    out = str(tmp_path / "t.partial.jsonl")
+    turns = [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)]
+
+    with partial.sink(out, turns=turns) as sink:
+        sink.add({"start": 3.0, "end": 31.0, "text": "straight through"})
+        assert [line["speaker"] for line in _lines(out)] == ["Speaker 2"]
+
+
 def test_a_segment_overlapping_no_turn_is_labelled_NULL_not_dropped(partial, tmp_path):
     """`speaker: null` is `diarize.py`'s answer for "Whisper heard words where
     the segmenter heard nobody", and a partial line that omitted the key

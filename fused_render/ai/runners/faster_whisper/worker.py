@@ -116,6 +116,35 @@ def load(model_id, fetched):
     from faster_whisper import WhisperModel
 
     device, compute_type = _placement()
+    # **No `cpu_threads`, and that is now measured rather than merely unexamined.**
+    # This runner is the one place where CPU is the ONLY path (CTranslate2 has no
+    # Metal backend), so it is where `diarize.NUM_THREADS`' finding — threads past
+    # the performance cores make a CPU model SLOWER on a P+E part — was most
+    # likely to repeat. It does not, because CT2's default already IS the value
+    # that finding lands on: `cpu_threads=0` means "CT2's own default", CT2
+    # documents `intra_threads` as "0 to use a default value" and faster-whisper
+    # documents that value as 4 — and a default run sits at ~350-390% CPU on a
+    # 10-core machine rather than at ~800%, which is the same thing observed from
+    # outside.
+    #
+    # Measured on that machine: 216-second recording, `int8` on CPU exactly as
+    # `_placement` picks it, one process per setting, best / median of 2-3 passes,
+    # and every setting returned the same segment count.
+    #
+    #     model=tiny.en   default 21.1s    1 thr 19.5s   4 thr 18.1s   8 thr 61.3s
+    #     model=small     default 94.4s    2 thr 71.9s   4 thr 86.8s   8 thr 146.6s
+    #     (small medians)         102.2s          92.5s        88.6s         182.8s
+    #
+    # So an explicit 4 would restate the default, and every alternative at or
+    # below it lands inside the run-to-run spread — while 8, which is what a naive
+    # "use the machine" rule (`os.cpu_count()`) would reach for, is 3.4x slower on
+    # tiny.en and 1.7x on small. **The suggestive 2-thread figure was deliberately
+    # NOT landed**: one best-of-2 on a busy machine cannot separate it from noise
+    # (its own median is slower than 4's), and a hardcoded 2 would be
+    # host-dependent in the opposite direction from `NUM_THREADS` — wrong on a
+    # 16-performance-core part in exactly the way `1` was wrong for diarization.
+    # If this is ever revisited, it needs a quiet machine and several parts, not a
+    # bigger number.
     _loaded["model"] = WhisperModel(fetched, device=device, compute_type=compute_type)
     _loaded["device"] = device
     # See `worker_base.STATE["device"]`. CTranslate2 has no Metal backend, so an
