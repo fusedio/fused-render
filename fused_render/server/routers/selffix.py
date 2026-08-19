@@ -93,11 +93,29 @@ def _claude_found() -> bool:
     one answer while the health strip beside it reports another, about the same
     binary, in the same second.
 
-    Its snapshot is disk-cached and invalidated by the binary's mtime, so this
-    costs a small file read on the warm path and a `--version` spawn once on a
-    cold one — which is nothing beside the session this route is about to start.
+    A CACHED YES IS TAKEN; A CACHED NO IS RE-MEASURED BEFORE IT MAY REFUSE. The
+    two errors are not the same size. A stale yes costs one spawn that fails and
+    says why in its own words — the answer the route gave before this gate
+    existed. A stale no refuses the click this whole feature exists to invite:
+    the button says "Set up Claude Code", the user goes and does exactly that,
+    comes back, and is told the binary is still missing.
+
+    And the cache is at its blindest for exactly that user. Its invalidation is
+    the resolved binary's mtime, which a snapshot that resolved NOTHING has no
+    path to stat: installing into a directory already on PATH moves no path,
+    changes no PATH string and touches no file the snapshot knows about, so the
+    fingerprint still matches and only the 60s age gate ever clears it. The one
+    transition this gate must not miss is the one it structurally cannot see.
+
+    So the fast path stays a file read, and the ~1-2.5s of probe is paid only
+    where the answer would otherwise be "no" — on a route that is about to start
+    a Claude session, which makes it the cheapest second on the click. The
+    re-measure writes the cache too, so the label's next read of
+    `/api/claude/health` catches up without a second endpoint.
     """
-    return bool(claude_health.summary().get("found"))
+    if claude_health.summary().get("found"):
+        return True
+    return bool(claude_health.summary_refreshed().get("found"))
 
 
 def _live_session_in(root: str) -> str:
