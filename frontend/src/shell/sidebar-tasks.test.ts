@@ -526,10 +526,15 @@ describe("pokeTasks", () => {
     // place a turn is ever in flight, which covers re-attached runs for free.
     expect(CHAT_TEMPLATE).toContain('"fused-render:chat-activity"');
     expect(CHAT_TEMPLATE).toMatch(
-      /setRunningUi\(true\);\s*\n\s*noteChatActivity\(\);/,
+      // Not adjacent any more: #653's generation comment sits between the
+      // chrome write and the stamp — the invariant is "stamps at loop START,
+      // before the first poll", not "on the very next line".
+      /setRunningUi\(true\);[\s\S]{0,700}noteChatActivity\(\);[\s\S]*?await fused\.runPython/,
     );
     expect(CHAT_TEMPLATE).toMatch(
-      /setRunningUi\(false\);\s*\n\s*noteChatActivity\(\);/,
+      // The end stamp sits after #653's seat-guarded chrome block — outside
+      // the guard, deliberately: the turn ended whichever loop owns the UI.
+      /setRunningUi\(false\);\s*\n\s*\}[\s\S]{0,300}noteChatActivity\(\);/,
     );
     // A changed value every time, or the second of two same-millisecond turn
     // ends fires no event at all.
