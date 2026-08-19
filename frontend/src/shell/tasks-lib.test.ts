@@ -6396,10 +6396,16 @@ describe("popoverPill", () => {
 
   it("is what the popover actually renders, shimmer seat and all", () => {
     const CAL = readFileSync(join(SHELL, "ScheduleCalendar.tsx"), "utf8");
+    // The pill's "running" is DAY-scoped on a rule (bugbot, 2026-08-19): the
+    // clicked chip's own occurrences, the same list the grid chip shimmers
+    // by — never the whole merged thread, which lit every day of a rule
+    // whose run was live somewhere else. One-offs keep the task-level fact.
+    expect(CAL).toContain("const liveToday = isRunningIn(task, chip.messages);");
+    expect(CAL).toContain("const pillLive = recurring ? liveToday : liveNow;");
     // The pill comes from this function, over the day's own rows...
-    expect(CAL).toContain("popoverPill(task, recurring, chip.projected, liveNow, today)");
-    // ...the running task's pill carries the shimmer class...
-    expect(CAL).toContain('liveNow ? " is-running" : ""');
+    expect(CAL).toContain("popoverPill(task, recurring, chip.projected, pillLive, today)");
+    // ...the running day's pill carries the shimmer class...
+    expect(CAL).toContain('pillLive ? " is-running" : ""');
     // ...and the dashes can no longer reach it.
     expect(CAL).not.toContain('pill.projected ? " is-projected"');
   });

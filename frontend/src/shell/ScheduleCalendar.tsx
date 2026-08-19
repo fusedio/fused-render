@@ -394,14 +394,21 @@ function ChipPopover({
     [messages, chip.day],
   );
 
-  // Is the task actually working RIGHT NOW — tasks-lib's reading, the very rule
-  // that shimmers the chip this panel is anchored to. Asked of the popover's
-  // merged list (a superset of chip.messages), so the freshly fetched thread can
-  // light it too; ghosts are safe to include because isRunningNow refuses
-  // anything that never started. It drives three things below: the header's
-  // lifecycle slot (no destructive verb mid-run), the pill's word on a
-  // recurring task, and the shimmer on the pill's own ink.
+  // Is the task actually working RIGHT NOW — tasks-lib's reading, asked of the
+  // popover's merged list (a superset of chip.messages) so the freshly fetched
+  // thread can light it too; ghosts are safe to include because isRunningNow
+  // refuses anything that never started. This is the TASK-level fact, and it
+  // gates exactly the things that are about the task: the header's lifecycle
+  // slot (no destructive verb mid-run) and a one-off's pill, which IS its
+  // task's status.
   const liveNow = isRunningIn(task, messages);
+
+  // And the same rule asked of THE CLICKED DAY only — chip.messages, the exact
+  // list the grid chip decides its own shimmer by (bugbot, 2026-08-19): a
+  // recurring task runs on many days, and a popover opened on Tuesday must not
+  // say In Progress because Thursday's occurrence happens to be in flight. This
+  // is what the pill's word and its shimmering ink follow on a recurring task.
+  const liveToday = isRunningIn(task, chip.messages);
 
   // Placed once from the CSS cap, then again from the box it became — the
   // thread lands a fetch later and an error line can appear under it, and both
@@ -605,20 +612,26 @@ function ChipPopover({
   // words, and the full reasoning is on that function: a ONE-OFF's pill is its
   // task's status (taskColumn + failed, exactly what the List's row and the
   // Board's card hand StatusIcon); a REPEATING task's pill answers for the
-  // clicked OCCURRENCE — In Progress while it works, Upcoming for a projected
-  // or not-yet-run day, and a past day's own outcome (Done/Failed) from the
-  // newest real run among the rows drawn right below it (Akshil, 2026-08-19: a
-  // rule's task-level column is nearly always "upcoming", which made the pill
-  // useless on the one view that is about days).
+  // clicked OCCURRENCE — In Progress while THIS DAY works (`liveToday`, the
+  // chip's own reading; `liveNow` would say In Progress on every day of a rule
+  // whose run is live somewhere else), Upcoming for a projected or not-yet-run
+  // day, and a past day's own outcome (Done/Failed) from the newest real run
+  // among the rows drawn right below it (Akshil, 2026-08-19: a rule's
+  // task-level column is nearly always "upcoming", which made the pill useless
+  // on the one view that is about days).
   //
   // AND ALWAYS SOLID (Akshil, 2026-08-19). The pill used to inherit the clicked
   // chip's dashes through `chip.projected`; the dashes are a DAY-scoped drawing
   // ("nothing written down yet") and stay on the grid's ghost chips and the
   // ghost rings on the occurrence rows — never on a status word.
   const recurring = Boolean(chip.recurring || repeat);
+  // What the pill (word and shimmer alike) means by "running": the clicked
+  // day's occurrences for a rule, the task itself for a one-off — so the pill
+  // and the chip it was opened from can never disagree about the same day.
+  const pillLive = recurring ? liveToday : liveNow;
   const pill = useMemo(
-    () => popoverPill(task, recurring, chip.projected, liveNow, today),
-    [task, recurring, chip.projected, liveNow, today],
+    () => popoverPill(task, recurring, chip.projected, pillLive, today),
+    [task, recurring, chip.projected, pillLive, today],
   );
 
   const nowSec = Math.floor(Date.now() / 1000);
@@ -718,7 +731,7 @@ function ChipPopover({
         <span
           className={
             `schedule-state schedule-state--${pill.column}` +
-            (liveNow ? " is-running" : "")
+            (pillLive ? " is-running" : "")
           }
         >
           {pill.label}
