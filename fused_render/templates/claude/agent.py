@@ -2409,12 +2409,35 @@ def _segments_from_rows(rows: list) -> list:
     return out
 
 
-def _poll(run_id: str) -> dict:
+def _poll(run_id: str, file: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
                 "permissions": [], "app_state": [], "skills": [], "retry": None,
                 "retry_total": 0, "retry_status": 0, "segments": []}
+
+    # A page may only attach to a run about ITS OWN target. Run ids are global
+    # (RUNS is one flat dir), and the `run` url param survives some hops the
+    # target does not — the listing pane retargeting `_file` on a selection
+    # change is the reported one — so an id alone must not be enough: without
+    # this check a stale param re-attached a live run's whole conversation
+    # under whichever folder the pane was pointed at next. Refused ONLY on a
+    # provable mismatch: `file` is optional (claude_spawn's bookkeeping loop
+    # polls with no page and no target), and a meta.json without `file` — or
+    # unreadable entirely — proves nothing and keeps the historical behavior.
+    # The wire shape matches "unknown run_id" so the page's existing stale-param
+    # recovery (clear the param, no error banner) covers this case too.
+    if file:
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                run_file = json.load(fh).get("file", "")
+        except (OSError, ValueError):
+            run_file = ""
+        if run_file and os.path.abspath(run_file) != os.path.abspath(file):
+            return {"text": "", "done": True, "session_id": "",
+                    "error": "run is for another target",
+                    "permissions": [], "app_state": [], "skills": [], "retry": None,
+                    "retry_total": 0, "retry_status": 0, "segments": []}
 
     text_parts = []
     result_text = None
@@ -3408,7 +3431,10 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _start(file, message, session_id, model, effort, permission_mode,
                       has_pane=None if has_pane == "" else has_pane != "0")
     if action == "poll":
-        return _poll(run_id)
+        # `file` rides along so the poll can refuse a run that is not about
+        # this page's target (see _poll) — optional, because not every caller
+        # has a page (claude_spawn's record loop).
+        return _poll(run_id, file)
     if action == "decide":
         # `answers` arrives as a JSON string for the same reason `state` does
         # below — params cross into python string-shaped — and is only read for
