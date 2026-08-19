@@ -297,7 +297,9 @@
      on the strip in every state (Akshil, 2026-08-19). */
   #anncta #anndiscard { display: none; }
   #anncta:has(#annrec.on) #anndiscard { display: inline-flex; padding: 0 8px; }
-  #anndiscard:hover { color: var(--error); border-color: var(--error); }
+  /* Two ids + the same pseudo-class count as the base hover above, or the
+     resting brighten wins and the destructive hint never paints. */
+  #anncta #anndiscard:hover:not(:disabled):not(.on) { color: var(--error); border-color: var(--error); }
   /* Recording: the seat is ■ plus the live clock, in the recording's own
      --error ink rather than the armed accent (the accent says "commenting",
      and what this seat says now is "stop"). */
@@ -6565,24 +6567,35 @@ function annRecAssign(ids, segments) {
 // than costing the reader the walkthrough they just did.
 async function annRecEnd() {
   if (!annRecOn || !annRecorder) return;
+  // Flags down BEFORE the stop's await (Bugbot, PR #665): the Discard seat
+  // stays on screen exactly as long as #annrec.on does, and a discard click
+  // landing inside this await used to pass its own guard, call stop() on an
+  // already-inactive recorder (InvalidStateError) and delete nothing while
+  // this function went on to send the walkthrough it tried to throw away.
+  // With the flags (and the face) gone first, that click is a no-op on a
+  // seat that is already leaving.
   const recorder = annRecorder;
-  const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
-  recorder.stop();
-  await stopped;
-  clearInterval(annRecTimerId);
-  annRecTimerId = null;
-  const blob = new Blob(annRecChunks, { type: recorder.mimeType || "" });
   annRecorder = null;
   annRecOn = false;
-  // The picker stays: it follows the MODE now (see annSetMode), and the mode
-  // is still armed until the disarm below. The selected tool stays too — it
-  // is on screen in both flavours of the mode, so carrying a walkthrough's
+  // The face goes with the flags — the trash and the stop clock leave the
+  // strip the moment the choice is made, not after the recorder settles.
+  // The picker stays: it follows the MODE (see annSetMode), and the mode is
+  // still armed until the disarm below. The selected tool stays too — it is
+  // on screen in both flavours of the mode, so carrying a walkthrough's
   // Point into the next typed comment is a visible fact, not a trap.
   annRecBtn.classList.remove("on");
   annRecBtn.setAttribute("aria-pressed", "false");
   annRecLbl.textContent = "";
   annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");
   annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+  const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
+  recorder.stop();
+  await stopped;
+  clearInterval(annRecTimerId);
+  annRecTimerId = null;
+  // The chunks are complete here: the recorder's final dataavailable fires
+  // before its stop event resolves the await above.
+  const blob = new Blob(annRecChunks, { type: recorder.mimeType || "" });
   // The Comment seat stops being the ■/clock stop control the moment `.on`
   // leaves the mic (the stylesheet swap keys off it); its labels go back to
   // naming the mode, which is still armed until the disarm below.
@@ -6688,16 +6701,22 @@ async function annRecDiscard() {
   const recorder = annRecorder;
   annRecorder = null;
   annRecOn = false;
+  // The face goes BEFORE the await, like annRecEnd's: the trash and the
+  // stop clock leave the strip the moment the choice is made, and a second
+  // click has nothing left to land on. The NAME comes back with the face
+  // (Bugbot, PR #665): annRecBegin called this seat "Stop the recording",
+  // and only annRecEnd used to give it back.
+  annRecBtn.classList.remove("on");
+  annRecBtn.setAttribute("aria-pressed", "false");
+  annRecLbl.textContent = "";
+  annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");
+  annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
   const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
   recorder.stop();   // onstop releases the mic tracks, same as a kept stop
   await stopped;
   clearInterval(annRecTimerId);
   annRecTimerId = null;
   annRecChunks = [];
-  annRecBtn.classList.remove("on");
-  annRecBtn.setAttribute("aria-pressed", "false");
-  annRecLbl.textContent = "";
-  annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
   const ids = new Set(annRecIds);
   annRecIds = [];
   if (ids.size) {
