@@ -44,6 +44,7 @@ import { SideCloseButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import { dropStaleChatParams } from "@apps/explorer/listing/chat-params";
+import { pathFromSelParam } from "@apps/explorer/listing/selection";
 import Listing from "@apps/explorer/Listing";
 import {
   activePaneMode,
@@ -229,14 +230,21 @@ export default function ListingPreviewPane({
   // the why). The condition mirrors the Claude branch below exactly, so the target
   // is only claimed on renders where the chat iframe is actually up — a skeleton
   // frame or a flip through Git never reads as a retarget. A hook, so above the
-  // early returns like the two before it.
+  // early returns like the two before it. `urlNamed` — this target is the one the
+  // url's own `?sel=` (or its absence) points at, i.e. a seeded selection playing
+  // out rather than the user clicking away from a chat — is what keeps a deep
+  // link's params alive through the mount-time folder→row hop (chat-params.ts).
   const chatTarget =
     !undecided && side === "claude" && sideEntries.claude && sideEntries.claude.path !== null
       ? paneSideTarget("claude", folder, row && !row.self ? row.path : null)
       : null;
+  const urlNamedTarget =
+    chatTarget !== null &&
+    chatTarget ===
+      (pathFromSelParam(folder, new URLSearchParams(location.search).get("sel")) ?? folder);
   useEffect(() => {
-    dropStaleChatParams(chatTarget);
-  }, [chatTarget]);
+    dropStaleChatParams(chatTarget, urlNamedTarget);
+  }, [chatTarget, urlNamedTarget]);
 
   // --- the pane's modes (listing/pane-side.ts) --------------------------------
   // EVERY MODE THE PANE MAY BE ON, and never fewer: an unofferable COMPANION is

@@ -16,10 +16,19 @@
 // So the pane drops the chat params whenever its chat TARGET changes. Module
 // state rather than component state, deliberately: ListingPreviewPane remounts,
 // and a per-mount ref would read every remount as a first mount and never see
-// the change. A page load resets the module, which is exactly the boundary a
-// deep link needs — the first chat target a fresh page shows keeps whatever
-// params the link carried; only a change AFTER that is a retarget.
-import { replaceSearch } from "@platform/lib/router";
+// the change.
+//
+// What resets the tracking is a NAVIGATION, any navigation: whatever params the
+// arriving entry carries are that entry's own — navigate() already strips them,
+// and a deep link (a Tasks row, a bookmark through navigateUrl) carries them on
+// purpose — so the first chat target the new entry shows ADOPTS its params
+// rather than stripping them. A hard page load resets by reloading the module;
+// in-app pushes say so through the router's own NAV_EVENT, and Back/Forward
+// through popstate. Without those two listeners an SPA hop from the Tasks page
+// would land on a pane whose tracked target is still the folder the user left,
+// read the hop as a retarget, and strip the very deep-link params it arrived
+// with.
+import { NAV_EVENT, replaceSearch } from "@platform/lib/router";
 
 // What the chat template owns on the shell url. `split` is layout, not
 // conversation, and stays; `msg` goes with the session it anchors into.
@@ -44,22 +53,61 @@ export function searchWithoutChatParams(search: string): string | null {
   return qs ? "?" + qs : "";
 }
 
+// The module's three touches of the page, injectable so the tests can drive
+// the state machine without staging `location`/`history` globals (which the
+// bun suite shares across files — a shim staged here collided with other
+// files' shims depending on run order).
+export interface ChatParamIo {
+  pathname(): string;
+  search(): string;
+  write(url: string): void;
+}
+
+const pageIo: ChatParamIo = {
+  pathname: () => location.pathname,
+  search: () => location.search,
+  write: replaceSearch,
+};
+
 // Called with the pane's current chat target on every render where the chat is
 // what the pane shows, and with null otherwise. Null holds the tracked target
 // rather than clearing it: the pane flipping to Git and back is not a retarget,
 // and neither is the skeleton frame while companion probes are out.
-export function dropStaleChatParams(target: string | null): void {
+//
+// `urlNamed` says the target IS what the current url itself names — the row its
+// `?sel=` points at, or the folder when there is no `?sel=`. Such a hop adopts
+// rather than strips, because it is the URL playing out, not the user leaving a
+// chat: a deep link with `?sel=…&session_id=…` mounts the pane on the FOLDER for
+// a beat while the rows load, and the seeded selection then retargets it to the
+// very row the link named — stripping there threw away the link's own params.
+// A user's row CLICK is never url-named at the moment it retargets: the `?sel=`
+// mirror trails the click by its debounce, so the url still names the row being
+// LEFT, and the strip goes through exactly as before.
+export function dropStaleChatParams(
+  target: string | null,
+  urlNamed: boolean,
+  io: ChatParamIo = pageIo
+): void {
   if (target === null) return;
-  if (lastTarget === null || target === lastTarget) {
+  if (lastTarget === null || target === lastTarget || urlNamed) {
     lastTarget = target;
     return;
   }
   lastTarget = target;
-  const stripped = searchWithoutChatParams(location.search);
-  if (stripped !== null) replaceSearch(location.pathname + stripped);
+  const stripped = searchWithoutChatParams(io.search());
+  if (stripped !== null) io.write(io.pathname() + stripped);
 }
 
-// Tests only: the module state IS the feature, so tests must be able to start over.
+// The navigation reset (see the module comment). Exported for the listeners
+// below and for tests.
 export function resetChatParamTracking(): void {
   lastTarget = null;
+}
+
+// Registered at module load, once, for the page the module actually runs in.
+// Guarded because the bun test environment has no full `window`; the browser
+// always does.
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener(NAV_EVENT, resetChatParamTracking);
+  window.addEventListener("popstate", resetChatParamTracking);
 }
