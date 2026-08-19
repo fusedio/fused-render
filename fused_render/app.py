@@ -347,20 +347,42 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
 # AppKit's own termination is precisely the step that aborts.
 
 
-def hard_exit(code: int = 0, *, exit_process=os._exit) -> None:
-    """Kill this process immediately, skipping every finalizer (see above).
+# Budget for the log flush below. Paid on every quit, so it may not be a visible
+# stall; and it is a backstop against a wedged filesystem, not an I/O allowance —
+# a flush that is going to work at all takes microseconds.
+QUIT_LOG_FLUSH_S = 0.5
 
-    Never returns. `exit_process` is injectable so tests can pin the behavior
-    without killing the pytest worker. The log flush is guarded: dying is not
-    optional, so a logging handler that raises on shutdown must not leave a
-    half-quit app alive."""
+
+def _flush_logs() -> None:
     try:
-        # os._exit runs no atexit handler, and logging's flush IS one — without
-        # this the tail of the quit log, exactly what a crash report gets read
-        # against, can be lost.
         logging.shutdown()
     except Exception:
         pass
+
+
+def hard_exit(code: int = 0, *, exit_process=os._exit,
+              flush_budget_s: float = QUIT_LOG_FLUSH_S) -> None:
+    """Kill this process immediately, skipping every finalizer (see above).
+
+    Never returns. `exit_process` is injectable so tests can pin the behavior
+    without killing the pytest worker.
+
+    os._exit runs no atexit handler, and logging's flush IS one — without it the
+    tail of the quit log, exactly what a crash report gets read against, can be
+    lost. But the flush is BOUNDED and off-thread, because a try/except catches
+    raises and not hangs, and the hang is the case that matters:
+    `logging.shutdown()` acquires every handler's lock, and the one scenario the
+    AppKit backstop exists for — a teardown thread wedged somewhere unbudgeted —
+    is precisely the scenario where that thread may be wedged mid-emit holding
+    the RotatingFileHandler lock (a rollover or write against a wedged
+    FUSED_RENDER_LOG_DIR). Waiting on that acquire() would make the app
+    unquittable: the exact outcome QUIT_HARD_DEADLINE_S and
+    QUIT_APPKIT_REPLY_WAIT_S exist to rule out. A daemon flusher we stop waiting
+    for costs at worst the last few log lines; blocking here costs the quit."""
+    flusher = threading.Thread(target=_flush_logs, daemon=True,
+                               name="quit-log-flush")
+    flusher.start()
+    flusher.join(flush_budget_s)
     exit_process(code)
 
 

@@ -929,6 +929,35 @@ def test_hard_exit_still_exits_when_the_log_flush_raises(monkeypatch):
     assert exits == [0]
 
 
+def test_hard_exit_still_exits_when_the_log_flush_HANGS(monkeypatch):
+    """A try/except catches raises, not hangs — and the hang is the case that
+    matters. `logging.shutdown()` acquires every handler's lock, and the one
+    scenario the AppKit backstop exists for (a teardown thread wedged somewhere
+    unbudgeted) is precisely the scenario where that thread may be wedged
+    mid-emit holding the RotatingFileHandler lock — a rollover or write against
+    a wedged FUSED_RENDER_LOG_DIR. Blocking on acquire() there would make the
+    app unquittable, the exact outcome QUIT_HARD_DEADLINE_S and the backstop
+    exist to rule out."""
+    wedged = threading.Event()
+    monkeypatch.setattr(app_mod.logging, "shutdown", wedged.wait)
+    exits = []
+
+    started = time.monotonic()
+    _REAL_HARD_EXIT(0, exit_process=exits.append, flush_budget_s=0.1)
+    elapsed = time.monotonic() - started
+
+    assert exits == [0]
+    assert elapsed < 2.0, "the flush must be bounded, not waited out"
+    wedged.set()  # let the parked flusher unwind
+
+
+def test_the_log_flush_budget_is_small_enough_to_be_invisible():
+    # It is paid on EVERY quit, so it may not be a second of beachball; and it
+    # is a backstop on a wedged filesystem, not a real I/O budget — the flush
+    # takes microseconds whenever anything is working.
+    assert 0 < app_mod.QUIT_LOG_FLUSH_S <= 1.0
+
+
 # ------------------------------------------- AppKit's own quit surfaces (D34)
 # The app is a REGULAR app (setup_py2app.py sets no LSUIElement: Dock icon AND
 # menu bar item, D34), so the Dock icon's right-click Quit, ⌘Q and logout/restart
