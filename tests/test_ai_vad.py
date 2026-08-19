@@ -255,3 +255,152 @@ def test_slicing_is_clamped_to_the_audio_it_has(vad):
     audio = np.arange(16000, dtype=np.float32)
     assert len(vad.slice_samples(audio, (-1.0, 0.5))) == 8000
     assert len(vad.slice_samples(audio, (0.5, 99.0))) == 8000
+
+
+# -- packing regions into as few 30-second windows as possible -------------------
+#
+# mlx-whisper pads every `transcribe()` call's mel to `N_FRAMES = 3000` — 30
+# seconds — so a 0.8-second region costs the same encoder pass as a 30-second
+# one. Decoding one region per call made `vad: true` a PESSIMISATION on the
+# large models: measured on a 216-second recording that is 92% speech (31
+# regions, min 0.8s, median 5.8s, max 14.0s), `large-v3-turbo` took 8.32s for
+# the whole file, 23.30s for the 31 raw regions and 9.31s once packed. These
+# functions are the packing, and they live here rather than in the runner
+# because `vad: true` means one thing for both MLX engines (AI-10f).
+
+
+def test_no_regions_pack_into_no_clips(vad):
+    """The empty list, not a clip covering nothing: what a recording with no
+    speech in it means is the CALLER's decision (the runner transcribes the
+    whole file), and inventing a clip here would take it away."""
+    assert vad.pack_regions([]) == []
+
+
+def test_one_region_is_one_clip(vad):
+    assert vad.pack_regions([(1.0, 3.0)]) == [[(1.0, 3.0)]]
+
+
+def test_regions_summing_to_EXACTLY_the_budget_stay_in_ONE_clip(vad):
+    """The boundary, and it is inclusive on purpose: the budget is the most
+    speech a clip may carry, and a clip carrying exactly that fits in the
+    window. Off by one the other way, a run of regions that added up perfectly
+    would pay for a second nearly-empty encoder pass — the very cost this
+    exists to avoid."""
+    half = vad.BUDGET_S / 2
+    regions = [(0.0, half), (100.0, 100.0 + half)]
+
+    assert vad.pack_regions(regions) == [regions]
+
+
+def test_one_second_MORE_than_the_budget_becomes_TWO_clips(vad):
+    """And the split is at a region boundary, never inside one."""
+    half = vad.BUDGET_S / 2
+    regions = [(0.0, half), (100.0, 100.5 + half)]
+
+    assert vad.pack_regions(regions) == [[regions[0]], [regions[1]]]
+
+
+def test_a_region_LONGER_than_the_budget_travels_ALONE_and_is_never_split(vad):
+    """Cutting mid-speech loses words, and Whisper already chunks a long input
+    internally — so an over-budget region is passed through whole. Today's
+    longest observed region is 14s, but a monologue with no half-second pause
+    in it can exceed the budget, and when it does it must not take a neighbour
+    with it either: the neighbour would be decoded inside a clip that is
+    already over the window."""
+    long_one = (10.0, 10.0 + vad.BUDGET_S + 5.0)
+    regions = [(0.0, 1.0), long_one, (100.0, 101.0)]
+
+    packs = vad.pack_regions(regions)
+
+    assert [(0.0, 1.0)] in packs
+    assert [long_one] in packs, "an over-budget region was merged or split"
+    assert all(len(pack) == 1 or vad.packed_duration(pack) <= vad.BUDGET_S
+               for pack in packs)
+
+
+def test_every_region_appears_ONCE_and_in_ORDER(vad):
+    """The invariant the timestamp remap rests on: the clips are a partition of
+    the regions, in the order the detector found them. A dropped region is
+    speech missing from the transcript, a duplicated one is a sentence
+    transcribed twice, and a reordered one puts the transcript out of order —
+    none of which the caller can see, because each clip decodes fine on its
+    own."""
+    regions = [(start, start + 3.0) for start in range(0, 200, 10)]
+
+    packs = vad.pack_regions(regions)
+
+    assert [region for pack in packs for region in pack] == regions
+    assert all(pack for pack in packs), "an empty clip was emitted"
+
+
+def test_the_budget_leaves_HEADROOM_under_whisper_s_window(vad):
+    """29 rather than 30. The window is 30 seconds exactly (`N_FRAMES = 3000`
+    at 100 frames a second), and a clip that tips a hair over it — by a
+    rounding of the region ends, or by the padding `PAD_S` adds — buys a second
+    encoder pass for a few hundred milliseconds of speech."""
+    assert 25.0 <= vad.BUDGET_S < 30.0
+
+
+def test_packing_CONCATENATES_the_speech_and_leaves_the_silence_behind(vad):
+    """The whole point: the clip handed to the decoder is speech only. The
+    rejected alternative was to slice from the first region's start to the
+    last's end, which is simpler and needs no remap — and which puts the
+    silence back inside the clip, giving up the reason `vad: true` exists at
+    all (Whisper hallucinates in silence)."""
+    audio = np.arange(16000 * 10, dtype=np.float32)
+    pack = [(0.0, 1.0), (5.0, 6.0)]
+
+    clip = vad.packed_samples(audio, pack)
+
+    assert len(clip) == 2 * 16000
+    # Second half is the SECOND region's samples, not the silence between them.
+    assert clip[0] == 0 and clip[16000] == 5 * 16000
+
+
+def test_a_time_in_the_clip_maps_back_through_the_JOIN(vad):
+    """The inverse of the concatenation, and the silent failure it prevents: a
+    transcript that looks perfect and whose every timestamp after a join is
+    early by the length of the silence that was dropped."""
+    pack = [(0.0, 5.0), (30.0, 35.0)]
+
+    assert vad.original_time(pack, 0.0) == 0.0
+    assert vad.original_time(pack, 2.5) == 2.5
+    # The join itself belongs to the region that STARTS there: nothing was said
+    # at 5.0 in the clip that was not also said at 30.0 in the recording, and
+    # placing it at the end of the first region would put a segment's start
+    # behind the silence it was cut out of.
+    assert vad.original_time(pack, 5.0) == 30.0
+    assert vad.original_time(pack, 7.5) == 32.5
+
+
+def test_the_two_ENDS_of_one_segment_are_mapped_INDEPENDENTLY(vad):
+    """A segment can span a join — Whisper hears continuous speech, because the
+    silence is not in the clip it was given — and then its start and its end
+    fall in different source regions. Mapping the pair as one offset would
+    stretch or squash it; mapping each endpoint on its own is what keeps both
+    numbers true."""
+    pack = [(0.0, 5.0), (30.0, 35.0)]
+
+    assert (vad.original_time(pack, 4.0), vad.original_time(pack, 6.0)) == (
+        4.0, 31.0)
+
+
+def test_a_time_PAST_the_speech_lands_on_the_clip_s_last_moment(vad):
+    """Whisper times against a padded 30-second window, so a two-second clip
+    can report a segment ending at 29 — and a hallucination in the padding can
+    start there too. Clamped to the last region's end, both come out as the
+    boundary, which is what lets the runner drop the zero-length result rather
+    than place text inside silence that was removed."""
+    pack = [(0.0, 5.0), (30.0, 35.0)]
+
+    assert vad.original_time(pack, 10.0) == 35.0
+    assert vad.original_time(pack, 29.0) == 35.0
+    # And below zero, for the same reason `slice_samples` clamps: a negative
+    # start must not wrap round to somewhere else in the recording.
+    assert vad.original_time(pack, -1.0) == 0.0
+
+
+def test_the_packed_duration_is_SPEECH_not_wall_clock(vad):
+    """What the ETA and the progress clamp are denominated in: the clip is two
+    seconds long even though it was cut out of six."""
+    assert vad.packed_duration([(0.0, 1.0), (5.0, 6.0)]) == 2.0

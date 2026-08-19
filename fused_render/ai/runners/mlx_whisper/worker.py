@@ -20,8 +20,11 @@ being a library rather than a streaming decoder:
   fork.
 * **`vad: true` runs a real speech detector**, as it does on the CT2 runner —
   Silero over ONNX Runtime (`vad.py`), on the waveform `av` already produced.
-  The silence is dropped, each speech region is transcribed on its own, and
-  every timestamp is mapped back to original-recording time. The cut is always
+  The silence is dropped, the remaining speech is CONCATENATED into clips of up
+  to `vad.BUDGET_S` seconds (one `transcribe()` call each, because the library
+  pads every call to a 30-second window — a call per region made `vad: true`
+  slower than no VAD at all on the large models), and every timestamp is mapped
+  back to original-recording time through `vad.original_time`. The cut is always
   at a boundary the detector found in silence, never at a fixed offset.
 * **`transcribe()` is ONE blocking call, not a generator.** faster-whisper hands
   back a stream and progress falls out of consuming it. Here the whole
@@ -698,21 +701,22 @@ class _watch_progress:
         return False
 
 
-def _seconds_done(position, offset=0.0, limit=None):
-    """Where the decoder has got to, in **seconds of the ORIGINAL recording**.
+def _clip_seconds(position, speech):
+    """How far into the CLIP the decoder has got, in seconds, or None.
 
-    `offset` is where the clip being transcribed starts in that recording, and
-    `limit` is where it ends. Both exist because of the VAD: once silence is
-    dropped, the borrowed counter denominates seconds of SPEECH, and reporting
-    that against a `total` of the whole recording would be two different units
-    in one progress bar — a 90-minute file with 30 minutes of silence would
-    finish at 60/90 and stop. Mapping the counter back through the region is
-    what keeps `done`/`total` meaning what SPEC AI-10a says they mean.
+    Seconds of the clip rather than of the recording, because that is what the
+    borrowed counter actually measures: it counts mel frames of whatever
+    waveform the library was handed, which once the silence is dropped and the
+    regions are packed is neither the recording nor any contiguous part of it.
+    Turning this into a position in the recording is `_original_time`'s job, and
+    the two are separate because the ETA needs THIS number — its rate is
+    `elapsed / speech decoded`, and a remapped position is a different currency
+    (see `_transcribe_regions`).
 
-    `limit` clamps rather than trusting the counter: mlx-whisper's bar counts
-    the mel frames of a padded clip, so the last window of a region can report
-    a fraction of a second past its end, and a bar that overshoots into the
-    silence it skipped is a bar that can exceed its own total.
+    `speech` clamps it: mlx-whisper's bar counts the frames of a PADDED clip, so
+    the last window of a two-second clip reports thirty. Unclamped, a bar would
+    overshoot the clip and, through the remap, walk into silence that was cut
+    out — a bar that can exceed its own total.
 
     None rather than 0 when there is no counter to read: a `done` of 0 is a
     claim that nothing has been transcribed, and `worker_base`/the job manager
@@ -720,10 +724,7 @@ def _seconds_done(position, offset=0.0, limit=None):
     """
     if not position.get("available"):
         return None
-    done = offset + position.get("frames", 0) / _FRAMES_PER_SECOND
-    if limit is not None:
-        done = min(done, limit)
-    return round(done, 2)
+    return min(position.get("frames", 0) / _FRAMES_PER_SECOND, speech)
 
 
 # ------------------------------------------------------------------------- VAD
@@ -900,14 +901,24 @@ def _speaker_turns(audio, speakers, job, row):
         raise worker_base.Cancelled()
 
 
-def _regions_to_decode(audio, regions, total):
-    """The clips to transcribe, as `(start, end)` in original-recording time.
+def _packs_to_decode(regions, total):
+    """The clips to transcribe, each as a LIST of `(start, end)` regions in
+    original-recording time whose speech travels in one `transcribe()` call.
 
-    One region spanning everything is what "no VAD" looks like, and that is the
-    point of the shape: the filtered and unfiltered paths are ONE loop, so the
-    timestamp remap, the progress mapping and the cancel behaviour cannot drift
-    between them. `vad: false` is not a different code path, it is a region
-    list of length one.
+    A list per clip rather than a single span, because the clip handed to the
+    decoder is those regions CONCATENATED — the silence between them is dropped,
+    which is the whole reason `vad: true` exists (Whisper hallucinates in
+    silence) — and the list is what `vad.original_time` inverts to put every
+    timestamp back on the recording's clock. The packing rule and its inverse
+    live in `vad.py`, beside the detector, because how many regions share a call
+    is part of what `vad: true` MEANS and both MLX engines read that from one
+    place (AI-10f).
+
+    One pack of one region spanning everything is what "no VAD" looks like, and
+    that is the point of the shape: the filtered and unfiltered paths are ONE
+    loop, so the timestamp remap, the progress mapping and the cancel behaviour
+    cannot drift between them. `vad: false` is not a different code path, it is
+    a pack list of length one.
 
     A recording the detector finds NO speech in also decodes whole. Reporting
     an empty transcript for a file nobody looked at would be the confident
@@ -916,8 +927,10 @@ def _regions_to_decode(audio, regions, total):
     handling is the better final word.
     """
     if not regions:
-        return [(0.0, total)]
-    return list(regions)
+        return [[(0.0, total)]]
+    import vad as vad_module
+
+    return vad_module.pack_regions(list(regions))
 
 
 def _decode_clip(module, clip, fetched, task, language, initial_prompt):
@@ -933,9 +946,12 @@ def _decode_clip(module, clip, fetched, task, language, initial_prompt):
                              verbose=False)
 
 
-def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
+def _transcribe_regions(audio, packs, fetched, task, language, initial_prompt,
                         job, row, total, transcribing_since, progressive=None):
     """Transcribe each clip and return `(segments, language)` in ORIGINAL time.
+
+    `packs` is `_packs_to_decode`'s list: one entry per `transcribe()` call,
+    each a list of regions whose speech that call is handed CONCATENATED.
 
     `progressive` is the partial-transcript sink (`runners/partial.py`), fed
     from the one place in this file where a segment is finished AND already
@@ -951,15 +967,27 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
     silence at least `MIN_SILENCE_S` long, which is where a sentence has already
     ended.
 
-    **What is still lost is conditioning ACROSS the gap.** `condition_on_
-    previous_text` operates inside one `transcribe()` call, so region two starts
-    with no memory of region one — a proper noun established before a pause can
-    be spelled differently after it. Carrying the previous region's tail in as
+    **How MANY of those cuts share a call is a cost question, and the answer is
+    "as many as fit"** (`vad.pack_regions`). The library pads every call's mel to
+    its full 30-second window, so a call per region billed 30 seconds of encoder
+    for a 0.8-second region: `vad: true` cost `large-v3-turbo` 23.30s on a
+    216-second recording that decodes whole in 8.32s, and 9.31s once packed. The
+    silence still never reaches the decoder — the clip is the regions
+    concatenated, not one span from the first to the last, which is the
+    difference between dropping the silence and merely relabelling it.
+
+    **What is still lost is conditioning ACROSS a CALL.** `condition_on_previous_
+    text` operates inside one `transcribe()` call, so the first region of a clip
+    starts with no memory of the last region of the one before it — a proper noun
+    established early can be spelled differently later. Packing shrinks that loss
+    rather than removing it: regions inside one clip now do condition on each
+    other (it is one continuous waveform to the decoder), which is a side effect
+    of the packing and not its reason. Carrying the previous clip's tail in as
     `initial_prompt` was considered and NOT done: it invites the model to
     continue a sentence that finished before the silence, which is the known way
-    to trigger a repetition loop, and it would make each region's output depend
-    on the previous region's errors. A caller's own `initial_prompt` goes to
-    EVERY region instead, since it is context about the recording as a whole
+    to trigger a repetition loop, and it would make each clip's output depend
+    on the previous clip's errors. A caller's own `initial_prompt` goes to
+    EVERY clip instead, since it is context about the recording as a whole
     (names, jargon) rather than about a position in it.
 
     **The language is detected once and then pinned.** With `language=None` each
@@ -987,14 +1015,15 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
     #: `60 * (0.5 / 3540)` — "~0s left" for the entire decode — and the same
     #: region at the START of that file ends on `3540 * (6 / 60)`, promising
     #: six minutes on a job that is about to finish.
-    speech_total = sum(clip_end - clip_start for clip_start, clip_end in clips)
+    speech_total = sum(_speech_seconds(pack) for pack in packs)
     #: Seconds of speech finished by earlier clips. The current clip's own
     #: contribution comes off the live counter, below.
     decoded = 0.0
 
-    for index, (start, end) in enumerate(clips):
-        last = index == len(clips) - 1
-        clip = audio if (start, end) == (0.0, total) else _slice(audio, start, end)
+    for index, pack in enumerate(packs):
+        last = index == len(packs) - 1
+        speech = _speech_seconds(pack)
+        clip = audio if pack == [(0.0, total)] else _clip_samples(audio, pack)
         if len(clip) < SAMPLE_RATE // 10:
             # Under a tenth of a second. Whisper pads anything shorter than its
             # 30s window anyway, so this is all padding and no signal — and a
@@ -1003,23 +1032,24 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
             continue
         position = {}
 
-        def progress(offset=start, limit=end, before=decoded):
-            done = _seconds_done(position, offset=offset, limit=limit)
-            if done is None:
+        def progress(regions=pack, span=speech, before=decoded):
+            at = _clip_seconds(position, span)
+            if at is None:
                 # No counter to read (see `_watch_progress`). Honest
                 # indeterminate ticking rather than an invented percentage —
                 # the tick is here to be answered, not to move a bar.
                 return None, None, "Transcribing…"
+            # Two currencies, deliberately: `done` is REPORTED, so it is mapped
+            # back onto the recording's clock (AI-10a); `speech_done` is
+            # DIVIDED, so it stays in seconds actually decoded. `at` is this
+            # clip's share, already clamped to its speech, and `before` is what
+            # earlier clips contributed. All three are default arguments because
+            # the closure outlives the loop iteration that made it, and a late
+            # tick reading the loop variables would price this clip against a
+            # later clip's progress.
+            done = round(_original_time(regions, at), 2)
             elapsed = time.time() - transcribing_since
-            # `done - offset` is this clip's share, already clamped to the
-            # region by `_seconds_done`; `before` is what earlier clips
-            # contributed. The pair handed to `_eta` is therefore speech decoded
-            # and speech left, in one currency — while the pair REPORTED stays
-            # in recording time. `before` is a default argument for the same
-            # reason `offset` and `limit` are: the closure outlives the loop
-            # iteration that made it, and a late tick reading the loop variable
-            # would price this clip against a later clip's progress.
-            speech_done = before + (done - offset)
+            speech_done = before + at
             return done, total, "Transcribing — %s of %s%s" % (
                 _clock(done), _clock(total) if total else "?",
                 _eta(speech_total - speech_done if speech_total else None,
@@ -1038,26 +1068,34 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
 
         # This clip is decoded, whatever its counter last said: the borrowed bar
         # counts mel frames of a PADDED window, so trusting its final value
-        # would drift the rate a little further from the truth on every region.
-        decoded += end - start
+        # would drift the rate a little further from the truth on every clip.
+        decoded += speech
         detected = detected or result.get("language")
         for segment in (result.get("segments") or []):
             # The library's segments carry tokens, logprobs and temperatures
             # too; only these three are published, because these three are the
             # CT2 runner's shape and a page must not have to know which one ran.
             #
-            # `+ start` is the remap: timestamps come back relative to the CLIP,
-            # and every consumer — the .json file, a caption track, a page
-            # seeking a player — reads them as positions in the FILE. Getting
-            # this wrong is silent: a transcript that looks perfect and whose
-            # every timestamp after the first gap is early.
-            # BOTH ends are clamped to the region, because Whisper times against
-            # a padded 30s window: the last segment of a two-second clip can end
-            # at 29, and a hallucination in the padding can START there too.
-            # Unclamped, either one places speech inside the silence that was
-            # removed and reorders it against the next region.
-            at = min(float(segment.get("start") or 0.0) + start, end)
-            until = min(float(segment.get("end") or 0.0) + start, end)
+            # `_original_time` is the remap: timestamps come back relative to the
+            # CLIP — which is this pack's regions concatenated, silence removed —
+            # and every consumer, the .json file, a caption track, a page seeking
+            # a player, reads them as positions in the FILE. Getting this wrong
+            # is silent: a transcript that looks perfect and whose every
+            # timestamp after the first join is early by the length of the
+            # silence that was dropped.
+            #
+            # EACH END is mapped on its own, because a segment can span a join:
+            # the decoder hears continuous speech across it (the silence is not
+            # in the clip it was given), so a start and an end can fall in
+            # different source regions, and one shared offset would place both in
+            # whichever region was picked. The mapping also clamps to the pack's
+            # last moment, because Whisper times against a padded 30s window: the
+            # last segment of a two-second clip can end at 29, and a
+            # hallucination in the padding can START there too. Unclamped, either
+            # one places speech inside the silence that was removed and reorders
+            # it against the next clip.
+            at = _original_time(pack, float(segment.get("start") or 0.0))
+            until = _original_time(pack, float(segment.get("end") or 0.0))
             if at >= until:
                 # Clamping alone is not enough for a segment that begins past
                 # the clip: end-only clamping emitted `{start: 15.0, end: 12.0}`
@@ -1065,8 +1103,10 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
                 # it to zero length at the boundary, which is text asserted to
                 # have been spoken during silence that was cut out. Nothing was
                 # said there, so the honest transcript omits it. Real speech that
-                # merely overruns its region still survives, clamped: it starts
-                # inside, so `at < until`.
+                # merely overruns its clip still survives, clamped: it starts
+                # inside, so `at < until`. The mapping is monotonic, so this can
+                # only ever fire on a segment past the end — never on one that
+                # merely crossed a join.
                 continue
             segments.append({
                 "start": round(at, 2),
@@ -1094,13 +1134,37 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
     return segments, detected
 
 
-def _slice(audio, start, end):
-    """One clip's samples. Only ever called for a REGION — the unfiltered path
-    passes the whole waveform through untouched — which is why importing the
-    detector's module here costs nothing on a machine that has no detector."""
+def _clip_samples(audio, pack):
+    """One clip's samples: this pack's regions, CONCATENATED.
+
+    Only ever called for a filtered pack — the unfiltered path passes the whole
+    waveform through untouched — which is why importing the detector's module
+    here costs nothing on a machine that has no detector (`vad.py`'s heavy
+    import is inside `vad.session`, not at its module scope)."""
     import vad as vad_module
 
-    return vad_module.slice_samples(audio, (start, end), SAMPLE_RATE)
+    return vad_module.packed_samples(audio, pack, SAMPLE_RATE)
+
+
+def _speech_seconds(pack):
+    """Seconds of SPEECH in one pack — the length of the clip that will be
+    decoded, not of the stretch of recording it was cut out of."""
+    import vad as vad_module
+
+    return vad_module.packed_duration(pack)
+
+
+def _original_time(pack, at):
+    """`at` seconds into a packed clip → seconds into the RECORDING.
+
+    In `vad.py` rather than here for AI-10f's reason: the packing and its
+    inverse are one decision, they have to be read together to be checked, and
+    the module that defines what `vad: true` means is the place both live.
+    Called per tick and per segment endpoint, so it is deliberately arithmetic
+    over a short list and nothing else."""
+    import vad as vad_module
+
+    return vad_module.original_time(pack, at)
 
 
 # --------------------------------------------------------------- transcription
@@ -1213,7 +1277,10 @@ def generate(body):
     # disabled the threshold as a stand-in for a filter this runner did not
     # have) — the two engines now mean the same thing by the same flag.
     regions = _speech_regions(audio, total, job, row) if vad else None
-    clips = _regions_to_decode(audio, regions, total)
+    # One entry per `transcribe()` call, each carrying the regions whose speech
+    # rides in it: the library pads every call to a 30-second window, so a call
+    # per region is what made `vad: true` cost more than it saved.
+    packs = _packs_to_decode(regions, total)
 
     # Everything from here to the final write happens inside the sink, because
     # its EXIT is the lifecycle: reaching the end means the real output landed
@@ -1225,7 +1292,7 @@ def generate(body):
         # PHASE THREE — transcribe each clip, ticked from here and watched from
         # inside, with every timestamp mapped back to original-recording time.
         segments, language = _transcribe_regions(
-            audio, clips, fetched, task, language, initial_prompt,
+            audio, packs, fetched, task, language, initial_prompt,
             job, row, total, transcribing_since, progressive=progressive)
 
         # PHASE FOUR — the join. Both engines call the SAME function on the same

@@ -6226,13 +6226,35 @@ an AI Models page that could say what was on disk but not what was *running*.
   defeating the folder split) and **not** the PyTorch one (gigabytes for a 2MB
   model). The repo is ungated, which the download rule requires of everything
   this app fetches and not only of models a user picks. **Silence is dropped and
-  each speech region is transcribed on its own**, with every timestamp mapped
-  back to original-recording time. That is chunking, which AI-10c rejects for
+  only speech is decoded**, with every timestamp mapped back to
+  original-recording time. That is chunking, which AI-10c rejects for
   progress — and the difference is where the cut falls: a VAD boundary is by
   construction half a second of silence, where a sentence has already ended,
-  whereas a fixed offset cuts through one. What is still lost is conditioning
-  ACROSS a gap (`condition_on_previous_text` works inside one call), and
-  carrying the previous region's text in as a prompt was rejected rather than
+  whereas a fixed offset cuts through one. **The speech is PACKED, not decoded a
+  region at a time** (D355, `vad.pack_regions`): the surviving regions are
+  concatenated into clips of at most 29 seconds and each clip is one
+  `transcribe()` call, with `vad.original_time` inverting the concatenation for
+  every timestamp — each endpoint mapped on its own, since a segment can span a
+  join. **This is the one place AI-10f claims a speed benefit, and it is
+  measured**, on a 216-second recording that is 92% speech (31 regions, min
+  0.8s, median 5.8s, max 14.0s), against the same file decoded whole:
+  `large-v3-turbo` 8.32s whole, 23.30s as 31 raw regions, 9.31s packed;
+  `tiny.en-8bit` 1.48s / 2.42s / 2.05s. Before packing, `vad: true` therefore
+  COST 15 seconds on a 3.6-minute recording rather than saving anything, because
+  mlx-whisper pads every call's mel to `N_FRAMES = 3000` — 30 seconds — so a
+  0.8-second region buys a full encoder window. faster-whisper never had the
+  defect (its own `vad_filter` calls `collect_chunks`, which concatenates and
+  remaps), and two engines sitting 2.8x apart on one flag is precisely what this
+  clause exists to prevent. **`parakeet_mlx` deliberately does not pack**: it is
+  a transducer with no fixed window (it chunks only above `chunk_duration =
+  60.0`), so its cost is proportional to the audio it is given and packing would
+  add a second timestamp mapping for no measured gain — same meaning of the
+  flag, different batching, which is the distinction the clause draws. A single
+  region longer than the budget passes through whole and is never split: cutting
+  mid-speech loses words, and Whisper's own seeking chunks a long input better.
+  What is still lost is conditioning ACROSS a CALL
+  (`condition_on_previous_text` works inside one), and
+  carrying the previous clip's text in as a prompt was rejected rather than
   forgotten: it invites the model to continue a sentence that finished before
   the pause, which is the known route to a repetition loop. **Progress stays in
   seconds of the ORIGINAL recording**: the borrowed frame counter denominates

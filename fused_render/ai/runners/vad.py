@@ -26,6 +26,16 @@ library that already has the model. This file exists because the MLX engines
 have no such library — which is the whole of AI-10f's argument, one engine
 further on.
 
+**It owns the PACKING too, not just the detection** (`pack_regions`,
+`packed_samples` and the inverse `original_time`, at the foot of this file).
+Deciding what the decoder is actually HANDED — one clip per region, or the
+speech concatenated into as few clips as fit — is part of what `vad: true`
+means, and this module is the one place allowed to define that for both MLX
+engines; `mlx_whisper/worker.py` is the only caller today only because Parakeet
+has no fixed window to pack into, which is a fact about that engine rather than
+a different reading of the flag. The arithmetic is stdlib and numpy, so a
+caller that wants it does not need onnxruntime to be installed.
+
 Three constraints shaped it, and each one closed off the obvious route:
 
 * **Not `faster_whisper`'s copy of Silero.** It is right there and it is the
@@ -96,6 +106,19 @@ MIN_SILENCE_S = 0.5
 #: vowel sit below the threshold and are exactly the samples a transcript needs.
 #: Overlapping regions are merged afterwards, so this can never reorder them.
 PAD_S = 0.2
+
+#: The most SPEECH one packed clip may carry, in seconds — see `pack_regions`.
+#:
+#: **29, not 30, and the missing second is the point.** Whisper's window is 30
+#: seconds exactly (`mlx_whisper.audio.N_FRAMES = 3000` at 100 frames a second)
+#: and every `transcribe()` call pads its mel to the full window, so a clip that
+#: tips a hair over it buys a SECOND, nearly empty encoder pass — the exact cost
+#: packing exists to remove, reintroduced at the boundary. A hair is all it
+#: takes: region ends are rounded to whole samples by `slice_samples` and each
+#: one carries `PAD_S` on both sides, so a run of regions that sums to 30.0 on
+#: paper is not guaranteed to sum to 30.0 in float. The headroom is worth more
+#: than the ~3% of window it gives up.
+BUDGET_S = 29.0
 
 
 def model_path(download_file):
@@ -226,3 +249,113 @@ def slice_samples(audio, region, sample_rate=16000):
     start = max(0, int(region[0] * sample_rate))
     end = min(len(audio), int(region[1] * sample_rate))
     return audio[start:end]
+
+
+def pack_regions(regions, budget=BUDGET_S):
+    """Group consecutive regions into clips of at most `budget` seconds of speech.
+
+    Returns `[[(start_s, end_s), …], …]` — a PARTITION of `regions`, in order,
+    every region appearing exactly once. Each inner list is one "pack": the
+    clip `packed_samples` builds, and simultaneously the whole of the inverse
+    map `original_time` needs to undo it. That is why the samples are not built
+    here: a caller that wanted every clip's audio up front would hold a second
+    copy of the whole waveform (345MB for a 90-minute recording), and it only
+    ever needs one clip at a time.
+
+    **Why this exists.** mlx-whisper pads every call's mel to the full 30-second
+    window, so a 0.8-second region costs the same encoder pass as a 30-second
+    one. Decoding one region per call therefore made `vad: true` a
+    PESSIMISATION on the large models: on a 216-second recording that is 92%
+    speech (31 regions, min 0.8s, median 5.8s, max 14.0s), `large-v3-turbo`
+    took 8.32s for the whole file, 23.30s for the 31 raw regions and 9.31s
+    packed. faster-whisper never had this defect — its own `vad_filter` calls
+    `collect_chunks`, which concatenates speech to a maximum duration and remaps
+    the timestamps afterwards — and since this module exists so both MLX engines
+    mean the SAME thing by the flag (AI-10f), the two engines sitting 2.8x apart
+    on it was the parity problem, not a missed optimisation.
+
+    **A region longer than the budget passes through ALONE and is never split.**
+    Cutting mid-speech loses the words at the cut, and Whisper already chunks a
+    long input internally with its own seeking, which is better at it than a
+    boundary chosen here. It travels alone rather than with a neighbour because
+    the clip is already over the window: adding a neighbour would decode that
+    neighbour inside the overflow.
+    """
+    packs = []
+    current = []
+    filled = 0.0
+    for region in regions:
+        span = region[1] - region[0]
+        # `>` not `>=`: a clip filled to exactly the budget still fits the
+        # window, and rejecting it would pay for the extra pass this avoids.
+        # `current and` is what lets an over-budget region through: with nothing
+        # to flush it starts its own clip, and the NEXT region then finds
+        # `filled` already past the budget and opens another.
+        if current and filled + span > budget:
+            packs.append(current)
+            current = []
+            filled = 0.0
+        current.append(region)
+        filled += span
+    if current:
+        packs.append(current)
+    return packs
+
+
+def packed_duration(pack):
+    """Seconds of SPEECH in one pack — the length of the clip, not of the span
+    of recording it was cut out of. What the progress clamp and the ETA's rate
+    are denominated in: a clip built from six seconds of recording holding two
+    seconds of speech is two seconds of decoding."""
+    return sum(end - start for start, end in pack)
+
+
+def packed_samples(audio, pack, sample_rate=16000):
+    """One pack's regions, concatenated — speech with the silence dropped.
+
+    The single-region case returns `slice_samples`' view rather than a
+    concatenation of one, because a copy buys nothing and the region can be
+    long: a pack of one is what an over-budget region travels as, and what a
+    caller with no detector at all asks for.
+    """
+    if len(pack) == 1:
+        return slice_samples(audio, pack[0], sample_rate)
+    import numpy as np
+
+    return np.concatenate(
+        [slice_samples(audio, region, sample_rate) for region in pack])
+
+
+def original_time(pack, at):
+    """`at` seconds into the packed clip → seconds into the RECORDING.
+
+    The inverse of `packed_samples`, and the reason concatenating is safe at
+    all. Without it every timestamp after the first join is early by the length
+    of the silence that was dropped — a transcript that looks perfect and sends
+    a seeking player to the wrong minute.
+
+    **Called once per endpoint, never once per segment.** A segment can span a
+    join (Whisper hears continuous speech, because the silence is not in the
+    clip it was given), so its start and its end can fall in different source
+    regions; mapping the pair through one offset would stretch or squash it.
+
+    Clamped at both ends. Past the speech, because Whisper times against its
+    padded window — the last segment of a two-second clip can end at 29, and a
+    hallucination in the padding can start there too — and the clamp is what
+    turns such a segment into a zero-length one the caller can recognise and
+    drop, rather than text placed inside silence that was cut out. Below zero
+    for `slice_samples`' reason: a negative time must not wrap round to
+    somewhere else in the recording.
+    """
+    offset = 0.0
+    for start, end in pack:
+        span = end - start
+        if at < offset + span:
+            # `<` not `<=`, so a time landing exactly ON a join belongs to the
+            # region that STARTS there: nothing was said at the join that was
+            # not also said at the next region's start, and attributing it to
+            # the previous region's end would place a segment's start behind
+            # the silence it was cut out of. `max(start, …)` is the low clamp.
+            return max(start, start + (at - offset))
+        offset += span
+    return pack[-1][1]
