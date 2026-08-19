@@ -354,6 +354,9 @@ export default function Canvases() {
               // the previews batch filled in afterwards (D364).
               const thumb =
                 canvas.preview_url ?? (canvas.id ? previews[canvas.id] : undefined) ?? null;
+              // Local clone mtime when we have one, else the control plane's
+              // last_updated — the same expression the sort above orders by.
+              const modified = canvas.mtime ?? canvas.updated_at;
               return (
               <button
                 key={canvas.name}
@@ -377,25 +380,25 @@ export default function Canvases() {
                       }
                     />
                   ) : (
-                    canvas.name.charAt(0).toUpperCase()
+                    <span className="canvas-card-noshot">No preview</span>
                   )}
-                  {canvas.cloned && <span className="canvas-card-pill">cloned</span>}
                 </span>
                 <span className="canvas-card-body">
                   <span className="canvas-card-name" title={canvas.name}>
                     {canvas.name}
                   </span>
-                  <span className="canvas-card-meta">
+                  <span className="canvas-card-stat">
                     {busy === canvas.name
                       ? "Cloning…"
-                      : canvas.cloned
-                        ? `${canvas.n_udfs ?? 0} UDF${canvas.n_udfs === 1 ? "" : "s"}${
-                            canvas.mtime
-                              ? ` · Modified ${formatModified(canvas.mtime)}`
-                              : ""
-                          }`
+                      : canvas.n_udfs !== null
+                        ? `${canvas.n_udfs} UDF${canvas.n_udfs === 1 ? "" : "s"}`
                         : "Not cloned yet — click to clone & open"}
                   </span>
+                  {modified !== null && (
+                    <span className="canvas-card-meta">
+                      Last modified: {formatModified(modified)}
+                    </span>
+                  )}
                 </span>
               </button>
               );

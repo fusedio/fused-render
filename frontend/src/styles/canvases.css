@@ -1,10 +1,10 @@
 /* ---- Canvases sub-app (/canvases) ---------------------------------------- */
 /* Listing modeled on the hosted workbench's canvases gallery: a page head
-   (title, search, actions) over a card grid. The CLI list is bare names, so
-   the card "thumbnail" is a token-tinted monogram plate, not an image; UDF
-   count and modified time exist only for cloned canvases and the stat line
-   degrades to a hint when absent. Every colour is a palette token so light
-   mode repaints for free (tests/test_theme.py). */
+   (title, search, actions) over a grid of chrome-less preview cards. UDF count
+   exists only for cloned canvases, so that stat line degrades to a clone hint;
+   the modified line falls back from clone mtime to the control plane's
+   last_updated. Every colour is a palette token so light mode repaints for
+   free (tests/test_theme.py). */
 .canvases-page {
   flex: 1 1 auto;
   min-height: 0;
@@ -12,7 +12,7 @@
 }
 
 .canvases-inner {
-  max-width: 1080px;
+  max-width: 1180px;
   margin: 0 auto;
   padding: 32px 28px 64px;
 }
@@ -58,30 +58,29 @@
 }
 
 /* Card grid ---------------------------------------------------------------- */
+/* Chrome-less cards, modeled on the hosted workbench's gallery: the preview
+   image IS the card, with the name and two stat lines sitting directly on the
+   page background underneath it. No plate, no monogram — a canvas without a
+   preview gets a quiet "No preview" field, because a giant initial letter was
+   louder than the real thumbnails beside it. */
 .canvases-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 34px 24px;
 }
 
 .canvas-card {
   display: flex;
   flex-direction: column;
+  gap: 10px;
   text-align: left;
   padding: 0;
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
+  background: none;
+  border: none;
+  border-radius: 0;
   cursor: pointer;
   color: inherit;
   font: inherit;
-  transition: border-color 120ms ease, transform 120ms ease;
-}
-
-.canvas-card:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  transform: translateY(-1px);
 }
 
 .canvas-card:disabled {
@@ -89,33 +88,39 @@
   cursor: default;
 }
 
-.canvas-card:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* Monogram plate standing in for a thumbnail: a quiet accent-washed field
-   with the canvas's initial. */
+/* The thumbnail frame. The hairline is the only chrome left, and it exists for
+   light mode: a pale preview on white --bg would otherwise have no edge at
+   all. In dark it reads as the barely-there seam the screenshot shows. */
 .canvas-card-thumb {
   position: relative;
   aspect-ratio: 16 / 9;
   display: flex;
   align-items: center;
   justify-content: center;
-  background:
-    radial-gradient(
-      110% 130% at 100% 0%,
-      color-mix(in srgb, var(--accent) 10%, transparent),
-      transparent 60%
-    ),
-    var(--bg);
-  border-bottom: 1px solid var(--border);
-  font-size: 30px;
-  font-weight: 600;
-  color: color-mix(in srgb, var(--accent) 65%, var(--fg));
+  overflow: hidden;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  transition: border-color 120ms ease;
 }
 
-/* Server-provided preview image filling the plate. */
+/* The border+name shift is the whole hover affordance now that the card has no
+   surface of its own to tint. */
+.canvas-card:hover:not(:disabled) .canvas-card-thumb {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+.canvas-card:hover:not(:disabled) .canvas-card-name {
+  color: var(--accent-soft);
+}
+
+.canvas-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+/* Server-provided preview image filling the frame. */
 .canvas-card-img {
   position: absolute;
   inset: 0;
@@ -124,37 +129,37 @@
   object-fit: cover;
 }
 
-.canvas-card-body {
-  padding: 12px 14px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.canvas-card-name {
-  font-size: 14px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.canvas-card-meta {
-  font-size: 12px;
+/* Stand-in for a canvas with no uploaded preview. */
+.canvas-card-noshot {
+  font-size: 13px;
   color: var(--fg-muted);
 }
 
-/* "cloned" state pill, top-right of the plate. */
-.canvas-card-pill {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  background: color-mix(in srgb, var(--success) 18%, var(--bg));
-  color: var(--success-bright);
-  border: 1px solid color-mix(in srgb, var(--success) 40%, var(--border));
+.canvas-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.canvas-card-name {
+  font-size: 20px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 120ms ease;
+}
+
+/* UDF count (or the clone hint) — the louder of the two stat lines. */
+.canvas-card-stat {
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.canvas-card-meta {
+  font-size: 13px;
+  color: var(--fg-muted);
 }
 
 /* New-canvas inline form (replaces the head actions while open). */
