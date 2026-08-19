@@ -626,3 +626,283 @@ def test_module_does_not_import_the_fused_engine():
     assert "import fused\n" not in src
     assert "from fused." not in src
     assert "import fused." not in src
+
+
+# --- a project folder that ships INSIDE the app -------------------------------
+
+
+def test_a_bundled_folder_is_keyed_on_its_place_in_the_package(home, monkeypatch):
+    """Not on the app's own path, which is not stable on the packaged builds.
+
+    The AppImage mounts itself at a fresh `.mount_FusedRxxxxxx` on every launch,
+    so an absolute-path key gave the bundled AI runner folders a new venv key each
+    time the app started: the multi-gigabyte environment built last launch was
+    still on disk, still correct, and unreachable — a full re-download per launch,
+    with `gc()` unable to reclaim the orphan (a vanished mount reads as merely
+    unreachable, which it deliberately keeps).
+    """
+    first = home / ".mount_FusedRaaaaaa" / "fused_render"
+    second = home / ".mount_FusedRbbbbbb" / "fused_render"
+    runner = "ai/runners/faster_whisper"
+
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(first))
+    key_first = projectenv.venv_key_for(str(first / runner))
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(second))
+    key_second = projectenv.venv_key_for(str(second / runner))
+
+    assert key_first == key_second
+
+
+def test_two_bundled_folders_still_get_two_keys(home, monkeypatch):
+    """Relativising is about the app's path moving, not about merging runners."""
+    pkg = home / "fused_render"
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(pkg))
+
+    whisper = projectenv.venv_key_for(str(pkg / "ai" / "runners" / "faster_whisper"))
+    image = projectenv.venv_key_for(str(pkg / "ai" / "runners" / "diffusers_image"))
+
+    assert whisper != image
+
+
+def test_a_users_folder_beside_the_package_is_keyed_on_its_path(home, monkeypatch):
+    """Only what is genuinely UNDER the package is bundled.
+
+    `..`-escaping relative paths are what a naive relpath check lets through, and
+    a user folder that keyed as though it were part of the app would collide with
+    a real runner on the next release that added one.
+    """
+    pkg = home / "app" / "fused_render"
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(pkg))
+    outside = _write_project(home / "app" / "mine")
+
+    assert projectenv.venv_key_for(str(outside)) == hashlib.sha256(
+        str(outside).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def test_the_real_runner_folders_key_as_bundled():
+    """The wiring, not a stand-in: these are the folders the failure was about."""
+    runner = os.path.join(projectenv._PACKAGE_DIR, "ai", "runners", "faster_whisper")
+    assert projectenv._venv_identity(runner) == "<fused_render>/ai/runners/faster_whisper"
+
+
+# --- the manifest mirror a read-only project's sync runs in -------------------
+
+
+def test_the_worker_and_this_module_agree_on_the_mirror_suffix():
+    """`_env_install_worker` cannot import this module (D152), so it restates it.
+
+    A divergence would leak a mirror per reclaimed venv, each holding the lock its
+    environment was resolved from.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(projectenv.__file__).with_name("_env_install_worker.py")
+    spec = importlib.util.spec_from_file_location("_worker_mirror_suffix", path)
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+
+    assert worker._MIRROR_SUFFIX == projectenv.MIRROR_SUFFIX
+
+
+def test_gc_reclaims_a_venvs_mirror_with_it(home):
+    """The mirror is a sibling of the venv with no sidecar of its own.
+
+    Left behind it is a permanent orphan — `gc` only ever looks at directories
+    that can say what they were built from, and a mirror cannot.
+    """
+    gone = home / "deleted"
+    gone.mkdir()
+    venv = os.path.join(projectenv.venvs_root(), projectenv.venv_key_for(str(gone)))
+    os.makedirs(venv)
+    projectenv.write_sidecar(venv, str(gone), "digest")
+    mirror = venv + projectenv.MIRROR_SUFFIX
+    os.makedirs(mirror)
+    open(os.path.join(mirror, "uv.lock"), "w").close()
+    gone.rmdir()
+
+    assert projectenv.gc() == 1
+    assert not os.path.exists(venv)
+    assert not os.path.exists(mirror), "the mirror outlived the venv it belonged to"
+
+
+def test_gc_never_reclaims_a_mirror_on_its_own_account(home):
+    """A mirror beside a LIVE venv is holding that venv's lock."""
+    proj = _write_project(home / "live")
+    venv = os.path.join(projectenv.venvs_root(), projectenv.venv_key_for(str(proj)))
+    os.makedirs(venv)
+    projectenv.write_sidecar(venv, str(proj), "digest")
+    mirror = venv + projectenv.MIRROR_SUFFIX
+    os.makedirs(mirror)
+
+    assert projectenv.gc() == 0
+    assert os.path.isdir(mirror)
+
+
+def test_gc_reclaims_a_mirror_that_never_GOT_a_venv(home):
+    """A build can leave a mirror and no venv, and nothing else would ever look.
+
+    `uv sync` creates the mirror before it resolves, so a resolver failure — no
+    wheel for this platform, no network, a bad pin — leaves one behind with no venv
+    beside it. So does a project deleted between the sync starting and finishing.
+    A mirror has no sidecar, so the main loop skips it, and reclaiming it with its
+    venv cannot help when there is no venv: it would sit there for the life of the
+    install, once per failed attempt.
+    """
+    proj = _write_project(home / "never-built")
+    venv = os.path.join(projectenv.venvs_root(), projectenv.venv_key_for(str(proj)))
+    mirror = venv + projectenv.MIRROR_SUFFIX
+    os.makedirs(mirror)
+    open(os.path.join(mirror, "pyproject.toml"), "w").close()
+
+    # Not counted: the number gc returns is what startup logs as reclaimed VENVS.
+    assert projectenv.gc() == 0
+    assert not os.path.exists(mirror)
+
+
+def test_gc_reclaims_a_BUNDLED_venv_whose_runner_folder_is_gone(home, monkeypatch):
+    """The reason the sidecar records the identity and not the mount path.
+
+    An AppImage mounts itself somewhere new on every launch, so an absolute path
+    recorded for a folder inside it names a directory that will never exist again —
+    and `gc` deliberately KEEPS a venv whose source is merely unreachable, because
+    that is also what an unplugged external drive looks like. A runner folder that
+    a release removes or renames would therefore strand its multi-gigabyte
+    environment permanently. Recording `<fused_render>/ai/runners/…` and resolving
+    it against the package dir of THIS launch is what makes the deletion visible.
+    """
+    first = home / ".mount_FusedRaaaaaa" / "fused_render"
+    second = home / ".mount_FusedRbbbbbb" / "fused_render"
+    (second / "ai" / "runners").mkdir(parents=True)  # the runner itself is gone
+    runner = _write_project(first / "ai" / "runners" / "faster_whisper")
+
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(first))
+    venv = projectenv.venv_dir_for(str(runner))
+    os.makedirs(venv)
+    projectenv.write_sidecar(venv, str(runner), "digest")
+
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(second))
+    assert projectenv.gc() == 1
+    assert not os.path.exists(venv)
+
+
+def test_gc_keeps_a_BUNDLED_venv_whose_runner_the_new_mount_still_has(home, monkeypatch):
+    """The half that must not break: a remount is not a deletion.
+
+    Every launch of the AppImage is a new mount directory, so if resolving the
+    identity read as "gone" the very first `gc` after any restart would delete
+    every runner environment on the machine.
+    """
+    first = home / ".mount_FusedRaaaaaa" / "fused_render"
+    second = home / ".mount_FusedRbbbbbb" / "fused_render"
+    runner = _write_project(first / "ai" / "runners" / "faster_whisper")
+    _write_project(second / "ai" / "runners" / "faster_whisper")
+
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(first))
+    venv = projectenv.venv_dir_for(str(runner))
+    os.makedirs(venv)
+    projectenv.write_sidecar(venv, str(runner), "digest")
+
+    import shutil
+
+    shutil.rmtree(first)  # last launch's mount is long gone
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(second))
+
+    assert projectenv.gc() == 0
+    assert os.path.isdir(venv)
+
+
+def test_gc_still_reads_a_sidecar_written_the_OLD_way(home):
+    """Installed copies have absolute-path sidecars on disk right now.
+
+    The identity is deliberately unspellable as a path, so a recorded path can
+    never be mistaken for one — an existing sidecar keeps exactly the behaviour it
+    had, which for a user's folder is the full rule and for a bundled one is
+    "never reclaimed until the next rebuild rewrites it". The failure to avoid in
+    both directions: a venv that becomes uncollectable, or one collected while its
+    source is alive.
+    """
+    import json
+
+    def _old_style_sidecar(folder):
+        venv = os.path.join(projectenv.venvs_root(),
+                            projectenv.venv_key_for(str(folder)))
+        os.makedirs(venv)
+        with open(os.path.join(venv, projectenv.SIDECAR_NAME), "w", encoding="utf-8") as fh:
+            json.dump({"path": str(folder), "digest": "d"}, fh)
+        return venv
+
+    gone = home / "gone"
+    gone.mkdir()
+    venv = _old_style_sidecar(gone)
+    live_venv = _old_style_sidecar(_write_project(home / "live"))
+    gone.rmdir()
+
+    assert projectenv.gc() == 1
+    assert not os.path.exists(venv)
+    assert os.path.isdir(live_venv)
+
+
+def test_the_worker_and_this_module_agree_on_the_recorded_IDENTITY(home, monkeypatch):
+    """Both write the sidecar, and `gc` resolves what they wrote.
+
+    `_env_install_worker` cannot import this module (D152), so it restates the
+    computation. A divergence gives a bundled venv a sidecar `gc` cannot map back
+    to a folder — which is precisely the permanent multi-gigabyte orphan the
+    package-relative identity exists to prevent, reintroduced by the mechanism
+    meant to fix it.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(projectenv.__file__).with_name("_env_install_worker.py")
+    spec = importlib.util.spec_from_file_location("_worker_identity", path)
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+
+    pkg = home / ".mount_FusedRaaaaaa" / "fused_render"
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(pkg))
+    monkeypatch.setattr(worker, "_PACKAGE_DIR", str(pkg))
+
+    for folder in (pkg / "ai" / "runners" / "faster_whisper",
+                   pkg,
+                   home / "a-users-folder",
+                   home / ".mount_FusedRaaaaaa" / "beside-the-package"):
+        assert worker._source_identity(str(folder)) == projectenv._venv_identity(str(folder))
+
+    assert worker._PACKAGE_IDENTITY == projectenv._PACKAGE_IDENTITY
+
+
+def test_the_worker_finds_the_package_dir_without_importing_the_package():
+    """It restates the constant, but it must not restate the VALUE.
+
+    The worker file lives in `fused_render/`, so its own dirname is the package
+    dir — no argv slot and no import (D152). Hard-coding anything else would make
+    the two agree in a test that monkeypatches both and disagree in production.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(projectenv.__file__).with_name("_env_install_worker.py")
+    spec = importlib.util.spec_from_file_location("_worker_package_dir", path)
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+
+    assert worker._PACKAGE_DIR == projectenv._PACKAGE_DIR
+
+
+def test_write_sidecar_records_a_bundled_folders_identity(home, monkeypatch):
+    """The server-side writer of the same record the worker writes."""
+    import json
+
+    pkg = home / "fused_render"
+    monkeypatch.setattr(projectenv, "_PACKAGE_DIR", str(pkg))
+    runner = _write_project(pkg / "ai" / "runners" / "faster_whisper")
+    venv = projectenv.venv_dir_for(str(runner))
+    os.makedirs(venv)
+
+    projectenv.write_sidecar(venv, str(runner), "digest")
+
+    with open(os.path.join(venv, projectenv.SIDECAR_NAME), encoding="utf-8") as fh:
+        assert json.load(fh)["path"] == "<fused_render>/ai/runners/faster_whisper"

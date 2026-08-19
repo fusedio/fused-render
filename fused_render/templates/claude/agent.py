@@ -1813,6 +1813,34 @@ def _alive(run_dir: str) -> bool:
         return False
 
 
+def _session_from_out(run_dir: str) -> str:
+    """The session id the CLI announced in its first system row, or "".
+
+    A fallback for the `session` file, which only exists once a poll has run
+    (see _poll): the id is sitting in the head of out.jsonl the moment claude
+    starts, and a lookup that needs it before any poll happened (see _live_run)
+    can read it there. Head-bounded — the announcement is the first row the CLI
+    writes, so anything past a handful of lines is a run whose head we cannot
+    parse, not one still warming up."""
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
+                  errors="replace") as fh:
+            for _ in range(5):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue  # half-written head; a later caller gets it
+                sid = row.get("session_id")
+                if sid:
+                    return str(sid)
+    except OSError:
+        pass
+    return ""
+
+
 # How far back a live-run lookup bothers to look. Run dirs are named
 # "<YYYYmmdd-HHMMSS>-<hex>", so a reverse sort is newest-first and a run that is
 # still going is by construction among the newest few — a turn does not outlive
@@ -1837,7 +1865,10 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
     one. Two ids can identify the same chat — the session the run resumed
     (`resumed_from` in meta.json) and the session the CLI minted for it (written
     to the `session` file by the first poll that sees one, because
-    `--fork-session` can hand back a NEW id) — so either matching is a match.
+    `--fork-session` can hand back a NEW id) — so either matching is a match,
+    and a run with no `session` file yet falls back to the id in out.jsonl's
+    head (_session_from_out), because "no poll ever ran" is precisely the state
+    a Back-mid-start leaves behind.
 
     `limit` is how many run dirs (newest first) the scan reads; `limit=None`
     reads all of them. The default cap is right for the ORIGINAL caller — a page
@@ -1875,6 +1906,18 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
                     own = fh.read().strip()
             except OSError:
                 pass
+            if not own:
+                # The `session` file is written by the FIRST POLL that sees the
+                # id (see _poll) — so a run nobody ever polled has none. That is
+                # not an exotic state: it is exactly what leaving mid-start
+                # leaves behind (Akshil, 2026-08-19 — the reopened chat "does
+                # not show me the streaming thing"): the page left before its
+                # first poll, a NEW chat has no `resumed_from` either, and this
+                # lookup answered "" for a run that was alive the whole time.
+                # The CLI announces the id in its first system row, so read it
+                # from the head of out.jsonl ourselves — a few lines, never the
+                # transcript.
+                own = _session_from_out(run_dir)
             if session_id not in (meta.get("resumed_from", ""), own):
                 continue
         # Liveness LAST: it is the only check that touches a pid, and the two

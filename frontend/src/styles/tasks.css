@@ -795,6 +795,33 @@ button.tasks-caret,
   transition: opacity 0.08s ease;
 }
 
+/* THE PRESS'S RECEIPT (Akshil, 2026-08-19). Clicking Archive keeps the pointer on
+   the row, so the swap above kept right on swapping: the slot instantly redrew the
+   OPPOSITE verb (Unarchive), and the press's only visible outcome was an icon flip
+   — nothing said the action landed. So a spent press hands the slot BACK: the ring
+   returns (drawing the task's new state, which IS the confirmation) and the button
+   stays down for as long as the pointer stays on the row. Leave and return, and
+   the reveal re-arms with the now-opposite action, like any other row.
+
+   `.is-refiled` is the row's own flag — set on the filing press, cleared on the
+   row's mouseleave (ScheduleTaskViews.tsx) — because no selector can say
+   "hovered, but the hover already spent its press". Scoped to the MARK SLOT's
+   occupant only, and still `:hover`-guarded: the flag must change nothing about
+   the keyboard, so both halves step aside for the button's own `:focus-visible` —
+   the same arm the reveal and the fade above honour — rather than leaving a
+   tabbed-to button invisible over a faded ring. The button's suppression takes
+   `pointer-events` down with the ink (invisible means intangible, same rule as
+   `.tasks-act` at rest), so its enlarged ::after zone, which inherits, goes
+   intangible with it and a press lands on the row's link as it does at rest. */
+.tasks-row.is-refiled:hover .tasks-rowmark .tasks-act:not(:focus-visible) {
+  opacity: 0;
+  pointer-events: none;
+}
+.tasks-row.is-refiled:hover .tasks-rowmark:not(:has(.tasks-act:focus-visible)) .schedule-ring {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 /* -- The same actions on a board card ------------------------------------------
    The card is a `<button>`, so the actions cannot live inside it — nested buttons
    do not parse. They are siblings, and this wrapper is what they are positioned
