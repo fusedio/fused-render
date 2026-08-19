@@ -25,7 +25,12 @@ tree. The uv cache sits beside it under the same home dir so both land on one
 filesystem — the only way uv's hardlinks actually dedupe instead of silently
 falling back to full copies.
 
-The path is hashed AS GIVEN (abspath, not realpath). This is a deliberate
+The path is hashed AS GIVEN (abspath, not realpath), with ONE exception: a project
+folder that ships inside the app (the AI runner folders) is keyed on its path
+relative to the `fused_render` package, because the app's own path is not stable —
+the AppImage's mount directory is fresh on every launch. See `_venv_identity`.
+
+Hashing the path as given is a deliberate
 divergence from MD-7's canonicalisation: moving or renaming a folder yields a
 fresh environment, which is a requested feature, and the orphaned venv is
 reclaimed by `gc()`. The dangerous direction — two different folders colliding
@@ -60,6 +65,14 @@ logger = logging.getLogger(__name__)
 # is the staleness signal; see the module docstring for why not mtimes.
 SIDECAR_NAME = ".fused-source.json"
 
+# Suffix of the manifest mirror a READ-ONLY project's `uv sync` runs in, beside the
+# venv it built: `<venvs_root>/<key>.src`. Nothing here creates one —
+# `_env_install_worker._sync_root` does, and that file must not import this package
+# (D152), so the two hold the same literal and a test holds them in step. This
+# module knows the name for one reason: `gc()` reclaims a mirror — with its venv,
+# or on its own when no venv was ever built beside it.
+MIRROR_SUFFIX = ".src"
+
 # sha256 of the folder's absolute path, truncated. 16 hex chars = 64 bits, which
 # is far past collision range for the number of project folders one user has,
 # and keeps the directory name readable in a path the user may see in a log.
@@ -90,9 +103,83 @@ def uv_cache_dir() -> str:
     return os.path.join(home_dir(), "uv-cache")
 
 
+#: The installed `fused_render` package directory, and the one prefix
+#: `_venv_identity` relativises against.
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+#: Stands in for `_PACKAGE_DIR` in the identity of a folder that ships inside the
+#: app. Not a path, and deliberately unspellable as one, so it can never collide
+#: with a real folder of the user's.
+_PACKAGE_IDENTITY = "<fused_render>"
+
+
+def _venv_identity(project_dir: str) -> str:
+    """What *project_dir* is, for keying purposes: its path, or its path IN the app.
+
+    An absolute path is the right identity for a folder of the user's — it is
+    stable for as long as the folder is where it was, and moving the folder is
+    meant to yield a fresh environment (see the module docstring).
+
+    It is the WRONG identity for a folder that ships inside the app, because on
+    two of the three packaged builds the app's own path is not stable:
+
+      * the AppImage runs from a squashfs mount whose directory name is fresh on
+        every launch (`~/.fused-render/temp/.mount_FusedRxxxxxx/…`)
+      * the macOS .app can be run from the DMG, from `/Applications`, or from
+        wherever the user dragged it
+
+    Keying those on the absolute path means the bundled AI runner folders get a
+    new venv key on every launch: the multi-gigabyte torch/ctranslate2 environment
+    built last time is still on disk, still correct, and unreachable, so the user
+    re-downloads it — and `gc()` cannot even reclaim the old one (it keeps venvs
+    whose source is merely unreachable, and a vanished mount is exactly that).
+    Relativising against the package makes the identity `<fused_render>/ai/runners/
+    faster_whisper`, which is the same string on every launch and across upgrades.
+
+    Across upgrades is intended, not a leak: staleness is a digest of the
+    manifest (`state_digest`), so a release that edits a runner's dependencies
+    rebuilds that environment and a release that does not keeps it. That is the
+    same rule a user's folder lives by.
+
+    One consequence worth naming, and it is a real one rather than a developer's
+    corner: any two copies of `fused_render` on one machine share these keys, since
+    both are a package with the same relative folders inside it. `home_dir()` is
+    `~/.fused-render` for every copy without a `FUSED_RENDER_BRANCH`, so an old
+    and a new AppImage kept side by side — or an AppImage plus a `pip install`, or
+    either plus a source checkout — share one venv and one manifest mirror per
+    runner. While their manifests agree that is the whole point (nobody downloads
+    torch twice). When they differ, the digest check makes them ALTERNATE: each
+    launch of the other copy rebuilds the runner it uses, instead of the two
+    coexisting.
+
+    That is the accepted cost, not an oversight. Reuse across launches and across
+    upgrades is what this identity is FOR, and folding an install identity (a
+    build hash, an app path) into the key would defeat exactly that — the AppImage
+    would be back to a fresh key per launch. Two copies of the app that are
+    actively used in alternation is a rarer situation than one copy relaunched,
+    and its cost is a rebuild rather than a wrong answer.
+    """
+    path = os.path.abspath(project_dir)
+    try:
+        rel = os.path.relpath(path, _PACKAGE_DIR)
+    except ValueError:
+        # Windows, different drives — nothing relative to say, so it is not ours.
+        return path
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
+        return path
+    if rel == os.curdir:
+        return _PACKAGE_IDENTITY
+    return _PACKAGE_IDENTITY + "/" + rel.replace(os.sep, "/")
+
+
 def venv_key_for(project_dir: str) -> str:
-    """The directory name of *project_dir*'s venv: sha256 of its absolute path."""
-    return hashlib.sha256(os.path.abspath(project_dir).encode("utf-8")).hexdigest()[:_KEY_LEN]
+    """The directory name of *project_dir*'s venv: sha256 of its identity.
+
+    The identity is the absolute path for every folder of the user's, and the
+    PACKAGE-RELATIVE path for a folder that ships inside the app — see
+    `_venv_identity`.
+    """
+    return hashlib.sha256(_venv_identity(project_dir).encode("utf-8")).hexdigest()[:_KEY_LEN]
 
 
 def venv_dir_for(project_dir: str) -> str:
@@ -235,7 +322,14 @@ def lock_path(project_dir: str) -> str:
 
 def has_lock(project_dir: str) -> bool:
     """A lock is a request for exact resolution, and is always honoured with a
-    real venv — the app-satisfies fast path is skipped for a locked project."""
+    real venv — the app-satisfies fast path is skipped for a locked project.
+
+    A READ-ONLY project's lock does not live here: it lives in the mirror
+    (`_env_install_worker._sync_root`), which this cannot see, so `locked` in
+    `engine.py` reads False for such a folder. No live bug — the bundled AI runners
+    reach their environments through `envinstall.is_installed`/`venv_python_for`
+    and never through the engine's app-satisfies fast path — but worth knowing
+    before someone reads this as "no lock exists anywhere for that folder"."""
     return os.path.isfile(lock_path(project_dir))
 
 
@@ -601,10 +695,20 @@ def read_sidecar(venv_dir: str) -> dict | None:
 def write_sidecar(venv_dir: str, project_dir: str, digest: str) -> None:
     """Record what this venv was built from. Written by the install worker on
     success, BEFORE the ready marker, so a venv is never advertised as ready
-    without the digest that lets the next request check it."""
+    without the digest that lets the next request check it.
+
+    The recorded `path` is the venv's IDENTITY (`_venv_identity`), the same string
+    its key is derived from — an absolute path for a folder of the user's, and
+    `<fused_render>/ai/runners/…` for one that ships inside the app. Recording the
+    absolute path of a bundled folder would record this launch's squashfs mount
+    directory, which no later launch can resolve, so `gc()` would read every
+    bundled venv as merely unreachable and keep it forever: a runner folder that a
+    release removes or renames would strand a multi-gigabyte environment nothing
+    could ever collect. `gc()` maps the identity back; `_env_install_worker._build`
+    is the other writer of this record and computes the same string."""
     tmp = os.path.join(venv_dir, SIDECAR_NAME + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"path": os.path.abspath(project_dir), "digest": digest}, f)
+        json.dump({"path": _venv_identity(project_dir), "digest": digest}, f)
     os.replace(tmp, os.path.join(venv_dir, SIDECAR_NAME))
 
 
@@ -619,6 +723,32 @@ def sidecar_matches(venv_dir: str, project_dir: str) -> bool:
 # --------------------------------------------------------------------------
 # Garbage collection
 # --------------------------------------------------------------------------
+
+
+def _sidecar_source_dir(source: str) -> str:
+    """The directory a sidecar's recorded `path` names, on THIS launch.
+
+    The inverse of `_venv_identity` for the in-app case: `<fused_render>/ai/runners/
+    faster_whisper` becomes that folder under the CURRENT `_PACKAGE_DIR`, which is
+    the whole reason the identity is recorded instead of the path — the recorded
+    string survives an AppImage remount, and this resolves it against wherever the
+    app is mounted now.
+
+    Anything that is not the package identity comes back unchanged, which is what
+    keeps sidecars written the OLD way (a plain absolute path, and there are
+    installed copies with those on disk) reading correctly: `_PACKAGE_IDENTITY` is
+    deliberately unspellable as a path, so no real recorded path can start with it
+    and be misread as an in-app one, and a bundled venv from before this change
+    simply keeps the behaviour it had — never reclaimed until its next rebuild
+    rewrites the sidecar. The one thing that must never happen, reclaiming a venv
+    whose source is alive, is impossible either way.
+    """
+    if source == _PACKAGE_IDENTITY:
+        return _PACKAGE_DIR
+    prefix = _PACKAGE_IDENTITY + "/"
+    if source.startswith(prefix):
+        return os.path.join(_PACKAGE_DIR, *source[len(prefix):].split("/"))
+    return source
 
 
 def _source_is_deleted(source: str) -> bool:
@@ -658,6 +788,33 @@ def gc() -> int:
       * a venv whose source is merely UNREACHABLE rather than deleted, e.g. on an
         unplugged external drive. See `_source_is_deleted`.
 
+    A manifest mirror (`<key>.src`) is reclaimed in two situations, and only
+    those: with the venv it belongs to, and when there is NO `<key>` directory at
+    all. The second is not tidiness — a mirror has no sidecar, so the loop below
+    skips it on its own account, and a build that never produced a venv (a
+    resolver failure, a project deleted between the sync starting and finishing)
+    left one that nothing would ever look at again. It is only a few KB, but it is
+    a few KB that accumulates once per failed install and is invisible to every
+    other mechanism here. A mirror BESIDE a live venv is still never touched
+    alone: it holds the lock that venv was resolved from.
+
+    That does mean a mirror can be taken out from under a FIRST install running
+    right now, for as long as its venv directory does not exist yet. The worker
+    only creates the venv's PARENT before spawning uv, so what closes the window
+    is uv itself creating the environment — which it does before it resolves, so
+    the exposure is the sliver between the mirror appearing and uv getting that
+    far, not the resolve and download the user actually waits through. `gc` runs
+    once at server startup, so hitting it means a first read-only install began
+    within about a second of the server booting.
+
+    The cost is bounded at what the mirror is worth: uv writes its lock into an
+    unlinked directory and the next build re-resolves. The venv itself, and
+    therefore the install the user is waiting on, is unaffected.
+
+    Returns the count of VENVS reclaimed — mirrors are not counted, because the
+    number is what startup logs as "reclaimed N orphaned project venv(s)" and a
+    stray few KB is not that.
+
     Blocking I/O; call it off the event loop.
     """
     root = venvs_root()
@@ -670,17 +827,34 @@ def gc() -> int:
         venv = os.path.join(root, name)
         if not os.path.isdir(venv):
             continue
+        if name.endswith(MIRROR_SUFFIX):
+            # A mirror with no venv beside it. Checked against the filesystem
+            # rather than against `entries`, because the venv branch below may
+            # already have removed both by the time this listing reaches the
+            # mirror — and because a venv is a directory either way.
+            if not os.path.isdir(venv[: -len(MIRROR_SUFFIX)]):
+                shutil.rmtree(venv, ignore_errors=True)
+                logger.info("reclaimed manifest mirror %s (no venv beside it)", venv)
+            continue
         info = read_sidecar(venv)
         if not info:
             continue
         source = info.get("path")
-        if not isinstance(source, str) or not _source_is_deleted(source):
+        if not isinstance(source, str):
+            continue
+        if not _source_is_deleted(_sidecar_source_dir(source)):
             continue
         try:
             shutil.rmtree(venv)
         except OSError as e:
             logger.warning("could not reclaim orphaned venv %s: %s", venv, e)
             continue
+        # The manifest mirror a read-only project's sync ran in
+        # (`_env_install_worker._sync_root`), which is a sibling of the venv and so
+        # is sitting in this same listing with no sidecar of its own. It is a few
+        # KB, but it holds the lock that venv was built from — so it is reclaimed
+        # WITH the venv and never on its own account.
+        shutil.rmtree(venv + MIRROR_SUFFIX, ignore_errors=True)
         logger.info("reclaimed venv %s (source %s is gone)", venv, source)
         removed += 1
     return removed
