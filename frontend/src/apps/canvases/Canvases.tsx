@@ -85,9 +85,11 @@ export default function Canvases() {
   // The sidebar's Workbench canvases row reads the same fact this page does, so
   // hand it every status this page learns — the first read, the login poll's
   // flip, the 401 downgrade, the sign-out — rather than leaving it to notice on
-  // its own minute-long poll. See ./logged-in.
+  // its own minute-long poll. The whole status goes over, not just the boolean:
+  // the 401 downgrade below is a verdict on a SPECIFIC credentials store, and
+  // `creds_stamp` is what names it (see ./logged-in).
   useEffect(() => {
-    if (status) publishLoggedIn(status.logged_in);
+    if (status) publishLoggedIn(status);
   }, [status]);
 
   // While a login is in flight, poll status until logged_in flips — or the

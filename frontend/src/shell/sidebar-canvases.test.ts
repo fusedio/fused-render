@@ -8,6 +8,8 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { decideLoggedIn } from "@apps/canvases/logged-in";
+import type { CanvasesStatus } from "@apps/canvases/api";
 
 const SHELL = new URL(".", import.meta.url).pathname;
 const SIDEBAR = readFileSync(join(SHELL, "GlobalSidebar.tsx"), "utf8");
@@ -62,9 +64,40 @@ describe("the sidebar's Workbench canvases entry", () => {
     // the page publishes what its own status poll returned, and the store's own
     // slow poll only exists to catch a login that happened elsewhere.
     expect(STORE).toMatch(/export function publishLoggedIn/);
-    expect(PAGE).toMatch(/publishLoggedIn\(status\.logged_in\)/);
+    expect(PAGE).toMatch(/publishLoggedIn\(status\)/);
     expect(STORE).toMatch(/window\.setTimeout\(poll, POLL_MS\)/);
     // A failed read is not a sign-out — the row survives a server restart.
     expect(STORE).toMatch(/catch \{\n\s*\/\/ A failed read is not a sign-out/);
   });
+
+  it("does not un-hide the row for credentials the server already refused", () => {
+    // /api/canvases/status answers `logged_in` from the file EXISTING, so a
+    // present-but-unrefreshable store reads as signed in forever. The page
+    // learns otherwise from a guarded 401 and replaces itself with the sign-in
+    // wall; before this the store's own poll wrote that verdict back a minute
+    // later and the row returned over a wall (bugbot, 2026-08-19).
+    const dead = status({ logged_in: true, creds_stamp: 100 });
+    expect(decideLoggedIn(dead, null)).toBe(true);
+    expect(decideLoggedIn(dead, 100)).toBe(false);
+    // A re-login over a stale-but-present store never flips `logged_in` — the
+    // mtime changing is the whole signal, which is why the refusal is
+    // remembered as a stamp and not a boolean.
+    expect(decideLoggedIn(status({ logged_in: true, creds_stamp: 101 }), 100)).toBe(true);
+    // No store at all is signed out whatever was refused before.
+    expect(decideLoggedIn(status({ logged_in: false, creds_stamp: null }), 100)).toBe(false);
+    // And a stampless read is never mistaken for the refused one.
+    expect(decideLoggedIn(status({ logged_in: true, creds_stamp: null }), null)).toBe(true);
+  });
 });
+
+function status(over: Partial<CanvasesStatus>): CanvasesStatus {
+  return {
+    cli_found: true,
+    logged_in: true,
+    creds_stamp: null,
+    login_in_flight: false,
+    workbench_base_url: "https://www.fused.io",
+    canvases_dir: "/Users/x/.fused-render/canvases",
+    ...over,
+  };
+}
