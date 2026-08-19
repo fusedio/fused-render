@@ -43,6 +43,7 @@ import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideCloseButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
+import { dropStaleChatParams } from "@apps/explorer/listing/chat-params";
 import Listing from "@apps/explorer/Listing";
 import {
   activePaneMode,
@@ -223,6 +224,19 @@ export default function ListingPreviewPane({
   // contract — platform/lib/frame-focus.ts). Also a hook, so also before the early
   // returns; the branches it guards are the ones that render a frame.
   const { rootRef, guardProps } = usePaneFocusGuard<HTMLDivElement>();
+
+  // Retargeting the chat takes its params off the URL (listing/chat-params.ts has
+  // the why). The condition mirrors the Claude branch below exactly, so the target
+  // is only claimed on renders where the chat iframe is actually up — a skeleton
+  // frame or a flip through Git never reads as a retarget. A hook, so above the
+  // early returns like the two before it.
+  const chatTarget =
+    !undecided && side === "claude" && sideEntries.claude && sideEntries.claude.path !== null
+      ? paneSideTarget("claude", folder, row && !row.self ? row.path : null)
+      : null;
+  useEffect(() => {
+    dropStaleChatParams(chatTarget);
+  }, [chatTarget]);
 
   // --- the pane's modes (listing/pane-side.ts) --------------------------------
   // EVERY MODE THE PANE MAY BE ON, and never fewer: an unofferable COMPANION is

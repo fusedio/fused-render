@@ -12004,7 +12004,7 @@ async function pollLoop(run_id) {
   let tick = 0;
   try {
     while (true) {
-      const data = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+      const data = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
       // Not awaited, for the same reason the app-state answer below is not: a
       // strip of chips may never hold up the streaming reply by a single frame.
@@ -13112,7 +13112,7 @@ async function resumeRun(run_id, opts) {
   if (sending) return;
   sending = true;
   try {
-    let probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+    let probe = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
     if (probe.error === "unknown run_id" && retryUnknown) {
       // A frame handed a run id by its EMBEDDER (the canvases workspace's
       // "Fix with Claude" navigates this iframe with ?run= the moment the
@@ -13121,12 +13121,14 @@ async function resumeRun(run_id, opts) {
       // retries tell the two apart; only then is the id written off.
       for (let i = 0; i < 5 && probe.error === "unknown run_id"; i++) {
         await new Promise((r) => setTimeout(r, 700));
-        probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+        probe = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
       }
     }
-    if (probe.error === "unknown run_id") {
-      // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach
-      // to, and nothing to hand annotations back to: resolve any stragglers
+    if (probe.error === "unknown run_id" || probe.error === "run is for another target") {
+      // stale param — a bookmarked mid-run URL, a pruned tmp, or a run id that
+      // survived onto a DIFFERENT target's page (the agent refuses those now,
+      // same recovery) — nothing to attach to, and nothing to hand annotations
+      // back to: resolve any stragglers
       fused.params.set("run", "", { history: "replace", default: "" });
       annResolveSent();
       return;
