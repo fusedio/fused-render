@@ -160,6 +160,55 @@ def test_the_scan_reaches_back_as_far_as_it_claims(agent, target):
     )
 
 
+# -- the unbounded lookup a LOCK needs (A2) ------------------------------------
+#
+# `_live_run`'s cap is right for its original job (a page re-attaching to its own
+# run: if the id is not among the newest few, that frame has been gone long
+# enough that adopting is pointless) and wrong for the job canvases.py adds —
+# deciding whether to make the embedded workbench read-only because a session is
+# editing the clone. There the answer must be RELIABLE, not cheap-and-usually-
+# right: a live run that fell out of the window reads as "nobody is editing" and
+# the lock silently does not engage. `limit=None` is the unbounded form.
+
+
+def test_the_lock_lookup_sees_a_live_run_past_the_scan_window(agent, target):
+    """The A2 bug: with the default cap, a live run buried under more than
+    _LIVE_SCAN_LIMIT newer dirs is invisible. Nothing prunes RUNS, so on a busy
+    machine that is the normal case, not the exotic one."""
+    live = "20260101-000000-live"
+    _run_dir(agent, live, file=target, resumed_from="sess-A")
+    for i in range(agent._LIVE_SCAN_LIMIT + 5):
+        _run_dir(agent, "202602%02d-000000-dead" % (i + 1), file=target,
+                 resumed_from="sess-A", alive=False)
+    assert agent._live_run(target, "sess-A") == {"run_id": ""}, (
+        "premise check: the capped default still stops at the window"
+    )
+    assert agent._live_run(target, "sess-A", limit=None) == {"run_id": live}
+
+
+def test_the_lock_lookup_still_answers_no_when_every_run_is_dead(agent, target):
+    """Unbounded must not mean credulous — the scan reads further, it does not
+    relax the pid check. A lock that never releases is worse than one that never
+    engages."""
+    for i in range(agent._LIVE_SCAN_LIMIT + 5):
+        _run_dir(agent, "202602%02d-000000-dead" % (i + 1), file=target,
+                 resumed_from="sess-A", alive=False)
+    assert agent._live_run(target, "sess-A", limit=None) == {"run_id": ""}
+
+
+def test_the_lock_lookup_is_scoped_to_the_folder(agent, target, tmp_path):
+    """A run live in ANOTHER folder must not lock this canvas — the clone dir is
+    the identity, and a directory target is what canvases.py passes."""
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    _run_dir(agent, "20260817-120000-aaa", file=str(other))
+    assert agent._live_run(str(clone), limit=None) == {"run_id": ""}
+    _run_dir(agent, "20260817-130000-bbb", file=str(clone))
+    assert agent._live_run(str(clone), limit=None) == {"run_id": "20260817-130000-bbb"}
+
+
 def test_without_a_session_it_answers_for_the_target(agent, target):
     """A boot that has a `run`-less URL and no session id yet still deserves an
     answer — the target is enough to identify the chat there."""

@@ -211,6 +211,121 @@ def _is_loadable(root: str, expected=()) -> bool:
     return True
 
 
+# -- the WORKBENCH plugin (canvas/UDF skills, a separate plugin we do not own) --
+#
+# A canvas clone's CLAUDE.md points the session at the canvas.toml format
+# reference and friends. Those skills live in the `workbench` plugin from the
+# `fusedio/claude-plugins` marketplace — a different plugin from the one this
+# module assembles, published by the workbench team, not shipped in this wheel.
+#
+# Until now the clone's CLAUDE.md handled a missing plugin by telling the USER to
+# run a shell command. That is wrong twice over: the reader is a Claude session
+# in a chat pane, which cannot act on it, and a user reading it there is the
+# wrong person to hand a terminal command to. So the app hands the skills to the
+# session itself, per-run, over the same `--plugin-dir` mechanism it already uses
+# for its own — session-scoped, additive, and no mutation of the user's global
+# Claude config. When the plugin is nowhere on the machine the CLAUDE.md simply
+# degrades and says to follow the folder's own conventions; it never instructs.
+#
+# `--plugin-dir` is repeatable, which is what makes composing the two roots
+# possible at all rather than having to merge trees.
+WORKBENCH_PLUGIN_NAME = "workbench"
+
+# Publishes the discovered root to the templates, exactly like PLUGIN_DIR_ENV.
+# Absent means "nothing to hand" and the template passes no second flag.
+WORKBENCH_PLUGIN_DIR_ENV = "FUSED_RENDER_WORKBENCH_PLUGIN_DIR"
+
+# Explicit override, checked first: a dev (or a future install that ships these
+# skills somewhere of its own) can point straight at a plugin root. Distinct from
+# the export var above so the export never reads its own output.
+WORKBENCH_PLUGIN_SRC_ENV = "FUSED_RENDER_WORKBENCH_PLUGIN"
+
+# The skills a clone session is actually told to load — the evidence that a
+# candidate root is the plugin we mean and not a same-named stub.
+WORKBENCH_SKILLS = ("canvas-toml", "fused-udfs", "json-ui-schemas", "fused-cli",
+                    "canvas-comments")
+
+
+def _claude_config_dir() -> str:
+    """Claude Code's config dir — CLAUDE_CONFIG_DIR wins, as it does for the CLI
+    itself. Read per call, never cached: user_skills.py's D185 lesson is that
+    resolving this once at import is how we end up writing to a directory the
+    CLI does not read."""
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+
+
+def _workbench_candidates() -> list:
+    """Where a `workbench` plugin root may sit, best first.
+
+    Both locations are Claude Code's own plugin storage, whose layout is not a
+    published contract — so this is a best-effort LOOKUP, never a requirement:
+    every caller treats "not found" as a normal outcome.
+
+      marketplaces/<marketplace>/<plugin>/  the marketplace checkout. Preferred:
+                                            it is a plain clone with a stable
+                                            path.
+      cache/<marketplace>/<plugin>/<ver>/   the installed copy, keyed by a
+                                            version hash that changes on every
+                                            update — usable, but only ever as
+                                            the fallback, newest first.
+    """
+    plugins = os.path.join(_claude_config_dir(), "plugins")
+    found = []
+    for kind in ("marketplaces", "cache"):
+        base = os.path.join(plugins, kind)
+        try:
+            markets = sorted(os.listdir(base))
+        except OSError:
+            continue
+        for market in markets:
+            root = os.path.join(base, market, WORKBENCH_PLUGIN_NAME)
+            if kind == "marketplaces":
+                found.append(root)
+                continue
+            try:
+                versions = sorted(os.listdir(root), reverse=True)
+            except OSError:
+                continue
+            found.extend(os.path.join(root, v) for v in versions)
+    return found
+
+
+def find_workbench_plugin() -> str | None:
+    """A loadable `workbench` plugin root on this machine, or None.
+
+    Validated with `_is_loadable` against WORKBENCH_SKILLS, not just the
+    manifest: handing `--plugin-dir` a tree that is missing the very skills the
+    CLAUDE.md names would load cleanly and teach the model nothing, which is the
+    silent failure this whole mechanism exists to remove.
+    """
+    override = os.environ.get(WORKBENCH_PLUGIN_SRC_ENV)
+    candidates = [override] if override else _workbench_candidates()
+    for root in candidates:
+        try:
+            if _is_loadable(root, WORKBENCH_SKILLS):
+                return root
+        except OSError:
+            continue
+    return None
+
+
+def export_workbench_plugin_env() -> str | None:
+    """Publish the workbench plugin root for the sessions we spawn, or clear the
+    var when there is none. Filesystem-only and never raises — same rules as
+    `export_skill_plugin_env`, and for the same reason: this runs on the
+    pre-bind startup path, where blocking is a server that failed to start."""
+    try:
+        root = find_workbench_plugin()
+    except Exception:  # noqa: BLE001 — a lookup is never worth a failed start
+        logger.warning("could not look for the workbench plugin", exc_info=True)
+        root = None
+    if root is None:
+        os.environ.pop(WORKBENCH_PLUGIN_DIR_ENV, None)
+        return None
+    os.environ[WORKBENCH_PLUGIN_DIR_ENV] = root
+    return root
+
+
 def _build(staging: str, sources: dict) -> None:
     shutil.rmtree(staging, ignore_errors=True)
     os.makedirs(os.path.join(staging, MANIFEST_DIR), exist_ok=True)

@@ -69,6 +69,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -82,6 +83,8 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -127,6 +130,14 @@ _FRESH_WINDOW_S = 10.0
 # here also keeps the name safe as a path segment and an argv element.
 _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 
+# How long the manual-push endpoint waits for the watcher's _op_lock before
+# giving up with a 409. Short on purpose: the caller is a Claude session that
+# just asked to publish, and "a sync operation is in flight, try again" is a
+# better answer than a request that hangs for the whole PUSH_TIMEOUT. The
+# watcher's own legs are what hold this lock, and they finish in seconds
+# outside a stuck network call.
+MANUAL_PUSH_LOCK_WAIT_S = 5.0
+
 # Fused environment the canvases feature targets. One knob drives BOTH the
 # workspace iframe URL and the CLI runs (`fused --env`, via the FUSED_ENV
 # variable it reads) so the canvas the iframe shows is the same one the local
@@ -158,10 +169,34 @@ WORKBENCH_BASE_URL = os.environ.get("FUSED_RENDER_WORKBENCH_URL") or _ENV_WEB_UR
 
 def _cli_env(cli) -> dict[str, str]:
     """child_env plus the env target, so CLI runs hit the same environment
-    the iframe shows."""
+    the iframe shows — and the marker that stops a CLI child of OURS from
+    being re-routed back into this server.
+
+    Every fused CLI run this module makes goes through here, which is why the
+    marker lives here rather than at the push site alone: none of these children
+    (push, pull, validate, the manifest/zip shims) should ever be intercepted,
+    and one chokepoint cannot be forgotten at a new call site.
+
+    Without it the sync manager's own push ate its own tail. `_push` runs
+    `[*cli.command, "workbench", "canvas", "push", …]`, and on the shim path
+    `cli.command` IS `[sys.executable, _fused_cli.py]` — the file that performs
+    the interception. So the push POSTed back to /api/canvases/sync/push, was
+    refused because a push was already running (itself), and recorded that
+    refusal as a CLI failure: push_state "error" with push_seq stuck at 0.
+    """
     env = child_env(cli)
     env["FUSED_ENV"] = WORKBENCH_ENV
+    env[_canvas_push_internal_env()] = "1"
     return env
+
+
+def _canvas_push_internal_env() -> str:
+    """The reentrancy marker's name, from the module that reads it, so the two
+    ends cannot drift. Imported lazily: _canvas_push is stdlib-only by design
+    and this keeps the dependency one-directional at import time."""
+    from fused_render._canvas_push import INTERNAL_ENV
+
+    return INTERNAL_ENV
 
 
 def canvases_root() -> str:
@@ -200,6 +235,18 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 
 def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
+
+
+def _busy(message: str) -> JSONResponse:
+    """A "someone else has this folder right now, try again" refusal.
+
+    Distinct from `_error` by the `code`, because the two mean opposite things
+    to a caller: a push FAILURE is about the canvas (validation, auth) and wants
+    fixing, while a busy refusal is about timing and wants retrying. The
+    interception in _canvas_push.py reports them differently for exactly that
+    reason, and nothing here records a busy refusal as sync state.
+    """
+    return JSONResponse({"error": message, "code": "busy"}, status_code=409)
 
 
 def _no_cli_error() -> JSONResponse:
@@ -533,31 +580,64 @@ remote edits (made in the hosted workbench) back down, merging per file.
 
 A watcher in the fused-render app syncs this folder continuously:
 
-- **Auto-push**: after ~1.5s of file quiet it runs `fused canvas push`,
-  which REPLACES the remote UDF set with this folder (deletes propagate).
-  Before pushing it probes the remote and merges concurrent workbench
-  edits in, per file.
+- **Auto-push**: after ~1.5s of file quiet it pushes this folder, which
+  REPLACES the remote UDF set (deletes propagate). Before pushing it probes
+  the remote and merges concurrent workbench edits in, per file. It is
+  HELD while you are working — see "Publishing your work" below.
 - **Auto-pull**: every ~10s it checks the remote; workbench edits are
   pulled down (clean clone) or merged per file (dirty clone — a file only
   you changed keeps your version; only they changed gets theirs; both →
   yours wins).
 
-You MAY run `fused canvas push` / `fused canvas pull` yourself, e.g. to
-reconcile a conflict — just account for the side-effects:
+## Publishing your work
 
-- Your saved edits push themselves within seconds; a manual push is
-  usually redundant. Pushing mid-edit ships a half-done state.
-- `fused canvas pull --force` overwrites the WHOLE folder with remote:
-  any unpushed local edits are lost, and it deletes this CLAUDE.md /
-  .fusedignore (the watcher re-seeds them on its own pulls).
+While you are working here the auto-push is **held** — the debounce measures
+file quiet, and you go quiet mid-change-set (thinking, reading, waiting on a
+tool), so shipping then would publish a half-done rename. You publish
+deliberately instead:
+
+    fused workbench canvas push .
+
+That is the right command and it is safe here. Inside this folder fused-render
+intercepts it and runs the push through its own sync manager, which first
+probes the remote and merges any concurrent workbench edit in, and aborts
+rather than overwriting something it cannot reconcile. You get the CLI's real
+output back: if validation fails, the errors are printed here, one line per
+problem — fix them and push again.
+
+Push when a change set is COHERENT (e.g. a rename: the `.py` file *and* its
+`canvas.toml` entry), not after every edit.
+
+- If you never push, nothing is lost: the watcher pushes the folder on its
+  next tick once you stop working.
+- `--no-validate` / `--no-ignore` are refused here. Fix validation errors
+  rather than skipping them.
+- Do NOT try to work around the interception by invoking a fused from
+  somewhere else (see "Running the fused CLI" below) — a raw push skips the
+  merge guard and can destroy a workbench edit the user made seconds ago,
+  unrecoverably.
+- `fused workbench canvas pull --force` overwrites the WHOLE folder with
+  remote: any unpushed local edits are lost, and it deletes this CLAUDE.md /
+  .fusedignore (the watcher re-seeds them on its own pulls). You rarely need
+  it — the auto-pull already brings remote edits down.
 - After a manual pull, the watcher may see the changed files as fresh
   local edits and push them back — expected, mention it if surprising.
 
-Other rules:
+## Running the fused CLI
+
+Always invoke it as the bare command — `fused ...` — and nothing else. That
+resolves to the CLI this app ships, which is the only one that works here.
+
+Do NOT `pip install fused`, do NOT run `python -m fused`, and do NOT call a
+`fused` from any other path, venv or environment. A different fused misses the
+pieces this folder's two-way sync depends on, and it bypasses the push
+protection described above.
+
+## Keeping the canvas valid
 
 - After structural edits (renaming a node, adding/removing nodes or edges),
-  check the clone with `fused workbench canvas validate .` — the auto-push
-  rejects an invalid canvas and the error surfaces to the user.
+  check the clone with `fused workbench canvas validate .` — an invalid
+  canvas is rejected at push time and the error surfaces to the user.
 - `canvas.toml` defines the canvas (nodes, edges, viewport); every node
   needs its source file next to it (`<udfName>.py`; widgets are `.json`).
 
@@ -588,23 +668,23 @@ Consequences:
   period, and a half-done rename that gets pushed or merged mid-way is
   exactly how invalid states happen.
 
-## Required skills
+## Skills
 
-Before editing, load the Fused plugin skills — they carry the format
-references and workflows for this folder:
+Load these before editing — they carry the format references and workflows
+for this folder. fused-render hands them to this session itself, so they
+should already be in your available-skills list:
 
-- `fused:canvas-toml` — canvas.toml format and folder layout
-- `fused:fused-udfs` — writing Fused UDFs
-- `fused:json-ui-schemas` — widget JSON component props
-- `fused:fused-cli` — the fused CLI reference
+- `workbench:canvas-toml` — canvas.toml format and folder layout
+- `workbench:fused-udfs` — writing Fused UDFs
+- `workbench:json-ui-schemas` — widget JSON component props
+- `workbench:fused-cli` — the fused CLI reference
+- `workbench:canvas-comments` — reading and resolving canvas comments
 
-If no `fused:*` skills appear in your available-skills list, the Fused
-Claude plugin is not installed — STOP and ask the user to run:
-
-    fused claude plugin add
-
-(registers the `fusedio/claude-plugins` marketplace and installs
-`fused@fused-marketplace`; a new session picks the skills up.)
+If they are absent, or listed under a different prefix, just search your
+available skills for the matching names. If they genuinely are not there,
+carry on without them: follow the conventions of the files already in this
+folder and treat the existing `canvas.toml` as the format reference. Do not
+stop to ask for them, and do not try to install anything.
 """
 
 
@@ -840,6 +920,19 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
         return _error("'name' must be a canvas name (letters, digits, underscore)")
     if not _logged_in():
         return _error("not signed in to Fused — sign in first", 409)
+    # Re-look for the `workbench` plugin, whose skills the CLAUDE.md seeded
+    # below names. Startup already looked; doing it again here picks up a plugin
+    # installed since, so the session in the right pane gets those skills
+    # without a server restart — and this is the canvases-scoped moment, rather
+    # than a cost every user pays at startup for a feature most never open.
+    # A lookup only (a few listdirs): no install, no config mutation, and a
+    # failure is swallowed — a clone must still succeed without it.
+    try:
+        from fused_render.skill_plugin import export_workbench_plugin_env
+
+        export_workbench_plugin_env()
+    except Exception:  # noqa: BLE001 — never fail a clone over a skill lookup
+        logger.debug("workbench plugin lookup failed", exc_info=True)
     target = _canvas_dir(name)
     os.makedirs(target, exist_ok=True)
     # --force: the clone folder is OURS (under ~/.fused-render/canvases); a
@@ -866,7 +959,65 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
     return {"ok": True, "dir": target}
 
 
-# -- the per-canvas sync watcher -----------------------------------------------------
+# -- "is a Claude session editing this clone?" ---------------------------------
+#
+# One question, two consumers: the watcher suppresses its debounced auto-push
+# while a session is mid-change-set, and the workspace makes the embedded
+# workbench read-only so the user cannot edit the same canvas from the other
+# pane at the same time.
+#
+# The answer is PID-BASED (agent.py's `_live_run`, whose liveness check is a live
+# process), never transcript activity. The distinction is the whole reason
+# `active_fix_run_id` is written the way it is, a few dozen lines below: a "no
+# recent activity" read carries a grace window that is fine for a status badge
+# and wrong for a lock, because a slow tool call mid-edit reads as "finished" and
+# would unlock the workbench underneath a session that is still writing.
+# `active_fix_run_id` itself is NOT reusable here — it only tracks fix sessions
+# this module spawned, not a chat the user started in the right pane themselves.
+
+# How long a liveness answer is reused. `_run()` refreshes it once a second on
+# EVERY tick, clean clone or not, so the request thread behind
+# `/api/canvases/sync/status` (polled every 2s) almost always finds a warm
+# cache and never itself pays for a scan (a meta.json read per run dir,
+# unbounded — see _live_run's `limit`; deliberately not result-capped, since a
+# capped scan can miss a live run buried under newer ones and silently stop
+# reporting it live). The TTL is kept a bit above the watcher's own 1s tick so
+# a slow tick still leaves margin before the request thread's poll interval
+# catches up and has to do the scan itself; the cost of being briefly stale is
+# at worst one suppressed-then-allowed push, which the debounce tolerates.
+AGENT_LIVE_CACHE_S = 3.0
+
+_AGENT_MOD = None
+_AGENT_MOD_TRIED = False
+_AGENT_MOD_LOCK = threading.Lock()
+
+
+def _agent_module():
+    """The claude template's agent.py, loaded once, or None if it won't load.
+
+    Reached through `claude_spawn.load_agent()`, which is the sanctioned seam for
+    in-process READ paths — canvases.py must not import agent.py directly (it is
+    a template, outside the package's import graph by design, SPEC PY-15).
+
+    Cached because `load_agent` execs the whole module on every call, and this is
+    on a once-a-second loop. A failure is cached too: if it cannot load now it
+    will not load on the next tick either, and retrying it 60 times a minute
+    would turn one broken import into a busy loop.
+    """
+    global _AGENT_MOD, _AGENT_MOD_TRIED
+    with _AGENT_MOD_LOCK:
+        if not _AGENT_MOD_TRIED:
+            _AGENT_MOD_TRIED = True
+            try:
+                from fused_render import claude_spawn
+
+                _AGENT_MOD = claude_spawn.load_agent()
+            except Exception:  # noqa: BLE001 — no agent module is an answer
+                logger.warning("could not load the claude agent module; canvas "
+                               "sync cannot tell whether a session is live",
+                               exc_info=True)
+                _AGENT_MOD = None
+        return _AGENT_MOD
 
 
 class _SyncManager:
@@ -914,6 +1065,13 @@ class _SyncManager:
         self.fix_lock = threading.Lock()
         self.pull_seq = 0
         self.last_pull_at: float | None = None
+        # True for the duration of a force-pull, three-way merge, or its
+        # validation-failure rollback — set/cleared around the two _run() call
+        # sites, both already under _op_lock. Read by the workspace lock
+        # (canvas-lock-lib.ts "pulling" hold): the clone's files are moving on
+        # disk right now, which is exactly the condition the push side of the
+        # lock exists for too.
+        self._pulling = False
         self.merge_seq = 0
         # Sync-point state for the three-way merge: per-file md5s of the
         # clone at the last sync point, and the last-seen remote manifest.
@@ -929,6 +1087,12 @@ class _SyncManager:
         self._history: list[dict] = []
         self.echo_seq = 0
         self.merge_rollback_seq = 0
+        # Cached answer to "is a Claude session live in this clone?" — see
+        # AGENT_LIVE_CACHE_S. Written by whichever of the watcher thread and a
+        # status request asks first; a lost race just means one extra scan, so
+        # the plain-attribute rule the class docstring states still holds.
+        self._agent_run_id = ""
+        self._agent_checked_at = 0.0
         self._load_base()
         self._fingerprint = self._take_fingerprint()
         # A fresh manager (server restart, self-heal after a dropped
@@ -994,6 +1158,30 @@ class _SyncManager:
         # has moved on.
         self.stop_event.set()
         self.thread.join()
+
+    def agent_run_id(self, *, fresh: bool = False) -> str:
+        """The id of a Claude run live in this clone, or "" — cached.
+
+        `limit=None` on purpose: the capped default scan can miss a live run
+        buried under 60 newer run dirs, and nothing prunes RUNS. For a badge
+        that miss is cosmetic; for the workbench lock it means silently not
+        locking, so this caller pays for the reliable answer and caches it.
+        """
+        now = time.time()
+        if not fresh and now - self._agent_checked_at < AGENT_LIVE_CACHE_S:
+            return self._agent_run_id
+        agent = _agent_module()
+        run_id = ""
+        if agent is not None:
+            try:
+                run_id = str(agent._live_run(self.dir, limit=None).get("run_id") or "")
+            except Exception:  # noqa: BLE001 — a failed read must not stop the
+                # watcher, and "cannot tell" is reported as "not live": the
+                # alternative is a lock that never releases.
+                logger.debug("live-run lookup failed for %s", self.dir, exc_info=True)
+        self._agent_run_id = run_id
+        self._agent_checked_at = now
+        return run_id
 
     def _take_fingerprint(self) -> dict[str, tuple[float, int]]:
         fp: dict[str, tuple[float, int]] = {}
@@ -1449,13 +1637,57 @@ class _SyncManager:
             return
         self.pull_seq += 1
         self.last_pull_at = time.time()
+        # Did a local edit land WHILE --force was running? That window cannot
+        # be closed with fingerprints — the pull's own writes and a concurrent
+        # local edit both just look like "the file changed" — so ask the CLI,
+        # exactly as the legacy leg does after its own force pull. Without
+        # this the shim leg re-baselined unconditionally, so a file an active
+        # session wrote mid-pull was overwritten AND adopted as the sync
+        # point: the edit was lost with nothing left to notice it.
+        #
+        # Re-seed the Claude helper files ONLY AFTER this recheck, not before:
+        # they are .fusedignore'd on push, so the remote bundle never contains
+        # them, and the CLI's own delete-ignore list doesn't know their names
+        # either — seeding first would make the dry-run report them as a
+        # perpetual diff (`plan.deletes`), so `still_diff` would be True on
+        # every single poll and the manager would go "pending" → push forever,
+        # re-pushing the content it just pulled right back down each cycle.
+        try:
+            recheck = subprocess.run(
+                [*cli.command, "workbench", "canvas", "pull", self.name,
+                 "-o", self.dir, "--dry-run"],
+                capture_output=True, text=True, timeout=PULL_TIMEOUT,
+                encoding="utf-8", errors="replace",
+                env=_cli_env(cli),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            recheck = None
+        still_diff = recheck is not None and recheck.returncode == 0 and (
+            "already up to date" not in (recheck.stdout or "")
+        )
         # The CLI's --force removed the seeded Claude helper files (they're
-        # not in the bundle) — put them back before rebaselining.
+        # not in the bundle) — put them back now that the recheck has run.
         _seed_clone_claude_files(self.dir, self.name)
         self._fingerprint = self._take_fingerprint()
+        # The remote genuinely IS at `probe` — we just pulled it — so rotate
+        # either way; not rotating would make the next poll see the same move
+        # again and re-run this destructive branch.
+        self._rotate_remote(probe)
+        if still_diff:
+            # Local diverged from what was pulled. Local wins: go dirty so the
+            # debounced push re-asserts it, and leave the merge base ALONE.
+            # Hashing the diverged disk here would record the concurrent edit
+            # as "already synced", and the next remote move would then classify
+            # that file as local-untouched and let remote overwrite it — the
+            # same clobber one step later. A stale base errs toward
+            # "local changed", which is the module's tie policy.
+            self._dirty_since = time.time()
+            if self.push_state != "error":
+                self.push_state = "pending"
+            self._save_base()
+            return
         self._dirty_since = None
         self._base_files = self._take_file_hashes()
-        self._rotate_remote(probe)
         self._save_base()
 
     def _push(self) -> None:
@@ -1483,7 +1715,19 @@ class _SyncManager:
                     # download failed) — pushing now would wholesale-replace
                     # edits we haven't seen, the exact clobber the merge
                     # exists to prevent. Re-arm and retry after the debounce.
+                    #
+                    # This is a benign, retryable deferral, not a push
+                    # failure — clear any STALE last_error/error_detail from
+                    # an earlier failed push. They only clear on a successful
+                    # push otherwise, so without this a merge-abort here would
+                    # report last time's validation errors verbatim: the
+                    # status endpoint's caller (and _fix_prompt, and the CLI
+                    # interception's error_detail passthrough) would send the
+                    # session to fix a problem this attempt never even
+                    # encountered, one it may have already fixed.
                     self.push_state = "pending"
+                    self.last_error = None
+                    self.error_detail = []
                     self._dirty_since = time.time()
                     return
         # Baseline BEFORE the push: a save landing while the push runs must
@@ -1596,9 +1840,11 @@ class _SyncManager:
             return
         self.pull_seq += 1
         self.last_pull_at = time.time()
-        _seed_clone_claude_files(self.dir, self.name)
         # Did local diverge from remote again during the force pull? If so,
-        # local wins — queue a push instead of baselining as clean.
+        # local wins — queue a push instead of baselining as clean. Re-seed
+        # the Claude helper files only AFTER this recheck (see the shim leg's
+        # `_poll_remote` for why: seeding first makes the seeded, never-bundled
+        # files look like a permanent diff to the recheck).
         try:
             recheck = subprocess.run(
                 [*cli.command, *base, "--dry-run"],
@@ -1608,10 +1854,11 @@ class _SyncManager:
             )
         except (subprocess.TimeoutExpired, OSError):
             recheck = None
-        self._fingerprint = self._take_fingerprint()
         still_diff = recheck is not None and recheck.returncode == 0 and (
             "already up to date" not in (recheck.stdout or "")
         )
+        _seed_clone_claude_files(self.dir, self.name)
+        self._fingerprint = self._take_fingerprint()
         self._dirty_since = time.time() if still_diff else None
         if still_diff and self.push_state != "error":
             self.push_state = "pending"
@@ -1622,6 +1869,18 @@ class _SyncManager:
                 paused = self.pause_count > 0
             if paused:
                 continue
+            # Keep the live-run cache warm from the WATCHER thread, on every
+            # tick, clean clone or not — not just from the dirty/debounce
+            # branch below. Without this a clean clone (the common case: a
+            # chat-only session, or between edits) never refreshes it here at
+            # all, so the unbounded os.walk-of-RUNS scan `agent_run_id()` runs
+            # (AGENT_LIVE_CACHE_S has a short TTL, so it re-triggers on the
+            # cache's own schedule) happened on the REQUEST thread instead,
+            # roughly every other `/api/canvases/sync/status` poll
+            # (SYNC_POLL_MS's 2s is close to AGENT_LIVE_CACHE_S's 2s). This
+            # call is a no-op read of the cache except once every
+            # AGENT_LIVE_CACHE_S seconds, so it does not add a scan per tick.
+            self.agent_run_id()
             current = self._take_fingerprint()
             if current != self._fingerprint:
                 self._fingerprint = current
@@ -1630,9 +1889,26 @@ class _SyncManager:
                     self.push_state = "pending"
                 continue
             if self._dirty_since is not None and time.time() - self._dirty_since >= DEBOUNCE_S:
-                with self._op_lock:
-                    self._push()
-                continue
+                # Hold the debounced auto-push while a Claude session is live in
+                # this clone. The debounce measures file quiet, and a session
+                # goes quiet for far longer than DEBOUNCE_S in the middle of a
+                # change set — thinking, reading, waiting on a tool — so the
+                # watcher would ship a half-done rename (the .py file without
+                # its canvas.toml entry) as a validation failure the user sees.
+                # The session publishes deliberately instead, via
+                # /api/canvases/sync/push.
+                #
+                # The watcher stays the BACKSTOP: _dirty_since is left armed, so
+                # the moment no run is live a still-dirty clone pushes on the
+                # next tick. A session that never pushes therefore degrades to
+                # exactly today's behaviour — never to a lost change set.
+                if not self.agent_run_id():
+                    with self._op_lock:
+                        self._push()
+                    continue
+                # Deliberately NOT `continue`: the remote-poll leg below must
+                # keep running while a session works, or workbench edits would
+                # stop arriving for the whole length of a chat.
             if time.time() - self._last_pull_poll >= PULL_POLL_S:
                 self._last_pull_poll = time.time()
                 cli = fused_cli()
@@ -1643,11 +1919,25 @@ class _SyncManager:
                     probe = self._probe_remote()
                     if probe is not None:
                         with self._op_lock:
-                            self._poll_remote(probe)
+                            # `pulling` covers every write this leg can make:
+                            # the clean force-pull, the three-way merge, and
+                            # its validation-failure rollback — the workspace
+                            # lock (canvas-lock-lib.ts) holds the embedded
+                            # workbench read-only for the same reason a push
+                            # does: the clone's files are moving right now.
+                            self._pulling = True
+                            try:
+                                self._poll_remote(probe)
+                            finally:
+                                self._pulling = False
                 elif self._dirty_since is None and self.push_state == "idle":
                     # External CLI (no shims): legacy dry-run poll, clean only.
                     with self._op_lock:
-                        self._pull_if_remote_changed()
+                        self._pulling = True
+                        try:
+                            self._pull_if_remote_changed()
+                        finally:
+                            self._pulling = False
 
     def status(self) -> dict:
         return {
@@ -1665,6 +1955,19 @@ class _SyncManager:
             "error": self.last_error,
             "error_detail": list(self.error_detail),
             "fix_active": self.active_fix_run_id is not None,
+            # Whether a Claude session is live in this clone right now.
+            # PID-based and NOT `fix_active`: that one only knows about fix
+            # sessions this module spawned, while this also covers a chat the
+            # user started in the right pane. Informational only — reported
+            # for the badge/banner copy, but the workspace's left-pane lock no
+            # longer keys off it (a live session with no actual edits yet,
+            # e.g. a plain "hi", must not lock the workbench for the whole
+            # length of the chat).
+            "agent_active": bool(self.agent_run_id()),
+            # True for the duration of a force-pull/three-way-merge leg. The
+            # lock holds for this exactly as it does for push_state
+            # pending/pushing: the clone's files are moving on disk right now.
+            "pulling": self._pulling,
         }
 
 
@@ -1712,23 +2015,123 @@ def api_canvases_sync_stop(body: dict = Body(...), x_fused: str | None = Header(
     return {"ok": True, "stopped": manager is not None}
 
 
+@router.post("/api/canvases/sync/push")
+def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Push this canvas NOW, through the watcher's own _push().
+
+    Exists so a Claude session working in the clone can publish a coherent
+    change set on purpose instead of waiting out the debounce — and, more
+    importantly, so it never has a reason to run `fused workbench canvas push`
+    itself. That raw call is not a faster version of this one, it is a
+    different and unsafe one:
+
+      * it skips the probe+merge+abort guard at the top of `_push`, which is
+        the only thing standing between `canvas push`'s wholesale REPLACE and a
+        concurrent workbench edit. The clobber is unrecoverable: `.sync/trash`
+        only ever protects local files, and the watcher's next probe sees
+        remote == local, so the merge no-ops.
+      * it moves the remote behind the watcher's back. With a clean clone the
+        next poll cannot tell that from a workbench edit and takes the
+        wholesale force-pull branch — pulling the agent's own push back down,
+        deleting every unignored local file the push did not publish, and
+        showing a phantom "pulled from workbench".
+
+    Running the real `_push` under the real `_op_lock` keeps the module's
+    "pushes are serialized per canvas" invariant true and makes the sync point
+    move WITH the push, so the poll that follows has nothing to react to.
+
+    Refuses rather than queues (409) when the watcher is paused, when a push is
+    already running, or when another sync leg holds the lock: the caller is an
+    agent that can read the answer and retry, and a silent no-op would leave it
+    believing it had published.
+
+    Returns the FULL status, `error_detail` included, because the transcript
+    is the point — a validation failure has to land in the session's own
+    context, one line per broken node, so it can fix and retry without a human
+    relaying the output.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        # Deliberately not create=True: constructing one here just to push
+        # once would also start its background thread as a side effect of a
+        # single request, and a manager built without ever having watched
+        # this open (no probe, no in-flight remote manifest) is not a
+        # meaningfully more guarded push than the raw CLI's — even though
+        # `_load_base()` may load a real merge base from a PRIOR sync
+        # session's `.sync/<name>.json`. The workspace starts the real
+        # watcher when it opens the canvas; that is the supported way back in.
+        #
+        # `code` is for _canvas_push.py: since D350's finding-3 correction, a
+        # positively-identified clone target REFUSES on this code rather than
+        # falling through — a merge base from a prior session, or a remote
+        # move via the hosted workbench, can both be invisible right here and
+        # the raw push is never provably inert for a clone. `code` still lets
+        # the CLI interception tell this apart from a genuine push failure it
+        # must report verbatim, and matching on prose would break the moment
+        # this wording changes.
+        return JSONResponse(
+            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+             "code": "no_watcher"}, status_code=409)
+    # The three refusals below are all "someone else has this folder right
+    # now", which is BENIGN — nothing is wrong with the canvas or its files.
+    # They carry code "busy" so neither the caller nor this manager mistakes
+    # them for a failed push: none of them touches push_state, last_error or
+    # error_detail, so the clone stays dirty, the watcher's backstop still
+    # publishes it, and the Fix-with-Claude button (gated on
+    # push_state == "error") never lights up for a race there is nothing to fix.
+    if manager.push_state == "pushing":
+        return _busy("a push is already running for this canvas")
+    if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+        return _busy(
+            "a sync operation is in flight for this canvas; try again in a moment")
+    try:
+        # Re-checked under the lock: pause() sets the count and then waits on
+        # this same lock, so holding it is what makes the answer stable.
+        with manager.pause_lock:
+            if manager.pause_count > 0:
+                return _busy(f"syncing for {name!r} is paused; try again in a moment")
+        before = manager.push_seq
+        manager._push()
+    finally:
+        manager._op_lock.release()
+    status = manager.status()
+    # "idle AND the counter moved" is the only success: _push also returns in
+    # "pending" when it aborted because the remote moved and could not be
+    # reconciled, which must not read as published.
+    status["ok"] = status["push_state"] == "idle" and manager.push_seq > before
+    return status
+
+
 def _fix_prompt(name: str, detail: list[str], error: str | None) -> str:
     """The first message of a fix session: the verbatim CLI output (never
     reworded — rewording makes an error unsearchable, D328) plus what the
-    session must and must not do. The no-push rule matters most: the watcher
-    auto-pushes this folder on every quiet period, so a session that pushes
-    by hand races it, and a session that pushes --no-validate defeats the
-    reason it was spawned."""
+    session must do.
+
+    It used to forbid pushing, because a hand-push raced the watcher and a
+    `--no-validate` one defeated the reason the session was spawned. Neither
+    holds now: the auto-push is HELD while this session is live, so there is
+    nothing to race, and `fused workbench canvas push` inside a clone is
+    intercepted into the guarded server-side push, which refuses
+    --no-validate outright. So the session is told to push — that is how it
+    confirms the fix actually landed, instead of finishing blind and leaving
+    the user to discover on the next tick whether it worked."""
     report = "\n".join(detail) or (error or "the push failed")
     return (
-        f"The automatic `fused workbench canvas push` for the canvas "
-        f"{name!r} (this folder) is failing. The CLI reported:\n\n"
+        f"The automatic canvas push for {name!r} (this folder) is failing. "
+        f"The CLI reported:\n\n"
         f"{report}\n\n"
         "Fix these problems in this folder's files. Check your work with "
-        "`fused workbench canvas validate .` until it passes. Do NOT run "
-        "`fused workbench canvas push` (with or without --no-validate) and "
-        "do not change the canvas name: fused-render watches this folder "
-        "and pushes automatically as soon as the files change."
+        "`fused workbench canvas validate .` until it passes, then publish "
+        "with `fused workbench canvas push .` — inside this folder that runs "
+        "through fused-render's sync manager, so it is safe, and it prints "
+        "any remaining errors straight back to you. Do not change the canvas "
+        "name, and do not use --no-validate (it is refused here anyway)."
     )
 
 
@@ -1807,5 +2210,11 @@ def api_canvases_sync_status(name: str = ""):
         return {"name": name, "watching": False, "push_state": "idle", "push_seq": 0,
                 "last_push_at": None, "pull_seq": 0, "last_pull_at": None,
                 "error": None, "error_detail": [], "dir": _canvas_dir(name),
-                "fix_active": False}
+                "fix_active": False,
+                # No watcher means nothing this page can be waiting on, so the
+                # lock must read "off" — a missing field would leave a locked
+                # pane with nothing left to unlock it (a dropped watcher or a
+                # server restart mid-lock).
+                "agent_active": False,
+                "pulling": False}
     return manager.status()

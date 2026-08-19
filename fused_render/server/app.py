@@ -129,6 +129,12 @@ def export_app_env() -> None:
     # ran `claude --help`, and blocking here blocks the socket bind, which the
     # desktop supervisor reads as a server that failed to start.
     skill_plugin.export_skill_plugin_env()
+    # And the `workbench` plugin's canvas/UDF skills, if this machine has them:
+    # a SECOND --plugin-dir for the sessions we spawn, so a canvas clone's
+    # CLAUDE.md can name the canvas.toml format reference without the app ever
+    # telling the user to go install something. A lookup, not a build — no
+    # network, no config mutation, and "not found" is a normal outcome.
+    skill_plugin.export_workbench_plugin_env()
     # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
     # script under home_dir()/fused-bin goes on PATH and its dir is published
     # as one more FUSED_RENDER_* var, so a Claude session can `fused workbench
