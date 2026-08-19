@@ -244,6 +244,39 @@ def test_list_reports_clone_metadata(harness):
 
 # In-interpreter list shim (the preferred path when the CLI isn't an external
 # binary): stub scripts standing in for _fused_canvases_list.py.
+def _load_list_shim():
+    """Import _fused_canvases_list.py with its `fused` imports stubbed.
+
+    The shim runs as a script inside the CLI's own interpreter, where `fused` is
+    always importable; the count filter it carries is pure, so a test of that
+    filter should not need the compute-engine wheel installed.
+    """
+    import importlib.util
+    import types
+
+    path = os.path.join(
+        os.path.dirname(canvases_mod.__file__), "_fused_canvases_list.py"
+    )
+    fake = types.ModuleType("fused")
+    fake._env = lambda name: None
+    global_api = types.ModuleType("fused._global_api")
+    global_api.get_api = lambda: None
+    saved = {k: sys.modules.get(k) for k in ("fused", "fused._global_api")}
+    sys.modules["fused"] = fake
+    sys.modules["fused._global_api"] = global_api
+    try:
+        spec = importlib.util.spec_from_file_location("_list_shim_under_test", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        for key, prev in saved.items():
+            if prev is None:
+                sys.modules.pop(key, None)
+            else:
+                sys.modules[key] = prev
+    return module
+
+
 def _wire_list_shim(tmp_path, monkeypatch, body: str) -> None:
     shim = tmp_path / "list_shim.py"
     shim.write_text(body, encoding="utf-8")
@@ -276,6 +309,66 @@ def test_list_shim_reports_previews_and_updated_at(harness, tmp_path, monkeypatc
     assert canvases["alpha"]["cloned"] is False
     assert canvases["beta"]["preview_url"] is None
     assert canvases["beta"]["cloned"] is True
+
+
+def test_list_shim_code_udf_count_passes_through(harness, tmp_path, monkeypatch):
+    # The count exists for every canvas the listing names, cloned or not — it is
+    # computed from the node list the lite payload already carried, so a card can
+    # show "N UDFs" (and tile N map thumbnails) before anything is cloned.
+    harness.log_in()
+    _wire_list_shim(
+        tmp_path,
+        monkeypatch,
+        "import json, sys\n"
+        "json.dump([\n"
+        "  {'name': 'alpha', 'id': 'id-a', 'n_code_udfs': 6, 'last_updated': None},\n"
+        "  {'name': 'beta', 'id': 'id-b', 'n_code_udfs': 0, 'last_updated': None},\n"
+        # A shim from an older install, or one whose payload had no node list.
+        "  {'name': 'gamma', 'id': 'id-c', 'last_updated': None},\n"
+        "  {'name': 'delta', 'id': 'id-d', 'n_code_udfs': 'six', 'last_updated': None},\n"
+        "], sys.stdout)\n",
+    )
+    res = harness.client.get("/api/canvases/list", headers=GUARD)
+    assert res.status_code == 200
+    canvases = {c["name"]: c for c in res.json()["canvases"]}
+    assert canvases["alpha"]["n_code_udfs"] == 6
+    # Zero is a real answer (an empty canvas), NOT a missing one — the card
+    # shows "No UDFs present in the canvas" for it rather than a map tile.
+    assert canvases["beta"]["n_code_udfs"] == 0
+    assert canvases["gamma"]["n_code_udfs"] is None
+    assert canvases["delta"]["n_code_udfs"] is None
+
+
+def test_list_external_cli_entries_carry_a_null_code_udf_count(harness):
+    # The bare-name `canvas list` fallback has no node list to count, but the key
+    # is still present so the client does not have to special-case its absence.
+    harness.log_in()
+    res = harness.client.get("/api/canvases/list", headers=GUARD)
+    canvases = {c["name"]: c for c in res.json()["canvases"]}
+    assert canvases["alpha"]["n_code_udfs"] is None
+
+
+def test_shim_code_udf_count_excludes_notes_widgets_and_apps():
+    # Mirrors the workbench client's getCodeUdfCount: sticky notes and widgets
+    # are nodes but not code, and an `app` node is a published app.
+    shim = _load_list_shim()
+    assert (
+        shim._code_udf_count(
+            {
+                "udf_ids": [
+                    {"slug": "airbnb_data", "udf_type": "auto"},
+                    {"slug": "note_3", "udf_type": "auto"},
+                    {"slug": "widget_1", "udf_type": "auto"},
+                    {"slug": "my_app", "udf_type": "app"},
+                    {"slug": "square_numbers", "udf_type": "auto"},
+                    "not-a-dict",
+                ]
+            }
+        )
+        == 2
+    )
+    assert shim._code_udf_count({"udf_ids": []}) == 0
+    assert shim._code_udf_count({}) is None
 
 
 def test_list_shim_expired_credentials_map_to_401(harness, tmp_path, monkeypatch):

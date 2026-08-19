@@ -8,6 +8,7 @@
 // (/canvases/<name>: Claude-editable local files, watch-and-push sync,
 // embedded live workbench). Styling lives in styles/canvases.css.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import previewTile from "@assets/canvas-preview-tile.png";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
@@ -31,11 +32,47 @@ const LOGIN_POLL_MS = 1500;
 // Same rule the server (and the CLI's push) enforces.
 const NAME_RE = /^[A-Za-z0-9_]{1,128}$/;
 
+// A canvas with no uploaded preview gets the hosted gallery's stand-in: one
+// dark map tile per UDF, laid out in a grid, so the card still reads as a
+// canvas of N things instead of an empty box. The tile is the workbench's own
+// `preview_thumbnail_1.png` (fused-magic S3, main_marketing_website/), vendored
+// into the bundle rather than hot-linked — this app runs locally and a card
+// that needs the network to look right is a card that breaks offline.
+const TILE_CAP = 16;
+
+// The gallery's grid shapes, keyed by the layout each count rounds up into: 5
+// tiles use the 6 layout with an empty cell, 7 uses the 8, and so on. Copied
+// from the client's `getGridTemplateByCount` so the two gardens match.
+type TileLayout = { gridTemplateColumns: string; gridTemplateRows: string };
+
+const TILE_LAYOUTS: Record<number, TileLayout> = {
+  1: { gridTemplateColumns: "1fr", gridTemplateRows: "1fr" },
+  2: { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr" },
+  3: { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" },
+  4: { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" },
+  6: { gridTemplateColumns: "1fr 1fr 1fr", gridTemplateRows: "1fr 1fr" },
+  8: { gridTemplateColumns: "1fr 1fr 1fr 1fr", gridTemplateRows: "1fr 1fr" },
+  9: { gridTemplateColumns: "1fr 1fr 1fr", gridTemplateRows: "1fr 1fr 1fr" },
+  12: { gridTemplateColumns: "1fr 1fr 1fr 1fr", gridTemplateRows: "1fr 1fr 1fr" },
+  15: {
+    gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
+    gridTemplateRows: "1fr 1fr 1fr",
+  },
+  16: {
+    gridTemplateColumns: "1fr 1fr 1fr 1fr",
+    gridTemplateRows: "1fr 1fr 1fr 1fr",
+  },
+};
+
+function tileLayout(count: number): TileLayout {
+  const size = [1, 2, 3, 4, 6, 8, 9, 12, 15, 16].find((n) => n >= count) ?? 16;
+  return TILE_LAYOUTS[size];
+}
+
+// Full locale date+time, seconds and four-digit year included — the same string
+// the hosted workbench's gallery prints under a canvas name.
 function formatModified(mtime: number): string {
-  return new Date(mtime * 1000).toLocaleString(undefined, {
-    dateStyle: "short",
-    timeStyle: "short",
-  });
+  return new Date(mtime * 1000).toLocaleString();
 }
 
 export default function Canvases() {
@@ -354,6 +391,17 @@ export default function Canvases() {
               // the previews batch filled in afterwards (D364).
               const thumb =
                 canvas.preview_url ?? (canvas.id ? previews[canvas.id] : undefined) ?? null;
+              // Local clone mtime when we have one, else the control plane's
+              // last_updated — the same expression the sort above orders by.
+              const modified = canvas.mtime ?? canvas.updated_at;
+              // The clone's own *.py count wins when we have one (it sees local
+              // edits the workbench hasn't been pushed yet); otherwise the
+              // listing's count, which exists for every canvas in the account.
+              const nUdfs = canvas.n_udfs ?? canvas.n_code_udfs ?? null;
+              // An account whose listing predates the count field (or came from
+              // the bare-name CLI fallback) still gets a map rather than an
+              // empty box — one tile, standing for "a canvas", not for a count.
+              const tiles = nUdfs === null ? 1 : Math.min(nUdfs, TILE_CAP);
               return (
               <button
                 key={canvas.name}
@@ -376,26 +424,44 @@ export default function Canvases() {
                         })
                       }
                     />
+                  ) : tiles > 0 ? (
+                    <span className="canvas-card-tiles" style={tileLayout(tiles)}>
+                      {Array.from({ length: tiles }, (_, i) => (
+                        <img
+                          key={i}
+                          className="canvas-card-tile"
+                          src={previewTile}
+                          alt=""
+                        />
+                      ))}
+                    </span>
                   ) : (
-                    canvas.name.charAt(0).toUpperCase()
+                    <span className="canvas-card-noshot">
+                      No UDFs present in the canvas
+                    </span>
                   )}
-                  {canvas.cloned && <span className="canvas-card-pill">cloned</span>}
                 </span>
                 <span className="canvas-card-body">
                   <span className="canvas-card-name" title={canvas.name}>
                     {canvas.name}
                   </span>
-                  <span className="canvas-card-meta">
+                  <span className="canvas-card-stat">
                     {busy === canvas.name
                       ? "Cloning…"
-                      : canvas.cloned
-                        ? `${canvas.n_udfs ?? 0} UDF${canvas.n_udfs === 1 ? "" : "s"}${
-                            canvas.mtime
-                              ? ` · Modified ${formatModified(canvas.mtime)}`
-                              : ""
-                          }`
-                        : "Not cloned yet — click to clone & open"}
+                      : nUdfs === null
+                        ? "Not cloned yet — click to clone & open"
+                        : `${nUdfs} UDF${nUdfs === 1 ? "" : "s"}${
+                            // The count now exists before the clone does, but
+                            // an uncloned card still needs to say what a click
+                            // will do — it is the only affordance it has.
+                            canvas.cloned ? "" : " · click to clone & open"
+                          }`}
                   </span>
+                  {modified !== null && (
+                    <span className="canvas-card-meta">
+                      Last modified: {formatModified(modified)}
+                    </span>
+                  )}
                 </span>
               </button>
               );
