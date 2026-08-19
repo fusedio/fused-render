@@ -274,13 +274,22 @@ WORKBENCH_REPO_URL = "https://github.com/fusedio/skills.git"
 WORKBENCH_CLONE_SUBDIR = "workbench-skills"
 WORKBENCH_PLUGIN_SUBDIR = "workbench"
 
-# How often the clone may be refreshed. Hours, not minutes: these are format
-# references that change on the scale of workbench releases, and the refresh runs
-# on a user-visible request (POST /api/canvases/clone), where a needless network
-# round trip is a stall the user sees. The stamp is written per ATTEMPT, not per
-# success, so an offline machine tries once per interval rather than once per
-# clone.
+# How often an EXISTING, loadable clone may be refreshed. Hours, not minutes:
+# these are format references that change on the scale of workbench releases, and
+# the refresh runs on a user-visible request (POST /api/canvases/clone), where a
+# needless network round trip is a stall the user sees. A skipped refresh costs
+# nothing — a stale-but-complete plugin is a working plugin.
 WORKBENCH_REFRESH_S = 6 * 3600
+
+# How often to retry when NOTHING is published yet. A skipped retry is not free:
+# there is no root at all, so the canvas session gets no `--plugin-dir` while the
+# CLAUDE.md seeded beside it names `workbench:canvas-toml` and friends — skills
+# that do not exist. Sharing the refresh interval put the new-user path (first
+# canvas ever, one transient network failure) six hours from working, which is
+# the exact scenario this whole mechanism exists for. Still bounded, because the
+# stamp is written per ATTEMPT: a machine with no network retries once a minute
+# at worst, not once per canvas clone.
+WORKBENCH_RETRY_S = 60
 
 # Beside the clone, not inside it: the clone is a git worktree and a plugin root,
 # and bookkeeping of ours has no business being in a tree something else parses
@@ -358,16 +367,20 @@ def workbench_plugin_root() -> str | None:
         return None
 
 
-def _refresh_due() -> bool:
-    """Whether the clone may be re-fetched. No stamp (or an unreadable one)
-    counts as due: a clone with no record of when it was fetched is exactly the
-    one worth checking once."""
+def _attempt_due(published: bool) -> bool:
+    """Whether git may be run again. No stamp (or an unreadable one) counts as
+    due: no record of an attempt is exactly the case worth attempting.
+
+    `published` — whether a loadable root exists right now — picks the interval,
+    and that distinction is the whole point: skipping a refresh keeps a working
+    plugin, while skipping a retry leaves the session with none."""
+    interval = WORKBENCH_REFRESH_S if published else WORKBENCH_RETRY_S
     try:
         with open(_stamp_file(), encoding="utf-8") as fh:
             last = float(fh.read().strip())
     except (OSError, ValueError):
         return True
-    return time.time() - last >= WORKBENCH_REFRESH_S
+    return time.time() - last >= interval
 
 
 def _stamp_attempt() -> None:
@@ -409,9 +422,12 @@ def _clone_workbench_skills(clone: str) -> None:
             return
         # Delete-then-rename for the same reason as the skill plugin's own swap:
         # os.replace refuses a non-empty destination directory on POSIX and
-        # there is no atomic directory swap to have instead. Reaching here means
-        # whatever sat at `clone` was NOT loadable (else no clone would have
-        # been attempted), so nothing usable is being thrown away.
+        # there is no atomic directory swap to have instead. Whatever sits at
+        # `clone` is NOT loadable — the caller only takes this path when
+        # `workbench_plugin_root()` is None, deliberately NOT on the shape of a
+        # `.git` entry: a `.git` FILE is a perfectly normal repo (worktrees,
+        # submodules), and testing for a `.git` DIRECTORY would have deleted a
+        # loadable tree that merely had one. So nothing usable is thrown away.
         shutil.rmtree(clone, ignore_errors=True)
         os.replace(dest, clone)
     finally:
@@ -451,17 +467,25 @@ def fetch_workbench_skills() -> str | None:
 
     The dev override short-circuits everything — that root is the developer's,
     not ours to fetch into or reset.
+
+    Which of the two git paths runs is decided by whether a loadable root is
+    already published, not by the presence of a `.git` directory: "loadable" is
+    the property that actually matters to a session, and it is the only premise
+    under which the clone path's `rmtree` is safe.
     """
     if os.environ.get(WORKBENCH_PLUGIN_SRC_ENV):
         return workbench_plugin_root()
+    published = workbench_plugin_root()
     clone = workbench_clone_dir()
     try:
-        if os.path.isdir(os.path.join(clone, ".git")):
-            if _refresh_due():
-                _stamp_attempt()
-                _refresh_workbench_skills(clone)
-        elif _refresh_due():
-            _stamp_attempt()
+        if not _attempt_due(published is not None):
+            return published
+        _stamp_attempt()
+        if published is not None:
+            # Refresh in place. If this tree turns out not to be a repo at all,
+            # the fetch simply fails and the working tree stays — never deleted.
+            _refresh_workbench_skills(clone)
+        else:
             _clone_workbench_skills(clone)
     except Exception:  # noqa: BLE001 — including OSError (no git) and timeouts
         logger.warning("could not fetch the workbench skills", exc_info=True)

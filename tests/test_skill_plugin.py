@@ -498,13 +498,21 @@ def _plugin_tree(root, skills, name="workbench"):
     return root
 
 
-def _clone_tree(home, skills=skill_plugin.WORKBENCH_SKILLS, git=True):
+def _clone_tree(home, skills=skill_plugin.WORKBENCH_SKILLS, git="dir"):
     """The clone as a successful fetch leaves it: `<home>/workbench-skills/`
-    holding a `workbench/` plugin root (and a `.git`, which is what tells the
-    fetch to refresh rather than re-clone)."""
+    holding a `workbench/` plugin root.
+
+    `git` shapes the `.git` entry — "dir" (a plain clone), "file" (a worktree or
+    submodule checkout, which is just as valid a repo) or None. The fetch must
+    not care: what decides refresh-vs-clone is whether the root is LOADABLE.
+    """
     clone = os.path.join(home, skill_plugin.WORKBENCH_CLONE_SUBDIR)
-    if git:
+    os.makedirs(clone, exist_ok=True)
+    if git == "dir":
         os.makedirs(os.path.join(clone, ".git"), exist_ok=True)
+    elif git == "file":
+        with open(os.path.join(clone, ".git"), "w", encoding="utf-8") as fh:
+            fh.write("gitdir: /somewhere/else/.git/worktrees/skills\n")
     return _plugin_tree(os.path.join(clone, skill_plugin.WORKBENCH_PLUGIN_SUBDIR),
                         skills)
 
@@ -628,6 +636,81 @@ def test_the_refresh_is_rate_limited(home, no_override, fake_git):
         fh.write("%d" % int(old))
     skill_plugin.fetch_workbench_skills()
     assert [c[2] for c in fake_git] == ["fetch", "reset"]
+
+
+def test_a_failed_first_clone_is_retried_soon_not_in_six_hours(
+        home, no_override, monkeypatch):
+    """The rate limit is right for a REFRESH and wrong when nothing is published.
+
+    Sharing one interval put the new-user path — first canvas ever, one
+    transient network failure — six hours away from working: the stamp was
+    written, the next POST /api/canvases/clone made no attempt at all, and the
+    session was handed no `--plugin-dir` while the CLAUDE.md seeded beside it
+    named `workbench:canvas-toml` and friends. Skipping a refresh keeps a
+    working plugin; skipping a retry leaves none.
+    """
+    calls = []
+
+    def failing(args, timeout):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(list(args), 128, "", "fatal: no network")
+
+    monkeypatch.setattr(skill_plugin, "_git", failing)
+    assert skill_plugin.fetch_workbench_skills() is None
+    assert len(calls) == 1
+
+    # Nothing published → the next canvas clone tries again, on the RETRY
+    # interval, not the refresh one.
+    monkeypatch.setattr(skill_plugin, "WORKBENCH_RETRY_S", 0)
+    assert skill_plugin.fetch_workbench_skills() is None
+    assert len(calls) == 2
+    # Still bounded: inside the retry window it does not spawn at all, so an
+    # offline machine costs one attempt per interval, not one per clone.
+    monkeypatch.setattr(skill_plugin, "WORKBENCH_RETRY_S", 300)
+    assert skill_plugin.fetch_workbench_skills() is None
+    assert len(calls) == 2
+    # The retry interval must stay far below the refresh interval, or this
+    # regresses back into the six-hour hole.
+    assert skill_plugin.WORKBENCH_RETRY_S <= skill_plugin.WORKBENCH_REFRESH_S / 10
+
+
+def test_once_published_the_slow_refresh_interval_takes_over(
+        home, no_override, monkeypatch, fake_git):
+    """The retry interval applies only while there is nothing to hand over."""
+    monkeypatch.setattr(skill_plugin, "WORKBENCH_RETRY_S", 0)
+    assert skill_plugin.fetch_workbench_skills() is not None
+    assert [c[0] for c in fake_git] == ["clone"]
+    fake_git.clear()
+    # A root exists now, so the 6h refresh interval governs — even though the
+    # retry interval is zero.
+    assert skill_plugin.fetch_workbench_skills() is not None
+    assert fake_git == []
+
+
+def test_a_loadable_clone_is_never_deleted_over_a_git_entry_shape(
+        home, no_override, monkeypatch):
+    """The clone path's `rmtree` is only safe under "nothing loadable is there".
+
+    Deciding refresh-vs-clone on a `.git` DIRECTORY would delete a perfectly
+    good tree whose `.git` is a FILE — the normal layout for a worktree or
+    submodule checkout — and re-clone it from scratch, or, if the network were
+    down, leave the user with nothing where a working plugin had been.
+    """
+    for shape in ("file", None):
+        shutil.rmtree(skill_plugin.workbench_clone_dir(), ignore_errors=True)
+        root = _clone_tree(home, git=shape)
+        calls = []
+
+        def run(args, timeout):
+            calls.append(list(args))
+            return subprocess.CompletedProcess(list(args), 1, "", "not a repository")
+
+        monkeypatch.setattr(skill_plugin, "_git", run)
+        assert skill_plugin.fetch_workbench_skills() == root, shape
+        assert os.path.isfile(os.path.join(root, skill_plugin.SKILLS_SUBDIR,
+                                           "canvas-toml", "SKILL.md")), shape
+        assert [c[2] for c in calls] == ["fetch"], (shape, calls)
+        os.remove(skill_plugin._stamp_file())
 
 
 def test_the_refresh_hard_resets_to_origins_default_branch(home, no_override, fake_git):
