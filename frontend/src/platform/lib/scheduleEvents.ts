@@ -24,7 +24,16 @@ import type { ScheduleToast } from "@platform/lib/schedule-toast";
 
 const POLL_MS = 15_000;
 
-export function useScheduleEvents(): void {
+/**
+ * @param onOutcome Called once per poll that narrated a done/failed event — a
+ *   scheduled run just ENDED, which is exactly the fact the Tasks page and the
+ *   sidebar are otherwise waiting out their own timers to learn. The shell
+ *   passes tasksPulse.pokeTasks here (App); it is a parameter rather than an
+ *   import because that store lives in shell and platform may not reach up
+ *   (frontend/scripts/check-boundaries.mjs). `missed` deliberately does not
+ *   fire it: nothing ran, so no row is mid-flip anywhere.
+ */
+export function useScheduleEvents(onOutcome?: () => void): void {
   // The highest event id already turned into a toast IN THIS PAGE. A ref (not
   // state) so it survives re-renders without re-arming the interval, and so two
   // overlapping polls can't narrate the same event twice while the ack for the
@@ -37,6 +46,10 @@ export function useScheduleEvents(): void {
   // verdict emitted by the scheduler's first tick still gets said out loud when
   // the shell finally loads. A client-side baseline swallowed exactly those.
   const lastEventId = useRef(0);
+  // Through a ref so the poll loop below (armed once, deps []) always calls the
+  // caller's CURRENT function rather than the one from the mounting render.
+  const outcome = useRef(onOutcome);
+  outcome.current = onOutcome;
 
   useEffect(() => {
     // Only the top-level shell narrates: every embed iframe would otherwise poll
@@ -59,6 +72,12 @@ export function useScheduleEvents(): void {
       lastEventId.current = Math.max(lastEventId.current, highest);
 
       for (const e of fresh) push(toastForEvent(e));
+      // The events just narrated are also the earliest word this poll has that
+      // a run ENDED — see the onOutcome contract above. Once per batch, not per
+      // event: the outcome callback refetches, and one refetch reads them all.
+      if (fresh.some((e) => e.kind === "done" || e.kind === "failed")) {
+        outcome.current?.();
+      }
       // Confirm only AFTER narrating: a page that dies in between sees these
       // once more, which is a duplicate toast rather than a silent miss — the
       // right way round for the one thing here that must not go unsaid.

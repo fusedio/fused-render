@@ -1468,6 +1468,88 @@ def test_a_send_the_scheduler_is_still_waiting_on_reads_as_running(
     assert task["status"] == "in_progress"
 
 
+def _near_now(offset_sec: float) -> str:
+    """A transcript/schedule timestamp measured from NOW — the shape the
+    liveness tests below need, since the 45-second window is against the real
+    clock and the fixed T9..T12 stamps are years cold by construction."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                         time.gmtime(time.time() + offset_sec))
+
+
+def test_a_freshly_resolved_turn_outvotes_the_transcripts_liveness(
+        client, projects_dir):
+    """The popover/tasks-page split, closed on the server's side.
+
+    A scheduled run's closing records are the last thing written to the
+    transcript, so for the whole 45-second window after the verdict landed the
+    tail still read as "live" — and the row said In Progress while the queue
+    card in the corner had said finished within seconds of the result row. The
+    turn has SPOKEN; its own obituary is not a pulse (Akshil, 2026-08-19: "if
+    finished in one, finished in the other")."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-5)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="ok",
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is False, "the echo is set aside, not just outvoted"
+    assert task["status"] == "done"
+
+
+def test_a_failed_verdict_outvotes_liveness_the_same_way(client, projects_dir):
+    """Failed resolves a turn exactly as done does — the corner card flips to
+    the error row at once, and the task must land in Failed with it rather than
+    idling in In Progress for the rest of the window."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("it broke", _near_now(-5)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="failed",
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "failed"
+    assert task["live"] is False
+
+
+def test_a_new_turn_after_the_resolved_run_still_reads_as_running(
+        client, projects_dir):
+    """The guard on the rule above: only the resolved run's own echo is set
+    aside. A prompt the user types AFTER it is a chat message with a newer
+    `ran_at`, so the transcript's liveness is attesting genuinely new work and
+    keeps its vote — the task stays In Progress."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _user("one more thing", _near_now(-3), uuid="u2"),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="ok",
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is True
+    assert task["status"] == "in_progress"
+
+
+def test_a_resolved_run_does_not_silence_a_sibling_still_in_flight(
+        client, projects_dir):
+    """A message that says it is running by its OWN state — sending, or sent
+    with the turn unreported — is real work whatever the newest verdict says,
+    and liveness corroborating it must not be withdrawn."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("first one done", _near_now(-5)),
+    ])
+    _seed_schedule([
+        _entry("e1", "go", _near_now(-30), state=schedule.SENT,
+               fired=_near_now(-30), turn="ok", claude_session_id="sess-a"),
+        _entry("e2", "and again", _near_now(-10), state=schedule.SENDING,
+               claude_session_id="sess-a"),
+    ])
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+
 def test_a_finished_run_is_not_in_progress_however_it_was_pinned(
         client, projects_dir, state_dir):
     """The stale-pin bug, gone by construction rather than by reaping.
