@@ -12,7 +12,7 @@ and needs a presigned URL from the control plane), or null (no preview).
 
 This shim resolves ONLY the free case. A sentinel is reported as
 ``preview_pending: true`` and signed later by _fused_canvas_previews.py, off
-the listing's critical path (D360): signing costs one control-plane round trip
+the listing's critical path (D364): signing costs one control-plane round trip
 per canvas, and doing them here — sequentially, before the page can render
 anything — made the listing scale linearly with the account's canvas count.
 

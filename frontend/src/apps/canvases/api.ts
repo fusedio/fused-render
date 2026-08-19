@@ -28,7 +28,7 @@ export interface CanvasEntry {
    *  URL already in the list payload. A preview held in the private image
    *  bucket arrives null here with `preview_pending` set — signing it is a
    *  control-plane round trip per canvas, kept off the listing's critical path
-   *  (D360) and fetched by getCanvasPreviews once the cards are on screen. */
+   *  (D364) and fetched by getCanvasPreviews once the cards are on screen. */
   preview_url: string | null;
   /** This canvas has an uploaded preview whose URL still needs signing. Older
    *  servers omit the field, so treat a missing value as false. */

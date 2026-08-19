@@ -61,7 +61,7 @@ const FAILED_POLLS_BEFORE_RELEASE = 3;
 // warning that the lock is advisory only.
 const LOCK_ACK_TIMEOUT_MS = 2000;
 
-// How long the lock is HELD after the session's work has settled.
+// How long the lock is HELD after a sync operation has settled.
 //
 // Releasing the instant the agent's process exits re-opens the very window the
 // lock exists to close, for two reasons that compound: on unlock the workbench
@@ -72,6 +72,11 @@ const LOCK_ACK_TIMEOUT_MS = 2000;
 // flight or not yet pulled → workbench flushes stale in-memory state →
 // last-writer-wins overwrites the agent's work. That is the D339 shape again,
 // reproduced by our own unlock. So the grace window has to outlast that poll.
+//
+// It is armed by any hold ending, not just a push's: the two legs of one publish
+// (pull, then push) and several publishes in a row otherwise unlock and relock
+// the pane once each, which the user sees as a flicker. One window spanning them
+// makes it one engagement. See canvas-lock-lib's header for the accepted cost.
 const WORKBENCH_UPSTREAM_POLL_MS = 10000;
 const LOCK_RELEASE_GRACE_MS = WORKBENCH_UPSTREAM_POLL_MS + 3000;
 
@@ -113,9 +118,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const [lockHold, setLockHold] = useState<LockHold | null>(null);
   const [ackState, setAckState] = useState<AckState>("waiting");
   // The hold this same decision returned last time — read synchronously (not
-  // via the `lockHold` state, which only updates after a render) so the
-  // grace window can tell "just came out of a push" from "just came out of a
-  // pull" (see decideLock's `prevHold`).
+  // via the `lockHold` state, which only updates after a render) so the grace
+  // window can tell "a hold just ended" from "nothing was holding" (see
+  // decideLock's `prevHold`).
   const prevHoldRef = useRef<LockHold | null>(null);
   // When the session's work first looked settled, in LOCAL time. Deliberately
   // not `last_push_at`: that is the server's clock, and comparing it to
@@ -235,9 +240,16 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // Push each lock transition to the workbench, and — enforcement belongs to
   // the WORKBENCH, this page only asks and observes — probe whether THIS
   // engagement can actually be enforced. Reset per engagement (`locked`
-  // flipping false→true), never sticky across engagements: the fallback scrim
-  // this drives must default to "on" for a brand new lock rather than
-  // inheriting a previous engagement's answer.
+  // flipping false→true), so the fallback scrim this drives defaults to "on"
+  // for a brand new lock rather than inheriting a previous engagement's answer.
+  //
+  // No "same episode" exemption: the reset is unconditional. What removes the
+  // mid-publish flicker is decideLock's coalescing (consecutive operations stay
+  // inside one engagement, so this effect does not re-run), and an engagement
+  // that DOES start fresh — after a full release, a dropped watcher, or a
+  // failed push the user then fixes — may be facing a frame that reloaded in
+  // between. Inheriting "acked" there would show a lock with nothing enforcing
+  // it and no fallback scrim either.
   useEffect(() => {
     sendLock(locked);
     if (!locked) return;

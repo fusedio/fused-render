@@ -95,6 +95,51 @@ export function openRows(rows: QueueRow[], jobs: Job[]): QueueRow[] {
 }
 
 /**
+ * Did a scheduled run END between these two job snapshots?
+ *
+ * Asked of every consecutive pair the card hands up (QueueDock's onJobs), and it
+ * is the trigger for the whole cross-surface sync: the job registry is about a
+ * second behind the turn, so the moment a `sys:schedule:*` job stops running is
+ * the moment this corner knows what the Tasks page will not learn from its own
+ * 20-second poll for most of a minute. QueueDock pokes the shared tasks store on
+ * a true answer (tasksPulse.pokeTasks), so the row and the popover flip together.
+ *
+ * "Ended" is running-then-not: a terminal state, or gone from the snapshot
+ * entirely (a Clear can remove a finished row between two polls, and a run that
+ * vanished still ended). A job that first appears already terminal fires
+ * nothing — that is history the registry is still displaying, not news, and
+ * poking on it would refetch the tasks on every mount.
+ */
+export function scheduleRunsEnded(prev: Job[], next: Job[]): boolean {
+  const still = new Set<string>();
+  for (const job of next) {
+    if (job.id.startsWith(SCHEDULE_JOB_PREFIX) && isRunning(job)) still.add(job.id);
+  }
+  return prev.some(
+    (job) => job.id.startsWith(SCHEDULE_JOB_PREFIX) && isRunning(job) && !still.has(job.id),
+  );
+}
+
+/**
+ * And did one START? The same question from the other end (Akshil, 2026-08-19:
+ * the popover said "thinking" within a second of a run spawning while the
+ * Tasks page sat on Upcoming until its 20s poll) — a `sys:schedule:*` job
+ * running in this snapshot that was not running in the last one, including a
+ * job the registry only just learned about. The caller skips the comparison
+ * for its very first snapshot: everything is "new" on mount, and the Tasks
+ * surfaces fetch on their own mount anyway.
+ */
+export function scheduleRunsStarted(prev: Job[], next: Job[]): boolean {
+  const was = new Set<string>();
+  for (const job of prev) {
+    if (job.id.startsWith(SCHEDULE_JOB_PREFIX) && isRunning(job)) was.add(job.id);
+  }
+  return next.some(
+    (job) => job.id.startsWith(SCHEDULE_JOB_PREFIX) && isRunning(job) && !was.has(job.id),
+  );
+}
+
+/**
  * WHICH SCHEDULED RUNS THIS HALF IS DRAWING, by entry id — the card's other half
  * drops exactly these and keeps everything else (`jobRows`).
  *

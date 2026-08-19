@@ -22,6 +22,7 @@ import {
   type CanvasEntry,
   type CanvasesStatus,
 } from "./api";
+import { publishLoggedIn } from "./logged-in";
 
 // `fused login`'s own browser callback times out server-side; polling any
 // slower than this makes a completed sign-in feel stuck.
@@ -56,7 +57,7 @@ export default function Canvases() {
   const loginStampRef = useRef<number | null | undefined>(undefined);
 
   // Presigned preview URLs, keyed by collection id — the second, slower half
-  // of the listing (D360). Kept beside `canvases` rather than merged into it so
+  // of the listing (D364). Kept beside `canvases` rather than merged into it so
   // a refresh that re-lists doesn't drop thumbs we already resolved.
   const [previews, setPreviews] = useState<Record<string, string>>({});
   // Ids already asked about (resolved OR came back empty), so a re-list doesn't
@@ -121,6 +122,16 @@ export default function Canvases() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // The sidebar's Workbench canvases row reads the same fact this page does, so
+  // hand it every status this page learns — the first read, the login poll's
+  // flip, the 401 downgrade, the sign-out — rather than leaving it to notice on
+  // its own minute-long poll. The whole status goes over, not just the boolean:
+  // the 401 downgrade below is a verdict on a SPECIFIC credentials store, and
+  // `creds_stamp` is what names it (see ./logged-in).
+  useEffect(() => {
+    if (status) publishLoggedIn(status);
+  }, [status]);
 
   // While a login is in flight, poll status until logged_in flips — or the
   // browser child exits without ever flipping it (closed tab, denied, or the
@@ -340,7 +351,7 @@ export default function Canvases() {
           <div className="canvases-grid">
             {filtered.map((canvas) => {
               // Either the free public URL from the listing, or the signed one
-              // the previews batch filled in afterwards (D360).
+              // the previews batch filled in afterwards (D364).
               const thumb =
                 canvas.preview_url ?? (canvas.id ? previews[canvas.id] : undefined) ?? null;
               return (

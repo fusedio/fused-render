@@ -10,7 +10,7 @@ asked for, null where the control plane has no image for it (404) or the
 request failed. A missing/failed signature is never an error — the card falls
 back to its letter thumb.
 
-Why a shim of its own (D360): the listing shim used to sign each preview
+Why a shim of its own (D364): the listing shim used to sign each preview
 inline, one blocking round trip per canvas, so the whole page waited on
 N × ~0.9s before rendering a single card. Here the round trips run on a small
 thread pool (they are pure network waits, so the GIL is irrelevant), which
