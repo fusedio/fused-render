@@ -361,14 +361,26 @@ def close_http_connection() -> bool:
 
     Called from the app's quit path (fused_render/app.py's `quit_teardown`)
     while Python is still healthy and the GIL is held. It has to be an explicit
-    step because interpreter finalization never runs on macOS:
-    `rumps.quit_application()` -> `NSApplication.terminate:` -> C `exit()`, and
-    pyobjc releases the GIL for the duration of that ObjC call, so the C++
-    static destructors `exit()` runs execute with no GIL — a surviving
-    `DuckDBPyConnection` destructs there, calls `PyEval_SaveThread`, and
-    Py_FatalError aborts the process (SIGABRT crash dialog, INCIDENT
-    2026-07-29: preview one mounted parquet file and every later quit crashed).
-    Linux/Windows exit through normal finalization and were unaffected.
+    step because interpreter finalization never runs on macOS. That was true for
+    a bad reason and is now true by design, and the difference matters to anyone
+    debugging the next duckdb-at-exit report:
+
+      * until D357, quit ended in `NSApplication.terminate:` -> C `exit()`, and
+        pyobjc releases the GIL for the duration of that ObjC call, so the C++
+        static destructors `exit()` runs executed with no GIL — a surviving
+        `DuckDBPyConnection` destructs there, calls `PyEval_SaveThread`, and
+        Py_FatalError aborts the process (SIGABRT crash dialog, INCIDENT
+        2026-07-29: preview one mounted parquet file and every later quit
+        crashed; and again 2026-08-19 on a connection this close cannot reach).
+      * since D357 the app dies by `os._exit` (`app.hard_exit`) and no longer
+        reaches those destructors at all — no code path calls into AppKit's
+        termination any more (app.py's own structural test pins that).
+
+    So this close is no longer what averts an abort. It stays for the reason it
+    would have been worth having anyway: the stashed connection holds a socket
+    against an rclone HTTP serve that the very next teardown rung reaps, and the
+    latch below is a real barrier against a late read reopening one. Linux and
+    Windows exit through normal finalization and were unaffected throughout.
 
     Latches first, and that is what makes closing this EARLY in the teardown
     safe rather than racy: the server drain ahead of it is a bounded join that can

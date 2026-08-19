@@ -2,7 +2,7 @@
 `_sessions`).
 
 The list is a scan of the transcripts already sitting in this cwd's
-~/.claude/projects dir (D357 removed the per-file sidecar): whether a chat
+~/.claude/projects dir (D359 removed the per-file sidecar): whether a chat
 started in this page or in a terminal, Claude Code wrote its transcript into
 the same project dir, so ONE reader answers for both.
 

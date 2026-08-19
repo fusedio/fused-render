@@ -71,12 +71,14 @@ def test_relauncher_quotes_a_bundle_path_with_spaces():
 # ------------------------------------------------------------ begin_relaunch
 
 
-def test_begin_relaunch_claims_the_quit_then_spawns():
+def test_begin_relaunch_spawns_inside_the_claimed_quit():
     order = []
 
-    def quit_action():
+    def quit_action(on_claim=None):
         order.append("quit")
-        return True  # claimed the teardown
+        on_claim()          # begin_quit runs this inside the claim
+        order.append("teardown-started")
+        return True         # claimed the teardown
 
     started = app_mod.begin_relaunch(
         quit_action=quit_action,
@@ -85,18 +87,58 @@ def test_begin_relaunch_claims_the_quit_then_spawns():
         running="0.4.8", installed="0.5.0",
     )
     assert started is True
-    # Quit first: begin_quit's claim is the atomic (locked) arbiter of whether
-    # a teardown is already in flight — spawning only on a claimed quit is what
-    # makes quit-vs-relaunch race-free. The teardown drains for seconds, so the
-    # spawn right after still comfortably precedes the process's death.
-    assert order == ["quit", ("spawn", "/Applications/FusedRender.app", os.getpid())]
+    # Quit first: begin_quit's claim is the atomic (locked) arbiter of whether a
+    # teardown is already in flight, so spawning only on a claimed quit is what
+    # makes quit-vs-relaunch race-free. But the spawn hangs off the CLAIM rather
+    # than off begin_relaunch's own statement order — see
+    # test_the_relauncher_is_parked_before_anything_can_terminate.
+    assert order == ["quit",
+                     ("spawn", "/Applications/FusedRender.app", os.getpid()),
+                     "teardown-started"]
+
+
+def test_the_relauncher_is_parked_before_anything_can_terminate(monkeypatch):
+    """The regression D357 could have introduced, pinned deterministically.
+
+    Before the hard exit, death was `AppHelper.callAfter(rumps.quit_application)`
+    — queued onto the main run loop, so it could not possibly run until
+    `application_openURLs_` had returned, and the spawn preceded it by
+    construction. `os._exit` off the watchdog thread has no such hop: an instance
+    with no mounts and a server that drains on its first poll can complete the
+    whole teardown while the main thread is still inside `Popen` (which
+    `start_new_session=True` makes a fork+exec of a large process). The failure
+    is invisible — the app quits and nothing comes back — so this test makes the
+    race deterministic instead of unlikely: the teardown terminates the INSTANT
+    it is started."""
+    order = []
+    exits = []
+    monkeypatch.setattr(app_mod, "hard_exit", lambda code=0: exits.append(code))
+
+    def _start(server, *, terminate, server_thread=None, **kw):
+        order.append("teardown")
+        terminate()  # nothing to unmount: done before begin_quit even returns
+
+    quit_action = app_mod.make_quit_action(
+        {}, terminate=lambda: order.append("exit") or app_mod.hard_exit(),
+        start=_start, remove_pidfile=lambda: None)
+
+    started = app_mod.begin_relaunch(
+        quit_action=quit_action, bundle="/Applications/FusedRender.app",
+        spawn=lambda bundle, pid: order.append("spawn"),
+        running="0.4.8", installed="0.5.0",
+    )
+
+    assert started is True
+    assert exits == [0]
+    assert order.index("spawn") < order.index("exit"), (
+        "the successor must be parked before this process can die: " + str(order))
 
 
 def test_begin_relaunch_without_a_bundle_does_nothing(monkeypatch):
     monkeypatch.delattr(sys, "frozen", raising=False)
     calls = []
     started = app_mod.begin_relaunch(
-        quit_action=lambda: calls.append("quit") or True,
+        quit_action=lambda on_claim=None: calls.append("quit") or True,
         spawn=lambda *a: calls.append(a),
         running="0.4.8", installed="0.5.0",
     )
@@ -107,7 +149,7 @@ def test_begin_relaunch_without_a_bundle_does_nothing(monkeypatch):
 def test_begin_relaunch_joins_a_quit_already_in_flight():
     calls = []
     started = app_mod.begin_relaunch(
-        quit_action=lambda: False,  # begin_quit joined an in-flight teardown
+        quit_action=lambda on_claim=None: False,  # begin_quit joined one in flight
         bundle="/Applications/FusedRender.app",
         spawn=lambda *a: calls.append(a),
         running="0.4.8", installed="0.5.0",
@@ -123,7 +165,7 @@ def test_begin_relaunch_is_a_noop_when_already_running_the_disk_version():
     # would be a pointless extra cycle, so relaunch only acts when stale.
     calls = []
     started = app_mod.begin_relaunch(
-        quit_action=lambda: calls.append("quit") or True,
+        quit_action=lambda on_claim=None: calls.append("quit") or True,
         bundle="/Applications/FusedRender.app",
         spawn=lambda *a: calls.append(a),
         running="0.5.0", installed="0.5.0",
@@ -136,7 +178,7 @@ def test_begin_relaunch_is_a_noop_when_the_disk_version_is_unknown():
     # Unreadable Info.plist: staleness can't be established, so don't quit.
     calls = []
     started = app_mod.begin_relaunch(
-        quit_action=lambda: calls.append("quit") or True,
+        quit_action=lambda on_claim=None: calls.append("quit") or True,
         bundle="/Applications/FusedRender.app",
         spawn=lambda *a: calls.append(a),
         running="0.5.0", installed=None,

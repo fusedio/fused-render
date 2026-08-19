@@ -433,7 +433,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
                 os.remove(tmp)
         # (The version-snapshot blob cache and the `version_html` action that
         # read it went with the version-history panel — its metadata lived in
-        # the per-file sidecar, deleted outright, D357.)
+        # the per-file sidecar, deleted outright, D359.)
         return {"path": file.replace(os.sep, "/"), "mtime": os.path.getmtime(file)}
 
     # ---- first save of a new/untitled draft: write the .docx to the location

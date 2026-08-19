@@ -51,7 +51,7 @@ Strictly READ-ONLY with respect to the Claude config dir. Nothing here writes,
 moves or unlinks anything under it, ever — that is the user's live edit history
 and this module is a guest in it. The only write it performs is to the target
 file itself, via mkstemp + `os.replace` in the target's own directory (the same
-atomicity rule the sidecar writers used, D357), gated on `file_writable`.
+atomicity rule the sidecar writers used, D359), gated on `file_writable`.
 
 Stdlib only, and reachable by `sys.path`-relative import rather than
 `import fused_render...`, for the reason `appenv.py` next door documents at
@@ -201,7 +201,7 @@ def writable_reason(file: str) -> str:
     # every layer already consults to decide whether to offer a revert at all.
     # `apply_revert` refused both correctly and refused them ALONE, one layer below
     # the decision: so the sheet opened on a target that could not succeed, the
-    # bridge (in the sidecar-stash era, D357) captured content read THROUGH the link, and only then
+    # bridge (in the sidecar-stash era, D359) captured content read THROUGH the link, and only then
     # did the write raise — a failed revert that still mutated `revertStash`, with
     # the wrong file's content in it. Same shape as the read-only case before it:
     # the guard existed, just under the layer that offers the action.

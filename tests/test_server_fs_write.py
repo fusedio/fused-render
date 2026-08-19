@@ -121,7 +121,7 @@ def test_write_create_ok_for_new_file(tmp_path):
 # ------------------------------------------------------------ missing parent
 # The write endpoint refuses a missing parent unconditionally (no mkdir -p — a
 # typo'd arbitrary path must not silently spawn a deep tree). The one carve-out
-# it used to have (the sidecar subtree) went with the sidecar, D357.
+# it used to have (the sidecar subtree) went with the sidecar, D359.
 
 def test_write_refuses_missing_parent_for_an_ordinary_path(tmp_path):
     f = tmp_path / "nope" / "new.txt"
