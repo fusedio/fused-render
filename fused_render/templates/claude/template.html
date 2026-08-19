@@ -5917,7 +5917,13 @@ function annPrefillComposer() {
 document.addEventListener("mousedown", (e) => {
   if (annPop.style.display !== "block") return;
   const t = e.target;
-  if (annPop.contains(t) || (t.closest && (t.closest(".annpin") || t.closest(".annchip")))) return;
+  // The strip's own controls are exempt alongside the pins and chips: a
+  // mousedown on ✓ Done used to close the composer HERE, before the click
+  // could reach annDone, silently dropping the words the user was about to
+  // send (Bugbot, PR #664). The Element/Point picker rides along — choosing
+  // the next click's tool is not walking away from this note.
+  if (annPop.contains(t) || (t.closest && (t.closest(".annpin") || t.closest(".annchip")
+      || t.closest("#anncta") || t.closest("#anntool")))) return;
   annCloseComposer();
 });
 annDelBtn.addEventListener("click", () => {
@@ -6078,6 +6084,14 @@ new ResizeObserver(annFitStrip).observe(annToolsEl);
     mo.observe(el, { subtree: true, childList: true, characterData: true,
                      attributes: true, attributeFilter: ["class", "hidden"] });
   }
+  // #back is content of this row too, and it comes and goes by CLASS on the
+  // chat column (`#chat.home`) and on <body> (the narrow views, nopane) —
+  // width the box observer cannot see and the clusters above do not contain
+  // (Bugbot, PR #664). Attributes only, no subtree: the columns' insides
+  // churn constantly and none of it changes the strip.
+  for (const el of [document.body, chatEl]) {
+    mo.observe(el, { attributes: true, attributeFilter: ["class"] });
+  }
 }
 annFitStrip();
 
@@ -6193,11 +6207,17 @@ function annSetMode(on) {
 // clock) — same exit annRecEnd gives the mic — so its click stops the
 // walkthrough instead of toggling a mode the stop is about to close anyway.
 annBtn.addEventListener("click", () => (annRecOn ? annRecEnd() : annSetMode(!annOn)));
-// Done: the typed-comment mode's exit that also delivers. Notes auto-send as
-// they are saved, but the guards can leave some pending (a turn in flight, a
-// typed draft the prefill refused to touch) — flush those with the same
-// prefill-and-submit the auto-send uses, then put the mode away.
-function annDone() {
+// Done: the typed-comment mode's exit that also delivers. A composer still
+// open with words in it is committed FIRST — Done means "send what I said",
+// and the mousedown exemption above is what kept that draft alive this far —
+// through the same annCommit the Enter key uses (save, crop, auto-send).
+// Then any notes the auto-send guards left pending (a turn in flight, a
+// typed draft the prefill refused to touch) flush with the same
+// prefill-and-submit, and the mode goes away.
+async function annDone() {
+  if (annPop.style.display === "block" && annTa.value.trim()) {
+    await annCommit();
+  }
   const pending = annotations.some((a) => a.content && !a.sent);
   if (pending && !sending && annPrefillComposer()) annAutoSubmit();
   annSetMode(false);
@@ -6302,7 +6322,11 @@ async function annRecBegin() {
   annRecBtn.setAttribute("aria-pressed", "true");
   // Both buttons are exits now: the Comment seat has become the ■/clock stop
   // control (the stylesheet swaps its face off `.on`), and the pulsing mic
-  // stops too — either click ends the walkthrough.
+  // stops too — either click ends the walkthrough. The aria-label too, not
+  // just the tooltip: annSetMode(true) a moment ago named this seat Done
+  // (annRecOn was still false there), and a live recording announced as
+  // "Done" reads as finished (Bugbot, PR #664).
+  annRecBtn.setAttribute("aria-label", "Stop the recording");
   annRecBtn.title = "Recording — click to stop · Esc also stops it";
   annBtn.setAttribute("aria-label", "Stop the recording");
   annBtn.title = "Stop the recording · Esc also stops it";
@@ -6504,6 +6528,7 @@ async function annRecEnd() {
   annRecBtn.classList.remove("on");
   annRecBtn.setAttribute("aria-pressed", "false");
   annRecLbl.textContent = "";
+  annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");
   annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
   // The Comment seat stops being the ■/clock stop control the moment `.on`
   // leaves the mic (the stylesheet swap keys off it); its labels go back to

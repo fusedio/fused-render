@@ -198,16 +198,39 @@ def test_the_other_button_is_always_the_way_out(html):
 
 
 def test_done_flushes_pending_notes_before_disarming(html):
-    """Done is the exit that also delivers: notes the auto-send guards left
-    pending (a turn in flight, a typed draft) ride out through the same
+    """Done is the exit that also delivers: an open composer's words are
+    committed first (through the same annCommit the Enter key uses), notes
+    the auto-send guards left pending ride out through the same
     prefill-and-submit, then the mode goes away."""
-    body = _block(html, "function annDone()", "\n}\n")
+    body = _block(html, "async function annDone()", "\n}\n")
+    assert "await annCommit();" in body
     assert "a.content && !a.sent" in body
     assert "if (pending && !sending && annPrefillComposer()) annAutoSubmit();" in body
     assert "annSetMode(false);" in body
+    commit = body.index("await annCommit();")
     flush = body.index("annAutoSubmit()")
     disarm = body.index("annSetMode(false);")
-    assert flush < disarm, "send while the armed composer is still seeded"
+    assert commit < flush < disarm, "save, send, then disarm"
+
+
+def test_a_mousedown_on_the_strip_does_not_drop_the_open_draft(html):
+    """The outside-click dismissal used to fire on ✓ Done's mousedown and
+    close the composer before the click reached annDone — silently dropping
+    the words the user was about to send (Bugbot, PR #664). The strip's own
+    controls are exempt, like the pins and chips."""
+    body = _block(html, 'document.addEventListener("mousedown", (e) => {', "});")
+    assert 't.closest("#anncta")' in body
+    assert 't.closest("#anntool")' in body
+
+
+def test_the_live_recording_is_never_announced_as_done(html):
+    """annSetMode(true) names the mic seat Done (annRecOn is still false when
+    annRecBegin arms the mode), so the recording writers must claim the
+    aria-label too, not just the tooltip (Bugbot, PR #664)."""
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
+    assert 'annRecBtn.setAttribute("aria-label", "Stop the recording");' in begin
+    end = _block(html, "async function annRecEnd()", "\n}\n")
+    assert 'annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");' in end
 
 
 def test_the_seats_swap_faces_off_the_two_state_classes(html):
@@ -256,6 +279,9 @@ def test_the_words_yield_only_when_they_truly_collide(html):
     assert "new ResizeObserver(annFitStrip).observe(annToolsEl);" in html
     assert "const mo = new MutationObserver(annFitStrip);" in html
     assert "for (const el of [annToolEl, annCta])" in html
+    # ...and the classes that show/hide #back (home ⇄ chat, the narrow views)
+    # change the row's content without touching box or clusters (Bugbot, #664)
+    assert "for (const el of [document.body, chatEl])" in html
     # the verdict reaches the words through the one token every .lbl reads
     assert "#anntools.tight #anncta, #anntools.tight #anntool { --annlbl: none; }" in html
     assert "#anncta .lbl, #anntool .lbl { display: var(--annlbl, inline); }" in html
