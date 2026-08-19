@@ -39,6 +39,19 @@ dependencies = [
     # (TASK F) — and fastapi.testclient needs it too — so a plain
     # `pip install fused-render` is broken without it. Core, not an extra.
     "httpx",
+    # The Hugging Face token is hf's to store, not ours (D381): the Preferences
+    # button drives hf's own device-code browser login and hf persists the
+    # result, so this app holds no credential and hands no subprocess one.
+    # Core rather than an extra because the alternative is a settings control
+    # that exists only in some installs. This is NOT the AI-2 exception being
+    # widened — that rule keeps ML FRAMEWORKS (Metal-only mlx, GB-scale torch)
+    # out of a file explorer's dependency set, and each runner still declares
+    # `huggingface_hub` for its own venv. What arrives here is hf itself plus
+    # `hf_xet` and `filelock`: ~16MB, in a wheel that already ships pyarrow.
+    # The floor is 1.28 because `utils._oauth_device` (the device flow) and
+    # `_login._save_oauth_token` (persisting it with its refresh token) are what
+    # routers/hf_auth.py drives.
+    "huggingface_hub>=1.28,<2",
     # Reading a project's `pyproject.toml` (projectenv._load_manifest). tomllib is
     # 3.11+ stdlib and requires-python is >=3.10, so on 3.10 this supplies it.
     # Still core rather than an extra, and now more so than when it was added for

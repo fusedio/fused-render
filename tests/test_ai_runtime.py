@@ -1262,6 +1262,19 @@ def test_generating_with_an_unloaded_model_starts_the_load(fake_runner):
     _wait_ready("org/cold")  # …and it really is loading, not just claimed to be
 
 
+# -- a worker's environment carries no Hub token of our making (D381) ------------
+
+
+def test_an_inherited_hub_token_is_passed_through_untouched(monkeypatch, tmp_path):
+    """A worker finds the machine's token by calling `huggingface_hub` itself, so
+    nothing here manufactures one — but an `HF_TOKEN` this process inherited is
+    not stripped either: hf reads that variable ahead of its own store, and a
+    machine that exports one expects its workers to use it."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HF_TOKEN", "hf_from_the_environment")
+    assert supervisor._child_env("worker-token")["HF_TOKEN"] == "hf_from_the_environment"
+
+
 # -- the download-manager join --------------------------------------------------
 
 

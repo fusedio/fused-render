@@ -63,6 +63,10 @@ Three rules the outbound call follows:
   which `huggingface_hub` honours) is the one exception: it comes from the
   user's own environment, and it is still checked to be an http(s) URL before it
   is used.
+* **The token is hf's, not ours.** `hf_auth.token()` is `get_token()`, so this
+  request carries whatever a `hf auth login` or the Preferences login button put
+  in hf's own store — and nothing this app persists, because it persists none
+  (D381).
 * **The query is ENCODED, never concatenated.** `urlencode` builds it, so a
   search for `a&b=c` is a search, not a second parameter.
 * **Every field is optional.** The Hub's list endpoint returns what it returns,
@@ -207,19 +211,18 @@ def hub_endpoint() -> str:
 
 def _token() -> str | None:
     """The user's Hub token, if they have one, for gated repos and a higher rate
-    limit. Read from the same places `huggingface_hub` reads it; NEVER returned
-    to the client, and never logged."""
-    for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
-        value = (os.environ.get(name) or "").strip()
-        if value:
-            return value
-    home = os.environ.get("HF_HOME") or os.path.join(
-        os.path.expanduser("~"), ".cache", "huggingface")
-    try:
-        with open(os.path.join(home, "token"), encoding="utf-8") as handle:
-            return handle.read().strip() or None
-    except OSError:
-        return None
+    limit. NEVER returned to the client, and never logged.
+
+    `hf_auth.token()` — i.e. `huggingface_hub.get_token()` — rather than a
+    resolution of its own (D381). The same credential decides this search and
+    every model download, and a download resolves it by calling hf inside the
+    worker; a second copy of the order here is how a page comes to report itself
+    authenticated while the download beside it goes out anonymous. Read per
+    request, so a login applies to the next search with no restart — and so that
+    an OAuth token hf refreshed in place is the one that gets sent."""
+    from fused_render.server.routers import hf_auth
+
+    return hf_auth.token()
 
 
 def _friendly_task(tag) -> str | None:
@@ -430,7 +433,7 @@ def _fetch(params: dict) -> tuple[list, str | None]:
         return [], f"Could not reach {urlsplit(hub_endpoint()).netloc}: {e.__class__.__name__}"
     if response.status_code == 401 or response.status_code == 403:
         return [], ("The Hub refused this request. A private or gated search needs a token — "
-                    "set HF_TOKEN, or log in with the Hugging Face CLI.")
+                    "sign in to Hugging Face in Preferences, or set HF_TOKEN.")
     if response.status_code == 429:
         return [], "The Hub is rate-limiting this machine. Try again in a minute."
     if response.status_code >= 400:

@@ -154,6 +154,13 @@ _IMPORT_TO_DIST = {
     # interpreter already meets a script's header (and so whether a venv is needed
     # at all). Import name and distribution name coincide.
     "packaging": "packaging",
+    # The Hub client, for the Preferences sign-in (routers/hf_auth.py, D381): hf
+    # owns the token store, so the app imports hf rather than keeping a
+    # credential of its own. Underscore in the import name, hyphen in the
+    # distribution — which is exactly the drift this map exists to record.
+    # NOT exempt from the completeness half: a template that reaches the Hub is
+    # a template that has to declare it, the same as `requests`.
+    "huggingface_hub": "huggingface-hub",
     # AppKit, for the macOS clipboard bridge (shell/pasteboard/_darwin.py).
     # Only installed on darwin, so on Linux and Windows these map names nothing
     # provides — the same harmless shape as `tomli` above, and listing them is

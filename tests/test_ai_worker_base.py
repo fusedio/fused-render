@@ -1724,3 +1724,32 @@ def test_a_missing_stdlib_SUBMODULE_is_still_named(base):
 
     assert "email.mime" in error
     assert "STANDARD LIBRARY" in error
+
+
+def test_worker_base_imports_nothing_but_the_stdlib():
+    """`worker_base` is stdlib-only at module scope, and this is what enforces it.
+
+    Absence does not enforce it: `huggingface_hub` ships with the app (D381), so
+    an accidental module-scope import of it would resolve here and in CI and the
+    rule would rot silently. And the rule has not changed — every runner's
+    interpreter imports this module, so anything imported here becomes a
+    dependency of every backend forever, and the contract has to stay importable
+    by tests that cannot install mlx or torch.
+
+    Read out of the SOURCE rather than by importing under a blocked meta-path
+    hook: the question is what the file declares at module scope, and the lazy
+    `from huggingface_hub import ...` calls inside functions are correct and must
+    keep working.
+    """
+    import ast
+
+    tree = ast.parse(open(BASE_PATH, encoding="utf-8").read())
+    imported = set()
+    for node in tree.body:  # module scope ONLY — function-level imports are the design
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+    assert imported, "the file surely imports something — did BASE_PATH stop resolving?"
+    outside = sorted(name for name in imported if name not in sys.stdlib_module_names)
+    assert outside == [], f"worker_base gained a non-stdlib module-scope import: {outside}"

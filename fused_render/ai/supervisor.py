@@ -444,6 +444,14 @@ def _child_env(token: str) -> dict:
     inside itself, and a venv interpreter that inherits it dies at startup with
     "Failed to import encodings module" before running a line. The origin is
     passed through so the worker can report its own download progress.
+
+    **No Hub token is placed here, deliberately** (D381). A worker imports
+    `huggingface_hub` and therefore finds the machine's token exactly where every
+    other hf caller finds it — hf's own store, written by the Preferences login
+    button (routers/hf_auth.py) — or an `HF_TOKEN` this process already inherited
+    and passes on in the copy below. Nothing in this app holds a credential to
+    inject, and manufacturing one here would assert something about an
+    environment the caller was asked nothing about.
     """
     env = dict(os.environ)
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):

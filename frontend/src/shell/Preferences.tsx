@@ -2,7 +2,10 @@
 // from the sidebar's bottom-left gear. Its tabs (D125), the count deliberately
 // not stated here since it has been wrong three times:
 //   Render preferences — Appearance, Default model (which Claude model the
-//     chat and fused.ai reach for when nothing else has said), Call log
+//     chat and fused.ai reach for when nothing else has said), Hugging Face
+//     (signing in to the Hub for model downloads — and NOT a preference: the
+//     token belongs to huggingface_hub, which stores it, so that section talks
+//     to /api/hf/* and holds no state of this page's), Call log
 //     (capture/redaction/retention for
 //     fused_render/calls.py), and Accessibility. Always present; the
 //     default (clean URL). No Tour button — the tour still runs itself on a
@@ -32,10 +35,14 @@ import {
   putCallsEnabled,
   putCallsParamsMode,
   putCallsRetentionDays,
+  cancelHfLogin,
+  getHfAuth,
+  hfLogout,
   putDefaultModel,
   putReaderEnabled,
+  startHfLogin,
 } from "@platform/lib/api";
-import type { CallsParamsMode, Prefs } from "@platform/lib/api";
+import type { CallsParamsMode, HfAuth, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -195,6 +202,161 @@ function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
           </select>
         </label>
       </div>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Signing in to Hugging Face (server/routers/hf_auth.py, D381).
+//
+// **No token passes through this component in either direction.** The button
+// starts huggingface_hub's own device-code login; the user authorizes on
+// huggingface.co; hf stores the result — with a refresh token it renews itself —
+// and every consumer (model downloads inside a worker, the Discover search)
+// reads it back through `get_token()`. So there is no box to paste a secret
+// into, nothing to mask, and nothing for this page to persist. Someone who
+// needs a specific fine-grained token exports HF_TOKEN instead, which hf reads
+// ahead of its own store and which this section reports as being in force.
+//
+// The page POLLS while a login is pending rather than holding a request open:
+// the thing being waited for is a person going to another tab, which can take
+// as long as it takes, and hf's device code lives for ~15 minutes.
+function HuggingFaceSection() {
+  const [auth, setAuth] = useState<HfAuth | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getHfAuth()
+      .then((a) => alive && setAuth(a))
+      .catch((e) => alive && setError((e as Error).message));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // One poll loop, armed only while a login is actually in flight — a settings
+  // page must not sit on a timer for a flow nobody started.
+  const pending = auth?.pending ?? null;
+  useEffect(() => {
+    if (!pending) return;
+    let alive = true;
+    const id = setInterval(() => {
+      getHfAuth()
+        .then((a) => alive && setAuth(a))
+        .catch(() => undefined); // a blip mid-login is not worth a banner
+    }, 2000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [pending !== null]);
+
+  const act = async (fn: () => Promise<HfAuth>) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setAuth(await fn());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const locked = auth?.forcedByVar != null;
+  return (
+    <section className="prefs-section">
+      <h2>Hugging Face</h2>
+      <p className="deploy-muted">
+        Sign in to download AI models. Without an account the Hub serves this machine
+        anonymously — a lower rate limit, slower downloads, and no access to gated or private
+        repos. Signing in hands the token to <code>huggingface_hub</code>, which stores it the
+        same way <code>hf auth login</code> does and keeps it renewed; this app never holds it.
+      </p>
+      {!auth && !error && <SkeletonLines rows={2} label="Loading Hugging Face status" />}
+      {auth && (
+        <>
+          {auth.pending ? (
+            <div className="prefs-field">
+              <p>
+                <a
+                  className="btn btn-primary hf-authorize-link"
+                  href={auth.pending.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Authorize on huggingface.co
+                </a>
+              </p>
+              {/* The code is shown as well as embedded in that link: the link
+                  carries it, but the Hub asks for confirmation, and somebody who
+                  opened the page in a different browser needs to type it. */}
+              <p className="deploy-muted">
+                Waiting for you to authorize. If asked for a code, enter{" "}
+                <code>{auth.pending.userCode}</code>. This code expires in{" "}
+                {Math.max(1, Math.round(auth.pending.secondsLeft / 60))} min.
+              </p>
+              <div className="prefs-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={busy}
+                  onClick={() => void act(cancelHfLogin)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="prefs-actions">
+              {auth.signedIn ? (
+                <>
+                  <span>
+                    Signed in{auth.account ? <> as <b>{auth.account}</b></> : null}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-danger-text"
+                    disabled={busy || locked}
+                    onClick={() => void act(hfLogout)}
+                  >
+                    Log out
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={busy || locked}
+                  onClick={() => void act(() => startHfLogin())}
+                >
+                  Log in to Hugging Face
+                </button>
+              )}
+            </div>
+          )}
+          <div className="deploy-muted">
+            {locked ? (
+              <>
+                Using the token in <code>{auth.forcedByVar}</code> from this app&apos;s
+                environment — hf reads that ahead of its own store, so signing in here would
+                change nothing until the variable is removed.
+              </>
+            ) : auth.signedIn ? (
+              <>Model downloads and Hub search use this account.</>
+            ) : (
+              <>Not signed in — requests to the Hub go out anonymously.</>
+            )}
+          </div>
+          {/* The last attempt's failure: denied, expired, or the network. Kept
+              until the next attempt replaces it, so a login that failed while
+              the user was authorizing in another tab can still say why. */}
+          {auth.error && <ErrorBanner>{auth.error}</ErrorBanner>}
+        </>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
@@ -400,6 +562,7 @@ export default function Preferences() {
               <>
                 <AppearanceSection />
                 <ModelSection prefs={prefs} onChange={setPrefs} />
+                <HuggingFaceSection />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
               </>

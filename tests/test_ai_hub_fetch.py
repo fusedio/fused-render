@@ -20,9 +20,14 @@ What is pinned, and why each one is a bug that has to stay fixed:
   - a failure anywhere falls back to today's `snapshot_download`, because a
     download that got faster and sometimes broken is worse than a slow one.
 
-`huggingface_hub` is not installed here (nor on CI), which is the point of
-`worker_base` being stdlib-only. The Hub is therefore reached through exactly
-two seams — `_hub_file_meta` and `repo_folder` — and both are monkeypatched.
+The Hub is reached through exactly two seams — `_hub_file_meta` and
+`repo_folder` — and both are monkeypatched.
+
+`worker_base` is stdlib-only, and its being so is NOT enforced by hf's absence
+from this environment — hf ships with the app (D381), so an accidental
+module-scope import of it would pass unnoticed here.
+`test_ai_worker_base.py::test_worker_base_imports_nothing_but_the_stdlib` is what
+enforces the rule, by reading the module's own imports out of its source.
 """
 import hashlib
 import http.server

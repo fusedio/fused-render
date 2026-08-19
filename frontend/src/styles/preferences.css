@@ -1134,6 +1134,15 @@
   resize: vertical;
 }
 
+/* The Hugging Face authorize link. An <a>, not a button, because it opens a URL
+   in a new tab and must survive a middle-click and a copy-link — but it is the
+   primary action of the section while a login is pending, so it wears .btn and
+   needs the inline-block and centring an <a> does not have. */
+.hf-authorize-link {
+  display: inline-block;
+  text-decoration: none;
+}
+
 /* Safety net for unmigrated selects only — .field-control selects carry their
    own canonical skin + custom chevron. */
 .prefs-section select:not(.field-control) {
