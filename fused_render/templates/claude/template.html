@@ -12311,6 +12311,15 @@ function unqueueAll(entries) {
 // One turn at a time: concurrent turns would share the session_id param and
 // launch parallel claude runs against the same resumed session.
 let sending = false;
+// Which action OWNS `sending`, and which loop owns the running chrome. Both
+// are monotonic seats: a finally that wakes late (its action was abandoned by
+// the back button, or superseded by a re-attach to the same run id) proves it
+// is still the newest holder before it releases anything — equality on the
+// flag, or even on the run id, is not proof (Bugbot, PR #653: a reopened chat
+// re-attaches to the SAME run_id, and the abandoned loop's finally stripped
+// the new loop's Stop chrome; a new send's gate was wiped the same way).
+let sendSeq = 0;
+let loopSeq = 0;
 // The generation of the visible log. The back button bumps it when it wipes
 // the transcript, and a streaming pollLoop that wakes to a bumped number
 // bails before touching the DOM or the URL params — the run itself keeps
@@ -12321,6 +12330,7 @@ let logGen = 0;
 // for the page's whole life — if this frame dies mid-loop, the subprocess
 // keeps going and the next boot re-attaches via resumeRun.
 async function pollLoop(run_id, gen = logGen) {
+  const seat = ++loopSeq;
   const w = addWorking();
   // This run is now the one the stop button and Escape aim at. Set here, the one
   // place a run is ever in flight, which covers a re-attached run for free.
@@ -12450,11 +12460,12 @@ async function pollLoop(run_id, gen = logGen) {
     if (w.el.isConnected) w.el.remove();
     // Nothing is interruptible any more. Cleared even when the loop threw: an
     // Escape landing after this must not cancel a finished run and then mislabel
-    // the NEXT turn's ending as a stop. OWNERSHIP-GUARDED (Bugbot, PR #653):
-    // a loop that bailed because the reader left finishes after the leave — by
-    // then a new turn may own this chrome, and an unconditional clear here
-    // stripped the new run's Stop square and its Escape target.
-    if (activeRun === run_id) {
+    // the NEXT turn's ending as a stop. OWNERSHIP-GUARDED (Bugbot, PR #653),
+    // and ownership means being the NEWEST loop, not matching the run id: a
+    // chat left mid-turn and reopened re-attaches to the SAME run_id, and the
+    // abandoned loop's late finally matched it and stripped the new loop's
+    // Stop square and Escape target.
+    if (loopSeq === seat) {
       activeRun = null;
       activeWorking = null;
       activeSegBody = null;
@@ -12482,6 +12493,7 @@ function setRunningUi(on) {
 async function sendMessage(message) {
   if (sending) return;
   sending = true;
+  const seat = ++sendSeq;
   // Sampled before anything is awaited: a Back landing mid-start outdates this
   // number, and everything below that touches the page (the run param, the
   // streaming loop, the queue drain) checks it first (Bugbot, PR #653).
@@ -12678,7 +12690,7 @@ async function sendMessage(message) {
     }
     addError(err.message);
   } finally {
-    sending = false;
+    if (sendSeq === seat) sending = false;
   }
   scrollBottom();
   focusBox(box);
@@ -13469,6 +13481,7 @@ async function resumeRun(run_id, opts) {
   const retryUnknown = !!(opts && opts.retryUnknown);
   if (sending) return;
   sending = true;
+  const seat = ++sendSeq;
   // Sampled before the probe, same reason as sendMessage's (Bugbot, PR #653):
   // a Back landing during the awaited probe must outdate the loop's number.
   const gen = logGen;
@@ -13559,7 +13572,7 @@ async function resumeRun(run_id, opts) {
   } catch (err) {
     console.warn("run re-attach failed:", err.message);
   } finally {
-    sending = false;
+    if (sendSeq === seat) sending = false;
     focusBox(box);
   }
   // Same-generation only — see sendMessage's tail (Bugbot, PR #653).
@@ -13664,6 +13677,7 @@ async function loadHistory(session_id) {
   // appended first and the older history turns dumped after it.
   if (sending) return;
   sending = true;
+  const seat = ++sendSeq;
   permCards.clear();
   notedSkills.clear();
   resetCardPolicy();  // ...and the overrides: every card of the restored transcript starts folded
@@ -13705,7 +13719,7 @@ async function loadHistory(session_id) {
     log.innerHTML = "";
     console.warn("history restore failed:", err.message);
   } finally {
-    sending = false;
+    if (sendSeq === seat) sending = false;
   }
 }
 
