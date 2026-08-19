@@ -6585,9 +6585,20 @@ async function annRecEnd() {
   // Point into the next typed comment is a visible fact, not a trap.
   annRecBtn.classList.remove("on");
   annRecBtn.setAttribute("aria-pressed", "false");
-  annRecLbl.textContent = "";
   annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");
   annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+  // The settle window is a STATUS, not a Done button (Bugbot, PR #665): with
+  // #annrec.on gone the armed CSS would show an enabled ✓ Done for however
+  // long MediaRecorder.stop()'s encode takes (no timeslice — it can take a
+  // while), still wearing the stop aria-label, and a click there ran annDone
+  // and disarmed the mode before transcription ever started. Same treatment
+  // the transcription below gets: disabled, .busy (the face yields to
+  // #annreclbl), named for what is happening.
+  annBtn.disabled = true;
+  annBtn.setAttribute("aria-label", "Stopping the recording");
+  annBtn.title = "Stopping the recording…";
+  annCta.classList.add("busy");
+  annRecLbl.textContent = "Stopping…";
   const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
   recorder.stop();
   await stopped;
@@ -6596,11 +6607,6 @@ async function annRecEnd() {
   // The chunks are complete here: the recorder's final dataavailable fires
   // before its stop event resolves the await above.
   const blob = new Blob(annRecChunks, { type: recorder.mimeType || "" });
-  // The Comment seat stops being the ■/clock stop control the moment `.on`
-  // leaves the mic (the stylesheet swap keys off it); its labels go back to
-  // naming the mode, which is still armed until the disarm below.
-  annBtn.setAttribute("aria-label", "Done — send the notes and finish commenting");
-  annBtn.title = ANN_ARMED_TITLE;
   const ids = annRecIds;
   annRecIds = [];
   // Ending a walkthrough puts the whole mode away (Akshil, 2026-08-19):
@@ -6613,16 +6619,22 @@ async function annRecEnd() {
   // already false there). Nothing recorded: disarm and go.
   const armed = annArmEpoch;
   if (!blob.size) {   // nothing said: no transcript to fetch
+    // The status leaves with this path's own hands — the transcription's
+    // finally never runs here. The disarm below renames the seat; the
+    // epoch-skipped case (someone re-armed mid-stop) is renamed by the
+    // annSetMode(true) that re-armed it.
+    annCta.classList.remove("busy");
+    annRecLbl.textContent = "";
+    annBtn.disabled = false;
+    annBtn.setAttribute("aria-label", "Done — send the notes and finish commenting");
+    annBtn.title = ANN_ARMED_TITLE;
     if (annOn && annArmEpoch === armed) annSetMode(false);
     return;
   }
   annRecBtn.disabled = true;
-  // `.busy` is the one state the buttons' own classes cannot say (recording
-  // over, mode still armed, words on their way): it yields every glyph and
-  // word to the "Transcribing…" status in #annreclbl. The seat is a STATUS
-  // while it says so — disabled and named for what is happening, because a
-  // face with no affordance must not still act as Done (Bugbot, PR #665);
-  // the finally below re-enables it and the disarm renames it.
+  // The seat is already busy/disabled from the stop above; only the words
+  // move on, from "Stopping…" to "Transcribing…" — one status seat, two
+  // tenses. The finally below re-enables it and the disarm renames it.
   annBtn.disabled = true;
   annBtn.setAttribute("aria-label", "Transcribing the walkthrough");
   annBtn.title = "Transcribing the walkthrough — the notes send themselves when the words land";
@@ -6675,6 +6687,11 @@ async function annRecEnd() {
     annBtn.disabled = false;
     annCta.classList.remove("busy");
     annRecLbl.textContent = "";   // "Transcribing…" only ever describes now
+    // The disarm below renames the seat on the normal path; when the epoch
+    // guard skips it (the user re-armed mid-transcription), the armed name
+    // must come back by hand or the seat keeps saying "Transcribing".
+    annBtn.setAttribute("aria-label", "Done — send the notes and finish commenting");
+    annBtn.title = ANN_ARMED_TITLE;
   }
   // The other half of the stop-disarms rule above: transcript fetched (or
   // failed — the notes stay in the transcript either way), walkthrough done,
@@ -6705,18 +6722,28 @@ async function annRecDiscard() {
   // stop clock leave the strip the moment the choice is made, and a second
   // click has nothing left to land on. The NAME comes back with the face
   // (Bugbot, PR #665): annRecBegin called this seat "Stop the recording",
-  // and only annRecEnd used to give it back.
+  // and only annRecEnd used to give it back. Across the settle the seat is
+  // the same disabled status annRecEnd shows — never an enabled Done.
   annRecBtn.classList.remove("on");
   annRecBtn.setAttribute("aria-pressed", "false");
-  annRecLbl.textContent = "";
   annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");
   annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+  annBtn.disabled = true;
+  annBtn.setAttribute("aria-label", "Discarding the recording");
+  annBtn.title = "Discarding the recording…";
+  annCta.classList.add("busy");
+  annRecLbl.textContent = "Discarding…";
   const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
   recorder.stop();   // onstop releases the mic tracks, same as a kept stop
   await stopped;
   clearInterval(annRecTimerId);
   annRecTimerId = null;
   annRecChunks = [];
+  annCta.classList.remove("busy");
+  annRecLbl.textContent = "";
+  annBtn.disabled = false;
+  annBtn.setAttribute("aria-label", "Done — send the notes and finish commenting");
+  annBtn.title = ANN_ARMED_TITLE;
   const ids = new Set(annRecIds);
   annRecIds = [];
   if (ids.size) {
