@@ -60,9 +60,9 @@
 /* Card grid ---------------------------------------------------------------- */
 /* Chrome-less cards, modeled on the hosted workbench's gallery: the preview
    image IS the card, with the name and two stat lines sitting directly on the
-   page background underneath it. No plate, no monogram — a canvas without a
-   preview gets a quiet "No preview" field, because a giant initial letter was
-   louder than the real thumbnails beside it. */
+   page background underneath it. No plate, no monogram — a canvas without an
+   uploaded preview gets the hosted gallery's map tile once per UDF, and only a
+   canvas with zero UDFs falls through to a line of text. */
 .canvases-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -129,7 +129,28 @@
   object-fit: cover;
 }
 
-/* Stand-in for a canvas with no uploaded preview. */
+/* Stand-in for a canvas with no uploaded preview: the hosted gallery's map tile,
+   once per UDF, in the grid shape that count rounds up into (see tileLayout).
+   `grid-template-*` arrive inline from the component, since the shape is data. */
+.canvas-card-tiles {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  gap: 4px;
+  align-items: stretch;
+  justify-items: stretch;
+}
+
+.canvas-card-tile {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+/* Only a canvas with zero UDFs lands here — there is nothing to tile. */
 .canvas-card-noshot {
   font-size: 13px;
   color: var(--fg-muted);
