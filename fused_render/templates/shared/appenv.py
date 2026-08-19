@@ -171,6 +171,25 @@ def skill_plugin_dir() -> str | None:
     return os.environ.get("FUSED_RENDER_SKILL_PLUGIN_DIR") or None
 
 
+def workbench_plugin_dir() -> str | None:
+    """A SECOND Claude Code plugin root to hand a session we spawn — the
+    `workbench` plugin's canvas/UDF skills — or None when the machine has none.
+
+    Separate from `skill_plugin_dir` because it is a separate plugin, published
+    by the workbench team rather than shipped in this app; `--plugin-dir` is
+    repeatable, so the two roots compose without merging trees. A canvas clone's
+    CLAUDE.md names those skills (canvas.toml format above all), and handing them
+    over per-run is what makes that true without asking the user to install
+    anything or touching their global Claude config.
+
+    Absent means "not found on this machine" — the flag is not passed and the
+    clone's CLAUDE.md degrades to the folder's own conventions. Decided by the
+    server (`skill_plugin.export_workbench_plugin_env`), like every other value
+    in this module.
+    """
+    return os.environ.get("FUSED_RENDER_WORKBENCH_PLUGIN_DIR") or None
+
+
 def fused_cli_dir() -> str | None:
     """The dir holding the `fused` CLI wrapper the server put on the PATH the
     sessions we spawn inherit, or None when there is no CLI to offer.
