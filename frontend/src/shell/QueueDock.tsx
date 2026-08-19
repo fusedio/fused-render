@@ -281,7 +281,19 @@ function Row({
           </button>
         )}
       </div>
-      <div className="q-status">{roleText(row, jobLine)}</div>
+      {/* A LIVE row's sentence shimmers (Akshil, 2026-08-19): the ink turns the
+          In Progress yellow with the brighter band travelling through it — the
+          app's one "running" treatment (sidebar.css `.sidebar-running`, where
+          the gradient's constraints are documented) — because a run in flight
+          was the one row in this card whose words looked exactly like a queued
+          one's. `live` is the ROLE, not a re-decision: the same reading that
+          gives the row its job-registry line and its Stop, so the shimmer and
+          the sentence cannot disagree. Finished runs never reach this branch —
+          openRows retires a live row the moment its job ends (43353b0f), and
+          the outcome row the job half then draws keeps its own green bar. */}
+      <div className={"q-status" + (row.role === "live" ? " is-running" : "")}>
+        {roleText(row, jobLine)}
+      </div>
     </div>
   );
 }

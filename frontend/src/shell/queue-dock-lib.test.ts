@@ -616,3 +616,39 @@ describe("scheduleRunsEnded: the moment the two surfaces sync", () => {
     ).toBe(false);
   });
 });
+
+// ---- the live row's shimmer -----------------------------------------------------
+// Akshil, 2026-08-19: a run in flight wore the same muted grey as a row merely
+// waiting. The sentence of a LIVE row now wears the app's one "running"
+// treatment — the In Progress yellow with the travelling band, the sidebar's
+// recipe. Source pins, because the decision is one ternary in the view and the
+// treatment one CSS block: the class must ride on the ROLE (the same fact that
+// gives the row its job line and its Stop), and the reduced-motion arm must
+// state the label flatly rather than letting the blanket rule park the sweep.
+describe("the live row's shimmer", () => {
+  const { readFileSync } = require("node:fs") as typeof import("node:fs");
+  const { join } = require("node:path") as typeof import("node:path");
+  const DOCK = readFileSync(join(import.meta.dir, "QueueDock.tsx"), "utf8");
+  const CSS = readFileSync(
+    join(import.meta.dir, "../styles/notifications.css"),
+    "utf8",
+  );
+
+  it("rides on the row's role, and only on live", () => {
+    expect(DOCK).toContain('"q-status" + (row.role === "live" ? " is-running" : "")');
+  });
+
+  it("is the sidebar's yellow text shimmer, with the flat reduced-motion arm", () => {
+    expect(CSS).toContain(".q-status.is-running {");
+    expect(CSS).toContain("color: var(--status-progress);");
+    expect(CSS).toContain("animation: q-running-shimmer 2.2s linear infinite;");
+    expect(CSS).toContain("@keyframes q-running-shimmer");
+    // The words never fade and never vanish: in-range travel over a 300% image.
+    expect(CSS).toContain("background-size: 300% 100%;");
+    expect(CSS).toMatch(/q-running-shimmer \{\n  from \{ background-position: 100% 0; \}\n  to \{ background-position: 0% 0; \}/);
+    // Motion off: no parked gradient — the flat status hue instead.
+    const reduced = CSS.slice(CSS.lastIndexOf(".q-status.is-running"));
+    expect(reduced).toContain("animation: none;");
+    expect(reduced).toContain("-webkit-text-fill-color: var(--status-progress);");
+  });
+});
