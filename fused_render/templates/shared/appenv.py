@@ -197,20 +197,29 @@ def workbench_plugin_dir() -> str | None:
 
 
 def canvases_root() -> str:
-    """Where canvas clones live (`~/.fused-render/canvases`, or its per-branch
-    nesting) — the fact a template needs to answer "is this target a canvas
-    clone?", which is what gates the workbench skills above.
+    """Where canvas clones live (`~/.fused-render/canvases`) — the fact a template
+    needs to answer "is this target a canvas clone?", which is what gates the
+    workbench skills above.
 
-    The server exports the already-resolved answer
-    (`FUSED_RENDER_CANVASES_DIR`, from `canvases.canvases_root()`); the fallback
-    mirrors that function's own rule for a template running standalone with no
-    server around. Deliberately a DUPLICATED rule rather than an import:
-    templates must not import `fused_render` (SPEC PY-15), and the env var is
-    what keeps the two copies from mattering in practice — under a server, this
-    returns the server's own answer verbatim.
+    The server exports the already-resolved answer (`FUSED_RENDER_CANVASES_DIR`,
+    from `canvases.canvases_root()`). Deliberately a DUPLICATED rule rather than
+    an import — templates must not import `fused_render` (SPEC PY-15) — and the
+    fallback is therefore character-for-character what `canvases.canvases_root()`
+    and `_canvas_push.canvases_root()` use: a HARDCODED `~/.fused-render/canvases`
+    that deliberately does NOT go through `home_dir()`.
+
+    That looks wrong beside every other helper in this module and is not: canvas
+    clones are the one thing the app does not nest per branch, so resolving this
+    through `home_dir()` would answer `<home>/branches/<ref>/canvases` on a branch
+    build while the server kept its clones in `~/.fused-render/canvases`. The
+    disagreement would not raise anything — `_in_canvases_root` would simply say
+    "not a canvas" for a real clone, and the gate's default answer is to withhold
+    the workbench skills, so the failure would be silent. If the server's rule
+    ever gains branch nesting, this string moves with it (a test pins the two
+    together).
     """
-    return os.environ.get("FUSED_RENDER_CANVASES_DIR") or os.path.join(
-        home_dir(), "canvases")
+    return os.environ.get("FUSED_RENDER_CANVASES_DIR") or os.path.expanduser(
+        "~/.fused-render/canvases")
 
 
 def fused_cli_dir() -> str | None:

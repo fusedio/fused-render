@@ -850,23 +850,78 @@ def test_appenv_names_the_workbench_var_and_the_canvases_root():
     assert "from appenv import canvases_root as _canvases_root" in src
 
 
-def test_appenv_canvases_root_matches_the_servers_own(monkeypatch, tmp_path):
-    """The two copies of the rule (SPEC PY-15 forbids the import) agree, and the
-    exported var is what makes them agree in practice."""
-    import fused_render.canvases as canvases_mod
-
+def _load_appenv():
     path = os.path.join(REPO_ROOT, "fused_render", "templates", "shared", "appenv.py")
     spec = importlib.util.spec_from_file_location("appenv_for_canvases", path)
-    appenv = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(appenv)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
+
+def test_appenv_canvases_root_matches_the_servers_own(monkeypatch, tmp_path):
+    """The two copies of the rule (SPEC PY-15 forbids the import) must agree in
+    BOTH branches, asserted against each other rather than against a spelled-out
+    expectation — a disagreement makes `_in_canvases_root` answer "not a canvas"
+    for a real clone, and the gate's default is to withhold the skills, so the
+    failure is silent.
+
+    The third participant is `_canvas_push.canvases_root()`, the shim the
+    intercepted `fused workbench canvas push` runs through; all three resolve the
+    same folder or the feature breaks in a different place each time.
+    """
+    import fused_render.canvases as canvases_mod
+    from fused_render import _canvas_push
+
+    appenv = _load_appenv()
+
+    # 1. Exported (the production path): all three read the var.
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(tmp_path / "cans"))
     assert appenv.canvases_root() == str(tmp_path / "cans")
-    assert canvases_mod.canvases_root() == str(tmp_path / "cans")
-    # Standalone fallback: under the home dir, like the server's own default.
+    assert canvases_mod.canvases_root() == appenv.canvases_root()
+    assert _canvas_push.canvases_root() == appenv.canvases_root()
+
+    # 2. Unexported (a standalone template, or a server whose export regressed):
+    # the fallbacks must still land on the same folder. Deliberately with
+    # FUSED_RENDER_HOME/HOME_DIR pointed elsewhere, because that is exactly the
+    # case that used to diverge: appenv resolved through home_dir() (branch
+    # nesting included) while the server hardcodes ~/.fused-render/canvases.
     monkeypatch.delenv("FUSED_RENDER_CANVASES_DIR")
-    monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(tmp_path / "home"))
-    assert appenv.canvases_root() == str(tmp_path / "home" / "canvases")
+    monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(tmp_path / "branchhome"))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "otherhome"))
+    assert appenv.canvases_root() == canvases_mod.canvases_root()
+    assert appenv.canvases_root() == _canvas_push.canvases_root()
+    assert appenv.canvases_root() == os.path.expanduser("~/.fused-render/canvases")
+
+
+def test_the_gate_normalizes_before_comparing(tmp_path, monkeypatch):
+    """Every normalization step guards a silent withholding of the skills.
+
+    A relative target (`_terminal_command` does not abspath its `file`), a
+    `/tmp` vs `/private/tmp` symlink, or — on Windows — a path differing only in
+    case are all the SAME canvas clone, and the gate answering "no" for any of
+    them hands the session no workbench skills while its CLAUDE.md names them.
+    """
+    canvases = tmp_path / "canvases"
+    (canvases / "c1").mkdir(parents=True)
+    agent = _load_agent()
+    monkeypatch.setattr(agent, "_skill_plugin_dir", lambda: "/a/own")
+    monkeypatch.setattr(agent, "_workbench_plugin_dir", lambda: "/b/workbench")
+    monkeypatch.setattr(agent, "_canvases_root", lambda: str(canvases))
+
+    assert agent._in_canvases_root(str(canvases / "c1" / "canvas.toml"))
+    # Relative to the process cwd — resolved, not compared as typed.
+    monkeypatch.chdir(canvases / "c1")
+    assert agent._in_canvases_root("canvas.toml")
+    assert agent._in_canvases_root(os.path.join(".", "sub", "x.py"))
+    monkeypatch.chdir(tmp_path)
+    assert not agent._in_canvases_root("canvas.toml")
+    # Case-insensitive only where the platform is: normcase is a no-op on POSIX,
+    # so this asserts the *rule*, not a case-folded answer on macOS/Linux.
+    upper = str(canvases / "c1").upper()
+    assert agent._in_canvases_root(upper) == (
+        os.path.normcase(upper) == os.path.normcase(str(canvases / "c1")))
+    # And the containment check itself still refuses a sibling by name.
+    assert not agent._in_canvases_root(str(tmp_path / "canvases-evil" / "x.py"))
 
 
 def test_the_server_exports_the_root_before_serving():

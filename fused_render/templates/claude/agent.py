@@ -459,16 +459,27 @@ def _claude_bin() -> str:
 def _in_canvases_root(target: str) -> bool:
     """Whether `target` is inside the canvas-clones root.
 
-    realpath + commonpath, never a string prefix: `<root>-evil` starts with the
-    root's characters and is a different directory entirely, and on macOS the
-    root and the target routinely disagree about `/tmp` vs `/private/tmp` until
-    both are resolved. A path that cannot be resolved at all is treated as
-    OUTSIDE — the gate's default answer is "no extra skills"."""
+    abspath + realpath + normcase + commonpath, and each of the four earns its
+    place — every way this can be wrong ends in the gate silently withholding the
+    workbench skills from a real canvas clone:
+
+    * abspath, because callers do not all normalize first (`_terminal_command`
+      does not) and a relative target would otherwise resolve against whatever
+      cwd the server process happens to have;
+    * realpath, because on macOS the root and the target routinely disagree about
+      `/tmp` vs `/private/tmp` until both are resolved;
+    * normcase, because Windows paths differing only in case (or in drive-letter
+      case) are the SAME path — `apps.py`'s containment check normcases for the
+      same reason;
+    * commonpath rather than a string prefix, because `<root>-evil` starts with
+      the root's characters and is a different directory entirely.
+
+    A path that cannot be resolved at all is treated as OUTSIDE."""
     if not target:
         return False
     try:
-        root = os.path.realpath(_canvases_root())
-        path = os.path.realpath(target)
+        root = os.path.normcase(os.path.realpath(os.path.abspath(_canvases_root())))
+        path = os.path.normcase(os.path.realpath(os.path.abspath(target)))
         return os.path.commonpath([root, path]) == root
     except (OSError, ValueError):
         # ValueError: commonpath refuses to mix an absolute and a relative path,
