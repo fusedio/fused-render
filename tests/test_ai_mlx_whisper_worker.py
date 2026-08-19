@@ -1768,7 +1768,7 @@ def test_the_LIVE_speaker_label_agrees_with_the_final_one_across_a_join(
 
     They can only disagree where this runner drops silence out of the middle of a
     segment — a packed join — and that is exactly where they did: the final
-    labelling masks its scoring to the speech (D364) and the sink was still
+    labelling masks its scoring to the speech (D366) and the sink was still
     scoring the whole span, so a page rendered the speaker heard inside the
     removed pause and then watched the name and the colour change when the run
     finished. `partial.sink` gets the same `spans` as `assign_speakers`, and this

@@ -5699,7 +5699,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   the content, so two instances write identical bytes at identical offsets and
   the loser of a rename race falls back rather than corrupting anything.
 - **AI-5k** **A model already complete on disk is resolved WITHOUT the network**
-  (D365). "Fetching weights…" for a cached model was about a second of pure
+  (D367). "Fetching weights…" for a cached model was about a second of pure
   latency in front of every bring-up: measured on an Apple Silicon machine for
   `mlx-community/whisper-tiny.en-8bit`, fully cached, `worker_base.
   download_snapshot` took **483ms** and `download_file` **456ms**, against **~14ms**
@@ -6295,7 +6295,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   progress — and the difference is where the cut falls: a VAD boundary is by
   construction half a second of silence, where a sentence has already ended,
   whereas a fixed offset cuts through one. **The speech is PACKED, not decoded a
-  region at a time** (D364, `vad.pack_regions`): the surviving regions are
+  region at a time** (D366, `vad.pack_regions`): the surviving regions are
   concatenated into clips of at most 29 seconds and each clip is one
   `transcribe()` call, with `vad.original_start`/`original_end` inverting the concatenation for
   every timestamp — each endpoint mapped on its own, since a segment can span a

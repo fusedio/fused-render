@@ -194,9 +194,9 @@ def test_a_JOIN_SPANNING_segment_is_labelled_the_same_LIVE_as_it_is_finally(
     """The same "one arithmetic" promise as above, at the one place the two
     labellings could still diverge: a segment that straddles a dropped silence.
 
-    `mlx_whisper` packs VAD regions into one `transcribe()` call (AI-10f, D364),
+    `mlx_whisper` packs VAD regions into one `transcribe()` call (AI-10f, D366),
     so a segment can span a pause that was never transcribed, and the FINAL
-    labelling masks its scoring to the speech (`spans=`, D364) — otherwise the
+    labelling masks its scoring to the speech (`spans=`, D366) — otherwise the
     turn living inside the pause outvotes the words. The sink has to be handed
     the same mask or the page watches the speaker and its colour flip the moment
     the run finishes, which is exactly the failure the comment above

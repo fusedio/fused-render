@@ -1444,7 +1444,7 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
 # under the same branch keeps serving the bytes this machine already has until
 # something else forces a re-check (a cache clear, a fetch of a file this
 # snapshot does not have, or a caller that scopes the download differently).
-# That is deliberate (D365): bring-up latency and working offline are worth more
+# That is deliberate (D367): bring-up latency and working offline are worth more
 # here than revision freshness, because these are pinned model snapshots a user
 # downloaded on purpose rather than a moving dependency — and a silently changing
 # set of weights under a name the user chose would be the worse surprise anyway.
