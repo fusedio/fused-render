@@ -27,6 +27,7 @@ degradation paths and the caps.
 """
 import importlib.util
 import json
+import re
 import os
 import shutil
 import stat
@@ -560,6 +561,8 @@ var annXO = false;
 var ANN_XO_SCROLL = {scrollX: 0, scrollY: 0};
 function annResolve(c, doc) { return c.el === undefined ? {contains: () => false} : c.el; }
 function annStageRect(el) { return RECTS[el.name] || {left: 10, top: 10, width: 100, height: 50}; }
+function annIntrinsic(el) { return el.nat || null; }
+function annContentBox(el) { return el.box || annStageRect(el); }
 var annFrame = {contentDocument: {defaultView: {scrollX: 0, scrollY: 0}}};
 function shotDirPath() { return Promise.resolve("/tmp/fr/shots"); }
 """
@@ -612,6 +615,40 @@ annotations = [a, b];
                              {"x": 300, "y": 400, "label": "B"}]
     assert out["marks"] == {"a": True, "b": True}
     assert out["clean"] == [True, True]
+
+
+def test_an_image_click_badges_the_clicked_pixel_not_the_box_center(html):
+    """A note on an image/canvas stored iu/iv — fractions of the painted
+    content box — and the on-page pin marks that spot, so the burned-in badge
+    must name the same pixel (Bugbot, #661). Center is only for element notes
+    that carry no fractional click."""
+    out = _capture(html, """
+const a = {id: "a", label: "A", iu: 0.25, iv: 0.5,
+           el: {name: "a", contains: () => false, nat: {w: 400, h: 300},
+                box: {left: 100, top: 40, width: 200, height: 150}}};
+RECTS.a = {left: 0, top: 0, width: 800, height: 600};
+annotations = [a];
+(async () => {
+  const r = await annCaptureOverview([a]);
+  console.log(JSON.stringify({badges: LAST_ENCODE.badges, marks: r.marks}));
+})();
+""")
+    assert out["badges"] == [{"x": 150, "y": 115, "label": "A"}], \
+        "iu/iv against the CONTENT box, not the element box center"
+    assert out["marks"] == {"a": True}
+
+
+def test_the_viewer_stacks_over_the_sent_popup_and_escape_peels_in_order(html):
+    """The popup's overview thumb opens the full-size viewer, so the viewer
+    must land ON TOP (its z-index above the popup's) and Escape must close the
+    viewer first, the popup second (Bugbot, #661)."""
+    view_z = int(re.search(r"#shotview \{[^}]*z-index: (\d+)", html).group(1))
+    pop_z = int(re.search(r"#sentpop \{[^}]*z-index: (\d+)", html).group(1))
+    assert pop_z < view_z, "the viewer must not open BEHIND the popup"
+    handler = _between(html, 'if (e.key !== "Escape" || sentPop.hidden) return;',
+                       "}, true);")
+    assert "if (!shotView.hidden) shotViewClose();" in handler
+    assert "else sentPopClose();" in handler
 
 
 def test_an_overview_that_encoded_as_webp_is_uploaded_under_a_webp_name(html):

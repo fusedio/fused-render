@@ -880,7 +880,9 @@
   #shotview-note:empty { display: none; }
 
   /* ── the "what was sent" popup: same overlay family as the viewer ─────── */
-  #sentpop { position: fixed; inset: 0; z-index: 1000;
+  /* Below the screenshot viewer (90): the popup's overview thumb opens the
+     viewer, which must land ON TOP of the popup or the click looks dead. */
+  #sentpop { position: fixed; inset: 0; z-index: 80;
              display: flex; align-items: center; justify-content: center; }
   #sentpop[hidden] { display: none; }
   #sentpop-scrim { position: absolute; inset: 0; background: var(--scrim); }
@@ -6244,17 +6246,15 @@ annBtn.addEventListener("click", () => (annRecOn ? annRecEnd() : annSetMode(!ann
 // Done: the typed-comment mode's exit that also delivers. A composer still
 // open with words in it is committed FIRST — Done means "send what I said",
 // and the mousedown exemption above is what kept that draft alive this far —
-// through the same annCommit the Enter key uses (save, crop, auto-send).
-// Then any notes the auto-send guards left pending (a turn in flight, a
-// typed draft the prefill refused to touch) flush with the same
-// prefill-and-submit, and the mode goes away.
+// through the same annCommit the Enter key uses (save, auto-send). Then any
+// notes the auto-send guard left pending (a turn was in flight) flush with a
+// bare auto-submit — the notes ARE the content, nothing is seeded — and the
+// mode goes away.
 //
-// One at a time (Bugbot, PR #664): annCommit's await spans a point note's
-// save-time crop, and annCloseComposer has already run by then — a second
-// Done click landing in that window would see no open composer, read the
-// just-saved note as merely pending, and auto-send it before its `shot` is
-// filled. The guard makes the second click a no-op; the first call's own
-// flush and disarm are seconds away at worst.
+// One at a time (Bugbot, PR #664): annCommit's await could span a second
+// Done click, which would see no open composer, read the just-saved note as
+// merely pending, and send it a second time. The guard makes the second
+// click a no-op; the first call's own flush and disarm are moments away.
 let annDoneBusy = false;
 async function annDone() {
   if (annDoneBusy) return;
@@ -6264,7 +6264,7 @@ async function annDone() {
       await annCommit();
     }
     const pending = annotations.some((a) => a.content && !a.sent);
-    if (pending && !sending && annPrefillComposer()) annAutoSubmit();
+    if (pending && !sending) annAutoSubmit();
     annSetMode(false);
   } finally {
     annDoneBusy = false;
@@ -6607,7 +6607,13 @@ async function annRecEnd() {
       const c = annotations.find((a) => a.id === id);
       return c && c.content && !c.sent;
     });
-    if ((spoke || intro) && !sending) { annPrefillComposer(intro); annAutoSubmit(); }
+    // The intro is seeded even when a live run blocks the auto-send: the words
+    // wait in the composer (beside the pending notes) and ride the user's next
+    // send, instead of evaporating because the walkthrough ended mid-turn.
+    if (spoke || intro) {
+      annPrefillComposer(intro);
+      if (!sending) annAutoSubmit();
+    }
   } catch (err) {
     console.warn("spoken annotation transcription failed:", err.message);
   } finally {
@@ -8127,8 +8133,16 @@ async function annCaptureOverview(pending, deadline) {
           + "message was sent (the app may have re-rendered since)";
         continue;
       }
-      const r = annStageRect(el);
-      pt = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      // Same spot the pin painter marks: an image/canvas click stored iu/iv
+      // (fractions of the painted content box) and the badge must name that
+      // pixel, not the box center — center is only for plain element notes.
+      if (c.iu != null && c.iv != null && annIntrinsic(el)) {
+        const b = annContentBox(el);
+        pt = { x: b.left + c.iu * b.width, y: b.top + c.iv * b.height };
+      } else {
+        const r = annStageRect(el);
+        pt = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
     }
     if (!pt || pt.x < 0 || pt.y < 0 || pt.x > pane.width || pt.y > pane.height) {
       marks[c.id] = "the spot was scrolled out of the visible pane when this "
@@ -8740,7 +8754,13 @@ function sentPopClose() { sentPop.hidden = true; }
 document.getElementById("sentpop-close").onclick = sentPopClose;
 document.getElementById("sentpop-scrim").onclick = sentPopClose;
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !sentPop.hidden) { e.stopPropagation(); sentPopClose(); }
+  if (e.key !== "Escape" || sentPop.hidden) return;
+  e.stopPropagation();
+  // The viewer stacks over the popup (opened from its overview thumb), so it
+  // is the topmost layer and Escape peels it first; the next press gets here
+  // again and closes the popup.
+  if (!shotView.hidden) shotViewClose();
+  else sentPopClose();
 }, true);
 
 // The receipt's door into the popup: every comment row opens it. No separate
