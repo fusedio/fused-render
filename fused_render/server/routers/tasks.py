@@ -1079,12 +1079,21 @@ def _place(task: dict) -> None:
     The project is the transcript's own `cwd` where there is one — the encoded
     directory name is lossy (Claude Code turns literal hyphens into separators
     too), so it is only the fallback — and otherwise the folder of whatever the
-    scheduled message was pointed at."""
+    scheduled message was pointed at.
+
+    The target, for a chat with no scheduled entry, prefers the FILE the chat's
+    pane was on (`tasks_store.head`'s fourth answer, read out of the
+    `<live-app-state>` block) over the project folder: opening the task should
+    land where the user was actually looking. A scheduled entry's own target
+    still wins — it is the thing the job was pointed at — and a pane file that
+    no longer exists on disk falls back to the folder rather than opening a
+    view of nothing."""
     cwd = None
     first_ts = None
     prompt = ""
+    pane = ""
     if task["path"]:
-        cwd, first_ts, prompt = tasks_store.head(task["path"])
+        cwd, first_ts, prompt, pane = tasks_store.head(task["path"])
     task["first_prompt"] = prompt
     entries = task["entries"]
     target = str(entries[-1].get("target") or "") if entries else ""
@@ -1093,7 +1102,8 @@ def _place(task: dict) -> None:
             sessions._decode_project_dir(os.path.basename(os.path.dirname(
                 task["path"]))) if task["path"] else "")
     task["project"] = tasks_store.project_of(cwd or "")
-    task["target"] = target or task["project"]
+    task["target"] = target or (
+        pane if pane and os.path.isfile(pane) else task["project"])
     if first_ts is None and entries:
         first_ts = (tasks_store.epoch(entries[0].get("created"))
                     or _entry_at(entries[0]))

@@ -91,6 +91,7 @@ import json
 import os
 import re
 import time
+import urllib.parse
 from datetime import datetime, timezone
 
 try:
@@ -539,9 +540,9 @@ def mark_deleted(key: str, now: float | None = None) -> None:
 # is what makes `backfill()` cheap enough to run at startup on a machine with a
 # few thousand sessions.
 
-# path -> (size_at_parse, cwd, first_ts, first_prompt). Same cache shape, and
-# the same append-only reasoning, as claude_sessions._HEAD_CACHE.
-_HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str]] = {}
+# path -> (size_at_parse, cwd, first_ts, first_prompt, pane_file). Same cache
+# shape, and the same append-only reasoning, as claude_sessions._HEAD_CACHE.
+_HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str, str]] = {}
 
 _HEAD_CHARS = 256 * 1024
 _HEAD_LINES = 2000
@@ -748,10 +749,68 @@ def slash_command(text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def _parse_head(path: str) -> tuple[str | None, float | None, str]:
+# ------------------------------------------------ pane file on a user record
+#
+# The `<live-app-state>` block the Claude page prepends to a send carries the
+# pane's own URL (`"url": "/render?path=<file>"`), and that URL is the only
+# durable record of WHICH FILE a chat was opened on: the transcript's `cwd` is
+# always a folder (agent.py:_workdir resolves a file target to its directory
+# before Claude Code ever sees it), and the per-file sidecar is on its way out
+# (D335). Reading the path back out of the block is what lets "open this task"
+# land on the file the user was actually looking at instead of its folder. A
+# chat with no block ever — a folder chat, a terminal session — has no pane,
+# and for those the folder IS the right answer, so "" here is not a failure.
+_APP_STATE_LEAD = re.compile(r"<live-app-state>(.*?)</live-app-state>",
+                             re.DOTALL)
+
+
+def pane_file(text: str) -> str:
+    """The file the LEADING `<live-app-state>` block says the pane was on,
+    or "". Anchored like every machinery matcher here (`_LEADING_BLOCK`),
+    because only a leading block is machinery — the tag further in may be
+    something a human typed. The state is prose followed by one JSON object,
+    so the object is cut from first `{` to last `}` and parsed properly
+    rather than regexed; a title containing `"url":` must not win.
+
+    Three answers, in order of honesty. `entry` is the state's own name for
+    the document the pane is about (template.html `appEntry`) and wins
+    outright. The url is the fallback for older blocks — and there the
+    `_file` param must beat `path`, because a templated preview's url is
+    `/render?path=<template>&_file=<file>`: `path` names OUR template, which
+    exists on disk and would sail through the caller's isfile check as the
+    target of somebody's chat about their own parquet file."""
+    match = _APP_STATE_LEAD.match((text or "").lstrip())
+    if not match:
+        return ""
+    blob = match.group(1)
+    start, end = blob.find("{"), blob.rfind("}")
+    if start == -1 or end <= start:
+        return ""
+    try:
+        state = json.loads(blob[start:end + 1])
+    except ValueError:
+        return ""
+    if not isinstance(state, dict):
+        return ""
+    entry = state.get("entry")
+    if isinstance(entry, str) and entry:
+        return entry
+    url = state.get("url")
+    if not isinstance(url, str):
+        return ""
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+    for key in ("_file", "path"):
+        values = query.get(key)
+        if values and values[0]:
+            return values[0]
+    return ""
+
+
+def _parse_head(path: str) -> tuple[str | None, float | None, str, str]:
     cwd: str | None = None
     first_ts: float | None = None
     prompt = ""
+    pane = ""
     chars = 0
     count = 0
     try:
@@ -786,6 +845,15 @@ def _parse_head(path: str) -> tuple[str | None, float | None, str]:
                         and not obj.get("isMeta") and not obj.get("isSidechain")):
                     msg = obj.get("message")
                     if isinstance(msg, dict) and msg.get("role") == "user":
+                        raw = first_text(msg.get("content"))
+                        # The pane file rides the same records the prompt is
+                        # searched in, and stops with it: the first send from
+                        # a pane carries both the block and the words, so by
+                        # the time the prompt resolves the pane has had its
+                        # chance. Scanning on after that would trade a bounded
+                        # head read for a full one on every pane-less chat.
+                        if not pane:
+                            pane = pane_file(raw)
                         # STRIPPED, not raw: the fused-render Claude page
                         # prepends its own blocks to what the user typed, and
                         # the raw text is how rows came to be titled
@@ -794,37 +862,42 @@ def _parse_head(path: str) -> tuple[str | None, float | None, str]:
                         # user record, because a blank title while the message
                         # that could have named the row sits two lines further
                         # down is the same bug from the other side.
-                        prompt = strip_machinery(first_text(msg.get("content")))
+                        prompt = strip_machinery(raw)
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:
-        return None, None, ""
-    return cwd, first_ts, prompt
+        return None, None, "", ""
+    return cwd, first_ts, prompt, pane
 
 
-def head(path: str, size: int | None = None) -> tuple[str | None, float | None, str]:
-    """(cwd, first timestamp, first user prompt) for one transcript, cached per
-    path. Transcripts are append-only, so a head that resolved fully stays
-    valid however much the file grows; an incomplete one is retried once the
-    file has more to offer, and a file that shrank was replaced."""
+def head(path: str, size: int | None = None,
+         ) -> tuple[str | None, float | None, str, str]:
+    """(cwd, first timestamp, first user prompt, pane file) for one
+    transcript, cached per path. Transcripts are append-only, so a head that
+    resolved fully stays valid however much the file grows; an incomplete one
+    is retried once the file has more to offer, and a file that shrank was
+    replaced. The pane file is deliberately absent from the completeness
+    test: a chat with no `<live-app-state>` block has none to find, and
+    re-reading it on every append to keep looking would never pay for
+    itself."""
     if size is None:
         try:
             size = os.path.getsize(path)
         except OSError:
-            return None, None, ""
+            return None, None, "", ""
     cached = _HEAD_CACHE.get(path)
     if cached is not None:
-        cached_size, cwd, first_ts, prompt = cached
+        cached_size, cwd, first_ts, prompt, pane = cached
         complete = bool(prompt) and first_ts is not None and cwd is not None
         if cached_size == size or (size > cached_size and complete):
             if size != cached_size:
-                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt)
-            return cwd, first_ts, prompt
+                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane)
+            return cwd, first_ts, prompt, pane
     if len(_HEAD_CACHE) > 20000:  # unbounded only if the user has 20k sessions
         _HEAD_CACHE.clear()
-    cwd, first_ts, prompt = _parse_head(path)
-    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt)
-    return cwd, first_ts, prompt
+    cwd, first_ts, prompt, pane = _parse_head(path)
+    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane)
+    return cwd, first_ts, prompt, pane
 
 
 def project_of(cwd: str) -> str:
@@ -867,7 +940,7 @@ def backfill(projects_dir: str | None = None) -> dict[str, str]:
             size = os.path.getsize(path)
         except OSError:
             continue  # vanished mid-walk: costs that one session, not the walk
-        cwd, first_ts, _prompt = head(path, size)
+        cwd, first_ts, _prompt, _pane = head(path, size)
         if not cwd:
             continue
         session_id = os.path.splitext(os.path.basename(path))[0]

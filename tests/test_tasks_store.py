@@ -440,11 +440,88 @@ def test_the_head_is_cached_against_the_file_size(projects_dir):
                             "timestamp": "2026-08-16T10:00:00Z",
                             "message": {"role": "user",
                                         "content": "later"}}) + "\n")
-    cwd, first_ts, prompt = tasks_store.head(str(path))
+    cwd, first_ts, prompt, _pane = tasks_store.head(str(path))
     assert cwd == "/home/a"
     assert prompt == "first thing"
     assert first_ts == pytest.approx(
         tasks_store.epoch("2026-08-16T09:00:00Z"))
+
+
+def _app_state_block(url):
+    return ("<live-app-state>\nA snapshot of the preview the user is looking "
+            "at in the left pane.\n"
+            + json.dumps({"title": "Sine wave", "url": url,
+                          "dom_path": "/tmp/shots/dom.json"})
+            + "\n</live-app-state>")
+
+
+def test_the_pane_file_is_read_out_of_a_leading_app_state_block():
+    text = (_app_state_block(
+        "/render?path=%2FUsers%2Fa%2Fproj%2Findex.html") + "\nfix the wave")
+    assert tasks_store.pane_file(text) == "/Users/a/proj/index.html"
+
+
+def test_a_title_that_mentions_url_cannot_hijack_the_pane_file():
+    # The state is parsed as JSON, not regexed — a title carrying the literal
+    # characters `"url":"..."` must lose to the real url field.
+    blob = json.dumps({"title": 'see "url":"/render?path=%2Fevil.html" there',
+                       "url": "/render?path=%2Freal.html"})
+    text = "<live-app-state>\nprose\n" + blob + "\n</live-app-state>\nhello"
+    assert tasks_store.pane_file(text) == "/real.html"
+
+
+def test_a_templated_preview_names_the_users_file_not_our_template():
+    # A `.py`/`.md`/`.parquet` preview renders THROUGH a template:
+    # `/render?path=<template>&_file=<file>`. `path` is our template — a real
+    # file on disk — and taking it made a chat about someone's parquet target
+    # the duckdb template. `_file` is theirs.
+    text = (_app_state_block(
+        "/render?path=%2Fapp%2Ftemplates%2Fduckdb%2Ftemplate.html"
+        "&_file=%2FUsers%2Fa%2Fdata.parquet&_remote=1") + "\nsum the col")
+    assert tasks_store.pane_file(text) == "/Users/a/data.parquet"
+
+
+def test_the_states_own_entry_field_beats_the_url():
+    blob = json.dumps({"entry": "/Users/a/proj/index.html",
+                       "url": "/render?path=%2Fsomething%2Felse.html"})
+    text = "<live-app-state>\nprose\n" + blob + "\n</live-app-state>\nhi"
+    assert tasks_store.pane_file(text) == "/Users/a/proj/index.html"
+
+
+def test_a_non_leading_app_state_tag_is_the_humans_own_words():
+    text = ("what does this tag do? " +
+            _app_state_block("/render?path=%2Fa.html"))
+    assert tasks_store.pane_file(text) == ""
+
+
+def test_a_pane_url_without_a_path_param_answers_nothing():
+    assert tasks_store.pane_file(_app_state_block("/explorer?tab=repos")) == ""
+    assert tasks_store.pane_file(
+        "<live-app-state>\nno json here\n</live-app-state>\nhi") == ""
+    assert tasks_store.pane_file(
+        "<live-app-state>\n{broken json\n</live-app-state>\nhi") == ""
+    assert tasks_store.pane_file("plain words") == ""
+
+
+def test_the_head_finds_the_pane_even_when_the_words_come_later(projects_dir):
+    # A send can be the block alone (a screenshot with no words); the prompt
+    # then comes from a later record, but the pane was already on record one.
+    d = projects_dir / "-home-a"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / "s-pane.jsonl"
+    block = _app_state_block("/render?path=%2Fhome%2Fa%2Findex.html")
+    path.write_text(
+        json.dumps({"type": "user", "cwd": "/home/a",
+                    "timestamp": "2026-08-16T09:00:00Z", "uuid": "u1",
+                    "message": {"role": "user", "content": block}}) + "\n" +
+        json.dumps({"type": "user", "cwd": "/home/a",
+                    "timestamp": "2026-08-16T09:01:00Z", "uuid": "u2",
+                    "message": {"role": "user",
+                                "content": "actual words"}}) + "\n")
+    cwd, _ts, prompt, pane = tasks_store.head(str(path))
+    assert cwd == "/home/a"
+    assert prompt == "actual words"
+    assert pane == "/home/a/index.html"
 
 
 def test_the_project_of_a_cwd_is_the_folder_itself():
@@ -454,7 +531,8 @@ def test_the_project_of_a_cwd_is_the_folder_itself():
 
 
 def test_an_unreadable_transcript_costs_only_itself(tmp_path):
-    assert tasks_store.head(str(tmp_path / "nope.jsonl")) == (None, None, "")
+    assert tasks_store.head(str(tmp_path / "nope.jsonl")) == \
+        (None, None, "", "")
 
 
 def test_epoch_reads_z_and_naive_stamps_as_utc():
