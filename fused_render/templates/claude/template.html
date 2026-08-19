@@ -6214,13 +6214,27 @@ annBtn.addEventListener("click", () => (annRecOn ? annRecEnd() : annSetMode(!ann
 // Then any notes the auto-send guards left pending (a turn in flight, a
 // typed draft the prefill refused to touch) flush with the same
 // prefill-and-submit, and the mode goes away.
+//
+// One at a time (Bugbot, PR #664): annCommit's await spans a point note's
+// save-time crop, and annCloseComposer has already run by then — a second
+// Done click landing in that window would see no open composer, read the
+// just-saved note as merely pending, and auto-send it before its `shot` is
+// filled. The guard makes the second click a no-op; the first call's own
+// flush and disarm are seconds away at worst.
+let annDoneBusy = false;
 async function annDone() {
-  if (annPop.style.display === "block" && annTa.value.trim()) {
-    await annCommit();
+  if (annDoneBusy) return;
+  annDoneBusy = true;
+  try {
+    if (annPop.style.display === "block" && annTa.value.trim()) {
+      await annCommit();
+    }
+    const pending = annotations.some((a) => a.content && !a.sent);
+    if (pending && !sending && annPrefillComposer()) annAutoSubmit();
+    annSetMode(false);
+  } finally {
+    annDoneBusy = false;
   }
-  const pending = annotations.some((a) => a.content && !a.sent);
-  if (pending && !sending && annPrefillComposer()) annAutoSubmit();
-  annSetMode(false);
 }
 // Annotate mode is OFF by default: reading the pane is the common case and an
 // armed comment layer swallows the clicks that reading needs, so only an

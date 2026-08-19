@@ -204,6 +204,11 @@ def test_done_flushes_pending_notes_before_disarming(html):
     prefill-and-submit, then the mode goes away."""
     body = _block(html, "async function annDone()", "\n}\n")
     assert "await annCommit();" in body
+    # one at a time: annCommit's await spans the point-crop, and a second
+    # Done click in that window would auto-send the note before its shot is
+    # filled (Bugbot, PR #664) — the guard makes it a no-op
+    assert "if (annDoneBusy) return;" in body
+    assert "annDoneBusy = false;" in body
     assert "a.content && !a.sent" in body
     assert "if (pending && !sending && annPrefillComposer()) annAutoSubmit();" in body
     assert "annSetMode(false);" in body
