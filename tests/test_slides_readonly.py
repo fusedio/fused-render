@@ -2,7 +2,7 @@
 
 slides.py is a runPython target (not a package module) that does `import engine`
 at module top; engine.py needs python-pptx, which isn't in the test venv. So —
-like test_annotate_comments.py — slides.py is loaded via importlib, but with a
+like test_annotate_revert.py — slides.py is loaded via importlib, but with a
 stub `engine` module injected into sys.modules first. Every gated path must
 raise BEFORE any engine call, so the stub's build/parse functions raise if
 touched: the tests prove both the PermissionError and the ordering.

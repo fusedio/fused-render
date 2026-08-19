@@ -6679,7 +6679,7 @@ world from one the user typed.
 - **SCH-9** **One copy of the spawn discipline** (`fused_render/claude_spawn.py`).
   The apps API and the scheduler need the identical posix_spawn posture — calling
   `agent._start` in the server process fork()s with libproj resident and SIGSEGVs
-  the child before exec — plus the same poll that gets a run into its sidecar.
+  the child before exec — plus the same poll that records a run's session id.
   Extracted rather than duplicated, because that reasoning is the kind that gets
   paraphrased into something false on the second telling.
 - **SCH-10** **Two surfaces, because nobody is looking when it happens.** This is
@@ -6727,7 +6727,7 @@ world from one the user typed.
   - **SCH-10d** **The watcher wraps the recorder, it does not replace it.**
     `record_session_when_ready` gained an optional `on_tick` observer (called
     before its `done` check, since that final tick is where the outcome is), whose
-    exceptions are swallowed: the sidecar write and the commit must happen whether
+    exceptions are swallowed: the session-id record and the commit must happen whether
     or not anything is watching, so an observer is never allowed to abandon a run.
     Every report is best-effort — a registry that refuses a field must not cost a
     message its send.

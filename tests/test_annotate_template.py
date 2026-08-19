@@ -17,8 +17,9 @@ tests used to be — and the handoff as a whole is now unreachable twice over
 longer resolves). What is left pins annotate's own source, which still holds the
 review model worth keeping.
 
-The sidecar writer next door has its own behavioural tests
-(tests/test_annotate_comments.py).
+The comment store those tests also covered is gone outright (D359): comments
+live in the URL and nowhere else, so annotate.py's behavioural tests are the
+revert ones next door (tests/test_annotate_revert.py).
 """
 import json
 import os

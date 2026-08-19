@@ -1727,11 +1727,11 @@ def _commit_turn(file: str, message: str) -> None:
             encoding="utf-8", errors="replace")
 
     try:
-        # Legacy defense (D83-reversal, D205): sidecars now live under
-        # home_dir()/sidecar/, never inside the app dir, so a fresh repo never
-        # grows one of these files — but a repo from before the relocation may
-        # still have an old co-located sidecar sitting in its tree, and this
-        # sweep's add -A would commit it into app history. Mirror
+        # Legacy defense: nothing writes these files any more — the sidecar
+        # they belonged to is deleted outright (D359), and it had already moved
+        # out of the app dir before that (D83-reversal, D205) — but a repo from
+        # either era may still have one sitting in its tree, and this sweep's
+        # add -A would commit it into app history. Mirror
         # app_git._ensure_excludes: append missing patterns to the repo-local
         # .git/info/exclude (never the user's .gitignore). Keep the pattern
         # list in step with app_git._GITIGNORE.

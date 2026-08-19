@@ -445,7 +445,7 @@ def test_a_run_is_named_by_the_chat_it_came_from_when_that_is_known(source):
     assert "const title = sessionTitle(s);" in recent
     assert "snapNames.set(s.id, title)" in recent
     # Populated BEFORE the no-sessions early return: a file can have chains in the
-    # store and nothing in its sidecar, and vice versa.
+    # store and no transcript on disk, and vice versa.
     assert recent.index("snapNames.set") < recent.index("if (!sessions.length)")
     assert 'row.querySelector(".row-title").textContent = sessionTitle(s);' in source
 
@@ -461,8 +461,8 @@ def test_a_run_is_named_by_the_chat_it_came_from_when_that_is_known(source):
     head = source[source.index("function snapRunHead(run)"):]
     head = head[: head.index("\n}")]
     # A miss is ordinary, not a bug: the store records every Claude Code session
-    # that touched the file, including terminal ones that were never in the
-    # sidecar. Fallback says only what is certain, and the short id is what
+    # that touched the file, including terminal ones the page never named.
+    # Fallback says only what is certain, and the short id is what
     # distinguishes two unnamed chains.
     assert 'name.textContent = known || "chat";' in head
     assert 'run.session.slice(0, 8)' in head

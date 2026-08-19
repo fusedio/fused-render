@@ -1,7 +1,7 @@
 """Read-only-file contract for the excel template (SPEC §13.5).
 
 reader.py is a runPython target, not a package module, so — like
-test_annotate_comments.py — these load it via importlib and drive its
+test_annotate_revert.py — these load it via importlib and drive its
 functions directly against tmp_path files.
 
 Under test:
