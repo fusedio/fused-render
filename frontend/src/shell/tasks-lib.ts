@@ -35,8 +35,15 @@
 // status is re-derived, no lane membership is re-decided (taskColumn still asks
 // the server), and every key is a time the server itself sent.
 import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
-import { BOARD_COLUMNS, explorerUrl, isProjected, turnPhase } from "./schedule-lib";
-import type { BoardColumn } from "./schedule-lib";
+import {
+  BOARD_COLUMNS,
+  explorerUrl,
+  isProjected,
+  runStatus,
+  taskStatus,
+  turnPhase,
+} from "./schedule-lib";
+import type { BoardColumn, RunStatus } from "./schedule-lib";
 
 // How many messages the LISTING carries per task — the server's window, not a
 // display cap: an expanded task draws every message it has (there is no Show more
@@ -2765,6 +2772,51 @@ export function isRunningNow(task: Task, m: TaskMessage): boolean {
  */
 export function isRunningIn(task: Task, messages: TaskMessage[]): boolean {
   return messages.some((m) => isRunningNow(task, m));
+}
+
+/**
+ * The calendar popover header's PILL, in the app's five words (Akshil,
+ * 2026-08-19).
+ *
+ * Two different nouns, depending on what kind of task was clicked:
+ *
+ * A ONE-OFF is its task — one run, so "the task's status" and "this
+ * occurrence's status" are the same fact, and the pill keeps saying exactly
+ * what the List's row and the Board's card say: `taskStatus(taskColumn, failed)`.
+ *
+ * A REPEATING task is a rule, and a rule's task-level column is nearly always
+ * `upcoming` — the next run is always scheduled — which made the pill useless
+ * on the one grid that is ABOUT individual days: click last Tuesday's failed
+ * run and the pill said "Upcoming". So for a recurring task the pill answers
+ * for the clicked OCCURRENCE instead:
+ *
+ *   - actually working right now  -> In Progress (`live`, the isRunningIn
+ *     reading the chip's own shimmer uses — same rule, same moment);
+ *   - a projected/future day      -> Upcoming (cron arithmetic, or a
+ *     materialized run that has not gone yet — runStatus says Upcoming for
+ *     those too, so both future arms land on the same word);
+ *   - a past day                  -> that day's outcome, from the NEWEST real
+ *     run on the day (`runStatus` + `messageTone`, the exact pair the thread
+ *     rows under the pill are painted with, so the pill can never disagree
+ *     with the top row it summarizes). Ghost rows are cron math, never an
+ *     outcome, and are filtered before "newest" is asked.
+ *
+ * Always SOLID: whatever the word, the pill never inherits the projected
+ * chip's dashes — a status is a word, not a drawing of a day.
+ */
+export function popoverPill(
+  task: Task,
+  recurring: boolean,
+  projected: boolean,
+  live: boolean,
+  dayMessages: TaskMessage[],
+): RunStatus {
+  if (!recurring) return taskStatus(taskColumn(task), task.failed);
+  if (live) return taskStatus("in_progress", false);
+  const real = dayMessages.filter((m) => !isProjected(m));
+  if (projected || real.length === 0) return taskStatus("upcoming", false);
+  const newest = real.reduce((a, b) => (b.at > a.at ? b : a));
+  return runStatus(newest, messageTone(newest));
 }
 
 // ---- the sidebar's two-number summary of this page ----------------------------

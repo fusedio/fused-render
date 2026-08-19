@@ -67,6 +67,7 @@ import {
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
+  popoverPill,
   parseLaneChoices,
   parseListMemory,
   projectOptions,
@@ -1724,6 +1725,68 @@ const REDUCED_MOTION_CSS = readFileSync(
   join(SHELL, "../styles/reduced-motion.css"),
   "utf8",
 );
+
+describe("the calendar popover's slim rows", () => {
+  // 2026-08-19 (Akshil). The popover was carrying four things per occurrence —
+  // ring, time, the body's first line, a queue/late note — plus a per-row
+  // skip/cancel button and a ↻ in the header. A row is ring + time now, and
+  // these pins hold each removal so a well-meaning "restore the preview" edit
+  // has to argue with the design rather than just re-typing a className. The
+  // stylesheets are read stripped of comments: each mark's history is
+  // deliberately still written down where its rule used to live.
+  const css = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "");
+
+  it("prints no message body and no note in the row's ink", () => {
+    // The body was most often the panel's own title echoed; the note's words
+    // still exist — schedule-lib.msgNote feeds the row's title tooltip — so
+    // msgNote must stay CALLED even though its class is gone from the markup.
+    expect(CALENDAR).not.toContain('"schedule-cal-msg-body"');
+    expect(CALENDAR).not.toContain('"schedule-cal-msg-note"');
+    expect(CALENDAR).toContain("msgNote(m, kind)");
+    expect(CALENDAR).toMatch(/title=\{\[t\.toLocaleString\(\), status\.label, note\]/);
+    for (const src of [SCHEDULE_CSS, TASKS_CSS]) {
+      expect(css(src)).not.toContain("schedule-cal-msg-body");
+      expect(css(src)).not.toContain("schedule-cal-msg-note");
+    }
+  });
+
+  it("offers no per-row skip/cancel, and no held spinner standing in for one", () => {
+    // "let us hide skip for now." The spinner's only argument was holding the
+    // button's 24px box so the row did not jump queued → sending — no button,
+    // no box. The row's one press is the row itself, which must survive.
+    expect(CALENDAR).not.toContain("schedule-cal-msg-act");
+    expect(CALENDAR).not.toContain('"schedule-cal-msg-held"');
+    expect(CALENDAR).not.toContain("ICON_STARTING");
+    expect(CALENDAR).toContain('className={"schedule-cal-msg-open"');
+    for (const src of [SCHEDULE_CSS, TASKS_CSS]) {
+      expect(css(src)).not.toContain("schedule-cal-msg-act");
+      expect(css(src)).not.toContain("schedule-cal-msg-held");
+    }
+  });
+
+  it("says the recurrence and the folder as ONE muted line, not icon rows", () => {
+    // "Every 2 weeks on Monday · /path/to/folder" — the separator is markup, so
+    // it can be omitted when either side is absent, and the header's ↻ is gone
+    // because this line already says it in words.
+    expect(CALENDAR).toContain('className="schedule-pop-meta"');
+    expect(CALENDAR).not.toContain("schedule-pop-rows");
+    expect(CALENDAR).not.toContain("schedule-cal-pop-rep");
+    expect(CALENDAR).not.toContain("ICON_REPEAT");
+    expect(css(SCHEDULE_CSS)).not.toContain("schedule-cal-pop-rep");
+    expect(css(SCHEDULE_CSS)).toContain(".schedule-pop-meta");
+  });
+
+  it("keeps the thread as one continuous list under the one day header", () => {
+    // "Earlier in this thread" was a second labelled block; with rows slimmed
+    // to ring + time the label outweighed what it introduced. The day split
+    // itself survives in threadForDay (tested in schedule-lib.test.ts) and in
+    // the ink: the day's rows print clock times, the rest print dates.
+    expect(CALENDAR).not.toContain("Earlier in this thread");
+    expect(CALENDAR).toMatch(
+      /\{today\.map\(\(m\) => row\(m, true\)\)\}\s*\{rest\.map\(\(m\) => row\(m, false\)\)\}/,
+    );
+  });
+});
 
 describe("laneUnread", () => {
   const withUnread = (n: number, key: string) =>
@@ -6267,5 +6330,83 @@ describe("isRunningIn", () => {
     const CAL = readFileSync(join(SHELL, "ScheduleCalendar.tsx"), "utf8");
     expect(CAL).toContain('isRunningIn(chip.task, chip.messages) ? " is-running" : ""');
     expect(CAL).not.toContain("isRunningNow(chip.task, chip.anchor)");
+  });
+});
+
+// ---- the popover header's pill --------------------------------------------------
+// Akshil, 2026-08-19: a one-off's pill is its task; a REPEATING task's pill is
+// the clicked OCCURRENCE — In Progress while it works, Upcoming for a future or
+// projected day, a past day's own outcome otherwise. And never dashed: solid in
+// every state, because the pill is a word about status, not a drawing of a day.
+describe("popoverPill", () => {
+  const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const done = msg({
+    message_id: "MSG-001", at: at("2026-08-15T09:00:00"),
+    ran_at: at("2026-08-15T09:00:00"), state: "sent", turn: "done",
+  });
+  const broke = msg({
+    message_id: "MSG-002", at: at("2026-08-15T14:00:00"),
+    ran_at: at("2026-08-15T14:00:00"), state: "error", turn: "done",
+  });
+  const ghost = msg({
+    message_id: "GHOST-2026-08-20T09:00:00",
+    at: at("2026-08-20T09:00:00"), ran_at: 0, state: "pending",
+  });
+
+  it("a ONE-OFF keeps saying what the List's row and the Board's card say", () => {
+    const t = task({ status: "done", failed: false });
+    expect(popoverPill(t, false, false, false, t.messages)).toMatchObject({
+      label: "Done", column: "done",
+    });
+    // failed folds into the column, exactly as StatusIcon reads it...
+    const f = task({ status: "done", failed: true });
+    expect(popoverPill(f, false, false, false, f.messages).label).toBe("Failed");
+    // ...and the day's contents cannot move a one-off's word: it IS its task.
+    expect(popoverPill(t, false, false, false, [broke]).label).toBe("Done");
+  });
+
+  it("a REPEATING task answers for the clicked day, not for the rule", () => {
+    // The rule's task-level column is upcoming — the next run always is — which
+    // is exactly why the task-level word was useless on a grid about days.
+    const rule = task({ status: "upcoming", messages: [done, broke] });
+    // A past day whose NEWEST real run broke: Failed, matching the top row
+    // below — order of the hand-over must not matter.
+    expect(popoverPill(rule, true, false, false, [done, broke]).label).toBe("Failed");
+    expect(popoverPill(rule, true, false, false, [broke, done]).label).toBe("Failed");
+    // A day that ended clean: Done.
+    expect(popoverPill(rule, true, false, false, [done]).label).toBe("Done");
+    // A projected day is cron arithmetic: Upcoming — and so is a day holding
+    // nothing but ghosts, whichever of the two flags arrives first.
+    expect(popoverPill(rule, true, true, false, [ghost]).label).toBe("Upcoming");
+    expect(popoverPill(rule, true, false, false, [ghost]).label).toBe("Upcoming");
+    // Working right now beats everything: the pill is the shimmer's seat.
+    expect(popoverPill(rule, true, false, true, [done, broke]).label).toBe("In Progress");
+  });
+
+  it("is solid in every state — projected never reaches the pill", () => {
+    const rule = task({ status: "upcoming", messages: [done] });
+    for (const p of [
+      popoverPill(rule, true, true, false, [ghost]),
+      popoverPill(rule, true, false, false, [done, broke]),
+      popoverPill(task({ status: "upcoming" }), false, true, false, []),
+    ]) {
+      expect(p.projected).toBe(false);
+    }
+  });
+
+  it("is what the popover actually renders, shimmer seat and all", () => {
+    const CAL = readFileSync(join(SHELL, "ScheduleCalendar.tsx"), "utf8");
+    // The pill's "running" is DAY-scoped on a rule (bugbot, 2026-08-19): the
+    // clicked chip's own occurrences, the same list the grid chip shimmers
+    // by — never the whole merged thread, which lit every day of a rule
+    // whose run was live somewhere else. One-offs keep the task-level fact.
+    expect(CAL).toContain("const liveToday = isRunningIn(task, chip.messages);");
+    expect(CAL).toContain("const pillLive = recurring ? liveToday : liveNow;");
+    // The pill comes from this function, over the day's own rows...
+    expect(CAL).toContain("popoverPill(task, recurring, chip.projected, pillLive, today)");
+    // ...the running day's pill carries the shimmer class...
+    expect(CAL).toContain('pillLive ? " is-running" : ""');
+    // ...and the dashes can no longer reach it.
+    expect(CAL).not.toContain('pill.projected ? " is-projected"');
   });
 });

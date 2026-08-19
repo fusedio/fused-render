@@ -36,6 +36,10 @@ this file is written around:
 * ``POST /api/tasks/unarchive`` — take that filing back, and nothing else: the
   work archiving cancelled stays cancelled, no run starts, and the task lands in
   whatever lane it DERIVES into rather than one a caller names. Same section.
+* ``POST /api/tasks/delete`` — take the ROW away for good: cancel the pending
+  work exactly as archive does, then tombstone the key so no listing shows it.
+  The transcript is not touched (D306) and new activity in the conversation
+  revives the row rather than running invisibly. Same section.
 
 **What a message is.** A user prompt in the transcript, or a scheduled entry.
 Those two overlap: a scheduled message that fired IS a prompt in the transcript
@@ -1008,9 +1012,54 @@ def _collect() -> dict[str, dict]:
         task["entries"].sort(key=_entry_at)
     # The drop happens HERE, once, rather than in each endpoint: the listing,
     # the full thread, the calendar window and the read endpoint all collect
-    # through this function, so a task that is no longer a task is absent from
-    # every one of them and no view has to know why.
-    return {key: task for key, task in tasks.items() if _is_task(task)}
+    # through this function, so a task that is no longer a task — or one the
+    # user deleted — is absent from every one of them and no view has to know
+    # why.
+    deleted = tasks_store.deleted_state()
+    return {key: task for key, task in tasks.items()
+            if _is_task(task) and not _deleted(task, deleted)}
+
+
+def _deleted(task: dict, deleted: dict) -> bool:
+    """Has the user deleted this task — and has nothing happened since?
+
+    The tombstone (`tasks_store.deleted_at`) carries its WHEN precisely so this
+    can be a comparison and not a verdict: the row stays gone only while the
+    tombstone is the newest thing about the task. Activity that postdates it
+    brings the row back, because the alternative is the one thing a hidden task
+    must never do — run invisibly. Two kinds of activity can postdate it:
+
+    * **an entry created after the deletion** — a message scheduled into the
+      same conversation later. `created` is the entry's own birth stamp; its
+      `due` is deliberately not read, because delete cancels pending entries
+      and a cancelled entry's future due time is not news, it is a corpse with
+      a date on it;
+    * **the transcript grew** — the user (or a run that was already in flight
+      when the delete landed, which the endpoint refuses but a race can slip)
+      said something in the session. Append-only files move their mtime for
+      exactly one reason. An unreadable mtime counts as no evidence, not as
+      revival: degrading widens nothing here because the tombstone still
+      answers, and a task wrongly hidden is recoverable while a delete that
+      silently failed is not — the endpoint's answer is the receipt.
+
+    This is `_revived` restated for a stronger filing — same promise, same
+    shape, different record.
+    """
+    at = tasks_store.deleted_at(deleted, task["key"])
+    if at <= 0:
+        return False
+    for entry in task["entries"]:
+        created = tasks_store.epoch(entry.get("created"))
+        if created is not None and created > at:
+            return False
+    path = task["path"]
+    if path:
+        try:
+            if os.path.getmtime(path) > at:
+                return False
+        except OSError:
+            pass
+    return True
 
 
 def _workdir(target: str) -> str:
@@ -1655,11 +1704,17 @@ def _read_whole_task(key: str) -> dict:
 # they end — see `_message_archived`. Nothing has to come back and finish the
 # job; the derivation simply answers differently once nothing is running.
 #
-# Deleting is still not on offer and never will be: a task IS a Claude session
-# and this app does not destroy transcripts (D306). The one place a row does
-# disappear is a task that never ran and has no session to keep — cancelling its
-# only message leaves nothing for a row to be about, which is `_is_task`'s rule
-# and predates this endpoint.
+# Deleting exists now (Akshil, 2026-08-19) and D306 still holds, because the
+# two were never actually in tension: what the user asks to delete is the ROW —
+# the task's place on the List, the Board, the calendar and the sidebar — and
+# what D306 protects is the TRANSCRIPT. So delete is archive's first half
+# (cancel the pending work, rules included) plus a TOMBSTONE in tasks_store
+# where archive writes a triage record; the transcript stays on disk, reachable
+# through Claude Code itself, and new activity in the conversation revives the
+# row (`_deleted`) rather than running behind a hidden task. A task that never
+# ran disappears the moment its work is cancelled anyway — `_is_task`'s rule,
+# older than either verb — and the tombstone is what extends that to tasks
+# that HAVE a session to keep.
 
 
 class ArchivePatch(BaseModel):
@@ -1758,6 +1813,114 @@ def api_task_unarchive(patch: UnarchivePatch):
                schedule.busy_sessions(schedule.list_entries()), [])
     return {"ok": True, "key": key, "unfiled": unfiled,
             "status": row["status"]}
+
+
+class DeletePatch(BaseModel):
+    key: str
+
+
+@router.post("/api/tasks/delete")
+def api_task_delete(patch: DeletePatch):
+    """Take the row away for good: cancel its pending work, tombstone its key.
+
+    Archive's first half — the rules first, then every pending entry, for the
+    reason documented there — and then `tasks_store.mark_deleted` where archive
+    writes triage: the tombstone is what `_collect` reads, so the task is
+    absent from the listing, the pulse, the calendar and the full thread in one
+    decision, exactly the way `_is_task` already drops shells.
+
+    THE RULES, FOUND BY WHERE THEIR NEXT RUN WOULD LAND (bugbot, 2026-08-19,
+    twice — once in each direction). Archive's `_rules_behind` reads template
+    ids off PENDING occurrences only — right for archive, whose cancelled runs
+    must not reach past the task, but blind to a live rule BETWEEN occurrences:
+    the materialiser mints lazily, so such a rule has no pending row, survives
+    the delete, and its next mint carries a `created` stamp newer than the
+    tombstone — the revival rule's front door (`_deleted`). The over-correction
+    was as wrong the other way: harvesting `template_id` off every entry
+    whatever its state cancelled a `new_task_each_run` SERIES because one of
+    its spent runs happened to be the task being deleted — a series whose
+    future runs mint into fresh sessions and were never going to touch this
+    row. So `_every_rule_behind` asks the one question that matters: would this
+    rule's next run land back ON THIS TASK? Those rules die with the row;
+    every other rule survives it, and only this task's own pending entries are
+    withdrawn.
+
+    REFUSED WHILE THE TASK IS RUNNING (409). A live turn cannot be cancelled
+    (`sending` is refused by schedule.cancel, a running job is the registry's
+    to stop), so deleting now would hide work that is still happening — a run
+    finishing into an invisible task is the exact failure the revival rule
+    exists to prevent, and the honest answer is "stop it first". The status
+    asked is the same derived row every view paints (`_row`), so this endpoint
+    cannot disagree with the pill the user is looking at.
+
+    WHAT IS AND IS NOT ERASED, in the answer as in fact: pending work is
+    cancelled (`cancelled` counts it), the row is gone everywhere, and the
+    TRANSCRIPT IS NOT TOUCHED (D306) — `erased_transcript` is always False and
+    is in the payload so the client never has to guess. The task's number is
+    likewise never reallocated (task_ids.json's "max seen plus one" rule), so
+    a deleted TASK-007 does not quietly become somebody else's name.
+    """
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    task = _collect().get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+
+    _place(task)
+    row = _row(task, "", sessions._load_state("triage.json"),
+               tasks_store.read_state(), time.time(),
+               schedule.busy_sessions(schedule.list_entries()), [])
+    if row["status"] == "in_progress":
+        raise HTTPException(
+            status_code=409,
+            detail="that task is running — stop the run first, then delete")
+
+    cancelled = 0
+    for template_id in _every_rule_behind(key):
+        if schedule.cancel(template_id) is not None:
+            cancelled += 1
+    for entry in task["entries"]:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        entry_id = str(entry.get("id") or "")
+        if entry_id and schedule.cancel(entry_id) is not None:
+            cancelled += 1
+
+    tasks_store.mark_deleted(key)
+    return {"ok": True, "key": key, "cancelled": cancelled,
+            "erased_transcript": False}
+
+
+def _every_rule_behind(key: str) -> list[str]:
+    """Every recurring rule that could put this task back on the board, named
+    once. DELETE's discovery, and a different question from `_rules_behind`'s.
+
+    The tie that matters is WHERE THE RULE'S NEXT RUN LANDS, not which task its
+    old runs ended up in — so the predicate is the rule's own session resolving
+    to this task's key, read with `_entry_session` exactly as `_collect` files
+    entries. That finds a same-session rule even between occurrences, when the
+    materialiser has minted nothing and the rule leaves no pending row to read
+    a `template_id` off (its next mint would land back on this key, `created`
+    newer than the tombstone, and revive the row — `_deleted`).
+
+    What it deliberately does NOT do is follow `template_id` off the task's own
+    entries: a `new_task_each_run` series mints every future run into a FRESH
+    session, so one of its spent runs being this task ties the series to the
+    task's PAST, not its future — deleting that one run's row must not kill the
+    live series, nor the pending occurrences that belong to other tasks. Those
+    rules keep minting; only this task's own rows go.
+
+    `schedule.cancel` cancels a recurring template together with its pending
+    occurrence, so a matched rule dies whole."""
+    rules: list[str] = []
+    for entry in schedule.list_entries():
+        if entry.get("state") != schedule.RECURRING:
+            continue
+        entry_id = str(entry.get("id") or "")
+        if entry_id and entry_id not in rules and _entry_session(entry) == key:
+            rules.append(entry_id)
+    return rules
 
 
 def _rules_behind(entries: list[dict]) -> list[str]:
