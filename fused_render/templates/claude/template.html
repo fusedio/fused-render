@@ -274,18 +274,23 @@
      (#annbtn.on = mode armed, #annrec.on = recording live), via :has on the
      wrapper — no third writer to fall out of step.
 
-     Idle faces: 💬 Comment · 🎙 Record. */
-  #annbtn .cmt-stop { display: none; }
-  #annrec .rec-done, #annrec .done-word { display: none; }
-  /* Comment armed (and no recording): the mic seat is the way out — ✓ Done. */
-  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annrec .rec-mic,
-  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annrec .rec-word { display: none; }
-  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annrec .rec-done { display: block; }
-  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annrec .done-word { display: var(--annlbl, inline); }
-  /* Recording: the Comment seat is the way out — ■ plus the live clock, in
-     the recording's own --error ink rather than the armed accent (the accent
-     says "commenting", and what this seat says now is "stop"). The mic keeps
-     its own red pulse; clicking either button stops. */
+     Idle faces: 💬 Comment · 🎙 Record. A mode ON means ONE control (Akshil,
+     2026-08-19): the mic hides outright, and the Comment seat morphs into
+     the mode's exit. */
+  #annbtn .cmt-stop, #annbtn .cmt-done, #annbtn .done-word { display: none; }
+  #anncta:has(#annbtn.on) #annrec { display: none; }
+  /* Comment armed (and no recording): the seat IS ✓ Done, in the armed
+     accent — send the notes and finish. `:not(.busy)` on the SHOW rules, so
+     the transcribing state below is one word, not "✓ Done Transcribing…"
+     (Akshil, 2026-08-19) — the hide rules stay unconditional because busy
+     wants the bubble and the word gone too. */
+  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annbtn .cmt-bubble,
+  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annbtn .cmt-word { display: none; }
+  #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annbtn .cmt-done { display: block; }
+  #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annbtn .done-word { display: var(--annlbl, inline); }
+  /* Recording: the seat is ■ plus the live clock, in the recording's own
+     --error ink rather than the armed accent (the accent says "commenting",
+     and what this seat says now is "stop"). */
   #anncta:has(#annrec.on) #annbtn .cmt-bubble,
   #anncta:has(#annrec.on) #annbtn .cmt-word { display: none; }
   #anncta:has(#annrec.on) #annbtn .cmt-stop { display: block; }
@@ -294,10 +299,11 @@
     background: transparent;
     border-color: var(--error);
   }
-  /* Transcribing (recording over, words on their way): the Comment seat
-     carries the one word of status in #annreclbl; the word "Comment" yields
-     to it. annRecEnd owns the .busy class. */
-  #anncta.busy #annbtn .cmt-word { display: none; }
+  /* Transcribing (recording over, words on their way): the seat carries the
+     one word of status in #annreclbl ALONE. No rules of its own: the armed
+     hide above already took the bubble and the word (the mode is still on),
+     and the `:not(.busy)` guards keep ✓ Done from joining the status text.
+     annRecEnd owns the .busy class. */
   /* Empty label must not hold a gap seat open beside the icon. */
   #annreclbl:empty { display: none; }
 
@@ -3217,27 +3223,28 @@
                 aria-label="Point"
                 title="Clicks pin the exact spot, with a marked screenshot"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.25"/><line x1="8" y1="1.5" x2="8" y2="4"/><line x1="8" y1="12" x2="8" y2="14.5"/><line x1="1.5" y1="8" x2="4" y2="8"/><line x1="12" y1="8" x2="14.5" y2="8"/></svg><span class="lbl">Point</span></button>
       </div>
-      <!-- TWO buttons, one mode at a time (Akshil, 2026-08-19): Comment on
-           the left, Record on the right, each an icon plus a word (the strip's
-           container query drops the words when the row runs out of room). The
-           OTHER button is always the way out of whichever mode is on: arming
-           Comment turns the mic seat into ✓ Done — send the notes, leave the
-           mode — and starting a recording turns the Comment seat into ■ plus
-           the live clock, so stopping is one click on either button. Ending a
-           recording still puts the whole mode away by itself. Both buttons
-           are gated and hidden exactly like the old pill's seats (annCapable()
-           / annPollTarget / enterNoPane's removal list) — the wrapper hides
-           itself when it has no visible button. Every glyph and word is baked
-           into the markup; the stylesheet swaps faces off the two state
-           classes (#annbtn.on, #annrec.on), and #annreclbl is the one text
-           the writers touch — the clock while recording, "Transcribing…"
-           after — so no writer ever overwrites an icon. -->
+      <!-- TWO buttons at rest, ONE while a mode is on (Akshil, 2026-08-19):
+           Comment on the left, Record on the right, each an icon plus a word
+           (annFitStrip drops the words when the row runs out of room). A mode
+           takes the strip down to a single control — the mic hides, and the
+           Comment seat ITSELF morphs into the mode's exit: ✓ Done while a
+           typed comment mode is armed (send the notes, leave the mode), ■
+           plus the live clock while a walkthrough records (stop it). Ending a
+           recording still puts the whole mode away by itself, and Esc still
+           cancels. Both buttons are gated and hidden exactly like the old
+           pill's seats (annCapable() / annPollTarget / enterNoPane's removal
+           list) — the wrapper hides itself when it has no visible button.
+           Every glyph and word is baked into the markup; the stylesheet swaps
+           faces off the two state classes (#annbtn.on, #annrec.on), and
+           #annreclbl is the one text the writers touch — the clock while
+           recording, "Transcribing…" after — so no writer ever overwrites an
+           icon. -->
       <div id="anncta">
         <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
-                title="Comment on the preview, then send the notes to Claude"><svg class="cmt-bubble" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z"/></svg><svg class="cmt-stop" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="4" y="4" width="8" height="8" rx="1.5"/></svg><span class="lbl cmt-word">Comment</span><span id="annreclbl"></span></button>
+                title="Comment on the preview, then send the notes to Claude"><svg class="cmt-bubble" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z"/></svg><svg class="cmt-stop" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="4" y="4" width="8" height="8" rx="1.5"/></svg><svg class="cmt-done" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl cmt-word">Comment</span><span class="lbl done-word">Done</span><span id="annreclbl"></span></button>
         <button id="annrec" type="button" aria-pressed="false"
                 aria-label="Record a spoken walkthrough"
-                title="Record a spoken walkthrough — talk while you click, and each click becomes a note"><svg class="rec-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg><svg class="rec-done" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl rec-word">Record</span><span class="lbl done-word">Done</span></button>
+                title="Record a spoken walkthrough — talk while you click, and each click becomes a note"><svg class="rec-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg><span class="lbl rec-word">Record</span></button>
       </div>
       <!-- More options (⋮), beside the annotate switch. One item today: hand
            this session to a real terminal. The LABEL is decided at open time
@@ -6032,7 +6039,7 @@ const annIdleTitle = () =>
 // seat — two writers, one string.
 const ANN_ARMED_TITLE = "Comment mode on — clicks pin what the Element/Point"
   + " tool says (Alt overrides for one click, empty space is always a spot)"
-  + " · Esc or click this button to stop";
+  + " · click this button to send the notes and finish, Esc cancels";
 
 // The picker's two doors, sharing the exit animation: showing is the display
 // flip itself (leaving display:none restarts the CSS entry animation), hiding
@@ -6193,17 +6200,15 @@ function annSetMode(on) {
   // and annToolShow's own refusal backs this up.
   if (!annOn || annXO) annToolHide();
   else annToolShow();
-  // The mic seat is the mode's other door, and it always names the way OUT of
-  // the state the strip is in: Done while a typed comment mode is armed (send
-  // the notes, leave the mode), Record otherwise. A live recording writes its
-  // own labels (annRecBegin/annRecEnd), so it is left alone here.
+  // The Comment seat is the mode's ONE control (the mic hides while a mode
+  // is on), so its name always says what a click does right now: arm the
+  // mode (idle), or ✓ Done — send the notes and finish (armed). A live
+  // recording writes its own labels (annRecBegin/annRecEnd), so it is left
+  // alone here; the title below and applyPaneNoun own the rest.
   if (!annRecOn) {
-    annRecBtn.setAttribute("aria-label", annOn
+    annBtn.setAttribute("aria-label", annOn
       ? "Done — send the notes and finish commenting"
-      : "Record a spoken walkthrough");
-    annRecBtn.title = annOn
-      ? "Send the notes to Claude and finish commenting"
-      : "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+      : "Comment on the " + paneNoun);
   }
   // Arming over a cross-origin target is the natural moment to raise the ONE
   // share prompt the tab-capture screenshots need (annXOStreamGet keeps the
@@ -6239,10 +6244,12 @@ function annSetMode(on) {
   }
 }
 
-// While a recording runs the Comment seat IS the stop control (■ plus the
-// clock) — same exit annRecEnd gives the mic — so its click stops the
-// walkthrough instead of toggling a mode the stop is about to close anyway.
-annBtn.addEventListener("click", () => (annRecOn ? annRecEnd() : annSetMode(!annOn)));
+// The seat's three answers, matching its three faces: stop a live recording
+// (■ plus the clock), finish an armed comment mode (✓ Done — send and
+// leave), or arm the mode from rest. Cancelling without sending is Esc's
+// job now — the seat that used to toggle the mode off IS the Done button.
+annBtn.addEventListener("click",
+  () => (annRecOn ? annRecEnd() : annOn ? annDone() : annSetMode(true)));
 // Done: the typed-comment mode's exit that also delivers. A composer still
 // open with words in it is committed FIRST — Done means "send what I said",
 // and the mousedown exemption above is what kept that draft alive this far —
@@ -6551,7 +6558,7 @@ async function annRecEnd() {
   // The Comment seat stops being the ■/clock stop control the moment `.on`
   // leaves the mic (the stylesheet swap keys off it); its labels go back to
   // naming the mode, which is still armed until the disarm below.
-  annBtn.setAttribute("aria-label", "Comment on the " + paneNoun);
+  annBtn.setAttribute("aria-label", "Done — send the notes and finish commenting");
   annBtn.title = ANN_ARMED_TITLE;
   const ids = annRecIds;
   annRecIds = [];
@@ -6628,11 +6635,11 @@ async function annRecEnd() {
   if (annOn && annArmEpoch === armed) annSetMode(false);
 }
 
-// The mic seat's three answers: stop a live recording, act as ✓ Done while a
-// typed comment mode is armed (its face already says so — see the stylesheet
-// swap), or start a walkthrough from rest.
+// The mic hides whenever a mode is on (the stylesheet's :has rule), so from
+// where it can be clicked it only ever starts a walkthrough; the recording
+// leg is a guard against a click racing the hide, not a second stop control.
 annRecBtn.addEventListener("click",
-  () => (annRecOn ? annRecEnd() : annOn ? annDone() : annRecBegin()));
+  () => (annRecOn ? annRecEnd() : annRecBegin()));
 
 // ── hosted only: keeping up with a target this document cannot hear ────────
 // The split layout is told about its pane by the pane itself — one iframe, one

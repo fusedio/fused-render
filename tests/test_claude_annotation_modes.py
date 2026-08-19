@@ -189,14 +189,16 @@ def test_a_note_saves_without_any_capture_of_its_own(html):
 
 # ------------------------------------------ two buttons, one mode at a time
 
-def test_the_other_button_is_always_the_way_out(html):
-    """Comment armed: the mic seat acts as Done (send pending notes, disarm).
-    Recording: the Comment seat is the stop control. Both are wired at the two
-    click handlers, off the two state flags the stylesheet also reads."""
-    assert ('annBtn.addEventListener("click",'
-            " () => (annRecOn ? annRecEnd() : annSetMode(!annOn)));") in html
+def test_the_comment_seat_is_the_modes_one_control(html):
+    """A mode ON takes the strip down to one button (Akshil, 2026-08-19): the
+    mic hides, and the Comment seat's click matches its face — stop a live
+    recording, Done for an armed comment mode, arm from rest. Cancelling
+    without sending is Esc's job now."""
     assert ("() => (annRecOn ? annRecEnd() :"
-            " annOn ? annDone() : annRecBegin()));") in html
+            " annOn ? annDone() : annSetMode(true)));") in html
+    # the mic only ever starts a walkthrough (the recording leg guards a
+    # click racing the hide, it is not a second stop control)
+    assert ("() => (annRecOn ? annRecEnd() : annRecBegin()));") in html
 
 
 def test_done_flushes_pending_notes_before_disarming(html):
@@ -243,19 +245,26 @@ def test_the_live_recording_is_never_announced_as_done(html):
     assert 'annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");' in end
 
 
-def test_the_seats_swap_faces_off_the_two_state_classes(html):
+def test_the_seat_swaps_faces_off_the_two_state_classes(html):
     """Every glyph and word is baked into the markup; the stylesheet derives
-    each button's face from #annbtn.on / #annrec.on via :has on the wrapper —
-    no third writer to fall out of step."""
-    # comment armed (and only then): the mic seat wears ✓ Done
-    assert ("#anncta:has(#annbtn.on):not(:has(#annrec.on))"
-            " #annrec .rec-done { display: block; }") in html
-    # recording: the Comment seat wears ■ plus the clock, in --error ink
+    the seat's face from #annbtn.on / #annrec.on via :has on the wrapper —
+    no third writer to fall out of step. The mic hides whenever a mode is on,
+    so the strip is ONE control while armed or recording."""
+    assert "#anncta:has(#annbtn.on) #annrec { display: none; }" in html
+    # comment armed (and only then, and not while transcribing): ✓ Done
+    assert ("#anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on))"
+            " #annbtn .cmt-done { display: block; }") in html
+    # recording: the seat wears ■ plus the clock, in --error ink
     assert "#anncta:has(#annrec.on) #annbtn .cmt-stop { display: block; }" in html
     stop = _block(html, "#anncta:has(#annrec.on) #annbtn.on {", "}")
     assert "var(--error)" in stop
-    # transcribing: annRecEnd stamps .busy, the word yields to the status
-    assert "#anncta.busy #annbtn .cmt-word { display: none; }" in html
+    # transcribing: annRecEnd stamps .busy and the status stands ALONE — the
+    # Done face is gated off busy at its own (higher-specificity) show rules,
+    # not fought with a weaker hide ("✓ Done Transcribing…", 2026-08-19)
+    assert ("#anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on))"
+            " #annbtn .cmt-done { display: block; }") in html
+    assert ("#anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on))"
+            " #annbtn .done-word { display: var(--annlbl, inline); }") in html
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert 'annCta.classList.add("busy");' in end
     assert 'annCta.classList.remove("busy");' in end
