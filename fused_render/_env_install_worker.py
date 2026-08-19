@@ -30,7 +30,10 @@ so the page shell polls one shape.
 
 Three deliberate choices:
 
-**It builds with `uv sync`, in the project directory.** The declaration is the
+**It builds with `uv sync`, in the project directory** (or, when that directory
+cannot be written to, in a manifest-only mirror of it beside the venv — see
+`_sync_root`, and note that the bundled AI runner folders are read-only on the
+packaged builds). The declaration is the
 folder's `pyproject.toml`; `uv sync` is the command that turns one into an
 environment, resolves it, and writes the `uv.lock` the user commits. It is
 pointed at a venv OUTSIDE the folder through `UV_PROJECT_ENVIRONMENT` (see
@@ -257,6 +260,225 @@ def _state_digest(project_dir):
         return ""
 
 
+#: The `fused_render` package directory. This file LIVES in the package — it is
+#: `fused_render/_env_install_worker.py`, spawned by path — so its own dirname is
+#: that directory, with no import and no argv slot needed to learn it. (D152 is
+#: about not IMPORTING the package in a detached child, not about not being part
+#: of it.)
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+#: Stands in for `_PACKAGE_DIR` in the identity of a folder that ships inside the
+#: app, and is deliberately unspellable as a path so it can never collide with a
+#: real folder of the user's. RESTATED from `projectenv._PACKAGE_IDENTITY`, like
+#: every other constant here (D152); a test pins the two computations together.
+_PACKAGE_IDENTITY = "<fused_render>"
+
+
+def _source_identity(project_dir):
+    """What the sidecar records *project_dir* as: its path, or its path IN the app.
+
+    Byte-identical to `projectenv._venv_identity`, which is not a nicety — that
+    function computes the venv KEY from this string, and `gc()` resolves the
+    sidecar's copy of it back to a directory to decide whether the source is gone.
+    A divergence here means a bundled venv whose sidecar names something `gc`
+    cannot map, i.e. exactly the multi-gigabyte permanent orphan the
+    package-relative identity was introduced to make collectable.
+
+    Why not the absolute path: on the packaged builds the app's own path is not
+    stable (the AppImage mounts itself at a fresh `.mount_FusedRxxxxxx` every
+    launch), so an absolute path recorded here reads as merely UNREACHABLE forever
+    — and `gc` deliberately keeps an unreachable source rather than reclaiming it,
+    since that is what an unplugged external drive also looks like. A runner
+    folder that a release removes or renames would strand its environment for
+    good. See `projectenv._venv_identity` for the full argument; RESTATED rather
+    than imported for the reason every constant in this file is (D152).
+    """
+    path = os.path.abspath(project_dir)
+    try:
+        rel = os.path.relpath(path, _PACKAGE_DIR)
+    except ValueError:
+        # Windows, different drives — nothing relative to say, so it is not ours.
+        return path
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
+        return path
+    if rel == os.curdir:
+        return _PACKAGE_IDENTITY
+    return _PACKAGE_IDENTITY + "/" + rel.replace(os.sep, "/")
+
+
+#: Suffix of the mirror directory, appended to the venv's own path. RESTATED from
+#: `projectenv.MIRROR_SUFFIX` rather than imported, like every other constant in
+#: this file (D152: no `fused_render` import in a detached child). That module
+#: needs the name because `gc()` reclaims the mirror with the venv; a test pins
+#: the two together.
+_MIRROR_SUFFIX = ".src"
+
+#: Names copied into a read-only project's mirror, in `_sync_root`. The
+#: declaration and the three files uv reads BESIDE it that a folder can
+#: legitimately commit — nothing else, because a mirror is not a copy of the
+#: project (a read-only tree can be arbitrarily large, and none of the rest is an
+#: input to resolution for the `package = false` folders this path exists for).
+#:
+#: `uv.toml` is here because it is uv's own configuration for the folder — a
+#: private index, an exclude-newer date, build settings. Left out of the mirror it
+#: does not silently stop applying somewhere visible; it just quietly does not
+#: apply, and a runner pinned to an internal index would resolve against PyPI
+#: instead with no message anywhere saying why.
+_MIRRORED_NAMES = ("pyproject.toml", "uv.lock", "uv.toml", ".python-version")
+
+#: The one entry of `_MIRRORED_NAMES` that is uv's OUTPUT rather than something
+#: the project ships, and therefore the one exempt from "drop what the source
+#: dropped" in `_sync_root`. Deleting the mirror's copy because the source has
+#: none would delete the lock on every single build — the source never has one,
+#: which is the entire reason the mirror persists.
+_MIRROR_OWN_OUTPUT = "uv.lock"
+
+
+def _writable_dir(path):
+    """Can a file actually be CREATED in *path*? Answered by doing it.
+
+    `os.access(path, os.W_OK)` is the obvious call and it is the wrong one. On
+    Windows it reports the read-only ATTRIBUTE, which is meaningless for a
+    directory: an ACL-protected `C:\\Program Files\\FusedRender\\...` answers
+    "writable", `_sync_root` then runs the sync in place, and uv dies with
+    `Access is denied. (os error 5)` — the exact platform the mirror exists to
+    cover, silently mis-answered. POSIX has a smaller version of the same hole:
+    `os.access` consults the mode bits, so a directory denied by an ACL entry or
+    by SELinux also reports writable.
+
+    A probe answers the question that is actually being asked ("can uv put
+    `uv.lock` here"), because it IS that operation. `O_CREAT|O_EXCL` so it can
+    never truncate something of the user's, and the pid in the name so two
+    installs probing one folder at once cannot collide on it.
+
+    The cleanup objection does not survive contact: a probe file we managed to
+    create is a file in a directory we have just proven we can write to, so it is
+    removable by definition. The unlink is still best-effort — a stray zero-byte
+    file in a folder that syncs fine is not a reason to fail a build a user is
+    waiting on.
+    """
+    probe = os.path.join(path, ".fused-render-write-probe.%d" % os.getpid())
+    try:
+        fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError:
+        return False
+    os.close(fd)
+    try:
+        os.unlink(probe)
+    except OSError:
+        pass
+    return True
+
+
+def _unlink_quietly(path):
+    """Remove *path* if it is there. A file the mirror should no longer hold that
+    refuses to go is not worth failing a build over — the next build tries again,
+    and the mirror lives in the home dir where nothing else reads it."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _read_bytes(path):
+    """*path*'s contents, or None when it cannot be read. Absent and unreadable
+    are one answer here because both mean "nothing to compare against"."""
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _sync_root(project_dir, venv_dir):
+    """Where `uv sync` runs: the project dir, or a writable MIRROR of its manifest.
+
+    `uv sync` WRITES to the directory it runs in — it puts `uv.lock` there, which
+    is the whole point for a user's folder (the lock is source and gets
+    committed). A project dir that cannot be written to therefore fails the sync
+    outright, with uv's own `failed to write to file .../uv.lock: Read-only file
+    system (os error 30)` and no environment built.
+
+    That is not a hypothetical: the AI runner folders (`fused_render/ai/runners/*`)
+    ship INSIDE the app, and the app's own tree is read-only in the shapes it is
+    normally installed in — the AppImage runs from a squashfs mount, and a Windows
+    install under `Program Files` is not user-writable. Every model download on
+    those builds died here. A user's folder on a read-only mount (a mounted
+    archive, a `ro` network share) is the same failure.
+
+    So: when the folder cannot hold uv's output, the sync runs in
+    `<venv_dir>.src` instead — a mirror holding the declaration, uv's own
+    configuration beside it, and nothing else (`_MIRRORED_NAMES`). The venv, the
+    cache and the interpreter are unchanged, so the environment built is the same
+    one; only the directory uv is allowed to litter moves.
+
+    That the mirror is enough to resolve from is a claim about the folders this
+    exists for, not about every folder: the AI runners and the templates are
+    `[tool.uv] package = false`, so nothing outside `pyproject.toml` and uv's
+    config beside it takes part in resolution. A read-only folder that DID declare
+    a `build-system` (uv would build and install the folder itself, from sources
+    the mirror does not hold) or a `[tool.uv.sources] {path = ...}` relative
+    dependency (which the mirror would resolve relative to itself, i.e. nowhere)
+    would resolve differently here than it does in place. That is a stated limit
+    of this fallback rather than a silent one; the alternative is copying an
+    arbitrarily large read-only tree on every build.
+
+    The mirror is NOT wiped between builds, and that is what makes it worth
+    having: the `uv.lock` uv wrote there on the first build is still there on the
+    next one, so a rebuild of a bundled runner resolves against the versions the
+    first one picked instead of re-resolving from PyPI. Source still beats derived
+    — a lock the project itself ships overwrites it, and so does the manifest.
+
+    But a kept lock has to EXPIRE, and the manifest is what expires it. Bare
+    `uv sync` re-resolves only what the manifest invalidates, and a widened
+    ceiling invalidates nothing: the documented pattern in those runner manifests
+    is a pre-1.0 ceiling (`mlx-lm>=0.31,<0.32`), so a release that widens it to
+    `<0.33` still has the locked 0.31.x satisfying the range. The rebuild would
+    reinstall the identical versions and the deliberate upgrade would never
+    happen — packaged builds behaving as if a lock had been committed and never
+    refreshed, while a dev checkout (writable folder, no lock, re-resolves every
+    time) picked the new one up. Exactly inverted from what those manifests say
+    they are relying on.
+
+    So the mirror's own copy of `pyproject.toml` is read as the record of what its
+    lock was resolved AGAINST: bytes equal means the lock still describes this
+    declaration and is kept (which is the rebuild-after-repair case the mirror is
+    for), bytes different means the declaration moved and the lock goes. The
+    manifest copy IS the state — no separate marker file to write, fail to write,
+    or leave behind.
+
+    Names the source no longer has are removed from the mirror, `uv.lock` alone
+    excepted (there the mirror is the only copy that ever existed). Without that,
+    a release that drops a runner's `.python-version`, or withdraws a `uv.lock` it
+    used to ship, leaves the withdrawn file governing every later build forever —
+    a read-only folder cannot be edited to undo it, and the file is somewhere the
+    user will never look.
+
+    Writability is a question about the DIRECTORY and it is asked by probing, not
+    by `os.access` — see `_writable_dir` for why that distinction is the
+    difference between working and not on Windows.
+    """
+    if _writable_dir(project_dir):
+        return project_dir
+    mirror = os.path.abspath(venv_dir) + _MIRROR_SUFFIX
+    os.makedirs(mirror, exist_ok=True)
+
+    # Before any copying, while the mirror's manifest still describes the build
+    # its lock came from.
+    if _read_bytes(os.path.join(project_dir, "pyproject.toml")) != _read_bytes(
+            os.path.join(mirror, "pyproject.toml")):
+        _unlink_quietly(os.path.join(mirror, _MIRROR_OWN_OUTPUT))
+
+    for name in _MIRRORED_NAMES:
+        src = os.path.join(project_dir, name)
+        dst = os.path.join(mirror, name)
+        if os.path.exists(src):
+            shutil.copyfile(src, dst)
+        elif name != _MIRROR_OWN_OUTPUT:
+            _unlink_quietly(dst)
+    return mirror
+
+
 def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
     """`uv sync` the project into `venv_dir`; returns that venv's interpreter.
 
@@ -283,6 +505,11 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
     `UV_LINK_MODE` is deliberately NOT set: uv already prefers hardlinks and
     degrades on its own, and pinning it here would override a user who had a
     reason to choose otherwise.
+
+    It runs in `_sync_root(project_dir, venv_dir)` rather than in `project_dir`
+    itself — the same directory in every case a folder can be written to, and a
+    manifest-only mirror when it cannot (the bundled AI runner folders, on every
+    build whose tree is read-only). See that function.
 
     A bare `uv sync`, with no `--frozen`. That is not a relaxation of
     reproducibility — uv uses an existing `uv.lock` as-is whenever it still
@@ -336,9 +563,13 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
 
     os.makedirs(os.path.dirname(venv_dir), exist_ok=True)
     os.makedirs(uv_cache_dir, exist_ok=True)
+    # After the makedirs above (the mirror is a SIBLING of the venv, so its parent
+    # is the one they create) and after the unmarked-venv removal (which must not
+    # be able to take the mirror's lock with it).
+    sync_root = _sync_root(project_dir, venv_dir)
     # close_fds=False for posix_spawn rather than fork()+exec — the same discipline
     # every other spawn in this codebase follows; see `_acquire_python` above.
-    proc = subprocess.run(cmd, cwd=project_dir, env=env,
+    proc = subprocess.run(cmd, cwd=sync_root, env=env,
                           capture_output=True, text=True, close_fds=False,
                           encoding="utf-8", errors="replace",
                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
@@ -362,9 +593,14 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
     # a later request compares the declaration against. Marking first would leave
     # a window in which the venv reads as ready and cannot say what it holds, and
     # `is_installed` would call it stale and rebuild it immediately.
+    #
+    # `_source_identity`, not the absolute path: for a folder inside the app the
+    # absolute path is this launch's mount directory, which `gc()` can never
+    # resolve again — see that function and `projectenv.write_sidecar`, the other
+    # writer of this same record.
     tmp = os.path.join(venv_dir, _SIDECAR_NAME + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"path": os.path.abspath(project_dir),
+        json.dump({"path": _source_identity(project_dir),
                    "digest": _state_digest(project_dir)}, f)
     os.replace(tmp, os.path.join(venv_dir, _SIDECAR_NAME))
     with open(os.path.join(venv_dir, _READY_MARKER), "w", encoding="utf-8") as f:
