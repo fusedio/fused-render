@@ -142,11 +142,19 @@ def test_the_tool_applies_inside_a_recording_too(html):
     assert "annRecMarkPoint(e.clientX, e.clientY, win)" in body
 
 
-def test_the_tool_picker_follows_the_mode(html):
-    """Shown while comment mode (or a recording, which arms it) is on, hidden
-    otherwise — a picker for a click that cannot happen is noise."""
+def test_the_tool_picker_follows_the_recording(html):
+    """Shown while a walkthrough RECORDS, hidden otherwise (Akshil,
+    2026-08-19): a typed comment pins the default tool and never asks, so the
+    picker is a property of recorded clicks — annRecBegin reveals it,
+    annRecEnd and annSetMode's disarm put it away."""
     assert 'id="anntool" role="radiogroup"' in html
-    assert "annToolEl.hidden = !annOn;" in html
+    assert "if (!(annOn && annRecOn)) annToolHide();" in html
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
+    assert "annToolShow();" in begin
+    end = _block(html, "async function annRecEnd()", "\n}\n")
+    assert "annToolHide();" in end
+    # stopping the walkthrough puts the whole mode away, both exits
+    assert end.count("if (annOn) annSetMode(false);") == 2, end
 
 
 def test_the_tool_picker_survives_the_hosted_layout(html):

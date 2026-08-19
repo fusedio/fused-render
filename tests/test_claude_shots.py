@@ -1805,36 +1805,43 @@ def test_the_rollback_releases_the_thumbnails_it_just_removed(html):
 
 # ------------------ the pane-shot toggle wears the composer's own clothes
 
-def test_the_annotate_control_is_a_labelled_switch(html):
-    """The annotate control is ONE labelled left-right sliding switch — plain
-    label text plus track + knob, no icon, no filled pill, no accent border. The
-    label is the static "Comment" in BOTH states (a label that changed width made
-    the right-anchored row shuffle on every toggle) and the only colour it ever
-    shows is the accent-filled track while armed. The old second switch (#annvis,
-    pin visibility) is gone: pins follow the mode."""
-    btn = _between(html, "#annbtn {", "}")
-    assert "height: 26px" in btn, btn
-    assert "white-space: nowrap" in btn, btn
-    # quiet by construction: no border, no fill, no accent on the idle control
-    assert "border: 0" in btn, btn
-    assert "background: transparent" in btn, btn
-    assert "var(--accent)" not in btn, "idle control carries no accent: " + btn
-    # the switch anatomy: track + knob, and the knob SLIDES on toggle
-    assert "#annbtn .track {" in html
-    assert "#annbtn .knob {" in html
-    assert "left: 14px" in _between(html, "#annbtn.on .knob {", "}")
-    # armed state repaints only the small track with the accent — never the pill
+def test_the_annotate_control_is_a_split_pill(html):
+    """The annotate control is ONE split pill (Akshil, 2026-08-19): mic seat on
+    the left, the word "Comment" on the right, sharing #anncta's single border —
+    the old track-and-knob switch is gone. The word seat is plain text (no icon)
+    and static in BOTH states — a label that changed width made the
+    right-anchored row shuffle on every toggle — and armed is the accent
+    filling that seat, the same voice as the picker's selected seat. The old
+    second switch (#annvis, pin visibility) stays gone: pins follow the mode."""
+    pill = _between(html, "#anncta {", "}")
+    assert "height: 26px" in pill, pill
+    assert "margin-left: auto" in pill, "the pill anchors the row's right: " + pill
+    assert "border: 1px solid var(--border)" in pill, pill
+    # seats are quiet by construction: borderless, transparent, muted ink
+    seat = _between(html, "#anncta button {", "}")
+    assert "border: 0" in seat, seat
+    assert "background: transparent" in seat, seat
+    assert "white-space: nowrap" in seat, seat
+    assert "var(--accent)" not in seat, "idle seats carry no accent: " + seat
+    # armed = the word seat wears the accent, on-accent ink for contrast
     on = _between(html, "#annbtn.on {", "}")
-    assert "background" not in on, "no filled pill when armed: " + on
-    assert "background: var(--accent)" in _between(html, "#annbtn.on .track {", "}")
-    # named, announced, and labelled in the markup — text only, no icon
-    view = _between(html, '<div id="anntools">', "</div>")
+    assert "background: var(--accent)" in on, on
+    assert "color: var(--on-accent)" in on, on
+    # the track-and-knob anatomy is gone with the switch
+    assert "#annbtn .track {" not in html
+    assert "#annbtn .knob {" not in html
+    # named, announced, and labelled in the markup. The strip is sliced to the
+    # kebab, not the first </div>: the tool picker sits BEFORE the pill (it
+    # unfolds to its left), and its own </div> would end the slice early.
+    view = _between(html, '<div id="anntools">', '<div id="kebab">')
     assert 'id="annbtn"' in view and 'aria-label="' in view, view
-    assert 'class="lbl"' in view, view
-    assert "<svg" not in view, "simple text + switch, no glyph: " + view
-    # the label is baked into the markup and NEVER rewritten — one wording,
-    # both states; the track alone shows armed
-    assert 'class="lbl">Comment</span>' in view, view
+    # mic seat left, word seat right — reading order inside the pill
+    pill_markup = _between(view, '<div id="anncta">', "</div>")
+    assert pill_markup.index('id="annrec"') < pill_markup.index('id="annbtn"'), pill_markup
+    # The WORD seat is text-only; the mic seat carries the SVG glyphs.
+    annbtn_markup = _between(view, '<button id="annbtn"', "</button>")
+    assert "<svg" not in annbtn_markup, "plain word seat, no glyph: " + annbtn_markup
+    assert ">Comment</button>" in view, view
     assert 'annBtn.querySelector(".lbl").textContent' not in html
     # the second switch is gone entirely
     assert "annvis" not in html and "annVisBtn" not in html
@@ -1902,7 +1909,7 @@ def test_the_annotation_controls_sit_outside_the_frame_so_they_cannot_be_capture
     view = _between(html, '<div id="leftview"', "<!-- /leftview -->")
     assert 'id="leftframe"' in view
     assert 'id="annbtn"' not in view, "the controls left the app pane entirely"
-    assert 'id="annbtn"' in _between(html, '<div id="anntools">', "</div>")
+    assert 'id="annbtn"' in _between(html, '<div id="anntools">', '<div id="kebab">')
     # and the capture still reads the frame, not the pane
     assert "appWindow()" in _between(html, "async function shotPane(", "\n}\n")
 
