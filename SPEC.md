@@ -5698,6 +5698,95 @@ an AI Models page that could say what was on disk but not what was *running*.
   rather than destructive), no per-segment UI, and no cache lock — the etag names
   the content, so two instances write identical bytes at identical offsets and
   the loser of a rename race falls back rather than corrupting anything.
+- **AI-5k** **A model already complete on disk is resolved WITHOUT the network**
+  (D367). "Fetching weights…" for a cached model was about a second of pure
+  latency in front of every bring-up: measured on an Apple Silicon machine for
+  `mlx-community/whisper-tiny.en-8bit`, fully cached, `worker_base.
+  download_snapshot` took **483ms** and `download_file` **456ms**, against **~14ms**
+  for the weight load itself inside mlx-whisper — all of it Hub round-trips
+  (`HfApi().model_info(files_metadata=True)` is 228ms on its own, hf's
+  `snapshot_download` spends another ~220ms revalidating etags), and also the
+  source of the "You are sending unauthenticated requests to the HF Hub" line in
+  every worker log. Both helpers now try `local_files_only=True` FIRST — 0.13ms
+  and 0.14ms for the same two answers — and fall through to the whole networked
+  path (metadata call, total, segmented fetch, progress) when the cache cannot
+  answer. **A repo the cache has never held reaches no hub download function at
+  all**, not even one carrying `local_files_only=True`: the gate is a filesystem
+  look first (a `snapshots/` directory for the repo; `try_to_load_from_cache`,
+  which cannot download, for the single-file path), and hf is asked only to
+  CONFIRM what the disk already suggested. That is AI-5e's rule holding at a new
+  site — the ✕ must never be answered by starting a download, and
+  `test_ai_hub_fetch.py` enforces it by counting calls rather than bytes, which is
+  the right test: "we only passed `local_files_only`" is exactly the claim a later
+  refactor breaks. For the same reason the local attempt catches only what means
+  "not cached" (hf's `LocalEntryNotFoundError`/`IncompleteSnapshotError` are both
+  `OSError`s, so the tuple names them without importing them) and never
+  `Cancelled`, which is an ordinary `Exception` — a bare `except Exception` there
+  turned a Stop into a fresh multi-gigabyte download. **First download behaviour
+  is unchanged, and a partial or NARROWER cache must never be mistaken for a
+  complete one.** hf's own completeness check is not the guarantee — it verifies
+  against `trees/<commit>.json`, hf's code says that without one "we cannot tell,
+  so we do nothing", and this app's segmented fetch (the normal path) writes
+  `refs/` and blobs but never a tree. **So the app records its own fetches and the
+  fast path answers only from that record**: `<repo folder>/.fused-fetch-<commit>.
+  json` holds the SCOPE a completed download was asked for and the FILE NAMES that
+  landed, written after the fetch returns (which is the one moment completeness is
+  knowable, since `_write_ref` runs after the last file), and a request is served
+  only when the record is for the commit hf resolved, at the scope being asked for,
+  with every recorded name present and settled. **Every record is keyed by the
+  commit the returned snapshot IS**, never by the sha that was asked for, and the
+  fallback to `snapshot_download` is **pinned to that sha** — a branch name resolved
+  twice is two answers, and a repo that moves between the listing and the fallback
+  would otherwise file a record under a snapshot directory that does not exist,
+  leaving that repo permanently cold. **A fetch that landed LESS than its scope asked
+  for writes no record at all**, and the record's file list is therefore the
+  LISTING's rather than the disk's: a record is verified by looking its own names
+  up, so building it from what landed would make it self-certifying — a fallback
+  delivering 1 of 50 files would record one name, every check would pass, and an
+  incomplete snapshot would be served forever. Checked against the set the listing
+  asked for (the one thing there the fetch did not choose), a shortfall leaves the
+  repo cold and says so on stderr, which is where it was before this path existed.
+  The `.writing` temp a record is staged in is **unique per writer and never
+  deleted by anyone else**: two loads sharing one cache are separate processes, and
+  sweeping that name to save a round trip made the other's `os.replace` fail and
+  its record never appear — the very failure this prevents, caused by tidying. The
+  name carries a random token as well as the pid, because two containers over one
+  mounted cache have their own pid namespaces and a reused pid would let two writers
+  interleave into one file and `os.replace` publish mixed JSON as truth — which also
+  makes a hard-kill leftover PERMANENT, accepted as a few hundred bytes written
+  inside a ~1ms window, invisible to every consumer, and removed by the same
+  `hf cache delete` that removes the record and the weights, against a by-age sweep
+  that could strike a live writer and cost the cold repo this exists to prevent. **The
+  skipped-record line is a diagnostic, not an error**: it fires on a download that
+  succeeded, so it says so, and says the next load re-resolves over the network. **Scoping is a property of the
+  on-disk STATE, not of the call**, which is why refusing scoped CALLS was not
+  enough: the same id reaches both kinds, because `diffusers_image` fetches
+  `black-forest-labs/FLUX.2-klein-4B` scoped to `recipe["keep"]` while
+  `mflux_image.download` fetches whatever it is given unscoped, and
+  `/api/ai/runtime/download` picks between them from the image-engine preference
+  with `weights_only=True` stopping before the `load()` that would refuse the
+  format — so a download on one engine after the other would have been served from
+  a cache holding a tenth of the repo, reporting success having fetched nothing.
+  Removing a GGUF recipe flips the same id from scoped to unscoped with no user
+  involved at all. **A file that went away has to be detectable**: a blob pruned
+  together with its snapshot entry leaves nothing for a directory walk to trip
+  over, and before this path existed pressing Download again re-listed and
+  re-fetched exactly that, so short-circuiting without the recorded list quietly
+  removed the app's only repair route. Checking recorded names also removes any
+  dependence on `os.walk`, which does not follow directory symlinks by default. **A
+  cache with no record is never served** — every machine that already holds models
+  takes the networked path once, as before, and gains a record on the way out. An interrupted download's markers (hf's
+  `.incomplete`, our `.fusedpart` and its sidecar) are checked per BLOB rather than
+  per repo, because a part file is the resume state (AI-5i) and a repo-wide scan
+  let one cancelled quantization void the fast path for every other file in a
+  multi-GGUF repo. Measured on a real cache: 0.5ms end to end for a 5-file whisper
+  snapshot and 1.2ms for the 17-file scoped FLUX one, against 483ms before; the
+  record-less first call is 0.6-1.1s, i.e. the old cost paid one more time. **The trade is stated rather than
+  discovered: a complete cached model does not pick up a newer Hub revision under
+  the same branch** until something forces a re-check. That is chosen — bring-up
+  latency and offline operation over revision freshness — because these are
+  snapshots a user downloaded on purpose, and weights silently changing under a
+  name they picked would be the worse surprise.
 - **AI-5j** **A load that omits `capability` INFERS it, and refuses rather than
   guessing when it cannot.** The omitted argument used to mean text generation
   unconditionally, which is a wrong-runner dispatch wearing a library error:
@@ -6226,13 +6315,43 @@ an AI Models page that could say what was on disk but not what was *running*.
   defeating the folder split) and **not** the PyTorch one (gigabytes for a 2MB
   model). The repo is ungated, which the download rule requires of everything
   this app fetches and not only of models a user picks. **Silence is dropped and
-  each speech region is transcribed on its own**, with every timestamp mapped
-  back to original-recording time. That is chunking, which AI-10c rejects for
+  only speech is decoded**, with every timestamp mapped back to
+  original-recording time. That is chunking, which AI-10c rejects for
   progress — and the difference is where the cut falls: a VAD boundary is by
   construction half a second of silence, where a sentence has already ended,
-  whereas a fixed offset cuts through one. What is still lost is conditioning
-  ACROSS a gap (`condition_on_previous_text` works inside one call), and
-  carrying the previous region's text in as a prompt was rejected rather than
+  whereas a fixed offset cuts through one. **The speech is PACKED, not decoded a
+  region at a time** (D366, `vad.pack_regions`): the surviving regions are
+  concatenated into clips of at most 29 seconds and each clip is one
+  `transcribe()` call, with `vad.original_start`/`original_end` inverting the concatenation for
+  every timestamp — each endpoint mapped on its own, since a segment can span a
+  join. **A segment that spans a join keeps its real interval but is SCORED for
+  its speaker only where speech was**: `assign_speakers`/`speaker_for` take an
+  optional `spans` mask, and the packed path passes the region list. Diarization
+  runs on the full waveform (§40, deliberately) and routinely has turns inside a
+  dropped pause, so summing overlap across the whole span handed the label to
+  whoever the segmenter heard during the silence rather than to whoever said the
+  words. The published `start`/`end` are unchanged — the words really do sit
+  either side of the pause — and every engine that drops no silence passes no
+  mask and scores exactly as before. **This is the one place AI-10f claims a
+  speed benefit, and it is measured**, on a 216-second recording that is 92% speech (31 regions, min
+  0.8s, median 5.8s, max 14.0s), against the same file decoded whole:
+  `large-v3-turbo` 8.32s whole, 23.30s as 31 raw regions, 9.31s packed;
+  `tiny.en-8bit` 1.48s / 2.42s / 2.05s. Before packing, `vad: true` therefore
+  COST 15 seconds on a 3.6-minute recording rather than saving anything, because
+  mlx-whisper pads every call's mel to `N_FRAMES = 3000` — 30 seconds — so a
+  0.8-second region buys a full encoder window. faster-whisper never had the
+  defect (its own `vad_filter` calls `collect_chunks`, which concatenates and
+  remaps), and two engines sitting 2.8x apart on one flag is precisely what this
+  clause exists to prevent. **`parakeet_mlx` deliberately does not pack**: it is
+  a transducer with no fixed window (it chunks only above `chunk_duration =
+  60.0`), so its cost is proportional to the audio it is given and packing would
+  add a second timestamp mapping for no measured gain — same meaning of the
+  flag, different batching, which is the distinction the clause draws. A single
+  region longer than the budget passes through whole and is never split: cutting
+  mid-speech loses words, and Whisper's own seeking chunks a long input better.
+  What is still lost is conditioning ACROSS a CALL
+  (`condition_on_previous_text` works inside one), and
+  carrying the previous clip's text in as a prompt was rejected rather than
   forgotten: it invites the model to continue a sentence that finished before
   the pause, which is the known route to a repetition loop. **Progress stays in
   seconds of the ORIGINAL recording**: the borrowed frame counter denominates
