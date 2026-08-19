@@ -238,10 +238,18 @@ export default function ListingPreviewPane({
     !undecided && side === "claude" && sideEntries.claude && sideEntries.claude.path !== null
       ? paneSideTarget("claude", folder, row && !row.self ? row.path : null)
       : null;
+  // `?sel=` decodes against the SAME base the rows are built on — Listing's
+  // fsPath with its trailing slash stripped (useListingSelection) — or the two
+  // spellings diverge exactly at the roots: "/" would decode `?sel=x` to "//x"
+  // while the row is "/x", and "C:/" likewise, so a seeded hop at a root would
+  // never count as url-named and a deep link's params would be stripped there.
   const urlNamedTarget =
     chatTarget !== null &&
     chatTarget ===
-      (pathFromSelParam(folder, new URLSearchParams(location.search).get("sel")) ?? folder);
+      (pathFromSelParam(
+        folder.replace(/\/$/, ""),
+        new URLSearchParams(location.search).get("sel")
+      ) ?? folder);
   useEffect(() => {
     dropStaleChatParams(chatTarget, urlNamedTarget);
   }, [chatTarget, urlNamedTarget]);
