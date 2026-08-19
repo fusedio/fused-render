@@ -17,6 +17,7 @@ import {
   type Config,
 } from "@platform/lib/api";
 import { useIndexStatus } from "@platform/lib/index-status";
+import { runCommunity } from "@platform/lib/community";
 import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { FilesSearch } from "@apps/explorer/FilesHome";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
@@ -159,7 +160,42 @@ export default function Home({ config }: { config: Config }) {
     if (limit === null) return;
     let alive = true;
     getHomeApps(Math.min(limit, MAX_ROW)).then(
-      (r) => alive && setApps(r.apps.slice(0, MAX_ROW)),
+      async (r) => {
+        if (!alive) return;
+        if (r.apps.length > 0) {
+          setApps(r.apps.slice(0, MAX_ROW));
+          return;
+        }
+        // Empty on a brand-new install usually isn't "no apps" — it's this
+        // fetch landing before the startup showcase clone (into
+        // <workspace>/showcase, kicked off in the background at server start)
+        // has finished. Apps.tsx already escalates the same "no-cache" catalog
+        // status into a wait-for-clone-then-refetch; Home is the first page a
+        // new user sees, so it needs the same escalation instead of settling
+        // on "No apps yet" forever.
+        try {
+          const local = await runCommunity<{ status?: string }>({ action: "catalog" });
+          if (!alive) return;
+          // A "no-cache" status means the clone is still missing — wait for
+          // it. But the clone can just as easily land in the gap between the
+          // first empty getHomeApps and this very check, which reports it
+          // "ok" already: that walk never re-ran, so its emptiness is just as
+          // stale. Either way, one more walk is needed before the row really
+          // is empty — retry unconditionally, only waiting on refresh first
+          // when the clone genuinely hasn't landed yet.
+          if (local.status === "no-cache") {
+            await runCommunity({ action: "refresh" });
+            if (!alive) return;
+          }
+          const retry = await getHomeApps(Math.min(limit, MAX_ROW));
+          if (!alive) return;
+          setApps(retry.apps.slice(0, MAX_ROW));
+          return;
+        } catch {
+          // Community backend unreachable — fall through to the empty state.
+        }
+        setApps([]);
+      },
       (e: Error) => {
         if (!alive) return;
         setApps([]);
