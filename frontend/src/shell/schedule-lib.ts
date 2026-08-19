@@ -1696,21 +1696,18 @@ export function runStatus(m: TaskMessage, tone: RunTone): RunStatus {
  * a task triaged to `done` whose newest run broke says Failed, and so does a
  * task the server already filed under `failed`.
  *
- * `projected` is the one DAY-scoped thing the pill still carries, and
- * deliberately not as a word: the dashes say "nothing on this day is written
- * down yet", a glance-level cue the chip itself also wears. Dropping a visual
- * distinction is not part of dropping a duplicated word.
+ * NEVER `projected` (Akshil, 2026-08-19). The pill used to inherit the clicked
+ * chip's dashes, but the dashes mean "nothing on this day is written down yet" —
+ * a DAY-scoped fact, and this pill states the TASK's status. Dashes belong to
+ * projected chips and the ghost rings on projected occurrence rows; a task is
+ * never itself a projection, so its pill is always solid.
  */
-export function taskStatus(
-  column: BoardColumn,
-  failed: boolean,
-  projected = false,
-): RunStatus {
+export function taskStatus(column: BoardColumn, failed: boolean): RunStatus {
   const c = failed ? "failed" : column;
   return {
     column: c,
     failed: c === "failed",
-    projected,
+    projected: false,
     label: columnLabel(c),
     // A task has no finer reading to keep: `detail` exists for the run-level
     // words runStatus folds away ("Missed", "Stopped reporting"), and a task's

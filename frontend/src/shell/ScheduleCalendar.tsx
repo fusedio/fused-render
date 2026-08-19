@@ -100,6 +100,7 @@ import {
   useState,
 } from "react";
 import {
+  archiveTask,
   getTaskMessages,
   getTasksScheduled,
   markTaskMessageRead,
@@ -134,7 +135,6 @@ import {
   scrollTarget,
   stepRange,
   taskChips,
-  taskStatus,
   threadForDay,
   windowBounds,
 } from "./schedule-lib";
@@ -165,6 +165,7 @@ import {
   isRunningIn,
   messageTone as taskMessageTone,
   openMessageHref,
+  popoverPill,
   taskColumn,
   taskHref,
   taskRunIntent,
@@ -207,6 +208,13 @@ export const ICON_CLOCK = icon(<><circle cx="12" cy="12" r="9" /><path d="M12 7v
 export const ICON_FOLDER = icon(<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />);
 export const ICON_SHIELD = icon(<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />);
 export const ICON_EDIT = icon(<><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" /></>);
+// Filing away — lucide `archive`, the same lidded box the List rows and the
+// Board cards wear for the same verb (ScheduleTaskViews.ICON_ARCHIVE), redrawn
+// here only because the two files keep separate `icon()` sizes.
+export const ICON_ARCHIVE = icon(
+  <><rect x="2" y="3" width="20" height="5" rx="1" />
+    <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+    <path d="M10 12h4" /></>);
 // No repeat / skip / cancel glyphs any more (Akshil, 2026-08-19). The repeat
 // arrows doubled the recurrence sentence they sat next to, and the skip/cancel
 // pair left with the per-row actions they decorated — see the popover's thread
@@ -375,6 +383,15 @@ function ChipPopover({
     [messages, chip.day],
   );
 
+  // Is the task actually working RIGHT NOW — tasks-lib's reading, the very rule
+  // that shimmers the chip this panel is anchored to. Asked of the popover's
+  // merged list (a superset of chip.messages), so the freshly fetched thread can
+  // light it too; ghosts are safe to include because isRunningNow refuses
+  // anything that never started. It drives three things below: the header's
+  // lifecycle slot (no destructive verb mid-run), the pill's word on a
+  // recurring task, and the shimmer on the pill's own ink.
+  const liveNow = isRunningIn(task, messages);
+
   // Placed once from the CSS cap, then again from the box it became — the
   // thread lands a fetch later and an error line can appear under it, and both
   // change the height that decides whether the panel fits below the click.
@@ -479,6 +496,46 @@ function ChipPopover({
     }
   };
 
+  // THE HEADER'S ONE LIFECYCLE VERB (Akshil, 2026-08-19). The approved design
+  // gives the header's right edge a pencil and ONE state-dependent slot:
+  //
+  //   done / failed  -> Archive — the same `api.archiveTask(task.key)` call the
+  //                     List's row button and the Board's drop make, so the
+  //                     three views file a task through one door;
+  //   running        -> nothing — no destructive verb mid-run;
+  //   upcoming,      -> the design says Delete, but the app has NO delete-task
+  //   archived          endpoint (archiving is deliberately the only filing
+  //                     verb — api.ts: "nothing was destroyed either way, which
+  //                     is the whole point of archiving rather than deleting").
+  //                     Rather than inventing an endpoint or mislabelling
+  //                     cancel-one-entry as Delete, the slot stays empty for
+  //                     these states until the server grows the verb.
+  //
+  // No confirm step on Archive for the same reason the List and Board ask none:
+  // it is reversible by design (unarchiveTask), and the one confirm the design
+  // asked for belongs to Delete, which does not exist yet.
+  const col = taskColumn(task);
+  const canArchive = !liveNow && (task.failed || col === "done" || col === "failed");
+  const archive = async () => {
+    setRunning(true);
+    setError("");
+    try {
+      await archiveTask(task.key);
+      // Archiving may take the task's chips off the grid entirely, so the panel
+      // closes rather than describing a chip the next poll has removed — the
+      // exact lifecycle rule runTask documents above.
+      onReload();
+      onClose();
+    } catch (e) {
+      // The server's own sentence, in the quiet line the run button already
+      // uses, and a reload so the grid corrects itself either way.
+      setError((e as Error).message);
+      onReload();
+    } finally {
+      setRunning(false);
+    }
+  };
+
   // NO PER-ROW CANCEL ANY MORE (Akshil, 2026-08-19: "let us hide skip for
   // now"). The two cancels this panel used to make — queue endpoint for a
   // QUEUED entry, schedule cancel for a future one — left with the ⊗/✕ buttons
@@ -493,26 +550,24 @@ function ChipPopover({
     day: "numeric",
   });
 
-  // THE HEADER'S PILL IS THE TASK'S STATUS — `taskColumn(task)` and
-  // `task.failed`, the exact two values the List's row and the Board's card hand
-  // StatusIcon, so the three views cannot say different words about one task.
+  // THE HEADER'S PILL — tasks-lib.popoverPill's decision, in the app's five
+  // words, and the full reasoning is on that function: a ONE-OFF's pill is its
+  // task's status (taskColumn + failed, exactly what the List's row and the
+  // Board's card hand StatusIcon); a REPEATING task's pill answers for the
+  // clicked OCCURRENCE — In Progress while it works, Upcoming for a projected
+  // or not-yet-run day, and a past day's own outcome (Done/Failed) from the
+  // newest real run among the rows drawn right below it (Akshil, 2026-08-19: a
+  // rule's task-level column is nearly always "upcoming", which made the pill
+  // useless on the one view that is about days).
   //
-  // It was the DAY's worst run until 2026-08-17 (schedule-lib.dayStatus, now
-  // gone), and that made this panel argue with itself: a recurring rule whose
-  // task is Upcoming but whose day holds one failed run showed a pill reading
-  // "Failed" next to the footer button reading "Run now". Two facts, one panel,
-  // disagreeing — and the pill sits beside TASK-023 in this header, so it is
-  // labelling that task and not that column. Each run's own outcome is still on
-  // its own row in the thread below, which is where a day-level word belongs.
-  //
-  // `chip.projected` is the one day-scoped thing left on it and is not a word:
-  // the dashes say nothing on this day is written down yet. The chip on the grid
-  // keeps its own day-level cues (schedule-lib.dayTone paints the wash, and a
-  // day holding a failure still reads differently from a clean one) — those are
-  // pixels, they were never the duplicated fact, and they stay.
+  // AND ALWAYS SOLID (Akshil, 2026-08-19). The pill used to inherit the clicked
+  // chip's dashes through `chip.projected`; the dashes are a DAY-scoped drawing
+  // ("nothing written down yet") and stay on the grid's ghost chips and the
+  // ghost rings on the occurrence rows — never on a status word.
+  const recurring = Boolean(chip.recurring || repeat);
   const pill = useMemo(
-    () => taskStatus(taskColumn(task), task.failed, chip.projected),
-    [task, chip.projected],
+    () => popoverPill(task, recurring, chip.projected, liveNow, today),
+    [task, recurring, chip.projected, liveNow, today],
   );
 
   const nowSec = Math.floor(Date.now() / 1000);
@@ -602,15 +657,49 @@ function ChipPopover({
         {/* No ↻ glyph beside the id any more (Akshil, 2026-08-19). It was
             decorative by its own admission — the recurrence is spelled out in
             words two lines down — and a glyph whose label is already printed
-            only ever repeats it. */}
+            only ever repeats it.
+
+            The pill sits HERE, against the id it labels (Akshil, 2026-08-19) —
+            swatch, id, status as one left-aligned statement of what this is —
+            and the header's right edge holds the panel's quiet tools instead:
+            the pencil (the same handler the footer's Edit button used to fire)
+            and the one lifecycle verb `canArchive` above decides. */}
         <span
           className={
             `schedule-state schedule-state--${pill.column}` +
-            (pill.projected ? " is-projected" : "")
+            (liveNow ? " is-running" : "")
           }
         >
           {pill.label}
         </span>
+        <div className="schedule-cal-pop-tools">
+          {onEditEntry && chip.anchor.entry_id && (
+            <button
+              type="button"
+              className="schedule-cal-pop-tool"
+              title="Edit"
+              aria-label="Edit"
+              onClick={() => {
+                onEditEntry(chip.anchor.template_id || chip.anchor.entry_id);
+                onClose();
+              }}
+            >
+              {ICON_EDIT}
+            </button>
+          )}
+          {canArchive && (
+            <button
+              type="button"
+              className="schedule-cal-pop-tool"
+              title="Archive"
+              aria-label="Archive"
+              disabled={running}
+              onClick={() => void archive()}
+            >
+              {ICON_ARCHIVE}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* TITLE THEN DESCRIPTION, as one writing block, exactly as the New task
@@ -670,13 +759,11 @@ function ChipPopover({
 
       {error && <p className="schedule-card-why">{error}</p>}
 
+      {/* NO Edit DOWN HERE ANY MORE (Akshil, 2026-08-19): the pencil moved to
+          the header's tool rail, same handler, so the footer is left holding
+          only the two things a footer is for — going somewhere (Open in
+          Explorer) and starting work (Run now / Re-run). */}
       <div className="schedule-card-actions">
-        {onEditEntry && chip.anchor.entry_id && (
-          <button type="button" className="btn btn-secondary"
-                  onClick={() => { onEditEntry(chip.anchor.template_id || chip.anchor.entry_id); onClose(); }}>
-            {ICON_EDIT} Edit
-          </button>
-        )}
         {threadHref && (
           <button type="button" className="btn btn-secondary"
                   onClick={() => navigateUrl(threadHref)}>
@@ -1011,8 +1098,10 @@ export default function ScheduleCalendar({
                         // chip on today's grid that was actually working looked
                         // exactly like the four that had finished. The rule is
                         // tasks-lib's — the same reading of state and turn the
-                        // other two views file a card by — and the CSS is a
-                        // shimmer that sweeps the chip, with a static highlight
+                        // other two views file a card by — and the CSS is the
+                        // app's ONE running treatment: the title's ink turns
+                        // the In Progress yellow and shimmers, exactly as the
+                        // sidebar's "N running" does, with a flat yellow label
                         // under prefers-reduced-motion.
                         //
                         // ASKED OF THE WHOLE CHIP, not of its anchor (bugbot,

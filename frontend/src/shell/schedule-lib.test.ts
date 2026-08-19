@@ -1552,8 +1552,7 @@ describe("the one status vocabulary", () => {
   // It used to be the DAY's worst run, and these are the tests that stop it going
   // back: the pill answers the same question the Board's lane does, about the same
   // task, or the panel contradicts its own Run now button.
-  const pillOf = (t: Task, projected = false) =>
-    taskStatus(taskColumn(t), t.failed, projected);
+  const pillOf = (t: Task) => taskStatus(taskColumn(t), t.failed);
 
   it("says what the TASK is, not what the day's worst run was", () => {
     // The case that made this wrong: a recurring rule still upcoming, whose day
@@ -1595,10 +1594,14 @@ describe("the one status vocabulary", () => {
     expect(pillOf(odd).label).toBe("Done");
   });
 
-  it("keeps the dashes as its ONE day-scoped fact, and never as a word", () => {
+  it("is never dashed — the pill states the TASK, and a task is not a projection", () => {
+    // The dashes are day-scoped (projected chips, ghost rings on occurrence
+    // rows) and used to leak onto this pill through a `projected` argument.
+    // Akshil, 2026-08-19: the pill is always solid, so the argument is gone —
+    // there is no way to ask taskStatus for a projected pill any more.
     const t = task({ key: "ghosts", status: "upcoming" });
-    expect(pillOf(t, true)).toMatchObject({ label: "Upcoming", projected: true });
-    expect(pillOf(t, false).projected).toBe(false);
+    expect(pillOf(t).projected).toBe(false);
+    expect(taskStatus(taskColumn(t), t.failed).projected).toBe(false);
   });
 
   it("leaves the chip's own day-level cue alone — a failing day still LOOKS different", () => {
@@ -1615,9 +1618,9 @@ describe("the one status vocabulary", () => {
     expect(chip.tone).toBe("error");
     expect(chip.tone).not.toBe(dayTone([messages[0]])); // a clean day differs
     // ...while the pill above it is the task's own word.
-    expect(pillOf(t, chip.projected)).toMatchObject({ label: "Upcoming", projected: false });
-    // A day of nothing but cron arithmetic is still outlined, and that flag is
-    // what the pill's dashes now come from.
+    expect(pillOf(t)).toMatchObject({ label: "Upcoming", projected: false });
+    // A day of nothing but cron arithmetic is still outlined — the CHIP keeps
+    // its dashes; the pill never wears them.
     const ghosts = [
       msg({ message_id: `${GHOST_PREFIX}1`, at: at(2026, 7, 18, 9), template_id: "t1" }),
       msg({ message_id: `${GHOST_PREFIX}2`, at: at(2026, 7, 18, 10), template_id: "t1" }),
@@ -2214,11 +2217,11 @@ describe("where the popover's run action is drawn", () => {
     expect(CAL_SRC).toContain("isProjectedId(intent.messageId)");
   });
 
-  it("sits in the footer beside Edit and Open in Explorer, and LAST", () => {
+  it("sits in the footer after Open in Explorer, and LAST — Edit left for the header", () => {
     expect(POP_FOOTER).toContain("{run && (");
-    expect(POP_FOOTER.indexOf("ICON_EDIT")).toBeLessThan(
-      POP_FOOTER.indexOf("ICON_INBOX"),
-    );
+    // The pencil moved to the header's tool rail (Akshil, 2026-08-19); the
+    // footer holds only going-somewhere and starting-work.
+    expect(POP_FOOTER).not.toContain("ICON_EDIT");
     expect(POP_FOOTER.indexOf("ICON_INBOX")).toBeLessThan(
       POP_FOOTER.indexOf("schedule-cal-pop-run"),
     );
@@ -2246,7 +2249,7 @@ describe("where the popover's run action is drawn", () => {
     // re-send's queued `note`) keeps it, with the server's own sentence.
     const body = CAL_SRC.slice(
       CAL_SRC.indexOf("const runTask = async"),
-      CAL_SRC.indexOf("// Two cancels, one button"),
+      CAL_SRC.indexOf("// THE HEADER'S ONE LIFECYCLE VERB"),
     );
     expect(body).toContain("if (said) setError(said);");
     expect(body).toContain("else onClose();");
@@ -2274,5 +2277,49 @@ describe("where the popover's run action is drawn", () => {
     for (const mix of ["12%", "32%"]) expect(block).toContain(mix);
     // Armoured against the page's two hover skins.
     expect(block).toContain(".prefs-section .schedule-cal-pop-run:hover:not(:disabled)");
+  });
+});
+
+describe("the popover's header rail (Akshil, 2026-08-19)", () => {
+  // The head as source, sliced like POP_FOOTER so a claim about ORDER inside it
+  // cannot be satisfied by markup elsewhere in the file.
+  const POP_HEAD = CAL_SRC.slice(
+    CAL_SRC.indexOf('<div className="schedule-cal-pop-head">'),
+    CAL_SRC.indexOf('<div className="schedule-pop-write">'),
+  );
+
+  it("reads swatch, id, pill as one left group — then the tools at the right edge", () => {
+    expect(POP_HEAD.indexOf("schedule-cal-swatch"))
+      .toBeLessThan(POP_HEAD.indexOf("schedule-cal-pop-id"));
+    expect(POP_HEAD.indexOf("schedule-cal-pop-id"))
+      .toBeLessThan(POP_HEAD.indexOf("schedule-state"));
+    expect(POP_HEAD.indexOf("schedule-state"))
+      .toBeLessThan(POP_HEAD.indexOf("schedule-cal-pop-tools"));
+    // The head's ONE auto margin belongs to the tool rail now, not the pill.
+    expect(SCHEDULE_CSS).toContain(".schedule-cal-pop-tools {\n  margin-left: auto;");
+    expect(SCHEDULE_CSS).not.toContain(
+      ".schedule-cal-pop-head .schedule-state {\n  margin-left: auto;",
+    );
+  });
+
+  it("the pencil in the rail fires the exact handler the footer's Edit did", () => {
+    expect(POP_HEAD).toContain(
+      "onEditEntry(chip.anchor.template_id || chip.anchor.entry_id);",
+    );
+  });
+
+  it("offers Archive only where the List would, and never mid-run", () => {
+    // The gate, verbatim: settled outcomes only, and nothing destructive while
+    // the task is working. Upcoming/archived offer NO verb — the design's
+    // Delete waits on a server endpoint that does not exist yet.
+    expect(CAL_SRC).toContain(
+      '!liveNow && (task.failed || col === "done" || col === "failed")',
+    );
+    // The same single door the List's button and the Board's drop file through.
+    expect(CAL_SRC).toContain("await archiveTask(task.key);");
+  });
+
+  it("the pill is solid in every state — the dashed pill rule is gone from the sheet", () => {
+    expect(SCHEDULE_CSS).not.toContain(".schedule-state.is-projected {");
   });
 });
