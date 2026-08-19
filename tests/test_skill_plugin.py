@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 
 import pytest
 
@@ -447,13 +448,29 @@ def test_appenv_names_the_var_the_server_exports():
     assert skill_plugin.PLUGIN_DIR_ENV in appenv
 
 
-# -- the WORKBENCH plugin: the app hands over the canvas skills itself ---------
+# -- the WORKBENCH skills: an app-owned clone, handed to CANVAS sessions only ---
 #
-# A canvas clone's CLAUDE.md names `workbench:canvas-toml` and friends. It used
-# to handle "not installed" by telling the USER to run a shell command, which a
-# Claude session in a chat pane cannot act on and a user reading it there should
-# never have been handed. So the app finds the plugin and passes it per-run, over
-# the same repeatable `--plugin-dir` flag it already uses for its own skills.
+# A canvas clone's CLAUDE.md names `workbench:canvas-toml` and friends. Those
+# skills are not in this wheel: they live in the public `fusedio/skills` repo,
+# which the app shallow-clones into a directory it owns under `home_dir()` and
+# refreshes at most once per interval. Two properties matter, and they fail in
+# different places:
+#
+# * the ROOT — only `<clone>/workbench` with every skill in WORKBENCH_SKILLS
+#   present is ever offered. A half-fetched or stubbed tree must read as
+#   "nothing to hand" (it would load cleanly and teach the model nothing), and a
+#   failed fetch must leave a previously-good clone exactly where it was.
+# * the GATE — the root goes to canvas-clone sessions only. Handing it to every
+#   session leaks canvas/UDF guidance into file, app-folder and plain-folder
+#   chats that have no canvas anywhere near them.
+#
+# Machine discovery (a scan of Claude Code's own
+# plugins/{marketplaces,cache}/<market>/workbench) used to answer the first half
+# and is deleted: the layout is private, so the scan could not tell an installed
+# plugin from an UNINSTALLED one — the uninstall leaves a tombstoned
+# cache/<market>/workbench/<sha>/ dir behind and the scan resurrected it. The
+# tests below therefore assert the app's OWN clone dir, and nothing here may
+# reach into `~/.claude` again.
 
 
 def _load_agent():
@@ -481,122 +498,310 @@ def _plugin_tree(root, skills, name="workbench"):
     return root
 
 
-def test_the_workbench_plugin_is_found_in_the_marketplace_checkout(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+def _clone_tree(home, skills=skill_plugin.WORKBENCH_SKILLS, git=True):
+    """The clone as a successful fetch leaves it: `<home>/workbench-skills/`
+    holding a `workbench/` plugin root (and a `.git`, which is what tells the
+    fetch to refresh rather than re-clone)."""
+    clone = os.path.join(home, skill_plugin.WORKBENCH_CLONE_SUBDIR)
+    if git:
+        os.makedirs(os.path.join(clone, ".git"), exist_ok=True)
+    return _plugin_tree(os.path.join(clone, skill_plugin.WORKBENCH_PLUGIN_SUBDIR),
+                        skills)
+
+
+@pytest.fixture
+def no_override(monkeypatch):
     monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
-    root = _plugin_tree(
-        tmp_path / "plugins" / "marketplaces" / "fused-marketplace" / "workbench",
-        skill_plugin.WORKBENCH_SKILLS)
-    assert skill_plugin.find_workbench_plugin() == str(root)
 
 
-def test_the_versioned_cache_copy_is_the_fallback(tmp_path, monkeypatch):
-    """The installed copy sits under a version hash that changes on every
-    update, so it is usable but never preferred — and the NEWEST version wins."""
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
-    cache = tmp_path / "plugins" / "cache" / "fused-marketplace" / "workbench"
-    _plugin_tree(cache / "aaa111", skill_plugin.WORKBENCH_SKILLS)
-    newest = _plugin_tree(cache / "zzz999", skill_plugin.WORKBENCH_SKILLS)
-    assert skill_plugin.find_workbench_plugin() == str(newest)
+@pytest.fixture
+def fake_git(monkeypatch):
+    """The git seam, recording every invocation. `clone` materializes a real
+    plugin tree at the destination so the swap-and-validate path runs for
+    real; anything else just succeeds."""
+    calls = []
 
-    # With a marketplace checkout present too, that one wins.
-    checkout = _plugin_tree(
-        tmp_path / "plugins" / "marketplaces" / "fused-marketplace" / "workbench",
-        skill_plugin.WORKBENCH_SKILLS)
-    assert skill_plugin.find_workbench_plugin() == str(checkout)
+    def run(args, timeout):
+        calls.append(list(args))
+        if args[0] == "clone":
+            _plugin_tree(os.path.join(args[-1], skill_plugin.WORKBENCH_PLUGIN_SUBDIR),
+                         skill_plugin.WORKBENCH_SKILLS)
+        return subprocess.CompletedProcess(list(args), 0, "", "")
 
-
-def test_a_gutted_plugin_tree_is_not_offered(tmp_path, monkeypatch):
-    """The manifest alone is not evidence: a root missing the very skills the
-    CLAUDE.md names would load cleanly and teach the model nothing — exactly the
-    silent failure this mechanism exists to remove."""
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
-    _plugin_tree(tmp_path / "plugins" / "marketplaces" / "m" / "workbench",
-                 ["canvas-toml"])  # manifest + one skill, not the set
-    assert skill_plugin.find_workbench_plugin() is None
+    monkeypatch.setattr(skill_plugin, "_git", run)
+    return calls
 
 
-def test_nothing_installed_is_a_normal_outcome(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "empty"))
-    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
-    assert skill_plugin.find_workbench_plugin() is None
+def test_no_clone_is_a_normal_outcome(home, no_override):
+    assert skill_plugin.workbench_plugin_root() is None
     assert skill_plugin.export_workbench_plugin_env() is None
     assert skill_plugin.WORKBENCH_PLUGIN_DIR_ENV not in os.environ
 
 
-def test_the_explicit_override_wins(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    _plugin_tree(tmp_path / "plugins" / "marketplaces" / "m" / "workbench",
-                 skill_plugin.WORKBENCH_SKILLS)
-    mine = _plugin_tree(tmp_path / "mine", skill_plugin.WORKBENCH_SKILLS)
-    monkeypatch.setenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, str(mine))
-    assert skill_plugin.find_workbench_plugin() == str(mine)
-    # And an override pointing at nothing does not silently fall back.
-    monkeypatch.setenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, str(tmp_path / "nope"))
-    assert skill_plugin.find_workbench_plugin() is None
-
-
-def test_the_export_publishes_the_root_and_clears_it_again(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
-    root = _plugin_tree(tmp_path / "plugins" / "marketplaces" / "m" / "workbench",
-                        skill_plugin.WORKBENCH_SKILLS)
-    assert skill_plugin.export_workbench_plugin_env() == str(root)
-    assert os.environ[skill_plugin.WORKBENCH_PLUGIN_DIR_ENV] == str(root)
-    # Plugin uninstalled → the var must go, or every later session is handed a
-    # --plugin-dir pointing at a tree that is no longer there.
+def test_a_valid_clone_is_the_root_and_the_export_publishes_it(home, no_override):
+    root = _clone_tree(home)
+    assert skill_plugin.workbench_plugin_root() == root
+    assert skill_plugin.export_workbench_plugin_env() == root
+    assert os.environ[skill_plugin.WORKBENCH_PLUGIN_DIR_ENV] == root
+    # Clone gone (a wiped home dir, a failed swap) → the var must go with it, or
+    # every later session is handed a --plugin-dir pointing at nothing.
     shutil.rmtree(root)
     assert skill_plugin.export_workbench_plugin_env() is None
     assert skill_plugin.WORKBENCH_PLUGIN_DIR_ENV not in os.environ
 
 
-def test_the_lookup_runs_no_subprocess(tmp_path, monkeypatch):
-    """Same rule as the skill-plugin export: this is on the pre-bind startup
-    path, and blocking there is a server the desktop supervisor kills."""
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+def test_a_gutted_clone_is_not_offered(home, no_override):
+    """The manifest alone is not evidence: a root missing the very skills the
+    CLAUDE.md names would load cleanly and teach the model nothing — exactly the
+    silent failure this mechanism exists to remove."""
+    _clone_tree(home, ["canvas-toml"])  # manifest + one skill, not the set
+    assert skill_plugin.workbench_plugin_root() is None
 
+
+def test_the_startup_export_runs_no_subprocess(home, no_override, monkeypatch):
+    """The export is on the PRE-BIND startup path, where blocking is a server
+    the desktop supervisor kills — so it publishes an existing clone and never
+    fetches one. The fetch belongs to the canvases path."""
     def no_spawn(*a, **kw):
-        raise AssertionError("the workbench plugin lookup must not spawn")
+        raise AssertionError("the startup workbench export must not spawn")
 
     for name in ("run", "Popen", "check_output", "call", "check_call"):
         monkeypatch.setattr(subprocess, name, no_spawn)
-    skill_plugin.export_workbench_plugin_env()
+    assert skill_plugin.export_workbench_plugin_env() is None
 
 
-def test_the_claude_template_passes_both_roots(monkeypatch):
-    """`--plugin-dir` is repeatable, which is what lets the two plugins compose
-    without merging trees. Either can be absent independently."""
+def test_the_fetch_shallow_clones_over_https(home, no_override, fake_git):
+    root = skill_plugin.fetch_workbench_skills()
+    assert root == os.path.join(home, skill_plugin.WORKBENCH_CLONE_SUBDIR,
+                                skill_plugin.WORKBENCH_PLUGIN_SUBDIR)
+    assert os.path.isdir(root)
+    assert len(fake_git) == 1
+    argv = fake_git[0]
+    assert argv[:3] == ["clone", "--depth", "1"]
+    assert skill_plugin.WORKBENCH_REPO_URL in argv
+    # HTTPS, never SSH: a shipping user has no SSH key, so an ssh:// remote
+    # would fail on exactly the machines this exists for.
+    assert skill_plugin.WORKBENCH_REPO_URL.startswith("https://")
+
+
+def test_a_failed_clone_publishes_nothing(home, no_override, monkeypatch):
+    """Staging exists for this: a failed clone must not leave a half-tree at the
+    real path for the next session to load."""
+    def run(args, timeout):
+        return subprocess.CompletedProcess(list(args), 128, "", "fatal: no network")
+
+    monkeypatch.setattr(skill_plugin, "_git", run)
+    assert skill_plugin.fetch_workbench_skills() is None
+    assert not os.path.exists(skill_plugin.workbench_clone_dir())
+
+
+def test_a_failed_refresh_leaves_the_good_clone_alone(home, no_override, monkeypatch):
+    root = _clone_tree(home)
+    calls = []
+
+    def run(args, timeout):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(list(args), 1, "", "fatal: no network")
+
+    monkeypatch.setattr(skill_plugin, "_git", run)
+    assert skill_plugin.fetch_workbench_skills() == root
+    assert os.path.isfile(os.path.join(root, skill_plugin.SKILLS_SUBDIR,
+                                       "canvas-toml", "SKILL.md"))
+    # It tried to refresh (no stamp yet) and stopped at the failed fetch rather
+    # than resetting a tree it could not update.
+    assert [c[2] for c in calls] == ["fetch"]
+
+
+def test_the_refresh_is_rate_limited(home, no_override, fake_git):
+    """Hours, not minutes: this runs on a user-visible request, and a needless
+    network round trip there is a stall the user sees."""
+    _clone_tree(home)
+    skill_plugin.fetch_workbench_skills()
+    assert [c[2] for c in fake_git] == ["fetch", "reset"]
+    fake_git.clear()
+    # Second call inside the interval: nothing at all.
+    skill_plugin.fetch_workbench_skills()
+    assert fake_git == []
+    # Stamp aged past the interval → one more refresh.
+    old = time.time() - skill_plugin.WORKBENCH_REFRESH_S - 1
+    with open(skill_plugin._stamp_file(), "w", encoding="utf-8") as fh:
+        fh.write("%d" % int(old))
+    skill_plugin.fetch_workbench_skills()
+    assert [c[2] for c in fake_git] == ["fetch", "reset"]
+
+
+def test_the_refresh_hard_resets_to_origins_default_branch(home, no_override, fake_git):
+    """A dirty or diverged clone has to self-heal — and the branch NAME is the
+    repo's business, so the fetch names HEAD rather than `main`."""
+    _clone_tree(home)
+    skill_plugin.fetch_workbench_skills()
+    fetch, reset = fake_git
+    assert fetch == ["-C", skill_plugin.workbench_clone_dir(), "fetch", "--depth",
+                     "1", "origin", "HEAD"]
+    assert reset == ["-C", skill_plugin.workbench_clone_dir(), "reset", "--hard",
+                     "FETCH_HEAD"]
+
+
+def test_no_git_on_the_machine_is_a_normal_outcome(home, no_override, monkeypatch):
+    def missing(args, timeout):
+        raise FileNotFoundError(2, "No such file or directory: 'git'")
+
+    monkeypatch.setattr(skill_plugin, "_git", missing)
+    assert skill_plugin.fetch_workbench_skills() is None
+    assert skill_plugin.sync_workbench_plugin() is None
+    assert skill_plugin.WORKBENCH_PLUGIN_DIR_ENV not in os.environ
+
+
+def test_a_timeout_is_a_normal_outcome(home, no_override, monkeypatch):
+    def hang(args, timeout):
+        raise subprocess.TimeoutExpired(args, timeout)
+
+    monkeypatch.setattr(skill_plugin, "_git", hang)
+    assert skill_plugin.fetch_workbench_skills() is None
+
+
+def test_the_git_spawn_keeps_the_posix_spawn_discipline():
+    """close_fds=False and an ABSOLUTE git path, never `cwd=`: a fork in this
+    process runs PROJ's atfork handler into a SIGSEGV before exec, so `git`
+    dies rc=-11 with no output at all. Same discipline as app_git.py."""
+    src = open(os.path.join(REPO_ROOT, "fused_render", "skill_plugin.py"),
+               encoding="utf-8").read()
+    body = src[src.index("def _git("):src.index("def workbench_clone_dir")]
+    body = body[body.index("return subprocess.run"):]  # the call, not its prose
+    assert "close_fds=False" in body
+    assert "cwd=" not in body
+    assert "_git_bin()" in body
+    assert "shutil.which(\"git\")" in src
+
+
+def test_the_override_bypasses_all_fetching(tmp_path, home, monkeypatch):
+    def no_git(args, timeout):
+        raise AssertionError("the dev override must never be fetched into")
+
+    monkeypatch.setattr(skill_plugin, "_git", no_git)
+    mine = _plugin_tree(tmp_path / "mine", skill_plugin.WORKBENCH_SKILLS)
+    monkeypatch.setenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, str(mine))
+    assert skill_plugin.workbench_plugin_root() == str(mine)
+    assert skill_plugin.fetch_workbench_skills() == str(mine)
+    assert skill_plugin.sync_workbench_plugin() == str(mine)
+    # An override pointing at nothing does not silently fall back to a clone.
+    _clone_tree(home)
+    monkeypatch.setenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, str(tmp_path / "nope"))
+    assert skill_plugin.workbench_plugin_root() is None
+    assert skill_plugin.fetch_workbench_skills() is None
+
+
+def test_no_machine_discovery_is_left_anywhere(home, monkeypatch, tmp_path):
+    """The scan of Claude Code's private plugin storage is gone, and must not
+    come back: it resurrected a plugin the user had UNINSTALLED (the uninstall
+    leaves the cache dir behind, tombstoned with `.orphaned_at`)."""
+    for gone in ("find_workbench_plugin", "_workbench_candidates",
+                 "WORKBENCH_PLUGIN_NAME"):
+        assert not hasattr(skill_plugin, gone), gone
+    src = open(os.path.join(REPO_ROOT, "fused_render", "skill_plugin.py"),
+               encoding="utf-8").read()
+    body = src[src.index("# -- the WORKBENCH"):]
+    # Comments deliberately still explain WHY the scan is gone; the code must
+    # not name any of it.
+    code = "\n".join(ln for ln in body.split("\n")
+                     if not ln.lstrip().startswith("#"))
+    for needle in ("marketplaces", "CLAUDE_CONFIG_DIR", "orphaned", "plugins"):
+        assert needle not in code, needle
+    # And behaviourally: a plugin sitting in Claude Code's storage is not found.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cc"))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+    _plugin_tree(tmp_path / "cc" / "plugins" / "marketplaces" / "m" / "workbench",
+                 skill_plugin.WORKBENCH_SKILLS)
+    assert skill_plugin.workbench_plugin_root() is None
+
+
+def test_the_claude_template_passes_the_workbench_root_to_canvases_only(
+        tmp_path, monkeypatch):
+    """The gate. `--plugin-dir` is repeatable, which is what lets the two
+    plugins compose without merging trees — but the workbench root is for canvas
+    clones alone, so the target decides whether it is passed at all."""
+    canvases = tmp_path / "canvases"
+    (canvases / "my_canvas").mkdir(parents=True)
     agent = _load_agent()
     monkeypatch.setattr(agent, "_skill_plugin_dir", lambda: "/a/own")
     monkeypatch.setattr(agent, "_workbench_plugin_dir", lambda: "/b/workbench")
-    assert agent._plugin_argv() == ["--plugin-dir", "/a/own",
-                                    "--plugin-dir", "/b/workbench"]
+    monkeypatch.setattr(agent, "_canvases_root", lambda: str(canvases))
+    both = ["--plugin-dir", "/a/own", "--plugin-dir", "/b/workbench"]
+    own = ["--plugin-dir", "/a/own"]
+
+    inside = str(canvases / "my_canvas" / "canvas.toml")
+    assert agent._plugin_argv(inside) == both
+    assert agent._plugin_argv(str(canvases / "my_canvas")) == both
+    # A sibling whose name merely STARTS with the root's characters is a
+    # different directory — a string prefix check would hand it the skills.
+    assert agent._plugin_argv(str(tmp_path / "canvases-evil" / "x.py")) == own
+    assert agent._plugin_argv(str(tmp_path / "elsewhere" / "app.html")) == own
+    assert agent._plugin_argv(None) == own
+    # Either root can still be absent independently.
     monkeypatch.setattr(agent, "_workbench_plugin_dir", lambda: None)
-    assert agent._plugin_argv() == ["--plugin-dir", "/a/own"]
+    assert agent._plugin_argv(inside) == own
     monkeypatch.setattr(agent, "_skill_plugin_dir", lambda: None)
-    assert agent._plugin_argv() == []
+    assert agent._plugin_argv(inside) == []
     monkeypatch.setattr(agent, "_workbench_plugin_dir", lambda: "/b/workbench")
-    assert agent._plugin_argv() == ["--plugin-dir", "/b/workbench"]
+    assert agent._plugin_argv(inside) == ["--plugin-dir", "/b/workbench"]
+    assert agent._plugin_argv(str(tmp_path / "elsewhere")) == []
 
 
-def test_appenv_names_the_workbench_var_too():
+def test_both_callers_pass_their_target_to_the_gate():
+    """A caller that forgets the argument silently withholds the skills from
+    every canvas session — the gate defaults to "no", so the failure is quiet."""
+    src = open(os.path.join(REPO_ROOT, "fused_render", "templates", "claude",
+                            "agent.py"), encoding="utf-8").read()
+    assert "_plugin_argv()" not in src
+    assert src.count("_plugin_argv(file)") == 2
+
+
+def test_appenv_names_the_workbench_var_and_the_canvases_root():
     appenv = open(os.path.join(REPO_ROOT, "fused_render", "templates", "shared",
                                "appenv.py"), encoding="utf-8").read()
     assert skill_plugin.WORKBENCH_PLUGIN_DIR_ENV in appenv
+    assert "FUSED_RENDER_CANVASES_DIR" in appenv
     src = open(os.path.join(REPO_ROOT, "fused_render", "templates", "claude",
                             "agent.py"), encoding="utf-8").read()
     assert "from appenv import workbench_plugin_dir as _workbench_plugin_dir" in src
+    assert "from appenv import canvases_root as _canvases_root" in src
 
 
-def test_the_server_exports_it_before_serving():
-    """The var has to be set before any child is spawned, or a session inherits
-    nothing — same contract as every other FUSED_RENDER_* export."""
+def test_appenv_canvases_root_matches_the_servers_own(monkeypatch, tmp_path):
+    """The two copies of the rule (SPEC PY-15 forbids the import) agree, and the
+    exported var is what makes them agree in practice."""
+    import fused_render.canvases as canvases_mod
+
+    path = os.path.join(REPO_ROOT, "fused_render", "templates", "shared", "appenv.py")
+    spec = importlib.util.spec_from_file_location("appenv_for_canvases", path)
+    appenv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(appenv)
+
+    monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(tmp_path / "cans"))
+    assert appenv.canvases_root() == str(tmp_path / "cans")
+    assert canvases_mod.canvases_root() == str(tmp_path / "cans")
+    # Standalone fallback: under the home dir, like the server's own default.
+    monkeypatch.delenv("FUSED_RENDER_CANVASES_DIR")
+    monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(tmp_path / "home"))
+    assert appenv.canvases_root() == str(tmp_path / "home" / "canvases")
+
+
+def test_the_server_exports_the_root_before_serving():
+    """The vars have to be set before any child is spawned, or a session
+    inherits nothing — same contract as every other FUSED_RENDER_* export."""
     src = open(os.path.join(REPO_ROOT, "fused_render", "server", "app.py"),
                encoding="utf-8").read()
     export = src[src.index("def export_app_env"):]
     assert "export_workbench_plugin_env()" in export
+    assert "FUSED_RENDER_CANVASES_DIR" in export
 
 
+def test_the_canvases_clone_route_is_what_fetches():
+    """Startup may not fetch (pre-bind), so the canvas-clone route must — and it
+    must swallow the failure, since a clone has to succeed without the skills."""
+    src = open(os.path.join(REPO_ROOT, "fused_render", "canvases.py"),
+               encoding="utf-8").read()
+    route = src[src.index("def api_canvases_clone"):]
+    route = route[:route.index("\n@router")]
+    assert "sync_workbench_plugin()" in route
+    assert "except Exception" in route

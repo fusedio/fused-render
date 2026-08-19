@@ -84,6 +84,7 @@ if "__file__" not in globals():
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from appenv import canvases_root as _canvases_root
 from appenv import fused_cli_dir as _fused_cli_dir
 from appenv import origin as _origin
 from appenv import skill_plugin_dir as _skill_plugin_dir
@@ -455,9 +456,29 @@ def _claude_bin() -> str:
     )
 
 
-def _plugin_argv() -> list:
+def _in_canvases_root(target: str) -> bool:
+    """Whether `target` is inside the canvas-clones root.
+
+    realpath + commonpath, never a string prefix: `<root>-evil` starts with the
+    root's characters and is a different directory entirely, and on macOS the
+    root and the target routinely disagree about `/tmp` vs `/private/tmp` until
+    both are resolved. A path that cannot be resolved at all is treated as
+    OUTSIDE — the gate's default answer is "no extra skills"."""
+    if not target:
+        return False
+    try:
+        root = os.path.realpath(_canvases_root())
+        path = os.path.realpath(target)
+        return os.path.commonpath([root, path]) == root
+    except (OSError, ValueError):
+        # ValueError: commonpath refuses to mix an absolute and a relative path,
+        # or paths on different Windows drives — both mean "not inside".
+        return False
+
+
+def _plugin_argv(target: str | None = None) -> list:
     """One `--plugin-dir <root>` per plugin root fused-render has to hand this
-    session, or `[]`.
+    session for THIS target, or `[]`.
 
     This is how a session we launch gets the fused-render skills with certainty
     instead of hoping the user-level sync landed somewhere the CLI reads (D216).
@@ -468,18 +489,27 @@ def _plugin_argv() -> list:
     and a user who installed the published plugin themselves just sees the same
     skills listed twice.
 
-    TWO roots, because they are two separate plugins: fused-render's own skills
-    (assembled by skill_plugin.py, shipped in this wheel) and the `workbench`
-    plugin's canvas/UDF skills (published by the workbench team, discovered on
-    the machine). A canvas clone's CLAUDE.md names the latter — the canvas.toml
-    format reference above all — so handing them over per-run is what makes that
-    instruction true without asking the user to install anything. The flag is
-    repeatable, so the roots compose rather than needing a merged tree; either
-    can be absent independently."""
-    return [arg
-            for root in (_skill_plugin_dir(), _workbench_plugin_dir())
-            if root
-            for arg in ("--plugin-dir", root)]
+    TWO roots, because they are two separate plugins, and they are NOT handed out
+    on the same terms:
+
+    * fused-render's own skills (assembled by skill_plugin.py, shipped in this
+      wheel) go to every session — the `fused` bridge contract is what every
+      target shape needs.
+    * the `workbench` plugin's canvas/UDF skills (fetched at runtime into a
+      directory the app owns — see appenv.workbench_plugin_dir) go ONLY to a
+      session whose target is inside the canvases root. A canvas clone's
+      CLAUDE.md names them (the canvas.toml format reference above all), and
+      nothing else does: handing them to a file, app-folder or plain-folder chat
+      would load canvas/UDF guidance into a session with no canvas anywhere near
+      it, which is noise at best and a wrong-tool suggestion at worst.
+
+    The flag is repeatable, so the roots compose rather than needing a merged
+    tree; either can be absent independently, and `target=None` (no target
+    resolved yet) gets the ungated root only."""
+    roots = [_skill_plugin_dir()]
+    if target and _in_canvases_root(target):
+        roots.append(_workbench_plugin_dir())
+    return [arg for root in roots if root for arg in ("--plugin-dir", root)]
 
 
 def _fused_cli_note() -> str:
@@ -802,7 +832,7 @@ def _terminal_command(file: str, session_id: str = "") -> dict:
             # user WOULD run — pasted, it produces the shell's own "command
             # not found", which names the actual problem.
             binary = "claude"
-    argv = [binary, *_plugin_argv()]
+    argv = [binary, *_plugin_argv(file)]
     if session_id:
         if _bad_id(session_id):
             return {"error": "malformed session id"}
@@ -1597,7 +1627,7 @@ def _start(file: str, message: str, session_id: str, model: str,
            ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
                      else []) + [_read_rule(SHOTS)]
                     + (["Bash(fused:*)"] if _fused_cli_dir() else []))]
-    cmd += _plugin_argv()
+    cmd += _plugin_argv(file)
     # BOTH targets get an --append-system-prompt here, and they get different
     # ones. A FILE target gets the scoping prompt. A DIRECTORY target that is an
     # APP FOLDER still does NOT get a scoping prompt — the session should be plain
