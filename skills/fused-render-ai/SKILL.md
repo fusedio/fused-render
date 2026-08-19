@@ -222,7 +222,7 @@ That second row is a hard limit, not a summary of the catalog: mflux has no `Aut
 
 The same model also downloads differently per engine: ~4.6GB as one MLX repo against ~10.8GB for the Diffusers recipe, which assembles a quantized transformer from a second repo. So `size_gb` is **every byte the download fetches across every repo it touches**, and the extra repo appears in the model cache as a component nobody chose — not a model, excluded from `catalog()`, and load-bearing.
 
-**Memory is the failure mode to expect on a small Mac.** MLX FLUX reserves far more memory than Diffusers and is untested below 32GB; an OOM arrives as `ai_error`, so show `err.message` and name the Engines tab rather than working around it.
+**Memory is the failure mode to expect, and which memory depends on the engine.** On Apple Silicon, MLX FLUX reserves far more than Diffusers and is untested below 32GB. Off it, the default engine is the CPU build, which holds the whole pipeline in **system RAM** rather than in a card's — so this is no longer an Apple-Silicon-shaped problem, and a machine that renders fine with a CUDA or ROCm engine selected can OOM on the default one. Either way the OOM arrives as `ai_error`, so show `err.message` and name the Engines tab rather than working around it.
 
 ### Progress: the row, and the cold start
 
@@ -245,8 +245,8 @@ Every tick carries a ready-made URL for a **~32px thumbnail of the image so far*
 
 ### Slow and failed renders
 
-- **Minutes, not seconds — and capped at 900 s (15 min)** server-side, separately from the 600 s the text relay allows. A 2048² 100-step render on a CPU-only machine can hit it and comes back `ai_error` "the image process did not answer", so don't hand a slider the full clamp range.
-- **Renders serialize.** One generation at a time per worker (one GPU, and neither pipeline is thread-safe), and a second call **waits with no queue message on its row** — unlike transcription, which says so. Two renders fired together read as one stalled bar. Disable the button; if your page queues, say so in your own UI.
+- **Minutes, not seconds — and capped at 900 s (15 min)** server-side, separately from the 600 s the text relay allows. **The default engine off Apple Silicon is the CPU build even on a machine with a capable GPU** — CUDA and ROCm are an Engines-tab opt-in — so this cap is reachable on ordinary hardware and not only where there is no GPU to use. A 2048² 100-step render can hit it and comes back `ai_error` "the image process did not answer", so don't hand a slider the full clamp range.
+- **Renders serialize.** One generation at a time per worker (neither pipeline is thread-safe, and an accelerated engine has one device to serialize on), and a second call **waits with no queue message on its row** — unlike transcription, which says so. Two renders fired together read as one stalled bar. Disable the button; if your page queues, say so in your own UI.
 - **An aged-out row still answers off the file.** A backgrounded tab can sleep past job retention; the bridge then `stat`s `path` and **resolves normally** if the PNG is there. Only a missing row *and* no file rejects `ai_error` "the image job is no longer being reported". A missing row is not a failed render.
 - Rejects `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` (no image runner here — reason in the message). `fused.ai.cancel("text-to-image")` stops the render; the bare `fused.ai.cancel()` will not.
 
