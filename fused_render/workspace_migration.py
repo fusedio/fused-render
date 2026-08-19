@@ -14,30 +14,23 @@ Safety, all non-negotiable:
   must not. Anything else logs and does nothing — never a merge, never a
   clobber.
 * **Nothing is ever deleted.** The workspace is *renamed* (it holds git working
-  trees; a copy-and-delete would churn every object and risk a partial tree),
-  and so is the sidecar subtree.
+  trees; a copy-and-delete would churn every object and risk a partial tree).
 * **``FUSED_RENDER_DIR`` wins, untouched.** A user who chose their own location
   is left alone entirely — migrating out from under them would be wrong, and
   the override keeps resolving exactly as it did.
 * **Best-effort.** Any failure is logged and swallowed: the app starts.
 
-Three things move, because the workspace's absolute path is written down in
-three places:
+Two things move, because the workspace's absolute path is written down in two
+places:
 
 a) the folder itself;
-b) the **sidecar subtree** — per-file state keyed by the source file's absolute
-   path (``shell/storage.sidecar_path``). This is the part that protects real
-   data: sidecars hold ``comments`` (the annotate log, D101), ``docs`` version
-   history, ``revertStash``, ``claudeSessions``, .... The mapping is a pure
-   path transform, so one directory rename re-homes all of it and no file
-   contents need patching;
-c) **absolute paths written into the app's own state** — community install
+b) **absolute paths written into the app's own state** — community install
    records, bookmark and recents view urls, scheduled-message targets (a
    stale one fails a 400 on an unattended run), and the menu-bar pin (the one
    of these that lives under Application Support, not ``home_dir()``).
 
-Re-entrant: (b) and (c) are attempted on every startup, gated on their own
-"old shape present, new shape absent" checks, so a process that died between
+Re-entrant: (b) is attempted on every startup, gated on its own
+"old shape present, new shape absent" check, so a process that died between
 the folder move and the bookkeeping heals on the next start instead of leaving
 orphaned state behind forever.
 """
@@ -108,7 +101,6 @@ def _run() -> None:
         return
     # Bookkeeping runs even when the folder move was a no-op: it is how a run
     # interrupted between the two steps heals.
-    _move_sidecars(src, dst)
     _rewrite_state(src, dst)
 
 
@@ -216,53 +208,6 @@ def _remap_file_param(query: str, src: str, dst: str) -> str | None:
     if remapped is None:
         return None
     return query[:m.start(2)] + quote(remapped, safe="") + query[m.end(2):]
-
-
-# ------------------------------------------------------------------- sidecars
-
-def _sidecar_root(path: str) -> str:
-    """Where `path`'s sidecar subtree lives under home_dir(). Derived through
-    storage._sidecar_subpath rather than string concatenation so drive-letter
-    and UNC shapes stay correct."""
-    parts = [p for p in storage._sidecar_subpath(os.path.abspath(path)).split("/") if p]
-    return os.path.join(storage.home_dir(), "sidecar", *(parts or [""]))
-
-
-def _move_sidecars(src: str, dst: str) -> None:
-    """Re-home both halves of the workspace's sidecar state.
-
-    Two moves, not one, because ``storage.sidecar_path`` appends ".json": the
-    sidecar of the workspace DIRECTORY ITSELF is a *sibling* file of the
-    subtree, not a child of it, so the subtree rename walks straight past it.
-    It is real state — a directory listing is bookmarkable
-    (``bookmarks._fs_path_from_url``), and its ``bookmarkHistory`` would be
-    orphaned by the move.
-    """
-    old, new = _sidecar_root(src), _sidecar_root(dst)
-    if old == new:
-        return
-    _rename_sidecar(old, new, "subtree")
-    _rename_sidecar(old + ".json", new + ".json", "file for the workspace itself")
-
-
-def _rename_sidecar(old: str, new: str, what: str) -> None:
-    """Same safety rules as everything else here: only into empty space, never
-    a delete, never a clobber."""
-    if not os.path.exists(old):
-        return
-    if os.path.exists(new):
-        logger.warning("not moving the sidecar %s %s -> %s: the destination "
-                       "already exists; per-file state for the moved workspace "
-                       "stays where it is", what, old, new)
-        return
-    try:
-        os.makedirs(os.path.dirname(new), exist_ok=True)
-        os.rename(old, new)
-    except OSError as exc:
-        logger.warning("could not move the sidecar %s %s -> %s (%s)",
-                       what, old, new, exc)
-        return
-    logger.info("moved the sidecar %s %s -> %s", what, old, new)
 
 
 # ---------------------------------------------------------------- state files

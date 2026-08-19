@@ -1,7 +1,7 @@
 """Read-only file support in the docs template (SPEC §13.5).
 
 docs.py is a runPython target, loaded here via importlib like
-test_annotate_comments.py. The test venv has no pypandoc/pandoc, so every test
+test_annotate_revert.py. The test venv has no pypandoc/pandoc, so every test
 exercises only code paths that raise or return BEFORE any pandoc call:
 
 - RO-3: the "save" action must gate on os.access(file, W_OK) and raise

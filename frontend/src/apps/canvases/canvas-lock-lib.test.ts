@@ -152,32 +152,94 @@ describe("releasing after a push", () => {
   });
 });
 
-describe("releasing after a pull — no grace window", () => {
-  it("releases the instant a pull/merge ends, immediately, not after grace", () => {
-    // A pull never moves the remote — it writes local files from a manifest
-    // already fetched — so there is nothing upstream for the workbench's own
-    // poll to race. Unlike a push, it must not arm the grace window.
+describe("holds coalesce across consecutive operations", () => {
+  it("a pull ending arms the grace window too, not just a push", () => {
+    // Superseding the push-only rule: a pull releasing outright is what let
+    // the pane unlock between the two legs of one publish. The extra hold
+    // after a LONE pull is the accepted cost of not flickering.
     const d = decideLock(st(), "pulling", null, T, GRACE);
-    expect(d.hold).toBeNull();
-    expect(d.settledAt).toBeNull();
+    expect(d.hold).toBe("settling");
+    expect(d.settledAt).toBe(T);
   });
 
-  it("a pull finishing while a push's grace window was running does not cancel it", () => {
-    // prevHold "settling" is preserved on its own path — a pull is a
-    // different, unrelated leg, so this test only pins that pulling=false +
-    // prevHold "settling" keeps counting the existing window rather than
-    // being reset by pull-specific logic (there is none to trigger here).
-    const midway = decideLock(st(), "settling", T, T + 100, GRACE);
-    expect(midway.hold).toBe("settling");
+  it("pull -> push is ONE engagement, never released in between", () => {
+    // The real shape of a publish: pull, resolve, validate, push. Every step
+    // must return a non-null hold, or the workbench visibly unlocks mid-way.
+    let hold: LockHold | null = null;
+    let settledAt: number | null = null;
+    const step = (status: LockInput, now: number) => {
+      const d = decideLock(status, hold, settledAt, now, GRACE);
+      hold = d.hold;
+      settledAt = d.settledAt;
+      return d.hold;
+    };
+    expect(step(st({ pulling: true }), T)).toBe("pulling");
+    // The pull ends; the push has not started yet (a real gap of a second or
+    // two while the merge validates).
+    expect(step(st(), T + 500)).toBe("settling");
+    expect(step(st({ push_state: "pending" }), T + 1500)).toBe("settling");
+    expect(step(st({ push_state: "pushing" }), T + 2500)).toBe("publishing");
+    expect(step(st(), T + 4000)).toBe("settling");
+    // ...and it does eventually release, once nothing has happened for a
+    // whole window.
+    expect(step(st(), T + 4000 + GRACE)).toBeNull();
+  });
+
+  it("N pushes inside one window are one hold, not N lock/unlock cycles", () => {
+    let hold: LockHold | null = null;
+    let settledAt: number | null = null;
+    let releases = 0;
+    for (let i = 0; i < 4; i += 1) {
+      // pushing → idle → pushing → idle …, each pair well inside GRACE.
+      for (const status of [st({ push_state: "pushing" }), st()]) {
+        const d = decideLock(status, hold, settledAt, T + i * 1000, GRACE);
+        if (d.hold === null) releases += 1;
+        hold = d.hold;
+        settledAt = d.settledAt;
+      }
+    }
+    expect(releases).toBe(0);
+    // Only the window running out releases it.
+    expect(decideLock(st(), hold, settledAt, T + 4000 + GRACE, GRACE).hold).toBeNull();
+  });
+
+  it("still never locks a canvas that was not holding anything", () => {
+    // The coalescing rule must not become "lock on arithmetic": with no
+    // previous hold there is nothing to keep holding.
+    expect(decideLock(st(), null, null, T, GRACE).hold).toBeNull();
+    expect(decideLock(st(), null, T - 1, T, GRACE).hold).toBeNull();
+  });
+
+  it("a dropped watcher or a failed push still releases immediately", () => {
+    // Coalescing must not outrank the two unconditional releases: those are
+    // the only ways out of a lock the user cannot otherwise clear.
+    expect(decideLock(st({ watching: false }), "pulling", T, T + 1, GRACE).hold).toBeNull();
+    expect(decideLock(st({ push_state: "error" }), "pulling", T, T + 1, GRACE).hold).toBeNull();
   });
 });
 
 describe("the enforcement ack handshake", () => {
-  it("a new engagement always starts waiting, even after a prior ack", () => {
-    // Reset per engagement, by owner decision — nothing carries over.
+  it("a genuinely new engagement starts waiting, even after a prior ack", () => {
+    // Nothing carries over across a full release: the capability is a fact
+    // about the deployed workbench that this page assumes nothing about.
     expect(nextAckState("acked", "engage")).toBe("waiting");
     expect(nextAckState("unacked", "engage")).toBe("waiting");
     expect(nextAckState("waiting", "engage")).toBe("waiting");
+  });
+
+  it("an engagement after a failed push still re-probes the capability", () => {
+    // The one re-engagement that really happens: a push fails, the error
+    // branch releases at once, the user hits Fix with Claude and a new push
+    // engages seconds later. The frame may have reloaded in between, so an
+    // inherited "acked" would mean a lock the page shows and nothing enforces —
+    // no scrim either. The anti-flicker property comes from coalescing, which
+    // keeps consecutive operations inside ONE engagement so this reset is not
+    // reached at all; there is nothing left for an exemption to protect.
+    const failed = decideLock(st({ push_state: "error" }), "publishing", null, T, GRACE);
+    expect(failed.hold).toBeNull();
+    const refixed = decideLock(st({ push_state: "pushing" }), failed.hold, failed.settledAt, T + 3000, GRACE);
+    expect(refixed.hold).toBe("publishing");
+    expect(nextAckState("acked", "engage")).toBe("waiting");
   });
 
   it("an ack always wins, including upgrading an unacked fallback", () => {

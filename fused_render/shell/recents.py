@@ -254,8 +254,8 @@ def post_recent_open(
         return JSONResponse({"error": "url required"}, status_code=400)
     fs_path = _file_path_from_url(url)
     if fs_path is None:
-        # Directory / sentinel / missing-file url -> benign no-op, same
-        # posture as POST /api/bookmarks/history for non-file urls.
+        # Directory / sentinel / missing-file url -> benign no-op: a recent is
+        # a FILE row, so a url with no file behind it has nothing to record.
         return {"recorded": False}
     # The rendered page's own <title> (frontend lib/recents.ts), preferred
     # over the file's basename by the sidebar row — same posture as bookmark

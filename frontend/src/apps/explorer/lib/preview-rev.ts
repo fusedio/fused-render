@@ -11,9 +11,8 @@
 //
 // WHY NOT A PARAM — the constraint the whole design is shaped by. A `_rev` on the
 // shell's URL would be carried onto the NEXT file (a path change preserves the
-// query verbatim), recorded into the file's session sidecar 400ms later and
-// replayed on the next bare open (platform/lib/session), and stored in a bookmark
-// (platform/lib/bookmarks). A revision is none of those things: it is a way of
+// query verbatim) and stored in a bookmark (platform/lib/bookmarks), to be
+// replayed on every later open of it. A revision is none of those things: it is a way of
 // LOOKING at one file for as long as you are looking. So it lives only on the
 // iframe's own src — the third param of that kind, after `_file` and `chat_only=1`.
 //
@@ -27,7 +26,7 @@
 //     says nothing about the next file, and this is the exact leak a URL param
 //     would have caused;
 //   * gone on reload — free, and the whole point of it being state: there is
-//     nothing in the URL, the sidecar or a bookmark to restore.
+//     nothing in the URL or a bookmark to restore.
 //
 // Deriving rather than clearing-by-effect is what makes the first two true BY
 // CONSTRUCTION. An effect that clears on a dependency change runs AFTER the paint

@@ -8,7 +8,7 @@
 // no rollback; a localhost PUT of this tiny tree is sub-millisecond). UI
 // components still subscribe via useBookmarksVersion (lib/hooks.ts) and call
 // notifyBookmarksChanged() after each mutation they trigger.
-import { getBookmarks, putBookmarks, recordBookmarkHistory } from "@platform/lib/api";
+import { getBookmarks, putBookmarks } from "@platform/lib/api";
 import { notifyArmedChanged } from "@platform/lib/hooks";
 import { splitShellSearch } from "@platform/lib/layout-codec";
 import { rewriteLegacyUrl } from "@platform/lib/router";
@@ -293,10 +293,6 @@ export async function addBookmark(name: string, url: string): Promise<void> {
   // Only after the write commits — a failed PUT rejects above and leaves no
   // row to scroll to.
   lastAddedId = item.id;
-  // Fire-and-forget after the bookmark write commits, so sidecar I/O never
-  // blocks or fails the bookmark itself.
-  recordBookmarkHistory({ id: item.id, name: item.name, url, created_at: item.created_at })
-    .catch((e) => console.error("[fused] failed to record bookmark history:", e));
 }
 
 export function deleteBookmark(id: string): Promise<void> {
@@ -412,21 +408,13 @@ export function toggleFolder(id: string): Promise<void> {
   });
 }
 
-export async function updateBookmarkUrl(id: string, url: string): Promise<void> {
-  let name: string | undefined;
-  let found = false;
-  await mutate((items) => {
+export function updateBookmarkUrl(id: string, url: string): Promise<void> {
+  return mutate((items) => {
     const bookmark = findById(items, id);
     if (!bookmark || isFolder(bookmark)) return null;
     bookmark.url = url;
-    name = bookmark.name;
-    found = true;
     return items;
   });
-  if (!found) return;
-  // Record the new url for that id (server upserts, refreshing updated_at).
-  recordBookmarkHistory({ id, url, name })
-    .catch((e) => console.error("[fused] failed to record bookmark history:", e));
 }
 
 // Set or clear (icon = null) a bookmark's emoji icon. Bookmarks only —

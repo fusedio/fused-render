@@ -319,7 +319,7 @@ def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     assert r.json()["session_error"] is None
     assert r.json()["run_id"] == "run-42"   # the UI can attach to the live run
     # The scaffolding session starts on the app FOLDER (claude agent),
-    # so its sidecar lands where the split view lists sessions from.
+    # so its transcript lands where the split view lists sessions from.
     assert seen["target"] == str(workspace / "local" / "demo")
     assert seen["prompt"] == "build a todo app"
 
@@ -648,7 +648,7 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     # model output) raised UnicodeDecodeError instead of returning a run_id.
     assert seen["kwargs"]["encoding"] == "utf-8"
     assert seen["kwargs"]["errors"] == "replace"
-    assert started_threads  # the sidecar-recording poll thread was kicked off
+    assert started_threads  # the session-recording poll thread was kicked off
 
 
 def test_spawn_helper_failure_reports_why(tmp_path, workspace, monkeypatch):
@@ -831,8 +831,8 @@ def test_claude_is_the_selectable_chat_mode_for_html():
 
 def test_claude_template_boots_into_chat_from_a_bare_run_param():
     """The page must resume a run it did not start itself: its boot reads the
-    `run` param, enters chat, and polls — no session_id needed (the sidecar
-    entry lands seconds later, once claude reports its id).
+    `run` param, enters chat, and polls — no session_id needed (the id lands in
+    the run dir seconds later, once claude reports it).
 
     Retargeted from the deleted plain chat template to the split view (which now
     carries the `claude` name): the POST always spawned through the chat agent on
@@ -893,9 +893,10 @@ def test_poll_serves_a_run_started_by_the_server(tmp_path, workspace, monkeypatc
     assert data["message"] == "make it red"
     assert "on it" in (data.get("text") or "")
     assert data.get("session_id") == "sid-live"
-    # ...and the session lists in the entry file's sidecar, so a later visit
-    # without a `run` param still finds the conversation
-    assert agent._sessions(str(entry))["sessions"][0]["id"] == "sid-live"
+    # ...and the run records its session id, so a later visit without a `run`
+    # param can still match the conversation to its run (_live_run's session file)
+    with open(os.path.join(agent.RUNS, run_id, "session"), encoding="utf-8") as fh:
+        assert fh.read().strip() == "sid-live"
 
 
 # --------------------------------------------- opens recorded by GET /render

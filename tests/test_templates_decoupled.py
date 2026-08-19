@@ -131,22 +131,14 @@ MIGRATED = [
      "[mod.main(action='note', file=MOUNTED)['error'],"
      " mod.main(action='note', file=LOCAL)['error']]",
      ["mount_unsupported", None]),
-    # D83-reversal: the sidecar now lives under appenv.home_dir()/sidecar/,
-    # never on the target's own mount, so _sidecar_path no longer needs to
-    # (and no longer can) distinguish MOUNTED from LOCAL — both resolve under
-    # the same home dir, which is exactly the property being pinned here. A
-    # broken appenv import would still be caught, just as a nonzero exit
-    # (ImportError has no fallback to degrade to, unlike the old
-    # mount_read_only checks these two rows replace) rather than a wrong
-    # boolean.
-    (os.path.join("annotate", "annotate.py"),
-     "[mod._sidecar_path(MOUNTED).startswith(os.environ['FUSED_RENDER_HOME_DIR']),"
-     " mod._sidecar_path(LOCAL).startswith(os.environ['FUSED_RENDER_HOME_DIR'])]",
-     [True, True]),
+    # The claude snapshot gate consults appenv.is_mount_backed: a mounted
+    # target is refused with a sentence, a local one gets the empty "allowed"
+    # answer — which is the discriminating pair this table wants. (The
+    # sidecar-path rows that used to sit here went with the sidecar, D359;
+    # annotate.py no longer touches appenv directly at all, so it has no row.)
     (os.path.join("claude", "agent.py"),
-     "[mod._sidecar_path(MOUNTED).startswith(os.environ['FUSED_RENDER_HOME_DIR']),"
-     " mod._sidecar_path(LOCAL).startswith(os.environ['FUSED_RENDER_HOME_DIR'])]",
-     [True, True]),
+     "[bool(mod._snap_target(MOUNTED)), bool(mod._snap_target(LOCAL))]",
+     [True, False]),
     (os.path.join("zarr_aoi", "tile_server.py"),
      "[mod.appenv.is_mount_backed(MOUNTED), mod.appenv.is_mount_backed(LOCAL)]",
      [True, False]),
