@@ -1802,8 +1802,9 @@ def test_annotate_mode_defaults_off_and_owns_pin_visibility(html):
     mode = _between(html, "function annSetMode(on) {", "\nannBtn.addEventListener")
     assert 'if ((fused.params.get("annmode") === "1") !== annOn) {' in mode
     assert mode.count('fused.params.set("annmode"') == 1
-    # auto-send is unconditional (bar the in-flight / typed-draft guards)
-    assert "if (isNew && filled && !sending) annAutoSubmit();" in html
+    # auto-send is unconditional (bar the in-flight guard) — an empty composer
+    # sends bare, the annotations carrying the content
+    assert "if (isNew && !sending) annAutoSubmit();" in html
     assert "annAutoEl" not in html and 'id="annauto"' not in html
 
 

@@ -244,7 +244,7 @@ def test_a_transcribed_walkthrough_autosends_only_when_words_landed(html):
     assign = body.index("annRecAssign(ids, rec.segments)")
     gate = body.index("c && c.content && !c.sent")
     send = body.index(
-        "if ((spoke || intro) && !sending && annPrefillComposer(intro)) annAutoSubmit();")
+        "if ((spoke || intro) && !sending) { annPrefillComposer(intro); annAutoSubmit(); }")
     assert assign < gate < send
 
 
@@ -269,26 +269,40 @@ console.log(JSON.stringify({intro: intro,
     assert out["b"] == "this chart too"
 
 
-def test_the_intro_seeds_the_composer_but_never_over_a_typed_draft(html):
-    """The intro is the user's own words for the task, so it outranks the
-    canonical prefill — but a draft the user typed is theirs, hands off."""
-    out = _node(["const ANN_PREFILL", "function annPrefillComposer("], """
+def test_the_intro_joins_a_typed_draft_and_no_canned_prefill_exists(html):
+    """An annotation-only send needs no prompt — the comments are the content,
+    so the old "apply the comments" prefill is gone. What the user adds rides
+    along: the spoken intro seeds an empty composer, and joins (never clobbers)
+    a draft they already typed."""
+    out = _node(["function annPrefillComposer("], """
 var chatEl = {classList: {contains: () => false}};
 var homebox = {value: ""};
 var box = {value: ""};
 function growBox() {}
 function growHome() {}
-const seeded = annPrefillComposer("make the header sticky");
+annPrefillComposer("make the header sticky");
 const seededValue = box.value;
 box.value = "my own half-typed draft";
-const refused = annPrefillComposer("something else");
-console.log(JSON.stringify({seeded: seeded, seededValue: seededValue,
-  refused: refused, kept: box.value}));
+annPrefillComposer("and the intro too");
+const joined = box.value;
+annPrefillComposer("");
+console.log(JSON.stringify({seededValue: seededValue, joined: joined,
+  untouched: box.value}));
 """, html)
-    assert out["seeded"] is True
     assert out["seededValue"] == "make the header sticky"
-    assert out["refused"] is False
-    assert out["kept"] == "my own half-typed draft"
+    assert out["joined"] == "my own half-typed draft\n\nand the intro too"
+    assert out["untouched"] == "my own half-typed draft\n\nand the intro too", \
+        "no seed means the composer is left exactly as the user had it"
+
+
+def test_a_new_note_autosends_bare_with_no_canned_message(html):
+    """Saving a note fires the send even with an empty composer: the message
+    may be empty, the annotations carry the content, and whatever the user had
+    typed is theirs and goes along as the message's own words."""
+    body = _block(html, "async function annCommit()", "\n}\n")
+    assert "if (isNew && !sending) annAutoSubmit();" in body
+    assert "annPrefillComposer" not in body, \
+        "the save path seeds nothing — there is no canned prompt to seed"
 
 
 # --------------------------------------------- the two stylesheets stay paired

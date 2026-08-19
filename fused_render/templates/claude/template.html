@@ -5983,24 +5983,21 @@ function annCloseComposer() {
   // this is the single choke point every close already goes through.
   annUnportalPop();
 }
-// A fresh note usually precedes a "go apply it" message: seed the visible
-// composer so sending is one keypress. Only when it's empty — never clobber
-// typed text. Auto-send (always on) then submits it.
-const ANN_PREFILL = "apply the comments";
-// `seed` is a walkthrough's spoken intro — the user's OWN words for the task,
-// which outrank the canonical prefill but never a typed draft.
+// A message needs no prompt to carry annotations: the comments ARE the
+// content, so an annotation-only send goes out with an EMPTY message (the old
+// "apply the comments" prefill is gone — canned words told the model nothing
+// the notes did not). What DOES ride along is anything the user chose to add:
+// `seed` is a walkthrough's spoken intro (everything said before the first
+// click), and a draft already typed in the composer is theirs and goes too —
+// appended-to rather than clobbered when both exist.
 function annPrefillComposer(seed) {
   const home = chatEl.classList.contains("home");
   const el = home ? homebox : box;
-  // A typed draft is the user's — hands off. But the composer holding exactly
-  // the canonical prefill is OUR text (a previous note left it, e.g. one saved
-  // while a turn was in flight), not a draft: it still counts as fillable, so
-  // the next note's auto-send can fire and carry every pending note with it.
-  const v = el.value.trim();
-  if (v && v !== ANN_PREFILL) return false;
-  el.value = seed || ANN_PREFILL;
+  if (seed) {
+    const v = el.value.trim();
+    el.value = v ? v + "\n\n" + seed : seed;
+  }
   (home ? growHome : growBox)();
-  return true;
 }
 // Click anywhere outside the popover dismisses it. mousedown, not click, so
 // it fires before the target's own handlers; pins and chips are exempt — their
@@ -6034,11 +6031,9 @@ annDelBtn.addEventListener("click", () => {
 async function annCommit() {
   const content = annTa.value.trim();
   const isNew = !!(content && annDraft);
-  let filled = false;
   if (isNew) {
     annotations.push({ id: crypto.randomUUID(), content, createdAt: Date.now(), ...annDraft });
     annSave();
-    filled = annPrefillComposer();
   } else if (content && annEditing) {
     const c = annotations.find((a) => a.id === annEditing);
     if (c && !c.sent) { c.content = content; annSave(); }
@@ -6046,10 +6041,10 @@ async function annCommit() {
   annCloseComposer();
   // Auto-send fires for NEW notes only — editing an existing pending note must
   // not send. Skipped while a turn is in flight (the note stays pending and
-  // rides the next message) and when the composer holds a typed draft — the
-  // prefill refused to touch it, and sending a half-typed message is worse
-  // than leaving the note as a chip.
-  if (isNew && filled && !sending) annAutoSubmit();
+  // rides the next message). The message may be EMPTY — an annotation-only
+  // send is the normal case — and whatever the user already typed in the
+  // composer is theirs and rides along as the message's own words.
+  if (isNew && !sending) annAutoSubmit();
 }
 annTa.addEventListener("keydown", (e) => {
   // stopPropagation, because the document-level Escape binding also kills a live
@@ -6621,12 +6616,14 @@ async function annRecEnd() {
     // reach Claude without a fourth step. Only when words actually landed —
     // on a note OR as intro; a transcription that assigned nothing leaves the
     // clicks pending and editable rather than sending empty notes — and never
-    // over a live run or a typed draft (annPrefillComposer's own refusal).
+    // over a live run. The intro joins whatever is already typed (the user's
+    // extras ride along, never get clobbered), and no words at all is fine:
+    // the comments are the content.
     const spoke = ids.some((id) => {
       const c = annotations.find((a) => a.id === id);
       return c && c.content && !c.sent;
     });
-    if ((spoke || intro) && !sending && annPrefillComposer(intro)) annAutoSubmit();
+    if ((spoke || intro) && !sending) { annPrefillComposer(intro); annAutoSubmit(); }
   } catch (err) {
     console.warn("spoken annotation transcription failed:", err.message);
   } finally {
