@@ -118,6 +118,24 @@ print(json.dumps(mod._start(req["file"], req["message"], req["session_id"], "", 
 """
 
 
+# What the user is told when the CLI is not on this machine. Named rather than
+# inlined because the WORDING IS LOAD-BEARING and nothing else says so: "Claude
+# Code isn't installed" is the NAMED pattern lib/trouble.ts classifies as
+# `notfound`, which is what puts the install command and the troubleshooting link
+# on the card the user sees. Reword this and the card silently degrades to a bare
+# error string.
+#
+# This is the ONLY place the sentence lives. A pre-check that knew the CLI was
+# missing (SPEC §43, SF-13f) still routes its click through here rather than
+# answering from a copy, so there is no second copy to keep in step.
+CLAUDE_MISSING_ERROR = (
+    "Claude Code isn't installed (or couldn't be found). "
+    "Install it, check that `claude` runs in a terminal, then "
+    "try again. Help: "
+    "https://render.fused.io/#troubleshooting-notfound"
+)
+
+
 def spawn_helper(target: str, prompt: str, permission_mode: str,
                  session_id: str = "") -> dict:
     """Run `agent._start` in the fork-safe helper; return its result dict.
@@ -154,11 +172,7 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
         # — useless on its own. Recognize it and say the one thing the user
         # can act on instead.
         if "claude CLI not found" in stderr:
-            return {"error":
-                    "Claude Code isn't installed (or couldn't be found). "
-                    "Install it, check that `claude` runs in a terminal, then "
-                    "try again. Help: "
-                    "https://render.fused.io/#troubleshooting-notfound"}
+            return {"error": CLAUDE_MISSING_ERROR}
         tail = stderr.splitlines()
         return {"error": "session helper failed: " + (tail[-1] if tail else "unknown")}
     return json.loads(proc.stdout)

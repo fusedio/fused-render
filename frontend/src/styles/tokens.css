@@ -33,10 +33,11 @@
   --accent-rgb: 229, 255, 68;
   --error-rgb: 255, 107, 107;
   --fg-muted-rgb: 154, 160, 166;
-  /* --warning's triple, for the trouble card's wash (SPEC §42): those failures
-     are caveats rather than crashes — the app is running, something beside it
-     is not — so they are tinted with the warning hue rather than with the
-     neutral --tint every other wash uses. */
+  /* --warning's triple, for the trouble card's wash (SPEC §42) and the
+     modified-installation chip's (SPEC §43): both are caveats rather than
+     crashes — the app is running, something beside it is not, or this copy is
+     not quite the released one — so they are tinted with the warning hue rather
+     than with the neutral --tint every other wash uses. */
   --warning-rgb: 210, 153, 34;
 
   /* Elevation. Dark-tuned: a near-opaque black drop reads as depth against a

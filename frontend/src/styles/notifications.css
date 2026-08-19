@@ -287,6 +287,34 @@
   font-variant-numeric: tabular-nums; /* the percentage must not jitter as it counts */
 }
 
+/* "Fix this" — the self-fix trigger on a FAILED row (SPEC §42, SF-1). Sits just
+   left of the ✕, so the two options a failure leaves you with — look at it, or
+   close it — are side by side. Bordered rather than filled: it is an offer, not
+   the row's primary action, and the row's primary action is reading the error
+   message directly above it. */
+.dl-fix {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: none;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.dl-fix:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.dl-fix:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* Same 16px slot as the queue row's controls below, so the ✕ column lines up down
    the whole list instead of stepping 4px sideways where the row kind changes. */
 .dl-x {

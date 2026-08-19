@@ -1,0 +1,1364 @@
+"""Self-fix — a Claude session on the app's OWN installation, and the mark it leaves.
+
+When something fails on an end user's machine (a download that errors, a job
+that dies with a traceback), the download manager offers one more option beside
+Dismiss: **try to fix it here**. That opens a Claude Code session whose working
+directory is this installed copy of fused-render, with the failure written down
+beside it, and lets the user watch it work in the explorer's chat sidebar.
+
+Everything in this module exists because of what that leaves behind: **an
+installation that is no longer the one we shipped.** Three facts follow, and
+they are the whole design.
+
+**1. The mark belongs to the INSTALL, not to the user.** A per-user file in
+``~/.fused-render`` would be a lie in both directions: a second account on the
+same machine runs the same modified bytes and would see a clean badge, and a
+user who reinstalls would keep the badge for an install that no longer has the
+change in it. So the state dir is ``<install root>/.fused-render-selffix`` —
+inside the tree a reinstall replaces. That placement is not bookkeeping, it is
+the mechanism: **replacing the installation removes the mark, with no uninstall
+hook anyone has to remember to run.**
+
+**2. …but "the tree was replaced" is not something we may merely assume**, so
+two independent checks back it up, each covering what the other cannot:
+
+  * a **version stamp** in the marker. `pip uninstall` only removes the files
+    its RECORD lists, so a marker this app wrote can outlive an upgrade that
+    replaced every file around it. A marker whose ``version`` is not the running
+    ``__version__`` describes an installation that is gone: it is deleted on
+    sight (`status`), with no digest and no I/O beyond the read.
+  * a **content digest**, reconciled once per process start (`reconcile`). That
+    is what catches the case the version stamp cannot see — a *same-version*
+    reinstall, the repair install someone does precisely because the app is
+    behaving oddly. If the tree now hashes back to the pristine baseline the
+    marker recorded, the modification is gone and so is the marker.
+
+**3. Only a self-fix session ever sets the mark.** There is deliberately no
+continuous verification, for a reason and a cost. The reason: what is being
+recorded is *"Claude changed this installation while fixing something, here is
+its report"* — a provenance claim — and not *"these bytes differ from the
+release"*, which is an integrity claim we cannot honestly make without shipping
+a signed per-file manifest. The cost: a modification made some other way (a
+developer's own edit, a half-finished `pip install`) is not marked, which is the
+right silence — a source checkout rebuilds `static/shell-dist` on every watch
+tick, and a badge that lit up for that would mean nothing anywhere else.
+
+No import of anything under ``fused_render.server`` — the router imports this;
+keep it acyclic.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import platform
+import sys
+import threading
+import time
+
+import fused_render
+from fused_render import __version__
+
+logger = logging.getLogger("fused_render.selffix")
+
+# The state dir, INSIDE the install tree (see the module docstring). Dot-led so
+# it is never importable as a package and never shows in an ordinary listing.
+STATE_DIR_NAME = ".fused-render-selffix"
+MARKER_NAME = "modified.json"
+BASELINE_NAME = "baseline.json"
+# Which tree state the user dismissed the badge for — see `clear`.
+DISMISSED_NAME = "dismissed.json"
+# The run id of the last fix session started here. A POINTER, not a lease: it
+# carries no expiry and needs no cleanup, because whether that run is still
+# going is answered by its process, never by this file (see `active_run`).
+SESSION_NAME = "session.json"
+REPORTS_DIR = "reports"
+INCIDENTS_DIR = "incidents"
+
+SCHEMA = 1
+
+# How many fix entries the marker keeps. One session per incident and an
+# incident is rare, so this is a runaway guard rather than a budget; the oldest
+# entries drop first, and their report FILES stay on disk either way (the panel
+# lists the directory, not just the marker).
+MAX_FIXES = 20
+
+# Files and dirs the digest ignores. Byte-caches are written by the act of
+# importing, so a tree that has merely been RUN must hash the same as one that
+# has not — otherwise every install is "modified" the moment it starts. The
+# state dir excludes itself for a sharper version of the same reason: writing
+# the incident file that a fix session reads would otherwise be a modification
+# of the installation, recorded by the very run that made it.
+_SKIP_DIRS = {"__pycache__", STATE_DIR_NAME}
+_SKIP_SUFFIXES = (".pyc", ".pyo")
+_SKIP_NAMES = {".DS_Store"}
+
+# The Vite build output, relative to the install root. Hashed on a SHIPPED
+# install — nothing rewrites it there, and a session that hand-patched the
+# bundle really has modified the app — but skipped on a SOURCE CHECKOUT, where
+# `scripts/dev.sh` runs `vite build --watch` beside the server and rewrites the
+# whole tree whenever the developer touches a frontend file. There that churn is
+# concurrent with a fix session and would be attributed to it: a badge, and a
+# `latest_report` pointing at a session that changed nothing.
+#
+# This is the one place the digest's answer depends on the KIND of install, and
+# it is the honest split rather than a convenience: on a checkout the build
+# output is the developer's own toolchain output, not part of "what we shipped".
+_BUILD_OUTPUT_REL = "static/shell-dist"
+
+# Where a user goes to get a clean copy. The download page is the one door that
+# is right for every platform; the releases page is where a wheel's URL lives.
+DOWNLOAD_URL = "https://render.fused.io"
+RELEASES_URL = "https://github.com/fusedio/fused-render/releases/latest"
+ISSUES_URL = "https://github.com/fusedio/fused-render/issues/new"
+
+_lock = threading.Lock()
+
+
+# ------------------------------------------------------------------- locations
+
+
+def install_root() -> str:
+    """The folder a fix session opens on: this installed `fused_render` package.
+
+    The package dir and NOT its parent, which is `site-packages` (or, in the
+    packaged mac app, `Contents/Resources/lib/python3.12`) — a folder holding
+    every third-party dependency the app ships. Handing an agent that as its
+    working directory invites a "fix" inside pydantic, which is neither ours to
+    change nor something a report could usefully describe. This tree is exactly
+    the code we wrote, plus the templates and the built shell we ship with it.
+    """
+    return os.path.dirname(os.path.abspath(fused_render.__file__))
+
+
+def state_dir() -> str:
+    return os.path.join(install_root(), STATE_DIR_NAME)
+
+
+def records_dir() -> str:
+    """Where incidents and reports are written — NOT always the state dir.
+
+    A read-only installation still gets a session; it just cannot be given a
+    fix, only a diagnosis (SF-4a). Everything that makes that session useful is
+    a file: the incident it reads, and the report it leaves behind. Both would
+    fail to write inside a tree the user cannot touch, so when the install is
+    read-only they go to the user's own dir instead.
+
+    THE MARKER STAYS PUT, deliberately, and this is not an inconsistency: the
+    marker is a claim about an INSTALLATION and has to die with it, which is why
+    it lives inside the tree a reinstall replaces (module docstring). A report
+    is a document about a machine's problem — it outlives the installation on
+    purpose, and on a read-only one there was never anything to mark.
+    """
+    return record_homes()[0]
+
+
+def out_of_tree_dir() -> str:
+    """The records home that does not depend on the installation at all."""
+    from fused_render.shell.storage import home_dir
+
+    return os.path.join(home_dir(), "selffix")
+
+
+def _dedup(paths: list[str]) -> list[str]:
+    seen, out = set(), []
+    for path in paths:
+        key = os.path.normcase(os.path.realpath(path))
+        if key not in seen:
+            seen.add(key)
+            out.append(path)
+    return out
+
+
+def record_homes() -> list[str]:
+    """Where a WRITER may try, preferred first.
+
+    `writable()` is a PREDICTION (`os.access` on the install root), and a
+    prediction is the wrong thing to build a promise on. It answers for the real
+    uid's permission bits and knows nothing about an ACL that denies, a mount
+    remounted read-only, an immutable flag, or a full disk — so an install can
+    predict "writable" and refuse the very next write. Hence one rule instead of
+    trusting the prediction twice:
+
+        WRITERS take the first home that will actually have them.
+        READERS look in all of them  (`reader_homes`, and it is a SEPARATE list).
+
+    The state dir is not offered here when the tree is known unwritable: it is
+    the one home we already know cannot take a write, and trying it first would
+    spend an exception per record to learn what `os.access` had answered
+    correctly. That skip is right for a writer and WRONG for a reader, which is
+    why the two lists exist rather than one shared one — see `reader_homes`.
+    """
+    homes = [state_dir(), out_of_tree_dir()] if writable() else [out_of_tree_dir()]
+    return _dedup(homes)
+
+
+def reader_homes() -> list[str]:
+    """Every home a record could be in — ALWAYS both, whatever today's
+    prediction says.
+
+    This is the half that a shared list got wrong in BOTH directions, and the
+    second direction is the worse one. Reading only `records_dir()` hid the
+    out-of-tree reports a diagnostic session wrote, once an install started
+    looking writable. Reading `record_homes()` hides the mirror image: an
+    install that WAS writable and is now not — a `chmod`, a remount, an
+    ownership change — has its in-tree reports and, worse, its session pointer
+    dropped out of view. That pointer is half the one-at-a-time guard (SF-13a),
+    so a live fix session could stop excluding a second one the moment the tree
+    it is editing turned read-only underneath it.
+
+    Nothing about a home's writability bears on whether it can be READ, so this
+    list never consults the prediction at all. Missing directories cost one
+    failed `listdir` each, which is what the callers already tolerate.
+    """
+    return _dedup([state_dir(), out_of_tree_dir()])
+
+
+def in_state_dir(path: str) -> bool:
+    """Is this record inside the installation's own state dir?
+
+    The question a caller asks to learn WHICH records home a write landed in,
+    which is the only trustworthy answer to "can this session write here?" —
+    `writable()` merely predicts it (`record_homes`).
+    """
+    root = os.path.normcase(os.path.realpath(state_dir()))
+    try:
+        here = os.path.normcase(os.path.realpath(path))
+    except OSError:
+        return False
+    return here == root or here.startswith(root + os.sep)
+
+
+def marker_path() -> str:
+    return os.path.join(state_dir(), MARKER_NAME)
+
+
+def baseline_path() -> str:
+    return os.path.join(state_dir(), BASELINE_NAME)
+
+
+def is_source_checkout(root: str | None = None) -> bool:
+    """Is this install a git working tree rather than something installed?
+
+    The repo ABOVE the package: an editable install and a plain
+    `python -m fused_render` from a clone look identical from in here. One
+    `stat`, no subprocess — unlike `install_method`, which shells out to brew
+    and therefore may not be called from the digest path.
+
+    `exists`, NOT `isdir`: in a linked git worktree `.git` is a FILE holding a
+    `gitdir:` pointer, so an `isdir` test calls a worktree a shipped install —
+    and this repo's own dev setup uses worktrees, which is precisely where the
+    build output churns under `vite build --watch` (SF-15a). Same spelling as
+    the repo's other repo-detection sites (server/search.py, server/gitignore.py);
+    the `isdir` ones elsewhere are about repos the app itself `git init`s, which
+    are always real directories.
+    """
+    root = install_root() if root is None else root
+    return os.path.exists(os.path.join(os.path.dirname(root), ".git"))
+
+
+def writable() -> bool:
+    """Whether a fix session could actually change anything here.
+
+    Asked BEFORE the session starts, because the alternative is an agent that
+    spends several minutes reading code it can never edit and then reports a
+    fix it did not apply. A DMG dragged to /Applications by the user is owned by
+    that user and writable; a copy an admin installed for everyone is not.
+    """
+    return os.access(install_root(), os.W_OK)
+
+
+# ---------------------------------------------------------------------- digest
+
+
+def _file_digest(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 18), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def tree_digest(root: str | None = None) -> str:
+    """sha256 over the (relative path, content) pairs of the install tree.
+
+    Same construction as `core_templates._tree_digest`, and deliberately the
+    same choice: **content, never mtimes or sizes**. A reinstall rewrites every
+    mtime without changing a byte, and a hand edit that swaps two characters
+    changes neither size nor — on a coarse filesystem clock — necessarily the
+    mtime either. Each entry contributes `<relpath>\\0<file sha256>\\0`, so a
+    rename is as visible as an edit.
+
+    An unreadable file folds `<unreadable>` in rather than raising: a tree we
+    cannot fully read must not hash equal to one we can.
+
+    On a SOURCE CHECKOUT the Vite build output is skipped — see
+    `_BUILD_OUTPUT_REL` for why, and why only there.
+    """
+    root = install_root() if root is None else root
+    skip_build = is_source_checkout(root)
+    h = hashlib.sha256()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
+        if skip_build:
+            here = os.path.relpath(dirpath, root).replace(os.sep, "/")
+            prefix = "" if here == "." else here + "/"
+            dirnames[:] = [d for d in dirnames
+                           if prefix + d != _BUILD_OUTPUT_REL]
+        for name in sorted(filenames):
+            if name in _SKIP_NAMES or name.endswith(_SKIP_SUFFIXES):
+                continue
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            h.update(rel.encode("utf-8"))
+            h.update(b"\0")
+            try:
+                h.update(_file_digest(full).encode("ascii"))
+            except OSError:
+                h.update(b"<unreadable>")
+            h.update(b"\0")
+    return h.hexdigest()
+
+
+# ------------------------------------------------------------------- json i/o
+
+
+def _read_json(path: str) -> dict | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        # Absent, unreadable, or garbage. All three mean the same thing to every
+        # caller — there is no usable record — and none of them may raise out of
+        # a status read that /api/config makes on every poll.
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_json(path: str, data: dict) -> None:
+    """Atomic-ish write: a reader must never see half a marker.
+
+    `os.replace` on the same directory, like every other store in this codebase.
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+# -------------------------------------------------------------------- baseline
+
+
+def ensure_baseline(*, digest: str = "", now: float | None = None) -> dict:
+    """The pristine digest this installation started from, computed once.
+
+    Taken when the FIRST fix session on this version starts — the last moment
+    the tree is still what we shipped, and the only moment we get: nothing runs
+    at install time, so there is no earlier hook to take it in. A baseline
+    stamped with a different version is re-taken rather than trusted, because an
+    upgrade legitimately replaced the tree it described.
+
+    Returned rather than merely written so the caller can put the digest in the
+    marker without a second walk. `digest` is the caller's already-computed hash
+    of the same tree (`begin_session` has one in hand), reused rather than
+    re-walked; omit it and this takes its own.
+
+    **A MARKER FOR THIS VERSION VETOES A FRESH BASELINE**, which is the one thing
+    this must never get wrong. Taking the baseline from the tree in front of us is
+    only honest on the first session of a version, and the marker is a standing
+    claim that this tree is NOT the one we shipped. Without the veto, a baseline
+    file that has gone missing under a live marker — the fix session itself is an
+    agent editing this installation and can delete its state dir; the first write
+    can have failed with `OSError` — would be re-taken from the PATCHED tree, and
+    `reconcile` would then find current == "pristine" on the next start and clear
+    the badge while the patch was still on disk. Silently un-warning a modified
+    install is the exact failure the whole feature exists to prevent.
+
+    The marker carries `baseline_digest`, so the usual repair is exact: the
+    pristine digest is recovered from it and the file rewritten. When the marker
+    has none either (it was stamped in a session whose own baseline write failed)
+    NOTHING is written and the digest comes back empty — `reconcile` finds no
+    pristine and leaves the badge alone. A badge that outstays its modification
+    is a cosmetic wrong; a badge that vanishes over a live one is the harmful
+    one, and this is the direction to fail in.
+    """
+    now = time.time() if now is None else now
+    with _lock:
+        existing = _read_json(baseline_path())
+        if existing and existing.get("version") == __version__ and existing.get("digest"):
+            return existing
+        marker = _read_json(marker_path()) or {}
+        modified_here = marker.get("version") == __version__
+        # An upgrade is NOT this case: the marker's version is then the old one,
+        # the new release really did replace the tree, and `reconcile` discards
+        # such a marker on sight anyway.
+        if modified_here:
+            recovered = str(marker.get("baseline_digest") or "")
+            if not recovered:
+                logger.info("self-fix: no baseline and a modified marker with no "
+                            "pristine digest — declining to baseline a patched tree")
+                return {"schema": SCHEMA, "version": __version__, "digest": "",
+                        "at": now}
+            logger.info("self-fix: recovering the lost baseline from the marker")
+        record = {
+            "schema": SCHEMA,
+            "version": __version__,
+            "digest": recovered if modified_here else (digest or tree_digest()),
+            "at": now,
+        }
+        try:
+            _write_json(baseline_path(), record)
+        except OSError:
+            # A read-only installation cannot be fixed in place either, so this
+            # is not the failure that matters — `writable()` is what the caller
+            # checks. Carry the digest back in memory regardless: it still makes
+            # the in-session comparison work for the life of this process.
+            logger.info("could not write the self-fix baseline", exc_info=True)
+        return record
+
+
+# ---------------------------------------------------------------------- marker
+
+
+def _public(marker: dict) -> dict:
+    """The wire shape: the marker, plus the absolute paths only we can resolve.
+
+    Report paths are stored RELATIVE to the state dir and absolutised here. The
+    install root moves — a bundle is dragged from the DMG to /Applications, a
+    venv is relocated — and a marker holding absolute paths would then point at
+    a directory that is not this one.
+    """
+    root = state_dir()
+    fixes = []
+    for fix in marker.get("fixes") or []:
+        if not isinstance(fix, dict):
+            continue
+        entry = dict(fix)
+        for key in ("report", "incident"):
+            rel = entry.get(key)
+            entry[key] = (os.path.normpath(os.path.join(root, rel))
+                          if isinstance(rel, str) and rel else None)
+        fixes.append(entry)
+    latest = fixes[-1] if fixes else None
+    return {
+        "modified": True,
+        "version": marker.get("version"),
+        "install_root": install_root(),
+        "state_dir": root,
+        "first_modified_at": marker.get("first_modified_at"),
+        "modified_at": marker.get("modified_at"),
+        "fixes": fixes,
+        # Named separately rather than left to the client to index: "the report
+        # to open" is a decision (the newest one), and the version chip is not
+        # the place to make it twice.
+        "latest_report": latest.get("report") if latest else None,
+    }
+
+
+def status() -> dict | None:
+    """What the shell shows on the version chip, or None for an unmodified install.
+
+    Cheap by construction — one small JSON read, no walk — because /api/config
+    carries this and the shell polls /api/config every few seconds.
+
+    The one thing it does beyond reading is **delete a marker left by a version
+    that is no longer installed**. That check has to live on the read path and
+    not only in `reconcile`: an upgrade may well be the very thing that fixes
+    the machine, and the badge has to be gone the moment the new version serves
+    its first request — not after the next restart, and not after a walk of the
+    tree that a config poll must never pay for.
+
+    UNDER THE LOCK, like every other writer, because this one deletes. Reading
+    the marker and unlinking it are one decision — "the version that wrote this
+    is gone" — and split apart they stop being about the same file: a
+    `mark_modified` landing in between writes a fresh, current-version marker,
+    and the unlink then throws away a badge that had just become true. The
+    window is small and the poll is frequent, which is the wrong side of that
+    trade to be on. Holding it costs one small JSON read on a path the other
+    holders are equally brief on.
+    """
+    with _lock:
+        path = marker_path()
+        marker = _read_json(path)
+        if not marker:
+            return None
+        if marker.get("version") != __version__:
+            logger.info("clearing a self-fix marker left by version %s",
+                        marker.get("version"))
+            _discard(path)
+            return None
+    return _public(marker)
+
+
+def _discard(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def dismissed_path() -> str:
+    return os.path.join(state_dir(), DISMISSED_NAME)
+
+
+def dismissed_digest() -> str:
+    """The tree state the user last said they did not want a badge for.
+
+    Version-scoped like everything else here: an upgrade replaced the tree the
+    dismissal was about, so the dismissal expires with it.
+    """
+    record = _read_json(dismissed_path()) or {}
+    if record.get("version") != __version__:
+        return ""
+    return str(record.get("digest") or "")
+
+
+def session_path() -> str:
+    """Beside the reports, not beside the marker — `records_dir()`, so that it
+    still exists on a read-only installation.
+
+    It reads like state about an installation, which is why it originally sat in
+    the state dir with the marker. But a marker is a CLAIM about the tree and has
+    to die with it; this is a pointer the guard needs in order to work, and on a
+    read-only install the guard is needed just as much — a diagnostic session
+    holds the tree open for reading exactly as long as a fixing one does. Left in
+    the state dir it silently failed to write there (`note_session` is
+    best-effort by design), quietly costing the long-session half of the guard on
+    the one kind of install where the user cannot investigate why."""
+    return os.path.join(records_dir(), SESSION_NAME)
+
+
+def note_session(run_id: str) -> None:
+    """Record which run is fixing this installation.
+
+    Written for ONE reason: the runs directory is shared by every chat on the
+    machine and the live-run scan only looks at the newest few, so a fix session
+    that runs while enough other conversations start would scroll out of that
+    window and stop excluding a second one. This pointer does not scroll — it
+    names a run directly, and the guard asks that run's process whether it is
+    still going.
+
+    NOT a lease, and the difference is the whole design: nothing here expires,
+    nothing recovers it at startup, and a record left behind by a session that
+    ended (or by a machine that lost power mid-fix) reads as "not running" the
+    moment its pid is gone. The next start overwrites it.
+
+    Best-effort. A pointer that could not be written costs the long-session half
+    of the guard, and the scan still covers the ordinary case; refusing to start
+    a fix over it would be the wrong trade.
+    """
+    for home in record_homes():
+        try:
+            _write_json(os.path.join(home, SESSION_NAME),
+                        {"schema": 1, "run_id": str(run_id)})
+            return
+        except OSError:
+            continue
+    logger.debug("could not record the fix session id", exc_info=True)
+
+
+def active_run() -> str:
+    """The run id last recorded here, or "". Says nothing about liveness — the
+    caller asks the process, which is the only thing that knows.
+
+    The NEWEST pointer across EVERY home (`reader_homes`), because an
+    installation's writability can change between one session and the next — in
+    both directions — and the guard must not lose sight of a live agent just
+    because the pointer it wrote now sits in a home today's prediction would not
+    have offered a writer."""
+    newest, run = 0.0, ""
+    for home in reader_homes():
+        path = os.path.join(home, SESSION_NAME)
+        record = _read_json(path)
+        if not record:
+            continue
+        try:
+            at = os.stat(path).st_mtime
+        except OSError:
+            continue
+        if at >= newest:
+            newest, run = at, str(record.get("run_id") or "")
+    return run
+
+
+def clear(*, now: float | None = None) -> bool:
+    """Forget the modification. Returns whether there was a marker to forget.
+
+    The baseline stays: it describes the release, not the modification, and
+    keeping it means a LATER fix session on the same version still knows what
+    pristine looked like without re-walking a tree that is no longer pristine.
+
+    **The dismissal is REMEMBERED, not just applied**, and that is what makes it
+    stick. A fix session's watcher re-stamps every few ticks and once more when
+    the turn ends, so dismissing mid-session — the likeliest moment, since the
+    badge appears while the user is watching — used to be undone seconds later
+    by the next stamp of the very same change. Recording WHICH tree state was
+    dismissed is what separates "I have seen this and I do not want a badge for
+    it" from "I never want a badge again": if the session goes on to change
+    something else, the digest moves past the dismissed one and the badge
+    legitimately comes back.
+
+    The marker's own `digest` is what gets recorded, rather than a fresh walk:
+    it is free, and it is exactly what the user was looking at when they
+    dismissed it. A tree that has drifted since that marker was written is a
+    state they have not seen.
+    """
+    now = time.time() if now is None else now
+    with _lock:
+        path = marker_path()
+        if not os.path.exists(path):
+            return False
+        marker = _read_json(path) or {}
+        _discard(path)
+        try:
+            _write_json(dismissed_path(), {
+                "schema": SCHEMA,
+                "version": __version__,
+                "digest": str(marker.get("digest") or ""),
+                "at": now,
+            })
+        except OSError:
+            # The badge is already gone for now; only its persistence across a
+            # re-stamp is lost. Not worth failing the user's click over.
+            logger.info("could not record the self-fix dismissal", exc_info=True)
+        return True
+
+
+def mark_modified(*, run_id: str = "", session_id: str = "", report: str = "",
+                  incident: str = "", title: str = "", digest: str = "",
+                  baseline_digest: str = "", now: float | None = None) -> dict:
+    """Record that a fix session changed this installation. Idempotent per run.
+
+    Upsert keyed on `run_id`, because the caller stamps REPEATEDLY: the watcher
+    checks the tree every few ticks so the badge appears while the user is still
+    watching the session work, rather than only once the turn ends. Appending
+    per call would leave one conversation showing as a column of fixes.
+
+    `report`/`incident` are absolute paths on the way in and stored relative to
+    the state dir — see `_public` for why.
+
+    Returns the public marker, or **an empty dict when it declines** because
+    `digest` is the state the user has already dismissed (checked under the
+    lock — see there).
+    """
+    now = time.time() if now is None else now
+    root = state_dir()
+
+    def rel(path: str) -> str:
+        if not path:
+            return ""
+        try:
+            return os.path.relpath(path, root).replace(os.sep, "/")
+        except ValueError:  # different drive on Windows — keep it absolute
+            return path
+
+    with _lock:
+        # THE AUTHORITATIVE DISMISSAL CHECK. `settle` tests this too, but its
+        # test is only an optimisation: it runs before a tree walk that takes
+        # long enough for the user to click Dismiss in between, and this
+        # function's own write would then delete the dismissal it never saw —
+        # bringing the badge back for a change the user had just waved away.
+        # Exactly the window SF-16 closed for `reconcile`, one function over:
+        # the slow read is outside the lock, so the DECISION has to be remade
+        # inside it.
+        if digest and digest == dismissed_digest():
+            return {}
+        marker = _read_json(marker_path()) or {}
+        if marker.get("version") != __version__:
+            # A marker from a version that is gone describes an installation
+            # that is gone. Start a fresh one rather than appending this fix to
+            # a history that was about different bytes.
+            marker = {}
+        fixes = [f for f in (marker.get("fixes") or []) if isinstance(f, dict)]
+        entry = next((f for f in fixes if f.get("run_id") == run_id and run_id), None)
+        if entry is None:
+            entry = {"at": now, "run_id": run_id}
+            fixes.append(entry)
+        entry["session_id"] = session_id or entry.get("session_id") or ""
+        entry["title"] = title or entry.get("title") or ""
+        if report:
+            entry["report"] = rel(report)
+        if incident:
+            entry["incident"] = rel(incident)
+        entry["updated_at"] = now
+
+        record = {
+            "schema": SCHEMA,
+            "version": __version__,
+            "first_modified_at": marker.get("first_modified_at") or now,
+            "modified_at": now,
+            "baseline_digest": baseline_digest or marker.get("baseline_digest") or "",
+            "digest": digest or marker.get("digest") or "",
+            "fixes": fixes[-MAX_FIXES:],
+        }
+        _write_json(marker_path(), record)
+        # A badge is being raised, so whatever the user dismissed is behind us:
+        # the tree has moved past it (that is `settle`'s precondition for
+        # getting here). Leaving the record would silence a LATER dismissal of a
+        # state that happened to hash back to it.
+        _discard(dismissed_path())
+        return _public(record)
+
+
+def begin_session(*, now: float | None = None) -> tuple[str, str]:
+    """Open a fix session's bookkeeping: `(pristine baseline, tree as found)`.
+
+    TWO digests, because there are two questions and only one of them is about
+    the session that is starting:
+
+      baseline   what the RELEASE shipped. Never changes for the life of a
+                 version, and it is what `reconcile` compares against to notice
+                 that an installation has been put back.
+      before     what THIS session finds on disk. Equal to the baseline on a
+                 clean install, and NOT equal on one an earlier session already
+                 changed — which is the case the two used to be conflated in.
+
+    One walk: the tree is hashed here and handed to `ensure_baseline`, which
+    only needs it on the first session of a version.
+    """
+    before = tree_digest()
+    baseline = ensure_baseline(digest=before, now=now)
+    return str(baseline.get("digest") or ""), before
+
+
+def settle(*, before: str, run_id: str = "", session_id: str = "",
+           report: str = "", incident: str = "", title: str = "",
+           now: float | None = None) -> bool:
+    """Did THIS session change the installation? If so, record it.
+
+    THE decision point of the whole feature, and it is made by this process
+    rather than by the model. A session that is asked to stamp its own work is
+    a session that can forget to — and the one thing this feature must not do is
+    leave an installation quietly carrying somebody's patch. So the model is
+    asked only for the REPORT (which nobody else can write) and the app decides
+    for itself whether anything changed.
+
+    **Against `before`, not against the pristine baseline** (`begin_session`).
+    Those differ the moment an earlier session has already changed something,
+    and comparing to the baseline then answers "is this install modified?" —
+    which is true before this session did anything at all. A session that edits
+    NOTHING would have been recorded as a fix, with its own do-nothing report
+    becoming the `latest_report` the badge points at, so the panel would send
+    the user to a document that explains none of the changes it is warning them
+    about. On a dismissed badge it would also re-light it, overriding a decision
+    the user had explicitly made, on the strength of a session that did nothing.
+
+    Returns whether this session changed anything.
+    """
+    current = tree_digest()
+    if current == before:
+        return False
+    if current == dismissed_digest():
+        # The user has already seen exactly this state and said they did not
+        # want a badge for it. The watcher stamps every few ticks and once more
+        # when the turn ends, so without this the dismissal — made, most
+        # likely, while watching the session that raised the badge — is undone
+        # seconds later by the next stamp of the very same change. Nothing has
+        # happened since; when something does, the digest moves off this value
+        # and the badge comes back on its own.
+        #
+        # An EARLY OUT, not the guarantee: a dismiss landing after this read
+        # would slip past it. `mark_modified` re-checks under the lock, which is
+        # where the promise actually holds.
+        return True
+    # The pristine digest for the record — read back rather than re-walked; the
+    # baseline file is written by `begin_session` before any session starts.
+    baseline = (_read_json(baseline_path()) or {})
+    pristine = baseline.get("digest") if baseline.get("version") == __version__ else ""
+    mark_modified(run_id=run_id, session_id=session_id, report=report,
+                  incident=incident, title=title, digest=current,
+                  baseline_digest=str(pristine or ""), now=now)
+    return True
+
+
+def reconcile() -> None:
+    """Once per process start: has this installation been put back?
+
+    Only ever does work when a marker exists, which is the rare case — so the
+    ordinary start pays one `stat`. When it does run, it answers the question
+    `status()` deliberately cannot: a **same-version reinstall**. That is not an
+    exotic case, it is the obvious thing a user does when the app is misbehaving
+    ("just install it again"), and the version stamp cannot see it because the
+    version did not change.
+
+    Never raises: this runs on a startup thread, and a badge that is a few bytes
+    out of date is not a reason to fail a boot.
+    """
+    try:
+        # A cheap look before the expensive one: no marker, nothing to reconcile.
+        if not _read_json(marker_path()):
+            return
+        current = tree_digest()  # SLOW — deliberately outside the lock
+
+        # RE-READ under the lock. The walk above takes long enough for the world
+        # to move: a `clear` (the user dismissing) or a `mark_modified` (a fix
+        # session's watcher) can land while it runs, and writing back the object
+        # read before the walk would silently undo either — a dismissed badge
+        # reappearing, or a just-recorded fix losing its report.
+        with _lock:
+            marker = _read_json(marker_path())
+            if not marker:
+                return  # cleared while we walked; the user's call stands
+            if marker.get("version") != __version__:
+                _discard(marker_path())
+                return
+            baseline = (_read_json(baseline_path()) or {})
+            pristine = (baseline.get("digest")
+                        if baseline.get("version") == __version__ else None)
+            if not pristine:
+                return
+            if current == pristine:
+                logger.info("self-fix: the installation matches the released tree "
+                            "again — clearing the modified marker")
+                # Not `clear()`: that takes this same non-reentrant lock, and it
+                # would also record a DISMISSAL, which this is not — the
+                # modification is gone, nobody waved it away.
+                _discard(marker_path())
+                _discard(dismissed_path())  # inert now, and confusing to leave
+            elif current != marker.get("digest"):
+                # Still modified, but not the way the marker last described. Keep
+                # the record honest so the "restored" test above stays meaningful.
+                # Merged into the FRESH read, not the stale one.
+                marker["digest"] = current
+                marker["modified_at"] = time.time()
+                try:
+                    _write_json(marker_path(), marker)
+                except OSError:
+                    pass
+    except Exception:  # noqa: BLE001 — startup housekeeping, never fatal
+        logger.debug("self-fix reconcile failed", exc_info=True)
+
+
+def start_reconcile() -> None:
+    """`reconcile` on a daemon thread — it walks the tree, so never inline."""
+    threading.Thread(target=reconcile, daemon=True,
+                     name="fused-render-selffix-reconcile").start()
+
+
+# ------------------------------------------------------------------- incidents
+
+
+def _stamp(now: float) -> str:
+    return time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+
+
+def _iso(now: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+
+
+def machine_facts() -> dict:
+    """What a developer reading the report needs and cannot ask the user for."""
+    return {
+        "app_version": __version__,
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "packaged": bool(getattr(sys, "frozen", None)),
+        "install_root": install_root(),
+    }
+
+
+# How much of this process's app log rides along in the incident. A session
+# started from Preferences has NO traceback — the user simply says the app is
+# behaving wrongly — so the log is often the only evidence that exists, and
+# telling the model to go and find it is a step it may not take. Bounded because
+# an incident file is meant to be read: the tail is where a session's recent
+# failures are, and the head is startup chatter.
+LOG_TAIL_BYTES = 24_000
+
+
+def _log_tail(limit: int = LOG_TAIL_BYTES) -> tuple[str, str]:
+    """(path, tail) of this process's log, or ("", "") when there isn't one."""
+    from fused_render import logs
+
+    try:
+        path = logs.log_path()
+        size = os.path.getsize(path)
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            if size > limit:
+                f.seek(size - limit)
+                f.readline()  # drop the partial line the seek landed inside
+            return path, f.read()
+    except OSError:
+        # No log configured, or it is gone. Not worth a word in the incident:
+        # the fix session has plenty else to read.
+        return "", ""
+
+
+def record_incident(context: dict, *, now: float | None = None) -> tuple[str, str]:
+    """Write the failure down, and pre-create the report the session must fill in.
+
+    Returns (incident path, report path).
+
+    **The report file is created HERE, already holding the incident**, rather
+    than left for the model to create. Two reasons, and the second is the real
+    one: a version chip that promises a report must always have a file to open,
+    and the thing a developer most needs — what actually failed, on what machine
+    — is known now and is not something a summarising model should be trusted to
+    copy back accurately. The session rewrites this file; if it never gets that
+    far, what survives is still the most useful half.
+
+    Both files go to the first of `record_homes()` that will actually take them
+    — the state dir when the installation is writable (the digest ignores it, so
+    writing them is not itself a modification of the installation), the user's
+    own dir when it is not, or when the install merely PREDICTED it was writable
+    and the write disagreed. That last case is not hypothetical padding: it is
+    an ACL that denies, a volume remounted read-only under a running app, or a
+    full disk, and it used to surface as a 500 on the very install SF-13 exists
+    for. The caller reads the returned path to learn which home won, and
+    switches the session to diagnostic when it is not the state dir.
+    """
+    now = time.time() if now is None else now
+    homes = record_homes()
+    facts = machine_facts()
+    note = str(context.get("note") or "").strip()
+    message = str(context.get("message") or "").strip()
+    title = (str(context.get("title") or "").strip()
+             or ("a problem the user described" if note else "an unnamed failure"))
+    lines = [
+        f"# Incident — {title}",
+        "",
+        f"- **When**: {_iso(now)}",
+        f"- **fused-render**: v{facts['app_version']}"
+        f"{' (packaged app)' if facts['packaged'] else ''}",
+        f"- **Python**: {facts['python']}",
+        f"- **Platform**: {facts['platform']}",
+        f"- **Installation**: `{facts['install_root']}`",
+        "",
+    ]
+    # THE USER'S OWN WORDS COME FIRST when there are any. A Preferences-started
+    # session has no traceback and no failed row — the description IS the
+    # report, and burying it under a machine-facts table would bury the only
+    # statement of what is actually wrong.
+    if note:
+        lines += ["## What the user asked for", "",
+                  "> " + "\n> ".join(note.splitlines()), ""]
+    fields = [
+        (label, str(context.get(key) or "").strip())
+        for label, key in (("Operation", "title"), ("Detail", "detail"),
+                           ("State", "state"), ("Kind", "kind"),
+                           ("Reported by", "page"), ("Job id", "job_id"),
+                           ("Where", "source"))
+    ]
+    fields = [(label, value) for label, value in fields if value]
+    if fields:
+        lines += ["## What the app was doing", ""]
+        lines += [f"- **{label}**: {value}" for label, value in fields]
+    if message:
+        lines += ["", "## Error", "", "```", message, "```"]
+    elif note:
+        # Said out loud so the session does not go hunting for a traceback that
+        # was never produced, and does not treat its absence as a dead end.
+        lines += ["", "**No error was raised.** Nothing crashed and nothing was "
+                  "reported as failed — the user is describing behaviour that is "
+                  "wrong, not an exception. The log below and the code are the "
+                  "evidence; reproduce first, diagnose second.", ""]
+
+    # The app's own log, inline. For a described problem it is frequently the
+    # only evidence that exists, and a path the session has to go and find is a
+    # step it may simply not take.
+    log_path, tail = _log_tail()
+    if tail:
+        lines += ["", f"## Recent app log (`{log_path}`)", "",
+                  "```", tail.rstrip(), "```"]
+    # Not inlined — it is a JSONL store that can run to megabytes — but NAMED,
+    # because "which of my pages errored, and when" is answered there and
+    # nowhere else (SPEC §31).
+    try:
+        from fused_render import calls as _calls
+
+        lines += ["", "## Call log", "",
+                  f"Every API call pages made is recorded under `{_calls.store_dir()}` "
+                  f"as `*{_calls.SUFFIX}` (JSONL, newest file last). Failures carry a "
+                  "traceback. Read it directly"
+                  + (" if the log above is not enough." if tail
+                     else " — this process wrote no log file.")]
+    except Exception:  # noqa: BLE001 — a missing call log is not worth failing over
+        pass
+
+    def write_into(home: str) -> tuple[str, str]:
+        incidents = os.path.join(home, INCIDENTS_DIR)
+        reports = os.path.join(home, REPORTS_DIR)
+        os.makedirs(incidents, exist_ok=True)
+        os.makedirs(reports, exist_ok=True)
+        # Second resolution, plus a suffix when that is not enough. A user with
+        # two failed rows clicks Fix on both in the same second more often than
+        # the timestamp suggests — and the collision would not be a duplicate
+        # file, it would be the SECOND session overwriting the first session's
+        # report while that one was still being written to.
+        stamp = _stamp(now)
+        suffix = 0
+        while os.path.exists(os.path.join(reports, f"{stamp}.md")) or os.path.exists(
+                os.path.join(incidents, f"{stamp}.md")):
+            suffix += 1
+            stamp = f"{_stamp(now)}-{suffix}"
+        incident = os.path.join(incidents, f"{stamp}.md")
+        report = os.path.join(reports, f"{stamp}.md")
+        text = "\n".join(lines + [
+            "", "---", "",
+            "This file was written by fused-render when the user asked for a "
+            "local fix. It is the input to the session; the session's own "
+            f"account of what it did goes in `{REPORTS_DIR}/{stamp}.md`.", ""])
+        with open(incident, "w", encoding="utf-8") as f:
+            f.write(text)
+        with open(report, "w", encoding="utf-8") as f:
+            f.write(_report_stub(stamp, text))
+        return incident, report
+
+    for index, home in enumerate(homes):
+        try:
+            return write_into(home)
+        except OSError:
+            # The LAST home's failure is the caller's problem — there is nowhere
+            # else to put the file and a session with no incident has nothing to
+            # read. Any earlier one is the prediction being wrong, which is what
+            # the second home is for.
+            if index == len(homes) - 1:
+                raise
+            logger.info("self-fix: %s would not take the incident — falling back "
+                        "to a records home outside the installation", home,
+                        exc_info=True)
+    raise OSError("no records home available")  # unreachable: homes is never empty
+
+
+def _report_stub(stamp: str, incident_text: str) -> str:
+    """The report as it exists before the session has written a word of it."""
+    return (
+        f"# Self-fix report — {stamp}\n"
+        "\n"
+        "> **Not written yet.** fused-render created this file when the user "
+        "asked for a local fix and handed it to a Claude Code session running "
+        "on this installation. If it still reads like this, that session did "
+        "not get as far as reporting — the incident it was given is below, and "
+        "is worth sending to the Fused Render developers either way.\n"
+        "\n"
+        "---\n"
+        "\n" + incident_text
+    )
+
+
+def list_reports() -> list[dict]:
+    """Every report on disk, newest first — the panel's list.
+
+    The DIRECTORY, not the marker's `fixes`: the marker is capped and a report
+    file is the artefact, so a listing that could go missing under a cap would
+    be the one thing this feature is not allowed to lose.
+
+    EVERY home, not the one today's prediction names (`reader_homes`). A
+    diagnostic session writes out of tree, and an installation's writability is
+    not fixed for life — a `chmod`, a move out of /Applications, an admin copy
+    whose ownership changes — so reading only `records_dir()` made those reports
+    vanish from the panel the moment the install started looking writable. They
+    were never deleted; the panel had simply stopped looking where it put them,
+    which is a worse failure than never having listed them, because the feature
+    promises a report outlives the installation (SF-13b).
+    """
+    out, seen = [], set()
+    for home in reader_homes():
+        reports = os.path.join(home, REPORTS_DIR)
+        try:
+            names = os.listdir(reports)
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".md"):
+                continue
+            full = os.path.join(reports, name)
+            key = os.path.normcase(os.path.realpath(full))
+            if key in seen:
+                continue
+            try:
+                stat = os.stat(full)
+            except OSError:
+                continue
+            seen.add(key)
+            out.append({"path": full, "name": name, "at": stat.st_mtime,
+                        "size": stat.st_size})
+    # Newest first ACROSS the homes: which directory a report landed in is an
+    # accident of the install's permissions on the day, and is not something the
+    # user has any reason to sort by.
+    out.sort(key=lambda e: e["at"], reverse=True)
+    return out
+
+
+# ---------------------------------------------------------------- the session
+
+
+# The permission mode the fix session runs in. NOT "auto" (the mode the app
+# scaffolder uses, routers/apps.py), and the difference is the whole posture of
+# this feature: that session writes a new folder in the user's workspace, this
+# one edits the application itself. A user who asked for a local fix has not
+# thereby agreed to let a model rewrite their installation unwatched — so every
+# tool call that the CLI's classifier does not consider safe parks a permission
+# card, and the user answers it in the sidebar they are already looking at.
+#
+# That is affordable here in a way it is not for the scaffolder precisely
+# because THIS session is opened in front of the user by the same click that
+# starts it. Nothing is unattended.
+FIX_PERMISSION_MODE = "prompt"
+
+
+def fix_prompt(incident: str, report: str, *, reported_error: bool = True,
+               diagnostic: bool = False) -> str:
+    """What the fix session is told. Written as instructions to a colleague who
+    has never seen this machine and cannot ask the user anything.
+
+    Three things it has to establish, and each has a failure it is there to
+    prevent: WHERE it is (an installed copy, not a checkout — so "run the test
+    suite" and "open a PR" are not available moves), WHAT IT MAY TOUCH (an
+    agent that wanders up into `site-packages` or down into the app bundle's
+    signed binaries breaks the app far worse than the bug it came to fix), and
+    that THE REPORT IS THE DELIVERABLE (the fix helps one machine; the report is
+    the only thing that can help everyone else).
+
+    `diagnostic` is the READ-ONLY installation (SF-4a), and it changes more than
+    a sentence. An agent told to fix something it cannot write to will try,
+    fail, and spend its remaining turns working around the permission error —
+    so it is told up front that the tree is not writable, that the report is the
+    ENTIRE deliverable, and that the report lives outside the installation. The
+    third one matters on its own: left at the default path it would try to
+    create a file inside the read-only tree as its last act, and lose the
+    diagnosis with it.
+    """
+    root = install_root()
+    # TWO WAYS IN, and they hand over different things. A failed job row carries
+    # a traceback and a name for what broke; a Preferences-started session
+    # carries a sentence from the user and nothing else. Telling the second one
+    # to "trace the failure" points it at a failure that does not exist, and the
+    # most likely outcome is a confident guess — which is the single thing a
+    # patch to somebody's installation must not be.
+    opening = (
+        'The user hit a failure in the app and chose "Fix this locally". What '
+        "happened is\nwritten down here — read it first:"
+        if reported_error else
+        "NOTHING CRASHED. The user opened Preferences and described something the "
+        "app is\ndoing wrong — no exception, no failed job, no traceback. Their "
+        "description, and\nthe app's recent log, are here — read it first:"
+    )
+    investigate = (
+        "Read the incident file, then trace the failure through the code in this\n"
+        "   folder until you can name the cause."
+        if reported_error else
+        "Read the incident file. REPRODUCE WHAT THEY DESCRIBE before you change\n"
+        "   anything — read the code paths involved, and use the log and the call\n"
+        "   log it points at. If you cannot reproduce it, say so in the report and\n"
+        "   change nothing: a described problem you could not observe is a "
+        "question,\n   not a diagnosis."
+    )
+    placement = (
+        """ What you change here changes the app running on
+this one machine, right now, and nowhere else."""
+        if not diagnostic else
+        """
+
+**THIS INSTALLATION IS READ-ONLY.** You cannot change anything in it — an
+install an administrator made for everyone, or a bundle mounted where this user
+cannot write. Do not spend turns working around that: it is a fact about the
+machine, not an obstacle to route around, and the report is the whole job."""
+    )
+    step_two = (
+        "If there is a small, safe fix, apply it here. Smallest change that "
+        "fixes the\n   reported problem; no refactors, no drive-by cleanups, no "
+        "dependency changes."
+        if not diagnostic else
+        "DO NOT ATTEMPT A FIX — you cannot write here. Work out what the fix "
+        "would be\n   instead, precisely enough that someone with write access "
+        "could apply it: which\n   file, which lines, what to change them to."
+    )
+    common_rules = """- Only edit source and text — .py, .html, .css, .json, .md, and template
+  assets. Never a compiled artefact (.so, .dylib, .pyc) and never the built
+  frontend under static/shell-dist/: that is minified build output, patching it
+  by hand is not a fix anyone can carry upstream.
+- Do not install, upgrade or remove packages, do not run the app's updater, and
+  do not touch ~/.claude or ~/.fused-render."""
+    rules = (
+        f"""- Only edit files under {root}. Never anything outside it: not the user's own
+  files, not other Python packages beside this one, not the app bundle's
+  binaries, frameworks or Info.plist.
+{common_rules}
+- Python changes need the app to be restarted before they take effect. Say so in
+  the report if you changed any.
+- If the right fix cannot be made here — it needs a new release, a rebuilt
+  frontend, or a change outside this folder — change nothing and say that in the
+  report. That is a good outcome, not a failure.
+
+fused-render is watching this folder while you work. If you change anything in
+it, the app marks the installation as modified and shows the user a badge on the
+version number that leads to your report. So write the report even if you fixed
+nothing: an unexplained modified install is the one outcome this must not leave
+behind."""
+        if not diagnostic else
+        f"""- CHANGE NOTHING under {root}, and nothing anywhere else on this machine
+  either. Read it, run it, reason about it — that is the whole of your access.
+- The report is the only file you write, and it is deliberately OUTSIDE the
+  installation so that you can. Its path is above; use exactly that path.
+- Say plainly in **What I changed** that you changed nothing and why: the
+  installation is read-only. A report that is vague about that reads like a fix
+  that silently failed.
+- **For the developers** carries more weight here than usual — it is the only
+  thing that can act on what you found, because nobody at this machine can."""
+    )
+    return f"""\
+You are fixing a problem in the fused-render installation on this machine.
+
+{opening}
+
+  {incident}
+
+## Where you are
+
+Your working directory is this machine's INSTALLED copy of fused-render:
+
+  {root}
+
+That is the app's own Python package inside the installation. It is not a source
+checkout: there is no test suite here, no git history, no way to open a pull
+request, and no frontend build.{placement}
+
+## What to do
+
+1. {investigate} Say "I could not find it" rather than
+   guessing — a wrong patch to an installation is worse than no patch.
+2. {step_two}
+3. Rewrite the report at
+
+     {report}
+
+   It already contains the incident. Replace it with your own account, keeping
+   these sections:
+
+     ## What went wrong        the failure, in one short paragraph
+     ## Cause                  the actual mechanism, with file:line references
+     ## What I changed         every file you edited and why; "nothing" if so
+     ## How to verify          what the user should do to confirm it worked
+     ## For the developers     what the real fix looks like upstream
+
+   Write it for a Fused Render developer who has never seen this machine. It is
+   the only thing that travels back to them.
+
+## Rules
+
+{rules}
+"""
+
+
+# ------------------------------------------------------------------- reinstall
+
+
+def install_method() -> str:
+    """How this copy got here: "brew" | "dmg" | "windows" | "linux" | "source" | "pip".
+
+    Decides the reinstall instructions, which are the panel's other half — a
+    badge that says "this app has been modified" and cannot tell you how to get
+    an unmodified one is only half an answer.
+    """
+    if getattr(sys, "frozen", None) == "macosx_app":
+        from fused_render.update import mac as mac_update
+
+        # Reuses the updater's own probe so "how do I reinstall" and "how do I
+        # update" can never disagree about what manages this bundle. It shells
+        # out to brew, which is why nothing on the /api/config path calls this.
+        return "brew" if mac_update.detect_method(mac_update.bundle_path()) == "brew" else "dmg"
+    if getattr(sys, "frozen", None):
+        return "windows" if sys.platform == "win32" else "linux"
+    if is_source_checkout():
+        return "source"
+    return "pip"
+
+
+def reinstall_advice() -> dict:
+    """How to get a clean copy of the latest version, for THIS kind of install.
+
+    Every branch ends in the same promise, which the caller renders once: the
+    replacement removes the state dir along with the tree, so reinstalling
+    clears the badge. That is a property of where the marker lives (module
+    docstring), not of anything the installer does on our behalf.
+
+    **`command` empty means the link IS the instruction**, and the panel styles
+    it as the section's primary action rather than as a footnote. That is the
+    DMG case — the most common end-user install, where "reinstall" means "go to
+    the download page and drag it over" and there is nothing to type. Wording
+    the link is this function's job too (`url_label`): the branches already say
+    everything else per method, and a raw URL printed as the only call to
+    action reads as a citation, not as a button.
+    """
+    method = install_method()
+    if method == "brew":
+        from fused_render.update import mac as mac_update
+
+        return {
+            "method": method,
+            "headline": "Reinstall with Homebrew",
+            "command": f"brew reinstall --cask {mac_update.CASK_NAME}",
+            "note": "Run it in a terminal, then quit and reopen fused-render. "
+                    "Homebrew manages this copy, so the app never swaps it out "
+                    "on its own.",
+            "url": DOWNLOAD_URL,
+            "url_label": "Download page",
+        }
+    if method == "dmg":
+        return {
+            "method": method,
+            "headline": "Reinstall from the latest DMG",
+            "command": "",
+            "note": "Download the DMG and drag FusedRender.app into "
+                    "Applications, replacing the copy that is there. Then quit "
+                    "and reopen it.",
+            "url": DOWNLOAD_URL,
+            "url_label": "Download the latest version",
+        }
+    if method in ("windows", "linux"):
+        return {
+            "method": method,
+            "headline": "Reinstall the latest build",
+            "command": "",
+            "note": "Download the latest installer and run it over this "
+                    "install, then restart fused-render.",
+            "url": DOWNLOAD_URL,
+            "url_label": "Download the latest version",
+        }
+    if method == "source":
+        return {
+            "method": method,
+            "headline": "Restore this checkout with git",
+            "command": f"git -C {os.path.dirname(install_root())} status",
+            "note": "This is a source checkout, so the fix is in your working "
+                    "tree — review it, keep it or revert it. The badge clears "
+                    "once the tree matches what the release ships.",
+            "url": RELEASES_URL,
+            "url_label": "Latest release",
+        }
+    return {
+        "method": "pip",
+        "headline": "Reinstall the wheel",
+        "command": "pip install --force-reinstall --no-cache-dir <wheel-url>",
+        "note": "Take the wheel URL from the latest release's notes. "
+                "--force-reinstall is what replaces the files that were "
+                "changed here.",
+        "url": RELEASES_URL,
+        "url_label": "Latest release notes",
+    }
+
+
+def snapshot() -> dict:
+    """Everything the badge's panel needs, in one read.
+
+    Deliberately NOT what /api/config carries: `install_method` shells out to
+    brew and `list_reports` walks a directory, and the config poll runs every
+    few seconds on every route. The chip's presence is a config field; its
+    contents are this endpoint, fetched when the user opens the panel.
+    """
+    state = status()
+    return {
+        "modified": state is not None,
+        "version": __version__,
+        "install_root": install_root(),
+        "writable": writable(),
+        "marker": state,
+        "reports": list_reports(),
+        "reinstall": reinstall_advice(),
+        "issues_url": ISSUES_URL,
+        "machine": machine_facts(),
+    }

@@ -408,3 +408,87 @@ third party, the map templates' tile daemons (they serve the browser directly),
 and `fused.rawUrl()` used as an `<img>`/`<embed>` source — a plain URL has
 nowhere to carry the attribution header. It is a diagnostic for your own pages,
 not an audit trail.
+
+## Fixing a failure on your own machine
+
+Two ways in: a failed row in the download manager, and
+**Preferences → Fix this app** for when nothing has actually errored.
+
+### Nothing errored, but something is wrong
+
+Open **Preferences → Fix this app** and describe it — "opening a big folder
+takes ten seconds and the window freezes", "the dates in the parquet preview are
+off by a day". You do not need an error message; most of what goes wrong never
+produces one.
+
+Claude opens a session on this installation with your description and the app's
+recent log, and you land in the conversation to watch. It is told to *reproduce
+what you describe before changing anything*, and to say so and change nothing if
+it cannot — so "I could not make that happen" is a possible and useful outcome.
+
+The same tab shows the state of this installation: whether it has been modified,
+and every report a fix session has written. (How to *reinstall* is not here —
+that answers a question the amber badge raises, so it lives in the badge's own
+panel, below.)
+
+### Something failed
+
+When something the app is doing fails — a model download, a long job, anything
+that shows up in the download manager at the bottom right — the failed row
+carries a **Fix this** button beside its ✕ (*Diagnose this* on an installation
+you cannot write to, *Set up Claude Code* if Claude Code isn't installed — see
+below).
+
+It opens a Claude Code session **on the fused-render installation itself**, with
+what went wrong already written down for it, and drops you into that
+conversation in the explorer's chat sidebar. You watch it work and answer its
+permission requests; nothing happens to your copy of the app unattended.
+
+A few things worth knowing:
+
+- **It needs Claude Code on this machine.** If it isn't installed, nothing
+  offers you a session in the first place: the button reads *Set up Claude Code*
+  and shows you how to get it. Being **signed out** or **over your usage limit**
+  are different — the app can't know either without running Claude, so those you
+  find out when the session starts, and the card that appears tells you which one
+  it was and what to do.
+- **Python changes need a restart.** Quit and reopen fused-render before
+  deciding whether the fix worked.
+- **It can only fix some things.** The session is working on installed files:
+  Python, templates, and shipped assets. Anything that needs a rebuilt frontend
+  or a new release, it will tell you about rather than attempt.
+- **If the app is installed somewhere you can't write to** — an admin installed
+  it for everyone, say — the session still runs, but it can only **diagnose**.
+  Claude reads the code, works out what is wrong, and writes a report saying
+  what the fix would be; nothing on your machine changes. Send that report on,
+  or apply the fix in a copy you own. **You are told before you start**, not
+  after: the failed row's button reads *Diagnose this* rather than *Fix this*,
+  and the Preferences one *Start a diagnostic session*.
+
+### The modified badge
+
+If the session changes anything, the version number in the sidebar turns amber
+with a **✳** beside it. That is the app being honest: you are running the
+release it names *plus* a local change, so the version alone no longer describes
+what is on your disk.
+
+Click it and you get:
+
+- **the report** the session wrote — what went wrong, what it found, what it
+  changed, and how to check it. It opens as an ordinary markdown file in the
+  app;
+- **a way to send it to us.** Please do. A fix that only exists on your machine
+  helps nobody else; the report is what lets it ship for everyone. The button
+  opens a pre-filled GitHub issue, and there is a **Copy report** button beside
+  it for pasting the text in (or attach the file);
+- **how to reinstall**, worded for how *this* copy was installed —
+  `brew reinstall --cask fused-render`, the DMG, the installer, or
+  `pip install --force-reinstall`.
+
+**Reinstalling always clears the badge.** The mark lives inside the installation
+folder, so replacing that folder removes it — there is nothing to remember to
+reset. Upgrading to a newer version clears it too.
+
+If you would rather keep the change and stop being reminded about it, the panel
+has a quiet **Dismiss this badge**. It clears the mark only — the report files
+stay where they are.

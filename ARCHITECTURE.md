@@ -57,12 +57,14 @@ fused-render/
 │   │       ├── run.py          # /api/run
 │   │       ├── env.py          # script-venv install loader: /api/env/install|progress|cancel (PY-18/D173)
 │   │       ├── jobs.py         # background-job registry: /api/jobs report|list|cancel|dismiss|clear (SPEC §36/D244)
+│   │       ├── selffix.py      # self-fix: /api/selffix start|read|clear — a Claude session on THIS install (SPEC §43/D365)
 │   │       └── export.py       # /api/export
 │   ├── executor.py             # runner: in-process for first-party helpers, subprocess for user code (D72)
 │   ├── _child.py               # worker-process entry (subprocess path)
 │   ├── _binding.py             # param coercion shared by both execution paths
 │   ├── logs.py                 # rotating app log for 500 / right-click-open diagnostics (D68)
 │   ├── jobs.py                 # the background-job registry itself (in-memory, swept) — the download manager's model
+│   ├── selffix.py              # the modified-install mark: digest, marker under <install>/.fused-render-selffix, fix prompt (SPEC §43)
 │   ├── static/
 │   │   ├── shell-dist/         # Vite build of frontend/ (gitignored, D54; built by dev / packaging hook)
 │   │   └── runtime.js          # injected into every rendered HTML (plain JS, NOT part of the React app)

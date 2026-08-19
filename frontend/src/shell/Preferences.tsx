@@ -41,8 +41,9 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
+import { SelfFixPanel } from "@shell/SelfFixPanel";
 
-type PrefsTab = "render" | "indexing";
+type PrefsTab = "render" | "indexing" | "selffix";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -358,7 +359,12 @@ export default function Preferences() {
   // /ai-models?tab=engines before this page renders, which is why an unknown
   // tab falling back to "render" is not the answer for that one — a bookmark
   // pointing at the engine picker should land ON the engine picker.
-  const tab: PrefsTab = requested === "indexing" ? "indexing" : "render";
+  //
+  // A membership test rather than a ternary chain: the nesting was the line
+  // every new branch conflicted on, and adding one more should not mean
+  // re-indenting the rest.
+  const tab: PrefsTab =
+    requested === "indexing" || requested === "selffix" ? requested : "render";
   const setTab = (next: PrefsTab) => {
     const params = new URLSearchParams(location.search);
     if (next === "render") params.delete("tab");
@@ -394,6 +400,20 @@ export default function Preferences() {
             >
               Indexing
             </button>
+            {/* Named for what a stuck user would look for, not for the
+                feature (SF-14). The siblings are noun phrases and this is an
+                imperative, deliberately: it is the one tab somebody opens
+                Preferences *in order to find*, and matching the grammar would
+                cost the only thing that matters about it. Ungated, like
+                Indexing — a user whose app is misbehaving must not have to
+                have enabled something first. */}
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "selffix" ? " active" : "")}
+              onClick={() => setTab("selffix")}
+            >
+              Fix this app
+            </button>
           </div>
           <div className="prefs-tabpanel">
             {tab === "render" && (
@@ -405,6 +425,7 @@ export default function Preferences() {
               </>
             )}
             {tab === "indexing" && <IndexingPanel />}
+            {tab === "selffix" && <SelfFixPanel />}
           </div>
         </>
       )}

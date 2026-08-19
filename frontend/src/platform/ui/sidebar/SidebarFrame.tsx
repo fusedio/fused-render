@@ -6,6 +6,8 @@
 // (platform/lib/sidebarstate): switching sub-apps must not jump the layout.
 import React, { useRef, useState } from "react";
 import PanelIcon from "@platform/ui/PanelIcon";
+import VersionChip from "@platform/ui/VersionChip";
+import type { ModifiedInstall } from "@platform/lib/selffix";
 import { navigateUrl } from "@platform/lib/router";
 import {
   getSidebarState,
@@ -58,6 +60,11 @@ export interface SidebarFrameProps {
   title: string;
   /** Version chip after the title — shown only by the shell ("Render"). */
   version?: string;
+  /** Set when a self-fix session has changed this installation (SPEC §43):
+      the chip turns amber and becomes the door to that session's report. The
+      frame stays ignorant of what any of that means — it hands both values to
+      VersionChip, which is where the two states are decided. */
+  modifiedInstall?: ModifiedInstall | null;
   /** Where the brand click lands; the front door of the owning app. */
   homeHref?: string;
   /** Section icons for the collapsed rail. Optional — a sidebar without them
@@ -113,7 +120,7 @@ export function NavItem({
   );
 }
 
-export function SidebarFrame({ title, version, homeHref = "/apps", rail, children }: SidebarFrameProps) {
+export function SidebarFrame({ title, version, modifiedInstall, homeHref = "/apps", rail, children }: SidebarFrameProps) {
   // Sidebar chrome: draggable width + collapsed flag, persisted once per
   // gesture (drag end / toggle), not per mousemove. The state lives in the
   // shared store (platform/lib/sidebarstate) rather than here so that a
@@ -261,7 +268,7 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
           </span>{" "}
           <span className="brand-title">{title}</span>
         </a>
-        {version && <span className="brand-version">v{version}</span>}
+        <VersionChip version={version} modified={modifiedInstall} />
         <button
           type="button"
           className="icon-btn sidebar-collapse-btn"
