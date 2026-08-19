@@ -44,7 +44,7 @@ def target(tmp_path):
 
 def test_the_wrapper_dir_is_prepended_to_path(agent, target, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", "/home/u/.fused-render/fused-bin")
-    monkeypatch.setattr(agent, "_plugin_argv", lambda: [])
+    monkeypatch.setattr(agent, "_plugin_argv", lambda target=None: [])
     monkeypatch.setattr(agent.os, "name", "posix")
     out = agent._terminal_command(target)
     command = out["command"]
@@ -60,7 +60,7 @@ def test_no_wrapper_means_the_command_is_unchanged(agent, target, monkeypatch):
     """A machine with no fused CLI must not get a PATH assignment pointing
     nowhere — same condition that gates the Bash(fused:*) pre-allowance."""
     monkeypatch.delenv("FUSED_RENDER_FUSED_CLI_DIR", raising=False)
-    monkeypatch.setattr(agent, "_plugin_argv", lambda: [])
+    monkeypatch.setattr(agent, "_plugin_argv", lambda target=None: [])
     monkeypatch.setattr(agent.os, "name", "posix")
     command = agent._terminal_command(target)["command"]
     assert "PATH=" not in command
@@ -69,7 +69,7 @@ def test_no_wrapper_means_the_command_is_unchanged(agent, target, monkeypatch):
 
 def test_a_path_with_spaces_is_quoted(agent, target, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", "/home/u/my apps/fused-bin")
-    monkeypatch.setattr(agent, "_plugin_argv", lambda: [])
+    monkeypatch.setattr(agent, "_plugin_argv", lambda target=None: [])
     monkeypatch.setattr(agent.os, "name", "posix")
     command = agent._terminal_command(target)["command"]
     assert "'/home/u/my apps/fused-bin':$PATH" in command
@@ -80,7 +80,7 @@ def test_windows_sets_path_with_cmd_syntax(agent, target, monkeypatch):
     has its own quoting — and `set` scopes to the shell the user pasted into,
     which is the lifetime we want."""
     monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", r"C:\Users\u\fused-bin")
-    monkeypatch.setattr(agent, "_plugin_argv", lambda: [])
+    monkeypatch.setattr(agent, "_plugin_argv", lambda target=None: [])
     monkeypatch.setattr(agent.os, "name", "nt")
     command = agent._terminal_command(target)["command"]
     assert r'set "PATH=C:\Users\u\fused-bin;%PATH%"' in command
@@ -91,7 +91,8 @@ def test_windows_sets_path_with_cmd_syntax(agent, target, monkeypatch):
 def test_the_resume_flag_still_rides_along(agent, target, monkeypatch):
     """The PATH prefix must not displace anything the command already carried."""
     monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", "/bin/fused-bin")
-    monkeypatch.setattr(agent, "_plugin_argv", lambda: ["--plugin-dir", "/p"])
+    monkeypatch.setattr(agent, "_plugin_argv",
+                        lambda target=None: ["--plugin-dir", "/p"])
     monkeypatch.setattr(agent.os, "name", "posix")
     command = agent._terminal_command(target, "sess-A")["command"]
     assert "--resume sess-A" in command
