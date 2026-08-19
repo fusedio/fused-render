@@ -119,13 +119,15 @@ _TOKENS = os.path.join(REPO_ROOT, "frontend", "src", "styles", "tokens.css")
 
 def test_the_popover_title_outranks_the_facts_under_it():
     """Title over description as ONE written block, and the title a real step
-    bigger than the 12px fact rows below — at 14px against 12px it was the same
-    size as its own metadata, which is not a hierarchy."""
+    bigger than the 12px facts below — at 14px against 12px it was the same
+    size as its own metadata, which is not a hierarchy. The facts themselves
+    are one muted `.schedule-pop-meta` line now (repeat · folder), not a stack
+    of icon-led rows, but the step in size is the same invariant."""
     css = _read(_CSS)
     size = _decl(css, ".schedule-pop-write .schedule-pop-title", "font-size")
     assert size and int(re.match(r"(\d+)px", size).group(1)) >= 16
-    rows = _decl(css, ".schedule-pop-rows", "font-size")
-    assert rows == "12px"
+    meta = _decl(css, ".schedule-pop-meta", "font-size")
+    assert meta == "12px"
     assert _decl(css, ".schedule-pop-desc", "color") == "var(--fg-muted)"
 
 
@@ -140,12 +142,15 @@ def test_the_description_is_prose_and_wears_no_icon():
 
 def test_the_occurrence_row_does_not_repeat_the_panel():
     """A popover about ONE task printed its title again on the row and its
-    status word again beside it. The ring carries the state; the tooltip carries
-    the word."""
+    status word again beside it. Both are out of the ink entirely now — a row
+    is the ring and the time, nothing else — and the ring carries the state
+    while the tooltip carries the word."""
     cal = _read(_CAL)
     assert '<span className="schedule-cal-msg-state">' not in cal
-    # The body is kept only when it says something the title has not.
-    assert 'const showBody = body && body !== headline ? body : "";' in cal
+    # No body text at all (Akshil, 2026-08-19): even a genuinely different
+    # prompt is one click away in the transcript the row opens.
+    assert "schedule-cal-msg-body" not in cal
+    assert "showBody" not in cal
     assert "status.label" in cal, "the word must survive in the row's tooltip"
 
 
@@ -182,14 +187,19 @@ def test_a_running_chip_says_so_and_stops_saying_it_on_request():
     """The calendar has no In Progress lane, so the chip itself has to carry
     the one fact that is only true while you are looking at it. Motion is the
     signal — every static property on a chip is already spent on the project
-    hue, the projected dashes and the past fade — and a reader who has asked for
-    less of it still gets a static highlight."""
+    hue, the projected dashes and the past fade — and a reader who has asked
+    for less of it still gets a static highlight. The treatment is the app's
+    ONE running treatment (Akshil, 2026-08-19): the title's ink in the In
+    Progress yellow with the sidebar's travelling band, not a sweep across the
+    whole chip — one fact, one look, and the popover's pill shares it."""
     css = _read(_CSS)
-    assert "@keyframes schedule-cal-shimmer" in css
-    running = ".schedule-cal .schedule-cal-chip.is-running::after"
-    assert _decl(css, running, "animation") == "schedule-cal-shimmer 2s linear infinite"
-    # It must not eat the chip's own clicks: the chip is a button.
-    assert _decl(css, running, "pointer-events") == "none"
+    assert "@keyframes schedule-running-shimmer" in css
+    running = ".schedule-cal .schedule-cal-chip.is-running .schedule-cal-chip-text"
+    assert _decl(css, running, "animation") == "schedule-running-shimmer 2.2s linear infinite"
+    # The pill in the popover header says "running" with the SAME band, so the
+    # two seats of the one live fact can never drift apart.
+    pill = ".schedule-cal-pop-head .schedule-state.is-running"
+    assert _decl(css, pill, "animation") == "schedule-running-shimmer 2.2s linear infinite"
     # The fallback is INSIDE a reduced-motion block, not merely after one: the
     # whole point is that it applies only to the reader who asked for it.
     blocks = re.findall(

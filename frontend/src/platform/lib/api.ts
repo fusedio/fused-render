@@ -1977,6 +1977,30 @@ export function unarchiveTask(
   );
 }
 
+// Taking the ROW away for good (Akshil, 2026-08-19). Archive's first half —
+// every pending run and the rule behind it are cancelled, `cancelled` counts
+// them — plus a tombstone where archive writes a filing, so the task stops
+// appearing on the List, the Board, the calendar and the sidebar at once.
+//
+// WHAT IS NOT DESTROYED, stated by the server in every answer rather than
+// assumed: the transcript stays on disk (D306 — `erased_transcript` is always
+// false), the task's number is never reallocated, and new activity in the
+// conversation revives the row instead of running invisibly behind it.
+//
+// Refused with a 409 while the task is running: a live turn cannot be
+// cancelled, and hiding work that is still happening is the one thing this
+// verb must never do. Stop the run first.
+export function deleteTask(
+  key: string,
+): Promise<{ ok: boolean; key: string; cancelled: number; erased_transcript: boolean }> {
+  return postJson<{
+    ok: boolean;
+    key: string;
+    cancelled: number;
+    erased_transcript: boolean;
+  }>("/api/tasks/delete", { key });
+}
+
 // Every scheduled message in a time window, which is the one question the
 // listing above cannot answer: `Task.messages` holds only the three most recent,
 // and a calendar draws a week. Without this the grid under-draws — a task whose
