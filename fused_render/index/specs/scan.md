@@ -93,6 +93,15 @@ The GIL caps one process at roughly 15k dirs/s, so the worker fans out:
 (tmp + `os.replace`) every 500 dirs; the parent globs and sums them every 0.5 s and
 emits one `progress` event. Counters can lag slightly but never double-count.
 
+**Scheduling priority:** all that fan-out is CPU the user did not ask to spend, so the
+worker calls `os.nice(SCAN_NICE_INCREMENT)` (+10) on itself at startup — in the child,
+after exec, never as a `preexec_fn` (which would force the spawn back onto `fork()`).
+Pool children and stat threads inherit it, and so does the compaction, which
+additionally caps DuckDB to `store.compaction_threads()` (`index-store.md §5`). The
+invariant: an interactive `/api/index/rank` keystroke wins the scheduler against a
+scan. Without it a full scan of a big home starved the lock-free rank read path for
+seconds at a time.
+
 **Device ids** are collected during the walk — a root spanning more than one volume
 disqualifies the FSEvents fast path (`scan-incremental.md §3`).
 

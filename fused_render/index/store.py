@@ -24,6 +24,26 @@ from fused_render.index.ignore import ignored_for_index
 # of syscalls to wait out.
 NT_LOCK_POLL_S = 0.05
 
+# Cores the background compaction's DuckDB may use. It runs inside a scan
+# worker, against an interactive `/api/index/rank` that gets no cap at all
+# (query.py) — a merge on every core starved the query for seconds, and the
+# user is not waiting on the merge. A quarter of the machine, never more than
+# this many.
+MAX_COMPACTION_THREADS = 4
+
+
+def compaction_threads() -> int:
+    return max(1, min(MAX_COMPACTION_THREADS, (os.cpu_count() or 4) // 4))
+
+
+def background_connect():
+    """An in-memory DuckDB for the scan side, capped to `compaction_threads`."""
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(f"SET threads TO {compaction_threads()}")
+    return con
+
 
 def _acquire_nt(msvcrt, fileno: int) -> None:
     """Block until the byte is ours, polling the NON-blocking mode.
@@ -380,7 +400,6 @@ def compact(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None,
 
 
 def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
-    import duckdb
     import shutil
 
     def phase(msg):
@@ -391,7 +410,7 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     dirs_parquet = cfg.dirs_parquet
     old_manifest = read_manifest(cfg) or {}
     generation = int(old_manifest.get("generation") or 0) + 1
-    con = duckdb.connect()
+    con = background_connect()
     rootp = root.rstrip("/") or "/"
     prefix_like = (like_literal(rootp) + "/") if rootp != "/" else "/"
     outside = (f"(dir <> '{_sql(rootp)}' "
