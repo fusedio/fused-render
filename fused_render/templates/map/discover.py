@@ -44,7 +44,10 @@ RASTER = (
     ".hgt",
     ".grd",
     ".nc",
+    ".nc4",
     ".hdf",
+    ".hdf5",
+    ".he5",
     ".h5",
 )
 VECTOR = (
@@ -156,7 +159,11 @@ def _payload(
     entries = []
     for name, is_directory, size in triples:
         full = os.path.join(directory, name)
-        item_kind = "dir" if is_directory else kind(name)
+        # A .zarr store is a directory that opens like a file.
+        if is_directory and name.lower().endswith(".zarr"):
+            item_kind = "raster"
+        else:
+            item_kind = "dir" if is_directory else kind(name)
         if item_kind == "other":
             continue
         entries.append(
@@ -164,10 +171,10 @@ def _payload(
                 "name": name,
                 "path": full,
                 "kind": item_kind,
-                "ext": "" if is_directory else os.path.splitext(name)[1].lower(),
+                "ext": "" if item_kind == "dir" else os.path.splitext(name)[1].lower(),
                 "size": None if is_directory else size,
                 "hidden": name.startswith("."),
-                "selectable": not is_directory and item_kind != "other",
+                "selectable": item_kind != "dir",
             }
         )
     entries.sort(key=lambda entry: (entry["kind"] != "dir", entry["name"].lower()))

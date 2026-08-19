@@ -306,7 +306,7 @@ def test_builtin_zarr_directory_key():
     # a `.zarr`-named dir carries the AOI streamer and the raw member listing as
     # peer modes (the legacy `zarr` template is gone; folder-level detection for
     # non-`.zarr` dirs is handled by the gate on the "/" key instead).
-    assert modes("/x/store.zarr", is_dir=True) == (["zarr_aoi", "_listing"], None)
+    assert modes("/x/store.zarr", is_dir=True) == (["zarr_aoi", "_listing", "map"], None)
     # a *file* named .zarr does not match the directory key
     assert modes("/x/store.zarr", is_dir=False) == ([], None)
 
@@ -774,7 +774,7 @@ def test_registry_drops_zarr_template_and_sentinel_keys():
     # ...and its folder is deleted, so the name no longer resolves at all
     assert server._resolve_name("zarr")[0] is None
     # zarr_aoi is the .zarr/ default and a gated candidate on every directory
-    assert registry[".zarr/"] == ["zarr_aoi", "_listing"]
+    assert registry[".zarr/"] == ["zarr_aoi", "_listing", "map"]
     assert registry["/"] == ["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"]
 
 
@@ -783,7 +783,7 @@ def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
     # returns True with ZERO marker files present (and zero filesystem calls).
     store = tmp_path / "store.zarr"
     store.mkdir()
-    assert modes(str(store), is_dir=True) == (["zarr_aoi", "_listing"], None)
+    assert modes(str(store), is_dir=True) == (["zarr_aoi", "_listing", "map"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
     # The `.zarr/` key is its own mode list and never offers `graph`, so

@@ -24,10 +24,9 @@ from urllib.parse import quote, urlsplit
 
 from geo_paths import (
     is_http_url,
-    is_managed_mount,
-    is_native_remote_path,
     is_remote_path,
     normalize_remote_path,
+    resolve_source,
 )
 from optional_runtime import require
 
@@ -105,40 +104,6 @@ def _dependency_descriptor(artifact_id: str, message: str) -> dict[str, Any]:
 def _suffix(value: str) -> str:
     path = urlsplit(value).path if is_http_url(value) else value
     return Path(path.replace("\\", "/")).suffix.lower()
-
-
-def _raw_url(origin: str, path: str) -> str:
-    return (
-        origin.rstrip("/")
-        + "/api/fs/raw?path="
-        + quote(path, safe="")
-        + "&pooled=1"
-    )
-
-
-def _resolve_source(request: dict[str, Any], target: str) -> str:
-    target = normalize_remote_path(target) if is_remote_path(target) else target
-    supplied_url = str(request.get("source_url") or "")
-    if is_remote_path(supplied_url):
-        supplied_url = normalize_remote_path(supplied_url)
-    direct_target = str(request.get("target") or "")
-    if is_remote_path(direct_target):
-        direct_target = normalize_remote_path(direct_target)
-    local = (
-        not is_remote_path(target)
-        and not is_managed_mount(target)
-        and os.path.isfile(target)
-    )
-    if local:
-        return os.path.abspath(target)
-    if is_native_remote_path(target):
-        return target
-    if target == direct_target and supplied_url:
-        return supplied_url
-    if is_http_url(target):
-        return target
-    origin = str(request.get("source_origin") or "")
-    return _raw_url(origin, target) if origin else os.path.abspath(target)
 
 
 def _source_size(source: str) -> int | None:
@@ -341,7 +306,7 @@ class VectorEngine:
         if not target or _suffix(target) not in VECTOR_SUFFIXES:
             return None
 
-        source = _resolve_source(request, target)
+        source = resolve_source(request, target)
         source_size = _source_size(source)
         artifact_id = str(request.get("artifact_id") or "")
         if source_size is None or source_size >= VECTOR_TILE_MIN_BYTES:

@@ -3,8 +3,9 @@
 The warm loopback service calls :func:`main` directly from this folder's geo
 runtime (declared in `pyproject.toml`, SPEC PY-16 — see `geo_classify.py`'s
 header). A one-shot CLI invocation remains as a degraded fallback
-if that service cannot start. Raster paths are offered to ``RasterEngine``
-first; vector and in-memory results then fall through to ``geo_classify``.
+if that service cannot start. Multidim stores are offered to ``MultidimEngine``
+first, remaining raster paths to ``RasterEngine``; vector and in-memory results
+then fall through to ``geo_classify``.
 """
 from __future__ import annotations
 
@@ -17,6 +18,8 @@ import sys
 import time
 import traceback
 from typing import Any
+
+from multidim_engine import multidim_suffix
 
 
 ENTRYPOINTS = ("main", "run", "udf", "fn")
@@ -167,6 +170,7 @@ def build(
     request: dict[str, Any],
     raster_engine=None,
     vector_engine=None,
+    multidim_engine=None,
 ) -> dict[str, Any]:
     import geo_classify
 
@@ -190,10 +194,34 @@ def build(
             obj = target
 
         descriptor = (
-            raster_engine.try_describe(request, obj=obj)
-            if raster_engine is not None
+            multidim_engine.try_describe(request, obj=obj)
+            if multidim_engine is not None
             else None
         )
+        described = obj if isinstance(obj, (str, os.PathLike)) else target
+        if (
+            descriptor is not None
+            and descriptor.get("status") == "error"
+            and raster_engine is not None
+            and multidim_suffix(str(described)) != ".zarr"
+        ):
+            # xarray needs CF-shaped coordinates; GDAL reads some files it
+            # cannot (a projected single-grid NetCDF, an HDF5 with only
+            # subdataset georeferencing). Give those the raster path, and
+            # adopt whatever honest answer it returns — ok, or
+            # not_georeferenced (an actionable amber card) — but keep the
+            # multidim error, which names variables and dimensions, when the
+            # raster path fails too. Zarr stays out: GDAL wants a
+            # ZARR:-prefixed locator, so its attempt only doubles the
+            # latency of an already-failed remote open.
+            fallback = raster_engine.try_describe(request, obj=obj)
+            if fallback is not None and fallback.get("status") in {
+                "ok",
+                "not_georeferenced",
+            }:
+                descriptor = fallback
+        if descriptor is None and raster_engine is not None:
+            descriptor = raster_engine.try_describe(request, obj=obj)
         if descriptor is None and vector_engine is not None:
             descriptor = vector_engine.try_describe(request, obj=obj)
         if descriptor is None:
@@ -210,6 +238,7 @@ def main(
     request: dict[str, Any],
     raster_engine=None,
     vector_engine=None,
+    multidim_engine=None,
 ) -> dict[str, Any]:
     started = time.time()
     try:
@@ -217,6 +246,7 @@ def main(
             request,
             raster_engine=raster_engine,
             vector_engine=vector_engine,
+            multidim_engine=multidim_engine,
         )
     except Exception as error:
         descriptor = {

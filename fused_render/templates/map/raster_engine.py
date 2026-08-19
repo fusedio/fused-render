@@ -27,11 +27,10 @@ from urllib.parse import quote, urlsplit
 from blob_tokens import TOKENS, is_signed, refused_access
 from geo_paths import (
     is_http_url,
-    is_managed_mount,
-    is_native_remote_path,
     is_remote_path,
     is_vsi_path,
     normalize_remote_path,
+    resolve_source,
 )
 from optional_runtime import require
 from raster_categories import classify_categories, read_pam_aux_xml, resolve_render_mode
@@ -76,7 +75,25 @@ def _raster_dependency_error() -> str | None:
     return require("Raster layers", RASTER_RUNTIME)
 
 
-def _dependency_descriptor(artifact_id: str, message: str) -> dict[str, Any]:
+_TRANSPARENT_TILE: bytes | None = None
+
+
+def transparent_tile() -> bytes:
+    """One shared blank 256px PNG for any tile outside a source's bounds."""
+    global _TRANSPARENT_TILE
+    if _TRANSPARENT_TILE is None:
+        import io
+        from PIL import Image
+
+        output = io.BytesIO()
+        Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(output, "PNG")
+        _TRANSPARENT_TILE = output.getvalue()
+    return _TRANSPARENT_TILE
+
+
+def error_descriptor(
+    artifact_id: str, message: str, detected_type: str = "raster"
+) -> dict[str, Any]:
     return {
         "id": artifact_id,
         "status": "error",
@@ -87,7 +104,7 @@ def _dependency_descriptor(artifact_id: str, message: str) -> dict[str, Any]:
         "style": {},
         "warnings": [],
         "message": message,
-        "detected_type": "raster",
+        "detected_type": detected_type,
     }
 
 
@@ -101,15 +118,6 @@ def _jsonable(value: Any) -> Any:
     if hasattr(value, "item"):
         return value.item()
     return value
-
-
-def _raw_url(origin: str, path: str) -> str:
-    return (
-        origin.rstrip("/")
-        + "/api/fs/raw?path="
-        + quote(path, safe="")
-        + "&pooled=1"
-    )
 
 
 @contextlib.contextmanager
@@ -182,7 +190,7 @@ def _source_fingerprint(
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
 
 
-def _ranges(data: Any) -> list[list[float]]:
+def band_ranges(data: Any) -> list[list[float]]:
     import numpy as np
 
     result: list[list[float]] = []
@@ -431,7 +439,6 @@ class RasterEngine:
         self.lock = threading.RLock()
         self.tile_cache: OrderedDict[tuple[Any, ...], bytes] = OrderedDict()
         self.readers = _ReaderPool(MAX_IDLE_PER_LOCATOR, MAX_IDLE_READERS)
-        self._transparent: bytes | None = None
 
     @staticmethod
     def _needs_relay(url: str) -> bool:
@@ -540,33 +547,12 @@ class RasterEngine:
         if suffix in RASTER_SUFFIXES:
             dependency_error = _raster_dependency_error()
             if dependency_error:
-                return _dependency_descriptor(
+                return error_descriptor(
                     str(req.get("artifact_id") or ""),
                     dependency_error,
                 )
 
-        direct_target = str(req.get("target") or "")
-        if is_remote_path(direct_target):
-            direct_target = normalize_remote_path(direct_target)
-        supplied_url = str(req.get("source_url") or "")
-        if is_remote_path(supplied_url):
-            supplied_url = normalize_remote_path(supplied_url)
-        is_local_file = (
-            not is_remote_path(target)
-            and not is_managed_mount(target)
-            and os.path.isfile(target)
-        )
-        if is_local_file:
-            source = os.path.abspath(target)
-        elif is_native_remote_path(target):
-            source = target
-        elif target == direct_target and supplied_url:
-            source = supplied_url
-        elif is_http_url(target):
-            source = target
-        else:
-            origin = str(req.get("source_origin") or "")
-            source = _raw_url(origin, target) if origin else os.path.abspath(target)
+        source = resolve_source(req, target)
 
         try:
             return self._describe_signed(
@@ -577,18 +563,10 @@ class RasterEngine:
             )
         except Exception as error:
             if suffix in RASTER_SUFFIXES:
-                return {
-                    "id": str(req.get("artifact_id") or ""),
-                    "status": "error",
-                    "kind": None,
-                    "bounds": None,
-                    "data": {},
-                    "stats": {},
-                    "style": {},
-                    "warnings": [],
-                    "message": _read_failure_message(source, error),
-                    "detected_type": "raster",
-                }
+                return error_descriptor(
+                    str(req.get("artifact_id") or ""),
+                    _read_failure_message(source, error),
+                )
             return None
 
     def _open_path(self, record: RasterSource, locator: str) -> str:
@@ -710,7 +688,7 @@ class RasterEngine:
                         np.ma.getmaskarray(preview_data),
                         np.all(preview_data.data == inferred_nodata, axis=0)[None, :, :],
                     )
-                rescale = _ranges(preview_data)
+                rescale = band_ranges(preview_data)
                 sample_data = preview_data
             else:
                 rescale = _dtype_ranges(dataset.dtypes, render_bands)
@@ -821,7 +799,7 @@ class RasterEngine:
                     if cached.crs is not None and cached.count:
                         record.preview_path = str(preview_derivative)
                         if record.auto_rescale:
-                            record.rescale = _ranges(cached.read(masked=True))
+                            record.rescale = band_ranges(cached.read(masked=True))
                         record.optimization = {
                             "status": "available",
                             "progress": 15,
@@ -1141,7 +1119,7 @@ class RasterEngine:
                             range_data = np.ma.masked_equal(
                                 range_data, render_nodata
                             )
-                        record.rescale = _ranges(range_data)
+                        record.rescale = band_ranges(range_data)
                     record.optimization.update(
                         progress=15,
                         phase="preview_ready",
@@ -1221,14 +1199,7 @@ class RasterEngine:
             self.tile_cache.pop(key, None)
 
     def transparent_tile(self) -> bytes:
-        if self._transparent is None:
-            import io
-            from PIL import Image
-
-            output = io.BytesIO()
-            Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(output, "PNG")
-            self._transparent = output.getvalue()
-        return self._transparent
+        return transparent_tile()
 
     def tile(self, source_id: str, z: int, x: int, y: int) -> bytes | None:
         import numpy as np

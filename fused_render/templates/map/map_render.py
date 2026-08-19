@@ -31,6 +31,7 @@ for _path in (str(HERE), str(SHARED)):
         sys.path.insert(0, _path)
 
 from geo_paths import is_managed_mount, is_remote_path, normalize_remote_path
+from multidim_engine import multidim_suffix
 from procutil import clean_env, file_lock, pid_alive, spawn_python
 
 CACHE_DIR = Path(
@@ -52,6 +53,7 @@ BACKEND_FILES = (
     DAEMON,
     WORKER,
     HERE / "raster_engine.py",
+    HERE / "multidim_engine.py",
     HERE / "vector_engine.py",
     HERE / "geo_classify.py",
     HERE / "geo_paths.py",
@@ -62,7 +64,7 @@ BACKEND_FILES = (
 RASTER_SUFFIXES = (
     ".tif", ".tiff", ".cog", ".vrt", ".jp2", ".j2k", ".img", ".ntf",
     ".nitf", ".dem", ".dt0", ".dt1", ".dt2", ".hgt", ".grd", ".nc",
-    ".hdf", ".h5",
+    ".nc4", ".hdf", ".hdf5", ".he5", ".h5", ".zarr",
 )
 VECTOR_SUFFIXES = (
     ".geojson", ".json", ".shp", ".gpkg", ".fgb", ".kml", ".gml",
@@ -85,6 +87,10 @@ def _clean_target(value: str) -> str:
 
 
 def _looks_like_raster(target: str) -> bool:
+    # multidim_suffix also recognizes the zarr spellings a plain suffix check
+    # misses: store.zarr/, .zmetadata, zarr.json, .zarr-v3.
+    if multidim_suffix(target):
+        return True
     return target.lower().split("?", 1)[0].endswith(RASTER_SUFFIXES)
 
 
@@ -361,6 +367,7 @@ def main(
     rescale: str = "",
     entrypoint: str = "",
     var: str = "",
+    sel: str = "",
     warmup: str = "",
     source_url: str = "",
     source_origin: str = "",
@@ -414,6 +421,11 @@ def main(
         "entrypoint": entrypoint,
         "var": var,
     }
+    if sel:
+        try:
+            options["sel"] = json.loads(sel)
+        except ValueError:
+            pass
     if rescale:
         try:
             lo, hi = (float(value) for value in rescale.split(","))

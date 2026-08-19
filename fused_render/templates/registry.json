@@ -389,10 +389,12 @@
     "map"
   ],
   ".nc": [
-    "netcdf"
+    "netcdf",
+    "map"
   ],
   ".nc4": [
-    "netcdf"
+    "netcdf",
+    "map"
   ],
   ".cdf": [
     "netcdf"
@@ -407,7 +409,8 @@
   ],
   ".zarr/": [
     "zarr_aoi",
-    "_listing"
+    "_listing",
+    "map"
   ],
   ".shp": [
     "vector",
@@ -574,5 +577,17 @@
   ],
   ".pickle": [
     "joblib_model"
+  ],
+  ".h5": [
+    "map"
+  ],
+  ".hdf5": [
+    "map"
+  ],
+  ".he5": [
+    "map"
+  ],
+  ".hdf": [
+    "map"
   ]
 }

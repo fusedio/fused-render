@@ -307,6 +307,17 @@
   }
   .catrow .catcount { flex: none; font-size: 10px; color: var(--faint); font-family: var(--mono); }
 
+  /* multidim dataset section (variable + dim selectors) */
+  .md-section.busy { opacity: .6; }
+  .md-btn {
+    flex: none; width: 26px; height: 24px; border: 1px solid var(--border-2);
+    border-radius: 6px; background: var(--panel); color: var(--muted); padding: 0;
+    font-size: 10px; display: flex; align-items: center; justify-content: center;
+  }
+  .md-btn:hover { color: var(--text); border-color: var(--accent); }
+  .md-btn.on { color: var(--accent); border-color: #ff3e0055; background: var(--accent-soft); }
+  .md-btn:disabled { opacity: .45; cursor: default; }
+
   /* right-docked style panel */
   #stylepanel {
     flex: none; width: 320px; min-width: 0; background: var(--panel);
@@ -654,6 +665,25 @@ const sourceArgs = target => ({
     ? target
     : `${location.origin}/api/fs/raw?path=${encodeURIComponent(target)}&pooled=1`,
 });
+// The one map_render argument block every describe path shares. A sel step
+// only takes the user's own contrast window along (touchedOnlyRescale) so an
+// untouched style picks up each slice's own 2–98% stretch from the new
+// descriptor.
+function renderArgs(L, { touchedOnlyRescale } = {}) {
+  const s = L.style || {};
+  const sendRescale = s.rescale && (!touchedOnlyRescale || s._touched);
+  return {
+    target: L.target,
+    colormap: s.colormap || "viridis",
+    rescale: sendRescale ? s.rescale.join(",") : "",
+    render_mode: s.render_mode || "",
+    stretch: s.stretch || "",
+    category_colors: JSON.stringify(s.category_colors || {}),
+    var: L.mdVar || "",
+    sel: L.mdSel ? JSON.stringify(L.mdSel) : "",
+    ...sourceArgs(L.target),
+  };
+}
 
 /* =======================================================================
    FILE BROWSER
@@ -907,14 +937,7 @@ async function loadTarget(target, name) {
       persistOpen(); renderAll(); refreshCode();
       return;
     }
-    const desc = await fused.runPython("./map_render.py", {
-      target, colormap: (L.style && L.style.colormap) || "viridis",
-      rescale: (L.style && L.style.rescale) ? L.style.rescale.join(",") : "",
-      render_mode: (L.style && L.style.render_mode) || "",
-      stretch: (L.style && L.style.stretch) || "",
-      category_colors: JSON.stringify((L.style && L.style.category_colors) || {}),
-      ...sourceArgs(target),
-    });
+    const desc = await fused.runPython("./map_render.py", renderArgs(L));
     L.loading = false; L.descriptor = desc;
     if (desc.status !== "ok") {
       L.visible = false;
@@ -926,6 +949,7 @@ async function loadTarget(target, name) {
     }
     const touched = L.style && L.style._touched;
     L.style = touched ? Object.assign({}, desc.style, L.style) : Object.assign({}, desc.style);
+    syncMultidim(L);
     if (desc.kind === "vector_geojson") {
       L.geojson = await (await fetch(fused.rawUrl(desc.data.geojson_path))).json();
       computeColorByStats(L);
@@ -1983,6 +2007,8 @@ function renderStyleDock() {
     return;
   }
 
+  if (d.kind === "raster_tiles" && d.stats.multidim) multidimControls(body, L);
+
   body.appendChild(sliderCtl("Opacity", Math.round(L.opacity*100)+"%", 0, 100, Math.round(L.opacity*100),
     v => { L.opacity = v/100; rebuildRasterTiles(); rebuildVectorTiles(); rebuildDeck(); updateCtlLabel(body,"Opacity",v+"%"); }));
 
@@ -2218,20 +2244,242 @@ function binaryPointControls(body, L) {
 async function reloadRaster(L) {
   L.loading = true; renderFileList();
   try {
-    const desc = await fused.runPython("./map_render.py", { target: L.target, colormap: L.style.colormap || "viridis",
-      rescale: L.style.rescale ? L.style.rescale.join(",") : "",
-      render_mode: L.style.render_mode || "",
-      stretch: L.style.stretch || "",
-      category_colors: JSON.stringify(L.style.category_colors || {}),
-      ...sourceArgs(L.target) });
+    const desc = await fused.runPython("./map_render.py", renderArgs(L));
     L.loading = false;
     if (desc.status === "ok") {
       const keepStyle = L.style; L.descriptor = desc; L.style = Object.assign({}, desc.style, keepStyle);
+      syncMultidim(L);
       L.tileRevision = (L.tileRevision || 0) + 1;
       monitorOptimization(L);
     }
     renderAll();
   } catch (e) { L.loading = false; toast("bad","Re-render failed", e.message); }
+}
+
+/* ---- multidim (NetCDF/Zarr/HDF5) dataset section ----------------------- */
+// Each (variable, dim-selection) is an immutable tile source on the backend,
+// so changing either is a re-describe that swaps tile_url: the old tiles stay
+// on the map until the new source takes over, and the camera never moves.
+// Scrubbing back to a slice already seen hits the browser tile cache.
+const TIME_LABEL = /^\d{4}-\d{2}-\d{2}T/;
+const timeLike = dim => dim.name.toLowerCase() === "time" || TIME_LABEL.test(dim.labels[0] || "");
+
+// A global grid overhangs the antimeridian and poles by half a cell
+// (west -180.125): MapLibre's LngLat throws beyond ±90 and mercator y is NaN
+// beyond ±85.051129, which silently drops every tile of the source.
+function clampMdBounds(d) {
+  const b = d.bounds;
+  if (!Array.isArray(b)) return;
+  d.bounds = [Math.max(b[0], -180), Math.max(b[1], -85.051129),
+              Math.min(b[2], 180), Math.min(b[3], 85.051129)];
+}
+
+function syncMultidim(L) {
+  const md = L.descriptor && L.descriptor.stats && L.descriptor.stats.multidim;
+  if (!md) return;
+  clampMdBounds(L.descriptor);
+  // A change queued behind the debounce is newer than this descriptor: keep it.
+  if (L._mdTimer) return;
+  L.mdVar = md.variable;
+  L.mdSel = {};
+  for (const dim of md.dims) L.mdSel[dim.name] = dim.index;
+}
+
+function mdStopPlay(L) {
+  if (!L._mdPlay) return;
+  clearInterval(L._mdPlay);
+  L._mdPlay = null;
+  // Ticks skipped the dock repaint (see applyMultidim); settle it now.
+  if (state.selected === L.target) renderStyleDock();
+}
+
+// The slider stays live so a scrub in flight can keep going (the newer call
+// supersedes the older one), and pause must always be reachable.
+function mdSetDisabled(box, busy) {
+  for (const el of box.querySelectorAll("select, input[type=number], .md-btn:not(.md-play)")) el.disabled = busy;
+}
+
+function setMdBusy(L, busy) {
+  L._mdBusy = busy;
+  if (state.selected !== L.target) return;   // the dock is showing another layer
+  const box = qs("sp-body").querySelector(".md-section");
+  if (!box) return;
+  box.classList.toggle("busy", busy);
+  mdSetDisabled(box, busy);
+}
+
+function scheduleMultidim(L) {
+  clearTimeout(L._mdTimer);
+  L._mdTimer = setTimeout(() => { L._mdTimer = null; applyMultidim(L); }, 150);
+}
+
+function setDimIndex(L, dim, value) {
+  const index = Math.min(Math.max(value, 0), dim.size - 1);
+  if ((L.mdSel[dim.name] ?? 0) === index) return;
+  L.mdSel[dim.name] = index;
+  scheduleMultidim(L);
+}
+
+async function applyMultidim(L) {
+  setMdBusy(L, true);
+  try {
+    // A per-layer channel: the default channel is shared by every map_render
+    // call, so a play tick would abort another layer's load (and vice versa)
+    // instead of only superseding its own. A superseded call's promise never
+    // settles, so exactly one call in flight ever runs the code below.
+    const desc = await fused.runPython("./map_render.py",
+      renderArgs(L, { touchedOnlyRescale: true }), { key: "md:" + L.target });
+    setMdBusy(L, false);
+    if (desc.status !== "ok") {
+      mdStopPlay(L);
+      toast("bad", "Couldn't render " + L.name, desc.message || (desc.error && desc.error.message) || "unknown error");
+      // Revert to the last good selection so choosing the same value again
+      // is a change setDimIndex acts on, not a no-op.
+      syncMultidim(L);
+      renderStyleDock();
+      return;
+    }
+    const prevMd = L.descriptor && L.descriptor.stats && L.descriptor.stats.multidim;
+    const touched = L.style && L.style._touched;
+    L.descriptor = desc;
+    L.style = touched ? Object.assign({}, desc.style, L.style) : Object.assign({}, desc.style);
+    const md = desc.stats && desc.stats.multidim;
+    // The backend can fall back to the plain raster path mid-flight; the
+    // dock must then drop the Dataset section and play has nothing to step.
+    if (!md) mdStopPlay(L);
+    syncMultidim(L);
+    rebuildRasterTiles();
+    // Nothing a layer card shows changes on a sel step, and repainting the
+    // legend on every play tick makes the dock churn: repaint only for a
+    // real shape change (variable switched, Dataset section gained/lost) or
+    // when idle; mdStopPlay repaints once when playback ends. Rebuilding
+    // mid-drag kills the drag; the pointerup or the next apply repaints.
+    const changed = !md !== !prevMd
+      || (md && prevMd && md.variable !== prevMd.variable);
+    if (state.selected === L.target && (changed || !L._mdPlay)
+        && !L._mdScrub && !L._mdTimer) {
+      renderStyleDock();
+    }
+  } catch (e) {
+    setMdBusy(L, false);
+    mdStopPlay(L);
+    toast("bad", "Re-render failed", e.message);
+    syncMultidim(L);
+    renderStyleDock();
+  }
+}
+
+function mdButton(text, on) {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "md-btn"; b.textContent = text;
+  b.onclick = on;
+  return b;
+}
+
+function multidimControls(body, L) {
+  const md = L.descriptor.stats.multidim;
+  const box = document.createElement("div");
+  box.className = "md-section" + (L._mdBusy ? " busy" : "");
+  const varCtl = ctlShell("Variable", "");
+  const sel = document.createElement("select");
+  for (const v of md.variables) {
+    const op = document.createElement("option");
+    op.value = v.name;
+    op.textContent = v.long_name ? `${v.long_name} (${v.name})` : v.name;
+    op.title = [v.units, v.dims.join(" × "), v.shape.join(" × ")].filter(Boolean).join(" · ");
+    if (v.name === (L.mdVar || md.variable)) op.selected = true;
+    sel.appendChild(op);
+  }
+  // The new variable lands on L before mdStopPlay repaints the dock, so the
+  // repaint shows the choice the user just made.
+  sel.onchange = e => { L.mdVar = e.target.value; mdStopPlay(L); scheduleMultidim(L); };
+  varCtl.appendChild(sel);
+  box.appendChild(varCtl);
+  for (const dim of md.dims) box.appendChild(dimCtl(L, dim));
+  if (L._mdBusy) mdSetDisabled(box, true);
+  body.appendChild(box);
+}
+
+function dimCtl(L, dim) {
+  const index = L.mdSel[dim.name] ?? dim.index;
+  const labels = dim.labels || [];
+  if (!dim.sparse && labels.length && timeLike(dim)) return timeDimCtl(L, dim, index);
+  if (!dim.sparse && labels.length && dim.size <= 2000) {
+    const c = ctlShell(dim.name, "");
+    const sel = document.createElement("select");
+    for (let i = 0; i < labels.length; i++) {
+      const op = document.createElement("option");
+      op.value = String(i);
+      op.textContent = `${labels[i]} (${i})`;
+      if (i === index) op.selected = true;
+      sel.appendChild(op);
+    }
+    sel.onchange = e => setDimIndex(L, dim, Number(e.target.value));
+    c.appendChild(sel);
+    return c;
+  }
+  // Too many labels for a select (or none at all, or a sparse dim whose labels
+  // are just its ends): a plain index input, with the label when one exists.
+  const c = ctlShell(dim.name, (!dim.sparse && labels[index]) || `0–${dim.size - 1}`);
+  const input = document.createElement("input");
+  input.type = "number"; input.className = "num";
+  input.min = 0; input.max = dim.size - 1; input.value = index;
+  input.onchange = e => setDimIndex(L, dim, Number(e.target.value) || 0);
+  c.appendChild(input);
+  return c;
+}
+
+function timeDimCtl(L, dim, index) {
+  const c = ctlShell(dim.name, dim.labels[index] || String(index));
+  const setLabel = i => { c.querySelector(".ctl-lbl b").textContent = dim.labels[i] || String(i); };
+  const row = document.createElement("div"); row.className = "row";
+  const slider = document.createElement("input");
+  slider.type = "range"; slider.min = 0; slider.max = dim.size - 1; slider.value = index;
+  slider.style.flex = "1"; slider.style.minWidth = "0";
+  slider.oninput = e => {
+    const i = Number(e.target.value);
+    L.mdSel[dim.name] = i;
+    setLabel(i);
+    scheduleMultidim(L);
+  };
+  slider.onpointerdown = () => { L._mdScrub = true; };
+  slider.onpointerup = () => {
+    L._mdScrub = false;
+    if (!L._mdBusy && !L._mdTimer) renderStyleDock();
+  };
+  slider.onpointercancel = slider.onpointerup;
+  const step = delta => {
+    setDimIndex(L, dim, (L.mdSel[dim.name] ?? 0) + delta);
+    const i = L.mdSel[dim.name] ?? 0;
+    slider.value = i;
+    setLabel(i);
+  };
+  const play = mdButton(L._mdPlay ? "❚❚" : "▶", () => {
+    if (L._mdPlay) { mdStopPlay(L); return; }
+    if ((L.mdSel[dim.name] ?? 0) >= dim.size - 1) { L.mdSel[dim.name] = 0; scheduleMultidim(L); }
+    L._mdPlay = setInterval(() => {
+      if (L._mdBusy || L._mdTimer) return;
+      if (state.layers.get(L.target) !== L) { mdStopPlay(L); return; }
+      const i = (L.mdSel[dim.name] ?? 0) + 1;
+      if (i >= dim.size) { mdStopPlay(L); return; }
+      L.mdSel[dim.name] = i;
+      // applyMultidim skips the dock repaint during play, so the tick moves
+      // the slider and label itself.
+      slider.value = i;
+      setLabel(i);
+      applyMultidim(L);
+    }, 700);
+    // Flip the button in place rather than repainting the dock: the interval
+    // above closes over THIS dock's slider, and a repaint would leave it
+    // moving a detached element.
+    play.textContent = "❚❚";
+    play.classList.add("on");
+  });
+  play.classList.add("md-play");
+  if (L._mdPlay) play.classList.add("on");
+  row.append(slider, mdButton("‹", () => step(-1)), play, mdButton("›", () => step(1)));
+  c.appendChild(row);
+  return c;
 }
 
 /* ---- small control builders ------------------------------------------ */

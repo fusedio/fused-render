@@ -28,6 +28,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import worker
+from multidim_engine import MultidimEngine
 from raster_engine import RasterEngine
 from vector_engine import VectorEngine
 
@@ -69,6 +70,10 @@ class Handler(BaseHTTPRequestHandler):
     @property
     def vectors(self) -> VectorEngine:
         return self.server.vectors  # type: ignore[attr-defined]
+
+    @property
+    def multidim(self) -> MultidimEngine:
+        return self.server.multidim  # type: ignore[attr-defined]
 
     def _touch(self):
         self.server.last_hit = time.time()  # type: ignore[attr-defined]
@@ -184,7 +189,20 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 self._json(400, {"error": "invalid tile coordinate"})
                 return
-            tile = self.engine.tile(source_id, z, x, y)
+            try:
+                tile = self.engine.tile(source_id, z, x, y)
+                if tile is None:
+                    tile = self.multidim.tile(source_id, z, x, y)
+            except Exception as error:
+                traceback.print_exc()
+                self._json(
+                    500,
+                    {
+                        "status": "error",
+                        "message": f"{type(error).__name__}: {error}",
+                    },
+                )
+                return
             if tile is None:
                 self._json(404, {"error": "unknown source"})
             else:
@@ -246,6 +264,7 @@ class Handler(BaseHTTPRequestHandler):
                     request,
                     raster_engine=self.engine,
                     vector_engine=self.vectors,
+                    multidim_engine=self.multidim,
                 )
                 self._json(200, descriptor)
                 return
@@ -337,6 +356,10 @@ def main():
         token=token,
         locator=server.engine.locator,
         cache_dir=args.cache,
+    )
+    server.multidim = MultidimEngine(  # type: ignore[attr-defined]
+        base_url=f"http://127.0.0.1:{port}",
+        token=token,
     )
 
     state_path = Path(args.state)
