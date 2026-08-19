@@ -126,7 +126,7 @@ def test_wrapper_default_matches_the_canvases_default(monkeypatch):
     reads it rather than keeping a default of its own (D146: a duplicated
     rule needs a test)."""
     monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
-    assert fusedcli.workbench_env() == "unstable"
+    assert fusedcli.workbench_env() == "prod"
     import fused_render.canvases as canvases
     src = open(canvases.__file__, encoding="utf-8").read()
     assert "WORKBENCH_ENV = workbench_env()" in src
@@ -230,3 +230,92 @@ def test_mcp_config_written(agent, tmp_path, monkeypatch):
     cmd = _spawn(agent, monkeypatch, target, tmp_path)
     cfg_path = cmd[cmd.index("--mcp-config") + 1]
     assert json.load(open(cfg_path, encoding="utf-8"))["mcpServers"]
+
+
+# -- which fused is in effect (a DEVELOPER diagnostic) -------------------------
+#
+# For a shipping user there is no other fused: the DMG bakes the pre-release
+# wheel into the app's own interpreter and `fused_cli()`'s second branch is the
+# only path they take. Both states below are reachable only from a dev checkout,
+# which is exactly why they get a log line and no user-facing UI — the failures
+# they cause (a canvas sync quietly missing its manifest shims, or SIGSEGV on
+# every /api/run from a stale wheel) surface far from their cause.
+
+
+def test_an_override_is_reported(monkeypatch):
+    from fused_render import fusedcli
+
+    monkeypatch.setenv("FUSED_RENDER_FUSED_BIN", "/opt/other/fused")
+    message = fusedcli.log_cli_provenance()
+    assert message and "/opt/other/fused" in message
+    # It names the two consequences that make this worth a log at all.
+    assert "shims" in message
+    assert "interception" in message
+
+
+def test_the_override_still_works(monkeypatch):
+    """HARD constraint: the test suite substitutes its stub CLI through this
+    variable, so the diagnostic must not gate or alter resolution."""
+    from fused_render import fusedcli
+
+    monkeypatch.setenv("FUSED_RENDER_FUSED_BIN", "/opt/other/fused --flag")
+    cli = fusedcli.fused_cli()
+    assert cli is not None
+    assert cli.command == ["/opt/other/fused", "--flag"]
+    assert cli.external is True
+
+
+def test_a_matching_install_is_silent(monkeypatch):
+    from fused_render import fusedcli
+
+    monkeypatch.delenv("FUSED_RENDER_FUSED_BIN", raising=False)
+    monkeypatch.setattr(fusedcli, "_installed_fused_version", lambda: "2.9.3b4")
+    monkeypatch.setattr(fusedcli, "_pinned_fused_version", lambda: "2.9.3b4")
+    assert fusedcli.log_cli_provenance() is None
+
+
+def test_version_drift_is_reported(monkeypatch):
+    """A recorded failure mode, not a hypothetical: a dev venv held an older
+    fused than pyproject pinned and every /api/run died with SIGSEGV."""
+    from fused_render import fusedcli
+
+    monkeypatch.delenv("FUSED_RENDER_FUSED_BIN", raising=False)
+    monkeypatch.setattr(fusedcli, "_installed_fused_version", lambda: "2.9.3b3")
+    monkeypatch.setattr(fusedcli, "_pinned_fused_version", lambda: "2.9.3b4")
+    message = fusedcli.log_cli_provenance()
+    assert message and "2.9.3b3" in message and "2.9.3b4" in message
+
+
+def test_no_fused_at_all_adds_nothing(monkeypatch):
+    """`fused_cli()` returns None and every canvases endpoint already explains
+    that in its own error — a second voice here would just be noise."""
+    from fused_render import fusedcli
+
+    monkeypatch.delenv("FUSED_RENDER_FUSED_BIN", raising=False)
+    monkeypatch.setattr(fusedcli, "_installed_fused_version", lambda: None)
+    assert fusedcli.log_cli_provenance() is None
+
+
+def test_the_version_is_read_from_distribution_metadata():
+    """NOT `fused.__version__`: in the drift incident that attribute reported
+    misleadingly, so it is not evidence of which wheel is installed."""
+    import inspect
+
+    from fused_render import fusedcli
+
+    src = inspect.getsource(fusedcli._installed_fused_version)
+    assert "importlib.metadata" in src
+    # Prose may explain WHY the attribute is wrong; the code must not read it.
+    body = src.split('"""')[-1]
+    assert "__version__" not in body, body
+
+
+def test_the_pin_is_discoverable_at_runtime():
+    """A shipped app has no pyproject.toml, so the pin has to come from
+    fused-render's own installed metadata. In this dev checkout that resolves;
+    if it stops, the drift check silently becomes a no-op."""
+    from fused_render import fusedcli
+
+    pinned = fusedcli._pinned_fused_version()
+    assert pinned, "could not read the fused pin from fused-render's metadata"
+    assert pinned[0].isdigit(), pinned

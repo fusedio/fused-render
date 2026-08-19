@@ -159,6 +159,49 @@ export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }
 
+// -- Is Claude Code usable (fused_render/claude_health.py) -------------------
+//
+// The proactive counterpart to the TroubleCard's reactive classification: these
+// are the facts a first run can be TOLD, before a prompt has been spent finding
+// them out. NOT on Config — /api/config is read on every page load, and each
+// field here is backed by a process spawn behind a disk cache.
+
+export interface ClaudeHealth {
+  /** Whether the resolved binary is one we could actually run. A stale
+      FUSED_RENDER_CLAUDE_BIN reports a `path` and `found: false`. */
+  found: boolean;
+  path: string | null;
+  /** How it was found, and the reason this field exists rather than just a
+      boolean. "path" means the app can see it unaided — nothing to say. "shell"
+      means ONLY the user's login shell can, so the app's own PATH is the
+      problem and the fix is the override, not another install. */
+  source: "override" | "path" | "candidate" | "shell" | null;
+  /** What `claude --version` said, or null when it would not tell us. */
+  version: string | null;
+  /** The lowest version this app's spawn line is known to work with. */
+  min_version: string;
+  /** Only ever true for a version we actually READ and that is below the
+      floor — an unreadable version is never reported as outdated. */
+  outdated: boolean;
+  /** true / false / null-for-unknown, from `claude auth status` — the only
+      party that actually knows, on every platform. null means it could not be
+      asked (no runnable CLI, or one predating the subcommand), NOT that it said
+      no: the UI may only offer a sign-in fix on an explicit `false`. */
+  signed_in: boolean | null;
+  config_dir: string;
+  checked_at: number;
+}
+
+export function getClaudeHealth(): Promise<ClaudeHealth> {
+  return getJson<ClaudeHealth>("/api/claude/health");
+}
+
+/** Re-probe, ignoring the cache — what "Check again" means after the user has
+    gone and installed or signed into something. */
+export function refreshClaudeHealth(): Promise<ClaudeHealth> {
+  return postJson<ClaudeHealth>("/api/claude/health/refresh", {});
+}
+
 // -- Self-update (fused_render/server/routers/update.py) ---------------------
 
 export interface UpdateStatus {
@@ -1614,6 +1657,15 @@ export function getApps(): Promise<{ apps: AppInfo[] }> {
   return getJson<{ apps: AppInfo[] }>("/api/apps");
 }
 
+// Home needs one recent row, not the exhaustive /apps catalog. The backend
+// hydrates stored recents first and only falls back to workspace discovery when
+// those do not fill the requested row.
+export function getHomeApps(limit: number): Promise<{ apps: AppInfo[] }> {
+  return getJson<{ apps: AppInfo[] }>(
+    `/api/apps/home?limit=${encodeURIComponent(String(limit))}`,
+  );
+}
+
 // (postAppOpen is gone — D301: the SERVER records app opens when GET /render
 // serves a page carrying the fused-app marker; no client post feeds opened_at
 // any more. The endpoint survives server-side for older clients only.)
@@ -1661,6 +1713,16 @@ export interface ClaudeSessionFolder {
 
 export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolder[] }> {
   return getJson<{ folders: ClaudeSessionFolder[] }>("/api/claude-sessions");
+}
+
+// Home only renders one row. The server orders transcript candidates by mtime
+// and stops opening JSONL files after this many unique existing folders land.
+export function getHomeClaudeSessionFolders(
+  limit: number,
+): Promise<{ folders: ClaudeSessionFolder[] }> {
+  return getJson<{ folders: ClaudeSessionFolder[] }>(
+    `/api/claude-sessions/home?limit=${encodeURIComponent(String(limit))}`,
+  );
 }
 
 // -- Claude sessions, one row each (GET /api/claude-sessions/summaries) --------
@@ -1819,8 +1881,18 @@ export interface Task {
   messages: TaskMessage[];
 }
 
+// The global sidebar needs task state, not the Tasks page's titles, paths,
+// descriptions, and message previews. Keep this structural subset compatible
+// with Task so the Tasks page can still publish its full rows into the shared
+// pulse store while every other route polls the compact endpoint.
+export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active">;
+
 export function getTasks(): Promise<{ tasks: Task[] }> {
   return getJson<{ tasks: Task[] }>("/api/tasks");
+}
+
+export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
+  return getJson<{ tasks: TaskPulseTask[] }>("/api/tasks/pulse");
 }
 
 // "Show more": the whole thread, newest first. Deliberately a separate call —
@@ -1873,14 +1945,35 @@ export function markWholeTaskRead(
 // row, and it is exactly the row the old session-keyed triage write could not
 // touch.
 //
-// There is no unarchive. Archive is a locked lane (tasks-lib's drag matrix) and
-// the row draws no way back — which costs nothing, because archiving destroys
-// nothing: the conversation and its transcript are kept (D306).
+// The way back is `unarchiveTask` below — a drag, not a button. Nothing is
+// destroyed either way: the conversation and its transcript are kept (D306).
 export function archiveTask(
   key: string,
 ): Promise<{ ok: boolean; key: string; cancelled: number; filed: boolean }> {
   return postJson<{ ok: boolean; key: string; cancelled: number; filed: boolean }>(
     "/api/tasks/archive",
+    { key },
+  );
+}
+
+// Taking the filing back — the drag out of the Archive lane, and the exact
+// opposite of only ONE of archiving's two halves.
+//
+// NO LANE IS SENT, and that is the design rather than a missing field: leaving
+// Archive says "not put away any more" and nothing about what the work is doing,
+// so the server drops the filing and the task lands in whatever lane it DERIVES
+// into. `status` in the answer is that lane, which is the one thing the client
+// cannot know before its next poll — and it may not be the lane the card was
+// dropped on. That is intended, not a near miss (see tasks-lib's drag matrix).
+//
+// NOTHING RUNS. The work archiving cancelled stays cancelled, and a card dropped
+// onto In Progress unarchives like any other drop — In Progress is Claude's
+// output, never a lane a reader can put a task into.
+export function unarchiveTask(
+  key: string,
+): Promise<{ ok: boolean; key: string; unfiled: boolean; status: string }> {
+  return postJson<{ ok: boolean; key: string; unfiled: boolean; status: string }>(
+    "/api/tasks/unarchive",
     { key },
   );
 }

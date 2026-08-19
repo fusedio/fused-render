@@ -1,7 +1,8 @@
 """Tasks over HTTP (server/routers/tasks.py).
 
 `GET /api/tasks` is the List page: every task, newest first, each carrying its
-three newest messages. `GET /api/tasks/{key}/messages` is Show more.
+three newest messages. `GET /api/tasks/pulse` is the global sidebar's compact
+projection. `GET /api/tasks/{key}/messages` is Show more.
 `POST /api/tasks/read` marks one message read.
 
 The rules under test are the ones that make a task and a session the same
@@ -138,6 +139,12 @@ def _by_key(client):
     return {t["key"]: t for t in _tasks(client)}
 
 
+def _pulse(client):
+    r = client.get("/api/tasks/pulse")
+    assert r.status_code == 200, r.text
+    return r.json()["tasks"]
+
+
 T9 = "2026-08-16T09:00:00Z"
 T10 = "2026-08-16T10:00:00Z"
 T11 = "2026-08-16T11:00:00Z"
@@ -180,6 +187,30 @@ def test_a_chat_session_is_a_task(client, projects_dir, state_dir):
     assert message["entry_id"] == ""
     assert message["anchor"] == "sess-a-0", "the record uuid, for scroll-to"
     assert message["unread"] is True
+
+
+def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
+        client, projects_dir, state_dir):
+    """The sidebar gets the same state without downloading page-only content."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [
+        _user("a large message body the sidebar must not receive", T9),
+        _assistant("done", T10),
+        _ai_title("A page-only title"),
+    ])
+
+    full = _tasks(client)
+    pulse = _pulse(client)
+
+    pulse_fields = ("key", "status", "unread", "last_active")
+    assert pulse == [
+        {field: row[field] for field in pulse_fields}
+        for row in full
+    ]
+    assert set(pulse[0]) == set(pulse_fields)
+    assert "messages" not in pulse[0]
+    assert "title" not in pulse[0]
+    assert len(json.dumps(pulse)) < len(json.dumps(full)) / 2
 
 
 def test_the_last_ai_title_wins(client, projects_dir):
@@ -1658,6 +1689,134 @@ def test_archiving_a_task_that_is_not_there_is_a_404(client):
 def test_archiving_without_a_key_is_a_400(client):
     assert client.post("/api/tasks/archive",
                        json={"key": "  "}).status_code == 400
+
+
+# ------------------------------------------------------------- unarchiving it
+# `POST /api/tasks/unarchive` — the drag out of the Archive lane. ONE half of
+# archiving undone (the filing), no lane named, no run started.
+
+
+def test_unarchiving_drops_the_filing_and_the_task_lands_where_it_derives(
+        client, projects_dir, state_dir):
+    """The whole move. The user drops the card somewhere outside Archive; what
+    that MEANS is "not put away any more", and the lane it lands in is derived
+    from the thread — here `done`, because the one run ended."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "ran", T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a")])
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+
+    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": "sess-a", "unfiled": True,
+                        "status": "done"}
+    assert "status" not in json.loads(
+        (state_dir / "triage.json").read_text())["sess-a"]
+    assert _by_key(client)["sess-a"]["status"] == "done", "the derived lane is back"
+
+
+def test_unarchiving_reports_the_derived_lane_not_the_one_dropped_on(
+        client, projects_dir):
+    """A failed run derives `failed` however the card was dragged — and the verb
+    takes no lane to be told otherwise with, which is the design."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "broke", T12, state=schedule.SENT, fired=T12,
+                           turn="failed", claude_session_id="sess-a")])
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+
+    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "failed"
+    assert _by_key(client)["sess-a"]["status"] == "failed"
+
+
+def test_unarchiving_keeps_the_note_the_tag_and_the_read_mark(client,
+                                                              projects_dir,
+                                                              state_dir):
+    """`clear_triage` drops the STATUS and its stamp, nothing else: a note, a
+    tag or a read mark on that session is somebody else's data."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    triage_path = state_dir / "triage.json"
+    rec = json.loads(triage_path.read_text())
+    rec["sess-a"].update({"note": "keep me", "tags": ["blue"], "read": "1"})
+    triage_path.write_text(json.dumps(rec))
+
+    assert client.post("/api/tasks/unarchive",
+                       json={"key": "sess-a"}).status_code == 200
+    kept = json.loads(triage_path.read_text())["sess-a"]
+    assert kept == {"note": "keep me", "tags": ["blue"], "read": "1"}
+
+
+def test_unarchiving_starts_no_run_and_revives_no_cancelled_work(client,
+                                                                 projects_dir):
+    """The one thing this must never do. Archiving cancelled the run ahead; a
+    booked run that came back to life because somebody put the card back on the
+    board would be a message firing that nobody asked for twice."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("e1", "ran", T9, state=schedule.SENT, fired=T9, turn="ok",
+               claude_session_id="sess-a"),
+        _entry("e2", "tomorrow", T12, claude_session_id="sess-a"),
+    ])
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    before = {e["id"]: dict(e) for e in schedule.list_entries()}
+
+    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert {e["id"]: dict(e) for e in schedule.list_entries()} == before, \
+        "the schedule is not touched at all — nothing sent, nothing revived"
+    assert r.json()["status"] == "done", "no pending work, so nothing is Upcoming"
+
+
+def test_unarchiving_a_task_that_was_not_filed_says_so_and_still_answers(
+        client, projects_dir):
+    """A card that reads Archive because its every message was filed away
+    (cancelled) has no triage record to drop. The verb is a no-op rather than an
+    error — and the honest `unfiled: False` is how the client knows the lane it
+    is being told about is not going to change."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.CANCELLED,
+                           claude_session_id="sess-a")])
+    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["unfiled"] is False
+
+
+def test_unarchiving_a_task_with_no_session_only_answers(client, tmp_path):
+    """Nothing to un-file — the row had no session to file in the first place."""
+    _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
+    key = _tasks(client)[0]["key"]
+    r = client.post("/api/tasks/unarchive", json={"key": key})
+    assert r.status_code == 200, r.text
+    assert r.json()["unfiled"] is False
+    assert r.json()["status"] == "upcoming"
+    assert schedule.list_entries()[0]["state"] == schedule.PENDING
+
+
+def test_unarchiving_a_task_that_is_not_there_is_a_404(client):
+    assert client.post("/api/tasks/unarchive",
+                       json={"key": "nope"}).status_code == 404
+
+
+def test_unarchiving_without_a_key_is_a_400(client):
+    assert client.post("/api/tasks/unarchive",
+                       json={"key": "  "}).status_code == 400
+
+
+def test_unarchiving_takes_no_lane(client, projects_dir):
+    """The lane a card was dropped on is not this verb's business, and a caller
+    that sends one must not be able to steer the answer with it."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "ran", T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a")])
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive",
+                    json={"key": "sess-a", "status": "in_progress",
+                          "lane": "in_progress"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "done", "derived, not asserted"
 
 
 # ----------------------------------------------------------------- the unread

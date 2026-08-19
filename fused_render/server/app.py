@@ -41,6 +41,7 @@ from fused_render.server.common import (
 from fused_render.server.routers.apps import router as apps_router
 from fused_render.server.routers.claude_artifacts import router as claude_artifacts_router
 from fused_render.server.routers.claude_config import router as claude_config_router
+from fused_render.server.routers.claude_health import router as claude_health_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.clipboard import router as clipboard_router
@@ -127,6 +128,12 @@ def export_app_env() -> None:
     # ran `claude --help`, and blocking here blocks the socket bind, which the
     # desktop supervisor reads as a server that failed to start.
     skill_plugin.export_skill_plugin_env()
+    # And the `workbench` plugin's canvas/UDF skills, if this machine has them:
+    # a SECOND --plugin-dir for the sessions we spawn, so a canvas clone's
+    # CLAUDE.md can name the canvas.toml format reference without the app ever
+    # telling the user to go install something. A lookup, not a build — no
+    # network, no config mutation, and "not found" is a normal outcome.
+    skill_plugin.export_workbench_plugin_env()
     # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
     # script under home_dir()/fused-bin goes on PATH and its dir is published
     # as one more FUSED_RENDER_* var, so a Claude session can `fused workbench
@@ -409,6 +416,16 @@ def create_app(start_dir: str) -> FastAPI:
     # fused_render/claude_config/ feature modules, plus a cheap availability
     # probe. Its POSTs mutate, so they carry the D3 X-Fused guard.
     app.include_router(claude_config_router)
+    # Is Claude Code usable at all (routers/claude_health.py): found / version /
+    # signed-in, so the first run can be TOLD rather than left to discover it by
+    # failing. Same doctrine as /api/config's learn_mount_ready, which gates the
+    # sidebar's Learn entry so it is never a dead link — this is that gate for
+    # everything Claude-dependent. Its own endpoint, not a /api/config field:
+    # the facts behind it are process spawns, and /api/config is read on every
+    # page load. The cache is warmed by the entry points (claude_health.
+    # warm_in_background), never from here — importing the server in a test must
+    # not spawn the user's login shell.
+    app.include_router(claude_health_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
     # POST /api/clone sparse-clone into ~/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.

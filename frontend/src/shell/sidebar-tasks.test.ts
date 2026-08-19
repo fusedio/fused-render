@@ -203,6 +203,8 @@ describe("one poll behind both readers", () => {
     expect(SCHEDULED).toContain("publishTasks(r.tasks ?? [])");
     expect(SIDEBAR).toContain("useTasksPulse()");
     expect(SIDEBAR).not.toContain("getTasks(");
+    expect(STORE).toContain("getTasksPulse()");
+    expect(STORE).not.toContain("getTasks()");
     // Polling belongs to the subscribers: it starts with the first reader and
     // stops with the last, like aiRuntime's.
     expect(STORE).toContain("listeners.add(setCurrent)");
@@ -297,9 +299,8 @@ describe("one poll behind both readers", () => {
 });
 
 describe("the Tasks entry's two marks", () => {
-  it("draws ONE dot on the collapsed rail, yellow winning over green", () => {
-    // The rail has no label, so the whole signal is a dot on the icon — and it is
-    // one dot: two in a corner is not a state this can draw, and "something is
+  it("draws ONE dot on the icon, yellow winning over green", () => {
+    // One dot: two in a corner is not a state this can draw, and "something is
     // running" is the fact that outranks "something is ready".
     expect(SIDEBAR).toContain("sidebar-rail-dot is-running");
     expect(SIDEBAR).toContain("sidebar-rail-dot is-unread");
@@ -320,13 +321,23 @@ describe("the Tasks entry's two marks", () => {
     expect(dot.slice(0, dot.indexOf("}"))).toContain("position: absolute");
   });
 
-  it("draws NO dot when expanded — words instead, in the same hues", () => {
-    // A dot on the icon plus a readout beside the label is one fact stated twice.
+  it("wears the SAME dot when expanded, and adds words to it", () => {
+    // The dot is the constant across both modes (Akshil, 2026-08-18): the icon is
+    // where the eye lands at either width, so a mark that shows collapsed and
+    // vanishes on expand reads as the state going away. Same node, both slots —
+    // the rail's `badge` and the row's `extra`.
+    expect(SIDEBAR).toContain("badge: tasksDot");
+    expect(SIDEBAR).toContain("extra={tasksDot}");
+    expect(FRAME).toContain("{extra}");
+    // And the glyph's own span anchors it there, or it resolves against the
+    // viewport and drags a scrollbar in with it (account.css).
+    expect(SIDEBAR_CSS).toMatch(/\.sidebar-item \.icon \{[^}]*position: relative/);
+    expect(SIDEBAR_CSS).toContain(".sidebar-item .icon > .sidebar-rail-dot {");
+    // Expanded ADDS words beside the dot rather than trading it for them.
     const trailing = SIDEBAR.slice(
       SIDEBAR.indexOf("const tasksTrailing ="),
       SIDEBAR.indexOf("// Everything that is not primary nav"),
     );
-    expect(trailing).not.toContain("sidebar-rail-dot");
     expect(trailing).toContain("runningLabel(pulse.running)");
     // The chip reads the RAW state — no dismissal, no visit suppression: it says
     // what is waiting to be read until it is read.
