@@ -6233,7 +6233,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   whereas a fixed offset cuts through one. **The speech is PACKED, not decoded a
   region at a time** (D355, `vad.pack_regions`): the surviving regions are
   concatenated into clips of at most 29 seconds and each clip is one
-  `transcribe()` call, with `vad.original_time` inverting the concatenation for
+  `transcribe()` call, with `vad.original_start`/`original_end` inverting the concatenation for
   every timestamp — each endpoint mapped on its own, since a segment can span a
   join. **This is the one place AI-10f claims a speed benefit, and it is
   measured**, on a 216-second recording that is 92% speech (31 regions, min

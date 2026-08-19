@@ -24,8 +24,10 @@ being a library rather than a streaming decoder:
   to `vad.BUDGET_S` seconds (one `transcribe()` call each, because the library
   pads every call to a 30-second window — a call per region made `vad: true`
   slower than no VAD at all on the large models), and every timestamp is mapped
-  back to original-recording time through `vad.original_time`. The cut is always
-  at a boundary the detector found in silence, never at a fixed offset.
+  back to original-recording time through `vad.original_start`/`original_end` (a
+  time on a join is the start of the next region or the end of the previous one,
+  never both). The cut is always at a boundary the detector found in silence,
+  never at a fixed offset.
 * **`transcribe()` is ONE blocking call, not a generator.** faster-whisper hands
   back a stream and progress falls out of consuming it. Here the whole
   transcript arrives at once, so the per-segment tick that carries progress AND
@@ -708,7 +710,7 @@ def _clip_seconds(position, speech):
     borrowed counter actually measures: it counts mel frames of whatever
     waveform the library was handed, which once the silence is dropped and the
     regions are packed is neither the recording nor any contiguous part of it.
-    Turning this into a position in the recording is `_original_time`'s job, and
+    Turning this into a position in the recording is `_original_end`'s job, and
     the two are separate because the ETA needs THIS number — its rate is
     `elapsed / speech decoded`, and a remapped position is a different currency
     (see `_transcribe_regions`).
@@ -908,11 +910,11 @@ def _packs_to_decode(regions, total):
     A list per clip rather than a single span, because the clip handed to the
     decoder is those regions CONCATENATED — the silence between them is dropped,
     which is the whole reason `vad: true` exists (Whisper hallucinates in
-    silence) — and the list is what `vad.original_time` inverts to put every
-    timestamp back on the recording's clock. The packing rule and its inverse
-    live in `vad.py`, beside the detector, because how many regions share a call
-    is part of what `vad: true` MEANS and both MLX engines read that from one
-    place (AI-10f).
+    silence) — and the list is what `vad.original_start`/`original_end` invert to
+    put every timestamp back on the recording's clock. The packing rule and its
+    inverse live in `vad.py`, beside the detector, because how many regions share
+    a call is part of what `vad: true` MEANS and both MLX engines read that from
+    one place (AI-10f).
 
     One pack of one region spanning everything is what "no VAD" looks like, and
     that is the point of the shape: the filtered and unfiltered paths are ONE
@@ -1047,7 +1049,12 @@ def _transcribe_regions(audio, packs, fetched, task, language, initial_prompt,
             # the closure outlives the loop iteration that made it, and a late
             # tick reading the loop variables would price this clip against a
             # later clip's progress.
-            done = round(_original_time(regions, at), 2)
+            # `_original_end`, not `_original_start`: the counter reports how far
+            # decoding HAS got, so a position sitting exactly on a join is the end
+            # of the region just finished, not the start of one not begun. The bar
+            # is then behind rather than ahead, which is the rule `_watch_progress`
+            # already states about its coarse updates.
+            done = round(_original_end(regions, at), 2)
             elapsed = time.time() - transcribing_since
             speech_done = before + at
             return done, total, "Transcribing — %s of %s%s" % (
@@ -1076,26 +1083,29 @@ def _transcribe_regions(audio, packs, fetched, task, language, initial_prompt,
             # too; only these three are published, because these three are the
             # CT2 runner's shape and a page must not have to know which one ran.
             #
-            # `_original_time` is the remap: timestamps come back relative to the
-            # CLIP — which is this pack's regions concatenated, silence removed —
-            # and every consumer, the .json file, a caption track, a page seeking
-            # a player, reads them as positions in the FILE. Getting this wrong
+            # `_original_start`/`_original_end` are the remap: timestamps come
+            # back relative to the CLIP — which is this pack's regions
+            # concatenated, silence removed — and every consumer, the .json file,
+            # a caption track, a page seeking a player, reads them as positions
+            # in the FILE. Getting this wrong
             # is silent: a transcript that looks perfect and whose every
             # timestamp after the first join is early by the length of the
             # silence that was dropped.
             #
-            # EACH END is mapped on its own, because a segment can span a join:
-            # the decoder hears continuous speech across it (the silence is not
-            # in the clip it was given), so a start and an end can fall in
-            # different source regions, and one shared offset would place both in
-            # whichever region was picked. The mapping also clamps to the pack's
+            # EACH END is mapped on its own, and by its OWN flavour of the
+            # mapping, because a segment can span a join: the decoder hears
+            # continuous speech across it (the silence is not in the clip it was
+            # given), so a start and an end can fall in different source regions,
+            # and one shared offset would place both in whichever region was
+            # picked. A time landing exactly ON a join is the case the two
+            # flavours exist for — see `_original_end`. Both clamp to the pack's
             # last moment, because Whisper times against a padded 30s window: the
             # last segment of a two-second clip can end at 29, and a
             # hallucination in the padding can START there too. Unclamped, either
             # one places speech inside the silence that was removed and reorders
             # it against the next clip.
-            at = _original_time(pack, float(segment.get("start") or 0.0))
-            until = _original_time(pack, float(segment.get("end") or 0.0))
+            at = _original_start(pack, float(segment.get("start") or 0.0))
+            until = _original_end(pack, float(segment.get("end") or 0.0))
             if at >= until:
                 # Clamping alone is not enough for a segment that begins past
                 # the clip: end-only clamping emitted `{start: 15.0, end: 12.0}`
@@ -1154,17 +1164,33 @@ def _speech_seconds(pack):
     return vad_module.packed_duration(pack)
 
 
-def _original_time(pack, at):
-    """`at` seconds into a packed clip → seconds into the RECORDING.
+def _original_start(pack, at):
+    """`at` seconds into a packed clip → a segment's START, in RECORDING time."""
+    import vad as vad_module
 
-    In `vad.py` rather than here for AI-10f's reason: the packing and its
-    inverse are one decision, they have to be read together to be checked, and
-    the module that defines what `vad: true` means is the place both live.
+    return vad_module.original_start(pack, at)
+
+
+def _original_end(pack, at):
+    """`at` seconds into a packed clip → a segment's END, in RECORDING time.
+
+    Two functions, not one with a flag, because the two are asked DIFFERENT
+    questions about a time landing exactly on a join: a start belongs to the
+    region that begins there, an end to the region that ends there. One shared
+    mapping used for both stretched any segment that merely ended on a join
+    across the whole dropped pause (`3.0-5.0` → `3.0-30.0`), which is text
+    claimed to have been spoken during silence this runner removed — and which
+    `diarize.speaker_for` would then label from the turns inside that silence.
+    `vad.py` carries the reasoning and the grid arithmetic.
+
+    Both live in `vad.py` rather than here for AI-10f's reason: the packing and
+    its inverse are one decision, they have to be read together to be checked,
+    and the module that defines what `vad: true` means is the place both live.
     Called per tick and per segment endpoint, so it is deliberately arithmetic
     over a short list and nothing else."""
     import vad as vad_module
 
-    return vad_module.original_time(pack, at)
+    return vad_module.original_end(pack, at)
 
 
 # --------------------------------------------------------------- transcription

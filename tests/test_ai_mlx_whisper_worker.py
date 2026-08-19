@@ -1281,6 +1281,31 @@ def test_a_segment_SPANNING_a_join_has_each_END_mapped_on_its_own(
     assert [(s["start"], s["end"]) for s in written["segments"]] == [(4.0, 31.0)]
 
 
+def test_a_segment_ENDING_exactly_on_a_join_does_not_span_the_silence(
+        monkeypatch, loaded, tmp_path):
+    """The other half of the join, and the failure mode packing introduced.
+
+    A segment that lies entirely inside region one and ends exactly at its last
+    moment must stay inside it. Mapped with START semantics — the join belongs
+    to the region that begins there — its end jumps the whole dropped pause:
+    clip `3.0-5.0` was reported as recording `3.0-30.0`, text asserted to have
+    been spoken through 25 seconds of silence this runner cut out. The error is
+    as large as the gap, and the join is exactly where the pause was, which is
+    the most natural place for Whisper to end a segment. `diarize.speaker_for`
+    then sums turn overlap across the stretched span, so the sentence can be
+    labelled with whoever the segmenter heard inside the silence.
+    """
+    worker, transcribe = loaded(windows=(100,), audio_seconds=40.0,
+                                segments=[_segment(3.0, 5.0, "inside region one")])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
+    request = _request(tmp_path)
+
+    worker.generate(request)
+
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert [(s["start"], s["end"]) for s in written["segments"]] == [(3.0, 5.0)]
+
+
 def test_a_segment_running_past_its_region_is_CLAMPED(monkeypatch, loaded, tmp_path):
     """Whisper times against a padded 30-second window, so the last segment of
     a short clip can end past the clip. Unclamped it would place speech inside

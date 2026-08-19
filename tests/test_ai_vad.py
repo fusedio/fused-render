@@ -363,14 +363,47 @@ def test_a_time_in_the_clip_maps_back_through_the_JOIN(vad):
     early by the length of the silence that was dropped."""
     pack = [(0.0, 5.0), (30.0, 35.0)]
 
-    assert vad.original_time(pack, 0.0) == 0.0
-    assert vad.original_time(pack, 2.5) == 2.5
-    # The join itself belongs to the region that STARTS there: nothing was said
-    # at 5.0 in the clip that was not also said at 30.0 in the recording, and
-    # placing it at the end of the first region would put a segment's start
-    # behind the silence it was cut out of.
-    assert vad.original_time(pack, 5.0) == 30.0
-    assert vad.original_time(pack, 7.5) == 32.5
+    assert vad.original_start(pack, 0.0) == 0.0
+    assert vad.original_start(pack, 2.5) == 2.5
+    assert vad.original_start(pack, 7.5) == 32.5
+    assert vad.original_end(pack, 2.5) == 2.5
+    assert vad.original_end(pack, 7.5) == 32.5
+
+
+def test_a_START_on_a_join_belongs_to_the_region_that_STARTS_there(vad):
+    """Nothing was said at 5.0 in the clip that was not also said at 30.0 in the
+    recording, and placing a segment's START at the first region's end would put
+    it behind the silence it was cut out of — a segment that begins before the
+    speech it transcribes."""
+    pack = [(0.0, 5.0), (30.0, 35.0)]
+
+    assert vad.original_start(pack, 5.0) == 30.0
+
+
+def test_an_END_on_a_join_belongs_to_the_region_that_ENDS_there(vad):
+    """The asymmetry, and it is the whole reason there are two functions.
+
+    A start and an end landing on the same clip time mean different things: the
+    start is the first moment of the next region, the end is the last moment of
+    the previous one. Mapped with start semantics, a segment that lies ENTIRELY
+    inside region one and merely ends on the join comes back stretched across
+    the silence — `3.0-5.0` reported as `3.0-30.0`, an end late by the whole
+    length of the pause.
+
+    Not a float coincidence either, which is why it has its own test: the join
+    is exactly where the pause was, so it is the most natural place for Whisper
+    to end a segment, and region ends land on its 0.02s timestamp grid regularly
+    (`WINDOW / 16000 * 5` = 0.16 and `2 * PAD_S` = 0.4 are both multiples of it).
+    Downstream the stretched span is worse than a late caption:
+    `diarize.speaker_for` sums turn overlap across it, so the sentence can be
+    attributed to whoever the segmenter heard inside the silence Silero dropped.
+    """
+    pack = [(0.0, 5.0), (30.0, 35.0)]
+
+    assert vad.original_end(pack, 5.0) == 5.0
+    # One grid step PAST the join is a different case and must keep mapping into
+    # the next region: a segment ending at 5.02 genuinely continues into it.
+    assert vad.original_end(pack, 5.02) == 30.02
 
 
 def test_the_two_ENDS_of_one_segment_are_mapped_INDEPENDENTLY(vad):
@@ -378,10 +411,16 @@ def test_the_two_ENDS_of_one_segment_are_mapped_INDEPENDENTLY(vad):
     silence is not in the clip it was given — and then its start and its end
     fall in different source regions. Mapping the pair as one offset would
     stretch or squash it; mapping each endpoint on its own is what keeps both
-    numbers true."""
+    numbers true.
+
+    Both flavours are exercised the way `worker.py` uses them, start for the
+    start and end for the end, because the pair is only correct together: a
+    segment that spans the join must survive, and one that merely touches it
+    must not be stretched (above).
+    """
     pack = [(0.0, 5.0), (30.0, 35.0)]
 
-    assert (vad.original_time(pack, 4.0), vad.original_time(pack, 6.0)) == (
+    assert (vad.original_start(pack, 4.0), vad.original_end(pack, 6.0)) == (
         4.0, 31.0)
 
 
@@ -393,11 +432,23 @@ def test_a_time_PAST_the_speech_lands_on_the_clip_s_last_moment(vad):
     than place text inside silence that was removed."""
     pack = [(0.0, 5.0), (30.0, 35.0)]
 
-    assert vad.original_time(pack, 10.0) == 35.0
-    assert vad.original_time(pack, 29.0) == 35.0
-    # And below zero, for the same reason `slice_samples` clamps: a negative
-    # start must not wrap round to somewhere else in the recording.
-    assert vad.original_time(pack, -1.0) == 0.0
+    for at_original in (vad.original_start, vad.original_end):
+        assert at_original(pack, 10.0) == 35.0
+        assert at_original(pack, 29.0) == 35.0
+        # And below zero, for the same reason `slice_samples` clamps: a negative
+        # time must not wrap round to somewhere else in the recording.
+        assert at_original(pack, -1.0) == 0.0
+
+
+def test_a_time_inside_a_ONE_region_pack_is_just_an_OFFSET(vad):
+    """The unfiltered path and the over-budget region both decode as a pack of
+    one, where there is no join for the two flavours to disagree about — so
+    they must agree, or every non-VAD transcript would depend on which one the
+    runner happened to call."""
+    pack = [(10.0, 12.0)]
+
+    assert vad.original_start(pack, 0.5) == vad.original_end(pack, 0.5) == 10.5
+    assert vad.original_start(pack, 2.0) == vad.original_end(pack, 2.0) == 12.0
 
 
 def test_the_packed_duration_is_SPEECH_not_wall_clock(vad):

@@ -27,9 +27,9 @@ have no such library — which is the whole of AI-10f's argument, one engine
 further on.
 
 **It owns the PACKING too, not just the detection** (`pack_regions`,
-`packed_samples` and the inverse `original_time`, at the foot of this file).
-Deciding what the decoder is actually HANDED — one clip per region, or the
-speech concatenated into as few clips as fit — is part of what `vad: true`
+`packed_samples` and the inverses `original_start`/`original_end`, at the foot of
+this file). Deciding what the decoder is actually HANDED — one clip per region,
+or the speech concatenated into as few clips as fit — is part of what `vad: true`
 means, and this module is the one place allowed to define that for both MLX
 engines; `mlx_whisper/worker.py` is the only caller today only because Parakeet
 has no fixed window to pack into, which is a fact about that engine rather than
@@ -257,10 +257,10 @@ def pack_regions(regions, budget=BUDGET_S):
     Returns `[[(start_s, end_s), …], …]` — a PARTITION of `regions`, in order,
     every region appearing exactly once. Each inner list is one "pack": the
     clip `packed_samples` builds, and simultaneously the whole of the inverse
-    map `original_time` needs to undo it. That is why the samples are not built
-    here: a caller that wanted every clip's audio up front would hold a second
-    copy of the whole waveform (345MB for a 90-minute recording), and it only
-    ever needs one clip at a time.
+    map `original_start`/`original_end` need to undo it. That is why the samples
+    are not built here: a caller that wanted every clip's audio up front would
+    hold a second copy of the whole waveform (345MB for a 90-minute recording),
+    and it only ever needs one clip at a time.
 
     **Why this exists.** mlx-whisper pads every call's mel to the full 30-second
     window, so a 0.8-second region costs the same encoder pass as a 30-second
@@ -326,15 +326,57 @@ def packed_samples(audio, pack, sample_rate=16000):
         [slice_samples(audio, region, sample_rate) for region in pack])
 
 
-def original_time(pack, at):
-    """`at` seconds into the packed clip → seconds into the RECORDING.
+def original_start(pack, at):
+    """`at` seconds into the packed clip → the START of a segment, in RECORDING
+    time.
+
+    A time landing exactly ON a join belongs to the region that STARTS there:
+    nothing was said at 5.0 in a clip that was not also said at the next
+    region's first moment, and attributing it to the previous region's end would
+    put a segment's start behind the silence it was cut out of — a segment that
+    begins before the speech it transcribes.
+    """
+    return _at_original(pack, at, join_ends_region=False)
+
+
+def original_end(pack, at):
+    """`at` seconds into the packed clip → the END of a segment, in RECORDING
+    time.
+
+    **The mirror image of `original_start`, and the asymmetry is the point.** A
+    time on a join means different things for the two ends of a segment: for a
+    start it is the next region's first moment, for an end it is the previous
+    region's last one. Mapped with start semantics, a segment lying ENTIRELY
+    inside one region and merely ending on the join comes back stretched across
+    the silence — clip `3.0-5.0` reported as recording `3.0-30.0`, an end late
+    by the whole length of the pause, and text asserted to have been spoken
+    during silence that was deliberately removed.
+
+    That is not a float coincidence to be shrugged at: the join IS where the
+    pause was, so it is the most natural place for Whisper to end a segment, and
+    region ends land on its 0.02s timestamp grid regularly (the detector's own
+    `WINDOW / 16000` steps and `2 * PAD_S` are both multiples of it). Downstream
+    the stretched span is worse than a late caption — `diarize.speaker_for` sums
+    turn overlap across it, so a sentence can be attributed to whoever the
+    segmenter heard inside the silence this file discarded.
+
+    One grid step past the join is a DIFFERENT case and still maps into the next
+    region: a segment ending at 5.02 genuinely continues into it.
+    """
+    return _at_original(pack, at, join_ends_region=True)
+
+
+def _at_original(pack, at, join_ends_region):
+    """The shared walk. `join_ends_region` is which side of a join `at` falls on
+    when it lands exactly there — the whole of the difference between the two
+    public functions, kept in one place so they cannot drift on the clamping.
 
     The inverse of `packed_samples`, and the reason concatenating is safe at
     all. Without it every timestamp after the first join is early by the length
     of the silence that was dropped — a transcript that looks perfect and sends
     a seeking player to the wrong minute.
 
-    **Called once per endpoint, never once per segment.** A segment can span a
+    **Called once per ENDPOINT, never once per segment.** A segment can span a
     join (Whisper hears continuous speech, because the silence is not in the
     clip it was given), so its start and its end can fall in different source
     regions; mapping the pair through one offset would stretch or squash it.
@@ -350,12 +392,10 @@ def original_time(pack, at):
     offset = 0.0
     for start, end in pack:
         span = end - start
-        if at < offset + span:
-            # `<` not `<=`, so a time landing exactly ON a join belongs to the
-            # region that STARTS there: nothing was said at the join that was
-            # not also said at the next region's start, and attributing it to
-            # the previous region's end would place a segment's start behind
-            # the silence it was cut out of. `max(start, …)` is the low clamp.
+        if at < offset + span or (join_ends_region and at <= offset + span):
+            # `max(start, …)` is the low clamp. The `or` is the asymmetry: an
+            # END on the boundary stops here, at this region's last moment,
+            # while a START falls through to the region that begins there.
             return max(start, start + (at - offset))
         offset += span
     return pack[-1][1]
