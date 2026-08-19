@@ -142,14 +142,26 @@ def test_the_tool_applies_inside_a_recording_too(html):
     assert "annRecMarkPoint(e.clientX, e.clientY, win)" in body
 
 
-def test_the_tool_picker_follows_the_mode(html):
-    """Shown while comment mode (or a recording, which arms it) is on, hidden
-    otherwise — a picker for a click that cannot happen is noise. A
-    cross-origin target (annXO, D355) hides it too: no element can ever be
-    resolved over there, so there is no choice to offer — every click is a
-    spot."""
+def test_the_tool_picker_follows_the_recording(html):
+    """Shown while a walkthrough RECORDS, hidden otherwise (Akshil,
+    2026-08-19): a typed comment pins the default tool and never asks, so the
+    picker is a property of recorded clicks — annRecBegin reveals it,
+    annRecEnd and annSetMode's disarm put it away. A cross-origin target
+    (annXO, D355) hides it even mid-recording: no element can ever be resolved
+    over there, so there is no choice to offer — every click is a spot."""
     assert 'id="anntool" role="radiogroup"' in html
-    assert "annToolEl.hidden = !annOn || annXO;" in html
+    assert "if (!(annOn && annRecOn)) || annXO" not in html  # guard shape below
+    assert "if (!(annOn && annRecOn) || annXO) annToolHide();" in html
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
+    assert "annToolShow();" in begin
+    end = _block(html, "async function annRecEnd()", "\n}\n")
+    assert "annToolHide();" in end
+    # stopping the walkthrough puts the whole mode away, both exits — but only
+    # the SAME arming it stopped: the epoch guard leaves a mode the user
+    # re-armed during transcription alone (Bugbot, PR #644)
+    assert end.count("if (annOn && annArmEpoch === armed) annSetMode(false);") == 2, end
+    # the cross-origin refusal lives in the one door that can raise the picker
+    assert "if (annXO) return;" in _block(html, "function annToolShow()", "\n}\n")
 
 
 def test_the_tool_picker_survives_the_hosted_layout(html):

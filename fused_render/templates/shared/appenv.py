@@ -171,22 +171,55 @@ def skill_plugin_dir() -> str | None:
 
 
 def workbench_plugin_dir() -> str | None:
-    """A SECOND Claude Code plugin root to hand a session we spawn — the
-    `workbench` plugin's canvas/UDF skills — or None when the machine has none.
+    """A SECOND Claude Code plugin root to hand a CANVAS session — the
+    `workbench` plugin's canvas/UDF skills — or None when there is none to hand.
 
-    Separate from `skill_plugin_dir` because it is a separate plugin, published
-    by the workbench team rather than shipped in this app; `--plugin-dir` is
-    repeatable, so the two roots compose without merging trees. A canvas clone's
-    CLAUDE.md names those skills (canvas.toml format above all), and handing them
-    over per-run is what makes that true without asking the user to install
-    anything or touching their global Claude config.
+    Separate from `skill_plugin_dir` because it is a separate plugin: it is not
+    shipped in this wheel but cloned at runtime from the public `fusedio/skills`
+    repo into a directory the app owns under `home_dir()`
+    (`skill_plugin.fetch_workbench_skills`, from the canvases path — never from
+    the user's own `~/.claude` plugin storage, which the app does not read and
+    does not write). `--plugin-dir` is repeatable, so the two roots compose
+    without merging trees. A canvas clone's CLAUDE.md names those skills
+    (canvas.toml format above all), and handing them over per-run is what makes
+    that true without asking the user to install anything or touching their
+    global Claude config.
 
-    Absent means "not found on this machine" — the flag is not passed and the
-    clone's CLAUDE.md degrades to the folder's own conventions. Decided by the
-    server (`skill_plugin.export_workbench_plugin_env`), like every other value
-    in this module.
+    This value being SET is not permission to pass it: the skills are for canvas
+    clones only, so the caller must also check the target against
+    `canvases_root()` — see `templates/claude/agent.py:_plugin_argv`. Absent
+    means "no validated clone on disk" (never fetched, fetch failed, or git is
+    missing) — no flag, and the clone's CLAUDE.md degrades to the folder's own
+    conventions. Decided by the server
+    (`skill_plugin.export_workbench_plugin_env`), like every other value here.
     """
     return os.environ.get("FUSED_RENDER_WORKBENCH_PLUGIN_DIR") or None
+
+
+def canvases_root() -> str:
+    """Where canvas clones live (`~/.fused-render/canvases`) — the fact a template
+    needs to answer "is this target a canvas clone?", which is what gates the
+    workbench skills above.
+
+    The server exports the already-resolved answer (`FUSED_RENDER_CANVASES_DIR`,
+    from `canvases.canvases_root()`). Deliberately a DUPLICATED rule rather than
+    an import — templates must not import `fused_render` (SPEC PY-15) — and the
+    fallback is therefore character-for-character what `canvases.canvases_root()`
+    and `_canvas_push.canvases_root()` use: a HARDCODED `~/.fused-render/canvases`
+    that deliberately does NOT go through `home_dir()`.
+
+    That looks wrong beside every other helper in this module and is not: canvas
+    clones are the one thing the app does not nest per branch, so resolving this
+    through `home_dir()` would answer `<home>/branches/<ref>/canvases` on a branch
+    build while the server kept its clones in `~/.fused-render/canvases`. The
+    disagreement would not raise anything — `_in_canvases_root` would simply say
+    "not a canvas" for a real clone, and the gate's default answer is to withhold
+    the workbench skills, so the failure would be silent. If the server's rule
+    ever gains branch nesting, this string moves with it (a test pins the two
+    together).
+    """
+    return os.environ.get("FUSED_RENDER_CANVASES_DIR") or os.path.expanduser(
+        "~/.fused-render/canvases")
 
 
 def fused_cli_dir() -> str | None:

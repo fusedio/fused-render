@@ -558,6 +558,60 @@
   word-break: break-word;
 }
 
+/* -- A live row's sentence, while the run is actually going ----------------------
+   The one row in this card describing work IN FLIGHT wore the same muted grey as
+   a row that was merely waiting. It now wears the app's one "running" treatment:
+   the ink itself in the In Progress yellow (--status-progress) with a brighter
+   band travelling through the letters — the exact recipe of the sidebar's "N
+   running" (sidebar.css `.sidebar-running`), whose documented constraints all
+   carry over and are why every value below is what it is:
+
+   * the words NEVER FADE — every gradient stop is the full status hue or the
+     hue mixed toward `--fg`, so the band only ever ADDS contrast, in both
+     themes, and the floor of the animation is the flat readable label the
+     reduced-motion arm below states outright;
+   * no reachable frame leaves a letter unpainted — the 300%-wide image travels
+     100% → 0% (every position in that range still covers the box) and repeats,
+     because with `background-clip: text` an unpainted spot is not a dim letter
+     but a MISSING one.
+
+   The keyframes are this sheet's own rather than sidebar.css's only because the
+   two files must not depend on each other's load order; the timing and travel
+   are identical, so every "running" in the app moves as one. */
+.q-status.is-running {
+  color: var(--status-progress);
+  background-image: linear-gradient(
+    100deg,
+    var(--status-progress) 30%,
+    color-mix(in srgb, var(--status-progress) 65%, var(--fg)) 50%,
+    var(--status-progress) 70%
+  );
+  background-size: 300% 100%;
+  background-repeat: repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: q-running-shimmer 2.2s linear infinite;
+}
+
+@keyframes q-running-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+
+/* The blanket reduced-motion rule (reduced-motion.css) collapses the duration
+   and runs the sweep ONCE, which would park the gradient wherever 0.01ms leaves
+   it. So the gradient is dropped instead and the sentence is the flat status
+   hue: still visibly "this one is going", stated without motion — the same arm
+   `.sidebar-running` takes. */
+@media (prefers-reduced-motion: reduce) {
+  .q-status.is-running {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: var(--status-progress);
+  }
+}
+
 /* What a cancel actually did — including the half that was refused because it
    was already away. Not a toast: it answers a button in this card, and it sits at
    the card's foot below the rows (outside the collapse, since Cancel all is in the

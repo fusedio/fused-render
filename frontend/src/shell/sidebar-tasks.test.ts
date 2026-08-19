@@ -449,3 +449,60 @@ describe("the Tasks entry's two marks", () => {
     expect(rm).toContain("-webkit-text-fill-color: var(--status-progress)");
   });
 });
+
+// -- the poke: finished in one surface, finished in the other -------------------
+// The queue card and the schedule's event poll both learn a run ended seconds
+// after it does; this store's own cadence is 10–30s and the Tasks page's 20s.
+// pokeTasks is the bridge, and these tests pin the two rules that make it safe:
+// it never fetches over a feeder, and every producer of "a run just ended"
+// actually calls it.
+
+const QUEUE_DOCK = readFileSync(join(SHELL, "QueueDock.tsx"), "utf8");
+const EVENTS = readFileSync(
+  join(SHELL, "../platform/lib/scheduleEvents.ts"),
+  "utf8",
+);
+const APP = readFileSync(join(SHELL, "App.tsx"), "utf8");
+
+describe("pokeTasks", () => {
+  it("forwards to the feeder page instead of fetching over it", () => {
+    // While the Tasks page holds the feeder, this store must not call the
+    // server — that is the double-poll the feeder exists to prevent. The poke
+    // becomes a window event, and the PAGE's own reload publishes back.
+    expect(STORE).toMatch(
+      /export function pokeTasks\(\) \{\s*\n\s*if \(feeders > 0\) \{\s*\n\s*window\.dispatchEvent\(new Event\(TASKS_POKE_EVENT\)\);\s*\n\s*return;/,
+    );
+  });
+
+  it("polls itself immediately when unfed — through the guarded poll()", () => {
+    // poll(), not a bare fetch: the in-flight and generation guards are what
+    // stop a poke's answer landing over a fresher publish.
+    expect(STORE).toMatch(/if \(listeners\.size === 0\) return;\s*\n\s*void poll\(\);/);
+  });
+
+  it("the Tasks page listens for the poke with its own reload", () => {
+    expect(SCHEDULED).toContain("TASKS_POKE_EVENT");
+    expect(SCHEDULED).toMatch(/window\.addEventListener\(TASKS_POKE_EVENT, reload\)/);
+    expect(SCHEDULED).toMatch(/window\.removeEventListener\(TASKS_POKE_EVENT, reload\)/);
+  });
+
+  it("the queue card pokes when a scheduled run's job starts or goes terminal", () => {
+    // Compared snapshot-to-snapshot (scheduleRunsEnded / scheduleRunsStarted)
+    // so mounting onto a registry full of old rows fires nothing — including
+    // the slot's initial [] echo, which must not become the baseline.
+    expect(QUEUE_DOCK).toMatch(/scheduleRunsEnded\(prevJobs\.current, next\)/);
+    expect(QUEUE_DOCK).toMatch(/scheduleRunsStarted\(prevJobs\.current, next\)/);
+    expect(QUEUE_DOCK).toMatch(/if \(news\) pokeTasks\(\);/);
+    expect(QUEUE_DOCK).toMatch(/sawEcho\.current = true;/);
+  });
+
+  it("a done/failed schedule event pokes too — handed down from the shell", () => {
+    // platform may not import shell (check-boundaries), so scheduleEvents takes
+    // the callback and App supplies the store's pokeTasks.
+    expect(EVENTS).toMatch(
+      /fresh\.some\(\(e\) => e\.kind === "done" \|\| e\.kind === "failed"\)/,
+    );
+    expect(EVENTS).not.toContain("@shell/");
+    expect(APP).toContain("useScheduleEvents(pokeTasks)");
+  });
+});

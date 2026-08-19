@@ -79,7 +79,7 @@ import {
   projectOptions,
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
-import { publishTasks, useTasksFeeder } from "./tasksPulse";
+import { publishTasks, TASKS_POKE_EVENT, useTasksFeeder } from "./tasksPulse";
 import { viewFromSearch, viewUrl } from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
 
@@ -278,6 +278,15 @@ export default function Scheduled() {
   useEffect(() => {
     const id = window.setInterval(reload, POLL_MS);
     return () => window.clearInterval(id);
+  }, []);
+  // The corner card knows a run ended about a second after it does; this page's
+  // own clock is 20s. pokeTasks forwards that knowledge here as a window event —
+  // the feeder above means the shared store may not fetch on our behalf — and
+  // the page re-reads all three feeds, so the row flips the moment the popover
+  // does rather than up to a poll later.
+  useEffect(() => {
+    window.addEventListener(TASKS_POKE_EVENT, reload);
+    return () => window.removeEventListener(TASKS_POKE_EVENT, reload);
   }, []);
 
   const pickView = (v: TaskView) => {

@@ -350,7 +350,10 @@ def test_the_two_halves_share_one_job_snapshot_so_the_handover_is_not_a_race(doc
     It also deletes what used to be a second forever-poll of the same endpoint."""
     assert "onJobs?: (jobs: Job[]) => void" in card, "the slot has to carry the way back"
     assert "onJobs?.(reported)" in card, "the FULL list, not the rows this card draws"
-    assert "onJobs: setJobs" in dock
+    # Not a bare setState any more: the callback also POKES the tasks store on a
+    # run starting or ending (PR #646) — the pin follows the handoff, which is
+    # what the two-halves contract actually needs.
+    assert "onJobs," in dock and "const onJobs = useCallback(" in dock
     assert "openRows(queueRows(" in dock, "the rows are filtered before anything is told"
     assert "fetchJobs" not in dock, "the queue half must not poll the job registry itself"
     # and the exemption that was the duplicate is gone from the rule

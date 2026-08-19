@@ -8,6 +8,7 @@ tmp file via FUSED_RENDER_FUSED_CREDENTIALS.
 """
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -298,6 +299,124 @@ def test_list_external_cli_entries_have_null_preview_fields(harness):
     canvases = {c["name"]: c for c in res.json()["canvases"]}
     assert canvases["alpha"]["preview_url"] is None
     assert canvases["alpha"]["updated_at"] is None
+    assert canvases["alpha"]["preview_pending"] is False
+
+
+# Preview signing off the listing's critical path (D364): the list shim reports
+# an uploaded preview as pending, and POST /api/canvases/previews signs the
+# whole batch afterwards.
+def _wire_previews_shim(tmp_path, monkeypatch, body: str) -> None:
+    shim = tmp_path / "previews_shim.py"
+    shim.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(
+        canvases_mod, "_shim_previews_command", lambda cli: [sys.executable, str(shim)]
+    )
+
+
+def test_list_reports_a_pending_preview_without_signing_it(harness, tmp_path, monkeypatch):
+    harness.log_in()
+    _wire_list_shim(
+        tmp_path,
+        monkeypatch,
+        "import json, sys\n"
+        "json.dump([\n"
+        "  {'name': 'alpha', 'id': 'id-a', 'preview_url': None,\n"
+        "   'preview_pending': True, 'last_updated': None},\n"
+        "  {'name': 'beta', 'id': None, 'preview_url': None,\n"
+        "   'preview_pending': True, 'last_updated': None},\n"
+        "], sys.stdout)\n",
+    )
+    res = harness.client.get("/api/canvases/list", headers=GUARD)
+    assert res.status_code == 200
+    canvases = {c["name"]: c for c in res.json()["canvases"]}
+    assert canvases["alpha"]["preview_pending"] is True
+    assert canvases["alpha"]["preview_url"] is None
+    # No id means nothing to sign, so it is not advertised as pending.
+    assert canvases["beta"]["preview_pending"] is False
+
+
+def test_previews_endpoint_signs_the_batch_it_is_given(harness, tmp_path, monkeypatch):
+    harness.log_in()
+    # The shim reads the ids as JSON on stdin — assert that, not just the output.
+    _wire_previews_shim(
+        tmp_path,
+        monkeypatch,
+        "import json, sys\n"
+        "ids = json.load(sys.stdin)\n"
+        "json.dump({i: None if i == 'id-none' else 'https://s3/%s.png' % i for i in ids},\n"
+        "          sys.stdout)\n",
+    )
+    res = harness.client.post(
+        "/api/canvases/previews", json={"ids": ["id-a", "id-none"]}, headers=GUARD
+    )
+    assert res.status_code == 200
+    assert res.json()["previews"] == {
+        "id-a": "https://s3/id-a.png",
+        "id-none": None,
+    }
+
+
+def test_previews_endpoint_is_guarded_and_validates_its_input(harness):
+    harness.log_in()
+    assert harness.client.post("/api/canvases/previews", json={"ids": []}).status_code == 403
+    bad = harness.client.post("/api/canvases/previews", json={"ids": "id-a"}, headers=GUARD)
+    assert bad.status_code == 400
+    # An empty batch is answered without running anything at all.
+    empty = harness.client.post("/api/canvases/previews", json={"ids": []}, headers=GUARD)
+    assert empty.status_code == 200
+    assert empty.json() == {"previews": {}}
+
+
+def test_previews_endpoint_caps_the_batch_size(harness, tmp_path, monkeypatch):
+    harness.log_in()
+    _wire_previews_shim(
+        tmp_path,
+        monkeypatch,
+        "import json, sys\n"
+        "json.dump({'n': str(len(json.load(sys.stdin)))}, sys.stdout)\n",
+    )
+    over = canvases_mod.PREVIEWS_MAX_IDS + 10
+    res = harness.client.post(
+        "/api/canvases/previews",
+        json={"ids": [f"id-{i}" for i in range(over)]},
+        headers=GUARD,
+    )
+    assert res.status_code == 200
+    assert res.json()["previews"]["n"] == str(canvases_mod.PREVIEWS_MAX_IDS)
+
+
+def test_previews_endpoint_on_an_external_cli_answers_empty(harness):
+    # The stub CLI is an external FUSED_RENDER_FUSED_BIN: that path never
+    # reports a pending preview, so there is nothing to sign — and no error.
+    harness.log_in()
+    res = harness.client.post(
+        "/api/canvases/previews", json={"ids": ["id-a"]}, headers=GUARD
+    )
+    assert res.status_code == 200
+    assert res.json() == {"previews": {}}
+
+
+def test_previews_endpoint_maps_expired_credentials_to_401(harness, tmp_path, monkeypatch):
+    harness.log_in()
+    _wire_previews_shim(
+        tmp_path,
+        monkeypatch,
+        "import sys\n"
+        "sys.stderr.write('Error: please re-authenticate with fused login\\n')\n"
+        "sys.exit(1)\n",
+    )
+    res = harness.client.post(
+        "/api/canvases/previews", json={"ids": ["id-a"]}, headers=GUARD
+    )
+    assert res.status_code == 401
+
+
+def test_previews_endpoint_requires_a_login(harness, tmp_path, monkeypatch):
+    _wire_previews_shim(tmp_path, monkeypatch, "import sys\nsys.exit(1)\n")
+    res = harness.client.post(
+        "/api/canvases/previews", json={"ids": ["id-a"]}, headers=GUARD
+    )
+    assert res.status_code == 409
 
 
 def test_create_canvas_runs_cli(harness):
@@ -1370,19 +1489,143 @@ def test_clean_pull_reseeds_claude_md(harness, tmp_path, monkeypatch):
     shims.set_manifest("t2")
     status = _wait_status(harness, lambda s: s["pull_seq"] >= 1)
     assert status and status["pull_seq"] >= 1, status
-    # `pull_seq` is NOT the postcondition this test is about. `_poll_remote`
-    # bumps it the moment `--force` returns and re-seeds only after the
-    # dry-run recheck — deliberately, so the never-bundled helper files do
-    # not read as a perpetual diff — so there is a whole subprocess between
-    # the counter this waits on and the file it asserts. Waiting on the file
-    # itself is the honest condition; asserting it off the counter failed
-    # roughly half the time.
-    seeded = harness.root / "alpha" / "CLAUDE.md"
-    deadline = time.time() + 8
-    while not seeded.exists() and time.time() < deadline:
-        time.sleep(0.05)
-    assert seeded.exists()
+    # Waited for, not asserted outright — the same reason as the recheck test
+    # above: `pull_seq` is bumped BEFORE the post-pull recheck subprocess, and
+    # the reseed deliberately follows that recheck (seeding first makes the
+    # never-bundled helper files look like a permanent diff). So a status that
+    # reports pull_seq >= 1 does not yet imply the files are back, and under
+    # load (-n auto) that gap is wide enough to fail ~1 run in 10.
+    assert _wait_for(lambda: (harness.root / "alpha" / "CLAUDE.md").exists()), \
+        "the pull leg never re-seeded CLAUDE.md"
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+# -- the workbench skills reach an EXISTING canvas, not just a fresh clone -----
+#
+# Field bug: the fetch hung off POST /api/canvases/clone alone, so a canvas that
+# already existed (i.e. nearly every real canvas) never got one. The plugin root
+# stayed absent, `_plugin_argv` passed no second --plugin-dir, and the session
+# looked up the `workbench:canvas-toml` skills its own seeded CLAUDE.md names,
+# found nothing, and went hunting for the format elsewhere — `find /` included,
+# which wedged every rclone mount on the machine. So the fetch has to fire on the
+# path that OPENS a canvas too, which is the watcher start the page does on boot.
+
+
+def _stub_skills_git(monkeypatch, calls):
+    """The git seam, materialising a loadable clone the way a real one would."""
+    from fused_render import skill_plugin
+
+    def run(args, timeout):
+        calls.append(list(args))
+        if args[0] == "clone":
+            root = os.path.join(args[-1], skill_plugin.WORKBENCH_PLUGIN_SUBDIR)
+            os.makedirs(os.path.join(root, skill_plugin.MANIFEST_DIR), exist_ok=True)
+            with open(os.path.join(root, skill_plugin.MANIFEST_DIR,
+                                   skill_plugin.MANIFEST_NAME), "w",
+                      encoding="utf-8") as fh:
+                fh.write('{"name": "workbench"}')
+            for skill in skill_plugin.WORKBENCH_SKILLS:
+                d = os.path.join(root, skill_plugin.SKILLS_SUBDIR, skill)
+                os.makedirs(d, exist_ok=True)
+                with open(os.path.join(d, "SKILL.md"), "w", encoding="utf-8") as fh:
+                    fh.write("# %s\n" % skill)
+        return subprocess.CompletedProcess(list(args), 0, "", "")
+
+    monkeypatch.setattr(skill_plugin, "_git", run)
+
+
+def test_opening_an_existing_canvas_fetches_the_workbench_skills(
+        harness, tmp_path, monkeypatch):
+    """The page's own open path: POST /api/canvases/sync/start on a canvas dir
+    that is already there. No /clone is involved and none can be — the canvas
+    predates this feature — so this is the only hook that can put the skills on
+    disk for it."""
+    from fused_render import skill_plugin
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "skillhome"))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+    calls = []
+    _stub_skills_git(monkeypatch, calls)
+
+    # An EXISTING canvas: made by hand, exactly as a pre-branch clone looks.
+    (harness.root / "canvas_1").mkdir(parents=True)
+    (harness.root / "canvas_1" / "canvas.toml").write_text(
+        'type = "canvas"\n', encoding="utf-8")
+    assert skill_plugin.workbench_plugin_root() is None, "precondition: no clone"
+
+    res = harness.client.post("/api/canvases/sync/start",
+                              json={"name": "canvas_1"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+
+    assert _wait_for(lambda: skill_plugin.workbench_plugin_root() is not None), (
+        "opening an existing canvas never fetched the workbench skills", calls)
+    root = skill_plugin.workbench_plugin_root()
+    # Published for the sessions this canvas spawns, which is the whole point.
+    assert _wait_for(
+        lambda: os.environ.get(skill_plugin.WORKBENCH_PLUGIN_DIR_ENV) == root)
+    assert os.path.isfile(os.path.join(root, skill_plugin.SKILLS_SUBDIR,
+                                       "canvas-toml", "SKILL.md"))
+    assert [c[0] for c in calls] == ["clone"], calls
+    harness.client.post("/api/canvases/sync/stop",
+                        json={"name": "canvas_1"}, headers=GUARD)
+
+
+def test_the_open_hook_never_blocks_the_request_and_never_fails_it(
+        harness, tmp_path, monkeypatch):
+    """Bounded on the latency side too: a shallow clone over a dead network sits
+    for up to _CLONE_TIMEOUT_S, and the canvas page AWAITS this request before it
+    renders anything. So the fetch runs off-thread, and a fetch that explodes
+    still leaves a started watcher behind."""
+    from fused_render import skill_plugin
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "skillhome"))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+    released = threading.Event()
+
+    def slow_and_broken(args, timeout):
+        released.wait(5)
+        raise OSError("git is not installed")
+
+    monkeypatch.setattr(skill_plugin, "_git", slow_and_broken)
+    (harness.root / "canvas_1").mkdir(parents=True)
+    (harness.root / "canvas_1" / "canvas.toml").write_text(
+        'type = "canvas"\n', encoding="utf-8")
+
+    started = time.time()
+    res = harness.client.post("/api/canvases/sync/start",
+                              json={"name": "canvas_1"}, headers=GUARD)
+    elapsed = time.time() - started
+    assert res.status_code == 200, res.text
+    assert res.json()["watching"] is True, res.json()
+    assert elapsed < 2.0, ("the open request waited for the skills fetch", elapsed)
+    released.set()
+    harness.client.post("/api/canvases/sync/stop",
+                        json={"name": "canvas_1"}, headers=GUARD)
+
+
+def test_repeated_opens_do_not_refetch(harness, tmp_path, monkeypatch):
+    """The page re-arms the watcher whenever a poll finds it dropped, so this
+    hook fires far more often than a canvas is opened. The rate limit is what
+    keeps that from being a git invocation per re-arm."""
+    from fused_render import skill_plugin
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "skillhome"))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+    calls = []
+    _stub_skills_git(monkeypatch, calls)
+    (harness.root / "canvas_1").mkdir(parents=True)
+    (harness.root / "canvas_1" / "canvas.toml").write_text(
+        'type = "canvas"\n', encoding="utf-8")
+
+    for _ in range(4):
+        harness.client.post("/api/canvases/sync/start",
+                            json={"name": "canvas_1"}, headers=GUARD)
+    assert _wait_for(lambda: skill_plugin.workbench_plugin_root() is not None)
+    time.sleep(0.2)  # let any further kicks land
+    assert [c[0] for c in calls] == ["clone"], (
+        "an open re-fetched instead of honouring the rate limit", calls)
+    harness.client.post("/api/canvases/sync/stop",
+                        json={"name": "canvas_1"}, headers=GUARD)
 
 
 # -- the sanctioned manual push (B1) -------------------------------------------
@@ -1734,6 +1977,33 @@ def test_the_claude_md_names_exactly_the_skills_the_app_hands_over():
         assert "workbench:%s" % skill in text, skill
 
 
+def test_the_missing_skills_fallback_confines_the_session_to_its_folder():
+    """The fallback has to be a BOUNDARY, not just "carry on".
+
+    What actually happened in the field, with the skills absent: the session
+    accepted the fallback, went looking for the edge format in the app's own
+    internals, and ran `find / -iname "pipeline.md"` and a recursive walk of
+    `~/.fused-render` — which permanently wedged every rclone NFS mount on the
+    user's machine (a known failure mode in this repo: a recursive walk over
+    ~/.fused-render/mounts is the documented mount-killer). Its own summary was
+    "I got sidetracked digging through internal app files", i.e. it recognised
+    the detour only afterwards — so the text must PREVENT the walk, not nudge.
+    """
+    text = canvases_mod._CLONE_CLAUDE_MD
+    tail = text[text.index("## Skills"):]
+    low = tail.lower()
+    # Stay in the folder, in as many words.
+    assert "do not search outside this folder" in low
+    # The three destinations it actually went to, named.
+    assert "find" in low and "recursive" in low
+    assert "~/.fused-render/mounts" in tail
+    assert "fused-render" in low and "internal" in low
+    # And why: the mounts are network mounts a walk destroys.
+    assert "wedge" in low or "wedges" in low
+    # The positive instruction survives — the folder itself is the reference.
+    assert "canvas.toml" in tail and "conventions" in low
+
+
 def test_the_seeded_claude_md_never_hands_the_user_a_shell_command():
     """The reader of this file is a Claude session in a chat pane. It cannot run
     an install command, and the user reading it there is the wrong person to
@@ -1861,32 +2131,136 @@ def test_the_auto_push_waits_for_a_live_session_and_then_fires(
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
-def test_the_remote_poll_keeps_running_while_a_session_is_live(
+def test_the_remote_poll_is_held_while_a_session_is_live(
         harness, tmp_path, monkeypatch, fake_agent):
-    """Only the push leg is suppressed. If the poll stopped too, workbench edits
-    would stop arriving for the whole length of a chat — and the session would
-    be editing against a folder it has been told is kept up to date."""
+    """Both downstream legs are now held for the length of a session, not just
+    the push.
+
+    The earlier rule (D354's note in the watcher) was that the remote poll must
+    keep running through a chat or workbench edits would stop arriving. It must
+    not: the clone's files moving under a session mid-change-set is what the
+    seeded CLAUDE.md and the workbench lock both exist to avoid, and every pull
+    was also a `pulling` window the lock engaged on — so a chat of any length
+    flickered the embedded workbench read-only every PULL_POLL_S. The accepted
+    cost is timing only: a workbench edit made during the session arrives at the
+    next pull (which is also step 1 of the push), where the per-file merge folds
+    it in with local winning ties.
+    """
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     fake_agent.live = "run-abc"
     harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
-    # Dirty, so the suppressed push leg is the one being exercised.
+    # Dirty, so the merge leg is the one that would fire.
     (harness.root / "alpha" / "a.py").write_text("a-local-edit\n")
     _wait_status(harness, lambda s: s["push_state"] == "pending")
     assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t1")
 
-    # A workbench edit lands: dirty clone → the per-file merge must still run.
+    # A workbench edit lands. It must NOT arrive while the session is live.
     shims.set_remote_files({**_BASE_FILES, "b.py": "b-from-workbench\n"})
     shims.set_manifest("t2", {"b": {"hash": "h2", "last_updated": "t2"}})
+    seen = []
+    for _ in range(20):
+        seen.append(harness.client.get(
+            "/api/canvases/sync/status?name=alpha").json())
+        time.sleep(0.05)
+    assert all(s["merge_seq"] == 0 for s in seen), \
+        "the remote poll merged into a clone a live session was working in"
+    assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"
+    # And no lock engagement at all: `pulling` never went true, so the embedded
+    # workbench was never flickered read-only by the held leg.
+    assert all(s["pulling"] is False for s in seen), seen
+    # `_remote` was not rotated past the move either — forgetting it would mean
+    # the edit is never applied at all.
+    assert (_manager()._remote or {}).get("last_updated") == "t1"
+
+    # Session ends → the held edit arrives.
+    fake_agent.live = ""
     status = _wait_status(harness, lambda s: s["merge_seq"] >= 1)
     assert status and status["merge_seq"] >= 1, (
-        "the remote poll stopped while a session was live", status)
+        "the remote poll never resumed after the session ended", status)
     assert (harness.root / "alpha" / "b.py").read_text() == "b-from-workbench\n"
-    # (That the push itself stays suppressed is pinned by the test above. It is
-    # deliberately NOT re-asserted here: the merge and the push would race, so
-    # the assertion would pass or fail on ordering rather than on behaviour.)
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_the_held_poll_resumes_on_the_very_next_tick(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """`_last_pull_poll` is deliberately NOT stamped while the leg is held. If it
+    were, a session ending one moment after a skipped poll would leave the
+    workbench's edits waiting up to a whole PULL_POLL_S — with the user watching
+    a canvas that visibly does not update."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 3.0)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)  # keep it dirty
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    fake_agent.live = "run-abc"
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    (harness.root / "alpha" / "a.py").write_text("a-local-edit\n")
+    assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t1")
+
+    shims.set_remote_files({**_BASE_FILES, "b.py": "b-from-workbench\n"})
+    shims.set_manifest("t2", {"b": {"hash": "h2", "last_updated": "t2"}})
+    # Sit in the held state until well past a full PULL_POLL_S window, so the
+    # leg has been due-and-skipped for a while.
+    time.sleep(3.5)
+    assert harness.client.get(
+        "/api/canvases/sync/status?name=alpha").json()["merge_seq"] == 0
+
+    # Release, and give it far less than PULL_POLL_S to act: a skip that stamped
+    # `_last_pull_poll` would push the next poll a fresh 3s out and time out here.
+    fake_agent.live = ""
+    status = _wait_status(harness, lambda s: s["merge_seq"] >= 1, timeout=1.2)
+    assert status and status["merge_seq"] >= 1, (
+        "the held leg waited for a fresh PULL_POLL_S instead of the next tick",
+        status)
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_the_first_look_baseline_is_adopted_even_while_a_session_is_live(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """The one exemption from the hold. The first look writes NOTHING to the
+    clone — it adopts `_remote` and hashes the disk as the merge base. Gate it
+    too and `_base_files` stays None for the whole session, which silently
+    degrades every later merge to local-wins wholesale: a workbench edit to a
+    file Claude never touched would be discarded instead of folded in."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    fake_agent.live = "run-abc"  # live BEFORE the watcher's first tick
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    assert _wait_for(
+        lambda: (_manager()._remote or {}).get("last_updated") == "t1", timeout=3
+    ), "the first-look baseline was gated by the live session"
+    assert _manager()._base_files is not None, \
+        "no merge base adopted — every later merge degrades to local-wins"
+    # Adopting is not pulling: nothing was written, so the lock stayed off.
+    assert harness.client.get(
+        "/api/canvases/sync/status?name=alpha").json()["pulling"] is False
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_a_poll_that_finds_nothing_never_reports_pulling(
+        harness, tmp_path, monkeypatch):
+    """`pulling` marks real WRITES only. It used to wrap probe-and-decide, so
+    every 10s poll of an unchanged remote registered a full lock engagement that
+    the 2s status poll could sample — the workbench flickering read-only for a
+    pull that never happened."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.05)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t1")
+
+    # Remote never moves; the leg polls repeatedly and must decide "nothing to
+    # do" without ever engaging the lock.
+    for _ in range(20):
+        assert _manager()._pulling is False
+        time.sleep(0.02)
+    assert harness.client.get(
+        "/api/canvases/sync/status?name=alpha").json()["pulling"] is False
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
@@ -2011,26 +2385,94 @@ def test_status_reports_pulling_during_a_clean_force_pull(harness, tmp_path, mon
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
-def test_status_reports_pulling_during_a_merge(harness, tmp_path, monkeypatch):
+def test_pulling_covers_the_merges_writes_but_not_its_zip_download(
+        harness, tmp_path, monkeypatch):
+    """`pulling` marks writes, and the merge's probe-and-decide reaches deeper
+    than the leg boundary: the bundle download is a network op that can fail, and
+    it precedes every write. Marking it held the embedded workbench read-only for
+    the whole download and for merges that then wrote nothing — the same flicker
+    the window was introduced to remove, one layer in."""
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)  # keep the clone dirty
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
 
+    # Observed from INSIDE the merge, so neither assertion depends on catching a
+    # window with an HTTP poll.
+    during_download = []
+    during_write = []
+    real_zip = canvases_mod._SyncManager._download_zip
+    real_backup = canvases_mod._SyncManager._backup_to
+
+    def watched_zip(self, revision_id):
+        during_download.append(self._pulling)
+        return real_zip(self, revision_id)
+
+    def slow_backup(self, trash, rel, data):
+        during_write.append(self._pulling)
+        time.sleep(0.4)  # hold the write open past one status poll
+        return real_backup(self, trash, rel, data)
+
+    monkeypatch.setattr(canvases_mod._SyncManager, "_download_zip", watched_zip)
+    monkeypatch.setattr(canvases_mod._SyncManager, "_backup_to", slow_backup)
+
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
     (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
     shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
     shims.set_manifest("t2")
-    monkeypatch.setenv("FAKE_ZIP_DELAY", "0.6")
 
     assert _wait_for(
         lambda: harness.client.get(
             "/api/canvases/sync/status?name=alpha").json()["pulling"] is True,
         timeout=3,
-    ), "status never reported pulling during the merge"
+    ), "status never reported pulling while the merge was writing"
     status = _wait_status(harness, lambda s: s["merge_seq"] >= 1)
     assert status and status["merge_seq"] >= 1, status
     assert status["pulling"] is False, status
+    assert during_download and all(v is False for v in during_download), \
+        ("the lock engaged for the bundle download, before any write",
+         during_download)
+    assert during_write and all(v is True for v in during_write), during_write
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_a_merge_that_writes_nothing_never_reports_pulling(
+        harness, tmp_path, monkeypatch):
+    """The common shape while a session works: the remote moved the same file the
+    session is editing, so every per-file decision goes to local. The merge
+    reconciles `_remote` and touches not one byte — it must cost no lock
+    engagement, or a flaky remote flickers the workbench every PULL_POLL_S."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)  # keep the clone dirty
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    seen = []
+    real_zip = canvases_mod._SyncManager._download_zip
+
+    def watched_zip(self, revision_id):
+        out = real_zip(self, revision_id)
+        seen.append(self._pulling)
+        return out
+
+    monkeypatch.setattr(canvases_mod._SyncManager, "_download_zip", watched_zip)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    # Local edit to a.py, and the remote moved a.py too — local wins, nothing to
+    # apply; b.py is identical on both sides, so it is a base refresh, not a write.
+    (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
+    _wait_status(harness, lambda s: s["push_state"] == "pending")
+    shims.set_remote_files({**_BASE_FILES, "a.py": "a-from-workbench\n"})
+    shims.set_manifest("t2")
+
+    assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t2",
+                     timeout=3), "the merge never reconciled the remote"
+    assert seen, "the merge never ran"
+    assert all(v is False for v in seen), \
+        ("the lock engaged for a merge that wrote nothing", seen)
+    assert (harness.root / "alpha" / "a.py").read_text() == "a-local\n"
+    assert _manager()._pulling is False
+    assert harness.client.get(
+        "/api/canvases/sync/status?name=alpha").json()["pulling"] is False
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 

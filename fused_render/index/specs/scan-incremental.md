@@ -134,19 +134,32 @@ again on every watch tick of a folder on screen**:
    indefinitely, and this one is serving a listing.
 3. `MIN_INTERVAL_S` (60 s) since any scan of that root, read off `scans.json` — so no
    state file of its own, and a scan that just ran for any reason suppresses a trigger.
-   `routers/index.FRESHNESS_CHECK_S` (55 s) paces the checks in memory to the same
-   cadence, deliberately a little **shorter**: the check clock starts when a check
-   begins and the scan clock when the scan is spawned, so equal intervals would put
-   every second check just inside the floor and halve the real rate. Scanning sooner is
-   also *cheaper*, since both dominant scan costs (the journal replay and the visit set
-   it names) scale with the window since the last one.
+   `routers/index.FRESHNESS_CHECK_S` (55 s) paces the checks in memory. **Known bug,
+   pre-existing and deliberately not fixed:** 55 being *shorter* than 60 does not give a
+   60 s folder-open scan cadence, it gives ~110 s. The check clock is stamped whenever a
+   check comes due, whether or not that check then scans — so the check at t=55 stamps,
+   is refused by this gate (last scan 55 s ago), and the next check is t=110. Every
+   other check is wasted, and an equal 60 gives ~120 the same way. The fix is to set
+   `FRESHNESS_CHECK_S` *above* `MIN_INTERVAL_S` plus the spawn offset (61), which lands
+   with this gate already clear; it is left alone because how often a machine rescans is
+   a behaviour decision, not a comment correction. Scanning sooner is also *cheaper*,
+   since both dominant scan costs (the journal replay and the visit set it names) scale
+   with the window since the last one.
 4. `QUIET_S` (30 s) since the directory's own mtime moved. A build tree's mtime never
    stops moving, so it is never quiet and never triggers; the open after the churn stops
    still does.
 
 A live run of the root is refused rather than joined, the check runs on a background
 thread throttled to one at a time, and nothing about the listing waits on it or fails
-with it.
+with it. That thread also waits `FRESHNESS_DELAY_S` (3 s) before it commits, so the scan
+it may start lands after a page's opening burst rather than inside it — `/home` draws one
+folder card per Claude session and so lists a fistful of folders on a plain refresh. The
+wait sits **after** the gates that can refuse for free (root membership, and a
+non-stamping peek at the check interval) and **before** the stamp, so a check that was
+never going to act does not hold the one-at-a-time slot for three seconds. Waiting costs
+nothing in accuracy: the comparison is folder mtime against the *index*, not against when
+the folder was opened. It does widen the window in which a `/api/git-repos` rotation turn
+is lost to a failed acquire — see the note on that function.
 
 **Who fires it:** `/api/fs/list`, naming the folder just opened, and `/api/git-repos`,
 naming **one configured root per request, round-robin** — that tab is served entirely

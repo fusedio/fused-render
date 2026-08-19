@@ -180,14 +180,24 @@ def _note_tab_opened(cfg) -> None:
 
     Exactly ONE root per request, taken round-robin, because the checker admits
     exactly one check at a time: note_folder_opened acquires a non-blocking slot
-    (routers/index._freshness_slot) and its background thread releases it a
-    config read — and possibly a duckdb lookup — later. Offering every root in a
-    loop therefore does not check every root; it checks the FIRST one and loses
-    the rest microseconds later on a failed acquire, every request, forever. The
-    first root would also take the slot on requests where it is not even due,
-    since due-ness is decided after the acquire. Rotating the offer is what makes
-    "each root gets checked" true, and it fits the slot rather than fighting it:
-    a tab render never queues more than one check.
+    (routers/index._freshness_slot) and its background thread releases it after
+    the check. Offering every root in a loop therefore does not check every root;
+    it checks the FIRST one and loses the rest on a failed acquire, every
+    request, forever. The first root would also take the slot on requests where
+    it is not even due, since due-ness is decided after the acquire. Rotating the
+    offer is what makes "each root gets checked" true, and it fits the slot
+    rather than fighting it: a tab render never queues more than one check.
+
+    Weakened, and named rather than papered over: "eventually every root" used to
+    rest on the slot being freed microseconds later, so a rotation turn was only
+    ever lost to a genuinely concurrent check. A check that decides to act now
+    holds the slot for routers/index.FRESHNESS_DELAY_S (3 s) while it defers, so
+    a repos-tab request landing inside that window spends its turn on a failed
+    acquire and that root waits a full rotation for another. The cheap gates run
+    before the wait, so only checks that are actually due hold the slot that
+    long and the window is small — but it is seconds wide, not microseconds, and
+    this tab is a cheap opportunistic nudge either way: the honest answer to "is
+    this list complete" is still `stale` plus the next scheduled scan.
 
     note_folder_opened never raises and never blocks (it spawns a thread), so
     this costs the request one lock acquire."""
