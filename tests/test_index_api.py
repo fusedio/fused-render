@@ -1124,41 +1124,83 @@ def test_listing_a_folder_notes_it_for_the_freshness_check(home, tmp_path,
 def instant_freshness_delay(monkeypatch):
     """FRESHNESS_DELAY_S off the clock. These tests drive `_run_freshness_check`
     synchronously, and the wait is not what they are about — paying it for real
-    would add three seconds per call to the suite. `time.sleep` is patched on
-    the module itself because the checker imports `time` inside the function."""
-    import time
+    would add three seconds per call to the suite.
 
-    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    The CONSTANT is what gets patched, not `time.sleep`: patching the stdlib
+    would void every sleep in the process for the duration of the test,
+    including store.py's NT-lock poll and this module's warm wait, turning them
+    into hot spins."""
+    monkeypatch.setattr(index_router, "FRESHNESS_DELAY_S", 0.0)
 
 
-def test_the_freshness_check_defers_before_it_touches_anything(
-        home, tmp_path, monkeypatch):
-    """The check waits out the page's opening burst before it does any work.
-
-    /home lists one folder per Claude session card, so a plain refresh lands a
-    handful of /api/fs/list inside the first second and the scan one of them may
-    start piles onto the paint. The wait must come before the FIRST thing the
-    check does, not between its gates: `_freshness_due` stamps the check clock,
-    and stamping and then sleeping would spend the epsilon that keeps that clock
-    clear of the scan floor. Ordering is the assertion — nothing here waits on a
-    real clock."""
-    import time
-
-    events = []
-    monkeypatch.setattr(index_router, "_freshness_checked", {})
-    # The stamp map, snapshotted as the wait begins: still empty is what says
-    # the wait ran BEFORE _freshness_due, not merely before the duckdb lookup.
-    monkeypatch.setattr(time, "sleep", lambda s: events.append(
-        ("slept", s, dict(index_router._freshness_checked))))
-    monkeypatch.setattr(index_router.freshness, "note_folder_opened",
-                        lambda cfg, path, roots: events.append(("checked", path)))
+def _freshness_root(tmp_path):
+    """A tree that is a configured scan root, with the check clock cleared."""
     src = _tree(tmp_path)
     cfg = load_config()
     cfg.roots = [str(src)]
     index_router.save_config(cfg)
+    return src
+
+
+def test_the_freshness_check_defers_before_it_stamps_the_check_clock(
+        home, tmp_path, monkeypatch):
+    """The check waits out the page's opening burst before it commits.
+
+    /home lists one folder per Claude session card, so a plain refresh lands a
+    handful of /api/fs/list inside the first second and the scan one of them may
+    start piles onto the paint.
+
+    The ordering against the STAMP is the assertion. `_freshness_due` records the
+    check the moment it decides one is due, and stamping and then waiting would
+    record a check three seconds before it actually happened — and, worse, would
+    make the wait unskippable for checks that are about to refuse. So the wait
+    must sit after the free gates and before the stamp. Nothing here waits on a
+    real clock; the seam is patched, not the stdlib."""
+    events = []
+    monkeypatch.setattr(index_router, "_freshness_checked", {})
+    # The stamp map, snapshotted as the wait begins. Still empty is what says
+    # the wait ran BEFORE _freshness_due stamped.
+    monkeypatch.setattr(index_router, "_freshness_wait", lambda s: events.append(
+        ("waited", s, dict(index_router._freshness_checked))))
+    monkeypatch.setattr(index_router.freshness, "note_folder_opened",
+                        lambda cfg, path, roots: events.append(("checked", path)))
+    src = _freshness_root(tmp_path)
     index_router._run_freshness_check(str(src))
-    assert events == [("slept", index_router.FRESHNESS_DELAY_S, {}),
+    assert events == [("waited", index_router.FRESHNESS_DELAY_S, {}),
                       ("checked", str(src))]
+    # ...and the stamp did land, on the far side of the wait.
+    assert str(src) in index_router._freshness_checked
+
+
+def test_a_check_that_will_refuse_anyway_never_waits(home, tmp_path,
+                                                     monkeypatch):
+    """The wait holds the one-at-a-time slot, so only a check that is going to do
+    something may pay it.
+
+    Both refusals here are the common case, not the corner: a folder on screen
+    re-lists about once a second, so a wait before the interval gate would mean
+    the slot is held essentially forever, dropping listings of other roots that
+    ARE stale. And on /home, a card sitting under no configured root would burn
+    the window doing nothing while every sibling card is turned away — the page
+    load would get no check at all, which is the opposite of the point."""
+    waits = []
+    monkeypatch.setattr(index_router, "_freshness_checked", {})
+    monkeypatch.setattr(index_router, "_freshness_wait", waits.append)
+    monkeypatch.setattr(index_router.freshness, "note_folder_opened",
+                        lambda cfg, path, roots: None)
+    src = _freshness_root(tmp_path)
+    # Under no configured root at all.
+    index_router._run_freshness_check(str(tmp_path.parent))
+    assert waits == []
+    # Under a root that was checked moments ago.
+    index_router._freshness_checked[str(src)] = time.time()
+    index_router._run_freshness_check(str(src))
+    assert waits == []
+    # ...and the wait IS paid once the root is genuinely due, so the two
+    # assertions above are about due-ness and not about a wait that never runs.
+    index_router._freshness_checked[str(src)] -= index_router.FRESHNESS_CHECK_S + 1
+    index_router._run_freshness_check(str(src))
+    assert waits == [index_router.FRESHNESS_DELAY_S]
 
 
 def test_the_freshness_slot_is_freed_after_a_deferred_check(
@@ -1170,18 +1212,20 @@ def test_the_freshness_slot_is_freed_after_a_deferred_check(
     monkeypatch.setattr(index_router, "_freshness_checked", {})
     monkeypatch.setattr(index_router.freshness, "note_folder_opened",
                         lambda cfg, path, roots: None)
-    src = _tree(tmp_path)
-    cfg = load_config()
-    cfg.roots = [str(src)]
-    index_router.save_config(cfg)
-    # Refused early: no enclosing root, so the check returns before the gates.
-    assert index_router._freshness_slot.acquire(blocking=False)
-    index_router._run_freshness_check(str(tmp_path.parent))
-    assert not index_router._freshness_slot.locked()
-    # ...and on the path that runs the check through.
-    assert index_router._freshness_slot.acquire(blocking=False)
-    index_router._run_freshness_check(str(src))
-    assert not index_router._freshness_slot.locked()
+    src = _freshness_root(tmp_path)
+    # The slot is a module global: a failed assertion below must not leave it
+    # held, or every later test that touches the real hook fails for an
+    # unrelated reason and hides this one.
+    for target in (str(tmp_path.parent), str(src)):
+        assert index_router._freshness_slot.acquire(blocking=False)
+        try:
+            # Two ways out: `tmp_path.parent` is under no root and refuses
+            # before the gates, `src` runs the check all the way through.
+            index_router._run_freshness_check(target)
+            assert not index_router._freshness_slot.locked()
+        finally:
+            if index_router._freshness_slot.locked():
+                index_router._freshness_slot.release()
 
 
 def test_the_freshness_check_runs_at_most_one_at_a_time(

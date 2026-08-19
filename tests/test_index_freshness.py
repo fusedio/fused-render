@@ -184,43 +184,51 @@ def test_a_root_scanned_two_minutes_ago_is_rescanned(tmp_path, spawned):
 
 
 def test_the_scan_floor_matches_the_routers_check_debounce(tmp_path):
-    """Two floors, one cadence. freshness.MIN_INTERVAL_S paces the SCANS (read
-    off scans.json, so it also sees the startup scheduler and the manual
-    buttons); routers.index.FRESHNESS_CHECK_S paces the CHECKS, per root, in
-    memory.
+    """Two floors. freshness.MIN_INTERVAL_S paces the SCANS (read off scans.json,
+    so it also sees the startup scheduler and the manual buttons);
+    routers.index.FRESHNESS_CHECK_S paces the CHECKS, per root, in memory.
 
-    An ordering, not an equality. Longer would leave scans the floor allows
-    unstarted, since a check is the only thing that starts one. Exactly equal is
-    the subtler failure: the check clock is stamped when a check BEGINS and the
-    scan clock when the scan is spawned (runner._record_scan, a duckdb lookup and
-    a Popen later), so the next due check lands just inside the scan floor, is
-    refused, and re-stamps — halving the real rate. Hence strictly shorter.
+    This pins the CURRENT VALUES, and they are not the ideal ones. 55 < 60 does
+    not give a 60 s folder-open scan cadence; it gives ~110 s, because
+    `_freshness_due` stamps the check clock whenever a check comes due whether or
+    not that check then scans. The check at t=55 stamps, note_folder_opened
+    refuses on its own 60 s floor (last scan 55 s ago), and the next check is
+    t=110 — the first that can act. An equal 60 gives ~120 the same way, so
+    "shorter avoids the interleave", which this docstring used to claim, is
+    backwards: shorter is what causes it.
 
-    The check also defers itself before it stamps, which keeps that slack whole
-    rather than spending it — see the sum below."""
+    The fix is FRESHNESS_CHECK_S ABOVE MIN_INTERVAL_S plus the spawn offset (61),
+    and it is a deliberate non-change here — how often every machine rescans is a
+    behaviour decision. So this stays an assertion of what the numbers ARE, with
+    the bug written down next to it, rather than an assertion that they are
+    right."""
     from fused_render.server.routers.index import FRESHNESS_CHECK_S
 
     assert FRESHNESS_CHECK_S < MIN_INTERVAL_S
 
 
-def test_the_deferred_check_still_fits_inside_the_scan_floor(tmp_path):
-    """The delay is part of the check cadence, so it comes out of the same slack.
+def test_the_deferral_is_absorbed_inside_the_check_interval(tmp_path):
+    """The delay must stay small against the check interval it lives inside.
 
-    routers.index._run_freshness_check sleeps FRESHNESS_DELAY_S and only then
-    stamps the check clock, so a root's checks recur every
-    FRESHNESS_CHECK_S + FRESHNESS_DELAY_S of wall clock while the scan clock is
-    stamped a spawn later still. If that sum ever reaches MIN_INTERVAL_S the
-    interleave the test above describes comes back: every second check lands
-    inside the scan floor, is refused, re-stamps, and the real cadence halves.
-    This is the assertion that stops the delay being raised to something
-    comfortable-sounding like ten seconds without moving FRESHNESS_CHECK_S down
-    to pay for it."""
+    _run_freshness_check waits FRESHNESS_DELAY_S and then stamps, so a root's
+    checks recur every FRESHNESS_CHECK_S + FRESHNESS_DELAY_S rather than every
+    FRESHNESS_CHECK_S. At 3 against 55 that shifts the schedule by a rounding
+    error, which is the whole claim the deferral makes: it does not introduce a
+    refusal that was not already happening (the refusals come from the check
+    interval — see the test above — not from this). A delay of the same order as
+    the interval would stop being absorbed and start being the cadence, so the
+    margin, not merely the ordering, is what is asserted.
+
+    Deliberately NOT asserted: any relation between this pair and MIN_INTERVAL_S.
+    The sum being under the scan floor is neither true-by-design nor desirable —
+    the fix to the cadence bug documented above is FRESHNESS_CHECK_S going ABOVE
+    MIN_INTERVAL_S, and a test forbidding that would lock the bug in."""
     from fused_render.server.routers.index import (
         FRESHNESS_CHECK_S,
         FRESHNESS_DELAY_S,
     )
 
-    assert FRESHNESS_CHECK_S + FRESHNESS_DELAY_S < MIN_INTERVAL_S
+    assert 0 < FRESHNESS_DELAY_S <= FRESHNESS_CHECK_S / 10
 
 
 def test_a_folder_outside_every_configured_root_triggers_nothing(

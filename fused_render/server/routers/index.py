@@ -465,27 +465,34 @@ _freshness_slot = threading.Lock()
 # freshness.MIN_INTERVAL_S is the other floor — on the SCANS themselves, read
 # off scans.json so it also sees the ones the scheduler and the manual buttons
 # start; this one is about the checks, and only about the ones this process
-# makes. One cadence, so this must not be LONGER: a check is the only thing that
-# can act on the scan floor, and checking less often than scans are allowed just
-# leaves the difference on the table.
+# makes.
 #
-# Slightly SHORTER, and the epsilon is load-bearing. The two clocks start at
-# different moments: this one is stamped when a check begins, while
-# `runner._record_scan` stamps when the scan it starts is spawned — a duckdb
-# lookup and a Popen later. So last_scan is always a little after last_check, and
-# at exactly equal intervals the next due check lands inside that offset, finds
-# the scan floor not yet clear, refuses — and re-stamps, pushing the next check
-# out a further full interval. Every second cycle would be a no-op and the real
-# cadence would be ~2x the number both comments name. Five seconds of slack
-# covers the spawn comfortably.
+# KNOWN, PRE-EXISTING, AND DELIBERATELY NOT FIXED HERE: this being 55, i.e.
+# SHORTER than freshness.MIN_INTERVAL_S (60), does NOT produce a ~60s folder-open
+# scan cadence. It produces ~110s. Trace the two clocks: `_freshness_due` stamps
+# this one the moment a check becomes due, WHETHER OR NOT the check then goes on
+# to scan. So the check at t=55 stamps 55 and calls
+# freshness.note_folder_opened, which sees the last scan ~55s ago, refuses on its
+# own 60s floor, and starts nothing; the next check is therefore t=110, and that
+# is the first one that can scan. Every other check is structurally wasted. An
+# equal 60 gives ~120 by the same argument, so "equal is the bad case, shorter is
+# the safe one" — which is what the note here used to say — is backwards.
+#
+# The fix, if the documented cadence is ever actually wanted, is to raise this
+# ABOVE MIN_INTERVAL_S plus the spawn offset (61 would do): the check then
+# arrives with the scan floor already clear and the real cadence is the number
+# written here. It is left alone on purpose. How often every developer machine
+# rescans its home is a behaviour change and the user's call, not a side effect
+# of a comment correction — and certainly not of a commit whose subject is "wait
+# three seconds".
 FRESHNESS_CHECK_S = 55.0
 
-# ...and the check, once it is due, does not start where it was asked. A check
-# that decides to act runs the ordinary incremental scan of the whole enclosing
-# root: min(10, cpu_count) unniced worker processes, each with a 16-thread stat
-# pool, and a compaction that rewrites every parquet partition at the end. That
-# is a fine thing to pay while the user browses; it is a bad thing to pay in the
-# first second of a page load.
+# ...and a check that is going to act does not act where it was asked. It runs
+# the ordinary incremental scan of the whole enclosing root: min(10, cpu_count)
+# unniced worker processes, each with a 16-thread stat pool, and a compaction
+# that rewrites every parquet partition at the end. That is a fine thing to pay
+# while the user browses; it is a bad thing to pay in the first second of a page
+# load.
 #
 # /home is where the two collide. It draws one FolderPreviewCard per Claude
 # session (shell/Home.tsx), and every card's FolderStack lists its folder on
@@ -493,22 +500,36 @@ FRESHNESS_CHECK_S = 55.0
 # and no interaction, fires a fistful of /api/fs/list at once, each one arriving
 # here, on top of the burst the page already fires for itself (/api/apps/home,
 # /api/claude-sessions/home, /api/claude/health, the search warm, and the
-# preview iframes). One of those listings wins the slot and the scan lands
-# across the first paint. It reproduces on a machine with fewer cores to spare
-# than ours and not on ours, which is exactly the shape of a contention bug.
+# preview iframes). One of those listings wins the slot and the scan lands across
+# the first paint. It reproduces on a machine with fewer cores to spare than ours
+# and not on ours, which is exactly the shape of a contention bug.
 #
-# So the check sleeps this long first, and the scan it may start lands after the
-# opening burst instead of inside it. Three seconds are cheap to give up because
-# the question is not time-sensitive in the first place: the check compares the
-# folder's mtime against what the INDEX recorded, not against the moment the
-# folder was opened, so waiting changes nothing about the answer it reaches — it
-# only moves when the answer is acted on. A user who navigates away inside the
-# window still gets the scan, and that is right: the index was stale either way,
-# and the next search would have paid for it.
+# So a check that has passed the cheap gates waits this long before it commits,
+# and the scan it may start lands after the opening burst instead of inside it.
+# Three seconds are cheap to give up because the question is not time-sensitive
+# in the first place: the check compares the folder's mtime against what the
+# INDEX recorded, not against the moment the folder was opened, so waiting
+# changes nothing about the answer it reaches — only when the answer is acted on.
+# A user who navigates away inside the window still gets the scan, and that is
+# right: the index was stale either way, and the next search would have paid for
+# it.
+#
+# It must stay far below FRESHNESS_CHECK_S, which is the only relationship
+# between the two that matters. The wait is absorbed inside the existing check
+# interval — a root's checks land every FRESHNESS_CHECK_S + FRESHNESS_DELAY_S
+# instead of every FRESHNESS_CHECK_S — so at three against fifty-five it shifts
+# the schedule by a rounding error and introduces no refusal that was not
+# already happening (see the note above: the refusals are pre-existing and come
+# from the check interval, not from this). A delay of the same order as the check
+# interval WOULD change the cadence materially, which is what the test on this
+# pair guards.
 #
 # _freshness_slot is held across the wait, so listings that arrive during it are
 # dropped rather than queued — the same thing the slot already did for the
-# check's own duration, just for longer. On /home that is the desirable
+# check's own duration, just for longer. That is why the wait comes after the
+# gates that can refuse for free (below): a check that was never going to do
+# anything must not hold the slot for three seconds while a listing of a
+# genuinely stale root is turned away. On /home the dropping is the desirable
 # behaviour and not a cost: every card is asking the same question of the same
 # root, and the first one to ask covers all of them.
 FRESHNESS_DELAY_S = 3.0
@@ -519,14 +540,31 @@ _freshness_checked: dict = {}
 _freshness_checked_lock = threading.Lock()
 
 
-def _freshness_due(root: str, now: float) -> bool:
-    """Whether `root` is due a check, stamping it when it is."""
+def _freshness_due(root: str, now: float, *, stamp: bool = True) -> bool:
+    """Whether `root` is due a check, stamping it when it is.
+
+    `stamp=False` is the peek taken before the FRESHNESS_DELAY_S wait, so a
+    check that was never due returns instead of holding _freshness_slot for
+    three seconds. Peek-then-stamp is not a race: the slot admits exactly one
+    checker at a time, so nothing else can stamp between the two calls, and the
+    only other writer (a check that finished) can only push the stamp further
+    into the past."""
     with _freshness_checked_lock:
         last = _freshness_checked.get(root)
         if last is not None and (now - last) < FRESHNESS_CHECK_S:
             return False
-        _freshness_checked[root] = now
+        if stamp:
+            _freshness_checked[root] = now
         return True
+
+
+def _freshness_wait(seconds: float) -> None:
+    """The deferral, as one named seam. A plain sleep — it is a function so that
+    tests can observe WHERE in the check it happens without patching
+    stdlib `time.sleep` for the whole process."""
+    import time
+
+    time.sleep(seconds)
 
 
 def _run_freshness_check(path: str) -> None:
@@ -535,16 +573,6 @@ def _run_freshness_check(path: str) -> None:
     try:
         import time
 
-        # Before load_config, and so before _freshness_due stamps: the epsilon
-        # between FRESHNESS_CHECK_S and freshness.MIN_INTERVAL_S (see the note
-        # above the constants) is spent if the wait lands after the stamp.
-        # Sleeping first moves both clocks together — the check stamp and
-        # runner._record_scan's — and leaves the five seconds of slack whole;
-        # sleeping after the stamp would burn three of them and put the two
-        # floors back within the spawn window that interleaves them into half
-        # the intended cadence.
-        time.sleep(FRESHNESS_DELAY_S)
-
         cfg = load_config()
         roots = scan_roots(cfg)
         # The debounce is keyed on the enclosing ROOT, not the folder: a scan
@@ -552,7 +580,23 @@ def _run_freshness_check(path: str) -> None:
         # folder under no root has no question to ask at all, and
         # note_folder_opened would answer None anyway.
         root = enclosing_root(roots, path)
-        if root is None or not _freshness_due(root, time.time()):
+        if root is None:
+            return
+        # Everything that can refuse for free happens BEFORE the wait, and only
+        # the stamp happens after it. The two cases this protects are the two
+        # that dominate: a folder on screen re-lists about once a second, so
+        # without the peek the steady state is acquire, sleep three seconds,
+        # find the root not due, release — a slot held almost permanently
+        # against listings of other roots that ARE stale. And on /home, if the
+        # card listing that happens to win the slot sits under no configured
+        # root, it would burn the whole window doing nothing while every sibling
+        # card is refused, so the page load would get no check at all.
+        if not _freshness_due(root, time.time(), stamp=False):
+            return
+        _freshness_wait(FRESHNESS_DELAY_S)
+        # ...and the stamp is taken on the far side, against the clock as it is
+        # now, so the recorded check time is when the check actually ran.
+        if not _freshness_due(root, time.time()):
             return
         started = freshness.note_folder_opened(cfg, path, roots)
         if started:
