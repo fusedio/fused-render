@@ -850,7 +850,12 @@
   gap: 2px;
 }
 
-.schedule-cal-pop-tool {
+/* Scoped under the rail, not bare: the Tasks page wraps this popover in
+   .prefs-section, whose generic `button` reset (0,1,1) outweighs a lone class
+   (0,1,0) — its 5px/12px padding + border left a 24px box ~0px of content and
+   crushed the icons to nothing (Akshil, 2026-08-19: "blank dark squares").
+   The extra ancestor class wins the cascade without !important. */
+.schedule-cal-pop-tools .schedule-cal-pop-tool {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -867,13 +872,13 @@
     color var(--dur-fast) var(--ease-out);
 }
 
-.schedule-cal-pop-tool:hover:not(:disabled),
-.schedule-cal-pop-tool:focus-visible {
+.schedule-cal-pop-tools .schedule-cal-pop-tool:hover:not(:disabled),
+.schedule-cal-pop-tools .schedule-cal-pop-tool:focus-visible {
   background: color-mix(in srgb, var(--fg) 8%, transparent);
   color: var(--fg);
 }
 
-.schedule-cal-pop-tool:disabled {
+.schedule-cal-pop-tools .schedule-cal-pop-tool:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -882,8 +887,8 @@
    the pointer — the hover is where a destructive control declares itself
    (the same contract .cc-iconbtn-danger keeps in the Claude config pane).
    Placed after the base hover rule so equal specificity resolves to red. */
-.schedule-cal-pop-tool--danger:hover:not(:disabled),
-.schedule-cal-pop-tool--danger:focus-visible {
+.schedule-cal-pop-tools .schedule-cal-pop-tool--danger:hover:not(:disabled),
+.schedule-cal-pop-tools .schedule-cal-pop-tool--danger:focus-visible {
   background: color-mix(in srgb, var(--error) 12%, transparent);
   color: var(--error);
 }
@@ -893,7 +898,7 @@
    the two presses: the button is saying "I heard you" and must keep saying it
    until pressed again or the popover closes (the component's state unmounts
    with the panel, so armed never outlives it). */
-.schedule-cal-pop-tool--danger.is-armed {
+.schedule-cal-pop-tools .schedule-cal-pop-tool--danger.is-armed {
   background: color-mix(in srgb, var(--error) 16%, transparent);
   color: var(--error);
 }
