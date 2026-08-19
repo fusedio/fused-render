@@ -1,20 +1,18 @@
-"""claude's annotation modes: element notes, point notes, and voice — typed or
-spoken, every saved note auto-sends.
+"""claude's annotation modes: element notes, point notes, and the walkthrough.
 
-The shape of the feature (D345/D346):
+The shape of the feature (D345/D346, redrawn 2026-08-19):
 
-* **one Comment mode; the GESTURE picks the target.** A click on an element
-  anchors to the element (the ring said so); a click on empty background — or an
-  Alt-click anywhere — pins the exact spot instead (the crosshair cursor said
-  so). No second mode toggle exists to be discovered or forgotten.
-* **the composer names the target before the words commit.** The anchor chip
-  reads "<button> Save" or "⌖ exact spot", and when the click had both readings
-  it is a real button that flips between them.
-* **voice is a property of the composer, not a mode.** The mic button records
-  one note; stopping transcribes and commits through the same `annCommit` the
-  Enter key uses — so typed and spoken notes cannot save (or auto-send)
-  differently. The walkthrough recorder (annrec) stays the batch flavour and
-  now auto-sends too, once its transcript actually lands words.
+* **one Comment mode; the TOOL picks the target.** The strip's Element/Point
+  picker is on screen whenever the mode is armed — typed comment and recording
+  alike — and says what a click pins. Alt is the momentary override in both
+  directions; empty background is always a spot. No second mode toggle exists
+  to be discovered or forgotten.
+* **the composer is just the words.** The anchor chip and the per-note mic
+  left the card: the picker owns the choice up front, speaking is the
+  walkthrough's job, and the placeholder still names the target's KIND.
+* **voice is the walkthrough (annrec).** Talk while clicking; stopping
+  transcribes, fills the notes, auto-sends once words actually land, and puts
+  the whole mode away.
 * **a point note's crop is captured at SAVE time and awaited.** Auto-send fires
   the moment the save returns; a fire-and-forget capture would race it and put
   `shot: null` on the wire for a picture a beat away from existing.
@@ -70,45 +68,23 @@ def _block(html, start, end):
     return html[i:html.index(end, i)]
 
 
-# ------------------------------------------------------------- the anchor chip
+# --------------------------------------------------- the composer's one line
 
-def test_the_chip_names_a_point_as_the_exact_spot(html):
-    out = _node(["function annAnchorLabel("],
-                'console.log(JSON.stringify(annAnchorLabel({kind: "point", x: 3, y: 4})));',
-                html)
-    assert out == "⌖ exact spot"
-
-
-def test_the_chip_names_an_element_by_tag_and_leading_text(html):
-    out = _node(["function annAnchorLabel("],
-                'console.log(JSON.stringify(annAnchorLabel({tag: "button", text: "Save"})));',
-                html)
-    assert out == "<button> Save"
+def test_the_placeholder_names_the_kind_of_target(html):
+    """The anchor chip left the card (2026-08-19); the placeholder is what
+    still says whether the note is about a box or a spot."""
+    body = _block(html, "function annPaintPlaceholder(", "\n}\n")
+    assert '"What about this spot?"' in body
+    assert '"What about this element?"' in body
 
 
-def test_the_chips_element_text_is_truncated_not_unbounded(html):
-    """The wire carries up to 80 chars of leading text; a chip is one line in a
-    280px card and cannot."""
-    long = "x" * 80
-    out = _node(["function annAnchorLabel("],
-                'console.log(JSON.stringify(annAnchorLabel({tag: "p", text: %s})));'
-                % json.dumps(long), html)
-    assert out.endswith("…") and len(out) < 80
-
-
-def test_an_anchorless_element_still_gets_a_name(html):
-    out = _node(["function annAnchorLabel("],
-                "console.log(JSON.stringify(annAnchorLabel({anchorId: 'a'})));",
-                html)
-    assert out == "<element>"
-
-
-def test_the_flip_swaps_draft_and_alt_and_never_fires_one_sided(html):
-    """The chip is a flip only while BOTH readings of the click exist; editing
-    a saved note (alt null) it must be inert."""
-    body = _block(html, 'annAnchorBtn.addEventListener("click"', "});")
-    assert "if (!annDraft || !annDraftAlt) return;" in body
-    assert "annDraft = annDraftAlt;" in body
+def test_the_anchor_chip_and_composer_mic_are_gone(html):
+    """Both removed 2026-08-19: what a click pins is chosen up front in the
+    strip's picker (no post-click flip), and speaking is the walkthrough's job.
+    Gone from the markup, both stylesheets (the page's own and the shadow copy
+    the portal carries), and the script."""
+    for needle in ["annanchor", "annAnchor", "annmic", "annMic", "annDraftAlt"]:
+        assert needle not in html, needle
 
 
 # ------------------------------------------- the gesture picks the target
@@ -117,16 +93,16 @@ def test_a_manual_background_click_opens_a_point_composer(html):
     """Manual mode used to swallow background clicks (only the recorder could
     make a point note); now the composer opens with a point anchor."""
     body = _block(html, "const pointAnchor = { kind:", "annPlaceHl(el);")
-    assert body.count("annOpenComposer(e.clientX, e.clientY, pointAnchor, null)") == 2
+    assert body.count("annOpenComposer(e.clientX, e.clientY, pointAnchor)") == 2
 
 
-def test_a_point_click_over_an_element_keeps_the_element_as_the_flip(html):
+def test_a_point_click_over_an_element_opens_a_point_composer(html):
     body = _block(html, "// A point click over an element:", "// Re-anchor the ring")
-    assert "annOpenComposer(e.clientX, e.clientY, pointAnchor, anchor)" in body
+    assert "annOpenComposer(e.clientX, e.clientY, pointAnchor)" in body
 
 
-def test_an_element_click_carries_the_point_reading_as_the_flip_target(html):
-    assert "annOpenComposer(e.clientX, e.clientY, anchor, pointAnchor)" in html
+def test_an_element_click_opens_an_element_composer(html):
+    assert "annOpenComposer(e.clientX, e.clientY, anchor);" in html
 
 
 def test_the_tool_decides_and_alt_is_a_two_way_override(html):
@@ -142,20 +118,26 @@ def test_the_tool_applies_inside_a_recording_too(html):
     assert "annRecMarkPoint(e.clientX, e.clientY, win)" in body
 
 
-def test_the_tool_picker_follows_the_recording(html):
-    """Shown while a walkthrough RECORDS, hidden otherwise (Akshil,
-    2026-08-19): a typed comment pins the default tool and never asks, so the
-    picker is a property of recorded clicks — annRecBegin reveals it,
-    annRecEnd and annSetMode's disarm put it away. A cross-origin target
-    (annXO, D355) hides it even mid-recording: no element can ever be resolved
-    over there, so there is no choice to offer — every click is a spot."""
+def test_the_tool_picker_follows_the_mode(html):
+    """Shown whenever the mode is armed — typed comment AND recording alike
+    (Akshil, 2026-08-19; it used to follow the recording only, and a typed
+    comment pinned the default tool with no say) — and put away on disarm,
+    through annSetMode, the one door. A cross-origin target (annXO, D355)
+    hides it in every state: no element can ever be resolved over there, so
+    there is no choice to offer — every click is a spot."""
     assert 'id="anntool" role="radiogroup"' in html
-    assert "if (!(annOn && annRecOn)) || annXO" not in html  # guard shape below
-    assert "if (!(annOn && annRecOn) || annXO) annToolHide();" in html
+    mode = _block(html, "function annSetMode(on) {", "\nannBtn.addEventListener")
+    assert "if (!annOn || annXO) annToolHide();" in mode
+    assert "else annToolShow();" in mode
+    # arming by mic keeps the picker up too — and cancels a pending exit glide
     begin = _block(html, "async function annRecBegin()", "\n}\n")
     assert "annToolShow();" in begin
+    # stopping a walkthrough does NOT hide the picker by hand: the disarm at
+    # the end goes through annSetMode, which owns the hide — and the selected
+    # tool survives, a visible fact now rather than a hidden trap
     end = _block(html, "async function annRecEnd()", "\n}\n")
-    assert "annToolHide();" in end
+    assert "annToolHide();" not in end
+    assert 'annSetTool("element");' not in end
     # stopping the walkthrough puts the whole mode away, both exits — but only
     # the SAME arming it stopped: the epoch guard leaves a mode the user
     # re-armed during transcription alone (Bugbot, PR #644)
@@ -188,13 +170,10 @@ def test_a_point_aim_shows_a_crosshair_and_hides_the_ring(html):
 
 # --------------------------------------------------- one commit path, awaited
 
-def test_typed_and_spoken_notes_save_through_the_same_commit(html):
-    """The Enter key and the mic's transcription both call annCommit — the two
-    ways of producing the words cannot save or auto-send differently."""
+def test_typed_notes_save_through_the_one_commit_path(html):
+    """The Enter key calls annCommit — the one save-and-autosend path."""
     enter = _block(html, 'if (e.key === "Enter" && !e.shiftKey)', "});")
     assert "annCommit();" in enter
-    mic = _block(html, "async function annMicStop()", "\n}\n")
-    assert "annCommit();" in mic
 
 
 def test_a_point_notes_crop_is_awaited_before_autosend(html):
@@ -206,29 +185,84 @@ def test_a_point_notes_crop_is_awaited_before_autosend(html):
     assert crop < send
 
 
-# --------------------------------------------------------------- the mic
+# ------------------------------------------ two buttons, one mode at a time
 
-def test_typing_while_the_mic_is_live_cancels_it(html):
-    assert 'annTa.addEventListener("input", () => annMicCancel());' in html
-
-
-def test_closing_the_composer_cancels_a_live_mic(html):
-    body = _block(html, "function annCloseComposer()", "\n}\n")
-    assert "annMicCancel();" in body
-
-
-def test_transcribed_words_only_land_on_the_note_they_were_spoken_for(html):
-    """The composer can close, or move to another note, while transcription
-    runs; the words are discarded, never written into whatever is open now.
-    The anchor-chip flip is the one legal move (same click, other reading)."""
-    body = _block(html, "async function annMicStop()", "\n}\n")
-    assert "annDraft === draft || annDraft === alt" in body
-    assert 'annPop.style.display === "block"' in body
+def test_the_other_button_is_always_the_way_out(html):
+    """Comment armed: the mic seat acts as Done (send pending notes, disarm).
+    Recording: the Comment seat is the stop control. Both are wired at the two
+    click handlers, off the two state flags the stylesheet also reads."""
+    assert ('annBtn.addEventListener("click",'
+            " () => (annRecOn ? annRecEnd() : annSetMode(!annOn)));") in html
+    assert ("() => (annRecOn ? annRecEnd() :"
+            " annOn ? annDone() : annRecBegin()));") in html
 
 
-def test_the_mic_never_transcribes_silence(html):
-    body = _block(html, "async function annMicStop()", "\n}\n")
-    assert "if (!blob.size) { annMicReset(); return; }" in body
+def test_done_flushes_pending_notes_before_disarming(html):
+    """Done is the exit that also delivers: notes the auto-send guards left
+    pending (a turn in flight, a typed draft) ride out through the same
+    prefill-and-submit, then the mode goes away."""
+    body = _block(html, "function annDone()", "\n}\n")
+    assert "a.content && !a.sent" in body
+    assert "if (pending && !sending && annPrefillComposer()) annAutoSubmit();" in body
+    assert "annSetMode(false);" in body
+    flush = body.index("annAutoSubmit()")
+    disarm = body.index("annSetMode(false);")
+    assert flush < disarm, "send while the armed composer is still seeded"
+
+
+def test_the_seats_swap_faces_off_the_two_state_classes(html):
+    """Every glyph and word is baked into the markup; the stylesheet derives
+    each button's face from #annbtn.on / #annrec.on via :has on the wrapper —
+    no third writer to fall out of step."""
+    # comment armed (and only then): the mic seat wears ✓ Done
+    assert ("#anncta:has(#annbtn.on):not(:has(#annrec.on))"
+            " #annrec .rec-done { display: block; }") in html
+    # recording: the Comment seat wears ■ plus the clock, in --error ink
+    assert "#anncta:has(#annrec.on) #annbtn .cmt-stop { display: block; }" in html
+    stop = _block(html, "#anncta:has(#annrec.on) #annbtn.on {", "}")
+    assert "var(--error)" in stop
+    # transcribing: annRecEnd stamps .busy, the word yields to the status
+    assert "#anncta.busy #annbtn .cmt-word { display: none; }" in html
+    end = _block(html, "async function annRecEnd()", "\n}\n")
+    assert 'annCta.classList.add("busy");' in end
+    assert 'annCta.classList.remove("busy");' in end
+
+
+def test_the_words_yield_only_when_they_truly_collide(html):
+    """Icon plus word while the strip has room, icon only when it does not —
+    detected by MEASURING (annFitStrip: words on, does content overflow the
+    box?), not by a breakpoint (Akshil, 2026-08-19: a fixed width dropped the
+    words while there was still room). Wired to a ResizeObserver (the box
+    changes) and mutation observers on the two content clusters (the picker
+    appears, a seat swaps faces, the clock ticks wider) — but never on
+    #anntools itself, whose class list annFitStrip writes: observing the node
+    it writes would make every verdict schedule the next. The clock is state,
+    not a label, and never hides."""
+    body = _block(html, "function annFitStrip()", "\n}\n")
+    assert "need > annToolsEl.clientWidth" in body
+    assert 'classList.remove("tight");' in body
+    # NOT scrollWidth: a flex row's scrollWidth floors at clientWidth, so the
+    # picker reserve added to it would read as overflow on a half-empty strip
+    assert "scrollWidth" not in body
+    # the OFF-screen picker's width is reserved, so arming (which slides it
+    # in) can never flip the words under the click — the row folds early
+    assert "const reserve = annToolReserve();" in body
+    probe = _block(html, "function annToolReserve()", "\n}\n")
+    assert "if (!annToolEl.hidden) return 0;" in probe
+    assert "annXO || !annToolEl.isConnected || annBtn.hidden" in probe
+    assert "annToolEl.offsetWidth" in probe
+    assert "@container" not in html, "collision detection, not a breakpoint"
+    assert "container-type" not in html
+    assert "new ResizeObserver(annFitStrip).observe(annToolsEl);" in html
+    assert "const mo = new MutationObserver(annFitStrip);" in html
+    assert "for (const el of [annToolEl, annCta])" in html
+    # the verdict reaches the words through the one token every .lbl reads
+    assert "#anntools.tight #anncta, #anntools.tight #anntool { --annlbl: none; }" in html
+    assert "#anncta .lbl, #anntool .lbl { display: var(--annlbl, inline); }" in html
+    assert 'class="lbl cmt-word"' in html
+    assert 'class="lbl rec-word"' in html
+    assert 'id="annreclbl"' in html
+    assert 'class="lbl" id="annreclbl"' not in html, "the clock is not a label"
 
 
 # ------------------------------------------------- the walkthrough auto-sends
@@ -244,29 +278,13 @@ def test_a_transcribed_walkthrough_autosends_only_when_words_landed(html):
     assert assign < gate < send
 
 
-# --------------------------------------------- the two stylesheets stay paired
-
-def test_the_chip_and_mic_are_styled_in_both_stylesheets(html):
-    """The composer is PORTALED into the target document behind a shadow root
-    (annPortalPop), where the page's own <style> cannot reach — every composer
-    rule exists twice, and a control styled in one copy arrives unstyled on
-    the other path."""
-    for sel in ["#annanchor", "#annmic"]:
-        # the page's own stylesheet
-        assert ("  %s {" % sel) in html, sel
-        # the shadow copy (string list, #annpop-prefixed)
-        assert ('"#annpop %s {' % sel) in html, sel
-
-
 # ------------------------------------------------ warming the transcriber
 
-def test_both_recorders_warm_the_transcriber_at_start(html):
+def test_the_recorder_warms_the_transcriber_at_start(html):
     """The load runs while the reader is still talking — the dead time it
     fits in — instead of the words waiting on a cold model at stop."""
     rec = _block(html, "async function annRecBegin()", "\n}\n")
-    mic = _block(html, "async function annMicBegin()", "\n}\n")
     assert "annWarmTranscriber();" in rec
-    assert "annWarmTranscriber();" in mic
 
 
 def test_the_warm_up_is_opportunistic_never_load_bearing(html):
@@ -305,7 +323,7 @@ def test_a_cross_origin_target_gets_a_point_overlay_in_the_host_document(html):
     # scroll to fold in), shot null until the save-time crop — and a recording
     # click takes the same walkthrough path a same-origin point does.
     assert "annRecMarkPoint(x, y, null)" in body
-    assert 'annOpenComposer(x, y, { kind: "point", x, y, shot: null }, null);' in body
+    assert 'annOpenComposer(x, y, { kind: "point", x, y, shot: null });' in body
     # Disarmed, the overlay must not eat a single event.
     assert 'catcher.style.display = annOn ? "" : "none";' in body
 

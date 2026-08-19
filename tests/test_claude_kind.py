@@ -645,9 +645,17 @@ def test_the_re_render_observer_follows_the_target_document():
     assert "hasAttribute(ANN_LAYER_MARK)" in obs, \
         "our own layer's arrival must not re-trigger the render that drew it"
 
-    # Nothing installs an observer anywhere else, and in particular not inside
-    # the run-once wiring block that started this bug.
-    assert code.count("new MutationObserver") == 1
+    # Nothing installs a PANE observer anywhere else, and in particular not
+    # inside the run-once wiring block that started this bug. The one other
+    # MutationObserver in the file is annFitStrip's (2026-08-19): it watches
+    # the PARENT document's own #anntools clusters for the strip's word-fit
+    # verdict and never touches the target document, so it cannot re-trigger
+    # a pane render.
+    assert code.count("new MutationObserver") == 2
+    fit = code[code.index("const mo = new MutationObserver(annFitStrip);"):]
+    fit = fit[:fit.index("\n}")]
+    assert "[annToolEl, annCta]" in fit, \
+        "the second observer is the strip's own, not a pane watcher"
     wire = code[code.index("function annWireTarget() {"):]
     wire = wire[:wire.index("\n}\n")]
     assert wire.index("annObserveTarget(doc);") < wire.index("if (doc.__fusedAnnWired)"), \
