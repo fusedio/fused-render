@@ -1120,8 +1120,72 @@ def test_listing_a_folder_notes_it_for_the_freshness_check(home, tmp_path,
     assert seen == [str(src)]
 
 
-def test_the_freshness_check_runs_at_most_one_at_a_time(home, tmp_path,
-                                                        monkeypatch):
+@pytest.fixture
+def instant_freshness_delay(monkeypatch):
+    """FRESHNESS_DELAY_S off the clock. These tests drive `_run_freshness_check`
+    synchronously, and the wait is not what they are about — paying it for real
+    would add three seconds per call to the suite. `time.sleep` is patched on
+    the module itself because the checker imports `time` inside the function."""
+    import time
+
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+
+
+def test_the_freshness_check_defers_before_it_touches_anything(
+        home, tmp_path, monkeypatch):
+    """The check waits out the page's opening burst before it does any work.
+
+    /home lists one folder per Claude session card, so a plain refresh lands a
+    handful of /api/fs/list inside the first second and the scan one of them may
+    start piles onto the paint. The wait must come before the FIRST thing the
+    check does, not between its gates: `_freshness_due` stamps the check clock,
+    and stamping and then sleeping would spend the epsilon that keeps that clock
+    clear of the scan floor. Ordering is the assertion — nothing here waits on a
+    real clock."""
+    import time
+
+    events = []
+    monkeypatch.setattr(index_router, "_freshness_checked", {})
+    # The stamp map, snapshotted as the wait begins: still empty is what says
+    # the wait ran BEFORE _freshness_due, not merely before the duckdb lookup.
+    monkeypatch.setattr(time, "sleep", lambda s: events.append(
+        ("slept", s, dict(index_router._freshness_checked))))
+    monkeypatch.setattr(index_router.freshness, "note_folder_opened",
+                        lambda cfg, path, roots: events.append(("checked", path)))
+    src = _tree(tmp_path)
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    index_router._run_freshness_check(str(src))
+    assert events == [("slept", index_router.FRESHNESS_DELAY_S, {}),
+                      ("checked", str(src))]
+
+
+def test_the_freshness_slot_is_freed_after_a_deferred_check(
+        home, tmp_path, monkeypatch, instant_freshness_delay):
+    """The slot is held across the wait, so it must still be released on every
+    way out of it — including the early refusals, which are the common case.
+    A leak would block the check for the rest of the process's life, so the next
+    refresh a minute later would silently never check anything."""
+    monkeypatch.setattr(index_router, "_freshness_checked", {})
+    monkeypatch.setattr(index_router.freshness, "note_folder_opened",
+                        lambda cfg, path, roots: None)
+    src = _tree(tmp_path)
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    # Refused early: no enclosing root, so the check returns before the gates.
+    assert index_router._freshness_slot.acquire(blocking=False)
+    index_router._run_freshness_check(str(tmp_path.parent))
+    assert not index_router._freshness_slot.locked()
+    # ...and on the path that runs the check through.
+    assert index_router._freshness_slot.acquire(blocking=False)
+    index_router._run_freshness_check(str(src))
+    assert not index_router._freshness_slot.locked()
+
+
+def test_the_freshness_check_runs_at_most_one_at_a_time(
+        home, tmp_path, monkeypatch, instant_freshness_delay):
     """A folder being watched re-lists on every mtime tick, so the hook fires
     far more often than a check costs. Overlapping checks would each open
     duckdb over dirs.parquet for nothing."""
@@ -1145,7 +1209,7 @@ class _FakeThread:
 
 
 def test_a_stale_open_folder_gets_its_configured_root_rescanned(
-        home, tmp_path, monkeypatch):
+        home, tmp_path, monkeypatch, instant_freshness_delay):
     """The glue end to end, synchronously: the persisted config supplies the
     roots and the check fires the ordinary incremental scan of the enclosing
     one."""
@@ -1166,8 +1230,8 @@ def test_a_stale_open_folder_gets_its_configured_root_rescanned(
     assert started == [str(src)]
 
 
-def test_a_root_checked_moments_ago_is_not_checked_again(home, tmp_path,
-                                                         monkeypatch):
+def test_a_root_checked_moments_ago_is_not_checked_again(
+        home, tmp_path, monkeypatch, instant_freshness_delay):
     """The in-flight lock drops OVERLAPPING checks, not the ones that follow —
     so browsing folder to folder checked (and could rescan) on every open, and
     every scan that completed invalidated every corpus the client had fetched.
@@ -1191,8 +1255,8 @@ def test_a_root_checked_moments_ago_is_not_checked_again(home, tmp_path,
     assert checked == [str(src / "sub"), str(src)]
 
 
-def test_a_folder_outside_every_root_never_reaches_the_index(home, tmp_path,
-                                                             monkeypatch):
+def test_a_folder_outside_every_root_never_reaches_the_index(
+        home, tmp_path, monkeypatch, instant_freshness_delay):
     """Cheapest gate first: no enclosing root means no scan is possible, so the
     duckdb lookup behind note_folder_opened must not be paid at all."""
     checked = []

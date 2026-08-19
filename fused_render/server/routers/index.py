@@ -480,6 +480,39 @@ _freshness_slot = threading.Lock()
 # covers the spawn comfortably.
 FRESHNESS_CHECK_S = 55.0
 
+# ...and the check, once it is due, does not start where it was asked. A check
+# that decides to act runs the ordinary incremental scan of the whole enclosing
+# root: min(10, cpu_count) unniced worker processes, each with a 16-thread stat
+# pool, and a compaction that rewrites every parquet partition at the end. That
+# is a fine thing to pay while the user browses; it is a bad thing to pay in the
+# first second of a page load.
+#
+# /home is where the two collide. It draws one FolderPreviewCard per Claude
+# session (shell/Home.tsx), and every card's FolderStack lists its folder on
+# mount (apps/explorer/BookmarkCards.tsx) — so a plain refresh, with no typing
+# and no interaction, fires a fistful of /api/fs/list at once, each one arriving
+# here, on top of the burst the page already fires for itself (/api/apps/home,
+# /api/claude-sessions/home, /api/claude/health, the search warm, and the
+# preview iframes). One of those listings wins the slot and the scan lands
+# across the first paint. It reproduces on a machine with fewer cores to spare
+# than ours and not on ours, which is exactly the shape of a contention bug.
+#
+# So the check sleeps this long first, and the scan it may start lands after the
+# opening burst instead of inside it. Three seconds are cheap to give up because
+# the question is not time-sensitive in the first place: the check compares the
+# folder's mtime against what the INDEX recorded, not against the moment the
+# folder was opened, so waiting changes nothing about the answer it reaches — it
+# only moves when the answer is acted on. A user who navigates away inside the
+# window still gets the scan, and that is right: the index was stale either way,
+# and the next search would have paid for it.
+#
+# _freshness_slot is held across the wait, so listings that arrive during it are
+# dropped rather than queued — the same thing the slot already did for the
+# check's own duration, just for longer. On /home that is the desirable
+# behaviour and not a cost: every card is asking the same question of the same
+# root, and the first one to ask covers all of them.
+FRESHNESS_DELAY_S = 3.0
+
 # root -> when it was last checked. Bounded by the number of configured scan
 # roots (a handful), so it needs no eviction.
 _freshness_checked: dict = {}
@@ -501,6 +534,16 @@ def _run_freshness_check(path: str) -> None:
     not fail, or slow down, because index housekeeping did."""
     try:
         import time
+
+        # Before load_config, and so before _freshness_due stamps: the epsilon
+        # between FRESHNESS_CHECK_S and freshness.MIN_INTERVAL_S (see the note
+        # above the constants) is spent if the wait lands after the stamp.
+        # Sleeping first moves both clocks together — the check stamp and
+        # runner._record_scan's — and leaves the five seconds of slack whole;
+        # sleeping after the stamp would burn three of them and put the two
+        # floors back within the spawn window that interleaves them into half
+        # the intended cadence.
+        time.sleep(FRESHNESS_DELAY_S)
 
         cfg = load_config()
         roots = scan_roots(cfg)

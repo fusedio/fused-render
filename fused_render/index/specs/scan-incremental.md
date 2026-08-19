@@ -146,7 +146,13 @@ again on every watch tick of a folder on screen**:
 
 A live run of the root is refused rather than joined, the check runs on a background
 thread throttled to one at a time, and nothing about the listing waits on it or fails
-with it.
+with it. That thread also waits `FRESHNESS_DELAY_S` (3 s) before gate 1, so the scan it
+may start lands after a page's opening burst rather than inside it — `/home` draws one
+folder card per Claude session and so lists a fistful of folders on a plain refresh. The
+wait comes **before** the check clock is stamped, which is what keeps the 5 s of slack in
+gate 3 whole; the check's own cadence therefore becomes `55 + 3` s, still under the 60 s
+floor. Waiting costs nothing in accuracy: the comparison is folder mtime against the
+*index*, not against when the folder was opened.
 
 **Who fires it:** `/api/fs/list`, naming the folder just opened, and `/api/git-repos`,
 naming **one configured root per request, round-robin** — that tab is served entirely

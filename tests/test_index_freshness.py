@@ -194,10 +194,33 @@ def test_the_scan_floor_matches_the_routers_check_debounce(tmp_path):
     the subtler failure: the check clock is stamped when a check BEGINS and the
     scan clock when the scan is spawned (runner._record_scan, a duckdb lookup and
     a Popen later), so the next due check lands just inside the scan floor, is
-    refused, and re-stamps — halving the real rate. Hence strictly shorter."""
+    refused, and re-stamps — halving the real rate. Hence strictly shorter.
+
+    The check also defers itself before it stamps, which keeps that slack whole
+    rather than spending it — see the sum below."""
     from fused_render.server.routers.index import FRESHNESS_CHECK_S
 
     assert FRESHNESS_CHECK_S < MIN_INTERVAL_S
+
+
+def test_the_deferred_check_still_fits_inside_the_scan_floor(tmp_path):
+    """The delay is part of the check cadence, so it comes out of the same slack.
+
+    routers.index._run_freshness_check sleeps FRESHNESS_DELAY_S and only then
+    stamps the check clock, so a root's checks recur every
+    FRESHNESS_CHECK_S + FRESHNESS_DELAY_S of wall clock while the scan clock is
+    stamped a spawn later still. If that sum ever reaches MIN_INTERVAL_S the
+    interleave the test above describes comes back: every second check lands
+    inside the scan floor, is refused, re-stamps, and the real cadence halves.
+    This is the assertion that stops the delay being raised to something
+    comfortable-sounding like ten seconds without moving FRESHNESS_CHECK_S down
+    to pay for it."""
+    from fused_render.server.routers.index import (
+        FRESHNESS_CHECK_S,
+        FRESHNESS_DELAY_S,
+    )
+
+    assert FRESHNESS_CHECK_S + FRESHNESS_DELAY_S < MIN_INTERVAL_S
 
 
 def test_a_folder_outside_every_configured_root_triggers_nothing(
