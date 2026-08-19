@@ -136,7 +136,85 @@ def test_home_skips_duplicate_and_missing_folders_until_the_row_is_full(
     data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
 
     assert [f["path"] for f in data["folders"]] == [str(a), str(b), str(c)]
-    assert len(opened) == 5
+    # Four, not five: a/old is never opened. Its directory was already resolved
+    # by a/new, and a directory name IS the encoded cwd, so the second file
+    # could only have reproduced a folder already in the row.
+    assert len(opened) == 4
+
+
+def test_home_opens_one_transcript_per_project_directory(
+        client, projects_dir, tmp_path, monkeypatch):
+    """The row's cost is directories touched, not sessions held.
+
+    A long-running project accumulates transcripts; every one of them records
+    the same cwd, and each open reads the head of a file that can be megabytes.
+    """
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    for i in range(10):
+        _session(projects_dir, "proj", f"s{i}", str(proj), mtime=1000 + i)
+
+    opened = []
+    real_session_cwd = claude_sessions_mod._session_cwd
+
+    def counted_session_cwd(path):
+        opened.append(path)
+        return real_session_cwd(path)
+
+    monkeypatch.setattr(claude_sessions_mod, "_session_cwd", counted_session_cwd)
+    data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
+
+    assert [f["path"] for f in data["folders"]] == [str(proj)]
+    assert opened == [str(projects_dir / "proj" / "s9.jsonl")]
+
+
+def test_home_falls_through_to_older_transcripts_of_an_unreadable_newest(
+        client, projects_dir, tmp_path, monkeypatch):
+    """A directory counts as resolved only once a cwd was actually read.
+
+    The newest transcript is the one still being written, so a truncated first
+    line is the normal way this happens - dropping the folder for it would hide
+    the project the user is working in right now, which is the row's whole point.
+    """
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _session(projects_dir, "proj", "readable", str(proj), mtime=1000)
+    headless = projects_dir / "proj" / "truncated.jsonl"
+    headless.write_text('{"cwd": "/tmp/half-writ')  # no closing brace: unparseable
+    os.utime(headless, (2000, 2000))
+
+    opened = []
+    real_session_cwd = claude_sessions_mod._session_cwd
+
+    def counted_session_cwd(path):
+        opened.append(path)
+        return real_session_cwd(path)
+
+    monkeypatch.setattr(claude_sessions_mod, "_session_cwd", counted_session_cwd)
+    data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
+
+    assert [f["path"] for f in data["folders"]] == [str(proj)]
+    assert opened == [str(headless), str(projects_dir / "proj" / "readable.jsonl")]
+
+
+def test_home_collapses_a_collided_directory_to_its_newest_folder(
+        client, projects_dir, tmp_path):
+    """Two real folders can encode to one directory, since both the separator
+    and a literal hyphen become "-". The row shows the newest of them; the
+    exhaustive endpoint above is the one that reads every transcript and lists
+    both."""
+    hyphened = tmp_path / "my-project"
+    nested = tmp_path / "my" / "project"
+    hyphened.mkdir()
+    nested.mkdir(parents=True)
+    _session(projects_dir, "collide", "older", str(nested), mtime=1000)
+    _session(projects_dir, "collide", "newer", str(hyphened), mtime=2000)
+
+    data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
+    assert [f["path"] for f in data["folders"]] == [str(hyphened)]
+    exhaustive = client.get("/api/claude-sessions").json()
+    assert sorted(f["path"] for f in exhaustive["folders"]) == sorted(
+        [str(hyphened), str(nested)])
 
 
 def test_home_session_limit_is_capped_to_its_single_row(
