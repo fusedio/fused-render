@@ -235,6 +235,25 @@ def test_a_mousedown_on_the_strip_does_not_drop_the_open_draft(html):
     assert 't.closest("#anntool")' in body
 
 
+def test_discard_throws_the_walkthrough_away(html):
+    """An outline trash seat, recording only, LEFT of the ■/clock (Akshil,
+    2026-08-19): the recording stops with nothing kept — no transcription, no
+    auto-send — and the clicks' empty marks are deleted with it. annRecEnd
+    no-ops after it, so a stop click racing the discard cannot resurrect the
+    walkthrough."""
+    assert "#anncta:has(#annrec.on) #anndiscard { display: inline-flex;" in html
+    assert "#anndiscard { display: none; }" in html
+    view = _block(html, '<div id="anncta">', "</div>")
+    assert view.index('id="anndiscard"') < view.index('id="annbtn"')
+    body = _block(html, "async function annRecDiscard()", "\n}\n")
+    # the flags drop BEFORE the await, closing the door on annRecEnd
+    assert body.index("annRecOn = false;") < body.index("await stopped;")
+    assert "annotations = annotations.filter((a) => !ids.has(a.id));" in body
+    assert "fused.ai.transcribe" not in body and "annAutoSubmit" not in body
+    assert "if (annOn) annSetMode(false);" in body
+    assert 'annDiscardBtn.addEventListener("click", () => annRecDiscard());' in html
+
+
 def test_the_busy_seat_is_a_status_not_a_button(html):
     """While "Transcribing…" is the whole face, the seat must not still act
     as Done (Bugbot, PR #665): disabled and named for what is happening; the

@@ -222,9 +222,10 @@
      the click that ends it. :not(.on) keeps hover a resting-seat affair; the
      armed looks below stay put under the pointer. */
   #anncta button:hover:not(:disabled):not(.on) { color: var(--fg); background: var(--surface); }
-  /* Armed comment mode fills the Comment button with the accent — same voice
-     as the picker's selected seat: a mode you are in, not a button you pressed. */
-  #annbtn.on { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+  /* Armed comment mode draws the seat in accent OUTLINE — accent border and
+     ink on a quiet ground (Akshil, 2026-08-19: the filled seat shouted). The
+     picker's selected seat keeps its fill; this is a state, that is a choice. */
+  #annbtn.on { color: var(--accent); background: transparent; border-color: var(--accent); }
   /* The buttons are HIDDEN, not disabled, when there is nothing to annotate —
      the sidebar layout's case, where the target is the host's content pane and
      the host may be showing something unmarked (annPollTarget). Same rule the
@@ -288,6 +289,12 @@
   #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annbtn .cmt-word { display: none; }
   #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annbtn .cmt-done { display: block; }
   #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annbtn .done-word { display: var(--annlbl, inline); }
+  /* The discard seat exists only while a walkthrough records — an outline
+     trash beside the stop, for throwing the recording away instead of
+     sending it. Derived from the same state class as every other face. */
+  #anndiscard { display: none; }
+  #anncta:has(#annrec.on) #anndiscard { display: inline-flex; padding: 0 8px; }
+  #anndiscard:hover { color: var(--error); border-color: var(--error); }
   /* Recording: the seat is ■ plus the live clock, in the recording's own
      --error ink rather than the armed accent (the accent says "commenting",
      and what this seat says now is "stop"). */
@@ -3240,6 +3247,12 @@
            recording, "Transcribing…" after — so no writer ever overwrites an
            icon. -->
       <div id="anncta">
+        <!-- Discard, recording only (Akshil, 2026-08-19): an outline trash
+             seat LEFT of the ■/clock — click throws the walkthrough away
+             (recording stopped, nothing transcribed or sent, the clicks'
+             empty marks deleted) where the stop seat keeps it. -->
+        <button id="anndiscard" type="button" aria-label="Discard the recording"
+                title="Discard the recording — nothing is transcribed or sent"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11"/><path d="M5.5 4V2.75a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4"/><path d="M3.75 4l.6 9a1 1 0 0 0 1 .95h5.3a1 1 0 0 0 1-.95l.6-9"/><line x1="6.5" y1="7" x2="6.5" y2="10.5"/><line x1="9.5" y1="7" x2="9.5" y2="10.5"/></svg></button>
         <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
                 title="Comment on the preview, then send the notes to Claude"><svg class="cmt-bubble" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z"/></svg><svg class="cmt-stop" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="4" y="4" width="8" height="8" rx="1.5"/></svg><svg class="cmt-done" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl cmt-word">Comment</span><span class="lbl done-word">Done</span><span id="annreclbl"></span></button>
         <button id="annrec" type="button" aria-pressed="false"
@@ -4959,6 +4972,7 @@ document.getElementById("divider").addEventListener("mousedown", (e) => {
 // rewritten — the posture every other stale param gets (see enterNoPane).
 const annBtn = document.getElementById("annbtn");
 const annRecBtn = document.getElementById("annrec");
+const annDiscardBtn = document.getElementById("anndiscard");
 // The buttons' wrapper: annRecEnd stamps `.busy` on it while a transcription
 // runs, the one state the two buttons' own classes cannot express (recording
 // over, mode still armed, words on their way).
@@ -6658,6 +6672,38 @@ async function annRecEnd() {
 // leg is a guard against a click racing the hide, not a second stop control.
 annRecBtn.addEventListener("click",
   () => (annRecOn ? annRecEnd() : annRecBegin()));
+
+// Discard: the walkthrough thrown away instead of sent (Akshil, 2026-08-19).
+// The recording stops with nothing kept — no upload, no transcription, no
+// auto-send — and the clicks' empty marks are deleted with it: a note that
+// was only ever going to carry the recording's words is nothing without
+// them. The mode goes away the same way a kept stop puts it away. annRecEnd
+// no-ops after this (annRecOn is false and the recorder is gone), so a stop
+// click racing the discard cannot resurrect the walkthrough.
+async function annRecDiscard() {
+  if (!annRecOn || !annRecorder) return;
+  const recorder = annRecorder;
+  annRecorder = null;
+  annRecOn = false;
+  const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
+  recorder.stop();   // onstop releases the mic tracks, same as a kept stop
+  await stopped;
+  clearInterval(annRecTimerId);
+  annRecTimerId = null;
+  annRecChunks = [];
+  annRecBtn.classList.remove("on");
+  annRecBtn.setAttribute("aria-pressed", "false");
+  annRecLbl.textContent = "";
+  annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+  const ids = new Set(annRecIds);
+  annRecIds = [];
+  if (ids.size) {
+    annotations = annotations.filter((a) => !ids.has(a.id));
+    annSave();
+  }
+  if (annOn) annSetMode(false);
+}
+annDiscardBtn.addEventListener("click", () => annRecDiscard());
 
 // ── hosted only: keeping up with a target this document cannot hear ────────
 // The split layout is told about its pane by the pane itself — one iframe, one

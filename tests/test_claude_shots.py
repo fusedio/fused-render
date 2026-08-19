@@ -1807,10 +1807,12 @@ def test_the_annotate_control_is_two_buttons(html):
     assert "height: 26px" in seat, seat
     assert "white-space: nowrap" in seat, seat
     assert "var(--accent)" not in seat, "idle buttons carry no accent: " + seat
-    # armed = the Comment button wears the accent, on-accent ink for contrast
+    # armed = accent OUTLINE, not a fill (Akshil, 2026-08-19): accent border
+    # and ink on a quiet ground — the picker's selected seat keeps its fill
     on = _between(html, "#annbtn.on {", "}")
-    assert "background: var(--accent)" in on, on
-    assert "color: var(--on-accent)" in on, on
+    assert "border-color: var(--accent)" in on, on
+    assert "color: var(--accent)" in on, on
+    assert "background: transparent" in on, on
     # the track-and-knob anatomy is gone with the switch
     assert "#annbtn .track {" not in html
     assert "#annbtn .knob {" not in html
