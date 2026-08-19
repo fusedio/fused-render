@@ -1198,19 +1198,8 @@ def _manager(name="alpha"):
     return canvases_mod._syncs[name]
 
 
-def _wait_for(predicate, timeout=24):
-    """Spin until `predicate()` or the deadline. Returns whether it held.
-
-    The deadline is 3x what it was (8s) because CI (pytest-xdist, `-n auto`)
-    has intermittently starved the watcher thread past the old one under full-
-    suite load — this is a fixed wall-clock poll, not a wake-on-change, on
-    purpose: several callers assert a TRANSIENT state (e.g. `pulling` true only
-    while one write is in flight, `test_pulling_covers_the_merges_writes_but_
-    not_its_zip_download`), which a signal fired once per tick cannot observe —
-    it can end up notifying only once the transient has already passed. The
-    short, tight sleep is what gives those a real chance of landing inside the
-    window; only the outer bound needed to grow.
-    """
+def _wait_for(predicate, timeout=8):
+    """Spin until `predicate()` or the deadline. Returns whether it held."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -1222,8 +1211,7 @@ def _wait_for(predicate, timeout=24):
     return False
 
 
-def _wait_status(harness, predicate, timeout=24):
-    """Same idea and the same reason for the wider deadline as `_wait_for`."""
+def _wait_status(harness, predicate, timeout=8):
     deadline = time.time() + timeout
     status = None
     while time.time() < deadline:
@@ -1598,20 +1586,15 @@ def test_opening_a_canvas_retires_the_legacy_fused_plugin(harness, tmp_path,
 
     harness.client.post("/api/canvases/sync/start", json={"name": "alpha"},
                         headers=GUARD)
-    # The kick runs off-thread, holding `_SKILLS_FETCH_LOCK` for its whole
-    # duration (sync_workbench_plugin, THEN retire_legacy_fused_plugin — see
-    # the lock's own docstring) — wait on THAT rather than polling the
-    # settings file against a deadline guessed against CI's variable load.
-    # `/sync/start`'s handler calls the kick synchronously before responding,
-    # so the lock is already either held or (a fast fake CLI) already released
-    # by the time this acquire runs; either way, acquiring it means the kick
-    # is done.
-    got_lock = canvases_mod._SKILLS_FETCH_LOCK.acquire(timeout=10)
-    if got_lock:
-        canvases_mod._SKILLS_FETCH_LOCK.release()
-    assert got_lock, "the workbench-skills-fetch kick never finished"
-    with open(lib.SETTINGS_PATH, encoding="utf-8") as f:
-        enabled = (json.load(f).get("enabledPlugins") or {})
+    # The kick runs off-thread — wait for it rather than sleeping a guess.
+    deadline = time.time() + 5
+    enabled = {}
+    while time.time() < deadline:
+        with open(lib.SETTINGS_PATH, encoding="utf-8") as f:
+            enabled = (json.load(f).get("enabledPlugins") or {})
+        if enabled.get(skill_plugin.LEGACY_PLUGIN_ID) is False:
+            break
+        time.sleep(0.05)
     assert enabled.get(skill_plugin.LEGACY_PLUGIN_ID) is False, enabled
     # And nothing else was touched on the way past.
     assert enabled.get("keep-me@mkt") is True, enabled
