@@ -121,6 +121,11 @@ _HISTORY_MAX = 5
 _TRASH_MAX = 20
 # `fused canvas validate` on the merged clone — local CLI run, no network.
 VALIDATE_TIMEOUT = 60.0
+# How many times `_validate_clone` retries a bare failure to FORK the CLI
+# process (not a slow or failing validate — see its docstring) before giving
+# up, and how long it waits between attempts.
+_SPAWN_RETRIES = 3
+_SPAWN_RETRY_BACKOFF_S = 0.2
 # A newly constructed _SyncManager treats the clone as clean only if every
 # file's mtime is younger than this — i.e. it just came out of a
 # `clone --force`. Anything older is unknown provenance (server restart,
@@ -1560,20 +1565,41 @@ class _SyncManager:
     def _validate_clone(self) -> bool | None:
         """`fused canvas validate` on the clone: True = valid, False =
         invalid, None = couldn't run (no CLI/timeout) — treated as valid so
-        a broken CLI can't wedge every merge into a rollback."""
+        a broken CLI can't wedge every merge into a rollback.
+
+        The spawn itself (`subprocess.run` before the child ever runs) is
+        retried a few times on `OSError` — `EAGAIN`/`ENOMEM` from `fork()`
+        under heavy concurrent load (many of these can run at once across a
+        machine's canvases, or across pytest-xdist workers in CI) is transient
+        and unrelated to whether the clone is actually valid; without the
+        retry it silently took the same "couldn't run" exit as a genuinely
+        broken CLI, which is indistinguishable from here (D-flaky-canvas-
+        tests: this is what let a rollback-under-load test observe a merge
+        that was never actually validated, and log it if it still happens —
+        the previous version gave up with no trace at all).
+        """
         cli = fused_cli()
         if cli is None:
             return None
-        try:
-            proc = subprocess.run(
-                [*cli.command, "workbench", "canvas", "validate", self.dir],
-                capture_output=True, text=True, timeout=VALIDATE_TIMEOUT,
-                encoding="utf-8", errors="replace",
-                env=_cli_env(cli),
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            return None
-        return proc.returncode == 0
+        for attempt in range(_SPAWN_RETRIES):
+            try:
+                proc = subprocess.run(
+                    [*cli.command, "workbench", "canvas", "validate", self.dir],
+                    capture_output=True, text=True, timeout=VALIDATE_TIMEOUT,
+                    encoding="utf-8", errors="replace",
+                    env=_cli_env(cli),
+                )
+            except subprocess.TimeoutExpired:
+                return None
+            except OSError:
+                if attempt == _SPAWN_RETRIES - 1:
+                    logger.debug("could not spawn `canvas validate` for %s after "
+                                "%d attempts", self.dir, _SPAWN_RETRIES,
+                                exc_info=True)
+                    return None
+                time.sleep(_SPAWN_RETRY_BACKOFF_S)
+                continue
+            return proc.returncode == 0
 
     def _probe_remote(self) -> dict | None:
         """The remote manifest via the shim, or None (external CLI, not
