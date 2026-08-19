@@ -6657,15 +6657,22 @@ async function annRecEnd() {
     if (annOn && annArmEpoch === armed) annSetMode(false);
     return;
   }
-  annRecBtn.disabled = true;
   // The seat is already busy/disabled from the stop above; only the words
   // move on, from "Stopping…" to "Transcribing…" — one status seat, two
-  // tenses. The finally below re-enables it and the disarm renames it.
-  annBtn.disabled = true;
-  annBtn.setAttribute("aria-label", "Transcribing the walkthrough");
-  annBtn.title = "Transcribing the walkthrough — the notes send themselves when the words land";
-  annCta.classList.add("busy");
-  annRecLbl.textContent = "Transcribing…";
+  // tenses. GATED like every other post-settle write (Bugbot, PR #665): a
+  // new live recording that slipped in through an Esc'd settle owns the
+  // seat, and painting the stale status here — with the finally's matching
+  // guard skipping the re-enable — left that walkthrough's stop control
+  // inert. When the seat is someone else's, the transcription just runs
+  // quietly in the background.
+  if (!annRecOn) {
+    annRecBtn.disabled = true;
+    annBtn.disabled = true;
+    annBtn.setAttribute("aria-label", "Transcribing the walkthrough");
+    annBtn.title = "Transcribing the walkthrough — the notes send themselves when the words land";
+    annCta.classList.add("busy");
+    annRecLbl.textContent = "Transcribing…";
+  }
   try {
     // The same 0700 temp dir the pane crops use (shotDirPath/shotJoin/shotStamp,
     // below) — it is already pruned by age and count (agent.py's `_prune_shots`),
@@ -6709,11 +6716,14 @@ async function annRecEnd() {
   } catch (err) {
     console.warn("spoken annotation transcription failed:", err.message);
   } finally {
-    annRecBtn.disabled = false;
     // A NEW session that began mid-transcription owns the seat — its stop
-    // face, its clock — and this stale finally must not repaint or re-name
-    // it (Bugbot, PR #665). Everything here is that session's to clean up.
+    // face, its clock, even the mic's disabled flag (annRecBegin holds it
+    // through the permission prompt) — and this stale finally must not
+    // repaint, re-name or re-enable any of it (Bugbot, PR #665). Symmetric
+    // with the gated writes above: if this ender never painted the status,
+    // there is nothing of its to undo.
     if (!annRecOn) {
+      annRecBtn.disabled = false;
       annBtn.disabled = false;
       annCta.classList.remove("busy");
       annRecLbl.textContent = "";   // "Transcribing…" only ever describes now
