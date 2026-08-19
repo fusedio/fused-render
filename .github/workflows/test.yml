@@ -12,15 +12,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Every job below sets timeout-minutes. GitHub's default with none set is 360
-# (6 hours) — and a stalled `apt-get update` against the Ubuntu archive mirror
-# has actually hit that ceiling more than once (multiple jobs across two
-# separate runs, each stuck for the full 360 minutes on nothing but "Install
-# rclone"/"Install desktop-file-utils"). Without a job-level timeout that kind
-# of hang doesn't fail — it just sits there until GitHub kills it 6 hours
-# later, silently blocking the PR the whole time. Each value below is picked
-# with headroom over that job's observed successful duration, not a guess.
-
 permissions:
   contents: read
   pull-requests: read # for dorny/paths-filter on pull_request
