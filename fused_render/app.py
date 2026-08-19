@@ -127,8 +127,8 @@ def _load_duckdb_reader():
 
 
 def _close_duckdb_default_connection() -> None:
-    """Close duckdb's own DEFAULT connection — the half of INCIDENT 2026-07-29
-    the first fix missed.
+    """Close duckdb's own DEFAULT connection — the handle INCIDENT 2026-07-29's
+    fix could not reach.
 
     Closing the reader's stash was necessary and not sufficient. duckdb 1.5.5
     (what the bundle ships) creates its default connection EAGERLY AT IMPORT and
@@ -744,36 +744,36 @@ def make_appkit_terminate_hook(state: dict, *, reply, start=None,
     if exit_now is None:
         exit_now = hard_exit
 
-    def _die() -> None:
+    def _exit() -> None:
+        """Die. Guarded only so a broken exit falls through to the caller's
+        fallback instead of raising into an AppKit callback or a daemon thread."""
         try:
             exit_now(0)
         except Exception:
             logger.warning("quit: the hard exit failed", exc_info=True)
-        # Unreachable while exit_now is os._exit-backed. If we do get here the
-        # process is still alive and AppKit may still be waiting on the reply we
-        # owe it, so give it one — an aborting quit beats an unquittable app.
-        try:
-            reply(True)
-        except Exception:
-            logger.warning("quit: replying to AppKit failed", exc_info=True)
 
     def _exit_when_ready(ready: threading.Event) -> None:
         if not ready.wait(QUIT_APPKIT_REPLY_WAIT_S):
             logger.warning("quit: teardown never signalled; exiting anyway "
                            "rather than leaving the app unquittable")
-        _die()
+        _exit()
+        # Unreachable while exit_now is os._exit-backed. If we do get here the
+        # process is still alive and AppKit is still waiting on the reply we owe
+        # it for the NSTerminateLater above, so give it one — a quit that aborts
+        # in exit() beats an app that cannot be quit at all.
+        try:
+            reply(True)
+        except Exception:
+            logger.warning("quit: replying to AppKit failed", exc_info=True)
 
     def _should_terminate() -> int:
         ready = _quit_ready_event(state)
         if ready.is_set():
-            # No reply is owed on this path (we never answered Later), so `_die`
-            # would call one nobody is waiting for: exit directly. The return is
-            # unreachable in the app and is the honest answer if a stubbed or
-            # broken exit ever hands control back.
-            try:
-                exit_now(0)
-            except Exception:
-                logger.warning("quit: the hard exit failed", exc_info=True)
+            # No reply is owed on this path — we never answered Later — so there
+            # is no fallback to make here. The return is unreachable in the app,
+            # and is the honest answer if a stubbed or broken exit hands control
+            # back: NSTerminateNow is what this branch meant before the hard exit.
+            _exit()
             return NS_TERMINATE_NOW
         begin_quit(state, start=start, remove_pidfile=remove_pidfile)
         threading.Thread(target=_exit_when_ready, args=(ready,), daemon=True,
