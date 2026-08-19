@@ -31,11 +31,10 @@ const LOGIN_POLL_MS = 1500;
 // Same rule the server (and the CLI's push) enforces.
 const NAME_RE = /^[A-Za-z0-9_]{1,128}$/;
 
+// Full locale date+time, seconds and four-digit year included — the same string
+// the hosted workbench's gallery prints under a canvas name.
 function formatModified(mtime: number): string {
-  return new Date(mtime * 1000).toLocaleString(undefined, {
-    dateStyle: "short",
-    timeStyle: "short",
-  });
+  return new Date(mtime * 1000).toLocaleString();
 }
 
 export default function Canvases() {
