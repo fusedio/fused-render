@@ -12331,6 +12331,7 @@ async function stopRun() {
   // array put back) has to keep auto-draining when that run really ends.
   const held = queuedMsgs.splice(0);
   if (activeWorking) activeWorking.setStopping(true);
+  disableSendButtons(true);
   try {
     await fused.runPython(AGENT, { action: "cancel", run_id }, { key: null });
     unqueueAll(held);
@@ -12350,6 +12351,7 @@ async function stopRun() {
     // during the await and re-states the order they were just put back in.
     persistQueue();
     if (activeWorking) activeWorking.setStopping(false);
+    disableSendButtons(false);
     addError("Could not stop the run: " + err.message);
   }
 }
@@ -12832,7 +12834,23 @@ function setRunningUi(on) {
     // does something else; the working line's own stop control stays the
     // keyboard-adjacent path.
     b.title = on ? "Stop this turn" : "";
+    // A fresh run (on=true, called right after `activeRun` is set) or no run
+    // at all (on=false) is always actionable — Send or Stop, either way a
+    // click does something. `disableSendButtons` covers the one span between
+    // those where it would not: from `stopRun`'s claim on `stoppedRun` to the
+    // cancel round-trip actually landing (or failing).
+    b.disabled = false;
   });
+}
+
+// The composer's Stop click (`inputbox`/`card` onsubmit, below) is a no-op the
+// moment `stoppedRun === activeRun` — see `stopRun`'s own guard — but until
+// this, only the working line's `setStopping` reflected that in the DOM: the
+// composer button stayed enabled for the whole cancel round-trip, so a second
+// click during that window looked live and silently did nothing. Mirrors
+// `activeWorking.setStopping` for the one control that call does not reach.
+function disableSendButtons(on) {
+  document.querySelectorAll(".send").forEach((b) => { b.disabled = on; });
 }
 
 async function sendMessage(message) {
