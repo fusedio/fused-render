@@ -22,8 +22,9 @@ succeeded, and the process still aborted in exit()'s `__cxa_finalize` — this
 time destructing duckdb's DEFAULT connection, which 1.5.5 creates eagerly at
 IMPORT, so no stash and no reader run were involved at all. Two fixes, and only
 the second one stops the crash: quit also closes that connection (correct
-shutdown of a handle we own — but measured on the shipped interpreter, the abort
-happens with or without it), and the quit never hands control back to C exit()
+shutdown of a handle we own — but measured on the shipped interpreter, closing
+it averts the abort only while a live Python reference pins the closed wrapper,
+which is a leak, not a fix), and the quit never hands control back to C exit()
 at all. It ends in `hard_exit` (os._exit), which skips atexit, Python
 finalization and `__cxa_finalize` entirely — which is the only fix that also
 covers every other native extension we load (GDAL/rasterio, pyarrow, torch).
@@ -222,11 +223,14 @@ def test_quit_close_swallows_a_raising_reader_hook(monkeypatch):
 # the in-process server does for /api/index, parquet, search, git_repos, h3,
 # excel, tableau — aborts in __cxa_finalize with no stash ever created.
 #
-# Closing it is NOT what stops the abort (the hard exit below is): measured on
-# the shipped interpreter, `import duckdb` then exit() off-thread aborts with or
-# without `duckdb.default_connection().close()` — the Python-level close does
-# not take the C++ global with it. What these tests pin is the correct shutdown
-# of a handle we own, and that neither half of the close can break the quit.
+# Closing it is NOT what stops the abort (the hard exit below is). Measured on
+# the shipped interpreter, `duckdb.default_connection().close()` still aborts,
+# while `dc = duckdb.default_connection(); dc.close()` does not — and neither
+# does pinning it WITHOUT closing. The difference is the surviving Python
+# reference, not the close: the abort is `~DuckDBPyConnection`, which runs only
+# when the last reference dies. See _close_duckdb_default_connection for the
+# whole table. What these tests pin is the correct shutdown of a handle we own,
+# and that neither half of the close can break the quit.
 
 
 def _fake_duckdb(default_connection):
@@ -1350,6 +1354,24 @@ def test_the_terminate_hop_hard_exits():
 
     assert "_terminate" in _enclosing_functions(_app_source_tree(),
                                                 is_hard_exit_call)
+
+
+def test_the_duckdb_reader_no_longer_explains_the_quit_by_nsapplication():
+    """The structural test above parses app.py only, and the same claim is made
+    in prose one file away: reader.py's `close_http_connection` justified itself
+    with "interpreter finalization never runs on macOS: `rumps.quit_application()`
+    -> `NSApplication.terminate:` -> C `exit()`". After D355 that is not why, and
+    it is the first thing anyone debugging the next duckdb-at-exit report will
+    read. A plain text check is enough for THIS file — unlike app.py, reader.py
+    has no legitimate reason to name the symbol at all."""
+    path = os.path.join(os.path.dirname(__file__), "..", "fused_render",
+                        "templates", "duckdb", "reader.py")
+    with open(path) as f:
+        src = f.read()
+
+    assert "quit_application" not in src
+    # ...and it says what DOES happen instead, so the pointer survives the fix.
+    assert "os._exit" in src or "hard_exit" in src
 
 
 def test_the_readiness_failure_abort_goes_through_the_quit_action():

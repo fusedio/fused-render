@@ -130,22 +130,45 @@ def _close_duckdb_default_connection() -> None:
     """Close duckdb's own DEFAULT connection — the handle INCIDENT 2026-07-29's
     fix could not reach.
 
-    Closing the reader's stash was necessary and not sufficient. duckdb 1.5.5
-    (what the bundle ships) creates its default connection EAGERLY AT IMPORT and
-    holds it in a C++ global that `__cxa_finalize` destructs during exit(), so a
-    process that merely `import duckdb`s — which the in-process server does for
-    /api/index, parquet, search, git_repos, h3, excel and tableau, none of which
-    ever touch the reader's stash — aborts exactly like one that left the stash
-    open.
+    duckdb 1.5.5 (what the bundle ships) creates its default connection EAGERLY
+    AT IMPORT and holds it in a C++ global, so a process that merely `import
+    duckdb`s — which the in-process server does for /api/index, parquet, search,
+    git_repos, h3, excel and tableau, none of which ever touch the reader's
+    stash — carries one for its whole life without any code asking for it.
 
-    HONEST ABOUT WHAT THIS BUYS, because it is less than it looks: measured on
-    the shipped interpreter (Contents/MacOS/python, duckdb 1.5.5), `import
-    duckdb` + `exit()` from a non-main thread aborts, AND SO DOES THE SAME RUN
-    WITH THIS CLOSE FIRST. The Python-level `close()` does not take the C++
-    global with it. So this is correct shutdown hygiene — release the handle
-    while the interpreter is healthy and holding the GIL, which is what any
-    later exit path would want — and NOT the fix for the crash. `hard_exit` is
-    the fix: the quit never reaches `__cxa_finalize` at all.
+    WHAT THIS DOES AND DOES NOT BUY, measured on the shipped interpreter
+    (Contents/MacOS/python, duckdb 1.5.5), `import duckdb` then
+    `ctypes.CDLL(None).exit(0)` off the main thread, 10 runs each and fully
+    deterministic:
+
+        import only, nothing else                          SIGABRT
+        duckdb.default_connection().close()                SIGABRT
+        dc = duckdb.default_connection(); dc.close()       rc 0
+        dc = duckdb.default_connection()   (never closed)  rc 0
+        dc = ...; dc.close(); del dc                       SIGABRT
+
+    So `close()` is NOT what makes the difference — a live Python reference to
+    the wrapper is. The abort is `~DuckDBPyConnection`, which runs only when the
+    LAST reference dies; `__cxa_finalize` dropping the C++ global's reference is
+    what runs it, and any surviving Python reference (open or closed) keeps the
+    refcount above zero so the destructor never runs at all. "Fixing" the crash
+    that way means deliberately leaking a reference to dodge a destructor, which
+    is a worse thing to own than the crash. `hard_exit` is the fix; this is
+    shutdown hygiene: release what the default connection holds while the
+    interpreter is healthy and the GIL is held, before the unmount rung runs.
+
+    It does not latch, and cannot: the stash in reader.py is ours to mediate,
+    duckdb's module-level API is not — the next `duckdb.sql(...)` or
+    `default_connection()` simply builds a fresh one. Nothing in `fused_render`
+    uses that API (every call site goes through `duckdb.connect()`), so the
+    window belongs to in-process template/user code alone.
+
+    Calling `default_connection()` CONSTRUCTS one when none is live (8.7ms
+    measured, versus 0.03ms to hand back the existing one), and duckdb exposes
+    no way to ask: `_clean_default_connection` is a PyCapsule, not a callable.
+    In practice the question never arises on 1.5.5 — the import already made
+    one — and paying 8.7ms once on a future version that does not is a better
+    trade than skipping the close on the version that does.
 
     `default_connection` is a builtin FUNCTION in 1.5.5, but the attribute has
     changed shape across duckdb releases (and may be gone in a future one), so
@@ -173,13 +196,14 @@ def _close_duckdb_stash() -> None:
     — and everything is swallowed (duckdb missing, unreadable reader, a raising
     close): a failure here must not block the quit.
 
-    Neither close is what stops the abort any more — `hard_exit` is, by never
-    reaching `__cxa_finalize` (and measurement says the default-connection close
-    alone would NOT have been enough anyway; see there). They stay because
-    releasing a connection while the interpreter is healthy and holding the GIL
-    is the correct shutdown: the reader's HTTP connection holds a socket against
-    an rclone serve that the very next teardown step reaps, and any future path
-    that does reach a normal exit() starts from a cleaner state."""
+    Neither close is what stops the abort — `hard_exit` is, by never reaching
+    `__cxa_finalize` (and measurement says the default-connection close would
+    not have been enough on its own anyway; see there). They stay for what they
+    actually deliver, which is different for each: the reader's stash close
+    LATCHES, so it durably stops a late read from holding a socket open against
+    an rclone serve the very next teardown step reaps, while the
+    default-connection close is a one-shot release of whatever that connection
+    holds at this instant, with no barrier behind it."""
     if "duckdb" not in sys.modules:
         return
     try:
@@ -329,12 +353,15 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
 # `abort()`s. The 2026-07-29 fix closed the one connection we knew about; on
 # 2026-08-19 the app aborted 20ms after a teardown that had FULLY succeeded,
 # because duckdb 1.5.5 also holds a default connection created at import — and
-# measured on the shipped interpreter, closing THAT one does not help either:
-# `import duckdb` + exit() off-thread aborts with or without the close. Every
-# native extension the server loads (GDAL/rasterio, pyarrow, torch) is the same
-# hazard, so chasing handles is whack-a-mole against a game we cannot win. The
-# durable fix is to never reach `__cxa_finalize`. Same measurement, dying via
-# os._exit instead: rc 0.
+# closing THAT one does not fix it either: measured on the shipped interpreter,
+# `import duckdb` + exit() off-thread aborts whenever the closed wrapper is
+# released, and only a still-referenced (leaked) Python wrapper averts it, since
+# the abort is a destructor that runs on the LAST reference dying (see
+# `_close_duckdb_default_connection` for the full table). Every native extension
+# the server loads (GDAL/rasterio, pyarrow, torch) is the same hazard, so
+# chasing handles is whack-a-mole against a game we cannot win. The durable fix
+# is to never reach `__cxa_finalize`. Same measurement, dying via os._exit
+# instead: rc 0.
 #
 # `os._exit` skips atexit handlers, Python finalization (interpreter shutdown,
 # gc, module teardown) and `__cxa_finalize`. That is safe here, and ONLY because
