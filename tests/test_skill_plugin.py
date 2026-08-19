@@ -934,12 +934,22 @@ def test_the_server_exports_the_root_before_serving():
     assert "FUSED_RENDER_CANVASES_DIR" in export
 
 
-def test_the_canvases_clone_route_is_what_fetches():
-    """Startup may not fetch (pre-bind), so the canvas-clone route must — and it
-    must swallow the failure, since a clone has to succeed without the skills."""
+def test_both_canvas_entry_points_fetch_and_neither_can_fail_over_it():
+    """Startup may not fetch (pre-bind), so the canvas paths must — and BOTH of
+    them, which is the field bug: hanging it on /clone alone meant a canvas that
+    already existed never got the skills, and a session that cannot find the
+    skills its own CLAUDE.md names goes hunting for the format across the
+    filesystem. The kick is off-thread and swallows everything, so neither route
+    can fail or stall over a skill fetch."""
     src = open(os.path.join(REPO_ROOT, "fused_render", "canvases.py"),
                encoding="utf-8").read()
-    route = src[src.index("def api_canvases_clone"):]
-    route = route[:route.index("\n@router")]
-    assert "sync_workbench_plugin()" in route
-    assert "except Exception" in route
+    for entry in ("def api_canvases_clone", "def api_canvases_sync_start"):
+        route = src[src.index(entry):]
+        route = route[:route.index("\n@router")]
+        assert "_kick_workbench_skills()" in route, entry
+    helper = src[src.index("def _kick_workbench_skills"):]
+    helper = helper[:helper.index("\ndef ")]
+    assert "sync_workbench_plugin" in helper
+    assert "except Exception" in helper
+    assert "daemon=True" in helper
+    assert "acquire(blocking=False)" in helper

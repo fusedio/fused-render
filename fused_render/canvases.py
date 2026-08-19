@@ -210,6 +210,52 @@ def _canvas_dir(name: str) -> str:
     return os.path.join(canvases_root(), name)
 
 
+# One in-flight workbench-skills fetch per process, ever. A non-blocking acquire
+# is the whole mechanism: the hooks below fire on user actions that repeat (a
+# canvas open, and the page re-arms the watcher on every poll that finds it
+# dropped), and without this a flaky network would pile up threads each waiting
+# out its own clone timeout.
+_SKILLS_FETCH_LOCK = threading.Lock()
+
+
+def _kick_workbench_skills() -> None:
+    """Fetch/refresh the `workbench` skills OFF-THREAD, best-effort.
+
+    Called from the canvas paths — the clone route and the watcher start the page
+    does when it opens a canvas. The open hook is the one that matters in the
+    field: hanging the fetch on /clone alone meant a canvas that already existed
+    (i.e. nearly every real canvas) never got the skills at all, and a session
+    that cannot find the `workbench:canvas-toml` skills its own seeded CLAUDE.md
+    names goes looking for the format elsewhere — a `find /` that wedges every
+    rclone mount on the machine is not a hypothetical, it is what happened.
+
+    Off-thread because both callers are requests the canvas page AWAITS before it
+    renders, and a shallow clone against a dead network sits there for
+    _CLONE_TIMEOUT_S. Off-thread also means the answer may land a moment after
+    the page opens, which is fine: what has to be set is the server process's env
+    by the time a SESSION spawns, and that is a user typing a message later.
+
+    Rate limiting stays in `skill_plugin` (`_attempt_due`), so repeated opens
+    cost a lock check and nothing else. Nothing here can fail a canvas open:
+    the thread swallows everything and the caller never waits on it.
+    """
+    if not _SKILLS_FETCH_LOCK.acquire(blocking=False):
+        return  # one already running — its result serves this caller too
+
+    def run() -> None:
+        try:
+            from fused_render.skill_plugin import sync_workbench_plugin
+
+            sync_workbench_plugin()
+        except Exception:  # noqa: BLE001 — never surface out of a helper thread
+            logger.debug("workbench skills sync failed", exc_info=True)
+        finally:
+            _SKILLS_FETCH_LOCK.release()
+
+    threading.Thread(target=run, name="workbench-skills-fetch",
+                     daemon=True).start()
+
+
 def _credentials_file() -> str:
     # The `fused login` store (fused-py _options.py: ~/.fused/credentials).
     # The env override is ours (tests, relocated stores) — the fused package
@@ -926,22 +972,14 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
         return _error("not signed in to Fused — sign in first", 409)
     # Fetch/refresh the `workbench` skills, whose names the CLAUDE.md seeded
     # below uses (`workbench:canvas-toml` and friends), and publish the root for
-    # the session in the right pane. THIS is the moment for it: the canvases path
-    # is the only place those skills are ever handed out, so a user who never
-    # opens a canvas pays nothing, a skills release made since startup is picked
-    # up without a server restart, and the network work happens on a request
-    # rather than before the server's bind (see server/app.py).
-    #
-    # Bounded and swallowed both: git may be missing, the network may be gone,
-    # and a canvas clone must still succeed — the session then simply gets no
-    # second --plugin-dir and the CLAUDE.md degrades to the folder's own
-    # conventions.
-    try:
-        from fused_render.skill_plugin import sync_workbench_plugin
-
-        sync_workbench_plugin()
-    except Exception:  # noqa: BLE001 — never fail a clone over a skill fetch
-        logger.debug("workbench skills sync failed", exc_info=True)
+    # the session in the right pane. A canvases path is the right moment for it:
+    # the only place those skills are ever handed out, so a user who never opens
+    # a canvas pays nothing, a skills release made since startup is picked up
+    # without a server restart, and the network work happens on a request rather
+    # than before the server's bind (see server/app.py). Off-thread and
+    # swallowed — a clone must still succeed when git is missing or the network
+    # is gone, and it must not wait out a clone timeout to find that out.
+    _kick_workbench_skills()
     target = _canvas_dir(name)
     os.makedirs(target, exist_ok=True)
     # --force: the clone folder is OURS (under ~/.fused-render/canvases); a
@@ -2103,6 +2141,12 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
         return _error("'name' must be a canvas name (letters, digits, underscore)")
     if not os.path.isfile(os.path.join(_canvas_dir(name), "canvas.toml")):
         return _error(f"canvas {name!r} is not cloned yet (no canvas.toml)", 409)
+    # The page calls this when it OPENS a canvas (and again whenever a poll finds
+    # the watcher dropped), which makes it the hook that covers a canvas cloned
+    # before this feature existed — nearly every real canvas. /clone alone left
+    # those sessions with no workbench skills at all. Rate-limited and
+    # off-thread; see _kick_workbench_skills.
+    _kick_workbench_skills()
     manager = _sync_manager(name, create=True)
     return manager.status()
 

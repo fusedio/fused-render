@@ -8,6 +8,7 @@ tmp file via FUSED_RENDER_FUSED_CREDENTIALS.
 """
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -1379,6 +1380,134 @@ def test_clean_pull_reseeds_claude_md(harness, tmp_path, monkeypatch):
     assert _wait_for(lambda: (harness.root / "alpha" / "CLAUDE.md").exists()), \
         "the pull leg never re-seeded CLAUDE.md"
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+# -- the workbench skills reach an EXISTING canvas, not just a fresh clone -----
+#
+# Field bug: the fetch hung off POST /api/canvases/clone alone, so a canvas that
+# already existed (i.e. nearly every real canvas) never got one. The plugin root
+# stayed absent, `_plugin_argv` passed no second --plugin-dir, and the session
+# looked up the `workbench:canvas-toml` skills its own seeded CLAUDE.md names,
+# found nothing, and went hunting for the format elsewhere — `find /` included,
+# which wedged every rclone mount on the machine. So the fetch has to fire on the
+# path that OPENS a canvas too, which is the watcher start the page does on boot.
+
+
+def _stub_skills_git(monkeypatch, calls):
+    """The git seam, materialising a loadable clone the way a real one would."""
+    from fused_render import skill_plugin
+
+    def run(args, timeout):
+        calls.append(list(args))
+        if args[0] == "clone":
+            root = os.path.join(args[-1], skill_plugin.WORKBENCH_PLUGIN_SUBDIR)
+            os.makedirs(os.path.join(root, skill_plugin.MANIFEST_DIR), exist_ok=True)
+            with open(os.path.join(root, skill_plugin.MANIFEST_DIR,
+                                   skill_plugin.MANIFEST_NAME), "w",
+                      encoding="utf-8") as fh:
+                fh.write('{"name": "workbench"}')
+            for skill in skill_plugin.WORKBENCH_SKILLS:
+                d = os.path.join(root, skill_plugin.SKILLS_SUBDIR, skill)
+                os.makedirs(d, exist_ok=True)
+                with open(os.path.join(d, "SKILL.md"), "w", encoding="utf-8") as fh:
+                    fh.write("# %s\n" % skill)
+        return subprocess.CompletedProcess(list(args), 0, "", "")
+
+    monkeypatch.setattr(skill_plugin, "_git", run)
+
+
+def test_opening_an_existing_canvas_fetches_the_workbench_skills(
+        harness, tmp_path, monkeypatch):
+    """The page's own open path: POST /api/canvases/sync/start on a canvas dir
+    that is already there. No /clone is involved and none can be — the canvas
+    predates this feature — so this is the only hook that can put the skills on
+    disk for it."""
+    from fused_render import skill_plugin
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "skillhome"))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+    calls = []
+    _stub_skills_git(monkeypatch, calls)
+
+    # An EXISTING canvas: made by hand, exactly as a pre-branch clone looks.
+    (harness.root / "canvas_1").mkdir(parents=True)
+    (harness.root / "canvas_1" / "canvas.toml").write_text(
+        'type = "canvas"\n', encoding="utf-8")
+    assert skill_plugin.workbench_plugin_root() is None, "precondition: no clone"
+
+    res = harness.client.post("/api/canvases/sync/start",
+                              json={"name": "canvas_1"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+
+    assert _wait_for(lambda: skill_plugin.workbench_plugin_root() is not None), (
+        "opening an existing canvas never fetched the workbench skills", calls)
+    root = skill_plugin.workbench_plugin_root()
+    # Published for the sessions this canvas spawns, which is the whole point.
+    assert _wait_for(
+        lambda: os.environ.get(skill_plugin.WORKBENCH_PLUGIN_DIR_ENV) == root)
+    assert os.path.isfile(os.path.join(root, skill_plugin.SKILLS_SUBDIR,
+                                       "canvas-toml", "SKILL.md"))
+    assert [c[0] for c in calls] == ["clone"], calls
+    harness.client.post("/api/canvases/sync/stop",
+                        json={"name": "canvas_1"}, headers=GUARD)
+
+
+def test_the_open_hook_never_blocks_the_request_and_never_fails_it(
+        harness, tmp_path, monkeypatch):
+    """Bounded on the latency side too: a shallow clone over a dead network sits
+    for up to _CLONE_TIMEOUT_S, and the canvas page AWAITS this request before it
+    renders anything. So the fetch runs off-thread, and a fetch that explodes
+    still leaves a started watcher behind."""
+    from fused_render import skill_plugin
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "skillhome"))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+    released = threading.Event()
+
+    def slow_and_broken(args, timeout):
+        released.wait(5)
+        raise OSError("git is not installed")
+
+    monkeypatch.setattr(skill_plugin, "_git", slow_and_broken)
+    (harness.root / "canvas_1").mkdir(parents=True)
+    (harness.root / "canvas_1" / "canvas.toml").write_text(
+        'type = "canvas"\n', encoding="utf-8")
+
+    started = time.time()
+    res = harness.client.post("/api/canvases/sync/start",
+                              json={"name": "canvas_1"}, headers=GUARD)
+    elapsed = time.time() - started
+    assert res.status_code == 200, res.text
+    assert res.json()["watching"] is True, res.json()
+    assert elapsed < 2.0, ("the open request waited for the skills fetch", elapsed)
+    released.set()
+    harness.client.post("/api/canvases/sync/stop",
+                        json={"name": "canvas_1"}, headers=GUARD)
+
+
+def test_repeated_opens_do_not_refetch(harness, tmp_path, monkeypatch):
+    """The page re-arms the watcher whenever a poll finds it dropped, so this
+    hook fires far more often than a canvas is opened. The rate limit is what
+    keeps that from being a git invocation per re-arm."""
+    from fused_render import skill_plugin
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "skillhome"))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+    calls = []
+    _stub_skills_git(monkeypatch, calls)
+    (harness.root / "canvas_1").mkdir(parents=True)
+    (harness.root / "canvas_1" / "canvas.toml").write_text(
+        'type = "canvas"\n', encoding="utf-8")
+
+    for _ in range(4):
+        harness.client.post("/api/canvases/sync/start",
+                            json={"name": "canvas_1"}, headers=GUARD)
+    assert _wait_for(lambda: skill_plugin.workbench_plugin_root() is not None)
+    time.sleep(0.2)  # let any further kicks land
+    assert [c[0] for c in calls] == ["clone"], (
+        "an open re-fetched instead of honouring the rate limit", calls)
+    harness.client.post("/api/canvases/sync/stop",
+                        json={"name": "canvas_1"}, headers=GUARD)
 
 
 # -- the sanctioned manual push (B1) -------------------------------------------

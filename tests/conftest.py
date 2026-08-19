@@ -257,7 +257,12 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_MOUNTS_DIR",
                 # Leaks the same way — a test that calls export_app_env would
                 # otherwise leave a previous test's plugin path on every later
                 # spawn's argv in the same worker.
-                "FUSED_RENDER_SKILL_PLUGIN_DIR")
+                "FUSED_RENDER_SKILL_PLUGIN_DIR",
+                # D355: the workbench skills root, published the same way and
+                # leaking the same way — and it is published from a BACKGROUND
+                # thread (canvases._kick_workbench_skills), so a leak here would
+                # also arrive at an unpredictable moment in a later test.
+                "FUSED_RENDER_WORKBENCH_PLUGIN_DIR")
 
 
 @pytest.fixture(autouse=True)
@@ -304,6 +309,36 @@ def _pin_the_script_interpreter_resolution():
         yield
     finally:
         envinstall.reset_script_python_cache()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_workbench_skills_clone(monkeypatch):
+    """No test may clone the workbench skills repo for real (D355).
+
+    The canvas paths kick `skill_plugin.fetch_workbench_skills()` off-thread, and
+    it is genuinely reachable from the tests: several of them POST
+    /api/canvases/clone or /api/canvases/sync/start, nothing is published under
+    the per-run FUSED_RENDER_HOME, so the retry interval says "due" and a real
+    `git clone https://github.com/fusedio/skills.git` goes out. That was
+    happening — a `workbench-skills/` tree turned up under a test home — which
+    makes the suite quietly network-dependent and slower, and would go red on an
+    offline runner for a reason unrelated to what any test asserts.
+
+    Stubbed as a plain FAILED git rather than an exception: the fetch swallows
+    everything by design, so an exception would be invisible anyway, while a
+    non-zero return code exercises the real "nothing to hand" path. Tests that
+    are ABOUT the fetch stub `_git` themselves in the test body, which wins over
+    this fixture.
+    """
+    import subprocess
+
+    from fused_render import skill_plugin
+
+    def no_network(args, timeout):
+        return subprocess.CompletedProcess(
+            list(args), 1, "", "refused by the test suite: no real clone")
+
+    monkeypatch.setattr(skill_plugin, "_git", no_network)
 
 
 @pytest.fixture(autouse=True)
