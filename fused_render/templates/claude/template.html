@@ -9782,6 +9782,11 @@ document.getElementById("back").onclick = () => {
   // actually retires the streaming loop — it bails on the next poll instead
   // of writing into the wiped transcript below.
   logGen += 1;
+  // Whether this leave abandons a LIVE turn, read before the lines below erase
+  // the evidence: `activeRun` is a streaming loop, `sending` is a turn still in
+  // its start, and the `run` param is a resumed run this frame may not have
+  // polled yet. `loadRecent` below needs to know — see the retries beside it.
+  const leftLive = !!(activeRun || sending || fused.params.get("run"));
   // The landing must not inherit the turn's chrome (Bugbot, PR #653): with
   // activeRun still set, the home composer wore the Stop square and its
   // submit CANCELLED the run this button deliberately leaves running. The
@@ -9840,6 +9845,23 @@ document.getElementById("back").onclick = () => {
   // a stale count for a moment is quieter than a section that blinks. Boot is
   // the only place the "not read yet" state is real.
   loadRecent();
+  // A chat left MID-TURN may not be in that list yet (Akshil, 2026-08-19 — "the
+  // chat doesn't show in recent chats until the run completes"): the list is
+  // the transcripts in the cwd's project dir (agent.py `_sessions`), and a
+  // brand-new session's transcript appears only once the CLI has written its
+  // first rows — seconds after this read, on a leave this quick. Not a poll
+  // loop: two more looks a few seconds apart cover the write, and after that
+  // the list is what it honestly is. Gated on still being ON the landing —
+  // re-entering a chat makes the repaint someone else's business — and
+  // loadRecent's own skeleton guard keeps these from blinking rows that are
+  // already up.
+  if (leftLive) {
+    for (const wait of [2500, 6000]) {
+      setTimeout(() => {
+        if (chatEl.classList.contains("home")) loadRecent();
+      }, wait);
+    }
+  }
   // The chips belonged to the conversation being left; the section below the
   // composer is the cross-session view and is re-read from the index instead.
   clearArtStrip();
@@ -13458,22 +13480,63 @@ setInterval(pollScheduledRuns, SCHEDULE_POLL_MS);
 // answers with the id of a run for this chat that is still alive. resumeRun has
 // always been able to adopt a run this frame did not start (the scheduled-send
 // path does exactly this); it just was never given the id.
+//
+// A WATCH, not a one-shot question (Akshil, 2026-08-19 — the reopened chat "does
+// not show me the streaming thing"). The one-shot version had two silent
+// give-ups, and each was a live turn the chat never showed again:
+//
+//   * `if (sending || activeRun) return` — the gate can be HELD at the one
+//     instant this fires (a second click's loadHistory mid-flight, an abandoned
+//     turn's finally a poll away from releasing), and "held right now" was read
+//     as "nothing to do, ever". The gate clears within a tick; the answer to it
+//     is to look again, not to leave.
+//   * a `live_run` that answers "" — which is the truth for an idle chat, but
+//     also what the server says while the run this very reopen is chasing is
+//     still being SPAWNED (Back landed during `start`; the run dir gains its
+//     pid a beat later). One answer, two meanings, and only time tells them
+//     apart: a short watch at the poll cadence covers the spawn window, and an
+//     idle chat costs a few cheap lookups that all agree before it goes quiet.
+//
+// Gen-guarded like every other loop that outlives an await: leaving the chat
+// bumps logGen and the watch dies with the transcript it was watching.
 async function adoptLiveRun(session_id) {
-  if (sending || activeRun) return;   // this frame already owns a turn
-  let live = null;
-  try {
-    live = await fused.runPython(AGENT, {
-      action: "live_run", file: FILE, session_id: session_id || "",
-    }, { key: null });
-  } catch (e) {
-    return;   // a failed lookup leaves the transcript exactly as it rendered
+  const gen = logGen;
+  // ~3s of looking: one tick is the common case (the reopen itself), the tail
+  // exists for the spawn window above. Each miss waits one poll interval, so
+  // the working row appears within ~400ms of the run becoming visible.
+  for (let tries = 0; tries < 8; tries++) {
+    if (tries) await sleep(400);
+    if (logGen !== gen) return;       // the reader left; nothing here is ours
+    if (activeRun) return;            // a turn is attached — adopted, or the user's own
+    if (sending) continue;            // gate held THIS tick; look again, don't give up
+    let live = null;
+    try {
+      live = await fused.runPython(AGENT, {
+        action: "live_run", file: FILE, session_id: session_id || "",
+      }, { key: null });
+    } catch (e) {
+      return;   // a failed lookup leaves the transcript exactly as it rendered
+    }
+    // Both can have changed across the await; re-check before acting on the
+    // answer — adopting into a wiped log, or over a turn the user started
+    // meanwhile, is worse than the miss this watch exists to fix.
+    if (logGen !== gen || activeRun) return;
+    const id = live && live.run_id;
+    if (!id) continue;
+    if (sending) continue;            // taken mid-lookup — same answer as above
+    // Same `replace` posture as every other `run` write: it is bookkeeping about
+    // the frame's state, not a step the reader took, so it must not cost an entry.
+    fused.params.set("run", id, { history: "replace" });
+    // resumeRun can itself bail on a gate grabbed between these two lines — the
+    // loop, not this call, is the guarantee: a bailed attempt comes back around,
+    // and the `activeRun` check above ends the watch once anyone has attached.
+    await resumeRun(id);
+    // resumeRun resolves at the END of the turn, so a completed call means the
+    // run was handled — its done branch cleared the param. The one call that
+    // resolves with the param still reading `id` is the bail above, and only
+    // that one earns another lap.
+    if (fused.params.get("run") !== id) return;
   }
-  const id = live && live.run_id;
-  if (!id) return;
-  // Same `replace` posture as every other `run` write: it is bookkeeping about
-  // the frame's state, not a step the reader took, so it must not cost an entry.
-  fused.params.set("run", id, { history: "replace" });
-  await resumeRun(id);
 }
 
 async function resumeRun(run_id, opts) {
@@ -13858,7 +13921,11 @@ for (const [name, id] of [["recent", "tab-recent"], ["artifacts", "tab-artifacts
 
 async function loadRecent() {
   const list = document.getElementById("recentlist");
-  renderRecentSkeleton(list);
+  // The skeleton stands in for rows we do not have yet — never for rows that
+  // are already up. A re-read over a drawn list (the back handler's mid-turn
+  // retries) repaints in place; blinking good rows into placeholder bars would
+  // make every retry look like the list lost the chats it is about to reprint.
+  if (!list.querySelector(".chat-row")) renderRecentSkeleton(list);
   syncLists();  // the skeleton needs its section shown
   try {
     const { sessions, error } = await fused.runPython(AGENT, { action: "sessions", file: FILE }, { key: null });
