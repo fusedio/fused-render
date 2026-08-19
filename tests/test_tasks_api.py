@@ -1,7 +1,8 @@
 """Tasks over HTTP (server/routers/tasks.py).
 
 `GET /api/tasks` is the List page: every task, newest first, each carrying its
-three newest messages. `GET /api/tasks/{key}/messages` is Show more.
+three newest messages. `GET /api/tasks/pulse` is the global sidebar's compact
+projection. `GET /api/tasks/{key}/messages` is Show more.
 `POST /api/tasks/read` marks one message read.
 
 The rules under test are the ones that make a task and a session the same
@@ -138,6 +139,12 @@ def _by_key(client):
     return {t["key"]: t for t in _tasks(client)}
 
 
+def _pulse(client):
+    r = client.get("/api/tasks/pulse")
+    assert r.status_code == 200, r.text
+    return r.json()["tasks"]
+
+
 T9 = "2026-08-16T09:00:00Z"
 T10 = "2026-08-16T10:00:00Z"
 T11 = "2026-08-16T11:00:00Z"
@@ -180,6 +187,30 @@ def test_a_chat_session_is_a_task(client, projects_dir, state_dir):
     assert message["entry_id"] == ""
     assert message["anchor"] == "sess-a-0", "the record uuid, for scroll-to"
     assert message["unread"] is True
+
+
+def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
+        client, projects_dir, state_dir):
+    """The sidebar gets the same state without downloading page-only content."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [
+        _user("a large message body the sidebar must not receive", T9),
+        _assistant("done", T10),
+        _ai_title("A page-only title"),
+    ])
+
+    full = _tasks(client)
+    pulse = _pulse(client)
+
+    pulse_fields = ("key", "status", "unread", "last_active")
+    assert pulse == [
+        {field: row[field] for field in pulse_fields}
+        for row in full
+    ]
+    assert set(pulse[0]) == set(pulse_fields)
+    assert "messages" not in pulse[0]
+    assert "title" not in pulse[0]
+    assert len(json.dumps(pulse)) < len(json.dumps(full)) / 2
 
 
 def test_the_last_ai_title_wins(client, projects_dir):

@@ -78,6 +78,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 # The fused engine execs this script without setting __file__; it puts the
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
@@ -88,6 +91,7 @@ if "__file__" not in globals():
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from appenv import fused_cli_dir as _fused_cli_dir
+from appenv import origin as _origin
 from appenv import skill_plugin_dir as _skill_plugin_dir
 from appenv import workspace_dir as _workspace_dir
 from private_dir import private_dir as _private_dir_under
@@ -526,6 +530,26 @@ def _workdir(file: str) -> str:
     return file if os.path.isdir(file) else os.path.dirname(file)
 
 
+def _custom_env(origin: str, file: str) -> bool | None:
+    """Does *file*'s own reader need a declared project environment, per
+    `/api/env/custom-env`? None when the app couldn't be asked — a network
+    hiccup on this prompt-building nicety must never fail the spawn, so any
+    error (timeout, connection refused, a malformed response) is swallowed
+    exactly like every other read in this module that decorates a screen
+    rather than gating it (see artifacts.py's own "NOTHING HERE RAISES").
+    `None` and `True` both mean "say nothing" downstream — the only value
+    that unlocks the interpreter fact is a confirmed `False`.
+    """
+    try:
+        url = origin + "/api/env/custom-env?" + urllib.parse.urlencode({"file": file})
+        req = urllib.request.Request(url, headers={"X-Fused": "1"})
+        with urllib.request.urlopen(req, timeout=2) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return bool(data.get("custom_env", True))
+    except Exception:  # noqa: BLE001 — see docstring
+        return None
+
+
 def _system_prompt(file: str) -> str:
     """The FILE target's prompt: what to work on, plus the same app-state
     disclosure the directory prompt makes (D235).
@@ -542,6 +566,23 @@ def _system_prompt(file: str) -> str:
     """
     name = os.path.basename(file)
     tool = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
+    origin = _origin()
+    # This session's OWN interpreter is a fact worth stating only when it is
+    # KNOWN to be the one that read `file` — never a caveated guess. The claude
+    # template's own folder never declares a project (SPEC PY-17), so this
+    # process always runs on the app's own bundled interpreter; whether that
+    # matches `file`'s actual reader depends on `file` itself, which
+    # /api/env/custom-env resolves properly (a `.py` in a declared project, or
+    # a data file whose template ships its own pyproject.toml — D276's
+    # map/vector/pdf_studio and any future one — answers `custom_env: true`,
+    # and this says nothing rather than assert a fact that might be wrong).
+    # `origin` is None only when there is no server to ask (e.g. a bare test).
+    custom_env = _custom_env(origin, file) if origin else None
+    env_note = (
+        f" For Python-based inspection of {name}, invoke the exact executable "
+        f"`{sys.executable}`. Do not substitute `python` or `python3` from "
+        "PATH; they may refer to a different environment."
+    ) if custom_env is False else ""
     return (
         f"You are embedded in a local file viewer, opened on {file}. "
         f"The user is looking at {name} right now; treat that file as the "
@@ -559,7 +600,7 @@ def _system_prompt(file: str) -> str:
         "reloads itself when the file changes). Anything the user annotates or "
         f"screenshots in that pane is a part of {name}, not of the viewer. A "
         f"<{APP_STATE_TAG}> block on their message is the same reading taken "
-        "at send time, and goes stale as soon as you edit anything."
+        f"at send time, and goes stale as soon as you edit anything.{env_note}"
     )
 
 

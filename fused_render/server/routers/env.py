@@ -123,6 +123,69 @@ def api_env_progress(key: str, x_fused: str | None = Header(default=None)):
     return JSONResponse({"ok": True, "key": key, "progress": prog})
 
 
+@router.get("/api/env/custom-env")
+def api_env_custom_env(file: str, x_fused: str | None = Header(default=None)):
+    """Does *file*'s own reader run on a declared project environment, or on
+    this app's own bundled interpreter?
+
+    A Claude Code session embedded beside a file's preview already knows its
+    OWN interpreter (`sys.executable` — the claude template's folder never
+    declares a project, so agent.py's own process always runs on the app's own
+    interpreter, SPEC PY-17). What it cannot know on its own is whether THAT
+    matches what actually reads `file`: a `.py` file may sit inside a project
+    declaring dependencies (SPEC PY-16), and some core templates ship their own
+    `pyproject.toml` too (D276 — `map`/`vector`/`pdf_studio`/…, moved out of
+    the bundled app on purpose), in which case the file's real reader runs on
+    a dedicated venv instead. Guessing which templates those are would drift
+    the moment a new one adds its own deps, so this asks the two real sources
+    instead of hardcoding a list:
+
+    * a `.py` file IS the script `/api/run` would execute, so its own
+      `project_env_for` is the direct, exact answer.
+    * anything else is served by whichever template's reader the registry
+      resolves for it (`server/templates._templates_for`, the same match
+      `/render` uses) — the FIRST (default, SPEC PT-7) entry's folder is
+      checked for a declared environment. A conditional template that gates
+      out the default at request time is a known, accepted imprecision here;
+      this is advisory, not a guarantee.
+
+    `custom_env: true` means "don't trust the session's own interpreter for
+    this file" (a declared project, an unresolvable file, or a file type this
+    app has no template for at all — safest default when unsure). `false`
+    means the session's own interpreter genuinely is what ran it.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if not os.path.exists(file):
+        return _error(f"no such file or directory: {file}")
+
+    from fused_render import projectenv
+
+    is_dir = os.path.isdir(file)
+    # Case-INsensitive, matching _match_registry's own basename lowercasing
+    # below: a `script.PY` must take the same direct-project_env_for path a
+    # `script.py` does, or it falls through to the registry's "code" template
+    # (no pyproject.toml of its own) and reports `custom_env: false` for a
+    # file that may actually run on a project's venv.
+    if not is_dir and file.lower().endswith(".py"):
+        custom_env = projectenv.project_env_for(file) is not None
+        return JSONResponse({"ok": True, "custom_env": custom_env})
+
+    from fused_render.server import templates as _server_templates
+
+    entries, _template_error = _server_templates._templates_for(file, is_dir)
+    default_path = entries[0].get("path") if entries else None
+    if not default_path:
+        # No template resolved (unmapped file type) or the default entry is a
+        # sentinel with no folder (e.g. `_render`) — nothing to check, so the
+        # safe answer is "don't know, don't trust it."
+        return JSONResponse({"ok": True, "custom_env": True})
+    folder = os.path.dirname(default_path)
+    return JSONResponse({"ok": True,
+                         "custom_env": projectenv.has_project_env(folder)})
+
+
 @router.post("/api/env/cancel")
 def api_env_cancel(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)

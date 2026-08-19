@@ -203,6 +203,8 @@ describe("one poll behind both readers", () => {
     expect(SCHEDULED).toContain("publishTasks(r.tasks ?? [])");
     expect(SIDEBAR).toContain("useTasksPulse()");
     expect(SIDEBAR).not.toContain("getTasks(");
+    expect(STORE).toContain("getTasksPulse()");
+    expect(STORE).not.toContain("getTasks()");
     // Polling belongs to the subscribers: it starts with the first reader and
     // stops with the last, like aiRuntime's.
     expect(STORE).toContain("listeners.add(setCurrent)");

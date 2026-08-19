@@ -15,7 +15,7 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { IS_EMBED, fsPathFromLocation, isPanelPath, navHintIsDir } from "@platform/lib/router";
+import { IS_EMBED, IS_PREVIEW, fsPathFromLocation, isPanelPath, navHintIsDir } from "@platform/lib/router";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
 import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady } from "@platform/lib/hooks";
@@ -437,10 +437,10 @@ export default function App({ config }: { config: Config }) {
   // first read is the effect below — otherwise a copy made in Finder *before*
   // the window opened would never be seen.
   useRefreshOnReturn(() => {
-    void reconcileOsClipboard();
+    if (!IS_PREVIEW) void reconcileOsClipboard();
   });
   useEffect(() => {
-    void reconcileOsClipboard();
+    if (!IS_PREVIEW) void reconcileOsClipboard();
   }, []);
 
   // Mod+K cheat sheet. Owned by App, not Listing: it documents the whole shell
