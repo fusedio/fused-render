@@ -731,10 +731,22 @@ should already be in your available-skills list:
 - `workbench:canvas-comments` — reading and resolving canvas comments
 
 If they are absent, or listed under a different prefix, just search your
-available skills for the matching names. If they genuinely are not there,
-carry on without them: follow the conventions of the files already in this
-folder and treat the existing `canvas.toml` as the format reference. Do not
-stop to ask for them, and do not try to install anything.
+available skills for the matching names.
+
+If they genuinely are not there, work from THIS FOLDER and nothing else: the
+existing `canvas.toml` and the files beside it are your format reference, and
+their conventions are the answer. Do not stop to ask for the skills, and do
+not try to install anything.
+
+**Do not search outside this folder for format references.** No `find`, `ls
+-R`, `grep -r`, glob or any other recursive walk over `/`, your home
+directory, `~/.fused-render`, or the fused-render source tree — the app's
+internal files are not documentation and looking through them is a detour
+that ends nowhere. In particular **never list, walk, glob or read anything
+under `~/.fused-render/mounts`**: those are network mounts, and a recursive
+walk wedges them permanently for every app on the machine, including this
+one. If this folder does not answer the question, say what you could not
+determine and stop there — do not go looking for it elsewhere on disk.
 """
 
 
