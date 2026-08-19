@@ -288,6 +288,50 @@ describe("useSelfFixReadiness", () => {
     second.unmount();
   });
 
+  test("a late failure cannot delete a FRESHER answer", async () => {
+    // THE OTHER HALF OF THE ORDERING TRAP. The generation stops a stale answer
+    // being painted; nothing stopped a stale FAILURE deleting a current one.
+    // The cache is shared, so removing an entry is as consequential as reading
+    // it: a first read still in flight when the user clicks, failing after the
+    // recheck has already answered, used to null the cache unconditionally and
+    // throw away a fresh answer it knows nothing about. The next row to mount
+    // then re-asks and races another probe into the listeners — a click that
+    // races the very first fetch leaving the module with no cached answer.
+    let failFirst: (reason: Error) => void = () => {};
+    reply = () =>
+      new Promise<Config>((_resolve, rejectRead) => {
+        failFirst = rejectRead;
+      });
+    const first = mount();
+    await settle();
+    expect(calls).toBe(1);
+
+    // The click's recheck starts a second read, and that one answers.
+    reply = () => Promise.resolve(config({ read_only: true }));
+    await act(async () => {
+      first.current().recheck();
+    });
+    await settle();
+    expect(first.current().readOnly).toBe(true);
+    expect(calls).toBe(2);
+
+    // NOW the abandoned first read fails. It is no longer the cache's answer,
+    // so it is no longer the cache's business.
+    await act(async () => {
+      failFirst(new Error("offline"));
+      await Promise.resolve();
+    });
+    await settle();
+
+    // A row mounting after all that re-uses the fresh answer — no third read.
+    const second = mount();
+    await settle();
+    expect(second.current().readOnly).toBe(true);
+    expect(calls).toBe(2);
+    first.unmount();
+    second.unmount();
+  });
+
   test("a successful read IS remembered", async () => {
     // Permissions on the install root are a property of how the app was
     // installed, so a later row re-uses the answer instead of re-asking.
