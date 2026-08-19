@@ -148,7 +148,7 @@ def _list(file: str) -> dict:
     not "gone" — those rows stay and open their hosted page.
 
     The per-target session scoping this used to add on top (which chats were
-    started on THIS file vs its folder) went with the per-file sidecar (D335):
+    started on THIS file vs its folder) went with the per-file sidecar (D357):
     `cwd` is the only record left, so a file and its folder now show the same
     cwd-scoped list.
     """

@@ -35,10 +35,26 @@ import os
 #: which does not tell a user their download was the wrong FORMAT.
 CT2_WEIGHTS = "model.bin"
 
-#: An MLX conversion of Whisper. `.npz` is what `mlx-community` publishes today
-#: and `.safetensors` is what `mlx_whisper.load_models` prefers when it is
-#: there, so a repo with either is loadable.
+#: An MLX conversion of Whisper, in the two spellings that are DISTINCT — no
+#: other format on the Hub calls a file `weights.npz` or `weights.safetensors`,
+#: so either name alone settles it. `mlx_whisper.load_models` itself looks for
+#: `model.safetensors` first, then these two — but `model.safetensors` is the
+#: filename every transformers repo carries, so that third spelling is only
+#: evidence TOGETHER with a whisper-shaped config (see
+#: `is_mlx_whisper_snapshot`). mlx-community publishes all three: `weights.npz`
+#: on most conversions, `weights.safetensors` on the large-v3-turbo era, and
+#: `model.safetensors` on the newer quantized re-uploads (whisper-tiny.en-8bit).
 MLX_WHISPER_WEIGHTS = ("weights.npz", "weights.safetensors")
+
+#: …and the third spelling, shared with every transformers repo on the Hub.
+MLX_WHISPER_SHARED_WEIGHTS = "model.safetensors"
+
+#: What an MLX whisper `config.json` is: the OpenAI `ModelDimensions` fields,
+#: verbatim. A transformers Whisper config spells the same facts as
+#: `num_mel_bins`/`d_model`/`encoder_layers` and a NeMo config has `target`, so
+#: these keys appear together nowhere else. Two are required rather than one so
+#: a stray `n_vocab` in some other config cannot claim a repo alone.
+MLX_WHISPER_CONFIG_KEYS = ("n_mels", "n_audio_ctx", "n_vocab")
 
 #: An MLX conversion of a NeMo Parakeet model — the single file `parakeet-mlx`
 #: loads. Nothing distinguishing on its own: it is the name every transformers
@@ -235,7 +251,28 @@ def has_ct2_weights(names) -> bool:
 
 
 def has_mlx_whisper_weights(names) -> bool:
+    """The DISTINCT spellings only — see `is_mlx_whisper_snapshot` for the full
+    test a runner and the page should ask."""
     return any(name in names for name in MLX_WHISPER_WEIGHTS)
+
+
+def is_mlx_whisper_config(config: dict) -> bool:
+    """The native whisper `ModelDimensions` config, which no transformers or
+    NeMo checkpoint carries."""
+    return sum(key in config for key in MLX_WHISPER_CONFIG_KEYS) >= 2
+
+
+def is_mlx_whisper_snapshot(names, config: dict) -> bool:
+    """Would `mlx_whisper.load_models` accept this snapshot?
+
+    Either a distinctly-named weight file, or the transformers-shared
+    `model.safetensors` with the whisper-shaped config beside it — the layout
+    the newer quantized mlx-community re-uploads ship, which the filename test
+    alone refused (the bug this function fixed).
+    """
+    if has_mlx_whisper_weights(names):
+        return True
+    return MLX_WHISPER_SHARED_WEIGHTS in names and is_mlx_whisper_config(config)
 
 
 #: What a CTranslate2 conversion of WHISPER carries beyond `model.bin`, which
@@ -289,8 +326,15 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool)
     found: list[str] = []
     if has_ct2_weights(names):
         found.append("faster-whisper")
-    if has_mlx_whisper_weights(names):
+    if is_mlx_whisper_snapshot(names, config):
         found.append("mlx-whisper")
+        # …and NOTHING else, for the Parakeet branch's reason: the newer
+        # mlx-community re-uploads carry `model.safetensors` plus an MLX
+        # `quantization` block, so the text branch below would offer to load a
+        # speech model as a chat model. (The `weights.safetensors` era had the
+        # same leak — `.safetensors` counts as torch weights — fixed by the
+        # same return.)
+        return tuple(found)
     if repo_id in MFLUX_VARIANTS and has_mflux_components(dirnames):
         found.append("mflux-image")
     if DIFFUSERS_INDEX in names:

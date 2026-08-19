@@ -6,7 +6,7 @@ thread does not care which; that is the whole point of collapsing the two stores
 the app used to keep side by side (the scheduled-message list it owns, and the
 session transcripts Claude Code owns, joined by one field).
 
-Three endpoints, and the split between the first two is the design constraint
+The endpoints, and the split between the first three is the design constraint
 this file is written around:
 
 * ``GET /api/tasks`` — every task, newest first, each carrying its **three most
@@ -17,6 +17,10 @@ this file is written around:
   row is deliberately NOT read from that window: `next_run` (with the entry it
   names) is `min(at)` over every pending entry, because the Board orders Upcoming
   by it and three messages cannot answer it. See `_next_run`.
+* ``GET /api/tasks/pulse`` — the same task states reduced to the four fields the
+  global sidebar needs. It deliberately carries no titles, paths, descriptions,
+  or message bodies; Home should not download the Tasks page just to draw its
+  status dot and unread count.
 * ``GET /api/tasks/{key}/messages`` — one task's FULL thread. This is the
   "Show more" click: a whole-transcript parse, which is affordable exactly
   because it happens for one task at a time and never for a listing.
@@ -26,6 +30,12 @@ this file is written around:
   wrong for a time axis, and one field cannot mean both.
 * ``POST /api/tasks/read`` — mark one message read, or (``all: true``) every
   message in one task, in one request and one store write.
+* ``POST /api/tasks/archive`` — file one task away. ONE gesture with two halves
+  (cancel the work, archive the session), which is why it is a verb here rather
+  than a triage write the client composes. See the archiving section at the end.
+* ``POST /api/tasks/unarchive`` — take that filing back, and nothing else: the
+  work archiving cancelled stays cancelled, no run starts, and the task lands in
+  whatever lane it DERIVES into rather than one a caller names. Same section.
 
 **What a message is.** A user prompt in the transcript, or a scheduled entry.
 Those two overlap: a scheduled message that fired IS a prompt in the transcript
@@ -93,7 +103,18 @@ router = APIRouter()
 # view that did not simply lost the news. One decision, made once, on the
 # server.
 STATUSES = ("upcoming", "in_progress", "done", "failed", "archived")
-_TRIAGE_STATUSES = ("in_progress", "done", "archived")
+
+# The ONE triage word this router still reads. `archived` is a FILING state —
+# the user put the task away — and filing is the only decision about a task that
+# is the user's to make. `in_progress` and `done` were read here too and are
+# not any more: a task's status is now derived from what its messages did (see
+# `_status`), and In Progress in particular is Claude's output rather than a
+# lane a person may drop a card into. A recorded `in_progress` (the sessions
+# Inbox's `autoFlow` writes one for every session it sees running, and cannot
+# take it back once its page closes) is therefore ignored rather than reaped —
+# which is the same outcome the reaping machinery was built to reach, without
+# the machinery.
+_FILED = "archived"
 
 # How many messages a listing row carries. The accordion shows three and offers
 # "Show more"; the fourth costs another row of tail to keep in memory for every
@@ -494,162 +515,271 @@ def _turn_of_newest_chat(messages: list[dict], live: bool) -> None:
 # --------------------------------------------------------------- the statuses
 
 
-def _board_column(message: dict | None) -> str:
-    """A task's status from its newest message, mapped state for state.
+def _message_running(message: dict) -> bool:
+    """Is THIS message's run happening right now?
 
-    Two mappings are worth naming because they look alike and are not:
+    Two shapes and no third. `sending` is the scheduler holding a send it has
+    spawned and not heard back from; `sent` with a turn that has not reported an
+    end is a turn in flight. `_entry_turn` writes "" for exactly that case (and
+    `_turn_of_newest_chat` writes "" over the newest typed prompt while the
+    transcript is live), which is why the empty string is the running answer
+    here rather than an absence to be defaulted away.
 
-    * **`error` is `failed`**, its own column. A run that started and broke is
-      news, and filing it under `done` meant every view had to remember to read
-      the `failed` flag separately to say so.
-    * **`cancelled` and `skipped` are `archived`**, NOT failed. A skipped
-      occurrence was filed away and never attempted — the coalescer dropped it,
-      or the user did — which is a different thing from a run that tried and
-      broke.
-
-    `missed` stays `done`, unchanged and deliberately not touched here. It is
-    only reachable at all on an install that set FUSED_RENDER_SCHEDULE_MAX_LATE
-    (a missed OCCURRENCE reads as `skipped` and archives above), and by the
-    reasoning that archives a skip it arguably belongs there too — but that is a
-    separate decision from this one and nobody has made it.
+    `unknown` is deliberately NOT running: the watcher said it stopped being
+    able to tell, and reporting that as work in progress is the frozen
+    progress-bar lie.
     """
-    if message is None:
-        return "done"  # a task with nothing in it happened and is over
     state = message["state"]
-    if state in ("cancelled", "skipped"):
-        return "archived"
     if state == "sending":
-        return "in_progress"
+        return True
+    return state == "sent" and message["turn"] in ("", "running")
+
+
+def _message_archived(message: dict, filed: bool) -> bool:
+    """Is this message filed away — out of the conversation the task is having?
+
+    TWO ways in, and the second is the cascade:
+
+    * the message's own state says so. `cancelled` and `skipped` are the two —
+      a run the user called off, and an occurrence that never happened. Neither
+      is an outcome anybody is waiting to read.
+    * the TASK is archived, and archiving a task archives what is in it. The one
+      exception is a message that is still RUNNING: a run cannot be filed away
+      while it is happening, so it keeps going, the task keeps reading In
+      Progress (`_status` asks about running first), and the whole task falls
+      into Archive by itself the moment the run ends. Nothing has to remember to
+      finish the job later — the derivation simply answers differently once the
+      last message stops running.
+    """
+    if message["state"] in ("cancelled", "skipped"):
+        return True
+    return filed and not _message_running(message)
+
+
+def _message_verdict(message: dict) -> str | None:
+    """What this message has to SAY about how it went — or None when it has
+    nothing to say yet.
+
+    None is the interesting answer and it is what makes a recurring task read
+    correctly. A `pending` message is a promise, not a report: a task whose last
+    run finished and whose next occurrence is already on the books has unread
+    OUTPUT sitting in it, and filing it under Upcoming because the newest row in
+    the thread happens to be in the future hides exactly the thing the person
+    has to look at. So a pending message says nothing and the run before it
+    speaks (`_status`).
+
+    `missed` stays `done`, unchanged: it is only reachable at all on an install
+    that set FUSED_RENDER_SCHEDULE_MAX_LATE (a missed OCCURRENCE reads as
+    `skipped`), the row already paints it red off the `failed` flag, and
+    promoting it to the Failed lane is a separate decision nobody has made.
+    """
+    state = message["state"]
     if state == "error":
         return "failed"
-    if state in ("sent", "missed"):
+    if state == "sent":
+        return "failed" if message["turn"] == "unknown" else "done"
+    if state == "missed":
         return "done"
-    return "upcoming"
+    return None
 
 
-def _pin_at(record: dict) -> float:
-    """When an `in_progress` pin was placed, or 0.0 for one that does not say.
+def _waiting(messages: list[dict], filed: bool) -> bool:
+    """Is there anything in this task still to come?
 
-    0.0 is the answer for every pin the Inbox's `autoFlow` wrote — it sends
-    `{status}` and nothing else — and for every pin written before the stamp
-    existed. Both are exactly the pins that have to be reapable, so the absence
-    reads as "older than anything that has happened", which is what 0.0 is.
+    THE OTHER HALF OF UPCOMING, and the half that was missing (Akshil,
+    2026-08-18: an Upcoming card could not be dragged into In Progress any more).
+    "No output yet" was read as enough on its own, which put every session whose
+    transcript surfaces no prompt at all — one that ran only `/clear`, or
+    `/making-a-release` — into Upcoming. On one real machine that was every card
+    in the lane: nine of them, each with `message_count: 0`.
 
-    Stored as a string because that is the shape of the record: `set_triage.py`
-    coerces every field it writes with `str(value).strip()`, so `read` is "1"
-    and not 1. Parsed defensively for the same reason — a hand-edited file must
-    cost a pin, not the page."""
+    Those cards are unrunnable BY CONSTRUCTION and correctly so — the drag into
+    In Progress fires a pending message and they have none — so the lane filled
+    up with the only cards in it that could not do the one thing it exists for.
+    The lane was the lie, not the drag: `dropLanes` was refusing a drop on a card
+    that had nothing to drop.
+
+    So Upcoming means work that has not happened but is going to, which is a
+    message still WAITING: not filed away, and with no verdict yet
+    (`_message_verdict` answers None for exactly the promises). A task with none
+    of those and nothing to report is over, and `done` is where it goes — the
+    same answer this server gave before the derivation landed ("a task with
+    nothing in it happened and is over"), for the same reason.
+    """
+    return any(not _message_archived(m, filed) and _message_verdict(m) is None
+               for m in messages)
+
+
+def _speaker(messages: list[dict], filed: bool) -> dict | None:
+    """The message a task's status is reading off: the most recent one that is
+    neither filed away nor still waiting to happen.
+
+    "Most recent" is position in the thread, which `_merge` has already ordered
+    by time. Skipping the archived ones is what makes filing a message a real
+    gesture: cancel the newest message and the one before it speaks again.
+    """
+    for message in reversed(messages):
+        if _message_archived(message, filed):
+            continue
+        if _message_verdict(message) is not None:
+            return message
+    return None
+
+
+def _archive_record(session_id: str, triage: dict) -> dict | None:
+    """This session's `archived` record, or None. The only triage word still
+    read here — see `_FILED`."""
+    record = triage.get(session_id) if session_id else None
+    if isinstance(record, dict) and record.get("status") == _FILED:
+        return record
+    return None
+
+
+def _filed_at(record: dict) -> float:
+    """When the filing was made, epoch seconds, or 0.0 for a record that does
+    not say.
+
+    Stored as a string because that is the shape of the record (`set_triage.py`
+    coerces every field it writes, so `at` is "1.0" and not 1.0), and parsed
+    defensively for the same reason: a hand-edited file must cost a filing, not
+    the page.
+
+    0.0 means the record does not say WHEN, and `_revived` reads that as "no
+    revival": a filing whose date is unknown cannot be shown to have been
+    overtaken, and the alternative — treating it as older than everything —
+    would make every archive the sessions Inbox has ever written (its own
+    `set_triage.py` stamps nothing) revive itself on the very next poll. Every
+    archive this app writes carries a stamp (`claude_sessions.write_triage`),
+    so the door below is open for every filing a person can make here."""
     try:
         return float(record.get("at") or 0.0)
     except (TypeError, ValueError):
         return 0.0
 
 
-def _pin_holds(record: dict, session_id: str, live: bool, busy: set[str],
-               active: float) -> bool:
-    """Is a recorded `in_progress` still describing something?
+def _revived(messages: list[dict], filed_at: float) -> bool:
+    """Has this task DONE something since it was filed away?
 
-    This is the one triage word that is a CLAIM ABOUT THE PRESENT. `done` and
-    `archived` are filing decisions and are timeless — they stay true however
-    long the card sits in the lane — so they are never asked this question and
-    never reaped. "Something is running in this conversation" is falsifiable,
-    and nothing was falsifying it.
+    THE AUTOMATIC WAY OUT OF ARCHIVE IS ACTIVITY (Akshil, 2026-08-18): "if you
+    want to move it to in progress or done, just type in a message inside that
+    chat and it will automatically move". This door has to be a real one: the
+    filing is dropped (`clear_triage`), not overlooked for one poll.
 
-    Why it had to be: the sessions Inbox's `autoFlow` writes `in_progress` for
-    every session it sees running, and only writes it back to `done` if THAT
-    SAME PAGE is still open to witness the stop — it gates on an in-memory
-    `RUNNING` set that is empty on every load. So every run whose finish no
-    Inbox tab watched leaves a pin on disk that outlives it forever, and
-    `_status` honoured them unconditionally as "the user's own act". The board
-    held five cards in In Progress for days over runs that had recorded `done`
-    hours or a day earlier. The Inbox's own `_summarize` names this exact
-    failure ("a session that finished while nothing was watching shouldn't sit
-    in in_progress forever") and then only guards the untriaged default, which
-    is the half that was never the problem.
+    The other door is the drag — a card lifted out of the Archive lane
+    (`api_task_unarchive`) — and it is the SAME drop of the SAME record, which is
+    why neither has to know about the other. Nothing here changes because a
+    gesture exists: activity still un-files a task nobody dragged.
 
-    THREE independent reasons to hold, and a pin needs only one. They are
-    independent on purpose, because each one is wrong on its own in a different
-    direction:
+    WHICH ACTIVITY, and the distinction is the whole function. `ran_at` is when
+    a message actually happened, so:
 
-    * **`live`** — the shared liveness rule says the transcript is mid-turn.
-      Not sufficient alone: a turn thinking through a long tool call appends
-      nothing for minutes and reads as not-live while genuinely running.
-    * **`busy`** — `schedule.busy_sessions`, the scheduler's own record of a
-      send it has not heard back from (`sending`, or `sent` with no verdict).
-      This is what covers the liveness gap above for a scheduled run, and it is
-      the scheduler's answer rather than a second one of ours. Not sufficient
-      alone either: a session a human is typing into has no entry at all.
-    * **a stamp later than the session's last activity** — a deliberate pin
-      that no run has contradicted. This is what keeps the reopen drag (a
-      `done` card dropped back on In Progress, which `dropLanes` offers) from
-      being undone on the next 20s poll. `active` is therefore what HAPPENED
-      and only that: a due time in the future is later than any stamp a user
-      can make, so admitting one here inverts this guard for exactly the tasks
-      that have work coming. `_row` keeps the two apart.
+    * a run that was ALREADY IN FLIGHT when the task was filed started before
+      the stamp. It does not revive anything — it keeps going, the card reads In
+      Progress while it does (rule 1 in `_status`), and the task settles back
+      into Archive when it ends. That is the promise the archive cascade already
+      makes and it is unchanged.
+    * a message that arrives AFTERWARDS — a prompt typed into the conversation,
+      a run someone started — happened after the stamp, and that is new work in
+      a task somebody had finished with. The filing is stale and goes.
 
-    A turn is therefore only reaped when the session is quiet, the scheduler is
-    waiting on nothing in it, and the pin predates the last thing that happened
-    — three ways of being over, all at once. What is NOT relied on is the
-    rendered message's `turn`: `_entry_turn` folds liveness into that field and
-    has no word for "sent, no verdict, not live" (it says `idle`), so reading it
-    would have collapsed the second guard into the first.
+    A message that has not happened yet does not count: `ran_at` is 0.0 until it
+    does, so a run scheduled into an archived task revives it when it RUNS,
+    which is when there is something to come back for.
+
+    An unstamped filing revives on nothing at all — see `_filed_at`.
     """
-    if live or session_id in busy:
-        return True
-    return _pin_at(record) > active
+    if filed_at <= 0:
+        return False
+    return any((m["ran_at"] or 0.0) > filed_at for m in messages)
 
 
-def _status(newest: dict | None, session_id: str, triage: dict, live: bool,
-            busy: set[str], active: float) -> str:
+def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
+    """Is something happening in this conversation RIGHT NOW, whatever its
+    messages say?
+
+    Two independent halves, either of which is enough and neither of which is
+    sufficient alone: `live` is the transcript mid-turn, `busy` is the scheduler
+    waiting on a send it has not heard back from. A turn thinking through a long
+    tool call appends nothing and reads as not-live; a session a human is typing
+    into has no scheduler entry at all.
+
+    Its own function so `_status`'s first rule and anything else that has to ask
+    cannot drift apart about what "running" means. The third way — a message of
+    this task's own that is in flight — is `_message_running`, and `_status`
+    asks both.
+    """
+    return live or (bool(session_id) and session_id in busy)
+
+
+def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
+            busy: set[str]) -> str:
     """The status a task sits in — ONE decision, made here, for every view.
 
-    Derived from the newest message, then overridden by an explicit triage
-    record. Triage wins on disagreement because it is the user's own act: they
-    dragged the card, and a derivation that undid that on the next poll would
-    make the board unusable. Only a RECORDED status overrides — the default
-    claude_sessions applies to an untriaged session (running -> in_progress) is
-    a derivation too, and a weaker one than the message's own state. Triage has
-    only three words, so a user cannot file a task as `failed`; that is a fact
-    about the run, not a place to put it.
+    Derived from the MESSAGES, in this order, and the order is the whole model:
 
-    The one exception to triage winning is a stale `in_progress` — a pin whose
-    run has ended, which is not the user's act at all but a claim the Inbox
-    wrote automatically and had no way to take back. See `_pin_holds`.
+    1. **Anything running ⇒ In Progress.** Activity beats recency: a task whose
+       newest message is next Tuesday's occurrence, with a run still going in
+       it, is a task that is working. Three things say a run is happening and a
+       task needs only one — a message of its own that is in flight
+       (`_message_running`), a transcript that is live, and `schedule.busy_sessions`,
+       the scheduler's record of a send it has not heard back from. They are
+       independent because each is wrong on its own in a different direction: a
+       turn thinking through a long tool call appends nothing for minutes and
+       reads as not-live, and a session a human is typing into has no busy entry
+       at all.
+    2. **Archived is a filing state.** The task the user put away is archived,
+       and so is a task whose every message ended up filed (cancelling the last
+       live message in a thread archives the task, without anybody having to say
+       so twice). Step 1 is above this on purpose: a run in flight when the task
+       was filed keeps running and the card reads In Progress until it stops.
+    3. **Otherwise the newest message that has something to say speaks** —
+       `failed` for a run that broke, `done` for one that ended. See `_speaker`.
+    4. **Nothing said yet, but something COMING ⇒ Upcoming**, and that second
+       half is the whole of it: the lane is what has not happened *yet*, so it
+       needs a message still waiting to happen. A task with nothing coming and
+       nothing to report is over, and `done` is where a spent session goes — see
+       `_waiting`.
 
-    `failed` is decided here rather than left to the `failed` boolean beside it
-    because a broken run is not a kind of `done`, and a status every view reads
-    is the only way to be sure every view says so. It covers both halves of
-    `_failed`: a message whose state is `error`, and one whose watcher stopped
-    being able to say how the turn went (`turn: unknown`) — the second is
-    invisible to `_board_column`, which only sees the state.
+    What is NOT here any more is triage's other two words. A person cannot file
+    a task as In Progress (the lane is Claude's output, and the Board no longer
+    offers the drop) and cannot file one as Done (a run says that, not a
+    reader) — so the stale-pin machinery that used to decide when an automatic
+    `in_progress` had outlived its run is gone with the pin it guarded.
 
-    A LIVE session still reads `in_progress` even over a failed newest message:
-    something is running in that conversation right now, which is the more
-    urgent fact and the one that stops being true on its own."""
-    record = triage.get(session_id) if session_id else None
-    if isinstance(record, dict):
-        status = record.get("status")
-        if status in _TRIAGE_STATUSES and (
-                status != "in_progress"
-                or _pin_holds(record, session_id, live, busy, active)):
-            return status
-    if live and newest is not None:
+    FILING SOMETHING DOES NOT STOP IT (Akshil, 2026-08-18), which is rule 1
+    standing above rule 2 and nothing more: Archive is a timeless decision and
+    the record is never touched here, but while a turn is genuinely in flight a
+    row that says `archived` is a lie the reader can watch. The moment the run
+    ends the task drops back into Archive on the next poll.
+
+    `filed` is the ANSWER, not the record: the caller has already asked whether
+    the filing still stands (`_archive_record` and `_revived`), because a filing
+    a new message has overtaken is dropped from disk rather than argued with on
+    every poll. This function reads no triage of its own.
+    """
+    if messages and (_running_now(session_id, live, busy)
+                     or any(_message_running(m) for m in messages)):
         return "in_progress"
-    if _failed(newest):
-        return "failed"
-    return _board_column(newest)
+    if filed:
+        return "archived"
+    if messages and all(_message_archived(m, filed) for m in messages):
+        return "archived"
+    speaker = _speaker(messages, filed)
+    if speaker is not None:
+        return _message_verdict(speaker) or "done"
+    return "upcoming" if _waiting(messages, filed) else "done"
 
 
-def _failed(newest: dict | None) -> bool:
-    """Did the newest message's run break?
+def _failed(speaker: dict | None) -> bool:
+    """Did the run this task is reading off break?
 
     Kept as its own field on the row as well as feeding `status` above, because
     the two can disagree in exactly one direction and the difference is worth
-    keeping: a user who has triaged a task to `done`, or a session that is live
-    again, reads `status` as something other than `failed` while this stays
-    true. Anything that only wants "which column" should read `status`."""
-    return newest is not None and (
-        newest["state"] == "error" or newest["turn"] == "unknown")
+    keeping: a task that is archived, or live again, reads `status` as something
+    other than `failed` while this stays true. Anything that only wants "which
+    column" should read `status`."""
+    return speaker is not None and (
+        speaker["state"] == "error" or speaker["turn"] == "unknown")
 
 
 # ----------------------------------------------------------------- the titles
@@ -756,7 +886,7 @@ def _entry_session(entry: dict) -> str:
 # States that mean a scheduled message will never run and never did. In
 # `_entry_state`'s vocabulary, so a cancelled or missed OCCURRENCE — which reads
 # as `skipped` — is covered by the same tuple, and `error` is NOT: a send that
-# broke is news, and `_board_column` gives it its own column.
+# broke is news, and `_message_verdict` reports it as `failed`.
 #
 # `sent` and `sending` are obviously excluded, and so is `pending`: a message
 # waiting for its time is work that has not happened yet, not work that never
@@ -985,14 +1115,21 @@ def _next_run(entries: list[dict]) -> tuple[float, str]:
 
 
 def _row(task: dict, number: str, triage: dict, read: dict, now: float,
-         busy: set[str]) -> dict:
+         busy: set[str], revived: list[str]) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
     `busy` is `schedule.busy_sessions` over the WHOLE store, computed once by
-    the caller — see `_pin_holds`. Over the whole store rather than this task's
+    the caller — one of the three things that say a run is happening (see
+    `_status`). Over the whole store rather than this task's
     own entries because a resume that forked is filed under the session it RAN
     in (`_entry_session` reads the answer first) while it still holds the
-    session it NAMED busy, and that one is another row."""
+    session it NAMED busy, and that one is another row.
+
+    `revived` is an OUT parameter and the only one: a session whose archive
+    record this row has just found stale is appended to it, and the caller does
+    the write. Collected rather than written here because building a row is
+    inside a per-task `try` that swallows IO errors — a failed write would cost
+    the row instead of costing the filing."""
     rec = _scan(task["path"]) if task["path"] else None
     live, active = _live(task["path"], now)
     prompts = list(rec["tail"]) if rec else []
@@ -1008,28 +1145,41 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # prompts and the unfired entries — a prompt outside that window cannot be
     # in the last three of a list it is in the same order as. Their ids follow
     # from the total, whatever else is below them.
-    tail = _merge(prompts, task["entries"], live)
+    merged = _merge(prompts, task["entries"], live)
     # BEFORE the cut, from the whole set: the one fact about the future that the
     # three-message window cannot be trusted to hold. See `_next_run`.
     next_run, next_run_entry = _next_run(task["entries"])
-    tail = tail[-_LISTING_MESSAGES:]
+    tail = merged[-_LISTING_MESSAGES:]
+    # The tail's dicts ARE the merged list's dicts (a slice shares them), so the
+    # liveness this writes onto the newest chat message is visible to the status
+    # derivation below, which reads the whole thread.
     _turn_of_newest_chat(tail, live)
     for offset, message in enumerate(reversed(tail)):
         message["message_id"] = tasks_store.format_message_id(total - offset)
     _mark_unread(tail, task["key"], read)
 
     newest = tail[-1] if tail else None
+    # DOES THE FILING STILL STAND? Asked once, here, and spent by both the
+    # status and the speaker below so they cannot read the task as archived and
+    # not-archived in the same row. A record the thread has overtaken is not
+    # merely ignored — its session id goes into `revived`, and the caller drops
+    # it from disk. See `_revived`.
+    record = _archive_record(task["session_id"], triage)
+    filed = record is not None
+    if record is not None and _revived(merged, _filed_at(record)):
+        filed = False
+        revived.append(task["session_id"])
+    # Which message the status is reading off — asked once here so the row's
+    # `failed` flag and its `status` cannot be reading two different runs.
+    speaker = _speaker(merged, filed)
     # TWO times, because "recent" is two questions here and one number could
     # only answer them by lying to one of them.
     #
     # `active` is the last thing that actually HAPPENED in this session, and
-    # nothing that has not happened may enter it — it is the clock `_pin_holds`
-    # measures a deliberate `in_progress` stamp against. `ran_at` is when a
-    # message ran (a caught-up run is news today, whatever day it was due) and
-    # 0.0 until it does; `at` is the due time, which never moves and can be in
-    # the FUTURE (see `_entry_at`). Reading `at` here was reaping every pin on a
-    # task with a message still to come, because no stamp a user can make is
-    # later than tomorrow — the exact reopen the stamp exists to protect.
+    # nothing that has not happened may enter it. `ran_at` is when a message ran
+    # (a caught-up run is news today, whatever day it was due) and 0.0 until it
+    # does; `at` is the due time, which never moves and can be in the FUTURE
+    # (see `_entry_at`).
     if newest is not None:
         active = max(active, newest["ran_at"] or 0.0)
     if not active and task["entries"]:
@@ -1061,11 +1211,12 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # an LLM call. Read from the entry so a store that grows the field later
         # starts working without a change here.
         "description": _description(task),
-        # `active`, not `surfaced`: a pin is stale exactly when it predates the
-        # last thing that HAPPENED, and a run still ahead has not happened.
-        "status": _status(newest, task["session_id"], triage, live, busy,
-                          active),
-        "failed": _failed(newest),
+        # Over the WHOLE merged thread, not the three-message tail: "is anything
+        # running in this task?" and "is every message filed away?" are both
+        # questions about all of it, and a run pushed out of the window by two
+        # later occurrences is exactly the run that must not be lost.
+        "status": _status(merged, filed, task["session_id"], live, busy),
+        "failed": _failed(speaker),
         "live": live,
         "unread": _unread_count(task, total, unfired, read),
         "last_active": surfaced,
@@ -1135,6 +1286,56 @@ def _unread_count(task: dict, total: int, unfired: list[dict],
                - waiting)
 
 
+def _task_rows() -> list[dict]:
+    """Build the authoritative task rows shared by the two listing shapes.
+
+    Keeping collection here makes the compact sidebar endpoint a projection of
+    exactly the same status, unread and activity decisions as the Tasks page.
+    FastAPI serializes only the projection returned by that endpoint, so the
+    large titles, descriptions and message bodies never cross the wire there.
+    """
+    triage = sessions._load_state("triage.json")
+    read = tasks_store.read_state()
+    now = time.time()
+    tasks = _collect()
+    # One pass over the store for every row: which conversations the scheduler
+    # is still waiting on. See `_status`.
+    busy = schedule.busy_sessions(schedule.list_entries())
+    for task in tasks.values():
+        _place(task)
+    numbers = _numbers(tasks)
+    rows = []
+    # Sessions whose archive record the thread has outlived — see `_revived`.
+    # Collected across the loop and written once, after it, so the listing is
+    # not doing IO in the middle of building rows.
+    revived: list[str] = []
+    for task in tasks.values():
+        try:
+            row = _row(task, numbers.get(task["key"], ""), triage, read, now,
+                       busy, revived)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue  # one unreadable task, not an unreadable page
+        rows.append(row)
+    for session_id in revived:
+        # THE WAY OUT OF ARCHIVE IS ACTIVITY, and it has to be a real way out:
+        # the row already reads as its derived lane above, and leaving the
+        # record on disk would put the task back in Archive the moment it went
+        # quiet again. Best-effort — a filing we could not drop costs one poll's
+        # worth of the row coming back, never the listing.
+        try:
+            sessions.clear_triage(session_id)
+        except OSError:
+            pass
+    # Day one: everything that already exists is read. Done HERE, from the
+    # counts the rows just produced, because this is the only place that knows
+    # them — and done after the rows are built rather than before, so it costs
+    # one extra pass on exactly one request in the store's lifetime.
+    if not tasks_store.initialized(read):
+        tasks_store.initialize([(r["key"], r["message_count"]) for r in rows])
+    rows.sort(key=lambda r: r["last_active"], reverse=True)
+    return rows
+
+
 @router.get("/api/tasks")
 def api_tasks():
     """Every task, newest activity first, each with its three newest messages.
@@ -1144,32 +1345,22 @@ def api_tasks():
     Excludes the ones that stopped being tasks: no session, and nothing left to
     run — see `_is_task`. That is an absence of a task, not a filter hiding one.
     """
-    triage = sessions._load_state("triage.json")
-    read = tasks_store.read_state()
-    now = time.time()
-    tasks = _collect()
-    # One pass over the store for every row: which conversations the scheduler
-    # is still waiting on. See `_pin_holds`.
-    busy = schedule.busy_sessions(schedule.list_entries())
-    for task in tasks.values():
-        _place(task)
-    numbers = _numbers(tasks)
-    rows = []
-    for task in tasks.values():
-        try:
-            row = _row(task, numbers.get(task["key"], ""), triage, read, now,
-                       busy)
-        except (OSError, ValueError, KeyError, TypeError):
-            continue  # one unreadable task, not an unreadable page
-        rows.append(row)
-    # Day one: everything that already exists is read. Done HERE, from the
-    # counts the rows just produced, because this is the only place that knows
-    # them — and done after the rows are built rather than before, so it costs
-    # one extra pass on exactly one request in the store's lifetime.
-    if not tasks_store.initialized(read):
-        tasks_store.initialize([(r["key"], r["message_count"]) for r in rows])
-    rows.sort(key=lambda r: r["last_active"], reverse=True)
+    rows = _task_rows()
     return {"tasks": rows}
+
+
+_PULSE_FIELDS = ("key", "status", "unread", "last_active")
+
+
+@router.get("/api/tasks/pulse")
+def api_tasks_pulse():
+    """The compact task facts used by the global sidebar's status pulse."""
+    return {
+        "tasks": [
+            {field: row[field] for field in _PULSE_FIELDS}
+            for row in _task_rows()
+        ]
+    }
 
 
 def _thread(task: dict, read: dict, now: float) -> list[dict]:
@@ -1387,3 +1578,144 @@ def _read_whole_task(key: str) -> dict:
         tasks_store.mark_read_many(key, unread_ids)
         _mark_unread(messages, key, tasks_store.read_state())
     return {"ok": True, "unread": sum(1 for m in messages if m["unread"])}
+
+
+# ------------------------------------------------------------------ archiving
+# Archiving is the only filing decision a person makes about a task, and it is
+# ONE gesture with two halves — which is why it is a verb here and not a triage
+# write from the client:
+#
+#   * the SESSION is filed (triage.json `archived`, the same record the Inbox
+#     writes and reads), so the transcript keeps its place and its notes;
+#   * the WORK IS CALLED OFF. A task with a run booked for tomorrow that is
+#     "archived" but still fires is not archived at all — it is a card that
+#     re-appears in Upcoming on its own, which is the one thing filing something
+#     away must never do. So every pending message is cancelled, and so is every
+#     recurring RULE behind one, because a rule that keeps materialising
+#     occurrences is a rule that keeps un-archiving the task.
+#
+# WHAT IS NOT TOUCHED is a run that is happening. `sending` is not cancellable
+# (schedule.cancel refuses it, and rightly: the helper is away and the turn may
+# have started) and neither is a live turn. Those keep going, the task keeps
+# reading In Progress while they do, and it settles into Archive by itself when
+# they end — see `_message_archived`. Nothing has to come back and finish the
+# job; the derivation simply answers differently once nothing is running.
+#
+# Deleting is still not on offer and never will be: a task IS a Claude session
+# and this app does not destroy transcripts (D306). The one place a row does
+# disappear is a task that never ran and has no session to keep — cancelling its
+# only message leaves nothing for a row to be about, which is `_is_task`'s rule
+# and predates this endpoint.
+
+
+class ArchivePatch(BaseModel):
+    key: str
+
+
+@router.post("/api/tasks/archive")
+def api_task_archive(patch: ArchivePatch):
+    """File one task away: cancel its pending work, archive its session.
+
+    Answers what it actually did — how many messages were called off, and
+    whether the session was filed — rather than a bare ok, because the two
+    halves can legitimately come apart (a task with no session id has only the
+    first, a pure-chat task has only the second) and the client's note line is
+    the place a person finds out which.
+    """
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    task = _collect().get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+
+    cancelled = 0
+    # The rules FIRST: cancelling a template also cancels the occurrence it has
+    # already materialised, so doing it the other way round would cancel one
+    # occurrence and let the rule mint the next.
+    for template_id in _rules_behind(task["entries"]):
+        if schedule.cancel(template_id) is not None:
+            cancelled += 1
+    for entry in task["entries"]:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        entry_id = str(entry.get("id") or "")
+        if entry_id and schedule.cancel(entry_id) is not None:
+            cancelled += 1
+
+    session_id = task["session_id"]
+    if session_id:
+        sessions.write_triage(session_id, _FILED)
+    return {"ok": True, "key": key, "cancelled": cancelled,
+            "filed": bool(session_id)}
+
+
+class UnarchivePatch(BaseModel):
+    key: str
+
+
+@router.post("/api/tasks/unarchive")
+def api_task_unarchive(patch: UnarchivePatch):
+    """Take the filing back: drop the archive record, nothing else.
+
+    THE MOVE HAS ONE MEANING AND NO DESTINATION. Dragging a card out of the
+    Archive lane does not say which lane it should land in — the user drops it
+    somewhere because that is how a card leaves a lane, and where it goes is
+    DERIVED (`_status`) exactly as it is for every other task on the board. So
+    this verb takes a key and no status, and the lane the user happened to drop
+    on is not sent, not read and not honoured. `status` in the answer is where
+    the task actually landed, which is the one thing the client cannot work out
+    for itself before its next poll — and it may well not be the lane under the
+    cursor. That is correct: the board shows what the work is doing.
+
+    ONE HALF, unlike archiving's two. Archiving cancels the pending work AND
+    files the session; this only un-files. The cancelled runs stay cancelled —
+    a booked run that came back to life because somebody unarchived a card
+    would be a message firing that nobody asked for twice, and "put this back
+    on the board" is not consent to send it. Ask for the run again (or say
+    something in the conversation) if that is what is wanted.
+
+    NO RUN IS EVER STARTED HERE, which is why the drop onto In Progress is this
+    same call and not a run: In Progress is Claude's output, never a verdict a
+    reader hands down, so a card dropped there simply comes back and lands
+    wherever its thread puts it — Done, Failed or In Progress if a turn really
+    is live.
+
+    `clear_triage` keeps the rest of the record — a note, a tag, a read mark on
+    that session is somebody else's data and outlives the status the Board put
+    on it. Same function the revival rule calls (`_revived`), so the gesture and
+    the automatic way out of Archive drop the filing identically.
+    """
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    task = _collect().get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+
+    session_id = task["session_id"]
+    unfiled = bool(session_id) and sessions.clear_triage(session_id)
+    # Where it landed, read the same way the listing reads it — one row built
+    # from the same helpers, AFTER the filing is gone, so the answer is the lane
+    # the very next poll will draw rather than a guess about it.
+    _place(task)
+    row = _row(task, "", sessions._load_state("triage.json"),
+               tasks_store.read_state(), time.time(),
+               schedule.busy_sessions(schedule.list_entries()), [])
+    return {"ok": True, "key": key, "unfiled": unfiled,
+            "status": row["status"]}
+
+
+def _rules_behind(entries: list[dict]) -> list[str]:
+    """The recurring templates this task's still-pending occurrences came from,
+    each named once. Only PENDING occurrences count: a template whose runs are
+    all spent is not going to produce another one on its own, and cancelling it
+    would be this verb reaching past the task it was asked about."""
+    rules: list[str] = []
+    for entry in entries:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        template_id = str(entry.get("template_id") or "")
+        if template_id and template_id not in rules:
+            rules.append(template_id)
+    return rules

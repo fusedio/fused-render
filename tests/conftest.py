@@ -8,7 +8,7 @@ set here at conftest import, ahead of the first test-module import, or the
 copy would land in the real ~/.fused-render.
 
 FUSED_RENDER_DIR is redirected for the same reason: /api/config reads it (D81)
-and the seed tests write into it, so no test may see the real ~/Documents/Fused.
+and the seed tests write into it, so no test may see the real ~/Fused.
 
 CLAUDE_CONFIG_DIR likewise: the user-level skill sync (user_skills.py, D185)
 writes into <config dir>/skills/ and POST /api/apps/new triggers it, so no
@@ -369,6 +369,23 @@ def _no_startup_index_scan(monkeypatch):
     # `freshness.note_folder_opened` directly with their own config
     # (tests/test_index_api.py, tests/test_index_freshness.py).
     monkeypatch.setattr(index_routes, "note_folder_opened", lambda path: False)
+    # ...and by a third: every /api/fs mutation tells the index which folder it
+    # changed (server/index_touch.py), which arms a timer thread that calls
+    # runner.start. A test that renames a file anywhere would therefore spawn a
+    # detached scan of that folder a second and a half later — after the test
+    # has finished and its tmp home has gone.
+    #
+    # The tests that are ABOUT it drive `RescanQueue` directly with injected
+    # deps (tests/test_index_touch.py).
+    from fused_render.server import fs_mutate
+
+    monkeypatch.setattr(fs_mutate, "note_index_mutation", lambda *paths: None)
+    # The ranked route caches the folded run listing for a beat, so that one
+    # question is not re-asked on every keystroke (routers/index._live_runs).
+    # It is module-global and keyed on nothing, so without this a test's runs
+    # leak into the next test's answer for a second — which is longer than a
+    # test takes.
+    index_routes._forget_runs()
 
 
 @pytest.fixture(autouse=True)

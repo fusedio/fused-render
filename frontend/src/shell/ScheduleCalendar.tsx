@@ -165,6 +165,7 @@ import type { CalendarChip, CalendarRange, MsgCancelKind, QueueRole } from "./sc
 // The pill used to answer a different question (the day's worst run) and could
 // therefore contradict the button — see the `pill` memo below.
 import {
+  isRunningIn,
   messageTone as taskMessageTone,
   openMessageHref,
   taskColumn,
@@ -214,6 +215,32 @@ export const ICON_SKIP = icon(<><polygon points="5 4 15 12 5 20 5 4" /><line x1=
 export const ICON_CANCEL = icon(<><circle cx="12" cy="12" r="9" /><path d="M8 8l8 8M16 8l-8 8" /></>);
 export const ICON_NOTES = icon(<><line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="14" y2="17" /></>);
 export const ICON_RESTORE = icon(<><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /></>);
+// The three views, as marks — the List / Board / Calendar switcher in
+// Scheduled.tsx. They live here with the rest of the page's vocabulary rather
+// than in that file because this is where `icon()` is, and a second copy of
+// that helper is how two icon sizes start. lucide `list`, `columns-3` and
+// `calendar`, unmodified: the switcher is the first control a person reads on
+// this page, so it should wear the shapes they already know from every other
+// board and calendar they use rather than bespoke ones.
+//
+// ICON_NOTES above is three lines too, and stays a separate glyph: it means
+// "this run has a note", and a mark that means two things on one page means
+// neither. The list icon carries the leading dots that one does not.
+export const ICON_VIEW_LIST = icon(
+  <><line x1="9" y1="6" x2="20" y2="6" /><line x1="9" y1="12" x2="20" y2="12" />
+    <line x1="9" y1="18" x2="20" y2="18" /><line x1="4" y1="6" x2="4.01" y2="6" />
+    <line x1="4" y1="12" x2="4.01" y2="12" /><line x1="4" y1="18" x2="4.01" y2="18" /></>,
+);
+export const ICON_VIEW_BOARD = icon(
+  <><rect x="3" y="3" width="18" height="18" rx="2" />
+    <line x1="9" y1="3" x2="9" y2="21" /><line x1="15" y1="3" x2="15" y2="21" /></>,
+);
+export const ICON_VIEW_CALENDAR = icon(
+  <><rect x="3" y="4" width="18" height="17" rx="2" />
+    <line x1="3" y1="10" x2="21" y2="10" /><line x1="8" y1="2" x2="8" y2="6" />
+    <line x1="16" y1="2" x2="16" y2="6" /></>,
+);
+
 export const ICON_INBOX = icon(<><path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></>);
 // Run now, and the word for doing it AGAIN. Two glyphs rather than one, for the
 // reason the archive pair is two: a person looking at a task that broke has to
@@ -528,6 +555,10 @@ function ChipPopover({
 
   const nowSec = Math.floor(Date.now() / 1000);
 
+  // What the popover's own title says, so a row that would only repeat it can
+  // stay quiet. See `showBody` in `row`.
+  const headline = firstLine(task.title || chip.anchor.body);
+
   const row = (m: TaskMessage, sameDayRow: boolean) => {
     const status = runStatus(m, taskMessageTone(m));
     const role = queueRole(m, roles, nowSec);
@@ -543,34 +574,59 @@ function ChipPopover({
     // draw it is a different situation, and only the race justifies the offer.
     const kind = msgCancelKind(m, role);
     const note = msgNote(m, kind);
+    // Empty when this row's prompt is the title again — see the JSX below.
+    const body = firstLine(m.body);
+    const showBody = body && body !== headline ? body : "";
     return (
       <li key={m.message_id} className="schedule-cal-msg">
         <button
           type="button"
           className={"schedule-cal-msg-open" + (canOpen(m) ? "" : " is-inert")}
           onClick={() => openMessage(m)}
-          title={note ? `${t.toLocaleString()} — ${note}` : t.toLocaleString()}
+          // The status WORD moved in here when it left the row's ink: the ring
+          // carries the fact and the tooltip carries the name for it, which is
+          // the same division the row's time already makes (relative in the
+          // ink, exact in the title).
+          title={[t.toLocaleString(), status.label, note].filter(Boolean).join(" — ")}
         >
           {/* The Board's ring, at row scale. `is-ghost` is the one thing the
               Board has no case for: a projected run, dashed because the word
               beside it says "Upcoming" like any other scheduled run and
-              something has to tell the two apart. */}
+              something has to tell the two apart.
+
+              It carries this row's UNREAD too, since 2026-08-18 — a filled centre
+              on a run nobody has opened, hollow once they have — which is the same
+              glyph the List's thread rows and the Board's cards wear, and it
+              replaced a blue dot of the calendar's own that sat after the body.
+              Three views, one mark. No `count`: this is a leaf, and "1 unread"
+              over a dot that already means unread is a caption for nothing. */}
           <span className={"schedule-cal-ring" + (status.projected ? " is-ghost" : "")}>
-            <StatusIcon status={status.column} failed={status.failed} />
+            <StatusIcon status={status.column} failed={status.failed} unread={m.unread} />
           </span>
           <span className="schedule-cal-msg-time">
             {sameDayRow
               ? clockTime(t)
               : t.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
           </span>
-          <span className="schedule-cal-msg-body">{firstLine(m.body) || "(no prompt)"}</span>
-          {/* role="img" so the dot is legitimately exposed: an aria-label on a
-              role-less span is not reliably announced, and this dot is the ONLY
-              carrier of the fact — unlike the ↻ and the pulse, it duplicates
-              nothing, so it is named rather than hidden. */}
-          {m.unread && (
-            <span className="schedule-cal-msg-unread" role="img" aria-label="Unread" />
+          {/* THE BODY, ONLY WHEN IT SAYS SOMETHING THE PANEL HAS NOT (Akshil,
+              2026-08-18). This popover is about ONE task, and a scheduled
+              occurrence carries the task's own message verbatim — so on the
+              common row the body was the title printed a second time, four
+              lines under the title.
+
+              It is not dropped outright, because a THREAD is not always one
+              message repeated: a chat prompt typed into the same session, or a
+              re-sent message that was edited, genuinely distinguishes its row
+              from the others. So the row keeps whatever the panel has not
+              already said, and drops the echo. */}
+          {showBody && (
+            <span className="schedule-cal-msg-body">{showBody}</span>
           )}
+          {/* No `.schedule-cal-msg-unread` dot here any more (2026-08-18). It was
+              a 6px accent disc after the body and it was this view's OWN unread
+              vocabulary — the List and the Board said the same thing with a
+              different mark in a different place. The ring above says it for all
+              three now. */}
           {note && (
             <span
               className={
@@ -580,8 +636,18 @@ function ChipPopover({
               {note}
             </span>
           )}
-          {/* The app's word, and only ever one of its five. */}
-          <span className="schedule-cal-msg-state">{status.label}</span>
+          {/* NO STATUS WORD HERE ANY MORE (Akshil, 2026-08-18). The header's
+              pill already says the task's state in the app's own vocabulary,
+              and on a one-occurrence popover — which is most of them — the row
+              was printing that same word a second time, at the other end of the
+              same small panel.
+
+              The RING is what carries it now, which is not a downgrade: it is
+              the same mark the List's thread rows and the Board's cards use for
+              exactly this fact, its hue IS the status, and the word is still
+              one hover away in the row's own title. What distinguishes one
+              occurrence from another is the TIME and whether it can still be
+              stopped — and those are what is left. */}
         </button>
         {kind === "held" ? (
           // A claimed entry has no cancel, so the slot holds a turning glyph
@@ -645,8 +711,31 @@ function ChipPopover({
         </span>
       </div>
 
-      <p className="schedule-pop-title">{task.title || firstLine(chip.anchor.body)}</p>
+      {/* TITLE THEN DESCRIPTION, as one writing block, exactly as the New task
+          modal presents the same two fields (new-task.css `.new-task-write`).
+          They are what the user WROTE, and a form that asks for a title above a
+          description and then plays them back as a heading and an icon-led fact
+          row has made the same pair look like two different kinds of thing.
 
+          So the description loses its icon and its place in the fact list. It
+          was drawn there with a notes glyph, which put "what this task is" in
+          the same register as "which folder it runs in" — one is prose to read,
+          the other is a value to recognise, and the icon column is for the
+          second. Smaller and muted under the title says the same hierarchy
+          without spending a glyph.
+
+          The title takes the size the hierarchy needs: it is the first thing
+          read in this panel and it was the same 14px as the fact rows' 12px,
+          which is not a step. */}
+      <div className="schedule-pop-write">
+        <p className="schedule-pop-title">{task.title || firstLine(chip.anchor.body)}</p>
+        {task.description && (
+          <p className="schedule-pop-desc">{task.description}</p>
+        )}
+      </div>
+
+      {/* Then the facts that are recognised rather than read — where it runs,
+          and how often — each led by its icon. */}
       <div className="schedule-pop-rows">
         {repeat && (
           <span className="schedule-pop-row">
@@ -658,12 +747,6 @@ function ChipPopover({
           {ICON_FOLDER}
           <code title={task.target}>{task.target}</code>
         </span>
-        {task.description && (
-          <span className="schedule-pop-row">
-            {ICON_NOTES}
-            <span>{task.description}</span>
-          </span>
-        )}
       </div>
 
       <div className="schedule-cal-thread">
@@ -1014,6 +1097,24 @@ export default function ScheduleCalendar({
                       className={
                         "schedule-cal-chip schedule-cal-chip--" + chip.tone +
                         (chip.projected ? " is-projected" : "") +
+                        // RUNNING RIGHT NOW. The List has an In Progress section
+                        // and the Board an In Progress lane; a calendar is
+                        // ordered by time and has neither, so until now the one
+                        // chip on today's grid that was actually working looked
+                        // exactly like the four that had finished. The rule is
+                        // tasks-lib's — the same reading of state and turn the
+                        // other two views file a card by — and the CSS is a
+                        // shimmer that sweeps the chip, with a static highlight
+                        // under prefers-reduced-motion.
+                        //
+                        // ASKED OF THE WHOLE CHIP, not of its anchor (bugbot,
+                        // 2026-08-18). A chip is a task on a DAY and the anchor
+                        // is only that day's EARLIEST message, so a day whose
+                        // 05:00 run has finished and whose 14:00 run is in flight
+                        // was asking about the finished one — while the running
+                        // mark landed on whichever day held the task's newest
+                        // row, routinely tomorrow's pending occurrence.
+                        (isRunningIn(chip.task, chip.messages) ? " is-running" : "") +
                         (chip.time < now ? " is-past" : "") +
                         // Three lanes leave a chip ~70px wide, which cannot hold
                         // both the title and the clock — the title collapsed to

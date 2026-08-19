@@ -8,19 +8,36 @@
 // locally and paints as you type; AI search is one row at the bottom of the
 // results (see FilesHome), taken only when the user asks for it.
 //
-// The RANKING is deliberately not reimplemented: scoring, the substring-beats-
-// fuzzy invariant, hidden-entry intent and the comparator all live in
-// listing/search.ts, and two search boxes in the same app that order results
-// differently is a bug the user experiences as "it found it last time".
+// The SERVER now filters and ranks (/api/index/rank, fused_render/index/
+// rank.py). The page used to fetch the whole corpus — 19.8 MB and 164k rows on
+// the first keystroke, capped at 200k entries so ~71% of a 571k-file home
+// could not be found at all — and rank it here. It now asks per query and gets
+// a few KB, over the WHOLE index.
 //
-// The one thing that must not be papered over is a cold index. The home page
-// has no live-walk fallback (that is the listing's job, one folder at a time),
-// so an uncovered root is reported as "still building", never as "no matches" —
-// blaming the user's files for the app's state is exactly the failure the
-// server's search.py refuses to make.
-import type { IndexSearchResult, WalkEntry } from "@platform/lib/api";
-import { indexCorpusFrom } from "@apps/explorer/listing/index-corpus";
-import type { SearchHit } from "@apps/explorer/listing/types";
+// The ranking is still not reimplemented anywhere: rank.py is a port of
+// listing/search.ts pinned by a cross-language fixture, because two search
+// boxes in the same app that order results differently is a bug the user
+// experiences as "it found it last time".
+//
+// Two things must not be papered over:
+//
+//  * a cold index. The home page has no live-walk fallback (that is the
+//    listing's job, one folder at a time), so an uncovered root is reported as
+//    "still building", never as "no matches" — blaming the user's files for
+//    the app's state is exactly the failure the server's search refuses to
+//    make.
+//  * the WAIT. Ranking used to be local, so results repainted within a frame
+//    and never blanked. A round trip per query can only feel as good if it
+//    never blanks the list, never flashes a spinner, fires the first keystroke
+//    without a debounce, and answers a backspace from memory — which is what
+//    the pieces below are for.
+//
+// The pieces that make a per-query round trip feel instant — the leading-edge
+// debounce, the pending threshold, the backspace memo — are NOT here: they are
+// shared with the listing's in-folder box, which is now the same kind of box,
+// and they live in platform/lib/instant-search.
+import type { IndexRankResult } from "@platform/lib/api";
+import { fuzzyMatch } from "@platform/lib/fuzzy";
 
 // Rows rendered at most. Far smaller than the listing's SEARCH_RESULT_CAP, and
 // the number is set by what has to stay VISIBLE rather than by how many hits are
@@ -33,127 +50,69 @@ import type { SearchHit } from "@apps/explorer/listing/types";
 // row, not more scrolling.
 export const HOME_RESULT_CAP = 10;
 
-// How still the query must be before the corpus is re-scanned. Short enough to
-// read as "while typing", long enough that a burst of keystrokes costs one scan
-// instead of one each. The corpus itself is fetched once and reused, so this
-// debounces scoring, not the network.
-export const INSTANT_DEBOUNCE_MS = 120;
+// Hits asked of the server per query. The list renders HOME_RESULT_CAP of
+// them; the rest are what makes the count note ("Showing top 10 of 137") true
+// without a second request. 200 rows is a few KB.
+export const RANK_FETCH_LIMIT = 200;
 
-// One rendered result row. `path` is absolute (the index's corpus is relative
-// to the searched root), which is what navigation and the icon helpers want.
+// One rendered result row. `path` is absolute (the index answers with rels
+// relative to the searched root), which is what navigation and the icon
+// helpers want. `positions` are indices into `rel` — computed here by
+// re-running fuzzyMatch, NOT sent by the server, so platform/lib/fuzzy.ts
+// stays the single source of truth for what highlights.
 export interface HomeHit {
   path: string;
   rel: string;
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
-}
-
-// The corpus behind the instant search, or why there isn't one.
-export type CorpusState =
-  | { status: "idle" }
-  | { status: "loading" }
-  // `key` names the corpus CONTENT (the index generation it came from), so a
-  // refetch that returns the same rows is recognisable as the same corpus even
-  // though it is a new array — see listing/useRankedScan's resume check. "" is
-  // "no stable identity", which never resumes.
-  | { status: "ok"; entries: WalkEntry[]; truncated: boolean; key: string }
-  // The index has not covered the home root yet — no answer, not zero answers.
-  | { status: "cold" }
-  | { status: "error"; message: string };
-
-/** A corpus already in hand, retained across refetches. */
-export interface HeldHomeCorpus {
-  entries: WalkEntry[];
-  truncated: boolean;
-  key: string;
+  positions?: number[];
 }
 
 /**
- * What the search box should actually rank and render.
+ * One answered query: the rows on screen, and what they are an answer TO.
  *
- * The rule is the one lib/repos.ts already applies to the repo cards, for the
- * same reason: HAVING AN ANSWER and THE ANSWER BEING CURRENT are two different
- * facts, and only the first may suppress rows. A rescan republishes the corpus
- * fetch, and the home page's fetch effect used to answer `cold` while it was in
- * flight — so mid-rescan the box said "The file index is still building" with
- * zero rows, for an index that was built and searchable. `cold` is a claim
- * about the index having never covered this root; it is not a state a REFETCH
- * can put the page into.
- *
- * So a corpus once in hand keeps answering, marked `stale`, until a fresh one
- * replaces it. `status` is what the copy branches on and reads "ok" whenever
- * there are rows, so a stale corpus can never route to a message that denies
- * having one.
+ * Carrying the query is what lets the box never blank. A new query in flight
+ * leaves the previous answer rendered (dimmed, because `answer.query !== q`
+ * says out loud that these are the old rows) instead of dropping to an empty
+ * frame and back — going results → nothing → results is the single most
+ * visible way a per-query round trip can feel worse than ranking locally, and
+ * the local version never had an empty frame.
  */
-export interface HomeCorpusView {
-  /** The rows to rank, or null when no corpus has EVER been in hand. */
-  entries: WalkEntry[] | null;
+export interface HomeAnswer {
+  /** The (trimmed) query these hits answer. */
+  query: string;
+  hits: HomeHit[];
+  /** More matched than were returned; the count note owns up to it. */
   truncated: boolean;
-  key: string;
-  /** These rows are a generation behind. The caller must SAY so. */
-  stale: boolean;
-  status: CorpusState["status"];
+  /** Hits the server ranked for this query, capped at RANK_FETCH_LIMIT. */
+  total: number;
   /**
-   * The last fetch's failure, or "".
-   *
-   * Reported whether or not rows are being held, which is the one place this
-   * view deliberately does NOT simplify to a single state. Held rows plus a
-   * failure is a real, nameable situation — "these still work, the refresh
-   * didn't" — and collapsing it either way is a bug: dropping the rows breaks
-   * a search that was working, and dropping the message makes `retryNonce`
-   * (which retries on a keystroke) a gesture with no feedback at all.
-   *
-   * listing/corpus-hold takes the opposite line for the in-folder search —
-   * an errored walk yields no rows, the error IS the answer — and the
-   * difference is not an inconsistency. There the walk is the fallback, so a
-   * failure means search genuinely has nothing and the user's move is to
-   * retry. Here the index is the only source there is, so the rows in hand are
-   * the best answer available and throwing them away buys nothing.
+   * The index has covered the home root. False is "still building", NOT "no
+   * matches": the home page has no live walk to fall back on, so a miss here
+   * is a statement about the app, not about the user's files.
    */
-  message: string;
+  covered: boolean;
 }
 
-/** What to retain after this render. Only a real corpus replaces the hold. */
-export function nextHeldHomeCorpus(
-  state: CorpusState,
-  held: HeldHomeCorpus | null,
-): HeldHomeCorpus | null {
-  if (state.status !== "ok") return held;
-  if (held !== null && held.entries === state.entries) return held;
-  return { entries: state.entries, truncated: state.truncated, key: state.key };
-}
-
-export function homeCorpusView(
-  state: CorpusState,
-  held: HeldHomeCorpus | null,
-): HomeCorpusView {
-  if (state.status === "ok")
-    return {
-      entries: state.entries,
-      truncated: state.truncated,
-      key: state.key,
-      stale: false,
-      status: "ok",
-      message: "",
-    };
-  const message = state.status === "error" ? state.message : "";
-  if (held !== null)
-    return {
-      entries: held.entries,
-      truncated: held.truncated,
-      key: held.key,
-      stale: true,
-      status: "ok",
-      message,
-    };
+/** A ranked response as an answer: absolutized, capped, and highlighted. */
+export function answerFrom(res: IndexRankResult, query: string, home: string): HomeAnswer {
   return {
-    entries: null,
-    truncated: false,
-    key: "",
-    stale: false,
-    status: state.status,
-    message,
+    query,
+    hits: res.hits.slice(0, HOME_RESULT_CAP).map((h) => ({
+      path: home + "/" + h.rel,
+      rel: h.rel,
+      is_dir: h.is_dir,
+      size: h.size,
+      mtime: h.mtime,
+      // Re-matched HERE rather than sent: fuzzy.ts decides what highlights,
+      // full stop, and the server's ranker is a port of it (index/rank.py),
+      // so this reproduces the alignment that produced the score.
+      positions: fuzzyMatch(query, h.rel)?.positions ?? [],
+    })),
+    truncated: res.truncated,
+    total: res.total,
+    covered: res.covered,
   };
 }
 
@@ -178,15 +137,27 @@ export function pathShortcut(query: string, home: string): string | null {
   return fsPath;
 }
 
-/** The rows to render, in rank order: the top of the ranking, absolutized. */
-export function homeHitsFrom(hits: SearchHit[], home: string): HomeHit[] {
-  return hits.slice(0, HOME_RESULT_CAP).map((h) => ({
-    path: home + "/" + h.entry.rel,
-    rel: h.entry.rel,
-    is_dir: h.entry.is_dir,
-    size: h.entry.size,
-    mtime: h.entry.mtime,
-  }));
+/**
+ * The highlight positions for a rendered cell, given positions into the rel.
+ *
+ * The rows render the rel twice — as a bare name and as a `~/`-prefixed path —
+ * and `highlightSegments` wants indices into the string it is given, so the
+ * rel's positions have to be rebased into each. Out-of-range positions are
+ * dropped rather than clamped: a match on the parent directory has nothing to
+ * mark in the name cell, and marking the wrong character is worse than marking
+ * none.
+ */
+export function positionsWithin(positions: number[], from: number, length: number): number[] {
+  const out: number[] = [];
+  for (const p of positions) {
+    if (p >= from && p < from + length) out.push(p - from);
+  }
+  return out;
+}
+
+/** Where the entry's own name starts inside its rel. */
+export function nameStart(rel: string): number {
+  return rel.lastIndexOf("/") + 1;
 }
 
 /**
@@ -203,18 +174,6 @@ export function homeCountNote(total: number, corpusTruncated: boolean): string {
   const n = total.toLocaleString();
   if (total <= HOME_RESULT_CAP) return `${n}${suffix} match${total === 1 ? "" : "es"}`;
   return `Showing top ${HOME_RESULT_CAP} of ${n}${suffix}`;
-}
-
-/** An index response as a corpus, or `cold` when it cannot answer for the root. */
-export function corpusFrom(res: IndexSearchResult): CorpusState {
-  const corpus = indexCorpusFrom(res);
-  if (corpus === null) return { status: "cold" };
-  // (root, generation) is the corpus's identity: the same pair always yields
-  // the same rows, so a refetch triggered by something other than the index
-  // moving (an in-app rename, a retry) is recognisable as the same corpus. A
-  // response with no `updated` gets no identity rather than a shared one.
-  const key = typeof res.updated === "number" ? `${res.root}|${res.updated}` : "";
-  return { status: "ok", entries: corpus.entries, truncated: corpus.truncated, key };
 }
 
 // -- typing anywhere is typing here ------------------------------------------
@@ -285,17 +244,40 @@ export function stepHighlight(
 }
 
 /**
- * Whether the instant results are a FINISHED answer for the current query.
+ * Whether the instant results are a FINISHED answer for the CURRENT query.
  *
- * `fileCount === 0` alone cannot tell "not scored yet" from "nothing matches",
- * and the difference is a paid model call: while the corpus loads or the 120ms
- * debounce runs, a query with plenty of instant matches shows zero of them.
- * `cold` and `error` are settled too — no ranking is ever coming for those, so
- * the AI row really is the only content left.
+ * `hits.length === 0` alone cannot tell "not answered yet" from "nothing
+ * matches", and the difference is a paid model call: while the request is in
+ * flight (or the previous query's rows are still on screen) a query with
+ * plenty of instant matches shows none of them, and pre-arming the AI row
+ * there spends a call on a query that was about to answer itself.
+ *
+ * A failed request IS settled — no answer is coming for it, so the AI row
+ * really is the only content left. Two conditions on that, and they are
+ * different conditions:
+ *
+ *  * only while nothing is in flight. `pending` is checked FIRST, because a
+ *    request that is still out may yet answer, and reading the previous
+ *    failure as this query's verdict is how a single transient failure turned
+ *    every later keystroke into an armed AI row.
+ *  * only if the rows on screen are not answering some OTHER query. The list
+ *    is deliberately never blanked, so a failure typically arrives over the
+ *    previous query's hits — and "settled" would then license `submitRow`'s
+ *    top-hit fallthrough to open one of them. Type "read", type "readme",
+ *    have that request fail, press Enter: you get "read"'s best match. The
+ *    pending check cannot see this one; nothing is in flight and the failure
+ *    is real. With no rows at all the AI row is still armed, because that is
+ *    the case the paragraph above is about.
  */
-export function rankingSettled(status: CorpusState["status"], scanning: boolean): boolean {
-  if (status === "idle" || status === "loading") return false;
-  return !scanning;
+export function rankingSettled(
+  answer: HomeAnswer | null,
+  query: string,
+  pending: boolean,
+  failed: boolean,
+): boolean {
+  if (pending) return false;
+  if (failed) return answer === null || answer.query === query;
+  return answer !== null && answer.query === query;
 }
 
 /**
@@ -325,6 +307,14 @@ export function activeRow(
  * this app where Enter is the obvious gesture. It still never falls through to
  * the AI row that way: reaching a paid action takes either zero settled hits or
  * an explicit highlight.
+ *
+ * That fallthrough is gated on `settled` for the same reason the AI row is, and
+ * the reason arrived with server-side ranking: the list is deliberately never
+ * blanked, so rows for the PREVIOUS query are on screen while this one is in
+ * flight, and "the top hit" then means the top hit for something the user has
+ * already finished typing over. Typing "read", then "readme", then Enter
+ * navigated to "read"'s best match. An explicit highlight still commits —
+ * the user pointed at a row they can actually see.
  */
 export function submitRow(
   highlight: number | null,
@@ -333,5 +323,5 @@ export function submitRow(
 ): number | null {
   const row = activeRow(highlight, fileCount, settled);
   if (row !== null) return row;
-  return fileCount > 0 ? 0 : null;
+  return settled && fileCount > 0 ? 0 : null;
 }

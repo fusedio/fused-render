@@ -10,18 +10,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import {
-  getApps,
-  getClaudeSessionFolders,
+  getHomeApps,
+  getHomeClaudeSessionFolders,
   type AppInfo,
   type ClaudeSessionFolder,
   type Config,
 } from "@platform/lib/api";
-import { sortApps } from "@platform/lib/appEntry";
 import { useIndexStatus } from "@platform/lib/index-status";
-import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
+import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { FilesSearch } from "@apps/explorer/FilesHome";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
+import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 
 // One row per section: the page measures its own width and renders exactly
 // as many full-size cards as fit — no wrapping, no clipping, no scrolling.
@@ -29,11 +29,35 @@ import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
 // Card width + gap must match the .home-row CSS.
 const CARD_W = 330;
 const CARD_GAP = 16;
-// How many entries each section fetches/keeps — enough for a very wide window.
+// The ceiling on what a section may fetch/keep — enough for a very wide
+// window, and the same cap the two endpoints apply to `limit` themselves
+// (HOME_APPS_LIMIT / HOME_SESSION_LIMIT). NOT the number either one asks for:
+// see useStripCount.
 const MAX_ROW = 12;
 
-// How many cards fit across the sections' shared container right now.
+// How many cards fit across the sections' shared container right now, plus the
+// most that have ever fit — the number the fetches ask for.
 // One ResizeObserver on the wrapper, one count for all three strips.
+//
+// The two numbers are not the same, and the difference is load-bearing. Asking
+// for MAX_ROW when the row draws three cards is what made the server's
+// recents-first fast path unreachable: /api/apps/home skips its exhaustive
+// workspace walk only once the recents FILL the request (routers/apps.py), so a
+// request for twelve walked the whole workspace on every visit for anyone with
+// fewer than twelve opened apps — which is nearly everyone. A row that asks for
+// what it can draw puts that walk back to being the fallback it is documented
+// as, and the session row's per-directory transcript reads (its endpoint stops
+// as soon as `limit` folders land) shrink with it.
+//
+// `count` is null until the wrapper has actually been MEASURED, and both
+// fetches wait for it. A guess would be a request for cards the row cannot
+// show, which is the same bug in smaller print. Nothing flashes for it: a
+// callback ref runs in the commit phase, so the measured value is in before the
+// browser paints.
+//
+// `limit` is the PEAK count, never the current one — widening the window needs
+// cards the first fetch did not ask for, while narrowing it already holds
+// enough, so a drag that shrinks the row refetches nothing.
 //
 // A CALLBACK ref, not useRef+useEffect: the measured wrapper UNMOUNTS while a
 // search is live (`searching ? null : <div ref=…>`), and a mount-once effect
@@ -43,20 +67,38 @@ const MAX_ROW = 12;
 // The callback re-runs on each mount/unmount: it tears the old observer down
 // and measures the element actually on screen.
 function useStripCount() {
-  const [count, setCount] = useState(3);
+  // One state, not two: `limit` is derived from the same measurement as
+  // `count`, and splitting them would let a render see a count the limit had
+  // not accounted for yet.
+  const [size, setSize] = useState<{ count: number | null; limit: number | null }>({
+    count: null,
+    limit: null,
+  });
   const roRef = useRef<ResizeObserver | null>(null);
   const ref = useCallback((el: HTMLDivElement | null) => {
     roRef.current?.disconnect();
     roRef.current = null;
     if (!el) return;
-    const measure = () =>
-      setCount(Math.max(1, Math.floor((el.clientWidth + CARD_GAP) / (CARD_W + CARD_GAP))));
+    const measure = () => {
+      const fits = Math.max(
+        1,
+        Math.floor((el.clientWidth + CARD_GAP) / (CARD_W + CARD_GAP)),
+      );
+      // Same object back when the count is unchanged: a ResizeObserver fires
+      // for every pixel of a window drag, and only a changed card count is a
+      // reason to re-render (or, via `limit`, to fetch).
+      setSize((prev) =>
+        prev.count === fits
+          ? prev
+          : { count: fits, limit: Math.max(prev.limit ?? 0, fits) },
+      );
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     roRef.current = ro;
   }, []);
-  return { ref, count };
+  return { ref, count: size.count, limit: size.limit };
 }
 
 // Section chrome: title row with the "See all" action on the right edge.
@@ -102,13 +144,22 @@ export default function Home({ config }: { config: Config }) {
   const home = config.home.replace(/\\/g, "/");
   useRecentsVersion();
 
-  // Fused apps — one cheap GET on mount, newest first.
+  // Ahead of the two fetches below, which size their request by it.
+  const { ref: stripRef, count, limit } = useStripCount();
+  // Slice width while the wrapper is still unmeasured. Pre-paint only — see
+  // useStripCount — so an empty row is never actually seen.
+  const shown = count ?? 0;
+
+  // Fused apps — hydrate the recent row first. The server only scans the full
+  // workspace when valid recents do not fill it, preserving discovery and the
+  // showcase fallback without charging returning visits for an exhaustive walk.
   const [apps, setApps] = useState<AppInfo[] | null>(null);
   const [appsError, setAppsError] = useState<string | null>(null);
   useEffect(() => {
+    if (limit === null) return;
     let alive = true;
-    getApps().then(
-      (r) => alive && setApps(sortApps(r.apps).slice(0, MAX_ROW)),
+    getHomeApps(Math.min(limit, MAX_ROW)).then(
+      (r) => alive && setApps(r.apps.slice(0, MAX_ROW)),
       (e: Error) => {
         if (!alive) return;
         setApps([]);
@@ -118,25 +169,24 @@ export default function Home({ config }: { config: Config }) {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [limit]);
 
-  // Claude session folders — the server already answers newest-session-first.
+  // Claude session folders — Home's endpoint orders transcript mtimes first,
+  // then opens only enough newest JSONL files to fill this one row.
   const [sessions, setSessions] = useState<ClaudeSessionFolder[] | null>(null);
   useEffect(() => {
+    if (limit === null) return;
     let alive = true;
-    getClaudeSessionFolders().then(
+    getHomeClaudeSessionFolders(Math.min(limit, MAX_ROW)).then(
       (r) => alive && setSessions(r.folders.slice(0, MAX_ROW)),
       () => alive && setSessions([]),
     );
     return () => {
       alive = false;
     };
-  }, []);
+  }, [limit]);
 
   // Recents come from the same client cache the explorer home reads (raw MRU).
-  useEffect(() => {
-    void hydrateRecents();
-  }, []);
   const recents = loadRecents().entries.slice(0, MAX_ROW);
 
   // Search takes over the page body while a query is live — the same posture
@@ -145,8 +195,6 @@ export default function Home({ config }: { config: Config }) {
   const [searching, setSearching] = useState(false);
   const indexScan = useIndexStatus(searching);
   const initialQuery = useRef(new URLSearchParams(location.search).get("q") || "").current;
-
-  const { ref: stripRef, count } = useStripCount();
 
   return (
     <div className="files-home">
@@ -165,13 +213,27 @@ export default function Home({ config }: { config: Config }) {
           // exactly as wide as the cards that fit and centered, so the section
           // titles and "See all" stay flush with the cards' edges.
           <div ref={stripRef}>
-            <div className="home-strips" style={{ width: count * (CARD_W + CARD_GAP) - CARD_GAP }}>
+            <div
+              className="home-strips"
+              style={
+                count === null
+                  ? undefined
+                  : { width: count * (CARD_W + CARD_GAP) - CARD_GAP }
+              }
+            >
+            {/* Above the strips, because on a machine where Claude Code is not
+                set up this is the only thing on the page the user can act on —
+                and it renders nothing at all once there is nothing to say.
+                Inside the measured column so it lines up with the cards rather
+                than spanning the window. Hidden while a search is live for the
+                same reason the strips are: the search result IS the page then. */}
+            <ClaudeHealthStrip />
             <Section title="Fused Apps" seeAllHref="/apps">
               {apps === null ? (
                 <p className="fh-empty">Loading apps…</p>
               ) : apps.length ? (
                 <div className="home-row">
-                  {apps.slice(0, count).map((app) => (
+                  {apps.slice(0, shown).map((app) => (
                     <AppPreviewCard key={app.path} app={app} />
                   ))}
                 </div>
@@ -187,7 +249,7 @@ export default function Home({ config }: { config: Config }) {
                 <p className="fh-empty">Looking for sessions…</p>
               ) : sessions.length ? (
                 <div className="home-row">
-                  {sessions.slice(0, count).map((f) => (
+                  {sessions.slice(0, shown).map((f) => (
                     <FolderPreviewCard key={f.path} path={f.path} />
                   ))}
                 </div>
@@ -199,7 +261,7 @@ export default function Home({ config }: { config: Config }) {
             <Section title="Recent files" seeAllHref="/explorer?tab=recents">
               {recents.length ? (
                 <div className="home-row">
-                  {recents.slice(0, count).map((r) => {
+                  {recents.slice(0, shown).map((r) => {
                     const fsPath = recentFsPath(r.url);
                     return (
                       <RecentPreviewCard

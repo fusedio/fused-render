@@ -134,7 +134,7 @@ MIGRATED = [
     # The claude snapshot gate consults appenv.is_mount_backed: a mounted
     # target is refused with a sentence, a local one gets the empty "allowed"
     # answer — which is the discriminating pair this table wants. (The
-    # sidecar-path rows that used to sit here went with the sidecar, D335;
+    # sidecar-path rows that used to sit here went with the sidecar, D357;
     # annotate.py no longer touches appenv directly at all, so it has no row.)
     (os.path.join("claude", "agent.py"),
      "[bool(mod._snap_target(MOUNTED)), bool(mod._snap_target(LOCAL))]",

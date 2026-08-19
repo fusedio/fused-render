@@ -211,6 +211,14 @@
    is always a little behind the filesystem, so a louder treatment would cry
    wolf permanently. Same two messages as the listing's search chip
    (listing/index-caveat) — one claim, one wording, two boxes. */
+/* "· Searching…" appended to the count while a request outlives
+   PENDING_INDICATOR_MS. Deliberately as quiet as the count it follows: the rows
+   underneath are still the previous query's answer, and a loud indicator over
+   readable results reads as "this is broken" rather than "one moment". */
+.fh-searching-note {
+  opacity: 0.7;
+}
+
 .fh-index-chip {
   display: inline-flex;
   align-items: center;

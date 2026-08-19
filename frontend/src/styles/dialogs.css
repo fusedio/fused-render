@@ -158,3 +158,137 @@
   -webkit-line-clamp: 3;
   word-break: break-word;
 }
+
+/* -- The Claude Code first-run strip (ui/ClaudeHealthStrip) -------------------
+ *
+ * The PROACTIVE sibling of the trouble card above, and styled as one on purpose:
+ * same warning tint, same plate, same quiet action row. The two say related
+ * things at different times — "this will not work yet" and "this did not work" —
+ * and a user who meets both should recognise the second from the first.
+ *
+ * Toned like the card for the same reason, and it matters more here: at the
+ * moment this renders NOTHING is broken. The app just started, the explorer
+ * works, and one optional dependency is not ready. Red would be a lie about the
+ * app's state, on the first screen a new user ever sees.
+ *
+ * Full width of whatever column it lands in (the measured card column on Home,
+ * the page body on /apps) rather than the card's 640px cap: it sits above a grid
+ * as a band, and a narrow plate floating over wide content reads as a stray
+ * dialog rather than as the page telling you something. */
+.claude-health {
+  margin: 0 0 20px;
+  padding: 14px 16px;
+  border: 1px solid rgba(var(--warning-rgb), 0.5);
+  border-radius: 10px;
+  background: rgba(var(--warning-rgb), 0.06);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.claude-health-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.claude-health-title {
+  margin: 0;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--warning-soft);
+}
+
+.claude-health-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Same quiet-control treatment as .trouble-actions — see the note there on why
+   these are peers in a row and not text links.
+ *
+ * :not(.claude-health-close) is load-bearing, not defensive. `.x > button` is
+ * (0,1,1) and `.claude-health-close` is (0,1,0), so WITHOUT it this rule wins
+ * every property they share and the dismiss ✕ silently takes the bordered pill
+ * the rule below is written to keep off it. Excluding it here rather than
+ * out-specifying it there keeps the intent readable: this is the treatment for
+ * the ACTION buttons, and the ✕ is not one. */
+.claude-health-head-actions > button:not(.claude-health-close) {
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--ctl-quiet-bg);
+  border: 1px solid var(--ctl-quiet-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.claude-health-head-actions > button:not(.claude-health-close):hover:not(:disabled) {
+  background: var(--ctl-quiet-bg-hover);
+  border-color: var(--ctl-quiet-border-hover);
+}
+
+.claude-health-head-actions > button:not(.claude-health-close):disabled {
+  cursor: default;
+  color: var(--fg-muted);
+}
+
+/* The dismiss ✕ is the one control here that is not a peer of the others: it
+   declines the whole notice rather than acting on it, so it stays a bare glyph
+   instead of taking the bordered pill treatment. */
+.claude-health-close {
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.claude-health-close:hover {
+  color: var(--fg);
+  background: var(--ctl-quiet-bg-hover);
+}
+
+.claude-health-issues {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Hairline between stacked problems, never above the first: on the common
+   one-problem strip there is nothing to separate, and a rule there would read as
+   an empty row. */
+.claude-health-issue + .claude-health-issue {
+  padding-top: 12px;
+  border-top: 1px solid rgba(var(--warning-rgb), 0.25);
+}
+
+.claude-health-issue-title {
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+
+.claude-health-issue-detail {
+  margin: 0 0 8px;
+  color: var(--fg-muted);
+}
+
+/* The install/update command sits in the same .update-badge-command plate the
+   trouble card uses for it, so "here is a line to run" looks identical wherever
+   the app offers one. It needs to wrap here: this strip can be narrow (a single
+   card column on Home at a small window) and `curl … | bash` is long. */
+.claude-health .update-badge-command {
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}

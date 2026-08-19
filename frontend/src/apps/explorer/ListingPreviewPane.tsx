@@ -41,7 +41,7 @@ import { iconForEntry } from "@platform/ui/FileIcons";
 import { KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideCloseButton, paneSideIcon } from "@apps/explorer/SideChrome";
-import { withNoFocus } from "@apps/explorer/listing/frame-focus";
+import { withNoFocus } from "@platform/lib/frame-focus";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import Listing from "@apps/explorer/Listing";
 import {
@@ -220,7 +220,7 @@ export default function ListingPreviewPane({
   }, [path, self, previewing]);
 
   // Keep the keyboard on the listing when this preview mounts (the pane's focus
-  // contract — listing/frame-focus.ts). Also a hook, so also before the early
+  // contract — platform/lib/frame-focus.ts). Also a hook, so also before the early
   // returns; the branches it guards are the ones that render a frame.
   const { rootRef, guardProps } = usePaneFocusGuard<HTMLDivElement>();
 
@@ -496,7 +496,7 @@ export default function ListingPreviewPane({
   // file itself (PT-12); a template mode renders the template against _file.
   //
   // Every one of them carries `_nofocus=1`: a preview in the pane must not take
-  // the keyboard off the listing (listing/frame-focus.ts). It rides on the URL
+  // the keyboard off the listing (platform/lib/frame-focus.ts). It rides on the URL
   // rather than being passed some other way for the same reason `_file` does —
   // the page is a document, and its URL is the only thing it is handed.
   //

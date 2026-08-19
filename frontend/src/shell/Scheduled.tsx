@@ -27,7 +27,7 @@
 // time filled in.
 //
 // The composer also has a THIRD affordance that lands here: its Schedule button
-// links to `/scheduled?new=1&target=…`, for the case the pill cannot serve — a
+// links to `/tasks?new=1&target=…`, for the case the pill cannot serve — a
 // task that wants a title, a description or a repeat rule. It is a handoff, not
 // a second form: the chat sends the folder it is bound to and nothing else, and
 // the effect below opens the modal on it.
@@ -64,7 +64,11 @@ import type {
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
-import ScheduleCalendar from "./ScheduleCalendar";
+import ScheduleCalendar, {
+  ICON_VIEW_BOARD,
+  ICON_VIEW_CALENDAR,
+  ICON_VIEW_LIST,
+} from "./ScheduleCalendar";
 import NewJobModal from "./NewJobModal";
 import {
   EMPTY_FILTERS,
@@ -75,6 +79,9 @@ import {
   projectOptions,
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
+import { publishTasks, useTasksFeeder } from "./tasksPulse";
+import { viewFromSearch, viewUrl } from "./tasks-lib";
+import type { TaskView } from "./tasks-lib";
 
 // How often the page re-reads itself. A `pending` message becomes `sent` on the
 // server's own tick (30s), so anything much slower than this shows a message as
@@ -85,6 +92,12 @@ const POLL_MS = 20000;
 // calendar plans on the calendar every time. List is the default now (Akshil,
 // 2026-08-17): the page's first question turned out to be "what is running",
 // not "when", and the calendar is the drill-down for the scheduled subset.
+//
+// SECOND to the URL, since 2026-08-18. `?view=` (tasks-lib.viewFromSearch) is
+// what a link carries and therefore what wins; this key is the fallback for a
+// bare `/tasks`, which is how the page is opened from the sidebar. Both are
+// kept in step, so switching the view in one tab still greets the next visit
+// the same way.
 const VIEW_KEY = "fused-render:scheduled-view";
 
 // How far ahead a deep link's prefilled time lands. The form's own default is
@@ -94,9 +107,13 @@ const VIEW_KEY = "fused-render:scheduled-view";
 // inside the CURRENT minute opens the form on a time already behind the clock.
 const NEW_LINK_LEAD_MS = 120_000;
 
-type View = "list" | "board" | "calendar";
-
 export default function Scheduled() {
+  // THIS PAGE IS THE POLLER while it is open. The sidebar's Tasks entry reads the
+  // same rows (shell/tasksPulse) and would otherwise run a timer of its own
+  // alongside this one — two calls to /api/tasks for one answer, at two
+  // cadences. Holding a feeder for the page's lifetime says "take my answers,
+  // make no calls", so the shared store stands down until this unmounts.
+  useTasksFeeder();
   const [state, setState] = useState<ScheduleResult | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tasksFailed, setTasksFailed] = useState(false);
@@ -106,13 +123,19 @@ export default function Scheduled() {
   // localStorage can THROW (private mode, locked-down webviews), and this read
   // runs during first render — unguarded it took the whole page down for a
   // preference. Storage failing costs the memory, never the page.
-  const [view, setView] = useState<View>(() => {
+  const [view, setView] = useState<TaskView>(() => {
+    let saved: TaskView = "list";
     try {
-      const saved = localStorage.getItem(VIEW_KEY);
-      return saved === "board" || saved === "calendar" ? saved : "list";
+      const stored = localStorage.getItem(VIEW_KEY);
+      if (stored === "board" || stored === "calendar") saved = stored;
     } catch {
-      return "list";
+      // A blocked store just means no remembered view; the URL may still say.
     }
+    // The URL outranks the memory, and the memory is what a bare `/tasks`
+    // falls back to. Read once, in the initialiser: the page remounts on every
+    // navigation (App.tsx keys it on the nav epoch), so a back button onto
+    // `?view=board` comes through here rather than needing a subscription.
+    return viewFromSearch(location.search, saved);
   });
   // null = closed; a Date = open, prefilled (from a calendar slot click);
   // "blank" = open from the New task button, prefilled with "in an hour".
@@ -186,7 +209,9 @@ export default function Scheduled() {
     if (q.get("new") !== "1") return;
     setEditId(q.get("edit"));
     setNewTarget(q.get("target"));
-    // The chat's whole handoff: the typed draft becomes the description, the
+    // The chat's whole handoff: the typed draft fills the card's two prose
+    // fields — its first line names the task and the rest is the description
+    // (NewJobModal splitDraft) — the
     // open conversation the session a ONE-OFF will continue, and the chat's URL
     // the way back — the form's round trip.
     setNewMessage(q.get("message"));
@@ -225,6 +250,12 @@ export default function Scheduled() {
       (r) => {
         setTasks(r.tasks ?? []);
         setTasksFailed(false);
+        // The sidebar's Tasks entry reads the same rows (shell/tasksPulse): the
+        // dot and the counts beside the label are this answer, not a second poll
+        // of their own — two polls would show a dot the page disagrees with for
+        // twenty seconds at a time. Publishing also restarts that module's own
+        // timer, so while this page is open nothing else calls /api/tasks.
+        publishTasks(r.tasks ?? []);
       },
       () => {
         setTasks([]);
@@ -249,8 +280,18 @@ export default function Scheduled() {
     return () => window.clearInterval(id);
   }, []);
 
-  const pickView = (v: View) => {
+  const pickView = (v: TaskView) => {
     setView(v);
+    // Into the URL, so the view is a thing you can link to and reload onto.
+    // replaceState, not push: see tasks-lib.viewUrl — the toggle is a way of
+    // reading this page, not a place to come back to. The path is taken from
+    // `location` rather than hardcoded so this cannot be the thing that has to
+    // be remembered on the next rename.
+    try {
+      history.replaceState(history.state, "", viewUrl(location.pathname, location.search, v));
+    } catch {
+      // Some embeddings refuse history writes; the switch itself still happens.
+    }
     try {
       localStorage.setItem(VIEW_KEY, v);
     } catch {
@@ -328,38 +369,57 @@ export default function Scheduled() {
                 sits beside it. List first and default: the page's question is
                 "what is running", and the calendar is the drill-down for the
                 scheduled subset of it. */}
+            {/* Icon + label on each half, added 2026-08-18. The three words are
+                short and near-identical in weight, so the row read as a block of
+                text you had to actually read; a list, a set of columns and a
+                calendar are shapes you recognise before you read anything. The
+                labels stay — an icon-only switcher for a control this central
+                would be recognition traded for guessing (design-principles §4)
+                — and the marks are lucide's, at the same 14px every other glyph
+                on this page uses (ScheduleCalendar's `icon`). */}
             <div className="schedule-form-seg" role="radiogroup" aria-label="View">
               <button type="button"
-                      className={"btn btn-secondary" + (view === "list" ? " is-active" : "")}
+                      className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
                       aria-pressed={view === "list"}
                       onClick={() => pickView("list")}>
+                {ICON_VIEW_LIST}
                 List
               </button>
               <button type="button"
-                      className={"btn btn-secondary" + (view === "board" ? " is-active" : "")}
+                      className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
                       aria-pressed={view === "board"}
                       onClick={() => pickView("board")}>
+                {ICON_VIEW_BOARD}
                 Board
               </button>
               <button type="button"
-                      className={"btn btn-secondary" + (view === "calendar" ? " is-active" : "")}
+                      className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
                       aria-pressed={view === "calendar"}
                       onClick={() => pickView("calendar")}>
+                {ICON_VIEW_CALENDAR}
                 Calendar
               </button>
             </div>
-            {/* Search, Status and Project belong to the two task views: the
-                calendar answers "when", and a week with tasks filtered out of
-                it is a week that lies. They sit AFTER the toggle, so hiding
-                them here cannot move it. */}
-            {view !== "calendar" && (
-              <TaskFilterControls
-                filters={filters}
-                projects={projects}
-                home={home}
-                onChange={setFilters}
-              />
-            )}
+            {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
+                used to be hidden on the calendar, on the argument that it
+                answers "when" and a week with tasks filtered out of it is a week
+                that lies. That reading did not survive contact: the filters are
+                not a claim about what exists, they are how you read the page
+                this minute — the same three lenses, and a person who has just
+                narrowed the List to one project and switched to Calendar meant
+                to keep looking at that project, not to be handed everything
+                back. Views are lenses on one dataset (design-principles §1), and
+                a control that vanishes when you change lens makes them read as
+                three different pages.
+
+                They sit AFTER the toggle, which owns the row's only auto margin,
+                so nothing here can move either end of the bar. */}
+            <TaskFilterControls
+              filters={filters}
+              projects={projects}
+              home={home}
+              onChange={setFilters}
+            />
             <button type="button" className="btn btn-primary schedule-new"
                     onClick={() => openForm("blank", null)}>
               + New task
@@ -372,15 +432,20 @@ export default function Scheduled() {
               only ever appeared for one of the two filters, which made the page
               look like it had lost the other. Clearing is where setting is: in
               the menu. */}
-          {view !== "calendar" && tasksFailed && (
-            // One quiet line, not a banner: the form and the calendar still
-            // work, and only the rows are missing.
+          {tasksFailed && (
+            // One quiet line, not a banner: the form still works and only the
+            // tasks are missing. Shown on the calendar too since 2026-08-18 —
+            // its chips come from the same feed, so an empty week and an
+            // unreadable one looked identical there.
             <p className="schedule-tv-note">Tasks could not be loaded.</p>
           )}
 
           {view === "calendar" ? (
             <ScheduleCalendar
-              tasks={tasks}
+              // The FILTERED set, same as the other two views get: the toolbar's
+              // three controls are live here now, and a filter that is shown but
+              // does nothing is worse than one that is hidden.
+              tasks={shown}
               entries={entries}
               queued={queued}
               running={running}
@@ -394,6 +459,11 @@ export default function Scheduled() {
             <TaskList
               tasks={shown}
               home={home}
+              // A failed poll empties `tasks` too, and the List cannot tell that
+              // apart from a filter that matched nothing — but it must, because
+              // one is a reason to forget where the reader was and the other is
+              // a reason to hold onto it. See `stale` in TaskList.
+              stale={tasksFailed}
               onEditEntry={editEntry}
               // Cancelling a message changes server state. The 20s poll would
               // catch it anyway, so this is about the row not looking stuck for

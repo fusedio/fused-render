@@ -58,6 +58,44 @@ def test_loaders_reads_the_format_and_nothing_else(names, dirnames, config, torc
                                config=config, torch_weights=torch)) == expected
 
 
+#: The config the newer quantized mlx-community whisper re-uploads carry:
+#: OpenAI's own `ModelDimensions` fields, which neither a transformers nor a
+#: NeMo checkpoint spells this way.
+_MLX_WHISPER_CONFIG = {"n_mels": 80, "n_audio_ctx": 1500, "n_vocab": 51864,
+                       "quantization": {"group_size": 64, "bits": 8}}
+
+
+def test_a_SHARED_weight_name_needs_the_whisper_config_beside_it():
+    """`model.safetensors` is every transformers repo's filename, so it claims
+    mlx-whisper only together with the native whisper config — the layout
+    whisper-tiny.en-8bit ships, which the filename test alone refused."""
+    assert set(formats.loaders(
+        repo_id="mlx-community/whisper-tiny.en-8bit",
+        names={"model.safetensors", "config.json"}, dirnames=set(),
+        config=_MLX_WHISPER_CONFIG, torch_weights=True)) == {"mlx-whisper"}
+    # A transformers whisper config beside the same filename is the text
+    # runners' business, exactly as before.
+    assert set(formats.loaders(
+        repo_id="openai/whisper-tiny.en",
+        names={"model.safetensors", "config.json"}, dirnames=set(),
+        config={"model_type": "whisper", "num_mel_bins": 80, "d_model": 384},
+        torch_weights=True)) == {"mlx-text", "transformers-text"}
+
+
+def test_an_mlx_whisper_snapshot_is_NOT_offered_to_the_text_runners():
+    """The quantized re-uploads carry an MLX `quantization` block, so without
+    the exclusion the text branch would offer to load a speech model as a chat
+    model — the Parakeet trap, arriving by a new route. The older
+    `weights.safetensors` era had the same leak (`.safetensors` counts as torch
+    weights), so that spelling is asserted too."""
+    for names in ({"model.safetensors"}, {"weights.safetensors"}):
+        codes = formats.loaders(
+            repo_id="mlx-community/whisper-large-v3-turbo", names=names,
+            dirnames=set(), config=_MLX_WHISPER_CONFIG, torch_weights=True)
+        assert "mlx-text" not in codes and "transformers-text" not in codes
+        assert "mlx-whisper" in codes
+
+
 #: What a Parakeet MLX snapshot looks like: transformers-shaped safetensors
 #: beside a config that is NeMo's rather than transformers'.
 _PARAKEET_CONFIG = {"target": "nemo.collections.asr.models.rnnt_bpe_models."

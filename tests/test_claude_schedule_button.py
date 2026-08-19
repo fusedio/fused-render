@@ -301,7 +301,7 @@ def test_the_page_reads_the_params_the_template_writes(code, page):
     """The contract, spelled in two files. A rename on either side leaves the
     button navigating to a Schedule page that simply ignores it — no error, no
     modal, nothing to debug from."""
-    assert 'SCHEDULE_URL = "/scheduled"' in code
+    assert 'SCHEDULE_URL = "/tasks"' in code
     assert 'q.get("new") !== "1"' in page
     for param in ("target", "message", "session_id", "back"):
         assert f'q.get("{param}")' in page, f"the page ignores {param}"
@@ -359,8 +359,8 @@ def test_the_deep_linked_values_do_not_outlive_their_own_modal(page):
 
 def test_the_link_beats_the_guess_and_an_edit_beats_the_link(modal):
     """Three sources for one field, in order: a stored target (Edit), the folder
-    a link named, and only then DEFAULT_TARGET_SUFFIX — which is a guess, and a
-    guess is what you offer when nobody said."""
+    a link named, and only then defaultTargetOf() — the server's resolved
+    workspace, which is what you offer when nobody said."""
     assert modal.count('editing?.target ?? initialTarget ?? ""') == 2, \
         "the state and the dirty baseline must be the same expression"
     # the async default only fills a still-EMPTY field, which is what keeps it

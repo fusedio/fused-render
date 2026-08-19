@@ -94,8 +94,16 @@ def test_a_scheduled_turn_that_FINISHED_between_polls_is_appended(code):
     # whatever the reader last said
     assert "if (probeMsg) addUser(probeMsg);" in done
 
-    # and the reload caller keeps the conservative default — passing no opts
-    assert "await resumeRun(run_id);" in code
+    # and the reload caller keeps the conservative default for THIS opt. It no
+    # longer passes no opts at all — #610 gave it `{ retryUnknown: true }`, which
+    # is a different question (retry a run_id the server has not registered yet)
+    # — so what has to hold is that it does not opt into `neverShown`, which is
+    # the one that would make a reload append a turn the transcript may already
+    # hold.
+    reload_call = code[code.index("if (run_id) await resumeRun(run_id"):]
+    reload_call = reload_call[:reload_call.index(";") + 1]
+    assert "neverShown" not in reload_call, \
+        "the reload path must not claim the turn was never shown: " + reload_call
 
 
 def test_never_shown_kills_matching_rather_than_only_adding_a_branch(code):

@@ -4,6 +4,11 @@
 // inverse is the exact path the entry came from (never a deduped one), and an
 // entry that cannot be undone leaves the stack rather than sitting at the top
 // failing forever.
+//
+// The TRASH DELETE is covered at the bottom, and what those cases assert is that
+// it needs no mechanics of its own: a trash is a rename into ~/.Trash whose
+// destination the server names, so it inverts, reports and toasts through the
+// same code as a move.
 import { beforeEach, expect, test } from "bun:test";
 
 // The apply path renames through the api layer, and the toast wording reaches
@@ -11,14 +16,17 @@ import { beforeEach, expect, test } from "bun:test";
 // so both stubs precede the (therefore dynamic) import, the same trade
 // fs-move.test.ts makes rather than carrying a DOM.
 (globalThis as { location?: unknown }).location = new URL("http://x/");
-type Req = { url: string; body: { src?: string; dst?: string } };
+// A trash-move posts {from, to} where a rename posts {src, dst} — same pair,
+// different endpoint — so the stub reads whichever the body carries.
+type Req = { url: string; body: { src?: string; dst?: string; from?: string; to?: string } };
 const posts: Req[] = [];
 // Which renames must fail, and how. A LIST, so one batch can hold several
 // failures — the property "every independent failure is reported" is only
 // observable within a single applyFsOp call, and a version of this that took one
 // rule at a time made that test pass against an unconditional break.
 //
-//   src      the source path to refuse, or "*" for all of them
+//   src      the source path to refuse, or "*" for all of them (matched against
+//            whichever source key the endpoint uses — `src` or `from`)
 //   status   the HTTP status; omit with `rejects` for a request that never
 //            answers at all (a dropped connection), which is the only way to
 //            reach the status-less branch of isPerPathRefusal / blamedPath
@@ -29,7 +37,8 @@ let failRules: FailRule[] = [];
 (globalThis as { fetch?: unknown }).fetch = ((url: string, init?: { body?: string }) => {
   const body = init?.body ? JSON.parse(init.body) : {};
   posts.push({ url, body });
-  const rule = failRules.find((r) => r.src === "*" || r.src === body.src);
+  const src = body.src ?? body.from;
+  const rule = failRules.find((r) => r.src === "*" || r.src === src);
   if (rule) {
     // No status anywhere on the error — api.ts's httpError always attaches one,
     // so a plain rejection is what a network failure looks like to a caller.
@@ -40,7 +49,11 @@ let failRules: FailRule[] = [];
       json: () => Promise.resolve({ error: rule.error }),
     });
   }
-  return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ path: body.dst }) });
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve({ path: body.dst ?? body.to }),
+  });
 }) as unknown as typeof fetch;
 
 const {
@@ -58,11 +71,16 @@ const {
   resetFsUndo,
   takeRedoOp,
   takeUndoOp,
+  trashUndoPairs,
   UNDO_CAP,
 } = await import("@apps/explorer/lib/fs-undo");
 
 const renames = () =>
   posts.filter((p) => p.url === "/api/fs/rename").map((p) => [p.body.src, p.body.dst]);
+// The trash primitive: the same pair over the endpoint that also fixes the bin's
+// sidecar. A "delete" op must go through THIS and not the plain rename.
+const trashMoves = () =>
+  posts.filter((p) => p.url === "/api/fs/trash-move").map((p) => [p.body.from, p.body.to]);
 
 beforeEach(() => {
   resetFsUndo();
@@ -574,4 +592,142 @@ test("a vanished source fails the same way — the entry is not retried forever"
   });
   expect(report.done).toEqual([]);
   expect((report.failed[0].error as { status?: number }).status).toBe(404);
+});
+
+// -- the TRASH DELETE, which is a relocation like any other -----------------
+
+test("a delete op inverts like a move — the same reversed, swapped pairs", () => {
+  // The whole claim of the delete kind: at the filesystem a trash IS a rename
+  // into ~/.Trash, so the inverse is the rename back and nothing in the
+  // mechanics knows the difference.
+  expect(
+    invertFsOp({
+      kind: "delete",
+      pairs: [
+        { from: "/w/a.md", to: "/h/.Trash/a.md" },
+        { from: "/w/b.md", to: "/h/.Trash/b 2.md" },
+      ],
+    })
+  ).toEqual({
+    kind: "delete",
+    pairs: [
+      { from: "/h/.Trash/b 2.md", to: "/w/b.md" },
+      { from: "/h/.Trash/a.md", to: "/w/a.md" },
+    ],
+  });
+});
+
+test("undoing a delete renames it OUT of the Trash, redoing it renames it back", async () => {
+  const op = {
+    kind: "delete" as const,
+    pairs: [{ from: "/w/notes.md", to: "/h/.Trash/notes.md" }],
+  };
+  // Undo: the inverse, asking for exactly the recorded original path — never a
+  // "… copy" one, since applyFsOp renames with overwrite off.
+  const undone = await applyFsOp(invertFsOp(op));
+  expect(trashMoves()).toEqual([["/h/.Trash/notes.md", "/w/notes.md"]]);
+  expect(undone.done).toEqual([{ from: "/h/.Trash/notes.md", to: "/w/notes.md" }]);
+  // Redo is the op itself again: back into the Trash.
+  posts.length = 0;
+  await applyFsOp(op);
+  expect(trashMoves()).toEqual([["/w/notes.md", "/h/.Trash/notes.md"]]);
+});
+
+test("the delete's toast wording reads as a sentence in both directions", async () => {
+  failRules = [];
+  const report = await applyFsOp({
+    kind: "delete",
+    pairs: [{ from: "/h/.Trash/a.md", to: "/w/a.md" }],
+  });
+  expect(relocationToast("undo", "delete", report)).toEqual({
+    msg: "Undid the delete.",
+    tone: "info",
+  });
+  expect(relocationToast("redo", "delete", report).msg).toBe("Redid the delete.");
+});
+
+test("an emptied Trash is one pair's problem, and it is said out loud", async () => {
+  // The two ways an undone delete legitimately fails: the entry is no longer in
+  // the Trash (emptied → 404, blamed on the Trash path that vanished) and the
+  // original name has since been retaken (409, blamed on the destination).
+  // Neither is systemic, so the batch runs to the end and nothing is left
+  // `pending`.
+  failRules = [
+    { src: "/h/.Trash/a.md", status: 404, error: "no such file or directory" },
+    { src: "/h/.Trash/c.md", status: 409, error: "conflict" },
+  ];
+  const report = await applyFsOp({
+    kind: "delete",
+    pairs: [
+      { from: "/h/.Trash/a.md", to: "/w/a.md" },
+      { from: "/h/.Trash/b.md", to: "/w/b.md" },
+      { from: "/h/.Trash/c.md", to: "/w/c.md" },
+    ],
+  });
+  expect(report.done).toEqual([{ from: "/h/.Trash/b.md", to: "/w/b.md" }]);
+  expect(report.pending).toEqual([]);
+  const { msg, tone } = relocationToast("undo", "delete", report);
+  expect(tone).toBe("error");
+  expect(msg).toStartWith("Undid part of the delete. ");
+  expect(msg).toContain('"a.md"'); // the 404 blames the path that is missing
+  expect(msg).toContain("(and 1 more)");
+  expect(msg).not.toContain("left in place");
+});
+
+test("trashUndoPairs records the delete as it happened, one op for the batch", () => {
+  expect(
+    trashUndoPairs([
+      { path: "/w/a.md", to: "/h/.Trash/a.md" },
+      { path: "/w/b.md", to: "/h/.Trash/b 2.md" },
+    ])
+  ).toEqual([
+    { from: "/w/a.md", to: "/h/.Trash/a.md" },
+    { from: "/w/b.md", to: "/h/.Trash/b 2.md" },
+  ]);
+});
+
+test("a trash with no known destination contributes NO pair", () => {
+  // The Finder fallback: the server could not name where the entry went, so
+  // there is nothing to rename back. The rows around it stay undoable.
+  expect(
+    trashUndoPairs([{ path: "/w/a.md" }, { path: "/w/b.md", to: "/h/.Trash/b.md" }])
+  ).toEqual([{ from: "/w/b.md", to: "/h/.Trash/b.md" }]);
+  // Every row unnamed → no pairs at all, and recordFsOp/push no-op on that.
+  expect(trashUndoPairs([{ path: "/w/a.md" }])).toEqual([]);
+  recordFsOp({ kind: "delete", pairs: trashUndoPairs([{ path: "/w/a.md" }]) });
+  expect(takeUndoOp()).toBeNull();
+});
+
+test("the kind picks the PRIMITIVE: a delete moves through trash-move, nothing else does", async () => {
+  // The one branch on `kind`. A delete restored with a plain rename would leave
+  // the freedesktop sidecar behind on Linux — the entry back in place and the bin
+  // still claiming to hold it — and a relocation sent through trash-move would
+  // ask the server to write bin bookkeeping for a path that is not in the bin.
+  await applyFsOp({ kind: "delete", pairs: [{ from: "/h/.Trash/a.md", to: "/w/a.md" }] });
+  expect(trashMoves()).toEqual([["/h/.Trash/a.md", "/w/a.md"]]);
+  expect(renames()).toEqual([]);
+
+  posts.length = 0;
+  await applyFsOp({ kind: "move", pairs: [{ from: "/b/a.md", to: "/a/a.md" }] });
+  await applyFsOp({ kind: "rename", pairs: [{ from: "/w/a.md", to: "/w/b.md" }] });
+  expect(trashMoves()).toEqual([]);
+  expect(renames().length).toBe(2);
+});
+
+test("a failing trash-move is reported exactly like a failing rename", async () => {
+  // The endpoint delegates to the same handler, so it answers with the same
+  // statuses — and every one of them must flow through the same per-path vs
+  // systemic split. A 403 from the restore destination stops the batch and hands
+  // the untried pairs back, as it does for a move.
+  failRules = [{ src: "*", status: 403, error: "readonly" }];
+  const report = await applyFsOp({
+    kind: "delete",
+    pairs: [
+      { from: "/h/.Trash/a.md", to: "/w/a.md" },
+      { from: "/h/.Trash/b.md", to: "/w/b.md" },
+    ],
+  });
+  expect(report.done).toEqual([]);
+  expect(report.pending.length).toBe(2);
+  expect(trashMoves().length).toBe(1); // stopped at the first, did not try the second
 });

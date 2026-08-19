@@ -56,19 +56,23 @@ def home_dir() -> str:
 
 
 def workspace_dir() -> str:
-    """The user's Fused workspace (~/Documents/Fused), where app folders live
+    """The user's Fused workspace (~/Fused), where app folders live
     two levels down (<workspace>/<tag>/<name>).
 
     `FUSED_RENDER_WORKSPACE_DIR` is exported by the server ALREADY RESOLVED —
     the output of `shell.seed.fused_dir()`. The fallback mirrors that function
     for a template running standalone: the same `FUSED_RENDER_DIR` override
     tests use, else the default location.
+
+    This module runs in template subprocesses and is stdlib-only — it CANNOT
+    import fused_render — so the default is a copy that must be kept in step
+    with `shell/seed.fused_dir()` by hand (D337 moved it out of ~/Documents).
     """
     d = os.environ.get("FUSED_RENDER_WORKSPACE_DIR")
     if d:
         return d
     return os.path.abspath(
-        os.path.expanduser(os.environ.get("FUSED_RENDER_DIR") or "~/Documents/Fused")
+        os.path.expanduser(os.environ.get("FUSED_RENDER_DIR") or "~/Fused")
     )
 
 
@@ -164,6 +168,25 @@ def skill_plugin_dir() -> str | None:
     other value in this module.
     """
     return os.environ.get("FUSED_RENDER_SKILL_PLUGIN_DIR") or None
+
+
+def workbench_plugin_dir() -> str | None:
+    """A SECOND Claude Code plugin root to hand a session we spawn — the
+    `workbench` plugin's canvas/UDF skills — or None when the machine has none.
+
+    Separate from `skill_plugin_dir` because it is a separate plugin, published
+    by the workbench team rather than shipped in this app; `--plugin-dir` is
+    repeatable, so the two roots compose without merging trees. A canvas clone's
+    CLAUDE.md names those skills (canvas.toml format above all), and handing them
+    over per-run is what makes that true without asking the user to install
+    anything or touching their global Claude config.
+
+    Absent means "not found on this machine" — the flag is not passed and the
+    clone's CLAUDE.md degrades to the folder's own conventions. Decided by the
+    server (`skill_plugin.export_workbench_plugin_env`), like every other value
+    in this module.
+    """
+    return os.environ.get("FUSED_RENDER_WORKBENCH_PLUGIN_DIR") or None
 
 
 def fused_cli_dir() -> str | None:

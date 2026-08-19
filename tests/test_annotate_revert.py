@@ -9,7 +9,7 @@ answer to "this file has no history").
 The sharpest hazard in the feature: current on-disk content is frequently in NO
 checkpoint, so a restore can vaporize work that exists nowhere else. The UI's
 confirm step (driven by `unique_current`) is the whole defence — no copy is
-kept anywhere (D335 removed the sidecar stash).
+kept anywhere (D357 removed the sidecar stash).
 """
 import importlib.util
 import os
@@ -357,7 +357,7 @@ def test_the_confirm_sheet_states_what_the_write_costs(source):
 
 
 def test_the_sheet_knows_no_copy_is_kept(source):
-    """D335 removed the sidecar stash, so the warning is driven by
+    """D357 removed the sidecar stash, so the warning is driven by
     `plan.unique_current` alone and must not hedge about a copy being kept —
     there is none, anywhere."""
     assert "plan.stash" not in source

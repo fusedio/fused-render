@@ -46,6 +46,11 @@ export interface SidebarRailItem {
   /** Override the exact-pathname highlight, mirroring NavItem's `active` —
       for icons that are "home" to a family of routes. */
   active?: boolean;
+  /** A mark ON the icon — the collapsed rail's only way to say anything about
+      the page behind it, since there is no label to hang a count on (the
+      shell's Tasks dot). Drawn inside the button, which is the positioned
+      ancestor it resolves against; the frame never says what it means. */
+  badge?: React.ReactNode;
 }
 
 export interface SidebarFrameProps {
@@ -69,13 +74,20 @@ export function NavItem({
   icon,
   id,
   extra,
+  trailing,
   active,
 }: {
   href: string;
   label: string;
   icon: React.ReactNode;
   id?: string;
+  /** A mark ON the icon (the Settings row's resident-model dot). */
   extra?: React.ReactNode;
+  /** Content AFTER the label, pushed to the row's trailing edge — where a count
+      or a status readout goes once there is a label for it to belong to. The
+      expanded sidebar's answer to the rail's `badge`: same fact, stated in
+      words rather than as a dot, because here there is room for words. */
+  trailing?: React.ReactNode;
   /** Override the exact-pathname highlight — for entries that are "home" to a
       whole family of routes (the global sidebar's Explorer row is active on
       every fs-path/panel/tab route, not just /explorer itself). */
@@ -96,6 +108,7 @@ export function NavItem({
         {extra}
       </span>{" "}
       {label}
+      {trailing && <span className="sidebar-item-trail">{trailing}</span>}
     </a>
   );
 }
@@ -203,6 +216,7 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
                   }}
                 >
                   {item.icon}
+                  {item.badge}
                 </a>
               </React.Fragment>
             ))}

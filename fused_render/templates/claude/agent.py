@@ -72,6 +72,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 # The fused engine execs this script without setting __file__; it puts the
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
@@ -82,7 +85,9 @@ if "__file__" not in globals():
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from appenv import fused_cli_dir as _fused_cli_dir
+from appenv import origin as _origin
 from appenv import skill_plugin_dir as _skill_plugin_dir
+from appenv import workbench_plugin_dir as _workbench_plugin_dir
 from appenv import workspace_dir as _workspace_dir
 from private_dir import private_dir as _private_dir_under
 from private_dir import require_private as _require_private
@@ -451,19 +456,30 @@ def _claude_bin() -> str:
 
 
 def _plugin_argv() -> list:
-    """`["--plugin-dir", <root>]` when fused-render has a skill plugin to hand
-    this session, else `[]`.
+    """One `--plugin-dir <root>` per plugin root fused-render has to hand this
+    session, or `[]`.
 
     This is how a session we launch gets the fused-render skills with certainty
     instead of hoping the user-level sync landed somewhere the CLI reads (D216).
-    The path (and the decision to pass it at all — see appenv) arrives through
+    The paths (and the decision to pass each at all — see appenv) arrive through
     the env contract, so `_start` neither imports the app nor shells out to
     interrogate the CLI. A `--plugin-dir` load is session-scoped and additive:
     the user's own skills, plugins, CLAUDE.md and settings are all untouched,
     and a user who installed the published plugin themselves just sees the same
-    skills listed twice."""
-    root = _skill_plugin_dir()
-    return ["--plugin-dir", root] if root else []
+    skills listed twice.
+
+    TWO roots, because they are two separate plugins: fused-render's own skills
+    (assembled by skill_plugin.py, shipped in this wheel) and the `workbench`
+    plugin's canvas/UDF skills (published by the workbench team, discovered on
+    the machine). A canvas clone's CLAUDE.md names the latter — the canvas.toml
+    format reference above all — so handing them over per-run is what makes that
+    instruction true without asking the user to install anything. The flag is
+    repeatable, so the roots compose rather than needing a merged tree; either
+    can be absent independently."""
+    return [arg
+            for root in (_skill_plugin_dir(), _workbench_plugin_dir())
+            if root
+            for arg in ("--plugin-dir", root)]
 
 
 def _fused_cli_note() -> str:
@@ -474,13 +490,25 @@ def _fused_cli_note() -> str:
 
     Appended to EVERY target's prompt (file, app folder, ordinary folder)
     rather than woven into each shape: the CLI is a fact about the machine,
-    not about the target. Three things it must say, each guarding a real
+    not about the target. Four things it must say, each guarding a real
     failure: run it as a BARE command (the `Bash(fused:*)` pre-allowance is a
     prefix rule, so `cd x && fused ...` still raises a card — correct, but
-    surprising if unsaid); never run its login flows (they open a browser and
-    a headless session hangs on them); and never hand-push inside a canvas
-    clone (fused-render's own sync manager already pushes those folders, and
-    a second pusher races it)."""
+    surprising if unsaid, and the bare form is also the ONLY spelling that
+    reaches the CLI this app ships, since the wrapper is what is on PATH);
+    never reach for some other fused (a `pip install fused`, a `python -m
+    fused`, another venv's copy — those miss the pieces the canvas sync needs
+    and bypass the push protection); never run its login flows (they open a
+    browser and a headless session hangs on them); and DO push inside a canvas
+    clone with the standard command.
+
+    That last one used to say the opposite — "let the sync push, rather than
+    running `canvas push` yourself" — which was right when a hand-push meant an
+    unguarded raw CLI call racing the watcher. It is now wrong twice: the
+    auto-push is HELD while a session is live in the clone (so there is nothing
+    to race, and a session that never pushes leaves its work unpublished until
+    it ends), and `canvas push` inside a clone is intercepted into the guarded
+    server-side push. Telling a session not to push now means telling it to
+    finish blind."""
     if not _fused_cli_dir():
         return ""
     return (
@@ -489,14 +517,19 @@ def _fused_cli_note() -> str:
         "workbench canvas push <dir> --canvas <name>`; see `fused --help`). "
         "Run it as a plain `fused ...` command — that exact form is "
         "pre-approved, while compound commands (`cd x && fused ...`) ask the "
-        "user first. It uses the user's existing Fused sign-in; NEVER run "
+        "user first — and never invoke fused any other way: no `pip install "
+        "fused`, no `python -m fused`, no copy from another path or "
+        "environment, since only the bare command reaches the CLI this app "
+        "ships. It uses the user's existing Fused sign-in; NEVER run "
         "`fused workbench login` or `fused cloud login` (they wait on a "
         "browser round-trip that cannot complete here) — on an auth error, "
         "ask the user to sign in from fused-render's Canvases page or a "
         "terminal instead. Inside a canvas folder under ~/.fused-render/"
-        "canvases, fused-render may already be auto-pushing every edit: "
-        "there, just edit the files and let that sync push, rather than "
-        "running `canvas push` yourself."
+        "canvases, fused-render holds its own auto-push while you work and "
+        "routes `fused workbench canvas push .` through its sync manager, "
+        "which merges concurrent workbench edits first: publish a coherent "
+        "change set with that command and read the errors it prints back. "
+        "See that folder's CLAUDE.md for the details."
     )
 
 
@@ -519,6 +552,26 @@ def _workdir(file: str) -> str:
     return file if os.path.isdir(file) else os.path.dirname(file)
 
 
+def _custom_env(origin: str, file: str) -> bool | None:
+    """Does *file*'s own reader need a declared project environment, per
+    `/api/env/custom-env`? None when the app couldn't be asked — a network
+    hiccup on this prompt-building nicety must never fail the spawn, so any
+    error (timeout, connection refused, a malformed response) is swallowed
+    exactly like every other read in this module that decorates a screen
+    rather than gating it (see artifacts.py's own "NOTHING HERE RAISES").
+    `None` and `True` both mean "say nothing" downstream — the only value
+    that unlocks the interpreter fact is a confirmed `False`.
+    """
+    try:
+        url = origin + "/api/env/custom-env?" + urllib.parse.urlencode({"file": file})
+        req = urllib.request.Request(url, headers={"X-Fused": "1"})
+        with urllib.request.urlopen(req, timeout=2) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return bool(data.get("custom_env", True))
+    except Exception:  # noqa: BLE001 — see docstring
+        return None
+
+
 def _system_prompt(file: str) -> str:
     """The FILE target's prompt: what to work on, plus the same app-state
     disclosure the directory prompt makes (D235).
@@ -535,6 +588,23 @@ def _system_prompt(file: str) -> str:
     """
     name = os.path.basename(file)
     tool = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
+    origin = _origin()
+    # This session's OWN interpreter is a fact worth stating only when it is
+    # KNOWN to be the one that read `file` — never a caveated guess. The claude
+    # template's own folder never declares a project (SPEC PY-17), so this
+    # process always runs on the app's own bundled interpreter; whether that
+    # matches `file`'s actual reader depends on `file` itself, which
+    # /api/env/custom-env resolves properly (a `.py` in a declared project, or
+    # a data file whose template ships its own pyproject.toml — D276's
+    # map/vector/pdf_studio and any future one — answers `custom_env: true`,
+    # and this says nothing rather than assert a fact that might be wrong).
+    # `origin` is None only when there is no server to ask (e.g. a bare test).
+    custom_env = _custom_env(origin, file) if origin else None
+    env_note = (
+        f" For Python-based inspection of {name}, invoke the exact executable "
+        f"`{sys.executable}`. Do not substitute `python` or `python3` from "
+        "PATH; they may refer to a different environment."
+    ) if custom_env is False else ""
     return (
         f"You are embedded in a local file viewer, opened on {file}. "
         f"The user is looking at {name} right now; treat that file as the "
@@ -552,7 +622,7 @@ def _system_prompt(file: str) -> str:
         "reloads itself when the file changes). Anything the user annotates or "
         f"screenshots in that pane is a part of {name}, not of the viewer. A "
         f"<{APP_STATE_TAG}> block on their message is the same reading taken "
-        "at send time, and goes stale as soon as you edit anything."
+        f"at send time, and goes stale as soon as you edit anything.{env_note}"
     )
 
 
@@ -706,7 +776,19 @@ def _terminal_command(file: str, session_id: str = "") -> dict:
 
     The binary is spelled `claude` when PATH resolves it — a command the user
     reads and reuses should say what they would type — and falls back to the
-    located absolute path only when it doesn't."""
+    located absolute path only when it doesn't.
+
+    The `fused` wrapper dir is PREPENDED to PATH for the handed-over command
+    whenever the server exported one (`fused_cli_dir`, the same condition that
+    gates the `Bash(fused:*)` pre-allowance and the prompt's CLI note). The
+    sessions we spawn inherit that dir on PATH from the server process; a
+    terminal the user opens themselves does not. Without this, `fused` in the
+    continued session is not a wrong version — for a shipping user it is
+    `command not found`, because fused-render bakes its own pre-release fused
+    into the app's interpreter and they never installed one. Prepended rather
+    than appended so the app's CLI also wins over any fused a developer does
+    have, since only that one carries the manifest shims the canvas sync needs.
+    Spelled as an ordinary PATH assignment, which is what a user would type."""
     if not file:
         return {"error": "missing target file (no _file param?)"}
     workdir = _workdir(file)
@@ -725,15 +807,25 @@ def _terminal_command(file: str, session_id: str = "") -> dict:
         if _bad_id(session_id):
             return {"error": "malformed session id"}
         argv += ["--resume", session_id]
+    cli_dir = _fused_cli_dir()
     if os.name == "nt":
         # cmd.exe quoting: bare when safe, double-quoted otherwise. shlex is
         # POSIX-only and its output misleads on Windows.
         def quote(s):
             return '"' + s + '"' if (" " in s or not s) else s
-        command = "cd /d {} && {}".format(quote(workdir),
-                                          " ".join(quote(a) for a in argv))
+        parts = ["cd /d {}".format(quote(workdir))]
+        if cli_dir:
+            # `set` scopes to the shell the user pasted into, which is exactly
+            # the lifetime we want: the session they just continued.
+            parts.append('set "PATH={};%PATH%"'.format(cli_dir))
+        parts.append(" ".join(quote(a) for a in argv))
+        command = " && ".join(parts)
     else:
-        command = "cd {} && {}".format(shlex.quote(workdir), shlex.join(argv))
+        run = shlex.join(argv)
+        if cli_dir:
+            # A one-command env prefix, so nothing outlives the session.
+            run = "PATH={}:$PATH {}".format(shlex.quote(cli_dir), run)
+        command = "cd {} && {}".format(shlex.quote(workdir), run)
     return {"command": command, "cwd": workdir}
 
 
@@ -1688,7 +1780,7 @@ def _alive(run_dir: str) -> bool:
 _LIVE_SCAN_LIMIT = 60
 
 
-def _live_run(file: str, session_id: str = "") -> dict:
+def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LIMIT) -> dict:
     """The id of a run for `file` that is STILL GOING, or "" if there is none.
 
     The page can only re-attach to a run whose id it has, and until this existed
@@ -1705,12 +1797,27 @@ def _live_run(file: str, session_id: str = "") -> dict:
     (`resumed_from` in meta.json) and the session the CLI minted for it (written
     to the `session` file by the first poll that sees one, because
     `--fork-session` can hand back a NEW id) — so either matching is a match.
+
+    `limit` is how many run dirs (newest first) the scan reads; `limit=None`
+    reads all of them. The default cap is right for the ORIGINAL caller — a page
+    re-attaching to its own run, where a run buried under 60 newer ones belongs
+    to a frame long gone — and wrong for a caller that needs a RELIABLE answer
+    about a folder rather than a cheap one. canvases.py's workbench lock is that
+    caller: it asks "is a session editing this clone?" to decide whether to make
+    the user's other editor read-only, and a live run that fell out of the
+    window would read as "nobody is editing", silently leaving the lock off.
+    Nothing prunes RUNS, so on a machine that has been chatting for weeks that
+    miss is the normal case, not an exotic one. Unbounded costs one meta.json
+    read per run dir, so the lock caller caches the answer across its poll
+    interval rather than paying it on every tick.
     """
     file = os.path.abspath(file)
     try:
-        names = sorted(os.listdir(RUNS), reverse=True)[:_LIVE_SCAN_LIMIT]
+        names = sorted(os.listdir(RUNS), reverse=True)
     except OSError:
         return {"run_id": ""}
+    if limit is not None:
+        names = names[:limit]
     for name in names:
         run_dir = os.path.join(RUNS, name)
         try:

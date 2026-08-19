@@ -66,6 +66,11 @@ const root = createRoot(document.getElementById("root")!);
 getConfig().then(
   (config) => {
     root.render(<App config={config} />);
+    // Embed documents are display-only panes/previews. They have no global
+    // sidebar, so hydrating its bookmark and recents stores in every iframe is
+    // unrelated work — and multiplies the two bounded filesystem checks by the
+    // number of preview cards on Home.
+    if (IS_EMBED) return;
     // Load the bookmark cache from the server (async; renders empty first, then
     // the sidebar/breadcrumb re-read once it resolves). Independent of config —
     // fire after mount so a config failure still shows its error screen.

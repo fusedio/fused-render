@@ -67,15 +67,97 @@ def fused_cli() -> FusedCli | None:
     return None
 
 
+def _installed_fused_version() -> str | None:
+    """The version of the `fused` DISTRIBUTION installed in this interpreter.
+
+    Distribution metadata, deliberately NOT ``fused.__version__``: a dev venv
+    once held an older fused than pyproject pinned and every ``/api/run`` died
+    with SIGSEGV, while that attribute reported misleadingly — so the attribute
+    is not evidence of which wheel is actually installed.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        return version("fused")
+    except PackageNotFoundError:
+        return None
+    except Exception:  # noqa: BLE001 — a diagnostic must never raise
+        return None
+
+
+def _pinned_fused_version() -> str | None:
+    """What THIS project pins `fused` to, from fused-render's own installed
+    metadata (``fused==X`` in Requires-Dist) — the only source that exists at
+    runtime, since a shipped app has no pyproject.toml."""
+    try:
+        from importlib.metadata import PackageNotFoundError, requires
+
+        try:
+            reqs = requires("fused-render") or []
+        except PackageNotFoundError:
+            return None
+        for req in reqs:
+            text = req.replace(" ", "")
+            if text.startswith("fused=="):
+                return text[len("fused=="):].split(";")[0].split(",")[0]
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def log_cli_provenance() -> str | None:
+    """Log which `fused` CLI is in effect when it is NOT the one this app ships,
+    and return the warning text (or None when all is well).
+
+    A DEVELOPER diagnostic, not user-facing. For a shipping user there is no
+    other fused: the DMG bakes the pre-release wheel into the app's own
+    interpreter and `fused_cli()`'s second branch is the only path they take —
+    so both states this reports (an explicit override, or an installed fused
+    that does not match the pin) are conditions only a dev checkout reaches.
+    That is precisely why they deserve a log rather than UI: the failures they
+    cause are baffling and far from their cause. An older fused has no manifest
+    shims, and BOTH the manifest-based two-way canvas sync and the clone's
+    CLAUDE.md seeding are gated on those — so the override can quietly disable
+    the machinery that depends on it, and it structurally bypasses the
+    `_fused_cli.py` push interception too.
+
+    The override itself stays fully supported: it is how the test suite
+    substitutes a stub CLI, and how a dev points at a local build.
+    """
+    override = os.environ.get("FUSED_RENDER_FUSED_BIN")
+    if override:
+        message = (
+            "using the fused CLI from FUSED_RENDER_FUSED_BIN (%s) instead of "
+            "the one this app ships. The manifest shims the two-way canvas "
+            "sync and clone CLAUDE.md seeding depend on may be missing, and "
+            "the canvas-push interception is bypassed." % override)
+        logger.warning("%s", message)
+        return message
+    installed = _installed_fused_version()
+    if installed is None:
+        # No fused importable at all: `fused_cli()` returns None and every
+        # canvases endpoint already says so in its own error. Nothing to add.
+        return None
+    pinned = _pinned_fused_version()
+    if pinned and installed != pinned:
+        message = (
+            "the installed fused is %s but this project pins %s. Version drift "
+            "here has produced SIGSEGV on every /api/run before; reinstall "
+            "with `pip install -e \".[fused]\"`." % (installed, pinned))
+        logger.warning("%s", message)
+        return message
+    return None
+
+
 def workbench_env() -> str:
     """The Fused environment the workbench features target — ONE knob
-    (FUSED_RENDER_WORKBENCH_ENV, default unstable) shared by canvases.py's
+    (FUSED_RENDER_WORKBENCH_ENV, default prod) shared by canvases.py's
     iframe URL + CLI runs AND the `fused` wrapper handed to Claude sessions
     (export_fused_cli_env), so what Claude pushes lands in the same
     environment the canvases iframe shows. Lives here rather than in
     canvases.py because canvases imports this module, not the other way
-    around."""
-    return os.environ.get("FUSED_RENDER_WORKBENCH_ENV", "unstable")
+    around. Set FUSED_RENDER_WORKBENCH_ENV=unstable to switch back."""
+    return os.environ.get("FUSED_RENDER_WORKBENCH_ENV", "prod")
 
 
 # The env var that carries the wrapper dir to the templates (SPEC PY-15):
@@ -143,6 +225,10 @@ def export_fused_cli_env() -> str | None:
     """
     from fused_render.shell.storage import home_dir
 
+    # Say so in the log when the CLI in effect is not the one this app ships.
+    # Here because this runs once before serving, and a dev whose canvas sync
+    # silently lost its manifest shims has no other breadcrumb.
+    log_cli_provenance()
     cli = fused_cli()
     if cli is None:
         os.environ.pop(CLI_DIR_ENV, None)

@@ -119,7 +119,7 @@ Left sidebar in the shell, always visible:
 - **SB-4** Bookmarks are renamable inline (edit affordance on hover → input → Enter/blur commits) and deletable. No confirm on delete (re-bookmarking is one click). While a row's rename input is open its whole hover-action cluster is hidden (**Save to disk**, **Rename**, **Delete** — folder rows likewise) — the input wants the row's full width, and every one of them fights the edit in progress: save would snapshot the pre-edit name, rename is what's already happening, and delete would destroy the row being named. Commit (Enter/blur) or cancel (Escape) first.
 - **SB-5** **DECIDED: persistence = server-side file** `~/.fused-render/bookmarks.json` (D75; superseded the original localStorage store). JSON array `{id, name, url, created_at}` (+ folders, D44); `id = crypto.randomUUID()`. Served by `GET /api/bookmarks` → `{exists, bookmarks, missing}` and `PUT /api/bookmarks` (whole-tree, atomic, last-write-wins); server code lives in `fused_render/shell/`. Frontend reads a synchronous in-memory cache hydrated at boot; mutations await the PUT (no optimistic update); a 30 s poll re-reads the server so another tab's edits converge (D77, eventual ≤30 s, still last-write-wins). **(D104):** the one-time legacy localStorage import has been removed — every pre-D75 install has long since migrated. **(D127):** `missing` is a bookmark-id side-channel — ids whose target is confirmed gone from disk, recomputed fresh on every GET (bounded, concurrent, mount-safe, fail-open) and never persisted/round-tripped through PUT. The sidebar keeps a flagged row's name at its normal color and shows a warning glyph + hover-card note (owner call: the icon alone carries the flag); nothing is auto-removed. The bookmark poll also fires immediately on window focus (in-flight guarded), not just every 30s. Contrast with Recents (§29, D115), which stays hidden-when-missing by deliberate owner choice.
 - **SB-6** Duplicate URLs allowed; **names are globally unique, case-insensitive** (D97 — names become `<name>.bookmark` filenames): a colliding create/rename auto-suffixes `-1`, `-2`, ... instead of rejecting, existing duplicates migrate once on GET (oldest by `created_at` keeps its name). Folder names are a separate namespace. List ordered by creation time. *(drag reorder, active-bookmark highlight: polish, later)*
-- **SB-7** **REMOVED (D335, retiring D83): bookmark history is gone with the per-file sidecar.** Nothing mirrors bookmark create/update anywhere; `POST /api/bookmarks/history` and its frontend caller are deleted. Kept as a tombstone so older references resolve.
+- **SB-7** **REMOVED (D357, retiring D83): bookmark history is gone with the per-file sidecar.** Nothing mirrors bookmark create/update anywhere; `POST /api/bookmarks/history` and its frontend caller are deleted. Kept as a tombstone so older references resolve.
 - **SB-8** **Save to disk**: a per-bookmark button writes a portable `<name>.bookmark` JSON file (format v1: `{version, name, icon?, kind: single|panel|tab, path?, search}`, D98) next to the file(s) the bookmark points at — a single bookmark into its target's own directory (`path` relative to it), a panel/tab bookmark into the deepest common ancestor directory of all `_layout` leaves, each leaf path rewritten relative to that dir (grammar, nesting, per-leaf queries and global params untouched). The button's hover title shows the exact destination path before the click; it is disabled (greyed, explanatory title) when no save target exists — a leaf without an absolute fs path, or no common root. Frontend computes `{dir, filename, content}` (`lib/bookmark-file.ts`); `POST /api/bookmarks/export` validates and writes, overwrite allowed (a re-save refreshes the snapshot).
 - **SB-9** **Double-click open** (macOS): the packaged app registers `.bookmark` as an Owner document type (D99); Finder-opening one routes to the `/view/_bookmark?file=<abs path>` sentinel, which reads the file (`GET /api/bookmark-file`), resolves its relative paths against the file's own directory (`lib/bookmark-file.ts` `bookmarkOpenUrl`, the inverse of SB-8's relativize) and `location.replace()`s to the described view — single, panel or tab. Browsing to a `.bookmark` file in the explorer opens it the same way (never a preview). Malformed / unsupported-version files render a readable error, no redirect.
 
@@ -145,6 +145,28 @@ The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket n
 
 **An unmatched chord is left completely alone** — no `preventDefault`, no state change — so whatever else owns it still works. A matched chord with nothing to act on (an empty selection, an empty clipboard) is likewise left alone rather than swallowed. The only chord that *wants* a secondary modifier is ⌘/Ctrl+Shift+N (new folder), and it takes Shift and nothing else. The table is pure and tested (`listing/shortcut-chord.ts`); the hook around it only wires it to the document and asks whether there is anything to act on.
 
+### Undo/redo covers the ops that are a rename both ways (D330, D335)
+
+- **FS-17** **`⌘/Ctrl+Z` (and `⇧⌘/Ctrl+Z`) undo the explorer's RELOCATIONS — a drag-move, a cut-paste, a rename, and the TRASH delete where the bin's destination is one the server named — and nothing else.** All of them are one primitive at the filesystem: they rename a path, their inverse is another rename, it destroys nothing, and applying the inverse twice is the original op, so undo, redo and undo-again all run the same code (`lib/fs-undo`: an op is a list of `{from, to}` absolute-path pairs, never a closure; `UNDO_CAP` = 50 ops; a module-level in-flight guard, because a move can navigate mid-gesture and a guard living in a component would remount to `false`).
+  **The trash delete is in the list because it IS a rename, not because the rule was relaxed.** On macOS `_move_to_macos_trash` renames into `~/.Trash/<deduped name>`; on Linux `_move_to_xdg_trash` renames into `$XDG_DATA_HOME/Trash/files/<name>` (defaulting to `~/.local/share`). In both the SERVER picks the destination, so it can report it as **`trashed_to`** on `/api/fs/delete`; the listing records the batch as one `delete` op, so a single `⌘Z` moves the whole selection back out of the bin and `⇧⌘Z` moves it back in. The restore asks for the **exact recorded path with overwrite off**, so a name retaken since the delete is a 409 the toast says out loud rather than a silent restore as "… copy"; an emptied bin is a 404 per pair, reported the same way; a systemic refusal (a read-only destination) stops the batch and leaves the untried pairs undoable.
+  **RECOVERABLE IS NOT THE SAME PROMISE AS UNDOABLE, and the two are decided by one question: did WE name the destination?** Every desktop platform has an OS-level bin and each has a backend, so a Delete is recoverable everywhere the bin is reachable. It is *undoable* only where the move was a rename to a path the server chose — which is what makes it invertible by another rename. Six cases, and the spec states them rather than letting a reader generalise from macOS:
+
+  | Case | Backend | Recoverable | Undoable (⌘Z) |
+  |---|---|---|---|
+  | macOS, local FS | `os.rename` → `~/.Trash` | ✓ | **✓** |
+  | macOS, cross-device | `osascript` → Finder | ✓ (in Finder) | ✗ |
+  | Linux, same device | XDG trash (`files/` + `info/` sidecar) | ✓ | **✓** |
+  | Linux, cross-device (`EXDEV`) | none — **501**, confirm-then-hard-delete | ✗ | ✗ |
+  | Windows | Recycle Bin (`SHFileOperationW`, `FOF_ALLOWUNDO`) | ✓ (in Explorer) | ✗ |
+  | Remote mount-backed file, any platform | none — **501**, confirm-then-hard-delete | ✗ | ✗ |
+
+  **The two ✗-but-recoverable rows are not exceptions; they are the same rule.** The macOS Finder fallback and the Windows Recycle Bin both let the OS choose where the entry goes — the bin stores an item as `$R…` beside a `$I…` metadata file under `C:\$Recycle.Bin\<SID>\` and restores it through the shell, not by a path rename — so there is no destination to record, and **a destination we cannot name is never recorded as an undo pair**. Guessing one would aim an undo at a path nothing is at.
+  **The 501 rows really are irreversible, and keep the confirm dialog that says so.** A remote mount is refused because lifting the file off the mount would read the whole thing through the kernel; a Linux cross-device delete is refused for the same reason inverted — we will **not** copy the bytes across the boundary (no `shutil.move` fallback, and no per-volume `.Trash-$uid` directories), because a delete must not become the most expensive operation in the app. Both answer the same **501 `trash unsupported`** the client already routes into its confirm-then-hard-delete flow; the Linux one is raised *after* an attempt that moved nothing, so the file is still in place when the dialog appears. Since every desktop now has a backend, that dialog has stopped being the ordinary Windows/Linux delete and is what it always claimed to be: the irreversible case.
+  **`FOF_ALLOWUNDO` still erases permanently in cases nobody can detect up front** — UNC/network shares, most removable and FAT-formatted volumes, and items over the bin's quota. The delete succeeds and is reported `trashed: true` regardless, because the shell did perform the recoverable delete it was asked for and the app cannot promise what the volume does with it. Stated here rather than papered over.
+  **Undo/redo of a delete goes through ONE endpoint, `POST /api/fs/trash-move {from, to}`, not through `/api/fs/rename`.** It delegates to the rename handler — the same X-Fused guard, absolute-path, snapshot, mount, readonly, 404 and 409 contract, overwrite always off — and adds the only part of a trash that is *not* symmetric: the XDG **`.trashinfo` sidecar**, written when an entry moves into `Trash/files` and removed when it moves back out (both, for a move within the trash). That is server-side bookkeeping, so it lives on the server side of the wire: `applyFsOp` branches on `op.kind` to pick the primitive (`trashMove` for `"delete"`, `renameEntry` otherwise) **and that is its only branch** — the pairs stay plain absolute paths and `invertFsOp`, the reversal semantics, the epoch, the in-flight guard and `UNDO_CAP` know nothing about trash. Restoring with a plain rename would leave the sidecar behind and the bin still claiming to hold an entry that had gone home. **The sidecar branch is a security boundary**: it fires only for a path whose *parent* resolves (`realpath`) to the server-computed trash `files` directory, with the info name taken as a `basename`, so no caller-supplied text can steer the endpoint into unlinking an arbitrary file.
+  **Undoability is additionally session-scoped**: the stack is in memory, so a reload — or an eviction past `UNDO_CAP` — leaves the entry sitting in the bin for the user to drag out through the OS. On macOS the rename also writes none of Finder's own put-back record (Finder keeps that in the Trash's private `.DS_Store`, not on the item), so Finder's "Put Back" is not a second way home for what this app trashed. Recents loses the entry in every case (`notePathDeleted`) and the undo does not re-note it: the file returns to the filesystem, its place in the recents list does not.
+  **The HARD delete is NOT undoable and its dialog keeps saying so** ("This can't be undone"): its inverse is not a rename, it is the bytes back. Same exclusion, same reason, for the explorer's other asymmetric ops — **copy-paste, duplicate, new file/folder, compress**, whose inverse would be a delete: undo would destroy data on the user's behalf and no redo could reproduce what was lost. A stack whose every entry is one primitive is the reason this can be trusted, not a limitation waiting to be grown out of.
+
 ### Server FS API (shape, not final contract)
 
 | Endpoint | Purpose |
@@ -152,6 +174,7 @@ The listing's file-op chords (⌘/Ctrl+C/X/V/D, the ⌘/Ctrl+arrow and bracket n
 | `GET /api/fs/list?path=` | entries with metadata |
 | `GET /api/fs/stat?path=` | single-entry metadata |
 | `GET /api/fs/raw?path=` | streamed bytes, `Range` support (video/audio seek), correct `Content-Type` |
+| `POST /api/fs/trash-move` | `{from, to}` — the reversible half of a trash delete: a rename under `/api/fs/rename`'s guards that also writes or removes the XDG `.trashinfo` sidecar as the entry enters or leaves the trash (FS-17, D335) |
 
 ---
 
@@ -579,7 +602,7 @@ Write surfaces are decentralized (the code editor via `/api/fs/write`; the sqlit
 - **RO-3** Any template-side Python **writer** applies the same gate itself (`os.access(file, W_OK)` → `PermissionError`) before writing, for the same reason: writers that rewrite via `os.replace` (duckdb, `shared/file_history.py`'s revert — §34/FH-7) bypass the read-only bit, and ones that don't (sqlite) fail late with an unhelpful mid-transaction error. The one `os.replace` writer that also consults the mount flag through `shared/appenv` (`file_history.file_writable`) is the exception RO-8's known gap notes; `file_writable` additionally requires `W_OK` on the **directory**, since that is where mkstemp and the replace both land.
 - **RO-4** Template **readers** fold fs writability into the editability verdict they already return — `editable` + `readonly_message` (short badge text) + `readonly_tooltip` (hover explanation). Filesystem read-onlyness is just one more reason alongside content-level ones ("View", "No rowid", "JSON"); the fs gate wins over a content-level "editable".
 - **RO-5** UI treatment is shared: `/template-shared/ro-badge.js` (`fusedRoBadge.update(el, message, tooltip)`) renders the identical badge in every template with an edit surface. The code editor derives its verdict from `stat.writable` (no Python reader) and locks the CodeMirror buffer; the grids disable editing per their reader's verdict.
-- **RO-6** Read-only never blocks *viewing*, and a template whose write target differs from the viewed file gates on ITS target. *(The clause's original example — annotate probing its sidecar's writability — went with the sidecar, D335.)*
+- **RO-6** Read-only never blocks *viewing*, and a template whose write target differs from the viewed file gates on ITS target. *(The clause's original example — annotate probing its sidecar's writability — went with the sidecar, D357.)*
 - **RO-7** (D110) An archive member's **preview** copy (zip and tar readers) lands **0444**: it is a throwaway — an edit "saved" to it never reaches the archive — and the permission bit routes it through RO-1..RO-6 unchanged (stat.writable false, templates open read-only, `/api/fs/write` refuses, writer gates hold). The copy is written to a unique temp file and `os.replace`'d into place, so a re-preview swaps out a stale read-only copy and a concurrent preview of the same member never sees a half-written or permission-flapping file. Deliberate `extract`/`extract_all` output keeps the original semantics: writable, and failing loudly (EACCES) on a write-protected existing target rather than silently replacing it.
 - **RO-8** (D110) A mount record persists `read_only`, re-detected **non-mutatingly on every attach** (rc `operations/fsinfo`: a present Features map with no Put/PutStream/Copy → read-only; `config/get`: anonymous S3 — no keys, no env_auth, no profile — → read-only) unless the flag was set explicitly via `read_only` in the create body (strict boolean, 400 otherwise; persisted with a `read_only_user` marker that detection never overrides). An **inconclusive** probe (rc failure, missing Features map) persists nothing — a transient hiccup must not freeze a wrong verdict; the next attach re-probes. `_writable` folds the flag in ahead of the `W_OK` check — under a mount `W_OK` lies (CacheMode=full takes any write into the local VFS cache and fails only at async upload) — so stat.writable and the write guard flip together per RO-1, via an mtime-cached mountpoint lookup (no mounts.json parse per stat). Unflagged mounts stay rw (pre-flag behavior; a credentialed-but-IAM-read-only remote is knowingly not caught — only a junk-writing probe could tell). Known gap, accepted for now: template-side writer gates (RO-3, `os.access`) don't see the flag — only `/api/fs/write` surfaces do; the deep fix is mounting read-only remotes with the VFS `ReadOnly` option so `W_OK` itself turns truthful, deferred because the serve and the mount must carry identical vfs option sets (see SERVE_VFS_OPT) and a per-mount option split needs its own validation. `mount_view` exposes the flag; the Mounts card labels the mount "read-only".
 
@@ -767,7 +790,7 @@ view is wired, the template reads `comment`: if the id is in the live URL store
 it focuses it (jumping to the comment's own view first when it differs, then
 lighting the pin/card); an id not in the URL cannot focus — the URL is the only
 store (the sidecar comments log, its `deleted_ids` tombstones and the one-shot
-hydration that used to back this went with the sidecar, D335, retiring
+hydration that used to back this went with the sidecar, D357, retiring
 D100/D101's log half). Deletion is simply absence from the URL array.
 
 **The whole Send-to-Claude round trip below is DEAD CODE as of D237, and it is
@@ -798,7 +821,7 @@ payload is then the whole sent tier — so the payload's ids are passed to `save
 as protected, and an over-budget write is preferred over dropping a comment from
 the live review to make room for a flag (the "removed" bar note explaining it
 would be destroyed by the navigation milliseconds later, making that loss silent).
-With the sidecar log gone (D335) eviction from the URL IS annihilation, which is
+With the sidecar log gone (D357) eviction from the URL IS annihilation, which is
 one more reason the open-unsent tier is never evicted.
 A sent card shows a "sent ↗" chip so its exclusion is visible — but **not** on a
 resolved card, which is the terminal state, already explains the exclusion, and
@@ -1289,7 +1312,7 @@ quirk).
 gate and the `ready` preview hold in `StatView`, and `restoredSearch` in
 `platform/lib/session-params.ts`. **No migration:** a `lastSession` key already on
 disk is simply never read or written again. *(The sidecar file this key lived in
-has since been deleted outright — every remaining key and its machinery, D335 —
+has since been deleted outright — every remaining key and its machinery, D357 —
 so the "sits inert beside the live keys" framing above is now moot: the whole
 tree under `~/.fused-render/sidecar/` is inert residue.)*
 
@@ -1765,7 +1788,7 @@ because of it — and the sidecar inspector was the half nobody reached for. **T
 successor has since been deleted too**, folded into the folder-only `git` view
 (§33, PT-14), so neither timeline mode ships and no template folder answers to
 `history` at all. *(The sidecar this section inspected has since been deleted
-outright as well — D335.)* `".*.json"` now falls
+outright as well — D357.)* `".*.json"` now falls
 through to `["tree", "code"]`, which renders the same bytes without pretending
 to be a history.
 
@@ -1840,7 +1863,7 @@ A shareable link that lands a GitHub repository subdirectory in fused-render:
 — the original GitHub tree URL, verbatim, as the `git` query param (a link
 author copies the GitHub URL and prefixes it). Clicking it launches (or
 reuses) the app, shows a confirm page, sparse-clones the subdirectory into
-`~/Documents/Fused/<subpath basename>`, and opens the folder's `index.html`
+`~/Fused/<subpath basename>`, and opens the folder's `index.html`
 when one exists, else the folder itself.
 
 - **DL-1** Link shape: `fused-render://open?git=<github URL>`. The action
@@ -1878,7 +1901,8 @@ when one exists, else the folder itself.
   route): `git clone --filter=blob:none --sparse` + `sparse-checkout set
   <subpath>` (plain filtered clone for repo-root links) using the user's own
   git — public repos clone anonymously, private repos ride the user's
-  existing credentials. Destination is `~/Documents/Fused/<subpath basename>`
+  existing credentials. Destination is `~/Fused/<subpath basename>` (the workspace, moved
+  out of the iCloud-synced `~/Documents` by D337)
   (repo name for root links); the repo root, `.git` included, lives at the
   destination, so the opened view is the nested `<dest>/<subpath>` path. A
   failed clone removes the partial destination (retryable). Git runs
@@ -2325,7 +2349,7 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   "last file by name" as "newest records" — not the store walk (CL-12), and not
   any bounded newest-first probe a future gate does (CL-11), which must order by
   **mtime**: on reverse name order its whole window can be stale same-day files. Not the `<file>.json`
-  sidecar (since deleted outright, D335): every writer there did a whole-file
+  sidecar (since deleted outright, D357): every writer there did a whole-file
   read-merge-write, which at call volume is O(n²) plus a lost-update race —
   it was right for low-frequency history, wrong for a firehose. Not
   the app log (`logs.py`): that file is disposable by design (D68) and
@@ -4340,7 +4364,7 @@ wanting "what has this file been through" wants §33.
   change. `reason` is also how a genuinely EMPTY diff arrives (an explicitly
   clicked version holding exactly what is on disk): an empty box reads as a broken
   diff, so no-diff is never silent. `ok: false` plans carry no `diff` key at all.
-- **FH-10** **REMOVED (D335): there is no pre-restore stash.** The second line
+- **FH-10** **REMOVED (D357): there is no pre-restore stash.** The second line
   of defence used to copy the current content into the per-file sidecar's
   `revertStash` before a revert; the sidecar is deleted, so `unique_current`
   (FH-13) now always means what it says — the write destroys the only copy —
@@ -4477,7 +4501,7 @@ wanting "what has this file been through" wants §33.
   cause: a guard living below the layer that decides whether to offer the action.
   The read-only verdict was enforced in `apply_revert` but invisible to the plan,
   so the sheet opened on a doomed target (FH-16). A symlink was refused the same
-  way and one layer lower still, so the (since-removed, FH-10/D335) sidecar
+  way and one layer lower still, so the (since-removed, FH-10/D357) sidecar
   stash ran first — and read *through* the link, capturing the wrong file's
   content for a revert that then failed. And the blocking-skips refusal was computed inside
   `revert_plan` while the timeline went on publishing a striped target and an
@@ -4554,7 +4578,7 @@ wanting "what has this file been through" wants §33.
   pass-through to `file_history.timeline`, adding nothing but the offer. The
   store stays
   strictly read-only; what a restore writes is the TARGET FILE, and nothing else
-  (the pre-revert sidecar stash went with the sidecar — FH-10, D335).
+  (the pre-revert sidecar stash went with the sidecar — FH-10, D357).
   - **The action is not called `history`.** That name is already taken on this
     module by the chat SESSION TRANSCRIPT replay. Two meanings on one action
     name is a collision only ever found in production.
@@ -4685,7 +4709,7 @@ wanting "what has this file been through" wants §33.
     checkpoint, so the write destroys the only copy) additionally demands
     `confirm_unique`, which the page sends ONLY for that case: a token passed on
     every call is a token nobody reads. There is no pre-revert stash (FH-10,
-    D335) — `unique_current` means the only copy is destroyed, and the confirm
+    D357) — `unique_current` means the only copy is destroyed, and the confirm
     copy says so. The write answers with the
     POST-revert enriched `timeline`, so the list never spends a round trip
     showing the pre-revert position back to the user who just clicked.

@@ -263,6 +263,17 @@ function usePreviewFileMenu(
   const doTrash = () => {
     trashEntry(fsPath, stat.is_dir).then((r) => {
       if (r.status === "trashed") {
+        // Undoable, exactly as the rename below is and for the same reason: the
+        // stack is module-level and the chord belongs to whichever Listing is
+        // mounted, so a delete made HERE is nearly always undone from the parent
+        // listing this navigates to. A delete that skipped this left the stack's
+        // top entry describing an older op, so Cmd+Z after it would undo that
+        // one instead — and the file stayed unreachable in the Trash.
+        //
+        // `to` is absent wherever the OS owns the location (the Recycle Bin, the
+        // macOS cross-device Finder fallback), and then there is no pair to
+        // record — recoverable from the OS, just not from here.
+        if (r.to) recordFsOp({ kind: "delete", pairs: [{ from: fsPath, to: r.to }] });
         notePathDeleted(fsPath);
         navigate(parent, { isDir: true });
       } else if (r.status === "unsupported") {
@@ -972,15 +983,24 @@ function TemplatePreview({
   // A shell loaded as a card thumbnail (IS_PREVIEW) forwards the flag onto
   // every render it triggers, so peeking at an app's entry page is not
   // recorded as opening the app (D301 records on GET /render by default).
-  const preview = IS_PREVIEW ? "&_preview=1" : "";
+  //
+  // `_nofocus=1` rides along on the same condition, not on a second flag of its
+  // own: a thumbnail is display-only, so nothing in it may take the keyboard —
+  // and focus inside a frame scrolls that frame into view, which propagated out
+  // to the card grid's scroller and jumped the grid to that card (D348,
+  // platform/lib/frame-focus.ts). Pairing it with IS_PREVIEW is also what makes
+  // it INHERIT: IS_PREVIEW is true for any descendant of a thumbnail shell
+  // (router.ancestorIsPreview), so a peeked page that itself embeds an app
+  // stamps the nested render too.
+  const thumbFlags = IS_PREVIEW ? "&_preview=1&_nofocus=1" : "";
   const srcFor = (m: string): string | null => {
     if (m === "_listing") return null;
     if (m === "_render")
-      return revSrc(`/render?path=${encodeURIComponent(fsPath)}${preview}`, rev);
+      return revSrc(`/render?path=${encodeURIComponent(fsPath)}${thumbFlags}`, rev);
     const t = templates.find((x) => x.mode === m);
     return t
       ? revSrc(
-          `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}${preview}`,
+          `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}${thumbFlags}`,
           rev
         )
       : null;
@@ -1020,7 +1040,7 @@ function TemplatePreview({
     const chatOnly = m === "claude" ? "&chat_only=1" : "";
     return (
       `/render?path=${encodeURIComponent(t.path)}` +
-      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${preview}`
+      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${thumbFlags}`
     );
   };
 

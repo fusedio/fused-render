@@ -41,7 +41,7 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--start-dir",
         default=fused_dir(),
-        help="initial directory shown in the browser (default: ~/Documents/Fused). "
+        help="initial directory shown in the browser (default: ~/Fused). "
         "The whole filesystem remains browsable.",
     )
     serve.add_argument(
@@ -126,7 +126,13 @@ def _run_serve(args: argparse.Namespace) -> None:
 
     install_no_window_policy()
     log_file = setup_logging()
-    # First-run onboarding (D81): create ~/Documents/Fused. Runs regardless of
+    # One-shot relocation of the workspace out of iCloud-synced ~/Documents
+    # (D337). Strictly BEFORE onboarding: ensure_fused_dir creates ~/Fused, and
+    # an existing destination is exactly what the migration refuses to move into.
+    from fused_render import workspace_migration
+
+    workspace_migration.run()
+    # First-run onboarding (D81): create ~/Fused. Runs regardless of
     # --start-dir — onboarding is about the Fused dir, not the start dir.
     fused_ws = ensure_fused_dir()
     # One-time migration: stamp `<meta name="fused-app">` into pre-existing
@@ -140,6 +146,13 @@ def _run_serve(args: argparse.Namespace) -> None:
     from fused_render import community
 
     community.refresh_in_background()
+    # Probe Claude Code (found / version / signed-in) off the request path, so
+    # the first-run strip's GET is a disk read rather than a login-shell spawn.
+    # Same placement rule as the showcase refresh above: an entry point, never
+    # create_app, so importing the server in a test probes nothing.
+    from fused_render import claude_health
+
+    claude_health.warm_in_background()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     app = create_app(start_dir=start_dir)
 

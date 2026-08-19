@@ -27,8 +27,9 @@ import type { WalkState } from "@apps/explorer/listing/types";
  * this is taken as a promise that two arrays hold the same entries in the same
  * order (listing/scan-resume). Each part earns its place:
  *
- *  * `source` — the index and the live walk race for one generation
- *    (listing/source-race) and do not return the same rows.
+ *  * `source` — the live walk and the index answer in different shapes and
+ *    are never the same rows (only one of them answers a given folder now,
+ *    but the key is a promise about CONTENT, not about who is running).
  *  * `fsPath`, `forRefresh` — the folder, and the generation it was fetched
  *    for.
  *  * `attempt` — the retry counter. Omitting it was a bug: a retry keeps the
