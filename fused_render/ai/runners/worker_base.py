@@ -1465,29 +1465,45 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
 # no-op, and it must not be counted as evidence. It was, in the first cut of this,
 # and the claim that the gap was unreachable was simply wrong.
 #
-# What IS evidence, and what the two rules are:
+# **So this app records its own fetches, and the fast path answers only from that
+# record.** `_record_fetch` writes `<repo folder>/.fused-fetch-<commit>.json` when a
+# download completes, holding the SCOPE it was asked for and the FILE NAMES that
+# landed; `_cached_path` serves a request only when the record is for the commit hf
+# resolved, at the scope being asked for, and every recorded name is present and
+# settled. That makes "nothing would be downloaded" a claim about the disk rather
+# than an inference from it, and it is what the two earlier attempts were reaching
+# for:
 #
-# * **The scope must not be relative to a pattern list.** `_write_ref` runs after
-#   the last file lands, so a ref means "the requested set is here" — but the
-#   requested set is whatever `allow_patterns`/`ignore_patterns` asked for, and
-#   whether a WIDER request is already satisfied cannot be answered from the disk:
-#   the expected names come from the listing this path exists to skip.
-#   `diffusers_image` downloads with `allow_patterns=list(recipe["keep"])` and its
-#   own comment anticipates that list growing; served from the cache, the first
-#   download after such a change would return the old, now-insufficient snapshot
-#   and `from_pretrained` would fail on a missing config instead of fetching it.
-#   So a scoped call skips the fast path entirely and keeps exactly the behaviour
-#   it had before this existed.
-# * **Every entry in the snapshot must actually resolve, and be settled.** A blob
-#   removed under a complete-looking snapshot — `hf cache` pruning, a partial copy
-#   of a cache, a cleanup script — leaves a dangling symlink. Before the fast path,
-#   pressing Download again re-listed and re-fetched what was missing; returning
-#   the folder unread would make that unrepairable and every later load fail on a
-#   file the cache claims to have. One walk of the snapshot directory (tens of
-#   entries) answers it, and it is the check that makes "complete-looking" mean
-#   something. The same walk asks `_settled` per entry, which is where an
-#   interrupted download's part files are ruled out — per BLOB rather than per
-#   repo, for the reason `_settled` gives.
+# * **Scoping is a property of the on-disk STATE, not of the call.** Refusing
+#   scoped CALLS — the previous rule — left the reachable half open, because the
+#   same repo id reaches BOTH kinds of call: `diffusers_image` fetches
+#   `black-forest-labs/FLUX.2-klein-4B` scoped to `recipe["keep"]`, and
+#   `mflux_image.download` fetches whatever id it is given unscoped, with
+#   `/api/ai/runtime/download` choosing between them from the user's image-engine
+#   preference and `weights_only=True` stopping before the `load()` that would
+#   refuse the format. A download on the MLX engine after one on the Diffusers
+#   engine would have been answered from a cache holding a tenth of the repo,
+#   reporting success having fetched nothing. The same flip needs no user at all if
+#   a recipe is ever REMOVED: `download()` takes its unscoped branch against a
+#   still-scoped cache, and `from_pretrained` fails on a component nobody fetched.
+#   A recorded scope answers both — and lets a scoped call USE the fast path when
+#   the scope on disk is its own.
+# * **A file that went away has to be DETECTABLE.** A blob pruned together with its
+#   snapshot entry leaves nothing for a walk of the snapshot to trip over; only a
+#   list of what should be there catches it. Before this path existed, pressing
+#   Download again re-listed and re-fetched exactly that, so short-circuiting
+#   without the list quietly removed the app's only repair route. Checking recorded
+#   NAMES also makes the verification exact instead of structural: nothing depends
+#   on `os.walk`, which does not follow directory symlinks by default and so used
+#   to refuse a snapshot whose files sit under a linked subdirectory — a fast path
+#   wrongly declined rather than wrongly taken, but wrong.
+# * **`_settled` per name**, which is where an interrupted download's part files
+#   are ruled out — per BLOB rather than per repo, for the reason `_settled` gives.
+#
+# A cache with no record — every machine that already holds models when this ships
+# — takes the networked path exactly as before and gains one on the way out, so the
+# next bring-up is the fast one. No migration step, and no cache is ever served on
+# the strength of a record this app did not write.
 #
 # **Two further rules the first cut got wrong, both about not doing MORE than
 # looking.** (1) A repo the cache has never held must not reach a hub download
@@ -1571,30 +1587,116 @@ def _has_cached_snapshot(folder):
         return False
 
 
-def _snapshot_is_intact(snapshot):
-    """Whether every entry in a resolved snapshot directory really is there.
+#: One completed fetch, per commit, in the repo's own cache folder.
+#:
+#: In hf's cache directory rather than beside the app's other state, because it
+#: describes THAT cache and has to die with it: `hf cache delete` and a manual
+#: `rm -rf` of the repo folder both take it, which is the only correct lifetime for
+#: a record of "what is on this disk". Dot-prefixed so it cannot be mistaken for
+#: repo content, and per-commit so a second revision writes its own rather than
+#: overwriting the answer for the first.
+_FETCH_RECORD = ".fused-fetch-%s.json"
 
-    `os.path.exists` FOLLOWS symlinks, which is the whole point: a snapshot entry
-    is a link into `blobs/`, and a blob pruned or never copied leaves the link
-    behind. An empty directory is not intact either — it satisfies every
-    existence check and holds no weights, which is what an interrupted first
-    download can leave once its part files are cleared.
 
-    Walked rather than counted, because a repo's files can sit in subdirectories
-    (`transformer/`, `onnx/`) and a top-level listing would miss exactly the
-    component a scoped recipe cares about.
+def _scope_key(allow, ignore):
+    """A fetch's scope, as one comparable value.
+
+    Sorted, because `allow_patterns` is a list whose ORDER means nothing to
+    `fnmatch` — two callers naming the same patterns in a different order must not
+    read as two different scopes. `None` and `[]` both come out as "unscoped",
+    which is what `selects` already treats them as.
     """
-    found = False
-    for dirpath, _dirs, files in os.walk(snapshot):
-        for name in files:
-            found = True
-            entry = os.path.join(dirpath, name)
-            if not os.path.exists(entry) or not _settled(entry):
-                return False
-    return found
+    return {"allow": sorted(allow or ()), "ignore": sorted(ignore or ())}
 
 
-def _cached_path(model_id, resolve):
+def _record_fetch(folder, commit, names, allow=None, ignore=None):
+    """Write down that a fetch of `names` at this scope COMPLETED for `commit`.
+
+    Called after a download returns, which is the only moment this is knowable:
+    `_write_ref` runs after the last file lands, so reaching there means the whole
+    requested set is on disk — and the request's own scope is what makes "the whole
+    set" mean anything at all.
+
+    **Best-effort, and never in the way.** A finished download must not fail
+    because a record could not be written: the weights are there either way, and
+    the only cost of a missing record is a slower next bring-up. Written to a
+    temporary name and `os.replace`d, so a crash mid-write leaves either the old
+    record or none — never half of one that a later fast path would read as truth.
+    """
+    if not folder or not commit:
+        return
+    path = os.path.join(folder, _FETCH_RECORD % commit)
+    payload = {"commit": commit, "scope": _scope_key(allow, ignore),
+               "files": sorted(names or ())}
+    try:
+        os.makedirs(folder, exist_ok=True)
+        temporary = path + ".writing"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
+def _has_fetch_record(folder):
+    """Whether this repo folder holds ANY fetch record.
+
+    Asked BEFORE hf is consulted, so a cache filled before this existed — or by
+    somebody else's tooling — costs one `scandir` and no hub call at all on its way
+    to the networked path. The per-commit lookup still has to happen afterwards;
+    this only avoids asking hf to resolve a snapshot whose completeness nothing
+    here could vouch for anyway.
+    """
+    prefix = _FETCH_RECORD.split("%s")[0]
+    try:
+        with os.scandir(folder) as entries:
+            return any(entry.name.startswith(prefix) for entry in entries)
+    except OSError:
+        return False
+
+
+def _recorded_files(folder, commit, allow, ignore):
+    """The file list a completed fetch of THIS scope recorded, or None.
+
+    None for every way of not knowing — no record, a record for another commit or
+    another scope, a record this process cannot read or cannot parse. They all mean
+    the same thing to the caller (take the networked path), and none of them is
+    worth a warning: no record is the normal state of every cache filled before
+    this existed.
+    """
+    if not folder or not commit:
+        return None
+    try:
+        with open(os.path.join(folder, _FETCH_RECORD % commit),
+                  encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if record.get("commit") != commit:
+        return None
+    if record.get("scope") != _scope_key(allow, ignore):
+        return None
+    files = record.get("files")
+    return files if isinstance(files, list) and files else None
+
+
+def _all_present(snapshot, names):
+    """Whether every recorded name is in the snapshot, resolved and settled.
+
+    `os.path.exists` FOLLOWS symlinks, which is the point: a snapshot entry is a
+    link into `blobs/`, and a blob pruned or never copied leaves the link behind.
+    Checked by NAME rather than by walking the directory, so a file that vanished
+    WITH its entry is caught — the case a walk cannot see at all — and nothing
+    depends on how `os.walk` treats a linked subdirectory.
+    """
+    for name in names:
+        entry = os.path.join(snapshot, name)
+        if not os.path.exists(entry) or not _settled(entry):
+            return False
+    return True
+
+
+def _cached_path(model_id, resolve, allow=None, ignore=None):
     """`resolve()`'s answer if the cache can serve it with NO network, else None.
 
     `resolve` is the hf call with `local_files_only=True` — the same function and
@@ -1609,21 +1711,28 @@ def _cached_path(model_id, resolve):
     the whole point of this file's degradation rules is that a ✕ is the one
     failure that must not be answered by starting a download.
 
-    The answer is verified before it is trusted, and not only that it exists:
-    every entry under it has to resolve (see `_snapshot_is_intact` and the note
-    above this section). It comes from a call this file did not make itself, and a
-    snapshot whose blobs went away is exactly the state that must send the
-    download back to the Hub rather than be handed to `load()`.
+    The answer is verified against this app's OWN record of what it fetched (see
+    the note above this section): the record has to be for the commit hf resolved,
+    at the scope being asked for, and every name in it has to be present and
+    settled. A repo with no record is never served, which is what makes "nothing
+    would be downloaded" a fact rather than an inference.
+
+    The commit comes from the resolved path's own basename — hf's cache puts a
+    snapshot at `snapshots/<commit>` — and if that ever stops being true the lookup
+    finds no record and the download takes the networked path. Slower, never wrong.
     """
-    if not _has_cached_snapshot(repo_folder(model_id)):
+    folder = repo_folder(model_id)
+    if not _has_cached_snapshot(folder) or not _has_fetch_record(folder):
         return None
     try:
         path = resolve()
     except _NOT_CACHED:
         return None
-    if not path or not os.path.isdir(path) or not _snapshot_is_intact(path):
+    if not path or not os.path.isdir(path):
         return None
-    return path
+    names = _recorded_files(folder, os.path.basename(os.path.normpath(path)),
+                            allow, ignore)
+    return path if names and _all_present(path, names) else None
 
 
 def _cached_file(repo_id, filename):
@@ -1674,15 +1783,15 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
 
         return snapshot_download(model_id, local_files_only=True)
 
-    # Already on disk and complete? Then there is nothing to download and nothing
-    # to report: no metadata call, no etag revalidation, no bar that fills in one
-    # tick. See the note above this section for what that costs in revision
-    # freshness — and for why a SCOPED or otherwise argued call is excluded rather
-    # than passed through: "complete" is then relative to a pattern list, and no
-    # amount of looking at the disk settles whether a wider request is already
-    # satisfied. Those calls run exactly as they did before this existed.
-    if not allow_patterns and not ignore_patterns and not kwargs:
-        cached = _cached_path(model_id, local)
+    # Already on disk, at this scope, and complete? Then there is nothing to
+    # download and nothing to report: no metadata call, no etag revalidation, no
+    # bar that fills in one tick. See the note above this section for what
+    # "complete" is allowed to mean here and what it costs in revision freshness.
+    # `kwargs` is excluded outright — an argument this function does not know about
+    # changes what a download IS, and no record describes it.
+    if not kwargs:
+        cached = _cached_path(model_id, local, allow=allow_patterns,
+                              ignore=ignore_patterns)
         if cached:
             return cached
 
@@ -1713,15 +1822,27 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         # download the wrong thing. Ours honours exactly the two it knows about.
         # A listing with no sha is the same problem: nothing to pin to.
         return hub()
+    names = [name for name, _size in files]
     try:
-        names = [name for name, _size in files]
-        return fetch_with_progress(
+        fetched = fetch_with_progress(
             model_id, lambda: _segmented_fetch(model_id, names, sha), total=total)
     except Cancelled:
         raise
     except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader
         _fallback(model_id, error)
-    return hub()
+    else:
+        # The one moment completeness is knowable: the fetch returned, so every
+        # name in the listing is on disk at `sha`. Recorded WITH the scope that
+        # produced it, which is what a later fast path compares itself against.
+        _record_fetch(repo_folder(model_id), sha, names,
+                      allow=allow_patterns, ignore=ignore_patterns)
+        return fetched
+    fell_back = hub()
+    # hf fetched the same listed set, so the record is just as true here — and
+    # without it a repo that ever fell back would never see the fast path again.
+    _record_fetch(repo_folder(model_id), sha, names,
+                  allow=allow_patterns, ignore=ignore_patterns)
+    return fell_back
 
 
 def download_file(repo_id, filename, detail=None, job=None, row=None):

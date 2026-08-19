@@ -776,7 +776,12 @@ def test_a_CACHED_snapshot_is_resolved_with_NO_network_call(base, monkeypatch,
     rather than returns, so a metadata call here fails the test by name."""
     snapshot = _snapshot_dir(tmp_path, "config.json")
     hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
-    _local_hub(monkeypatch, base, hub, folder=_cache_folder(tmp_path))
+    folder = _cache_folder(tmp_path)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    # A completed fetch, recorded the way `download_snapshot` records one: the fast
+    # path answers from that record and from nothing else.
+    _fetched(base, folder, commit=os.path.basename(snapshot),
+             names=["config.json"])
 
     assert base.download_snapshot("u/x") == snapshot
     assert hub.calls == [("snapshot", True)]
@@ -882,7 +887,9 @@ def test_a_model_that_is_NOT_cached_downloads_exactly_as_before(base, monkeypatc
 
     assert base.download_snapshot("u/x") == hub.snapshot
 
-    assert hub.calls == [("snapshot", True), ("snapshot", False)]
+    # No record for this repo, so hf is not even asked to resolve one — see
+    # `_has_fetch_record`. What must still happen is the whole networked path.
+    assert hub.calls == [("snapshot", False)]
     assert listed, "the networked path must still list the repo"
     assert ticks, "the networked path must still report progress"
 
@@ -974,6 +981,7 @@ def test_a_part_file_for_an_UNRELATED_blob_does_not_disable_the_fast_path(
     snapshot, entry = _blob_backed(tmp_path, folder, "q4.gguf", etag="m1ne")
     hub = _LocalHub(cached=["u/x"], snapshot=snapshot, file_path=entry)
     _local_hub(monkeypatch, base, hub, folder=folder)
+    _fetched(base, folder, commit=os.path.basename(snapshot), names=["q4.gguf"])
 
     assert base.download_file("u/x", "q4.gguf") == entry
     assert hub.calls == [], hub.calls
@@ -996,36 +1004,111 @@ def test_a_local_answer_that_is_not_actually_THERE_is_not_trusted(
     assert ("snapshot", False) in hub.calls, hub.calls
 
 
-def test_a_SCOPED_download_is_never_answered_from_the_cache(base, monkeypatch,
-                                                            tmp_path):
-    """`allow_patterns` changes WHAT a complete download contains, and whether the
-    cache already holds that set is not a question the disk can answer: the
-    expected names come from the Hub listing this path exists to skip.
+def _fetched(base, folder, commit="c0mm1t", names=("config.json",),
+             allow=None, ignore=None):
+    """Record a completed fetch the way `download_snapshot` does after one."""
+    base._record_fetch(str(folder), commit, list(names), allow, ignore)
 
-    The concrete failure is `diffusers_image`, which downloads with
-    `allow_patterns=list(recipe["keep"])` and whose own comment anticipates that
-    list growing (a `tokenizer_2`). With the fast path serving scoped requests,
-    the first `download()` after such a change returns the OLD, now-insufficient
-    snapshot in 0.2ms and `from_pretrained` fails on a missing config instead of
-    fetching it. So a scoped caller keeps exactly the behaviour it had before the
-    fast path existed, and the win is claimed only where "complete" is not
-    relative to a pattern list.
+
+def test_a_snapshot_fetched_at_a_NARROWER_scope_does_not_answer_a_WIDER_request(
+        base, monkeypatch, tmp_path):
+    """The hole the "skip scoped calls" rule did not close, and it is reachable
+    today rather than hypothetical.
+
+    Scoping is a property of the on-disk STATE, not of the call: `diffusers_image`
+    fetches `black-forest-labs/FLUX.2-klein-4B` with
+    `allow_patterns=list(recipe["keep"])`, and the SAME id reaches an UNSCOPED
+    `download_snapshot` through `mflux_image.download` — `POST /api/ai/runtime/
+    download` resolves the runner from the user's image-engine preference and
+    `weights_only=True` stops before the `load()` that would refuse the format. So
+    a user who downloads on the Diffusers engine and then downloads again on the
+    MLX FLUX engine asks for the whole repo against a cache holding a tenth of it.
+    Answered from the cache, that download reports success having fetched nothing.
+
+    The same flip happens with no user action at all if a recipe is ever REMOVED
+    from `_GGUF_RECIPES`: `download()` takes its unscoped branch against a cache
+    that is still scoped, and `from_pretrained` fails on a component that was
+    never fetched.
+
+    So the scope that was FETCHED is recorded, and the fast path answers only a
+    request for the same one.
     """
-    hub = _LocalHub(cached=["u/x"], snapshot=_snapshot_dir(tmp_path, "config.json"))
-    _local_hub(monkeypatch, base, hub, folder=_cache_folder(tmp_path))
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
     monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    _fetched(base, folder, commit=os.path.basename(snapshot),
+             names=["config.json"], allow=["*.json"])
 
-    base.download_snapshot("u/x", allow_patterns=["*.json"])
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
+def test_a_snapshot_fetched_at_the_SAME_scope_answers_from_the_cache(
+        base, monkeypatch, tmp_path):
+    """The other side: a scoped call is not refused on principle — it is answered
+    when this app recorded a completed fetch of that exact scope for that exact
+    commit, which is a claim about the disk rather than an argument about it."""
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json", "vae/diffusion.safetensors")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    _fetched(base, folder, commit=os.path.basename(snapshot),
+             names=["config.json", "vae/diffusion.safetensors"],
+             allow=["*.json", "vae/*"])
+
+    got = base.download_snapshot("u/x", allow_patterns=["*.json", "vae/*"])
+
+    assert got == snapshot
+    assert hub.calls == [("snapshot", True)]
+
+
+def test_a_recorded_file_that_WENT_AWAY_sends_the_download_back_to_the_hub(
+        base, monkeypatch, tmp_path):
+    """Recording the names is what makes a MISSING file detectable at all. A blob
+    deleted with its snapshot entry — `hf cache` pruning, a tidy cleanup script —
+    leaves nothing for a walk of the snapshot to trip over, and the fast path
+    would report a model that cannot load. Before it existed, pressing Download
+    again re-listed and re-fetched exactly this."""
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    _fetched(base, folder, commit=os.path.basename(snapshot),
+             names=["config.json", "weights.safetensors"])
+
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
+def test_a_repo_with_NO_record_takes_the_networked_path_and_gains_one(
+        base, monkeypatch, tmp_path):
+    """What every cache looks like the first time this code runs on a machine that
+    already holds models — and the migration, which needs no special case: the
+    networked path completes as it always did and records what it fetched, so the
+    NEXT bring-up is the fast one. A cache with no record is never served."""
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: ("c0mm1t", [("config.json", 7)]))
+    monkeypatch.setattr(base, "_segmented_fetch",
+                        lambda model_id, names, sha, **kw: snapshot)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    assert base.download_snapshot("u/x") == snapshot
     assert [call for call in hub.calls if call[1] is True] == [], hub.calls
 
+    # …and the record it just wrote answers the next call off the disk.
     hub.calls.clear()
-    base.download_snapshot("u/x", ignore_patterns=["*.bin"])
-    assert [call for call in hub.calls if call[1] is True] == [], hub.calls
-
-    # …and an unscoped request for the same repo still takes it.
-    hub.calls.clear()
-    assert base.download_snapshot("u/x") == hub.snapshot
+    assert base.download_snapshot("u/x") == snapshot
     assert hub.calls == [("snapshot", True)]
 
 

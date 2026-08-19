@@ -5723,27 +5723,40 @@ an AI Models page that could say what was on disk but not what was *running*.
   `OSError`s, so the tuple names them without importing them) and never
   `Cancelled`, which is an ordinary `Exception` — a bare `except Exception` there
   turned a Stop into a fresh multi-gigabyte download. **First download behaviour
-  is unchanged, and a partial or narrower cache must never be mistaken for a
-  complete one.** hf's own completeness check is NOT the guarantee — it verifies
+  is unchanged, and a partial or NARROWER cache must never be mistaken for a
+  complete one.** hf's own completeness check is not the guarantee — it verifies
   against `trees/<commit>.json`, hf's code says that without one "we cannot tell,
   so we do nothing", and this app's segmented fetch (the normal path) writes
-  `refs/` and blobs but never a tree — so two rules the disk can actually answer
-  carry it instead. **A SCOPED call skips the fast path entirely**: `_write_ref`
-  runs after the last file lands, so a ref means "the requested set is here", but
-  that set is whatever `allow_patterns` asked for and no amount of looking settles
-  whether a wider request is satisfied (`diffusers_image` scopes to
-  `recipe["keep"]` and expects that list to grow — served from the cache, the next
-  download would return the old snapshot and `from_pretrained` would fail on a
-  missing config instead of fetching it). **Every snapshot entry must resolve and
-  be settled**: a blob pruned or never copied leaves a dangling symlink, and
-  short-circuiting before the listing would make that state permanent — before
-  this, pressing Download again re-listed and re-fetched what was missing, which
-  is the app's only repair route. An interrupted download's markers (hf's
+  `refs/` and blobs but never a tree. **So the app records its own fetches and the
+  fast path answers only from that record**: `<repo folder>/.fused-fetch-<commit>.
+  json` holds the SCOPE a completed download was asked for and the FILE NAMES that
+  landed, written after the fetch returns (which is the one moment completeness is
+  knowable, since `_write_ref` runs after the last file), and a request is served
+  only when the record is for the commit hf resolved, at the scope being asked for,
+  with every recorded name present and settled. **Scoping is a property of the
+  on-disk STATE, not of the call**, which is why refusing scoped CALLS was not
+  enough: the same id reaches both kinds, because `diffusers_image` fetches
+  `black-forest-labs/FLUX.2-klein-4B` scoped to `recipe["keep"]` while
+  `mflux_image.download` fetches whatever it is given unscoped, and
+  `/api/ai/runtime/download` picks between them from the image-engine preference
+  with `weights_only=True` stopping before the `load()` that would refuse the
+  format — so a download on one engine after the other would have been served from
+  a cache holding a tenth of the repo, reporting success having fetched nothing.
+  Removing a GGUF recipe flips the same id from scoped to unscoped with no user
+  involved at all. **A file that went away has to be detectable**: a blob pruned
+  together with its snapshot entry leaves nothing for a directory walk to trip
+  over, and before this path existed pressing Download again re-listed and
+  re-fetched exactly that, so short-circuiting without the recorded list quietly
+  removed the app's only repair route. Checking recorded names also removes any
+  dependence on `os.walk`, which does not follow directory symlinks by default. **A
+  cache with no record is never served** — every machine that already holds models
+  takes the networked path once, as before, and gains a record on the way out. An interrupted download's markers (hf's
   `.incomplete`, our `.fusedpart` and its sidecar) are checked per BLOB rather than
   per repo, because a part file is the resume state (AI-5i) and a repo-wide scan
   let one cancelled quantization void the fast path for every other file in a
-  multi-GGUF repo. Measured: the verification costs 0.05-0.88ms depending on file
-  count, end to end 0.2-1.1ms against 483ms. **The trade is stated rather than
+  multi-GGUF repo. Measured on a real cache: 0.5ms end to end for a 5-file whisper
+  snapshot and 1.2ms for the 17-file scoped FLUX one, against 483ms before; the
+  record-less first call is 0.6-1.1s, i.e. the old cost paid one more time. **The trade is stated rather than
   discovered: a complete cached model does not pick up a newer Hub revision under
   the same branch** until something forces a re-check. That is chosen — bring-up
   latency and offline operation over revision freshness — because these are
