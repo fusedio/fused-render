@@ -466,3 +466,14 @@ def test_degree_unit_spellings_pass_the_geographic_gate(eng, tmp_path):
     ).to_netcdf(path, engine="h5netcdf")
     descriptor = _describe(eng, path)
     assert descriptor["status"] == "ok"
+
+
+def test_zarr_metadata_locator_keeps_its_query_string(eng):
+    # Regression: trimming the object name off the whole locator ate into a
+    # signed URL's query, leaving a store path that could never open.
+    me = sys.modules["multidim_engine"]
+    assert me._zarr_store("https://h/s.zarr/zarr.json?sig=a&se=b") == "https://h/s.zarr?sig=a&se=b"
+    assert me._zarr_store("https://h/s.zarr/.zmetadata?sig=a") == "https://h/s.zarr?sig=a"
+    assert me._zarr_store("https://h/s.zarr/zarr.json") == "https://h/s.zarr"
+    assert me._zarr_store("https://h/s.zarr") == "https://h/s.zarr"
+    assert me._zarr_store(os.path.join("C:", "d", "s.zarr", "zarr.json")).endswith("s.zarr")

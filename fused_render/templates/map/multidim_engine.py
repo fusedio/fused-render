@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from geo_paths import (
     is_http_url,
@@ -101,8 +101,20 @@ def _is_zarr_metadata(target: str) -> bool:
 
 
 def _zarr_store(source: str) -> str:
-    path = urlsplit(source).path if is_http_url(source) else source
-    name = Path(path.replace("\\", "/")).name.lower()
+    """The store a metadata-object locator points at: its parent directory.
+
+    Trimming the tail off the whole locator would eat into a query string —
+    a signed URL ends in its signature, not in the object name — so a URL is
+    taken apart and put back together around the shortened path.
+    """
+    if is_http_url(source):
+        parts = urlsplit(source)
+        name = Path(parts.path).name.lower()
+        if name not in {".zmetadata", "zarr.json"}:
+            return source
+        parent = parts.path[: -(len(name) + 1)]
+        return urlunsplit(parts._replace(path=parent))
+    name = Path(source.replace("\\", "/")).name.lower()
     if name in {".zmetadata", "zarr.json"}:
         return source[: -(len(name) + 1)]
     return source

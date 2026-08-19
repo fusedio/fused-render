@@ -208,6 +208,7 @@ const EXT_VARIANT: Record<string, Variant> = {
   // tabular / gridded data
   parquet: "data", csv: "data", tsv: "data", xlsx: "data",
   nc: "data", nc4: "data", cdf: "data",
+  h5: "data", hdf: "data", hdf5: "data", he5: "data",
   zgroup: "data", zattrs: "data", zmetadata: "data",
   // structured
   json: "json", jsonl: "json", ndjson: "json",

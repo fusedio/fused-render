@@ -47,7 +47,8 @@ _ICON_VARIANT_FOR_TOKEN = {
     ),
     # tabular / gridded data
     **dict.fromkeys(
-        "parquet csv tsv xlsx xlsm nc nc4 cdf zgroup zattrs zmetadata hyper".split(),
+        "parquet csv tsv xlsx xlsm nc nc4 cdf h5 hdf hdf5 he5 zgroup zattrs "
+        "zmetadata hyper".split(),
         "data",
     ),
     # structured text
