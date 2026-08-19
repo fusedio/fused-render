@@ -140,7 +140,7 @@
   .ProseMirror .comment.active { background: #ffe08a; }
   .math-node { cursor: pointer; }
 
-  /* ---- right panel (comments / history) ---- */
+  /* ---- right panel (comments) ---- */
   #panel { flex: 0 0 300px; border-left: 1px solid var(--hair); background: var(--chrome); display: flex; flex-direction: column; }
   #panel.hidden { display: none; }
   .panel-head { display: flex; align-items: center; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--hair); }
@@ -155,13 +155,6 @@
   .card .body { font-size: 13px; margin: 4px 0; white-space: pre-wrap; }
   .card .acts { display: flex; gap: 8px; margin-top: 6px; }
   .card .acts button { border: none; background: none; color: var(--blue); font-size: 12px; cursor: pointer; padding: 0; }
-  .ver-row { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 6px; }
-  .ver-row:hover { background: var(--hair-2); }
-  .ver-row .vk { font-size: 10px; text-transform: uppercase; letter-spacing: .4px; padding: 1px 5px; border-radius: 4px; }
-  .ver-row .vk.manual { background: var(--blue-soft); color: var(--blue); }
-  .ver-row .vk.auto { background: var(--hair-2); color: var(--ink-3); }
-  .ver-row .vwhen { flex: 1 1 auto; font-size: 12px; color: var(--ink-2); }
-  .ver-row button { border: 1px solid var(--hair); background: #fff; border-radius: 5px; font-size: 11.5px; padding: 3px 8px; cursor: pointer; }
   .empty-note { color: var(--ink-3); font-size: 12.5px; padding: 10px 4px; }
 
   /* ---- find & replace bar ---- */
@@ -253,9 +246,6 @@
   .sk-line { height: 13px; }
   .sk-line.h1 { height: 24px; width: 55% !important; margin-bottom: 6px; }
   .sk-line.h2 { height: 18px; width: 40% !important; margin-top: 8px; margin-bottom: 2px; }
-  .sk-vk { width: 44px; height: 14px; border-radius: 4px; }
-  .sk-vwhen { flex: 1 1 auto; height: 12px; }
-  .sk-vbtn { width: 54px; height: 22px; border-radius: 5px; }
 </style>
 <script src="/template-shared/ro-badge.js"></script>
 </head>
@@ -347,7 +337,6 @@
     <span id="ro" hidden></span>
     <span class="spacer"></span>
     <button id="btnComments" class="btn ghost" title="Comments"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
-    <button id="btnHistory" class="btn ghost" title="Version history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
     <div class="seg" id="modeSeg">
       <button data-mode="view" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>View</button>
       <button data-mode="edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>Edit</button>
@@ -386,7 +375,6 @@
     <div id="panel" class="hidden">
       <div class="panel-head">
         <button class="ptab" data-tab="comments">Comments</button>
-        <button class="ptab" data-tab="history">History</button>
         <button class="pclose" id="panelClose">×</button>
       </div>
       <div class="panel-body" id="panelBody"></div>
@@ -477,8 +465,8 @@
   // the library scratch file so nothing is lost, but the first manual Save
   // prompts for a real location + name (set from the import verdict below).
   let untitled = false;
-  // A user-facing display title, editable inline in the nav bar and stored in
-  // the sidecar (like slides' deck name). It also seeds the first-save filename.
+  // A user-facing display title, editable inline in the nav bar for this
+  // session only. It also seeds the first-save filename.
   let title = "";
   const displayName = () => title || (untitled ? BASENAME.replace(DOC_EXT, "") : BASENAME);
   document.title = "Docs — " + BASENAME;
@@ -695,7 +683,7 @@
     return comments;
   }
 
-  // One import path for both file open and version restore: extract comments,
+  // One import path for file open: extract comments,
   // then lift display math to block level — pandoc wraps it in a <p>, and
   // ProseMirror ignores block parse rules in inline context, so left inline it
   // would degrade to literal \[…\] text. `revisions` counts tracked changes,
@@ -845,61 +833,6 @@
   let toastTimer;
   function toast(msg, ms = 2800) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = "none", ms); }
   const fileToBase64 = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",", 2)[1]); r.onerror = () => rej(r.error); r.readAsDataURL(file); });
-
-  // ================= sidecar (version metadata + author name) ======
-  // The document itself lives in the .docx; version snapshot CONTENT lives as
-  // content-addressed blobs in the cache (written by the save action). The
-  // sidecar (home_dir()/sidecar/<mapped path>.json, "docs" key, read-modify-
-  // write, D83-reversal) holds only what's left: version metadata and the
-  // last-used author name for comments.
-  async function loadSidecar() {
-    let data;
-    try { data = JSON.parse(await fused.readFile(await window._fusedSidecarPath(FILE))); } catch (e) { data = null; }
-    if (!data || typeof data !== "object") data = {};
-    if (!data.docs || typeof data.docs !== "object") data.docs = {};
-    const d = data.docs;
-    if (!Array.isArray(d.versions)) d.versions = [];
-    if (typeof d.author !== "string") d.author = "";
-    return data;
-  }
-  // Serialized read-modify-write: overlapping callers would otherwise read the
-  // same base and the later write would clobber the earlier mutation. Sidecar
-  // writes are best-effort metadata — they never reject, so no caller needs a
-  // catch and a version-history hiccup can't fail a save that already landed.
-  let sidecarChain = Promise.resolve();
-  function saveSidecar(mutate) {
-    sidecarChain = sidecarChain.then(async () => {
-      const data = await loadSidecar();
-      mutate(data.docs);
-      await fused.writeFile(await window._fusedSidecarPath(FILE), JSON.stringify(data));
-    }).catch((e) => console.warn("docs sidecar write failed:", e));
-    return sidecarChain;
-  }
-  // Keep one per 10 minutes <24h, hourly to 7 days, daily older. Never drop
-  // manual saves.
-  function thinVersions(versions) {
-    const now = Date.now(); const keep = []; const buckets = new Set();
-    for (const v of versions) {
-      if (v.kind === "manual") { keep.push(v); continue; }
-      const age = now - v.ts;
-      const bucket = age < 86400000 ? "m" + Math.floor(v.ts / 600000)
-        : age < 7 * 86400000 ? "h" + Math.floor(v.ts / 3600000)
-        : "d" + Math.floor(v.ts / 86400000);
-      if (!buckets.has(bucket)) { buckets.add(bucket); keep.push(v); }
-    }
-    return keep;
-  }
-  // The save action already wrote the snapshot blob (the same self-contained
-  // docToSaveHtml form the .docx uses — comment text/author ride inside the
-  // marker spans) and returned its sha; only the metadata goes in the sidecar.
-  async function recordVersion(sha, size, kind, label = "") {
-    if (!sha) return;
-    await saveSidecar((d) => {
-      if (d.versions.some((v) => v.sha === sha)) return;   // identical content already stored — skip
-      d.versions.unshift({ id: String(Date.now()), ts: Date.now(), kind, label, sha, size });
-      d.versions = thinVersions(d.versions);
-    });
-  }
 
   const nodeViews = {
     math_inline: (node, view, getPos) => new MathViewInline(node, view, getPos, false),
@@ -1198,25 +1131,6 @@
       (v) => onOk(v.tex.trim()),
       { preview: true, okLabel: "Insert equation", onInput: (v) => { ensureKatexCss(); const pv = $("dlgPreview"); if (pv) katex.render(v.tex || "\\;", pv, { displayMode: display, throwOnError: false }); } });
   }
-  function confirmDialog(title, message, okLabel) {
-    closeDialog();
-    return new Promise((resolve) => {
-      const wrap = document.createElement("div");
-      wrap.className = "modal-overlay";
-      wrap.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.28);display:grid;place-items:center;z-index:80";
-      const card = document.createElement("div");
-      card.style.cssText = "background:#fff;border-radius:10px;box-shadow:var(--shadow-2);padding:18px;width:min(420px,92vw)";
-      card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:8px">${esc(title)}</div>
-        <div style="color:var(--ink-2);font-size:13px;margin-bottom:14px">${esc(message)}</div>
-        <div style="display:flex;justify-content:flex-end;gap:8px">
-          <button class="btn" id="cfCancel">Cancel</button><button class="btn primary" id="cfOk">${esc(okLabel)}</button></div>`;
-      wrap.appendChild(card); document.body.appendChild(wrap); dialogEl = wrap;
-      const finish = (v) => { closeDialog(); resolve(v); };
-      card.querySelector("#cfCancel").onclick = () => finish(false);
-      card.querySelector("#cfOk").onclick = () => finish(true);
-      wrap.onclick = (e) => { if (e.target === wrap) finish(false); };
-    });
-  }
 
   // ================= comments =================
   // Anchored by the `comment` mark in the doc (moves with edits); text/author
@@ -1238,7 +1152,6 @@
     openDialog("Add comment", [{ id: "text", label: "Comment", value: "", area: true, rows: 3 }, { id: "author", label: "Your name", value: S.author || "" }], (v) => {
       if (!v.text.trim()) return;
       S.author = v.author || "You";
-      saveSidecar((d) => { d.author = S.author; });
       const id = genId();
       S.comments[id] = { text: v.text.trim(), author: S.author, ts: Date.now(), quote };
       S.view.dispatch(S.view.state.tr.addMark(from, to, schema.marks.comment.create({ id })));
@@ -1297,7 +1210,6 @@
   async function renderPanel() {
     const body = $("panelBody"); if ($("panel").classList.contains("hidden")) return;
     if (S.panelTab === "comments") return renderComments(body);
-    if (S.panelTab === "history") return renderHistory(body);
   }
   function renderComments(body) {
     const live = liveCommentIds();
@@ -1318,44 +1230,6 @@
       body.appendChild(card);
     });
   }
-  async function renderHistory(body) {
-    body.innerHTML = Array.from({ length: 4 }, () =>
-      '<div class="ver-row"><span class="sk sk-vk"></span><span class="sk sk-vwhen"></span><span class="sk sk-vbtn"></span></div>'
-    ).join("");
-    const data = await loadSidecar();
-    const versions = data.docs.versions;
-    if (!versions.length) { body.innerHTML = '<div class="empty-note">No saved versions yet. Save to create one.</div>'; return; }
-    body.innerHTML = "";
-    versions.forEach((v) => {
-      const row = document.createElement("div"); row.className = "ver-row";
-      row.innerHTML = `<span class="vk ${v.kind}">${v.kind}</span><span class="vwhen">${new Date(v.ts).toLocaleString()}${v.label ? " · " + esc(v.label) : ""}</span><button>Restore</button>`;
-      row.querySelector("button").onclick = () => restoreVersion(v.id);
-      body.appendChild(row);
-    });
-  }
-  async function restoreVersion(versionId) {
-    const data = await loadSidecar();
-    const v = data.docs.versions.find((x) => x.id === versionId);
-    if (!v || !v.sha) { toast("Version not found."); return; }
-    if (S.dirty) {
-      const ok = await confirmDialog("Discard unsaved changes?",
-        "Restoring this version replaces your current unsaved edits.", "Discard & restore");
-      if (!ok) return;
-    }
-    // Stop the pending autosave and wait out any save already in flight —
-    // doSave snapshots the doc at call time, so one finishing after the swap
-    // below would write the pre-restore content back over the restored one.
-    clearTimeout(saveTimer);
-    while (S.saving) await new Promise((r) => setTimeout(r, 100));
-    try {
-      const res = await py({ action: "version_html", file: FILE, sha: v.sha });
-      const { dom, comments } = parseDocHtml(res.html);
-      S.comments = comments;
-      mountEditor(PMDOMParser.fromSchema(schema).parse(dom.body));
-    } catch (e) { toast("This version is no longer available."); return; }
-    setMode("edit"); S.dirty = true; updateSavedTag(); toast("Version restored — save to keep it.");
-  }
-
   // ---- read-only lock (SPEC §13.5) ----
   // The import action's verdict (RO-4); applied at boot, or mid-session when a
   // save trips the writer's fs gate (RO-3 — a chmod -w that happened after
@@ -1391,7 +1265,7 @@
     if (untitled) { $("savedTag").textContent = S.saving ? "Saving…" : S.dirty ? "Unsaved changes" : "Draft — Save to name & choose a location"; return; }
     $("savedTag").textContent = S.saving ? "Saving…" : S.dirty ? "Unsaved changes" : (S.savedMtime ? "All changes saved" : "");
   }
-  async function doSave(kind = "auto", label = "") {
+  async function doSave(kind = "auto") {
     // Suppressed entirely on a read-only file (manual Save, ⌘S, autosave) —
     // the badge explains why; only the deliberate paths get a toast too.
     if (RO) { if (kind === "manual") toast("This file is read-only — use “Save a copy…” to keep changes."); return; }
@@ -1404,8 +1278,7 @@
     try {
       const doc = S.view.state.doc;
       const html = IS_DOCX ? docToSaveHtml(doc) : docToHtml(doc);
-      const keep = (await loadSidecar()).docs.versions.map((v) => v.sha);
-      const res = await py({ action: "save", file: FILE, html, keep: JSON.stringify(keep),
+      const res = await py({ action: "save", file: FILE, html,
         expected_mtime: String(fileMtime ?? "") });
       if (res.conflict) { toast("This file changed on disk — reload to see the latest version."); return; }
       if (res.error) throw new Error(res.error);
@@ -1413,7 +1286,6 @@
       // Edits made while the write was in flight leave the doc != the snapshot;
       // keep it dirty so the pending autosave picks them up (no false "saved").
       if (S.view.state.doc.eq(doc)) { S.dirty = false; S.savedMtime = Date.now(); }
-      await recordVersion(res.version_sha, html.length, kind, label);   // best-effort, never rejects
     } catch (e) {
       toast("Save failed: " + e.message);
       // Mid-session chmod fallback: the writer's PermissionError arrives as a
@@ -1640,7 +1512,6 @@
   buildToolbar();
   $("modeSeg").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
   $("btnComments").addEventListener("click", () => togglePanel("comments"));
-  $("btnHistory").addEventListener("click", () => togglePanel("history"));
   $("panelClose").addEventListener("click", closePanel);
   $("panel").querySelectorAll(".ptab").forEach((b) => b.addEventListener("click", () => openPanel(b.dataset.tab)));
   $("btnExport").addEventListener("click", (e) => { e.stopPropagation(); $("exportMenu").classList.toggle("hidden"); });
@@ -1686,7 +1557,7 @@
   // warm pandoc in the background so the first export is fast
   py({ action: "warmup" }).catch(() => {});
 
-  // ---- boot: load the file + its sidecar, mount the editor ----
+  // ---- boot: load the file, mount the editor ----
   $("boot").classList.add("hidden");
   if (!IS_DOC) {
     $("nofile").classList.remove("hidden");
@@ -1705,14 +1576,13 @@
   const { dom, comments, revisions } = parseDocHtml(res.html);
   S.comments = comments;
   const importedDoc = PMDOMParser.fromSchema(schema).parse(dom.body);
-  const sidecar = await loadSidecar();
-  S.author = sidecar.docs.author || "";
+  S.author = "";
   untitled = !!res.library;
   // Rename only applies to a new draft, where the edited name seeds the
   // first-save file name. An already-saved file's name IS its identity, so its
   // nav-bar title stays fixed (renaming a label there does nothing on Save,
   // which is confusing) — we don't make it editable.
-  title = untitled ? (sidecar.docs.title || "") : "";
+  title = "";
   const dt = $("docTitle");
   dt.textContent = displayName();
   document.title = "Docs — " + displayName();
@@ -1729,7 +1599,6 @@
       const t = (n && n !== BASENAME.replace(DOC_EXT, "")) ? n : "";
       if (t === title) { dt.textContent = displayName(); return; }
       title = t; dt.textContent = displayName(); document.title = "Docs — " + displayName();
-      saveSidecar((d) => { d.title = t; });  // best-effort; never rejects
     });
   }
   $("topbar").classList.remove("hidden"); $("toolbar").classList.remove("hidden"); $("main").classList.remove("hidden");
@@ -1739,7 +1608,7 @@
   if (res.editable === false) applyReadonly(res.readonly_message, res.readonly_tooltip);
   setMode(fused.params.get("mode") || "view");
   const panelParam = fused.params.get("panel");
-  if (panelParam === "comments" || panelParam === "history") openPanel(panelParam);
+  if (panelParam === "comments") openPanel(panelParam);
   // Closed is a state the URL is the record of, so stamp it rather than leaving
   // the param invisible until something opens. setParam recognises this as a
   // restatement and writes it with replaceState — no history entry.

@@ -20,6 +20,7 @@ import {
   queueRows,
   roleText,
   rowCancelKind,
+  scheduleRunsEnded,
   showCancelAll,
   withdrawableCount,
   type QueueRow,
@@ -567,5 +568,87 @@ describe("one scheduled run, one row, at every step of its life", () => {
     expect(jobsSummary(failed, queueCount([]))).toBe("1 running");
     expect(shownRows([], []).length).toBe(0);
     expect(jobRows([], drawnIds([]))).toEqual([]);
+  });
+});
+
+describe("scheduleRunsEnded: the moment the two surfaces sync", () => {
+  // A scheduled run's status lives on two surfaces at two cadences: this card's
+  // job snapshot (~1s behind the turn) and the Tasks page's own poll (20s, plus
+  // the server's liveness window on top). "If finished in one, finished in the
+  // other" (Akshil, 2026-08-19) — so the running→terminal flip detected here is
+  // what QueueDock pokes the shared tasks store with (tasksPulse.pokeTasks).
+  const running = () => job({ id: `${SCHEDULE_JOB_PREFIX}e1` });
+
+  it("fires on a run flipping running → terminal", () => {
+    for (const state of ["done", "error", "cancelled"] as const) {
+      expect(scheduleRunsEnded([running()], [job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state })])).toBe(
+        true,
+      );
+    }
+  });
+
+  it("fires on a running run vanishing — a Clear between polls still ended it", () => {
+    expect(scheduleRunsEnded([running()], [])).toBe(true);
+  });
+
+  it("does not fire on history: a job first seen already terminal is not news", () => {
+    // The card mounts onto whatever the registry still displays. Poking on that
+    // would refetch the tasks on every mount for a run that ended an hour ago.
+    expect(scheduleRunsEnded([], [job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state: "done" })])).toBe(
+      false,
+    );
+    expect(scheduleRunsEnded([], [])).toBe(false);
+  });
+
+  it("stays quiet while the run is still going, stalled included", () => {
+    expect(scheduleRunsEnded([running()], [running()])).toBe(false);
+    // Stalled is the app admitting it stopped hearing, not the turn ending.
+    expect(
+      scheduleRunsEnded([running()], [job({ id: `${SCHEDULE_JOB_PREFIX}e1`, stalled: true })]),
+    ).toBe(false);
+  });
+
+  it("only scheduled runs count — a download finishing is not a task event", () => {
+    expect(
+      scheduleRunsEnded([job({ id: "sys:ai-model:repo" })], [
+        job({ id: "sys:ai-model:repo", state: "done" }),
+      ]),
+    ).toBe(false);
+  });
+});
+
+// ---- the live row's shimmer -----------------------------------------------------
+// Akshil, 2026-08-19: a run in flight wore the same muted grey as a row merely
+// waiting. The sentence of a LIVE row now wears the app's one "running"
+// treatment — the In Progress yellow with the travelling band, the sidebar's
+// recipe. Source pins, because the decision is one ternary in the view and the
+// treatment one CSS block: the class must ride on the ROLE (the same fact that
+// gives the row its job line and its Stop), and the reduced-motion arm must
+// state the label flatly rather than letting the blanket rule park the sweep.
+describe("the live row's shimmer", () => {
+  const { readFileSync } = require("node:fs") as typeof import("node:fs");
+  const { join } = require("node:path") as typeof import("node:path");
+  const DOCK = readFileSync(join(import.meta.dir, "QueueDock.tsx"), "utf8");
+  const CSS = readFileSync(
+    join(import.meta.dir, "../styles/notifications.css"),
+    "utf8",
+  );
+
+  it("rides on the row's role, and only on live", () => {
+    expect(DOCK).toContain('"q-status" + (row.role === "live" ? " is-running" : "")');
+  });
+
+  it("is the sidebar's yellow text shimmer, with the flat reduced-motion arm", () => {
+    expect(CSS).toContain(".q-status.is-running {");
+    expect(CSS).toContain("color: var(--status-progress);");
+    expect(CSS).toContain("animation: q-running-shimmer 2.2s linear infinite;");
+    expect(CSS).toContain("@keyframes q-running-shimmer");
+    // The words never fade and never vanish: in-range travel over a 300% image.
+    expect(CSS).toContain("background-size: 300% 100%;");
+    expect(CSS).toMatch(/q-running-shimmer \{\n  from \{ background-position: 100% 0; \}\n  to \{ background-position: 0% 0; \}/);
+    // Motion off: no parked gradient — the flat status hue instead.
+    const reduced = CSS.slice(CSS.lastIndexOf(".q-status.is-running"));
+    expect(reduced).toContain("animation: none;");
+    expect(reduced).toContain("-webkit-text-fill-color: var(--status-progress);");
   });
 });
