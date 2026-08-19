@@ -1901,6 +1901,202 @@ def test_unarchiving_takes_no_lane(client, projects_dir):
     assert r.json()["status"] == "done", "derived, not asserted"
 
 
+# ---------------------------------------------------------------- deleting it
+# `POST /api/tasks/delete` — archive's first half (cancel the pending work)
+# plus a tombstone instead of a triage record: the row is gone from every
+# listing, the transcript is not touched (D306), and activity newer than the
+# tombstone revives the row rather than running invisibly.
+
+
+def test_deleting_cancels_the_work_and_hides_the_row_everywhere(
+        client, projects_dir, state_dir):
+    path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "tomorrow", T12, claude_session_id="sess-a")])
+    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": "sess-a", "cancelled": 1,
+                        "erased_transcript": False}
+    # The row is gone from the listing AND the sidebar's pulse — one decision
+    # in _collect, so no surface has to know why.
+    assert _tasks(client) == []
+    assert _pulse(client) == []
+    # The work ahead was called off, not orphaned behind a hidden row...
+    assert schedule.list_entries()[0]["state"] == schedule.CANCELLED
+    # ...and the transcript is exactly where it was: D306, checked in fact and
+    # not only in the payload's promise.
+    assert path.exists()
+    rec = json.loads((state_dir / "deleted.json").read_text())["sess-a"]
+    assert rec["at"] > 0
+
+
+def test_deleting_stops_the_rule_behind_the_next_occurrence(client,
+                                                            projects_dir):
+    """Same reason as archiving: a rule that keeps materialising occurrences
+    would keep resurrecting the task — worse here, because each occurrence is
+    activity NEWER than the tombstone and would revive the row on its own."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("tpl", "every day", T9, state=schedule.RECURRING,
+               repeats="0 9 * * *", claude_session_id="sess-a"),
+        _entry("e2", "every day", T12, template_id="tpl",
+               claude_session_id="sess-a"),
+    ])
+    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["tpl"] == schedule.CANCELLED
+    assert states["e2"] == schedule.CANCELLED
+    assert _tasks(client) == []
+
+
+def test_deleting_kills_a_rule_even_between_its_occurrences(client,
+                                                            projects_dir):
+    """The materialiser mints lazily, so between a run going out and the next
+    tick a live rule has NO pending occurrence. A delete that only reads
+    template ids off pending rows walks straight past the machine that will
+    mint the next one — with a `created` stamp newer than the tombstone, which
+    is the revival rule's front door. The rule itself has to die (bugbot,
+    2026-08-19)."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("tpl", "every day", T9, state=schedule.RECURRING,
+               repeats="0 9 * * *", claude_session_id="sess-a"),
+        # The rule's only trace in the task: an occurrence that already ran.
+        _entry("e1", "every day", T9, state=schedule.SENT, fired=T9,
+               turn="ok", template_id="tpl", claude_session_id="sess-a"),
+    ])
+    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] == 1, "the rule itself is what gets called off"
+
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["tpl"] == schedule.CANCELLED
+    assert states["e1"] == schedule.SENT, "what already ran is left alone"
+
+    # The scheduler's next materialisation pass now has nothing to mint from:
+    # no new occurrence appears, so nothing can postdate the tombstone, and the
+    # deleted row stays deleted.
+    schedule._materialize(schedule._now())
+    assert {e["id"] for e in schedule.list_entries()} == {"tpl", "e1"}
+    assert "sess-a" not in _by_key(client)
+
+
+def test_deleting_one_run_of_a_fresh_session_series_spares_the_series(
+        client, projects_dir):
+    """The other edge of the same knife (bugbot, 2026-08-19). A
+    `new_task_each_run` rule mints every future run into a FRESH session, so
+    each spent run is its own task — and deleting one of them must not reach
+    up its `template_id` and kill the live series, nor take the pending
+    occurrence that belongs to a different (future) task with it. The rule is
+    behind this task's PAST, not its future: nothing it ever mints can land on
+    the deleted key, so the tombstone holds without the series dying."""
+    _write_transcript(projects_dir, "sess-b", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("tpl", "every day", T9, state=schedule.RECURRING,
+               repeats="0 9 * * *", new_task_each_run=True),
+        # Yesterday's run: it started a fresh session, which is the task
+        # being deleted.
+        _entry("e1", "every day", T9, state=schedule.SENT, fired=T9,
+               turn="ok", template_id="tpl", claude_session_id="sess-b",
+               new_task_each_run=True),
+        # The next run, already minted, session still unwritten — a different
+        # task (its own pending: row), not the one being deleted.
+        _entry("e2", "every day", T12, template_id="tpl",
+               new_task_each_run=True),
+    ])
+    assert client.post("/api/tasks/archive",
+                       json={"key": "sess-b"}).status_code == 200
+    r = client.post("/api/tasks/delete", json={"key": "sess-b"})
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] == 0, "nothing of this task's own was pending"
+
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["tpl"] == schedule.RECURRING, "the series lives on"
+    assert states["e2"] == schedule.PENDING, "the next task's run is untouched"
+    assert states["e1"] == schedule.SENT
+
+    # And the series keeps working: the materialiser still has its template
+    # (e2 pending means nothing new to mint), while the deleted row stays gone.
+    schedule._materialize(schedule._now())
+    by_key = _by_key(client)
+    assert "sess-b" not in by_key
+    assert tasks_store.pending_key("e2") in by_key
+
+
+def test_deleting_a_running_task_is_refused(client, projects_dir):
+    """A live turn cannot be cancelled, so deleting now would hide work that
+    is still happening. 409, row untouched, nothing cancelled."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.SENDING,
+                           claude_session_id="sess-a")])
+    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert r.status_code == 409, r.text
+    assert schedule.list_entries()[0]["state"] == schedule.SENDING
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+
+def test_deleting_an_archived_task_takes_the_row_out_of_archive(
+        client, projects_dir):
+    """The Archive lane is where deletable rows accumulate — a filed task is
+    settled by construction, so the delete goes through and the lane shrinks."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert _tasks(client) == []
+
+
+def test_deleting_a_task_with_no_session_leaves_no_shell(client, tmp_path):
+    """A message scheduled for tomorrow that never ran: cancelling it already
+    leaves nothing for a row to be about (_is_task), and the tombstone makes
+    the same answer hold even before the cancel settles."""
+    _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
+    key = _tasks(client)[0]["key"]
+    r = client.post("/api/tasks/delete", json={"key": key})
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] == 1
+    assert _tasks(client) == []
+
+
+def test_an_entry_created_after_the_delete_revives_the_task(client,
+                                                            projects_dir):
+    """The tombstone hides the row only while it is the newest thing about the
+    task: a message scheduled into the conversation AFTERWARDS brings the row
+    back — hidden work must never run invisibly. It is the entry's CREATED
+    stamp that answers, never its due time: a cancelled entry's future due is
+    a corpse with a date on it, not news."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert _tasks(client) == []
+    _seed_schedule([_entry("e9", "again", T12, claude_session_id="sess-a",
+                           created="2036-01-01T00:00:00Z")])
+    assert "sess-a" in _by_key(client)
+
+
+def test_a_transcript_that_grows_after_the_delete_revives_the_task(
+        client, projects_dir):
+    """The other kind of later activity: the user said something in the
+    session itself. Append-only files move their mtime for exactly one
+    reason, and it postdating the tombstone is what brings the row back."""
+    path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert _tasks(client) == []
+    future = time.time() + 60
+    os.utime(path, (future, future))
+    assert "sess-a" in _by_key(client)
+
+
+def test_deleting_a_task_that_is_not_there_is_a_404(client):
+    assert client.post("/api/tasks/delete",
+                       json={"key": "nope"}).status_code == 404
+
+
+def test_deleting_without_a_key_is_a_400(client):
+    assert client.post("/api/tasks/delete",
+                       json={"key": "  "}).status_code == 400
+
+
 # ----------------------------------------------------------------- the unread
 
 

@@ -342,6 +342,32 @@ def _no_real_workbench_skills_clone(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_schedule_loop_thread(monkeypatch):
+    """No test may start the scheduled-messages daemon thread.
+
+    `schedule.start()` runs from the app's STARTUP event, so any test that
+    enters `with TestClient(create_app(...))` (the fs_raw proxies, parts of
+    test_schedule_api) spawns the `fused-schedule` loop — a daemon that is
+    never joined and ticks every POLL_INTERVAL_S for the REST OF THE WORKER
+    PROCESS, reading FUSED_RENDER_HOME afresh each pass. A later test in that
+    worker that seeds an overdue `pending` entry is then in a race: the leaked
+    loop's catch-up tick can claim it (`pending` -> `sending`) between the seed
+    and the request under test, at which point cancel rightly refuses it —
+    test_archiving_cancels_the_work_and_files_the_session lost exactly that
+    race on CI (`cancelled == 0`, fused-engine, 2026-08-19), with no spawn in
+    its own window to explain it. Same shape of hole as the mount threads
+    below, with a sharper edge: a claimed entry SENDS — a real
+    `claude --resume` against whatever the tmp store says.
+
+    The tests that are ABOUT the loop call `schedule.tick()` directly with
+    their own clock, and the one wiring test that asserts startup DOES call
+    `start` monkeypatches it in its own body, which wins over this fixture."""
+    from fused_render import schedule
+
+    monkeypatch.setattr(schedule, "start", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_background_mount_threads(monkeypatch):
     """`create_app` starts two daemon threads that reach for a real rclone;
     neither may run in a test.

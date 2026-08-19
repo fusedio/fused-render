@@ -476,6 +476,62 @@ def mark_read_many(key: str, ids_to_mark, now: float | None = None) -> dict:
     return _update(READ_FILE, mutate)
 
 
+# ------------------------------------------------------------ deleted.json
+#
+#     {"<session-id-or-pending-key>": {"at": 1755300000.0}}
+#
+# TOMBSTONES, not erasure. Deleting a task removes the ROW — the third fact
+# about a task that cannot live in a transcript (after its number and its read
+# marks), and it lives here for the same reasons: keyed by session, global,
+# never branch-nested. The transcript itself is Claude Code's and is not
+# touched (D306: this app does not destroy transcripts); what is stored is the
+# user's decision that the row stops being shown, with the WHEN, because the
+# when is what makes revival decidable: activity NEWER than the tombstone —
+# a fresh message in the conversation, a run scheduled into it afterwards —
+# brings the row back rather than running invisibly behind a hidden task,
+# which is the same promise the archive cascade makes (`_revived` next door).
+# The router owns that comparison (`_deleted` in routers/tasks.py); this
+# module only keeps the record, exactly as it does for numbers and reads.
+#
+# A tombstone whose task never revives is a few bytes forever, and that is the
+# correct price — the same "gaps over renumbering" trade task_ids.json makes.
+
+DELETED_FILE = "deleted.json"
+
+
+def deleted_state() -> dict:
+    """The tombstone store, as saved. Missing/corrupt reads as {} — nothing
+    deleted — like every other store here: degrading means rows come BACK,
+    never that they vanish."""
+    return load_state(DELETED_FILE)
+
+
+def deleted_at(state: dict, key: str) -> float:
+    """When this key was deleted, or 0.0 — which every real timestamp beats,
+    so an unreadable record can never hide a task."""
+    rec = state.get(str(key))
+    if not isinstance(rec, dict):
+        return 0.0
+    try:
+        at = float(rec.get("at"))
+    except (TypeError, ValueError):
+        return 0.0
+    return at if at > 0 else 0.0
+
+
+def mark_deleted(key: str, now: float | None = None) -> None:
+    """Tombstone one task key. Idempotent by intent: deleting twice re-stamps
+    the WHEN, which is what the second gesture means — hide it as of now,
+    including from any activity that revived it in between."""
+    stamp = time.time() if now is None else float(now)
+
+    def mutate(state: dict):
+        state[str(key)] = {"at": stamp}
+        return None, True
+
+    _update(DELETED_FILE, mutate)
+
+
 # ------------------------------------------------------------- transcript head
 #
 # Only the head, and only the three facts a backfill needs. The full read of a
