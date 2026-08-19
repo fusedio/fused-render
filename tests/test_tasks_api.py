@@ -189,6 +189,74 @@ def test_a_chat_session_is_a_task(client, projects_dir, state_dir):
     assert message["unread"] is True
 
 
+def _pane_block(file_path):
+    from urllib.parse import quote
+    return ("<live-app-state>\nA snapshot of the preview the user is looking "
+            "at in the left pane.\n"
+            + json.dumps({"title": "t",
+                          "url": "/render?path=" + quote(file_path, safe=""),
+                          "dom_path": "/tmp/dom.json"})
+            + "\n</live-app-state>\n")
+
+
+def test_a_chat_opened_on_a_file_targets_that_file(
+        client, projects_dir, state_dir, tmp_path):
+    """The transcript's cwd is always a folder, but the pane's own
+    `<live-app-state>` block names the FILE the chat was opened on — and that
+    file, while it exists, is where opening the task should land."""
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    file = proj / "index.html"
+    file.write_text("<html></html>")
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user(_pane_block(str(file)) + "make the wave faster", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == str(file)
+    assert task["project"] == str(proj)
+    assert task["messages"][0]["body"] == "make the wave faster"
+
+
+def test_a_pane_file_that_is_gone_falls_back_to_the_folder(
+        client, projects_dir, state_dir, tmp_path):
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user(_pane_block(str(proj / "deleted.html")) + "hello", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == str(proj)
+    assert task["project"] == str(proj)
+
+
+def test_a_scheduled_entry_target_beats_the_pane_file(
+        client, projects_dir, state_dir, tmp_path):
+    """A scheduled entry's target is the thing the job was pointed at; the
+    pane file only speaks for chats that have no entry of their own."""
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    file = proj / "index.html"
+    file.write_text("<html></html>")
+    _seed_schedule([_entry("e1", "run the report", T9,
+                           target=str(proj / "report.py"),
+                           state=schedule.SENT,
+                           claude_session_id="sess-a")])
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user(_pane_block(str(file)) + "run the report", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == str(proj / "report.py")
+
+
 def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         client, projects_dir, state_dir):
     """The sidebar gets the same state without downloading page-only content."""
