@@ -700,6 +700,21 @@ def _regions_to_decode(audio, regions, duration):
     A recording the detector finds NO speech in also decodes whole: reporting
     an empty transcript for a file nobody looked at would be the confident
     version of a wrong answer.
+
+    **One region per clip, and this engine deliberately does NOT pack them the
+    way `mlx_whisper` does** (`vad.pack_regions`, which sits in the shared module
+    and is available here for the asking). Packing pays for itself over there
+    because Whisper is a fixed-window encoder: mlx-whisper pads every call's mel
+    to 30 seconds, so a 0.8-second region costs a full window and thirty-one
+    regions cost more than the whole file. Parakeet is a transducer with no such
+    window — `parakeet_mlx.parakeet` only chunks at all above
+    `chunk_duration = 60.0` — so its cost is proportional to the audio it is
+    given, and one call per region costs the same as one call for the lot. What
+    packing WOULD add here is a second timestamp mapping to keep correct for no
+    measured gain, which is why the two engines differ on this and agree on
+    everything the flag actually promises: both drop the silence, both cut only
+    at boundaries the detector found, both report original-recording time
+    (AI-10f). "Same meaning" is not "same batching".
     """
     if not regions:
         return [(0.0, duration)]

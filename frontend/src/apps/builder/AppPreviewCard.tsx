@@ -10,8 +10,9 @@
 //      and hover-end swaps it back — see the hover state below.
 //   2. the app itself, live: `entry_html` in a sandboxed iframe at desktop
 //      width (1280px) scaled down to fit the card.
-//   3. no entry file at all — the Home grid's tinted monogram, so a card is
-//      never blank.
+//   3. no entry file at all — an empty thumb. The box keeps its 16/10 aspect,
+//      background and top border, so the card holds its shape; it just says
+//      nothing about an app that has nothing to show (D365).
 //
 // The precedence is a FALLBACK CHAIN, not a fixed choice, and it has to be:
 // `preview_image` says a file of that name exists and is non-empty, not that it
@@ -28,17 +29,15 @@
 // preview.png would still end up with every card that has ever scrolled
 // through the viewport pinned open — each a whole sandboxed page + JS
 // runtime. useNearViewport instead mounts the iframe only while its card is
-// near the viewport and unmounts it once scrolled well past, falling back to
-// the monogram in between (the same placeholder step 3 already uses, so an
-// offloaded card looks like an app with no live preview rather than a broken
-// one).
+// near the viewport and unmounts it once scrolled well past, showing step 3's
+// empty thumb in between — an offloaded card reads the same as an app with no
+// live preview (D365).
 import { useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { rawUrl } from "@platform/lib/api";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { withPreviewFlag } from "@platform/lib/router";
 import { appRecency, hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
-import { hueFor } from "@apps/builder/AppCard";
 import { useNearViewport, usePreviewStart } from "@platform/lib/preview-start";
 
 import { timeAgo } from "@platform/lib/format";
@@ -85,8 +84,8 @@ export function AppPreviewCard({
   // Set when the authored thumbnail fails to decode — see the fallback chain in
   // the module comment. One-way: a retry would loop on a file that is broken.
   const [shotFailed, setShotFailed] = useState(false);
-  // Gates the live-iframe branch only — preview.png and the monogram cost
-  // nothing to keep mounted, so they don't need this.
+  // Gates the live-iframe branch only — preview.png costs nothing to keep
+  // mounted and the empty thumb costs nothing at all, so neither needs this.
   const [thumbRef, nearViewport] = useNearViewport<HTMLSpanElement>();
   // Hover on a png-thumbed card swaps in the live app: the iframe mounts
   // UNDER the still image on mouseenter and the image only fades once the
@@ -200,11 +199,7 @@ export function AppPreviewCard({
                 keeps middle-click over the preview a new tab for the app. */}
             <span className="app-pcard-shield" />
           </>
-        ) : (
-          <span className="app-pcard-monogram" style={{ color: hueFor(app.name) }}>
-            {title.charAt(0).toUpperCase()}
-          </span>
-        )}
+        ) : null}
       </span>
     </a>
   );

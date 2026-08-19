@@ -9774,7 +9774,43 @@ function consumeAnchor() {
 // Clear the session param so a reload lands on the landing page,
 // wipe the visible transcript, and rebuild the session list.
 document.getElementById("back").onclick = () => {
-  if (sending) return;  // mid-turn reset would orphan the streaming run's UI
+  // Live even mid-turn (Akshil, 2026-08-19 — "when it is working I can't
+  // click back"). The old `if (sending) return` guarded against orphaning the
+  // streaming run's UI, but the architecture already survives leaving: the
+  // run id rides in `?run=`, the subprocess keeps going, and resumeRun
+  // re-attaches from the session list. Bumping the log generation is what
+  // actually retires the streaming loop — it bails on the next poll instead
+  // of writing into the wiped transcript below.
+  logGen += 1;
+  // Whether this leave abandons a LIVE turn, read before the lines below erase
+  // the evidence: `activeRun` is a streaming loop, `sending` is a turn still in
+  // its start, and the `run` param is a resumed run this frame may not have
+  // polled yet. `loadRecent` below needs to know — see the retries beside it.
+  const leftLive = !!(activeRun || sending || fused.params.get("run"));
+  // The landing must not inherit the turn's chrome (Bugbot, PR #653): with
+  // activeRun still set, the home composer wore the Stop square and its
+  // submit CANCELLED the run this button deliberately leaves running. The
+  // loop's own finally repeats this cleanup harmlessly when it bails.
+  activeRun = null;
+  activeWorking = null;
+  setRunningUi(false);
+  // Parked follow-ups belong to the conversation being left. Their
+  // sessionStorage mirror keeps them for the session's next open — persistQueue
+  // is deliberately NOT called (the params below are about to be cleared, and
+  // persisting an empty list under the leaving session's key would erase the
+  // mirror this is counting on). The bubbles are removed here by hand: #queue
+  // is a SIBLING of #log, so the transcript wipe below never touches them, and
+  // a bubble that outlived its entry reappeared on the next enterChat,
+  // detached from everything (Bugbot, PR #653).
+  for (const q of queuedMsgs) q.el.remove();
+  queuedMsgs.length = 0;
+  // The abandoned turn's sendMessage/resumeRun still holds `sending` until its
+  // loop bails (one poll away) — long enough for the landing composer's submit
+  // to hit `if (sending) return` and drop the click (Bugbot, PR #653). The
+  // landing is a new life for the flag, so it releases HERE; the old loop's
+  // cleanup is ownership-guarded, so its late finally cannot strip a run this
+  // page starts in the meantime.
+  sending = false;
   // `{default: ""}`, because this button is live on a chat that has no session
   // yet — "New chat" enters the chat view and `session_id` is not written until
   // the first turn's poll answers. Clearing an already-absent param is a
@@ -9809,6 +9845,23 @@ document.getElementById("back").onclick = () => {
   // a stale count for a moment is quieter than a section that blinks. Boot is
   // the only place the "not read yet" state is real.
   loadRecent();
+  // A chat left MID-TURN may not be in that list yet (Akshil, 2026-08-19 — "the
+  // chat doesn't show in recent chats until the run completes"): the list is
+  // the transcripts in the cwd's project dir (agent.py `_sessions`), and a
+  // brand-new session's transcript appears only once the CLI has written its
+  // first rows — seconds after this read, on a leave this quick. Not a poll
+  // loop: two more looks a few seconds apart cover the write, and after that
+  // the list is what it honestly is. Gated on still being ON the landing —
+  // re-entering a chat makes the repaint someone else's business — and
+  // loadRecent's own skeleton guard keeps these from blinking rows that are
+  // already up.
+  if (leftLive) {
+    for (const wait of [2500, 6000]) {
+      setTimeout(() => {
+        if (chatEl.classList.contains("home")) loadRecent();
+      }, wait);
+    }
+  }
   // The chips belonged to the conversation being left; the section below the
   // composer is the cross-session view and is re-read from the index instead.
   clearArtStrip();
@@ -12280,17 +12333,38 @@ function unqueueAll(entries) {
 // One turn at a time: concurrent turns would share the session_id param and
 // launch parallel claude runs against the same resumed session.
 let sending = false;
+// Which action OWNS `sending`, and which loop owns the running chrome. Both
+// are monotonic seats: a finally that wakes late (its action was abandoned by
+// the back button, or superseded by a re-attach to the same run id) proves it
+// is still the newest holder before it releases anything — equality on the
+// flag, or even on the run id, is not proof (Bugbot, PR #653: a reopened chat
+// re-attaches to the SAME run_id, and the abandoned loop's finally stripped
+// the new loop's Stop chrome; a new send's gate was wiped the same way).
+let sendSeq = 0;
+let loopSeq = 0;
+// The generation of the visible log. The back button bumps it when it wipes
+// the transcript, and a streaming pollLoop that wakes to a bumped number
+// bails before touching the DOM or the URL params — the run itself keeps
+// going server-side, and resumeRun re-attaches to it from the session list.
+let logGen = 0;
 
 // Stream one run into the log. The `run` URL param marks the run as in-flight
 // for the page's whole life — if this frame dies mid-loop, the subprocess
 // keeps going and the next boot re-attaches via resumeRun.
-async function pollLoop(run_id) {
+async function pollLoop(run_id, gen = logGen) {
+  const seat = ++loopSeq;
   const w = addWorking();
   // This run is now the one the stop button and Escape aim at. Set here, the one
   // place a run is ever in flight, which covers a re-attached run for free.
   activeRun = run_id;
   activeWorking = w;
   setRunningUi(true);
+  // `gen` is the log generation this loop is allowed to write, and it is the
+  // CALLER'S sample, not one taken here (Bugbot, PR #653): sendMessage and
+  // resumeRun sample it before their own awaited start/probe, so a Back that
+  // lands during those awaits already outdates the number this loop compares
+  // against — sampled here instead, the loop would adopt the wiped landing as
+  // its log and re-write the very params (session_id) the leave just cleared.
   let reply = null;
   let typer = null;
   let segBody = null;    // the element the segment views are rendered into
@@ -12303,6 +12377,7 @@ async function pollLoop(run_id) {
   try {
     while (true) {
       const data = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
+      if (logGen !== gen) break;  // the reader left; the run continues without this page
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
       // Not awaited, for the same reason the app-state answer below is not: a
       // strip of chips may never hold up the streaming reply by a single frame.
@@ -12407,11 +12482,17 @@ async function pollLoop(run_id) {
     if (w.el.isConnected) w.el.remove();
     // Nothing is interruptible any more. Cleared even when the loop threw: an
     // Escape landing after this must not cancel a finished run and then mislabel
-    // the NEXT turn's ending as a stop.
-    activeRun = null;
-    activeWorking = null;
-    activeSegBody = null;
-    setRunningUi(false);
+    // the NEXT turn's ending as a stop. OWNERSHIP-GUARDED (Bugbot, PR #653),
+    // and ownership means being the NEWEST loop, not matching the run id: a
+    // chat left mid-turn and reopened re-attaches to the SAME run_id, and the
+    // abandoned loop's late finally matched it and stripped the new loop's
+    // Stop square and Escape target.
+    if (loopSeq === seat) {
+      activeRun = null;
+      activeWorking = null;
+      activeSegBody = null;
+      setRunningUi(false);
+    }
   }
 }
 
@@ -12434,6 +12515,11 @@ function setRunningUi(on) {
 async function sendMessage(message) {
   if (sending) return;
   sending = true;
+  const seat = ++sendSeq;
+  // Sampled before anything is awaited: a Back landing mid-start outdates this
+  // number, and everything below that touches the page (the run param, the
+  // streaming loop, the queue drain) checks it first (Bugbot, PR #653).
+  const gen = logGen;
   // Fold pending annotations into the outgoing message and stamp them `sent`.
   // If the start below never launches a run, the stamp (and the receipt) are
   // rolled back so the notes stay editable and re-sendable.
@@ -12591,8 +12677,12 @@ async function sendMessage(message) {
     // any kind buys the visit's one entry (PR-3): the push belongs to the first
     // thing the user actually does, and a Back onto a finished run's id is a
     // history entry that restores nothing.
-    fused.params.set("run", run_id, { history: "replace" });
-    await pollLoop(run_id);
+    if (logGen === gen) {
+      fused.params.set("run", run_id, { history: "replace" });
+      await pollLoop(run_id, gen);
+    }
+    // else: the reader left during start — the run continues server-side and
+    // resumeRun/adoptLiveRun can re-attach; the landing gains no run param.
   } catch (err) {
     // The run never launched, so the agent never saw the annotations: give
     // them back as pending (and pull the receipt) so they can be re-sent.
@@ -12622,11 +12712,15 @@ async function sendMessage(message) {
     }
     addError(err.message);
   } finally {
-    sending = false;
+    if (sendSeq === seat) sending = false;
   }
   scrollBottom();
   focusBox(box);
-  drainQueue();
+  // Same-generation only: after a Back, the parked follow-ups belong to the
+  // conversation that was left — firing them from the landing would launch a
+  // hidden new chat (Bugbot, PR #653). Their sessionStorage mirror survives,
+  // so reopening the session restores them, still queued.
+  if (logGen === gen) drainQueue();
 }
 
 // Re-attach to a run that was streaming when this page last unloaded (mode
@@ -13386,22 +13480,63 @@ setInterval(pollScheduledRuns, SCHEDULE_POLL_MS);
 // answers with the id of a run for this chat that is still alive. resumeRun has
 // always been able to adopt a run this frame did not start (the scheduled-send
 // path does exactly this); it just was never given the id.
+//
+// A WATCH, not a one-shot question (Akshil, 2026-08-19 — the reopened chat "does
+// not show me the streaming thing"). The one-shot version had two silent
+// give-ups, and each was a live turn the chat never showed again:
+//
+//   * `if (sending || activeRun) return` — the gate can be HELD at the one
+//     instant this fires (a second click's loadHistory mid-flight, an abandoned
+//     turn's finally a poll away from releasing), and "held right now" was read
+//     as "nothing to do, ever". The gate clears within a tick; the answer to it
+//     is to look again, not to leave.
+//   * a `live_run` that answers "" — which is the truth for an idle chat, but
+//     also what the server says while the run this very reopen is chasing is
+//     still being SPAWNED (Back landed during `start`; the run dir gains its
+//     pid a beat later). One answer, two meanings, and only time tells them
+//     apart: a short watch at the poll cadence covers the spawn window, and an
+//     idle chat costs a few cheap lookups that all agree before it goes quiet.
+//
+// Gen-guarded like every other loop that outlives an await: leaving the chat
+// bumps logGen and the watch dies with the transcript it was watching.
 async function adoptLiveRun(session_id) {
-  if (sending || activeRun) return;   // this frame already owns a turn
-  let live = null;
-  try {
-    live = await fused.runPython(AGENT, {
-      action: "live_run", file: FILE, session_id: session_id || "",
-    }, { key: null });
-  } catch (e) {
-    return;   // a failed lookup leaves the transcript exactly as it rendered
+  const gen = logGen;
+  // ~3s of looking: one tick is the common case (the reopen itself), the tail
+  // exists for the spawn window above. Each miss waits one poll interval, so
+  // the working row appears within ~400ms of the run becoming visible.
+  for (let tries = 0; tries < 8; tries++) {
+    if (tries) await sleep(400);
+    if (logGen !== gen) return;       // the reader left; nothing here is ours
+    if (activeRun) return;            // a turn is attached — adopted, or the user's own
+    if (sending) continue;            // gate held THIS tick; look again, don't give up
+    let live = null;
+    try {
+      live = await fused.runPython(AGENT, {
+        action: "live_run", file: FILE, session_id: session_id || "",
+      }, { key: null });
+    } catch (e) {
+      return;   // a failed lookup leaves the transcript exactly as it rendered
+    }
+    // Both can have changed across the await; re-check before acting on the
+    // answer — adopting into a wiped log, or over a turn the user started
+    // meanwhile, is worse than the miss this watch exists to fix.
+    if (logGen !== gen || activeRun) return;
+    const id = live && live.run_id;
+    if (!id) continue;
+    if (sending) continue;            // taken mid-lookup — same answer as above
+    // Same `replace` posture as every other `run` write: it is bookkeeping about
+    // the frame's state, not a step the reader took, so it must not cost an entry.
+    fused.params.set("run", id, { history: "replace" });
+    // resumeRun can itself bail on a gate grabbed between these two lines — the
+    // loop, not this call, is the guarantee: a bailed attempt comes back around,
+    // and the `activeRun` check above ends the watch once anyone has attached.
+    await resumeRun(id);
+    // resumeRun resolves at the END of the turn, so a completed call means the
+    // run was handled — its done branch cleared the param. The one call that
+    // resolves with the param still reading `id` is the bail above, and only
+    // that one earns another lap.
+    if (fused.params.get("run") !== id) return;
   }
-  const id = live && live.run_id;
-  if (!id) return;
-  // Same `replace` posture as every other `run` write: it is bookkeeping about
-  // the frame's state, not a step the reader took, so it must not cost an entry.
-  fused.params.set("run", id, { history: "replace" });
-  await resumeRun(id);
 }
 
 async function resumeRun(run_id, opts) {
@@ -13409,8 +13544,13 @@ async function resumeRun(run_id, opts) {
   const retryUnknown = !!(opts && opts.retryUnknown);
   if (sending) return;
   sending = true;
+  const seat = ++sendSeq;
+  // Sampled before the probe, same reason as sendMessage's (Bugbot, PR #653):
+  // a Back landing during the awaited probe must outdate the loop's number.
+  const gen = logGen;
   try {
     let probe = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
+    if (logGen !== gen) return;  // the reader left mid-probe; nothing here is theirs to redraw
     if (probe.error === "unknown run_id" && retryUnknown) {
       // A frame handed a run id by its EMBEDDER (the canvases workspace's
       // "Fix with Claude" navigates this iframe with ?run= the moment the
@@ -13491,14 +13631,15 @@ async function resumeRun(run_id, opts) {
     } else if (probeMsg) {
       addUser(probeMsg);
     }
-    await pollLoop(run_id);
+    await pollLoop(run_id, gen);
   } catch (err) {
     console.warn("run re-attach failed:", err.message);
   } finally {
-    sending = false;
+    if (sendSeq === seat) sending = false;
     focusBox(box);
   }
-  drainQueue();
+  // Same-generation only — see sendMessage's tail (Bugbot, PR #653).
+  if (logGen === gen) drainQueue();
 }
 
 function submitChat() {
@@ -13599,6 +13740,7 @@ async function loadHistory(session_id) {
   // appended first and the older history turns dumped after it.
   if (sending) return;
   sending = true;
+  const seat = ++sendSeq;
   permCards.clear();
   notedSkills.clear();
   resetCardPolicy();  // ...and the overrides: every card of the restored transcript starts folded
@@ -13640,7 +13782,7 @@ async function loadHistory(session_id) {
     log.innerHTML = "";
     console.warn("history restore failed:", err.message);
   } finally {
-    sending = false;
+    if (sendSeq === seat) sending = false;
   }
 }
 
@@ -13777,12 +13919,25 @@ for (const [name, id] of [["recent", "tab-recent"], ["artifacts", "tab-artifacts
   };
 }
 
+let recentSeq = 0;
 async function loadRecent() {
+  // Reads overlap by design now (the back handler retries over a just-left
+  // run's spawn window), so only the NEWEST call may write: a slower older
+  // read finishing late would clobber the fresher list — including the very
+  // row the retry existed to add (Bugbot, PR #653). Same seat idiom as
+  // sendSeq/loopSeq: take a number, and prove it is still the latest before
+  // touching anything after the await.
+  const seat = ++recentSeq;
   const list = document.getElementById("recentlist");
-  renderRecentSkeleton(list);
+  // The skeleton stands in for rows we do not have yet — never for rows that
+  // are already up. A re-read over a drawn list (the back handler's mid-turn
+  // retries) repaints in place; blinking good rows into placeholder bars would
+  // make every retry look like the list lost the chats it is about to reprint.
+  if (!list.querySelector(".chat-row")) renderRecentSkeleton(list);
   syncLists();  // the skeleton needs its section shown
   try {
     const { sessions, error } = await fused.runPython(AGENT, { action: "sessions", file: FILE }, { key: null });
+    if (recentSeq !== seat) return;  // a newer read owns the list now
     if (error) throw new Error(error);
     list.innerHTML = "";  // drop the skeleton now that we know the real state
     // Name the snapshot runs from the SAME strings these rows are labelled with,
@@ -13822,6 +13977,10 @@ async function loadRecent() {
     recentCount = sessions.length;
     for (const s of sessions) addChatRow(list, s);
   } catch (err) {
+    // The seat check above never runs when the read itself REJECTS, so a
+    // stale retry that died late must be caught here too — its failure says
+    // nothing about the list a newer read already drew (Bugbot, PR #653).
+    if (recentSeq !== seat) return;
     list.innerHTML = "";
     // A list that could not be read is not a list with nothing in it, but it
     // renders the same way here: no heading, no empty state, no error.

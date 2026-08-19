@@ -805,7 +805,7 @@ def _iso_epoch(value) -> float | None:
 
 
 def _list_entries():
-    """(entries, error): each entry is {name, id, preview_url, updated_at}.
+    """(entries, error): each entry is {name, id, preview_url, n_code_udfs, updated_at}.
 
     Preferred path is the in-interpreter shim (ids, last_updated, and resolved
     preview image URLs — the CLI's `canvas list` prints bare names only); an
@@ -867,6 +867,11 @@ def _list_entries():
                             # the client asks for separately (D364).
                             "preview_pending": bool(entry.get("preview_pending"))
                             and entry.get("id") is not None,
+                            # The workbench's own code-UDF count, computed from
+                            # the node list the lite payload already carried.
+                            "n_code_udfs": entry.get("n_code_udfs")
+                            if isinstance(entry.get("n_code_udfs"), int)
+                            else None,
                             "updated_at": _iso_epoch(entry.get("last_updated")),
                         }
                     )
@@ -890,14 +895,16 @@ def _list_entries():
             if isinstance(entry, str):
                 entries.append(
                     {"name": entry, "id": None, "preview_url": None,
-                     "preview_pending": False, "updated_at": None}
+                     "preview_pending": False, "n_code_udfs": None,
+                     "updated_at": None}
                 )
             elif isinstance(entry, dict):
                 name = entry.get("name") or entry.get("slug")
                 if isinstance(name, str) and name:
                     entries.append(
                         {"name": name, "id": entry.get("id"), "preview_url": None,
-                         "preview_pending": False, "updated_at": None}
+                         "preview_pending": False, "n_code_udfs": None,
+                         "updated_at": None}
                     )
     return entries, None
 

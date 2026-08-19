@@ -425,6 +425,11 @@ def _scheduled_message(entry: dict, live: bool, at: float, ran_at: float,
         "at": at,
         "ran_at": ran_at,
         "state": _entry_state(entry),
+        # When the turn's verdict LANDED — 0.0 until it has (and for entries a
+        # pre-stamp version of the store wrote). `ran_at` is when the run
+        # started; this is when it was pronounced over, which is the moment
+        # `_verdict_outvotes_live` measures the transcript's tail against.
+        "turn_at": tasks_store.epoch(entry.get("turn_at")) or 0.0,
         "unread": False,
         "entry_id": str(entry.get("id") or ""),
         "template_id": str(entry.get("template_id") or ""),
@@ -447,6 +452,9 @@ def _chat_message(prompt: dict) -> dict:
         # A typed message was delivered the moment it was typed. The state
         # vocabulary is the schedule's, and `sent` is the word in it for that.
         "state": schedule.SENT,
+        # A typed message carries no verdict stamp — only the watcher writes
+        # one — and 0.0 is how every stamp here says "never".
+        "turn_at": 0.0,
         "unread": False,
         "entry_id": "",
         "template_id": "",
@@ -715,7 +723,16 @@ def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
     return live or (bool(session_id) and session_id in busy)
 
 
-def _verdict_outvotes_live(messages: list[dict]) -> bool:
+# How much newer than its verdict the transcript's tail must be before the tail
+# stops being the finished turn's own echo and starts being evidence of new
+# work. The closing records land in the same breath as the verdict (the watcher
+# stamps `turn_at` the moment the run reports done, seconds after the last real
+# record) — a couple of seconds absorbs that ordering jitter and clock skew,
+# while a session genuinely still working appends records well past it.
+_VERDICT_ECHO_SEC = 5.0
+
+
+def _verdict_outvotes_live(messages: list[dict], active: float) -> bool:
     """Is the transcript's liveness just the echo of a run that has already
     reported its verdict?
 
@@ -738,6 +755,20 @@ def _verdict_outvotes_live(messages: list[dict]) -> bool:
     prompt a scheduled run fired is consumed by the join (`_merge`) and cannot
     also stand on the chat side, so an equal stamp is the run's own.
 
+    BUT THE VERDICT MAY ONLY SILENCE ITS OWN ECHO (TASK-001, Akshil,
+    2026-08-19: a task wore the green Done ring while Claude was visibly still
+    building the app in its session). A resolved turn is not the end of a
+    conversation — the session can keep working with no new prompt to show for
+    it (follow-up turns, background work), and none of that is a "message"
+    here, so the newest thing that HAPPENED stayed the verdict for as long as
+    the work ran and the suppression never lifted. `active` is the transcript's
+    own answer — the timestamp of its newest real (non-housekeeping) record —
+    and `turn_at` is the moment the watcher pronounced the turn over: a tail
+    meaningfully newer than the verdict (`_VERDICT_ECHO_SEC`) is new work, and
+    the transcript keeps its vote. An entry a pre-stamp store wrote has no
+    `turn_at` and keeps the old rule — by the time such an entry matters its
+    transcript has long gone stale anyway.
+
     Deliberately NOT consulted: `busy_sessions`. The scheduler holding a send in
     flight is an independent claim and `_running_now` keeps asking it whatever
     this answers — this function only decides whether the TRANSCRIPT gets a
@@ -746,14 +777,20 @@ def _verdict_outvotes_live(messages: list[dict]) -> bool:
     if any(_message_running(m) for m in messages):
         return False  # something really is in flight; liveness corroborates it
     verdict_at = 0.0
+    resolved_at = 0.0
     other_at = 0.0
     for message in messages:
         happened = message["ran_at"] or 0.0
         if message["kind"] == "scheduled" and _message_verdict(message) is not None:
             verdict_at = max(verdict_at, happened)
+            resolved_at = max(resolved_at, message["turn_at"] or 0.0)
         else:
             other_at = max(other_at, happened)
-    return verdict_at > 0.0 and verdict_at >= other_at
+    if not (verdict_at > 0.0 and verdict_at >= other_at):
+        return False
+    if resolved_at > 0.0 and active > resolved_at + _VERDICT_ECHO_SEC:
+        return False  # written to well after the verdict: that is a pulse
+    return True
 
 
 def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
@@ -1079,12 +1116,21 @@ def _place(task: dict) -> None:
     The project is the transcript's own `cwd` where there is one — the encoded
     directory name is lossy (Claude Code turns literal hyphens into separators
     too), so it is only the fallback — and otherwise the folder of whatever the
-    scheduled message was pointed at."""
+    scheduled message was pointed at.
+
+    The target, for a chat with no scheduled entry, prefers the FILE the chat's
+    pane was on (`tasks_store.head`'s fourth answer, read out of the
+    `<live-app-state>` block) over the project folder: opening the task should
+    land where the user was actually looking. A scheduled entry's own target
+    still wins — it is the thing the job was pointed at — and a pane file that
+    no longer exists on disk falls back to the folder rather than opening a
+    view of nothing."""
     cwd = None
     first_ts = None
     prompt = ""
+    pane = ""
     if task["path"]:
-        cwd, first_ts, prompt = tasks_store.head(task["path"])
+        cwd, first_ts, prompt, pane = tasks_store.head(task["path"])
     task["first_prompt"] = prompt
     entries = task["entries"]
     target = str(entries[-1].get("target") or "") if entries else ""
@@ -1093,7 +1139,8 @@ def _place(task: dict) -> None:
             sessions._decode_project_dir(os.path.basename(os.path.dirname(
                 task["path"]))) if task["path"] else "")
     task["project"] = tasks_store.project_of(cwd or "")
-    task["target"] = target or task["project"]
+    task["target"] = target or (
+        pane if pane and os.path.isfile(pane) else task["project"])
     if first_ts is None and entries:
         first_ts = (tasks_store.epoch(entries[0].get("created"))
                     or _entry_at(entries[0]))
@@ -1247,7 +1294,10 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # `live` — the status, the newest chat message's turn, and the row's own
     # `live` flag — so the row cannot half-agree with itself. See
     # `_verdict_outvotes_live` for why a genuinely new turn is safe.
-    if live and _verdict_outvotes_live(merged):
+    # `active` rides along because it is the tie-breaker the bug demanded:
+    # a transcript still being written to meaningfully after the verdict is a
+    # session that kept working, and only the verdict's own echo is set aside.
+    if live and _verdict_outvotes_live(merged, active):
         live = False
     # BEFORE the cut, from the whole set: the one fact about the future that the
     # three-message window cannot be trusted to hold. See `_next_run`.

@@ -387,9 +387,9 @@ Deferred to later milestones (needed for data templates):
 - **PY-12** `/api/run` executes the built-in executor **by default**, regardless of whether the `fused` package is importable. `FUSED_RENDER_ENGINE=auto` opts in to running code through its local compute backend (`engine.py`) instead — fresh subprocess per call in a temp exec dir (PY-6 semantics preserved), a script whose folder declares no `pyproject.toml` running on the app's own interpreter (PY-17) and one whose folder does getting that folder's cached venv, built from exactly what it declares (PY-16), params delivered via `_params.json` — falling back to the built-in executor if `fused` isn't importable; `FUSED_RENDER_ENGINE=fused` requires it (startup error if missing); `=builtin` (or unset) always uses the built-in executor (D70). The active engine is reported in `GET /api/config` (`engine`) and logged at startup — the choice changes the code contract, so it is never silent.
 - **PY-13** **Code contract under the fused engine:** a function decorated with **`@fused.udf`** — any name, the last decorated one is the entrypoint — receiving params as **raw JSON values** (no annotation coercion; the calling JS owns types); or a plain script assigning **`result = ...`**. A bare **`main()`** remains supported as a compat bridge with PY-4 coercion and PY-8 cwd semantics, so pages and the built-in templates behave identically under either engine. A file with none of the three → the PY-1 structured error, extended to name the alternatives.
 - **PY-14** Both engines return **one wire shape** — `{ok, result, error: {type, message, traceback}, stdout}` (the fused engine adds `stderr`/`duration_ms`) — so `runtime.js` and templates never see which ran. Tracebacks under the fused engine point at the user's real file (the source is compiled as its own unit under its own filename); backend/wrapper plumbing frames are stripped.
-- **PY-16** A `.py`'s environment is decided by the **folder** it belongs to, never by anything written in the file. The project root is resolved first — the app folder (`<fused_dir()>/<tag>/<name>`), an immediate child of a template root, else the **topmost** ancestor holding a `pyproject.toml` — and that root's `pyproject.toml` `[project].dependencies` is the whole declaration. A manifest that declares **no** dependencies that apply on this platform is not an environment at all and falls through to PY-17 — a bare `uv init` scaffold must not put a script into an empty venv without the bundled stack. Every `.py` under the root shares one venv, however deep it sits; a `pyproject.toml` in a subfolder is **inert** and is surfaced as such (an inert file that looks correct is the failure this rule exists to prevent), and a `# /// script` header is **not read at all** — a leftover block is an ordinary comment, neither honored, merged, nor reported, and a file carrying one runs exactly as it would without it. There is deliberately **no migration tooling and no detection**: this is a clean break in a pre-release product (D233). The venv contains **exactly** what the manifest declares and nothing else — no baseline is unioned in, so it does not contain the rest of the `[bundled]` extra (DM-2), which only the app's own interpreter ships (PY-17). It is built by `uv sync` and stored **centrally** at `<home_dir()>/venvs/<sha256 of the root's absolute path>[:16]`, never inside the user's folder: the folder gains only `pyproject.toml` and `uv.lock`, both source, both git-tracked (MD-7). The path is hashed **as given**, not canonicalised, so moving or renaming a folder yields a fresh environment by design and the orphan is reclaimed by garbage collection at server startup. **One class of folder is keyed differently: one that ships inside the app** (the AI runner folders of §40) is keyed on its path *relative to the `fused_render` package*, because the app's own path is not stable — the AppImage's mount directory is fresh on every launch, so an absolute-path key handed those folders a new venv on each start and re-downloaded a multi-gigabyte environment that was already on disk and unreachable (D365). The staleness rule is unchanged by this, so a release that edits a runner's manifest rebuilds that venv and one that does not keeps it. Staleness is a **digest of `pyproject.toml`** recorded in a `.fused-source.json` sidecar inside the venv — the manifest only, since `uv.lock` is an output of `uv sync` and not an input to it — never an mtime chain — core templates are re-staged with `copy2` on every release, which would make an mtime rule resync byte-identical dependencies at every upgrade. A template that manages its own venv for a daemon declares its dependencies there, not in the folder manifest — that is the only form the built-in engine can honor too (D174). A core template may declare an environment **only if** it is **necessary** (it names something the platform's app interpreter genuinely lacks — judged against the macOS bundle's real contents, not `[bundled]`'s promises, D176), it is **complete** (it covers every such distribution imported by any `.py` under the folder), it has something a `runPython` call site can actually reach, and it ships a committed `uv.lock` so a released build never resolves against PyPI on first render. All of these are enforced by `tests/test_engine_requirements.py`, `tests/test_bundle_contents.py` and `tests/test_template_locks.py`, which derive entry points from the source (`_runpython_targets`/`_module_refs`) rather than from a maintained list (D172, D177; supersedes the per-file header rule).
+- **PY-16** A `.py`'s environment is decided by the **folder** it belongs to, never by anything written in the file. The project root is resolved first — the app folder (`<fused_dir()>/<tag>/<name>`), an immediate child of a template root, else the **topmost** ancestor holding a `pyproject.toml` — and that root's `pyproject.toml` `[project].dependencies` is the whole declaration. A manifest that declares **no** dependencies that apply on this platform is not an environment at all and falls through to PY-17 — a bare `uv init` scaffold must not put a script into an empty venv without the bundled stack. Every `.py` under the root shares one venv, however deep it sits; a `pyproject.toml` in a subfolder is **inert** and is surfaced as such (an inert file that looks correct is the failure this rule exists to prevent), and a `# /// script` header is **not read at all** — a leftover block is an ordinary comment, neither honored, merged, nor reported, and a file carrying one runs exactly as it would without it. There is deliberately **no migration tooling and no detection**: this is a clean break in a pre-release product (D233). The venv contains **exactly** what the manifest declares and nothing else — no baseline is unioned in, so it does not contain the rest of the `[bundled]` extra (DM-2), which only the app's own interpreter ships (PY-17). It is built by `uv sync` and stored **centrally** at `<home_dir()>/venvs/<sha256 of the root's absolute path>[:16]`, never inside the user's folder: the folder gains only `pyproject.toml` and `uv.lock`, both source, both git-tracked (MD-7). The path is hashed **as given**, not canonicalised, so moving or renaming a folder yields a fresh environment by design and the orphan is reclaimed by garbage collection at server startup. **One class of folder is keyed differently: one that ships inside the app** (the AI runner folders of §40) is keyed on its path *relative to the `fused_render` package*, because the app's own path is not stable — the AppImage's mount directory is fresh on every launch, so an absolute-path key handed those folders a new venv on each start and re-downloaded a multi-gigabyte environment that was already on disk and unreachable (D373). The staleness rule is unchanged by this, so a release that edits a runner's manifest rebuilds that venv and one that does not keeps it. Staleness is a **digest of `pyproject.toml`** recorded in a `.fused-source.json` sidecar inside the venv — the manifest only, since `uv.lock` is an output of `uv sync` and not an input to it — never an mtime chain — core templates are re-staged with `copy2` on every release, which would make an mtime rule resync byte-identical dependencies at every upgrade. A template that manages its own venv for a daemon declares its dependencies there, not in the folder manifest — that is the only form the built-in engine can honor too (D174). A core template may declare an environment **only if** it is **necessary** (it names something the platform's app interpreter genuinely lacks — judged against the macOS bundle's real contents, not `[bundled]`'s promises, D176), it is **complete** (it covers every such distribution imported by any `.py` under the folder), it has something a `runPython` call site can actually reach, and it ships a committed `uv.lock` so a released build never resolves against PyPI on first render. All of these are enforced by `tests/test_engine_requirements.py`, `tests/test_bundle_contents.py` and `tests/test_template_locks.py`, which derive entry points from the source (`_runpython_targets`/`_module_refs`) rather than from a maintained list (D172, D177; supersedes the per-file header rule).
 - **PY-17** A script whose project root declares **no** `pyproject.toml` (or one with no `[project]` table) runs on **the app's own interpreter** and gets no venv at all: the app ships `[bundled]` + its core `dependencies`, so numpy/pandas/pyarrow/duckdb/pillow/… are available with no download and no first-run wait — a deliberately small set since D276, which moved polars, matplotlib, scipy, the PDF stack and the geo stack out of `[bundled]` and into the manifests of the templates that use them. The interpreter is **verified, not assumed** — it is run once per server process and must report this app's own `sys.prefix`, probed under the child's stripped environment (the backend removes PYTHONHOME/PYTHONPATH, which a packaged interpreter may need to locate its stdlib). An autodetected candidate whose basename is not python-shaped is rejected without being spawned. If the direct candidate fails, the app generates a **wrapper script** that restores the `PYTHONHOME` this process depends on and `exec`s the real interpreter, then verifies THAT the same way. This is the packaged-macOS path, not an edge case: measured on a real DMG, the bundled interpreter stripped of `PYTHONHOME` reports the *build machine's* Homebrew framework as its prefix, and the bundle ships no `venv` module, so a venv-based rescue is impossible there. The wrapper sets the child's `sys.executable` to itself (`exec -a`), so a daemon re-spawned as `[sys.executable, …]` — geotiff, zarr_aoi, usd — keeps working even though those templates scrub `PYTHONHOME` from the environments they spawn into. Wrappers are POSIX-only and generated **only** when this process actually needs `PYTHONHOME`; Windows and the Linux AppImage self-locate and stay on the direct candidate. If no interpreter can be verified, such a script **fails with a configuration error** naming `FUSED_RENDER_APP_PYTHON` — it is never silently degraded to a venv, because with no baseline requirements that venv has no data stack and would fail on the first import, and because a core template that declares nothing must never reach the network. Nothing in this resolution installs anything. `FUSED_RENDER_APP_PYTHON` overrides the candidate (still probed) (D172, D175). **Both probes spawn with `close_fds=False`, and a probe that reached no verdict is not cached** (D277). They run in the server process, where PROJ is resident, so the default `close_fds=True` takes the `fork()` path and the child dies in PROJ's atfork handler at ~1ms — the crash GT-3 documents, one layer up. The probe is therefore **three-valued**, like the sibling-venv probe D212 already made three-valued and which names this one as its model: a candidate that RAN and answered (a foreign `sys.prefix`, a non-zero exit, unparseable output) is a definite rejection and is remembered, while a spawn that never got a verdict — killed by a **signal**, timed out, or failing with a transient `OSError` — leaves the resolution **unresolved and retryable**, at the cost of one subprocess on the next request. The split is by exception **type**, not by errno: a missing, unreadable or not-a-directory path is a fact about the candidate and stays definite. Rung 2 cannot launder rung 1 — the wrapper is built FROM the candidate, so an inconclusive direct probe makes the whole answer provisional even when the wrapper reached a real verdict. For the same reason `app_packages()` no longer caches its `None` when there is no interpreter: it used to, justified by the interpreter's answer being terminal, which this rule voids. Getting this wrong is not a slow path but a dead one — the resolution is per process and no HTTP route resets it, so a single unlucky spawn disabled **every** header-less script until the server restarted.
-- **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` — **in the project directory, or in a manifest-only mirror at `<venvs_root>/<key>.src` when that directory cannot be written to** (D365) — and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`: `uv sync` writes `uv.lock` where it runs, which is the point for a user's folder and impossible for the bundled runner folders, whose tree is read-only on the AppImage's squashfs mount and under a Windows `Program Files` install. The mirror persists and keeps the lock uv resolved there, so a rebuild reconciles instead of re-resolving; a lock the folder itself ships overwrites it, and `projectenv.gc()` reclaims a mirror with its venv, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. **That spawn takes the `posix_spawn` path and the worker detaches ITSELF** (D292): it runs from the server process, where PROJ is resident, so `start_new_session=True` — which forces `fork()+exec` — killed the worker in PROJ's atfork handler before it could write anything, leaving an empty `worker.log`, a record stuck at `spawn`, and an install that failed identically on every retry for the life of the process. `close_fds=False` selects `posix_spawn`; `os.setsid()` as the worker's first statement restores the session `killpg` needs. **The venv readiness probe (D212) obeys the same rule and treats a signal as no verdict at all**: forked, it died `-11`, which read as "this venv cannot run its own python" and unlinked a healthy venv's ready marker — charging the user a full re-download for a crash in the probe. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. Progress is deliberately coarse (`uv sync` captures its output, so per-package progress is unavailable) and reports only stages it can observe. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so the environment can live under the app's home dir rather than in the backend's store.
+- **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` — **in the project directory, or in a manifest-only mirror at `<venvs_root>/<key>.src` when that directory cannot be written to** (D373) — and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`: `uv sync` writes `uv.lock` where it runs, which is the point for a user's folder and impossible for the bundled runner folders, whose tree is read-only on the AppImage's squashfs mount and under a Windows `Program Files` install. The mirror persists and keeps the lock uv resolved there, so a rebuild reconciles instead of re-resolving; a lock the folder itself ships overwrites it, and `projectenv.gc()` reclaims a mirror with its venv, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. **That spawn takes the `posix_spawn` path and the worker detaches ITSELF** (D292): it runs from the server process, where PROJ is resident, so `start_new_session=True` — which forces `fork()+exec` — killed the worker in PROJ's atfork handler before it could write anything, leaving an empty `worker.log`, a record stuck at `spawn`, and an install that failed identically on every retry for the life of the process. `close_fds=False` selects `posix_spawn`; `os.setsid()` as the worker's first statement restores the session `killpg` needs. **The venv readiness probe (D212) obeys the same rule and treats a signal as no verdict at all**: forked, it died `-11`, which read as "this venv cannot run its own python" and unlinked a healthy venv's ready marker — charging the user a full re-download for a crash in the probe. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. Progress is deliberately coarse (`uv sync` captures its output, so per-package progress is unavailable) and reports only stages it can observe. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so the environment can live under the app's home dir rather than in the backend's store.
 
 ---
 
@@ -5698,6 +5698,95 @@ an AI Models page that could say what was on disk but not what was *running*.
   rather than destructive), no per-segment UI, and no cache lock — the etag names
   the content, so two instances write identical bytes at identical offsets and
   the loser of a rename race falls back rather than corrupting anything.
+- **AI-5k** **A model already complete on disk is resolved WITHOUT the network**
+  (D367). "Fetching weights…" for a cached model was about a second of pure
+  latency in front of every bring-up: measured on an Apple Silicon machine for
+  `mlx-community/whisper-tiny.en-8bit`, fully cached, `worker_base.
+  download_snapshot` took **483ms** and `download_file` **456ms**, against **~14ms**
+  for the weight load itself inside mlx-whisper — all of it Hub round-trips
+  (`HfApi().model_info(files_metadata=True)` is 228ms on its own, hf's
+  `snapshot_download` spends another ~220ms revalidating etags), and also the
+  source of the "You are sending unauthenticated requests to the HF Hub" line in
+  every worker log. Both helpers now try `local_files_only=True` FIRST — 0.13ms
+  and 0.14ms for the same two answers — and fall through to the whole networked
+  path (metadata call, total, segmented fetch, progress) when the cache cannot
+  answer. **A repo the cache has never held reaches no hub download function at
+  all**, not even one carrying `local_files_only=True`: the gate is a filesystem
+  look first (a `snapshots/` directory for the repo; `try_to_load_from_cache`,
+  which cannot download, for the single-file path), and hf is asked only to
+  CONFIRM what the disk already suggested. That is AI-5e's rule holding at a new
+  site — the ✕ must never be answered by starting a download, and
+  `test_ai_hub_fetch.py` enforces it by counting calls rather than bytes, which is
+  the right test: "we only passed `local_files_only`" is exactly the claim a later
+  refactor breaks. For the same reason the local attempt catches only what means
+  "not cached" (hf's `LocalEntryNotFoundError`/`IncompleteSnapshotError` are both
+  `OSError`s, so the tuple names them without importing them) and never
+  `Cancelled`, which is an ordinary `Exception` — a bare `except Exception` there
+  turned a Stop into a fresh multi-gigabyte download. **First download behaviour
+  is unchanged, and a partial or NARROWER cache must never be mistaken for a
+  complete one.** hf's own completeness check is not the guarantee — it verifies
+  against `trees/<commit>.json`, hf's code says that without one "we cannot tell,
+  so we do nothing", and this app's segmented fetch (the normal path) writes
+  `refs/` and blobs but never a tree. **So the app records its own fetches and the
+  fast path answers only from that record**: `<repo folder>/.fused-fetch-<commit>.
+  json` holds the SCOPE a completed download was asked for and the FILE NAMES that
+  landed, written after the fetch returns (which is the one moment completeness is
+  knowable, since `_write_ref` runs after the last file), and a request is served
+  only when the record is for the commit hf resolved, at the scope being asked for,
+  with every recorded name present and settled. **Every record is keyed by the
+  commit the returned snapshot IS**, never by the sha that was asked for, and the
+  fallback to `snapshot_download` is **pinned to that sha** — a branch name resolved
+  twice is two answers, and a repo that moves between the listing and the fallback
+  would otherwise file a record under a snapshot directory that does not exist,
+  leaving that repo permanently cold. **A fetch that landed LESS than its scope asked
+  for writes no record at all**, and the record's file list is therefore the
+  LISTING's rather than the disk's: a record is verified by looking its own names
+  up, so building it from what landed would make it self-certifying — a fallback
+  delivering 1 of 50 files would record one name, every check would pass, and an
+  incomplete snapshot would be served forever. Checked against the set the listing
+  asked for (the one thing there the fetch did not choose), a shortfall leaves the
+  repo cold and says so on stderr, which is where it was before this path existed.
+  The `.writing` temp a record is staged in is **unique per writer and never
+  deleted by anyone else**: two loads sharing one cache are separate processes, and
+  sweeping that name to save a round trip made the other's `os.replace` fail and
+  its record never appear — the very failure this prevents, caused by tidying. The
+  name carries a random token as well as the pid, because two containers over one
+  mounted cache have their own pid namespaces and a reused pid would let two writers
+  interleave into one file and `os.replace` publish mixed JSON as truth — which also
+  makes a hard-kill leftover PERMANENT, accepted as a few hundred bytes written
+  inside a ~1ms window, invisible to every consumer, and removed by the same
+  `hf cache delete` that removes the record and the weights, against a by-age sweep
+  that could strike a live writer and cost the cold repo this exists to prevent. **The
+  skipped-record line is a diagnostic, not an error**: it fires on a download that
+  succeeded, so it says so, and says the next load re-resolves over the network. **Scoping is a property of the
+  on-disk STATE, not of the call**, which is why refusing scoped CALLS was not
+  enough: the same id reaches both kinds, because `diffusers_image` fetches
+  `black-forest-labs/FLUX.2-klein-4B` scoped to `recipe["keep"]` while
+  `mflux_image.download` fetches whatever it is given unscoped, and
+  `/api/ai/runtime/download` picks between them from the image-engine preference
+  with `weights_only=True` stopping before the `load()` that would refuse the
+  format — so a download on one engine after the other would have been served from
+  a cache holding a tenth of the repo, reporting success having fetched nothing.
+  Removing a GGUF recipe flips the same id from scoped to unscoped with no user
+  involved at all. **A file that went away has to be detectable**: a blob pruned
+  together with its snapshot entry leaves nothing for a directory walk to trip
+  over, and before this path existed pressing Download again re-listed and
+  re-fetched exactly that, so short-circuiting without the recorded list quietly
+  removed the app's only repair route. Checking recorded names also removes any
+  dependence on `os.walk`, which does not follow directory symlinks by default. **A
+  cache with no record is never served** — every machine that already holds models
+  takes the networked path once, as before, and gains a record on the way out. An interrupted download's markers (hf's
+  `.incomplete`, our `.fusedpart` and its sidecar) are checked per BLOB rather than
+  per repo, because a part file is the resume state (AI-5i) and a repo-wide scan
+  let one cancelled quantization void the fast path for every other file in a
+  multi-GGUF repo. Measured on a real cache: 0.5ms end to end for a 5-file whisper
+  snapshot and 1.2ms for the 17-file scoped FLUX one, against 483ms before; the
+  record-less first call is 0.6-1.1s, i.e. the old cost paid one more time. **The trade is stated rather than
+  discovered: a complete cached model does not pick up a newer Hub revision under
+  the same branch** until something forces a re-check. That is chosen — bring-up
+  latency and offline operation over revision freshness — because these are
+  snapshots a user downloaded on purpose, and weights silently changing under a
+  name they picked would be the worse surprise.
 - **AI-5j** **A load that omits `capability` INFERS it, and refuses rather than
   guessing when it cannot.** The omitted argument used to mean text generation
   unconditionally, which is a wrong-runner dispatch wearing a library error:
@@ -6226,13 +6315,43 @@ an AI Models page that could say what was on disk but not what was *running*.
   defeating the folder split) and **not** the PyTorch one (gigabytes for a 2MB
   model). The repo is ungated, which the download rule requires of everything
   this app fetches and not only of models a user picks. **Silence is dropped and
-  each speech region is transcribed on its own**, with every timestamp mapped
-  back to original-recording time. That is chunking, which AI-10c rejects for
+  only speech is decoded**, with every timestamp mapped back to
+  original-recording time. That is chunking, which AI-10c rejects for
   progress — and the difference is where the cut falls: a VAD boundary is by
   construction half a second of silence, where a sentence has already ended,
-  whereas a fixed offset cuts through one. What is still lost is conditioning
-  ACROSS a gap (`condition_on_previous_text` works inside one call), and
-  carrying the previous region's text in as a prompt was rejected rather than
+  whereas a fixed offset cuts through one. **The speech is PACKED, not decoded a
+  region at a time** (D366, `vad.pack_regions`): the surviving regions are
+  concatenated into clips of at most 29 seconds and each clip is one
+  `transcribe()` call, with `vad.original_start`/`original_end` inverting the concatenation for
+  every timestamp — each endpoint mapped on its own, since a segment can span a
+  join. **A segment that spans a join keeps its real interval but is SCORED for
+  its speaker only where speech was**: `assign_speakers`/`speaker_for` take an
+  optional `spans` mask, and the packed path passes the region list. Diarization
+  runs on the full waveform (§40, deliberately) and routinely has turns inside a
+  dropped pause, so summing overlap across the whole span handed the label to
+  whoever the segmenter heard during the silence rather than to whoever said the
+  words. The published `start`/`end` are unchanged — the words really do sit
+  either side of the pause — and every engine that drops no silence passes no
+  mask and scores exactly as before. **This is the one place AI-10f claims a
+  speed benefit, and it is measured**, on a 216-second recording that is 92% speech (31 regions, min
+  0.8s, median 5.8s, max 14.0s), against the same file decoded whole:
+  `large-v3-turbo` 8.32s whole, 23.30s as 31 raw regions, 9.31s packed;
+  `tiny.en-8bit` 1.48s / 2.42s / 2.05s. Before packing, `vad: true` therefore
+  COST 15 seconds on a 3.6-minute recording rather than saving anything, because
+  mlx-whisper pads every call's mel to `N_FRAMES = 3000` — 30 seconds — so a
+  0.8-second region buys a full encoder window. faster-whisper never had the
+  defect (its own `vad_filter` calls `collect_chunks`, which concatenates and
+  remaps), and two engines sitting 2.8x apart on one flag is precisely what this
+  clause exists to prevent. **`parakeet_mlx` deliberately does not pack**: it is
+  a transducer with no fixed window (it chunks only above `chunk_duration =
+  60.0`), so its cost is proportional to the audio it is given and packing would
+  add a second timestamp mapping for no measured gain — same meaning of the
+  flag, different batching, which is the distinction the clause draws. A single
+  region longer than the budget passes through whole and is never split: cutting
+  mid-speech loses words, and Whisper's own seeking chunks a long input better.
+  What is still lost is conditioning ACROSS a CALL
+  (`condition_on_previous_text` works inside one), and
+  carrying the previous clip's text in as a prompt was rejected rather than
   forgotten: it invites the model to continue a sentence that finished before
   the pause, which is the known route to a repetition loop. **Progress stays in
   seconds of the ORIGINAL recording**: the borrowed frame counter denominates

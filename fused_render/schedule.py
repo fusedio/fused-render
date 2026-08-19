@@ -724,6 +724,11 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # call, and reporting that as a send failure would send the user looking
         # in the wrong place.
         "turn": "",
+        # WHEN the turn's verdict landed — stamped by the same write that fills
+        # `turn` in, "" until then. The Tasks page compares it against the
+        # transcript's tail: activity meaningfully after this moment is new
+        # work, not the verdict's own closing echo.
+        "turn_at": "",
         # The Claude Code session this message's turn actually ran in, filled in by
         # the watcher from the run's first reporting tick. Distinct from
         # `session_id` above (the input) precisely so a fresh send does not end up
@@ -1035,6 +1040,7 @@ def _claim_due(now: datetime) -> list[dict]:
                 # `_close_unwatched` uses for a watch that ended without one.
                 if not _is_watched(str(entry.get("id") or "")):
                     entry["turn"] = "unknown"
+                    entry["turn_at"] = now.isoformat()
                     entry["error"] = ("interrupted: the app stopped while this "
                                       "message's turn was running")
                     announce.append((EVENT_FAILED, dict(entry), entry["error"]))
@@ -1202,11 +1208,17 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
     if data.get("done"):
         reason = str(data.get("error") or "")
         if reason:
-            _update(entry_id, turn="failed", error=reason)
+            _update(entry_id, turn="failed", error=reason,
+                    turn_at=_now().isoformat())
             _report(entry_id, state="error", message=reason)
             _emit(EVENT_FAILED, entry, reason)
         else:
-            _update(entry_id, turn="ok")
+            # `turn_at` is WHEN the verdict landed, stamped wherever `turn` is
+            # written. The Tasks page needs the moment, not just the word: a
+            # transcript still being written to meaningfully after this stamp
+            # is new work, and only the verdict's own closing echo may be set
+            # aside (`tasks._verdict_outvotes_live`).
+            _update(entry_id, turn="ok", turn_at=_now().isoformat())
             _report(entry_id, state="done", detail="finished")
             _emit(EVENT_DONE, entry)
         return False
@@ -1223,7 +1235,7 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             agent._cancel(run_id)
         except Exception:  # noqa: BLE001 — a cancel that fails is still a stop attempt
             logger.debug("could not cancel scheduled run %s", run_id, exc_info=True)
-        _update(entry_id, turn="cancelled")
+        _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
         _report(entry_id, state="cancelled")
         return False
     return True
@@ -1360,7 +1372,8 @@ def _close_unwatched(entry: dict, reason: str) -> None:
         stored = next((e for e in _read() if e.get("id") == entry_id), None)
         if stored is None or stored.get("state") != SENT or stored.get("turn"):
             return  # already resolved, or never got far enough to need this
-    _update(entry_id, turn="unknown", error=reason)
+    _update(entry_id, turn="unknown", error=reason,
+            turn_at=_now().isoformat())
     _report(entry_id, state="error", message=reason)
     _emit(EVENT_FAILED, entry, reason)
 
@@ -1873,6 +1886,7 @@ def _materialize(now: datetime) -> None:
                 "run_id": "",
                 "error": "",
                 "turn": "",
+                "turn_at": "",
                 "claude_session_id": "",
             }
             fresh.append(occurrence)

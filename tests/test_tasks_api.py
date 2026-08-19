@@ -189,6 +189,74 @@ def test_a_chat_session_is_a_task(client, projects_dir, state_dir):
     assert message["unread"] is True
 
 
+def _pane_block(file_path):
+    from urllib.parse import quote
+    return ("<live-app-state>\nA snapshot of the preview the user is looking "
+            "at in the left pane.\n"
+            + json.dumps({"title": "t",
+                          "url": "/render?path=" + quote(file_path, safe=""),
+                          "dom_path": "/tmp/dom.json"})
+            + "\n</live-app-state>\n")
+
+
+def test_a_chat_opened_on_a_file_targets_that_file(
+        client, projects_dir, state_dir, tmp_path):
+    """The transcript's cwd is always a folder, but the pane's own
+    `<live-app-state>` block names the FILE the chat was opened on — and that
+    file, while it exists, is where opening the task should land."""
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    file = proj / "index.html"
+    file.write_text("<html></html>")
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user(_pane_block(str(file)) + "make the wave faster", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == str(file)
+    assert task["project"] == str(proj)
+    assert task["messages"][0]["body"] == "make the wave faster"
+
+
+def test_a_pane_file_that_is_gone_falls_back_to_the_folder(
+        client, projects_dir, state_dir, tmp_path):
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user(_pane_block(str(proj / "deleted.html")) + "hello", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == str(proj)
+    assert task["project"] == str(proj)
+
+
+def test_a_scheduled_entry_target_beats_the_pane_file(
+        client, projects_dir, state_dir, tmp_path):
+    """A scheduled entry's target is the thing the job was pointed at; the
+    pane file only speaks for chats that have no entry of their own."""
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    file = proj / "index.html"
+    file.write_text("<html></html>")
+    _seed_schedule([_entry("e1", "run the report", T9,
+                           target=str(proj / "report.py"),
+                           state=schedule.SENT,
+                           claude_session_id="sess-a")])
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user(_pane_block(str(file)) + "run the report", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == str(proj / "report.py")
+
+
 def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         client, projects_dir, state_dir):
     """The sidebar gets the same state without downloading page-only content."""
@@ -1029,8 +1097,8 @@ def test_a_windowed_message_is_the_whole_task_message(client, tmp_path):
     item = _scheduled(client, DAY_START, DAY_END)[0]
     assert item["task_key"] == "pending:e1"
     assert set(item["message"]) == {
-        "message_id", "kind", "body", "at", "ran_at", "state", "unread",
-        "entry_id", "template_id", "turn", "anchor"}
+        "message_id", "kind", "body", "at", "ran_at", "state", "turn_at",
+        "unread", "entry_id", "template_id", "turn", "anchor"}
     assert item["message"]["kind"] == "scheduled"
     assert item["message"]["message_id"] == "MSG-001"
     assert item["message"]["entry_id"] == "e1"
@@ -1530,6 +1598,49 @@ def test_a_new_turn_after_the_resolved_run_still_reads_as_running(
     task = _by_key(client)["sess-a"]
     assert task["live"] is True
     assert task["status"] == "in_progress"
+
+
+def test_transcript_activity_after_the_verdict_restores_the_pulse(
+        client, projects_dir):
+    """TASK-001 (Akshil, 2026-08-19): a task wore the green Done ring while
+    Claude was visibly mid-build in its session. The run's verdict had landed
+    (`turn: ok`, stamped `turn_at`) but the session KEPT WORKING — follow-up
+    turns and background work append real transcript records without adding a
+    single new prompt, so nothing on the chat side of the thread ever outdates
+    the verdict and the transcript's vote stayed suppressed for as long as the
+    work ran. The verdict may only silence its own echo: a tail meaningfully
+    newer than the moment the turn resolved is NEW work, and the task is In
+    Progress."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-40), uuid="u1"),
+        _assistant("first turn done", _near_now(-32)),
+        _assistant("still building the app", _near_now(-3)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-40), state=schedule.SENT,
+                           fired=_near_now(-40), turn="ok",
+                           turn_at=_near_now(-30),
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is True
+    assert task["status"] == "in_progress"
+
+
+def test_a_stamped_verdicts_own_echo_is_still_set_aside(client, projects_dir):
+    """The rule above must not reopen the split it was cut from: a tail whose
+    freshness IS the finished turn's closing records — written in the same
+    breath as the verdict — is the echo, and the task is done the moment the
+    corner card says so."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-6)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="ok",
+                           turn_at=_near_now(-5),
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is False
+    assert task["status"] == "done"
 
 
 def test_a_resolved_run_does_not_silence_a_sibling_still_in_flight(
