@@ -111,6 +111,7 @@ def export_app_env() -> None:
     separately by ``shell.mounts.export_ro_mounts_env`` because it has to be
     refreshed on every store write, not just at startup.
     """
+    from fused_render import canvases
     from fused_render import skill_plugin
     from fused_render.shell import mounts as shell_mounts
     from fused_render.shell import seed as shell_seed
@@ -129,12 +130,25 @@ def export_app_env() -> None:
     # ran `claude --help`, and blocking here blocks the socket bind, which the
     # desktop supervisor reads as a server that failed to start.
     skill_plugin.export_skill_plugin_env()
-    # And the `workbench` plugin's canvas/UDF skills, if this machine has them:
-    # a SECOND --plugin-dir for the sessions we spawn, so a canvas clone's
-    # CLAUDE.md can name the canvas.toml format reference without the app ever
-    # telling the user to go install something. A lookup, not a build — no
-    # network, no config mutation, and "not found" is a normal outcome.
+    # And the `workbench` plugin's canvas/UDF skills, if the app's own clone of
+    # them is already on disk: a SECOND --plugin-dir, handed to CANVAS-clone
+    # sessions only (the gate is in templates/claude/agent.py), so a canvas
+    # clone's CLAUDE.md can name the canvas.toml format reference without the
+    # app ever telling the user to go install something.
+    #
+    # Filesystem-only HERE, deliberately: this line runs before the socket bind,
+    # and a git clone on a slow network would blow the desktop supervisor's
+    # readiness budget — a server that failed to start. Fetching the clone is
+    # the canvases path's job (`skill_plugin.sync_workbench_plugin`, called from
+    # POST /api/canvases/clone); startup only publishes what already validated,
+    # and "nothing there yet" is a normal outcome.
     skill_plugin.export_workbench_plugin_env()
+    # Where canvas clones live. Exported so the templates can answer "is this
+    # target a canvas clone?" (appenv.canvases_root) the same way the server
+    # does — re-deriving it there would drift the instant either side changes,
+    # and a wrong answer silently withholds the workbench skills from the one
+    # session shape that needs them.
+    os.environ["FUSED_RENDER_CANVASES_DIR"] = canvases.canvases_root()
     # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
     # script under home_dir()/fused-bin goes on PATH and its dir is published
     # as one more FUSED_RENDER_* var, so a Claude session can `fused workbench

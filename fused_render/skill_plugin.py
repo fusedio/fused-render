@@ -45,7 +45,10 @@ import json
 import logging
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
+import time
 
 from fused_render.shell.storage import home_dir
 
@@ -211,111 +214,297 @@ def _is_loadable(root: str, expected=()) -> bool:
     return True
 
 
-# -- the WORKBENCH plugin (canvas/UDF skills, a separate plugin we do not own) --
+# -- the WORKBENCH skills (canvas/UDF skills, a plugin we fetch but do not own) --
 #
 # A canvas clone's CLAUDE.md points the session at the canvas.toml format
-# reference and friends. Those skills live in the `workbench` plugin from the
-# `fusedio/claude-plugins` marketplace — a different plugin from the one this
-# module assembles, published by the workbench team, not shipped in this wheel.
+# reference and friends. Those skills are the `workbench` plugin — published in
+# the PUBLIC `fusedio/skills` repo, not shipped in this wheel — and the app hands
+# them to a canvas session itself, per-run, over the same repeatable
+# `--plugin-dir` mechanism it already uses for its own skills. Session-scoped,
+# additive, and no mutation of the user's global Claude config.
 #
-# Until now the clone's CLAUDE.md handled a missing plugin by telling the USER to
-# run a shell command. That is wrong twice over: the reader is a Claude session
-# in a chat pane, which cannot act on it, and a user reading it there is the
-# wrong person to hand a terminal command to. So the app hands the skills to the
-# session itself, per-run, over the same `--plugin-dir` mechanism it already uses
-# for its own — session-scoped, additive, and no mutation of the user's global
-# Claude config. When the plugin is nowhere on the machine the CLAUDE.md simply
-# degrades and says to follow the folder's own conventions; it never instructs.
+# The root comes from a clone THIS APP OWNS, under `home_dir()`. It used to come
+# from a scan of Claude Code's own plugin storage
+# (`~/.claude/plugins/{marketplaces,cache}/<market>/workbench`), and that is gone
+# for two reasons. First, the layout is Claude Code's private business and the
+# only signal a scan has is the directory shape — so it cannot tell an installed
+# plugin from an UNINSTALLED one: the uninstall leaves the cache dir behind,
+# tombstoned with an `.orphaned_at` marker the scan knew nothing about, and the
+# plugin the user removed came back. Second, discovery made the root a fact about
+# the MACHINE, which invited handing it to every session; these skills belong to
+# canvas clones alone (the gate lives in `templates/claude/agent.py:_plugin_argv`,
+# which is where the target path is known). A clone we fetch is the opposite on
+# both counts: its presence means we put it there, and its lifetime is ours.
+#
+# Rejected: `claude plugin install` (or a marketplace add). It would work, and it
+# would load the workbench skills into EVERY `claude` on the machine — including
+# the user's own unrelated sessions — which is precisely the leak the gate exists
+# to prevent, and a mutation of their config we have no consent for.
 #
 # `--plugin-dir` is repeatable, which is what makes composing the two roots
 # possible at all rather than having to merge trees.
-WORKBENCH_PLUGIN_NAME = "workbench"
 
-# Publishes the discovered root to the templates, exactly like PLUGIN_DIR_ENV.
-# Absent means "nothing to hand" and the template passes no second flag.
+# Publishes the root to the templates, exactly like PLUGIN_DIR_ENV. Absent means
+# "nothing to hand" and the template passes no second flag.
 WORKBENCH_PLUGIN_DIR_ENV = "FUSED_RENDER_WORKBENCH_PLUGIN_DIR"
 
-# Explicit override, checked first: a dev (or a future install that ships these
-# skills somewhere of its own) can point straight at a plugin root. Distinct from
-# the export var above so the export never reads its own output.
+# Explicit dev override, checked first and bypassing ALL fetching: point it
+# straight at an existing plugin root (a local checkout of the skills repo, say)
+# and that root is used as it is — never fetched into, never reset, never
+# refreshed. Distinct from the export var above so the export never reads its own
+# output.
 WORKBENCH_PLUGIN_SRC_ENV = "FUSED_RENDER_WORKBENCH_PLUGIN"
 
 # The skills a clone session is actually told to load — the evidence that a
-# candidate root is the plugin we mean and not a same-named stub.
+# candidate root is the plugin we mean and not a same-named stub, and the reason
+# `_is_loadable` takes an `expected` list at all.
 WORKBENCH_SKILLS = ("canvas-toml", "fused-udfs", "json-ui-schemas", "fused-cli",
                     "canvas-comments")
 
+# HTTPS, never SSH: a shipping user has no SSH key and no reason to have one, and
+# an `ssh://` remote would fail on exactly the machines this feature exists for.
+# The repo is public, so an anonymous shallow clone needs no credentials at all.
+WORKBENCH_REPO_URL = "https://github.com/fusedio/skills.git"
 
-def _claude_config_dir() -> str:
-    """Claude Code's config dir — CLAUDE_CONFIG_DIR wins, as it does for the CLI
-    itself. Read per call, never cached: user_skills.py's D185 lesson is that
-    resolving this once at import is how we end up writing to a directory the
-    CLI does not read."""
-    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+# The clone's dir under home_dir(), and the plugin root INSIDE it. The repo holds
+# several plugins; `workbench/` is the one whose `.claude-plugin/plugin.json` is
+# named `workbench`, and that name is load-bearing: it is the skill prefix the
+# seeded CLAUDE.md already writes (`workbench:canvas-toml`). Renaming the dir or
+# rewriting the manifest would silently rename every skill the CLAUDE.md names.
+WORKBENCH_CLONE_SUBDIR = "workbench-skills"
+WORKBENCH_PLUGIN_SUBDIR = "workbench"
+
+# How often an EXISTING, loadable clone may be refreshed. Hours, not minutes:
+# these are format references that change on the scale of workbench releases, and
+# the refresh runs on a user-visible request (POST /api/canvases/clone), where a
+# needless network round trip is a stall the user sees. A skipped refresh costs
+# nothing — a stale-but-complete plugin is a working plugin.
+WORKBENCH_REFRESH_S = 6 * 3600
+
+# How often to retry when NOTHING is published yet. A skipped retry is not free:
+# there is no root at all, so the canvas session gets no `--plugin-dir` while the
+# CLAUDE.md seeded beside it names `workbench:canvas-toml` and friends — skills
+# that do not exist. Sharing the refresh interval put the new-user path (first
+# canvas ever, one transient network failure) six hours from working, which is
+# the exact scenario this whole mechanism exists for. Still bounded, because the
+# stamp is written per ATTEMPT: a machine with no network retries once a minute
+# at worst, not once per canvas clone.
+WORKBENCH_RETRY_S = 60
+
+# Beside the clone, not inside it: the clone is a git worktree and a plugin root,
+# and bookkeeping of ours has no business being in a tree something else parses
+# (and would show up as an untracked file the refresh has to reason about).
+_WORKBENCH_STAMP_SUFFIX = ".fetched"
+
+# Bounded, because both run on a request path. A shallow clone of a handful of
+# markdown files is a second or two on any working network; these are the "the
+# network is a black hole" ceilings, not budgets.
+_CLONE_TIMEOUT_S = 60
+_FETCH_TIMEOUT_S = 30
+
+_GIT_BIN = None
 
 
-def _workbench_candidates() -> list:
-    """Where a `workbench` plugin root may sit, best first.
-
-    Both locations are Claude Code's own plugin storage, whose layout is not a
-    published contract — so this is a best-effort LOOKUP, never a requirement:
-    every caller treats "not found" as a normal outcome.
-
-      marketplaces/<marketplace>/<plugin>/  the marketplace checkout. Preferred:
-                                            it is a plain clone with a stable
-                                            path.
-      cache/<marketplace>/<plugin>/<ver>/   the installed copy, keyed by a
-                                            version hash that changes on every
-                                            update — usable, but only ever as
-                                            the fallback, newest first.
-    """
-    plugins = os.path.join(_claude_config_dir(), "plugins")
-    found = []
-    for kind in ("marketplaces", "cache"):
-        base = os.path.join(plugins, kind)
-        try:
-            markets = sorted(os.listdir(base))
-        except OSError:
-            continue
-        for market in markets:
-            root = os.path.join(base, market, WORKBENCH_PLUGIN_NAME)
-            if kind == "marketplaces":
-                found.append(root)
-                continue
-            try:
-                versions = sorted(os.listdir(root), reverse=True)
-            except OSError:
-                continue
-            found.extend(os.path.join(root, v) for v in versions)
-    return found
+def _git_bin() -> str:
+    """An ABSOLUTE git path, resolved once. Absolute is required, not tidy:
+    CPython's subprocess forks unless `os.path.dirname(executable)` is truthy,
+    and a fork in this process dies with SIGSEGV before exec — libproj is
+    resident (the engine's import tree reaches pyproj) and PROJ's pthread_atfork
+    child handler crashes. Same discipline, and the same reasoning, as
+    `app_git.py`; see `tests/test_git_posix_spawn.py`."""
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
 
 
-def find_workbench_plugin() -> str | None:
-    """A loadable `workbench` plugin root on this machine, or None.
+def _git(args: list, timeout: int) -> subprocess.CompletedProcess:
+    """One git invocation. `close_fds=False` (posix_spawn instead of fork, see
+    `_git_bin`), no `cwd=` (a `cwd=` puts CPython back on the fork path — pass
+    `-C <dir>` instead), and the module-wide text conventions.
 
-    Validated with `_is_loadable` against WORKBENCH_SKILLS, not just the
-    manifest: handing `--plugin-dir` a tree that is missing the very skills the
-    CLAUDE.md names would load cleanly and teach the model nothing, which is the
-    silent failure this whole mechanism exists to remove.
+    Raises OSError (git absent) or subprocess.TimeoutExpired; every caller
+    treats both as "no root", which is a normal outcome."""
+    return subprocess.run(
+        [_git_bin(), *args],
+        capture_output=True, text=True, timeout=timeout,
+        encoding="utf-8", errors="replace",
+        close_fds=False,
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+    )
+
+
+def workbench_clone_dir() -> str:
+    """Where the skills repo is cloned: ``home_dir()/workbench-skills``.
+
+    Under the app's own home dir (branch-nested like everything else there), so
+    a branch build's skills can never be loaded into a baseline build's
+    session — the same rule as `plugin_dir()`."""
+    return os.path.join(home_dir(), WORKBENCH_CLONE_SUBDIR)
+
+
+def _stamp_file() -> str:
+    return workbench_clone_dir() + _WORKBENCH_STAMP_SUFFIX
+
+
+def workbench_plugin_root() -> str | None:
+    """The workbench plugin root to hand a canvas session, or None — a pure
+    filesystem question, no network, no subprocess.
+
+    The dev override wins and is used verbatim. Otherwise it is
+    ``<clone>/workbench``, and only if `_is_loadable` says the tree is really
+    there: a root missing the very skills the CLAUDE.md names would load
+    cleanly and teach the model nothing, which is the silent failure this whole
+    mechanism exists to remove. An interrupted or half-fetched clone therefore
+    reads as "nothing to hand" rather than as a plugin.
     """
     override = os.environ.get(WORKBENCH_PLUGIN_SRC_ENV)
-    candidates = [override] if override else _workbench_candidates()
-    for root in candidates:
-        try:
-            if _is_loadable(root, WORKBENCH_SKILLS):
-                return root
-        except OSError:
-            continue
-    return None
+    root = override or os.path.join(workbench_clone_dir(),
+                                    WORKBENCH_PLUGIN_SUBDIR)
+    try:
+        return root if _is_loadable(root, WORKBENCH_SKILLS) else None
+    except OSError:
+        return None
+
+
+def _attempt_due(published: bool) -> bool:
+    """Whether git may be run again. No stamp (or an unreadable one) counts as
+    due: no record of an attempt is exactly the case worth attempting.
+
+    `published` — whether a loadable root exists right now — picks the interval,
+    and that distinction is the whole point: skipping a refresh keeps a working
+    plugin, while skipping a retry leaves the session with none."""
+    interval = WORKBENCH_REFRESH_S if published else WORKBENCH_RETRY_S
+    try:
+        with open(_stamp_file(), encoding="utf-8") as fh:
+            last = float(fh.read().strip())
+    except (OSError, ValueError):
+        return True
+    return time.time() - last >= interval
+
+
+def _stamp_attempt() -> None:
+    try:
+        os.makedirs(os.path.dirname(_stamp_file()), exist_ok=True)
+        with open(_stamp_file(), "w", encoding="utf-8") as fh:
+            fh.write("%d" % int(time.time()))
+    except OSError as exc:
+        logger.debug("could not write the workbench fetch stamp: %s", exc)
+
+
+def _clone_workbench_skills(clone: str) -> None:
+    """First fetch: shallow-clone into a private staging dir and swap it in only
+    once it validates.
+
+    Cloning straight into place would publish a half-written tree to whatever
+    session starts mid-clone, and would leave a broken directory behind on
+    failure that the next call would then have to distinguish from a good one.
+    Staging makes both impossible: nothing is ever visible at `clone` except a
+    tree that already passed `_is_loadable`.
+    """
+    parent = os.path.dirname(clone)
+    os.makedirs(parent, exist_ok=True)
+    staging = tempfile.mkdtemp(prefix=os.path.basename(clone) + ".new-",
+                               dir=parent)
+    try:
+        dest = os.path.join(staging, "repo")
+        proc = _git(["clone", "--depth", "1", WORKBENCH_REPO_URL, dest],
+                    _CLONE_TIMEOUT_S)
+        if proc.returncode != 0:
+            logger.warning("could not clone the workbench skills (%s): %s",
+                           proc.returncode, (proc.stderr or "").strip()[:400])
+            return
+        if not _is_loadable(os.path.join(dest, WORKBENCH_PLUGIN_SUBDIR),
+                            WORKBENCH_SKILLS):
+            logger.warning(
+                "%s cloned but has no loadable %s/ plugin root — not publishing "
+                "it", WORKBENCH_REPO_URL, WORKBENCH_PLUGIN_SUBDIR)
+            return
+        # Delete-then-rename for the same reason as the skill plugin's own swap:
+        # os.replace refuses a non-empty destination directory on POSIX and
+        # there is no atomic directory swap to have instead. Whatever sits at
+        # `clone` is NOT loadable — the caller only takes this path when
+        # `workbench_plugin_root()` is None, deliberately NOT on the shape of a
+        # `.git` entry: a `.git` FILE is a perfectly normal repo (worktrees,
+        # submodules), and testing for a `.git` DIRECTORY would have deleted a
+        # loadable tree that merely had one. So nothing usable is thrown away.
+        shutil.rmtree(clone, ignore_errors=True)
+        os.replace(dest, clone)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _refresh_workbench_skills(clone: str) -> None:
+    """Bring an existing clone up to origin's default branch.
+
+    `fetch origin HEAD` + `reset --hard FETCH_HEAD` rather than a pull of a
+    named branch: the branch name is the repo's business (and can be renamed
+    without telling us), and a hard reset is what makes a clone that somehow
+    went dirty or diverged self-heal instead of staying stuck forever. Failure
+    is not repaired here — the tree that is already on disk keeps working, and
+    a stale-but-complete plugin beats no plugin.
+    """
+    proc = _git(["-C", clone, "fetch", "--depth", "1", "origin", "HEAD"],
+                _FETCH_TIMEOUT_S)
+    if proc.returncode != 0:
+        logger.debug("workbench skills fetch failed (%s): %s", proc.returncode,
+                     (proc.stderr or "").strip()[:400])
+        return
+    proc = _git(["-C", clone, "reset", "--hard", "FETCH_HEAD"], _FETCH_TIMEOUT_S)
+    if proc.returncode != 0:
+        logger.debug("workbench skills reset failed (%s): %s", proc.returncode,
+                     (proc.stderr or "").strip()[:400])
+
+
+def fetch_workbench_skills() -> str | None:
+    """Make sure the workbench skills are on disk, then return the root (or None).
+
+    Best-effort and bounded in every direction, because the caller is a user
+    request (POST /api/canvases/clone) that must succeed with or without this:
+    explicit subprocess timeouts, never raises, git being absent is a normal
+    "no root" outcome, and a failed fetch leaves whatever already validated
+    exactly where it was.
+
+    The dev override short-circuits everything — that root is the developer's,
+    not ours to fetch into or reset.
+
+    Which of the two git paths runs is decided by whether a loadable root is
+    already published, not by the presence of a `.git` directory: "loadable" is
+    the property that actually matters to a session, and it is the only premise
+    under which the clone path's `rmtree` is safe.
+    """
+    if os.environ.get(WORKBENCH_PLUGIN_SRC_ENV):
+        return workbench_plugin_root()
+    published = workbench_plugin_root()
+    clone = workbench_clone_dir()
+    try:
+        if not _attempt_due(published is not None):
+            return published
+        _stamp_attempt()
+        if published is not None:
+            # Refresh in place. If this tree turns out not to be a repo at all,
+            # the fetch simply fails and the working tree stays — never deleted.
+            _refresh_workbench_skills(clone)
+        else:
+            _clone_workbench_skills(clone)
+    except Exception:  # noqa: BLE001 — including OSError (no git) and timeouts
+        logger.warning("could not fetch the workbench skills", exc_info=True)
+    return workbench_plugin_root()
 
 
 def export_workbench_plugin_env() -> str | None:
     """Publish the workbench plugin root for the sessions we spawn, or clear the
     var when there is none. Filesystem-only and never raises — same rules as
     `export_skill_plugin_env`, and for the same reason: this runs on the
-    pre-bind startup path, where blocking is a server that failed to start."""
+    pre-bind startup path, where blocking is a server that failed to start.
+
+    So it exports only a clone that ALREADY validated. Fetching one belongs on
+    the canvases path (`sync_workbench_plugin`), where the feature is actually
+    about to be used and where a slow network delays one request instead of the
+    whole server's bind.
+    """
     try:
-        root = find_workbench_plugin()
+        root = workbench_plugin_root()
     except Exception:  # noqa: BLE001 — a lookup is never worth a failed start
         logger.warning("could not look for the workbench plugin", exc_info=True)
         root = None
@@ -324,6 +513,21 @@ def export_workbench_plugin_env() -> str | None:
         return None
     os.environ[WORKBENCH_PLUGIN_DIR_ENV] = root
     return root
+
+
+def sync_workbench_plugin() -> str | None:
+    """Fetch/refresh the skills clone and publish the resulting root.
+
+    The canvases-scoped entry point: a fetch here picks up a skills release made
+    since startup without a server restart, and costs nothing to the users who
+    never open a canvas. Never raises — a canvas clone must still succeed when
+    the fetch does not.
+    """
+    try:
+        fetch_workbench_skills()
+    except Exception:  # noqa: BLE001 — belt and braces; the fetch swallows too
+        logger.warning("workbench skills fetch failed", exc_info=True)
+    return export_workbench_plugin_env()
 
 
 def _build(staging: str, sources: dict) -> None:
