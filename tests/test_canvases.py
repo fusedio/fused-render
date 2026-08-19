@@ -1370,7 +1370,14 @@ def test_clean_pull_reseeds_claude_md(harness, tmp_path, monkeypatch):
     shims.set_manifest("t2")
     status = _wait_status(harness, lambda s: s["pull_seq"] >= 1)
     assert status and status["pull_seq"] >= 1, status
-    assert (harness.root / "alpha" / "CLAUDE.md").exists()
+    # Waited for, not asserted outright — the same reason as the recheck test
+    # above: `pull_seq` is bumped BEFORE the post-pull recheck subprocess, and
+    # the reseed deliberately follows that recheck (seeding first makes the
+    # never-bundled helper files look like a permanent diff). So a status that
+    # reports pull_seq >= 1 does not yet imply the files are back, and under
+    # load (-n auto) that gap is wide enough to fail ~1 run in 10.
+    assert _wait_for(lambda: (harness.root / "alpha" / "CLAUDE.md").exists()), \
+        "the pull leg never re-seeded CLAUDE.md"
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
@@ -2104,26 +2111,94 @@ def test_status_reports_pulling_during_a_clean_force_pull(harness, tmp_path, mon
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
-def test_status_reports_pulling_during_a_merge(harness, tmp_path, monkeypatch):
+def test_pulling_covers_the_merges_writes_but_not_its_zip_download(
+        harness, tmp_path, monkeypatch):
+    """`pulling` marks writes, and the merge's probe-and-decide reaches deeper
+    than the leg boundary: the bundle download is a network op that can fail, and
+    it precedes every write. Marking it held the embedded workbench read-only for
+    the whole download and for merges that then wrote nothing — the same flicker
+    the window was introduced to remove, one layer in."""
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)  # keep the clone dirty
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
 
+    # Observed from INSIDE the merge, so neither assertion depends on catching a
+    # window with an HTTP poll.
+    during_download = []
+    during_write = []
+    real_zip = canvases_mod._SyncManager._download_zip
+    real_backup = canvases_mod._SyncManager._backup_to
+
+    def watched_zip(self, revision_id):
+        during_download.append(self._pulling)
+        return real_zip(self, revision_id)
+
+    def slow_backup(self, trash, rel, data):
+        during_write.append(self._pulling)
+        time.sleep(0.4)  # hold the write open past one status poll
+        return real_backup(self, trash, rel, data)
+
+    monkeypatch.setattr(canvases_mod._SyncManager, "_download_zip", watched_zip)
+    monkeypatch.setattr(canvases_mod._SyncManager, "_backup_to", slow_backup)
+
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
     (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
     shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
     shims.set_manifest("t2")
-    monkeypatch.setenv("FAKE_ZIP_DELAY", "0.6")
 
     assert _wait_for(
         lambda: harness.client.get(
             "/api/canvases/sync/status?name=alpha").json()["pulling"] is True,
         timeout=3,
-    ), "status never reported pulling during the merge"
+    ), "status never reported pulling while the merge was writing"
     status = _wait_status(harness, lambda s: s["merge_seq"] >= 1)
     assert status and status["merge_seq"] >= 1, status
     assert status["pulling"] is False, status
+    assert during_download and all(v is False for v in during_download), \
+        ("the lock engaged for the bundle download, before any write",
+         during_download)
+    assert during_write and all(v is True for v in during_write), during_write
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_a_merge_that_writes_nothing_never_reports_pulling(
+        harness, tmp_path, monkeypatch):
+    """The common shape while a session works: the remote moved the same file the
+    session is editing, so every per-file decision goes to local. The merge
+    reconciles `_remote` and touches not one byte — it must cost no lock
+    engagement, or a flaky remote flickers the workbench every PULL_POLL_S."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)  # keep the clone dirty
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    seen = []
+    real_zip = canvases_mod._SyncManager._download_zip
+
+    def watched_zip(self, revision_id):
+        out = real_zip(self, revision_id)
+        seen.append(self._pulling)
+        return out
+
+    monkeypatch.setattr(canvases_mod._SyncManager, "_download_zip", watched_zip)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    # Local edit to a.py, and the remote moved a.py too — local wins, nothing to
+    # apply; b.py is identical on both sides, so it is a base refresh, not a write.
+    (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
+    _wait_status(harness, lambda s: s["push_state"] == "pending")
+    shims.set_remote_files({**_BASE_FILES, "a.py": "a-from-workbench\n"})
+    shims.set_manifest("t2")
+
+    assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t2",
+                     timeout=3), "the merge never reconciled the remote"
+    assert seen, "the merge never ran"
+    assert all(v is False for v in seen), \
+        ("the lock engaged for a merge that wrote nothing", seen)
+    assert (harness.root / "alpha" / "a.py").read_text() == "a-local\n"
+    assert _manager()._pulling is False
+    assert harness.client.get(
+        "/api/canvases/sync/status?name=alpha").json()["pulling"] is False
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 

@@ -1445,7 +1445,7 @@ class _SyncManager:
         except zipfile.BadZipFile:
             return None
 
-    def _merge_remote(self, probe: dict) -> bool:
+    def _merge_remote(self, probe: dict, begin_writes=None) -> bool:
         """Apply remote changes into a DIRTY clone, per file, three-way.
 
         base = last sync point. For each bundle file: local untouched since
@@ -1467,7 +1467,14 @@ class _SyncManager:
 
         Returns True when the remote state was reconciled (merged, rolled
         back, or nothing to do) and False on a transient failure (the zip
-        download) — the caller must NOT push over an unreconciled remote."""
+        download) — the caller must NOT push over an unreconciled remote.
+
+        `begin_writes` is the workbench lock's marker (`_pull_writes`), called at
+        the first write this merge actually performs — so the three no-write
+        outcomes above cost no lock engagement. The PUSH path deliberately passes
+        nothing: a push is one continuous `push_state == "pushing"` hold, and
+        raising `pulling` inside it would relabel the user's banner mid-push."""
+        begin = begin_writes or (lambda: None)
         base = self._base_files
         if base is None:
             self._rotate_remote(probe)
@@ -1516,6 +1523,7 @@ class _SyncManager:
                 # new remote file, absent locally → create
             elif local_hash != base.get(rel):
                 continue  # local edit wins; push publishes it
+            begin()  # first real write of this merge, if it is the first
             if local_bytes is not None:
                 if trash is None:
                     trash = self._new_trash_dir()
@@ -1545,6 +1553,7 @@ class _SyncManager:
                 else None
             )
             if local_hash is not None and local_hash == new_base[rel]:
+                begin()  # a remote delete applied locally is a write too
                 if trash is None:
                     trash = self._new_trash_dir()
                 self._backup_to(trash, rel, local_bytes)
@@ -1602,22 +1611,30 @@ class _SyncManager:
 
     @contextlib.contextmanager
     def _pull_writes(self):
-        """Marks the window in which a downstream leg is actually WRITING the
+        """Scopes the window in which a downstream leg is actually WRITING the
         clone's files — the workspace lock (canvas-lock-lib.ts) holds the
         embedded workbench read-only for exactly this, and for the same reason a
         push does.
 
-        Entered only past every probe-and-decide step (`_remote_moved`, the
-        stale-echo check, the dirty/clean branch, the clean path's re-check):
-        setting it any earlier meant a poll that found nothing still registered a
-        full lock engagement that the 2s status poll could sample, i.e. a
-        read-only flicker for a pull that never happened. `finally` on every
-        path, including the merge's validation-failure rollback, because a
-        `pulling` that never clears is a permanently read-only pane.
+        Yields a `begin()` marker rather than arming on entry, because
+        probe-and-decide does not stop at the leg boundary. `_poll_remote` gets
+        past `_remote_moved`, the stale-echo check and the dirty/clean branch and
+        the merge can STILL write nothing: no merge base yet, a zip download that
+        fails (network), or a bundle whose every file loses its per-file decision
+        to a local edit — the common case while a session works. Arming on entry
+        engaged the lock for all of those: a read-only flicker every PULL_POLL_S
+        for a pull that never happened, which is the exact defect this window was
+        introduced to remove. So callers arm it at the first real write.
+
+        The reset is in `finally` on every path — including the merge's
+        validation-failure rollback and any exception — because a `pulling` that
+        never clears is a permanently read-only pane.
         """
-        self._pulling = True
+        def begin() -> None:
+            self._pulling = True
+
         try:
-            yield
+            yield begin
         finally:
             self._pulling = False
 
@@ -1654,8 +1671,8 @@ class _SyncManager:
                 self.push_state = "pending"
             return
         if self._dirty_since is not None:
-            with self._pull_writes():
-                self._merge_remote(probe)
+            with self._pull_writes() as begin_writes:
+                self._merge_remote(probe, begin_writes=begin_writes)
             return
         if self.push_state != "idle":
             return
@@ -1669,7 +1686,10 @@ class _SyncManager:
             return
         # Past every decision now, and about to overwrite the clone: this is
         # where the lock's `pulling` window starts, not at the top of the leg.
-        with self._pull_writes():
+        # Armed at once here, unlike the merge's — `_force_pull`'s first act is
+        # the clone snapshot, i.e. a write.
+        with self._pull_writes() as begin_writes:
+            begin_writes()
             self._force_pull(probe, cli)
 
     def _force_pull(self, probe: dict, cli) -> None:
@@ -1889,7 +1909,8 @@ class _SyncManager:
         # Committed to writing now — everything above was probe-and-decide, and
         # marking `pulling` for that made the lock engage on polls that turned
         # out to be no-ops.
-        with self._pull_writes():
+        with self._pull_writes() as begin_writes:
+            begin_writes()
             self._apply_legacy_pull(cli, base)
 
     def _apply_legacy_pull(self, cli, base: list) -> None:
