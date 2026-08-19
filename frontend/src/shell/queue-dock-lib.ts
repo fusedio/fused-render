@@ -121,6 +121,25 @@ export function scheduleRunsEnded(prev: Job[], next: Job[]): boolean {
 }
 
 /**
+ * And did one START? The same question from the other end (Akshil, 2026-08-19:
+ * the popover said "thinking" within a second of a run spawning while the
+ * Tasks page sat on Upcoming until its 20s poll) — a `sys:schedule:*` job
+ * running in this snapshot that was not running in the last one, including a
+ * job the registry only just learned about. The caller skips the comparison
+ * for its very first snapshot: everything is "new" on mount, and the Tasks
+ * surfaces fetch on their own mount anyway.
+ */
+export function scheduleRunsStarted(prev: Job[], next: Job[]): boolean {
+  const was = new Set<string>();
+  for (const job of prev) {
+    if (job.id.startsWith(SCHEDULE_JOB_PREFIX) && isRunning(job)) was.add(job.id);
+  }
+  return next.some(
+    (job) => job.id.startsWith(SCHEDULE_JOB_PREFIX) && isRunning(job) && !was.has(job.id),
+  );
+}
+
+/**
  * WHICH SCHEDULED RUNS THIS HALF IS DRAWING, by entry id — the card's other half
  * drops exactly these and keeps everything else (`jobRows`).
  *
