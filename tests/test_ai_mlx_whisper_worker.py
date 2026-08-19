@@ -186,14 +186,19 @@ class FakeResampler:
     fraction of a second.
     """
 
-    def __init__(self, format=None, layout=None, rate=None):
+    def __init__(self, format=None, layout=None, rate=None, flush=160):
         self.args = {"format": format, "layout": layout, "rate": rate}
         self.flushed = False
+        #: How many samples the flush yields. A parameter rather than a constant
+        #: only so a recording of a few dozen samples can exist at all — see
+        #: `make_av`; `args` deliberately does not carry it, because it is this
+        #: fake's own knob and not one the runner passes.
+        self._flush = flush
 
     def resample(self, frame):
         if frame is None:
             self.flushed = True
-            return [FakeFrame(np.full(160, 0.5, dtype=np.float32))]
+            return [FakeFrame(np.full(self._flush, 0.5, dtype=np.float32))]
         return [frame]
 
 
@@ -221,19 +226,27 @@ class FakeContainer:
         return False
 
 
-def make_av(seconds=2.0, has_audio=True):
-    """An `av` module holding one recording of `seconds`, at 16 kHz."""
-    samples = np.zeros(int(16000 * seconds) - 160, dtype=np.float32)
+def make_av(seconds=2.0, has_audio=True, samples=None):
+    """An `av` module holding one recording of `seconds`, at 16 kHz.
+
+    `samples` overrides `seconds` for the case measured in a handful of them — a
+    file so short its duration rounds to zero, which is the shape that reached
+    the decode loop as `(0.0, None)`. Spelled the way `parakeet_mlx`'s harness
+    spells it, since it is the same file and the same bug.
+    """
+    count = int(16000 * seconds) if samples is None else int(samples)
+    flush = min(160, count)
+    body = np.zeros(max(0, count - flush), dtype=np.float32)
     module = types.ModuleType("av")
     module.resamplers = []
 
     def _resampler(**kwargs):
-        made = FakeResampler(**kwargs)
+        made = FakeResampler(flush=flush, **kwargs)
         module.resamplers.append(made)
         return made
 
     module.AudioResampler = _resampler
-    module.open = lambda path: FakeContainer([FakeFrame(samples)], has_audio=has_audio)
+    module.open = lambda path: FakeContainer([FakeFrame(body)], has_audio=has_audio)
     return module
 
 
@@ -951,6 +964,51 @@ def test_every_segment_is_LABELLED_and_the_json_gains_the_legend(
     assert result["speakers"] == ["Speaker 1", "Speaker 2"]
 
 
+def test_a_segment_spanning_a_join_is_labelled_by_the_WORDS_not_by_the_silence(
+        monkeypatch, loaded, tmp_path):
+    """The two features meeting: packing makes a segment able to straddle a
+    dropped pause, and the diarizer ran on the whole waveform, so it has turns
+    inside that pause.
+
+    Scored over the published span, the label went to whoever the segmenter
+    heard during the silence Silero discarded — ten seconds of speaker 2 in the
+    gap outvoting the two-plus-one seconds of speaker 1 who actually said the
+    words. The published start and end stay as they are (the segment really does
+    straddle the pause, and a page seeking a player wants the real interval);
+    only the scoring is masked to where the speech was.
+    """
+    worker, _ = loaded(windows=(100,), audio_seconds=40.0,
+                       segments=[_segment(3.0, 6.0, "either side of the pause")])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
+    _diarizes(monkeypatch, worker, [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)])
+    request = _request(tmp_path, diarize=True, speakers=2)
+
+    worker.generate(request)
+
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    # The clip is 0-5 and 30-35 concatenated, so 3.0-6.0 in clip time is
+    # 3.0-31.0 in the recording — unchanged, and straddling the pause.
+    assert [(s["start"], s["end"]) for s in written["segments"]] == [(3.0, 31.0)]
+    assert [s["speaker"] for s in written["segments"]] == ["Speaker 1"]
+    assert written["speakers"] == ["Speaker 1"]
+
+
+def test_the_speaker_mask_is_NOT_applied_when_there_is_no_VAD(
+        monkeypatch, loaded, tmp_path):
+    """`vad: false` drops no silence, so there is nothing to mask and the label
+    must be the one this runner produced before the mask existed — the same one
+    `faster_whisper` produces from the same two lists (AI-10c)."""
+    worker, _ = loaded(windows=(100,), audio_seconds=40.0,
+                       segments=[_segment(3.0, 31.0, "straight through")])
+    _diarizes(monkeypatch, worker, [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)])
+    request = _request(tmp_path, diarize=True, speakers=2, vad=False)
+
+    worker.generate(request)
+
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert [s["speaker"] for s in written["segments"]] == ["Speaker 2"]
+
+
 def test_the_pre_pass_does_NOT_inflate_the_progress_total(
         monkeypatch, loaded, tmp_path, base):
     """`done`/`total` are SECONDS OF AUDIO of the TRANSCRIPT (AI-10a, and
@@ -1122,6 +1180,38 @@ def test_a_recording_with_no_speech_writes_an_empty_transcript(loaded, tmp_path)
     assert open(request["outText"], encoding="utf-8").read() == "\n"
 
 
+@pytest.mark.parametrize("vad", [True, False])
+def test_a_file_too_SHORT_to_have_a_duration_writes_an_empty_transcript(
+        monkeypatch, loaded, tmp_path, vad):
+    """A clip of a few dozen samples rounds to 0.0 seconds, and the row's `total`
+    is then None — indeterminate, which is the honest thing to show. What must
+    not happen is that None reaching the decode arithmetic: it travelled as the
+    END of the only clip, and the speech sum over the clips raised `TypeError:
+    unsupported operand type(s) for -: 'NoneType' and 'float'`, so a file the
+    loop would have skipped in one line came back as a traceback on the job row
+    instead of an empty transcript.
+
+    `parakeet_mlx/worker.py` already fixed exactly this, with two names for the
+    same seconds; this is the same split ported, and this test is its twin
+    (`test_a_file_too_SHORT_to_have_a_duration_writes_an_empty_transcript` over
+    there). Both routes into the clip list are driven, because both produced the
+    same `(0.0, None)`: a `None` from the detector and the `vad: false` skip.
+    """
+    worker, transcribe = loaded(windows=(100,), samples=40,
+                                segments=[_segment(0.0, 1.0, "hi")])
+    monkeypatch.setattr(worker, "_speech_regions", lambda *a, **k: None)
+    request = _request(tmp_path, vad=vad)
+
+    result = worker.generate(request)
+
+    assert result["duration"] is None
+    assert result["segments"] == 0
+    assert transcribe.calls == [], "a clip of pure padding must not be decoded"
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert written["segments"] == [] and written["text"] == ""
+    assert open(request["outText"], encoding="utf-8").read() == "\n"
+
+
 def test_the_two_whisper_directions_reach_the_model(loaded, tmp_path):
     worker, transcribe = loaded(windows=(100,))
     worker.generate(_request(tmp_path, task="translate", language="fr"))
@@ -1180,18 +1270,57 @@ def _raise(error):
     return fail
 
 
-def test_each_speech_region_is_transcribed_SEPARATELY(monkeypatch, loaded, tmp_path):
+def test_the_cuts_are_at_VAD_boundaries_and_SEVERAL_ride_in_ONE_call(
+        monkeypatch, loaded, tmp_path):
     """Cutting at a VAD boundary is cutting in silence, which is where a
     sentence has already ended — unlike the fixed-offset chunking this runner
-    refuses, which cuts through one."""
+    refuses, which cuts through one. That reasoning is unchanged; what changed
+    is that several such cuts now travel in one `transcribe()` call.
+
+    mlx-whisper pads every call's mel to its full 30-second window, so a call
+    per region charged 30 seconds of encoder for a 0.8-second region: on a
+    216-second recording that is 92% speech, `large-v3-turbo` took 8.32s for the
+    whole file and 23.30s for its 31 regions — `vad: true` costing +15s rather
+    than saving anything. Packed, it is 9.31s. The silence still never reaches
+    the decoder, which is the part that must not change: it is why `vad: true`
+    exists at all.
+    """
     worker, transcribe = loaded(windows=(100,), audio_seconds=30.0)
     _regions(monkeypatch, worker, [(0.0, 5.0), (20.0, 25.0)])
 
     worker.generate(_request(tmp_path))
 
-    assert len(transcribe.calls) == 2
-    # Each call got ITS region's samples, not the whole recording.
-    assert [len(c["audio"]) for c in transcribe.calls] == [5 * 16000, 5 * 16000]
+    assert len(transcribe.calls) == 1
+    # Ten seconds of SPEECH — both regions concatenated. Not two calls of five,
+    # and not the 30-second recording with the silence left in.
+    assert [len(c["audio"]) for c in transcribe.calls] == [10 * 16000]
+
+
+def test_regions_that_do_NOT_fit_one_window_are_split_at_a_REGION_boundary(
+        monkeypatch, loaded, tmp_path):
+    """The budget is a limit, not a target. Past it there is a second call —
+    and its boundary is one the detector found, never a fixed offset inside a
+    region, because that is the cut this runner refuses on quality grounds."""
+    worker, transcribe = loaded(windows=(100,), audio_seconds=120.0)
+    # 20 + 20 = 40 seconds of speech, which no single 30-second window holds.
+    _regions(monkeypatch, worker, [(0.0, 20.0), (60.0, 80.0)])
+
+    worker.generate(_request(tmp_path))
+
+    assert [len(c["audio"]) for c in transcribe.calls] == [20 * 16000, 20 * 16000]
+
+
+def test_a_region_LONGER_than_the_window_is_still_decoded_WHOLE(
+        monkeypatch, loaded, tmp_path):
+    """A monologue with no half-second pause in it. Splitting it here would cut
+    mid-word; mlx-whisper's own seeking chunks a long input better than a
+    boundary chosen by this file could."""
+    worker, transcribe = loaded(windows=(100,), audio_seconds=120.0)
+    _regions(monkeypatch, worker, [(0.0, 45.0)])
+
+    worker.generate(_request(tmp_path))
+
+    assert [len(c["audio"]) for c in transcribe.calls] == [45 * 16000]
 
 
 def test_timestamps_are_mapped_back_to_ORIGINAL_recording_time(
@@ -1199,9 +1328,16 @@ def test_timestamps_are_mapped_back_to_ORIGINAL_recording_time(
     """The silent failure this remap exists to prevent: a transcript that looks
     perfect and whose every timestamp after the first gap is early. The library
     times each clip from zero; every consumer reads the numbers as positions in
-    the FILE."""
-    worker, transcribe = loaded(windows=(100,), audio_seconds=40.0,
-                                segments=[_segment(0.0, 2.0, "hello")])
+    the FILE.
+
+    With the regions packed into one call, the gap is INSIDE the clip — the
+    decoder is handed 0-5 and 30-35 as one ten-second waveform and quite
+    correctly reports the second sentence at 6.0. Six seconds into the clip is
+    31 seconds into the recording, and nothing but this mapping knows that.
+    """
+    worker, transcribe = loaded(
+        windows=(100,), audio_seconds=40.0,
+        segments=[_segment(0.0, 2.0, "hello"), _segment(6.0, 8.0, "world")])
     _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
     request = _request(tmp_path)
 
@@ -1209,7 +1345,55 @@ def test_timestamps_are_mapped_back_to_ORIGINAL_recording_time(
 
     written = json.load(open(request["out"], encoding="utf-8"))
     assert [(s["start"], s["end"]) for s in written["segments"]] == [
-        (0.0, 2.0), (30.0, 32.0)]
+        (0.0, 2.0), (31.0, 33.0)]
+
+
+def test_a_segment_SPANNING_a_join_has_each_END_mapped_on_its_own(
+        monkeypatch, loaded, tmp_path):
+    """The case the packing creates and per-region decoding never could: the
+    decoder hears continuous speech across the join, because the silence is not
+    in the clip it was given, so one segment can start in one source region and
+    end in the next.
+
+    Mapping the pair through a single offset would place both ends in whichever
+    region was picked — the end 25 seconds early, or the start 25 seconds late —
+    and either way the segment would overlap its neighbours and sort wrongly in
+    a caption track.
+    """
+    worker, transcribe = loaded(windows=(100,), audio_seconds=40.0,
+                                segments=[_segment(4.0, 6.0, "across the gap")])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
+    request = _request(tmp_path)
+
+    worker.generate(request)
+
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert [(s["start"], s["end"]) for s in written["segments"]] == [(4.0, 31.0)]
+
+
+def test_a_segment_ENDING_exactly_on_a_join_does_not_span_the_silence(
+        monkeypatch, loaded, tmp_path):
+    """The other half of the join, and the failure mode packing introduced.
+
+    A segment that lies entirely inside region one and ends exactly at its last
+    moment must stay inside it. Mapped with START semantics — the join belongs
+    to the region that begins there — its end jumps the whole dropped pause:
+    clip `3.0-5.0` was reported as recording `3.0-30.0`, text asserted to have
+    been spoken through 25 seconds of silence this runner cut out. The error is
+    as large as the gap, and the join is exactly where the pause was, which is
+    the most natural place for Whisper to end a segment. `diarize.speaker_for`
+    then sums turn overlap across the stretched span, so the sentence can be
+    labelled with whoever the segmenter heard inside the silence.
+    """
+    worker, transcribe = loaded(windows=(100,), audio_seconds=40.0,
+                                segments=[_segment(3.0, 5.0, "inside region one")])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
+    request = _request(tmp_path)
+
+    worker.generate(request)
+
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert [(s["start"], s["end"]) for s in written["segments"]] == [(3.0, 5.0)]
 
 
 def test_a_segment_running_past_its_region_is_CLAMPED(monkeypatch, loaded, tmp_path):
@@ -1485,15 +1669,20 @@ def test_a_CANCEL_during_the_detector_fetch_is_not_degraded_away(
         worker.generate(_request(tmp_path))
 
 
-def test_a_cancel_between_REGIONS_is_honoured_and_writes_nothing(
+def test_a_cancel_between_CLIPS_is_honoured_and_writes_nothing(
         monkeypatch, loaded, base, tmp_path):
-    """Keeping the first region of five and writing it out would present a
-    fifth of a transcript as a whole one. A cancel is worth honouring exactly
-    while there is work left to stop, and between regions there is."""
+    """Keeping the first clip of three and writing it out would present a third
+    of a transcript as a whole one. A cancel is worth honouring exactly while
+    there is work left to stop, and between clips there is.
+
+    Three regions of twenty seconds, because "between clips" only exists when
+    the speech does not fit one window: packed, three five-second regions are
+    one call with nothing to cancel between (which is the point of the packing,
+    and is covered by the last-clip case below)."""
     worker, transcribe = loaded(windows=(500,), seconds_per_window=0.15,
-                                audio_seconds=60.0,
+                                audio_seconds=120.0,
                                 segments=[_segment(0.0, 1.0, "one")])
-    _regions(monkeypatch, worker, [(0.0, 5.0), (10.0, 15.0), (20.0, 25.0)])
+    _regions(monkeypatch, worker, [(0.0, 20.0), (30.0, 50.0), (60.0, 80.0)])
     request = _request(tmp_path)
 
     real_report = base.report_or_cancel
@@ -1545,13 +1734,14 @@ def _partial_lines(path):
 
 def test_segments_reach_the_partial_file_in_ORIGINAL_recording_time(
         monkeypatch, loaded, tmp_path):
-    """The remap is per-region and happens after the library returns, so a sink
-    fed one line earlier — inside `_decode_clip`, say — would publish `0.0-2.0`
-    for speech that is 30 seconds into the file. A page seeking a player off
-    that lands in the wrong minute, and the final `.json` would disagree with
-    the lines the same page had already rendered."""
+    """The remap happens after the library returns, so a sink fed one line
+    earlier — inside `_decode_clip`, say — would publish `6.0-8.0` for speech
+    that is 31 seconds into the file. A page seeking a player off that lands in
+    the wrong minute, and the final `.json` would disagree with the lines the
+    same page had already rendered."""
     worker, _ = loaded(windows=(100,), audio_seconds=40.0,
-                       segments=[_segment(0.0, 2.0, "hello")])
+                       segments=[_segment(0.0, 2.0, "hello"),
+                                 _segment(6.0, 8.0, "world")])
     _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
     request = _request(tmp_path, outPartial=str(tmp_path / "out.partial.jsonl"))
     seen = []
@@ -1564,11 +1754,45 @@ def test_segments_reach_the_partial_file_in_ORIGINAL_recording_time(
     worker.generate(request)
 
     assert [(line["start"], line["end"]) for line in seen] == [
-        (0.0, 2.0), (30.0, 32.0)]
+        (0.0, 2.0), (31.0, 33.0)]
     written = json.load(open(request["out"], encoding="utf-8"))
     assert [(s["start"], s["end"]) for s in written["segments"]] == [
-        (0.0, 2.0), (30.0, 32.0)]
+        (0.0, 2.0), (31.0, 33.0)]
     assert not os.path.exists(request["outPartial"])
+
+
+def test_the_LIVE_speaker_label_agrees_with_the_final_one_across_a_join(
+        monkeypatch, loaded, tmp_path):
+    """The two labellings of one segment, end to end: the line the sink writes as
+    it decodes, and the `speaker` the final `.json` carries.
+
+    They can only disagree where this runner drops silence out of the middle of a
+    segment — a packed join — and that is exactly where they did: the final
+    labelling masks its scoring to the speech (D366) and the sink was still
+    scoring the whole span, so a page rendered the speaker heard inside the
+    removed pause and then watched the name and the colour change when the run
+    finished. `partial.sink` gets the same `spans` as `assign_speakers`, and this
+    is the wiring, not the arithmetic (`tests/test_ai_partial_transcript.py` owns
+    that).
+    """
+    worker, _ = loaded(windows=(100,), audio_seconds=40.0,
+                       segments=[_segment(3.0, 6.0, "either side of the pause")])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
+    _diarizes(monkeypatch, worker, [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)])
+    request = _request(tmp_path, diarize=True, speakers=2,
+                       outPartial=str(tmp_path / "out.partial.jsonl"))
+    seen = []
+    monkeypatch.setattr(
+        worker.partial.Sink, "add",
+        lambda self, segment, _real=worker.partial.Sink.add: (
+            _real(self, segment),
+            seen.append(_partial_lines(self.path)[-1]))[0])
+
+    worker.generate(request)
+
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert [line["speaker"] for line in seen] == ["Speaker 1"]
+    assert [s["speaker"] for s in written["segments"]] == ["Speaker 1"]
 
 
 def test_a_segment_the_remap_DROPS_never_reaches_the_partial_file(
