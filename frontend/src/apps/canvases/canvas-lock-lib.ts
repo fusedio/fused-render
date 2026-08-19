@@ -27,23 +27,39 @@
 // locking on "pending" is the no-session auto-push's own ~1.5s debounce
 // window — the merge covers that too, so nothing is actually lost.
 //
-// Releasing is the subtle half, and only for a PUSH. On unlock the workbench
-// FLUSHES whatever is dirty in its memory, and it only notices upstream
-// changes on its own ~10s poll. A push moves the remote out from under
-// that poll, so releasing the instant push_state goes idle gives: the
-// agent's last push still in flight or not yet visible upstream → workbench
-// flushes stale state → last-writer-wins overwrites the agent's work — the
-// D339 incident, reproduced by our own unlock. Hence a push's release needs a
-// grace window past that longer than the poll. A PULL does not move the
-// remote — it only writes local files from a manifest already fetched — so
-// there is nothing upstream for the workbench's poll to race, and pulling
-// releases the instant it ends, no grace window.
+// Releasing is the subtle half. On unlock the workbench FLUSHES whatever is
+// dirty in its memory, and it only notices upstream changes on its own ~10s
+// poll. A push moves the remote out from under that poll, so releasing the
+// instant push_state goes idle gives: the agent's last push still in flight or
+// not yet visible upstream -> workbench flushes stale state ->
+// last-writer-wins overwrites the agent's work — the D339 incident, reproduced
+// by our own unlock. Hence the release needs a grace window longer than that
+// poll.
+//
+// The window is armed by ANY hold ending, not only a push's (superseding D352's
+// push-only rule). The reason is COALESCENCE, not the clobber risk: the real
+// sequence of a publish is pull -> resolve -> validate -> push, and a chat of
+// any length produces several of them back to back. With a push-only window, a
+// pull ending released the lock outright and the push starting a moment later
+// engaged it again, so the user watched the pane flicker read-only/editable
+// once per leg — and each re-engagement re-armed the ack handshake, flashing
+// the fallback scrim with it. Treating the window as "the hold is settling,
+// whatever it was holding for" collapses the whole sequence into ONE engagement:
+// N operations inside one window are one hold, and the pane changes state twice
+// instead of 2N times.
+//
+// The accepted cost, stated rather than hidden: a LONE pull now keeps the
+// workbench read-only for the grace window after it finishes, where D352
+// released immediately. A pull genuinely does not move the remote, so those
+// extra seconds buy nothing against the D339 shape — they are paid for
+// steadiness, which is the property the owner asked for after watching the
+// flicker.
 
 /** Why the workbench is held read-only, or null for "not locked". Every hold
  *  STARTS a lock unconditionally — there is no "already engaged" precondition
  *  for `publishing`/`pulling` any more, because a sync operation in flight is
  *  never safe to ignore, even on a page that just loaded. Only `settling`
- *  requires having just come out of a `publishing` hold (see decideLock). */
+ *  requires having just come out of SOME hold (see decideLock). */
 export type LockHold = "publishing" | "pulling" | "settling";
 
 /** The fields of SyncStatus the decision reads. `agent_active` is
@@ -68,10 +84,11 @@ export interface LockDecision {
 /** Decide the hold.
  *
  *  `prevHold` is the hold this same function returned last time (null before
- *  the first call) — it is what lets the grace window arm ONLY when coming
- *  out of a push, not out of a pull: `settledAt` starts only when `prevHold`
- *  was "publishing" or "settling" itself. `now` and `graceMs` are passed in so
- *  this stays deterministic under test. */
+ *  the first call) — it is what separates "a hold just ended, start settling"
+ *  from "nothing was holding, stay released". ANY previous hold arms the
+ *  window, which is what makes consecutive operations one engagement instead
+ *  of one each. `now` and `graceMs` are passed in so this stays deterministic
+ *  under test. */
 export function decideLock(
   status: LockInput | null,
   prevHold: LockHold | null,
@@ -102,10 +119,14 @@ export function decideLock(
     // lock with no end condition.
     return { hold: null, settledAt: null };
   }
-  // Idle, and not pulling. A pull just finishing releases immediately — it
-  // never moved the remote, so there is nothing for the workbench's own
-  // upstream poll to race. Only a push finishing arms the grace window.
-  if (prevHold !== "publishing" && prevHold !== "settling") {
+  // Idle, and not pulling. If anything at all was holding a moment ago —
+  // publishing, pulling, or an already-running settling window — keep holding
+  // through the grace window. That is the coalescing rule: the next leg of the
+  // same publish (a pull's push, a second push) engages inside this window, so
+  // the pane never visibly unlocks between them, and the ack handshake is not
+  // re-armed. Nothing holding → stay released; a quiet canvas is never locked
+  // by arithmetic here.
+  if (prevHold === null) {
     return { hold: null, settledAt: null };
   }
   const since = settledAt ?? now;
@@ -140,12 +161,15 @@ export type AckState = "waiting" | "acked" | "unacked";
 /** One transition in the ack handshake, kept pure so the reset-per-engagement
  *  rule is testable without a timer or postMessage in the loop.
  *
- *  "engage": a NEW lock engagement started (the previous hold was null) —
- *  always resets to "waiting", even if a prior engagement had already been
- *  acked; the capability could differ next time (a different workbench
- *  version deployed under this same tab is not the scenario this guards, but
- *  "assume nothing carries over" is the safe default and the one the owner
- *  asked for).
+ *  "engage": a NEW lock engagement started (the previous hold was null).
+ *  Resets to "waiting" — the capability is a fact about the deployed workbench
+ *  that this page assumes nothing about until it has just been told — UNLESS
+ *  `withinGrace`, i.e. the re-engagement landed inside the release grace window
+ *  of the engagement that just ended. That is the same episode of activity
+ *  against the same frame: resetting there re-flashes the fallback scrim for a
+ *  second or two in the middle of a publish that never actually let go, which
+ *  is the flicker this whole change removes. Past the window it is a genuinely
+ *  new engagement and nothing carries over.
  *  "ack": the workbench's `fused-embed-lock-ack` arrived — always wins,
  *  including over an "unacked" fallback already showing (a late ack upgrades
  *  to pass-through instead of leaving the fallback scrim up needlessly).
@@ -155,8 +179,24 @@ export type AckState = "waiting" | "acked" | "unacked";
 export function nextAckState(
   prev: AckState,
   event: "engage" | "ack" | "timeout",
+  withinGrace = false,
 ): AckState {
   if (event === "ack") return "acked";
-  if (event === "engage") return "waiting";
+  if (event === "engage") return withinGrace ? prev : "waiting";
   return prev === "waiting" ? "unacked" : prev;
+}
+
+/** Whether a lock engaging NOW continues the one that just released, rather
+ *  than starting a fresh one: it engaged within one grace window of the
+ *  release. `releasedAt` is when the hold last went null (null before the
+ *  first release, i.e. a first-ever engagement is always new).
+ *
+ *  Kept here, beside `nextAckState`, so the "same engagement" rule is one
+ *  testable definition rather than an inline comparison in the component. */
+export function reengagedWithinGrace(
+  releasedAt: number | null,
+  now: number,
+  graceMs: number,
+): boolean {
+  return releasedAt !== null && now - releasedAt < graceMs;
 }

@@ -65,6 +65,7 @@ shell/* routers.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import io
@@ -1580,6 +1581,43 @@ class _SyncManager:
             self.last_pull_at = time.time()
         return True
 
+    def _baseline_pending(self) -> bool:
+        """Whether the next downstream poll would do nothing but ADOPT a
+        baseline — the one part of the leg that still runs while a Claude session
+        is live (see the watcher's hold).
+
+        `_remote is None` is the whole condition on the shim path: `_poll_remote`
+        takes its first-look branch and returns before it can touch a file. The
+        shim check is not decoration — under an external CLI the legacy leg never
+        sets `_remote` at all, so a bare "`_remote` is None" would read as
+        "harmless first look" forever and leave that leg's force-pull ungated.
+        """
+        if self._remote is not None:
+            return False
+        cli = fused_cli()
+        return cli is not None and _shim_manifest_command(cli) is not None
+
+    @contextlib.contextmanager
+    def _pull_writes(self):
+        """Marks the window in which a downstream leg is actually WRITING the
+        clone's files — the workspace lock (canvas-lock-lib.ts) holds the
+        embedded workbench read-only for exactly this, and for the same reason a
+        push does.
+
+        Entered only past every probe-and-decide step (`_remote_moved`, the
+        stale-echo check, the dirty/clean branch, the clean path's re-check):
+        setting it any earlier meant a poll that found nothing still registered a
+        full lock engagement that the 2s status poll could sample, i.e. a
+        read-only flicker for a pull that never happened. `finally` on every
+        path, including the merge's validation-failure rollback, because a
+        `pulling` that never clears is a permanently read-only pane.
+        """
+        self._pulling = True
+        try:
+            yield
+        finally:
+            self._pulling = False
+
     def _poll_remote(self, probe: dict) -> None:
         """Shim-backed poll leg: runs clean or dirty (unlike the legacy
         dry-run poll). Clean → CLI force pull; dirty → merge."""
@@ -1613,7 +1651,8 @@ class _SyncManager:
                 self.push_state = "pending"
             return
         if self._dirty_since is not None:
-            self._merge_remote(probe)
+            with self._pull_writes():
+                self._merge_remote(probe)
             return
         if self.push_state != "idle":
             return
@@ -1625,6 +1664,18 @@ class _SyncManager:
         cli = fused_cli()
         if cli is None:
             return
+        # Past every decision now, and about to overwrite the clone: this is
+        # where the lock's `pulling` window starts, not at the top of the leg.
+        with self._pull_writes():
+            self._force_pull(probe, cli)
+
+    def _force_pull(self, probe: dict, cli) -> None:
+        """The clean-clone branch of `_poll_remote`, after it has committed to
+        writing: CLI force pull, post-pull divergence recheck, re-baseline.
+
+        Split out only so `_pull_writes` can wrap exactly the writing part —
+        every line here either writes the clone or records what the write did.
+        """
         # The CLI's --force overwrites/deletes without us seeing each file —
         # snapshot the clone first so nothing is ever unrecoverable.
         self._snapshot_clone()
@@ -1832,6 +1883,14 @@ class _SyncManager:
         # Re-check: did a local edit land while the dry-run ran? Local wins.
         if self._take_fingerprint() != self._fingerprint:
             return
+        # Committed to writing now — everything above was probe-and-decide, and
+        # marking `pulling` for that made the lock engage on polls that turned
+        # out to be no-ops.
+        with self._pull_writes():
+            self._apply_legacy_pull(cli, base)
+
+    def _apply_legacy_pull(self, cli, base: list) -> None:
+        """The writing half of `_pull_if_remote_changed` — see `_pull_writes`."""
         try:
             applied = subprocess.run(
                 [*cli.command, *base, "--force"],
@@ -1911,10 +1970,38 @@ class _SyncManager:
                     with self._op_lock:
                         self._push()
                     continue
-                # Deliberately NOT `continue`: the remote-poll leg below must
-                # keep running while a session works, or workbench edits would
-                # stop arriving for the whole length of a chat.
             if time.time() - self._last_pull_poll >= PULL_POLL_S:
+                # HOLD the whole downstream leg while a Claude session is live in
+                # this clone — the same signal and the same backstop shape as the
+                # auto-push hold above.
+                #
+                # This supersedes the earlier rule (D354's note here) that the
+                # remote-poll leg must keep running through a session so workbench
+                # edits keep arriving. It must not: the clone's files moving under
+                # a session mid-change-set is the thing the seeded CLAUDE.md and
+                # the workbench lock both exist to avoid, and every pull was also
+                # a `pulling` window the lock engaged on, so a chat of any length
+                # flickered the embedded workbench read-only every PULL_POLL_S.
+                # The accepted cost, stated rather than hidden: a workbench edit
+                # made during a session no longer arrives mid-chat. It arrives at
+                # the next pull — which is also step 1 of the push — where D338's
+                # per-file three-way merge folds it in, local winning ties. So a
+                # same-file collision surfaces at PUSH time instead of at edit
+                # time; nothing is lost, the timing changes.
+                #
+                # Backstop, exactly like the push hold: `_last_pull_poll` is NOT
+                # stamped when we skip, so the leg runs on the very next tick
+                # after the session ends rather than up to PULL_POLL_S later. And
+                # `_remote` is NOT rotated while held — forgetting a remote move
+                # that happened during the hold would mean never applying it.
+                #
+                # EXEMPT: the first look, which only ADOPTS a baseline
+                # (`_poll_remote`'s `self._remote is None` branch) and writes
+                # nothing to the clone. Gating that too would leave `_base_files`
+                # None for the whole session, and every later merge would then
+                # degrade to local-wins wholesale.
+                if self.agent_run_id() and not self._baseline_pending():
+                    continue
                 self._last_pull_poll = time.time()
                 cli = fused_cli()
                 if cli is not None and _shim_manifest_command(cli) is not None:
@@ -1924,25 +2011,16 @@ class _SyncManager:
                     probe = self._probe_remote()
                     if probe is not None:
                         with self._op_lock:
-                            # `pulling` covers every write this leg can make:
-                            # the clean force-pull, the three-way merge, and
-                            # its validation-failure rollback — the workspace
-                            # lock (canvas-lock-lib.ts) holds the embedded
-                            # workbench read-only for the same reason a push
-                            # does: the clone's files are moving right now.
-                            self._pulling = True
-                            try:
-                                self._poll_remote(probe)
-                            finally:
-                                self._pulling = False
+                            # NOTE: `_pulling` is set INSIDE _poll_remote, not
+                            # here. Wrapping probe-and-decide made a poll that
+                            # decided to do nothing register as a full lock
+                            # engagement the 2s status poll could sample — a
+                            # read-only flicker for a pull that never happened.
+                            self._poll_remote(probe)
                 elif self._dirty_since is None and self.push_state == "idle":
                     # External CLI (no shims): legacy dry-run poll, clean only.
                     with self._op_lock:
-                        self._pulling = True
-                        try:
-                            self._pull_if_remote_changed()
-                        finally:
-                            self._pulling = False
+                        self._pull_if_remote_changed()
 
     def status(self) -> dict:
         return {
