@@ -206,13 +206,16 @@ def test_done_flushes_pending_notes_before_disarming(html):
     prefill-and-submit, then the mode goes away."""
     body = _block(html, "async function annDone()", "\n}\n")
     assert "await annCommit();" in body
-    # one at a time: annCommit's await spans the point-crop, and a second
-    # Done click in that window would auto-send the note before its shot is
-    # filled (Bugbot, PR #664) — the guard makes it a no-op
+    # one at a time: annCommit's await could span a re-entrant Done click,
+    # which would double-send the pending notes — the guard makes it a no-op
     assert "if (annDoneBusy) return;" in body
     assert "annDoneBusy = false;" in body
     assert "a.content && !a.sent" in body
-    assert "if (pending && !sending && annPrefillComposer()) annAutoSubmit();" in body
+    # the flush is a bare auto-submit: annPrefillComposer returns nothing now,
+    # so gating on its return value would silently never send (Bugbot, #661)
+    assert "if (pending && !sending) annAutoSubmit();" in body
+    assert "annPrefillComposer" not in body, \
+        "there is no canned prompt to seed — the notes are the content"
     assert "annSetMode(false);" in body
     commit = body.index("await annCommit();")
     flush = body.index("annAutoSubmit()")
@@ -308,9 +311,14 @@ def test_a_transcribed_walkthrough_autosends_only_when_words_landed(html):
     body = _block(html, "async function annRecEnd()", "\n}\n")
     assign = body.index("annRecAssign(ids, rec.segments)")
     gate = body.index("c && c.content && !c.sent")
-    send = body.index(
-        "if ((spoke || intro) && !sending) { annPrefillComposer(intro); annAutoSubmit(); }")
+    send = body.index("if (spoke || intro) {")
     assert assign < gate < send
+    # the intro is seeded OUTSIDE the !sending gate: a walkthrough that ends
+    # during a live run parks its words in the composer to ride the next send
+    # instead of evaporating (Bugbot, #661) — only the auto-submit is gated
+    seed = body.index("annPrefillComposer(intro);")
+    submit = body.index("if (!sending) annAutoSubmit();")
+    assert send < seed < submit
 
 
 def test_speech_before_the_first_click_becomes_the_prompt_not_a_note(html):
