@@ -203,6 +203,105 @@ def test_quit_close_swallows_a_raising_reader_hook(monkeypatch):
     app_mod._close_duckdb_stash()  # must not raise
 
 
+# ---- the DEFAULT connection: the half of defect C the 2026-07-29 fix missed --
+# Closing the reader's stash was necessary and not sufficient. duckdb (1.5.5,
+# what the bundle ships) builds its default connection EAGERLY AT IMPORT and
+# holds it in a C++ global, so a process that merely `import duckdb`s — which
+# the in-process server does for /api/index, parquet, search, git_repos, h3,
+# excel, tableau — aborts in __cxa_finalize with no stash ever created. Measured
+# on the shipped interpreter: `import duckdb` then exit() off-thread => SIGABRT;
+# the same with `duckdb.default_connection().close()` first => rc 0.
+
+
+def _fake_duckdb(default_connection):
+    mod = types.ModuleType("duckdb")
+    if default_connection is not None:
+        mod.default_connection = default_connection
+    return mod
+
+
+@pytest.fixture()
+def no_reader(monkeypatch):
+    """Neutralise the reader half so these tests pin the default-connection half
+    alone (the two are independently guarded on purpose)."""
+    stub = types.ModuleType("__fused_duckdb_reader_stub__")
+    stub.close_http_connection = lambda: None
+    monkeypatch.setattr(app_mod, "_load_duckdb_reader", lambda: stub)
+    return stub
+
+
+def test_quit_close_also_closes_duckdbs_default_connection(monkeypatch, no_reader):
+    con = _FakeCon()
+    monkeypatch.setitem(sys.modules, "duckdb",
+                        _fake_duckdb(lambda: con))
+
+    app_mod._close_duckdb_stash()
+
+    assert con.closed == 1
+
+
+def test_a_default_connection_exposed_as_an_attribute_is_closed_too(monkeypatch,
+                                                                    no_reader):
+    # 1.5.5 spells it as a builtin function; older/newer duckdb may hand back the
+    # connection object itself. Both shapes have to close — guessing wrong is an
+    # abort, and the cost of handling both is one `callable()`.
+    con = _FakeCon()
+    monkeypatch.setitem(sys.modules, "duckdb", _fake_duckdb(con))
+
+    app_mod._close_duckdb_stash()
+
+    assert con.closed == 1
+
+
+def test_a_duckdb_without_a_default_connection_is_not_an_error(monkeypatch,
+                                                               no_reader):
+    monkeypatch.setitem(sys.modules, "duckdb", _fake_duckdb(None))
+
+    app_mod._close_duckdb_stash()  # must not raise
+
+
+def test_a_raising_default_connection_still_closes_the_reader_stash(monkeypatch):
+    # Independently guarded: whichever of the two halves fails, the other still
+    # runs — each one alone is enough to abort the process.
+    closed = []
+    stub = types.ModuleType("__fused_duckdb_reader_stub__")
+    stub.close_http_connection = lambda: closed.append("stash")
+    monkeypatch.setattr(app_mod, "_load_duckdb_reader", lambda: stub)
+
+    def _boom():
+        raise RuntimeError("duckdb is wedged")
+
+    monkeypatch.setitem(sys.modules, "duckdb", _fake_duckdb(_boom))
+
+    app_mod._close_duckdb_stash()
+
+    assert closed == ["stash"]
+
+
+def test_a_raising_close_of_the_default_connection_does_not_raise(monkeypatch,
+                                                                  no_reader):
+    con = _FakeCon(raises=True)
+    monkeypatch.setitem(sys.modules, "duckdb", _fake_duckdb(lambda: con))
+
+    app_mod._close_duckdb_stash()  # must not raise
+
+    assert con.closed == 1
+
+
+def test_the_default_connection_is_left_alone_when_duckdb_was_never_imported(
+        monkeypatch, no_reader):
+    # Same reason as the stash: no import means no connection, and quit must not
+    # pay a duckdb import to learn that.
+    monkeypatch.delitem(sys.modules, "duckdb", raising=False)
+    touched = []
+    monkeypatch.setattr(app_mod, "_close_duckdb_default_connection",
+                        lambda: touched.append(True))
+
+    app_mod._close_duckdb_stash()
+
+    assert touched == []
+
+
 # ----------------------------------------------------- the mount ladder (A)
 # Faked at the same boundary tests/test_shell_mounts.py fakes: `_rc` (rcd's HTTP
 # API), `_force_unmount` (the umount -f / diskutil shell-out) and `_is_mounted`

@@ -126,19 +126,63 @@ def _load_duckdb_reader():
     return mod
 
 
-def _close_duckdb_stash() -> None:
-    """Best-effort quit-time close of the reader's cached HTTP connection.
+def _close_duckdb_default_connection() -> None:
+    """Close duckdb's own DEFAULT connection — the half of INCIDENT 2026-07-29
+    the first fix missed.
 
-    Skips the load entirely when `duckdb` was never imported: no import means no
+    Closing the reader's stash was necessary and not sufficient. duckdb 1.5.5
+    (what the bundle ships) creates its default connection EAGERLY AT IMPORT and
+    holds it in a C++ global, which `__cxa_finalize` destructs during exit().
+    So a process that merely `import duckdb`s — which the in-process server does
+    for /api/index, parquet, search, git_repos, h3, excel and tableau, none of
+    which ever touch the reader's stash — aborts exactly like a process that
+    left the stash open. Measured on the shipped interpreter
+    (Contents/MacOS/python): `import duckdb` + exit() off-thread => SIGABRT;
+    the same run with this close first => rc 0.
+
+    `default_connection` is a builtin FUNCTION in 1.5.5, but the attribute has
+    changed shape across duckdb releases (and may be gone in a future one), so
+    both a callable and a bare connection object are accepted rather than
+    assuming: guessing wrong costs an aborted quit, and handling both costs one
+    `callable()`."""
+    duckdb = sys.modules.get("duckdb")
+    default = getattr(duckdb, "default_connection", None)
+    if default is None:
+        return
+    con = default() if callable(default) else default
+    close = getattr(con, "close", None)
+    if callable(close):
+        close()
+
+
+def _close_duckdb_stash() -> None:
+    """Best-effort quit-time close of every DuckDB connection this process can
+    still be holding: the reader's cached HTTP connection and duckdb's own
+    default connection.
+
+    Skips both entirely when `duckdb` was never imported: no import means no
     connection can exist, and quit shouldn't pay a multi-hundred-ms duckdb
-    import to discover that. Swallows everything (duckdb missing, unreadable
-    reader, a raising close) — a failure here must not block the quit."""
+    import to discover that. Each half is guarded on its own — either one alone
+    is enough to abort the process, so a failure in one must not skip the other
+    — and everything is swallowed (duckdb missing, unreadable reader, a raising
+    close): a failure here must not block the quit.
+
+    Note this is now belt AND braces: since the quit path ends in `hard_exit`,
+    `__cxa_finalize` never runs at all. Both remain, because closing a
+    connection while Python is healthy and holding the GIL is the correct
+    shutdown, and because this function is also the one place that would keep
+    the quit clean if a future surface ever reached a normal exit()."""
     if "duckdb" not in sys.modules:
         return
     try:
         _load_duckdb_reader().close_http_connection()
     except Exception:
         logger.warning("closing the duckdb http connection on quit failed",
+                       exc_info=True)
+    try:
+        _close_duckdb_default_connection()
+    except Exception:
+        logger.warning("closing duckdb's default connection on quit failed",
                        exc_info=True)
 
 
