@@ -533,7 +533,7 @@ def _quit_ready_event_locked(state: dict) -> threading.Event:
 
 
 def begin_quit(state: dict, *, terminate=None, start=None,
-               remove_pidfile=None) -> bool:
+               remove_pidfile=None, on_claim=None) -> bool:
     """Start THE teardown unless one is already running; True if this call
     started it.
 
@@ -548,7 +548,20 @@ def begin_quit(state: dict, *, terminate=None, start=None,
     still observes the same event. The pidfile is removed on the calling (main)
     thread: it costs microseconds, and a relaunch during a slow teardown must not
     find this dying instance and hand the user a browser tab on a closing
-    server."""
+    server.
+
+    `on_claim` (optional) runs INSIDE the claim — after the pidfile is gone,
+    before the teardown is started — for work that must be finished before this
+    process can die. That ordering has to be enforced here now: since D355 the
+    quit ends in `os._exit` on the watchdog thread with no main-thread hop, so
+    "after begin_quit returns" is no longer safely before the exit. An instance
+    with nothing mounted and a server that drains on its first poll can complete
+    the whole teardown and exit while the caller is still executing its next
+    statement — which for `begin_relaunch` is the `Popen` that parks its
+    successor (a fork+exec of a large process under `start_new_session`), i.e.
+    the app quits and nothing comes back. The old
+    `AppHelper.callAfter(rumps.quit_application)` made that impossible by
+    construction, and this hook is what replaces that guarantee."""
     if start is None:
         start = start_quit
     if remove_pidfile is None:
@@ -563,6 +576,15 @@ def begin_quit(state: dict, *, terminate=None, start=None,
             return False
         state["quitting"] = True
     remove_pidfile()
+    if on_claim is not None:
+        try:
+            on_claim()
+        except Exception:
+            # Best-effort like the teardown steps, and for a sharper reason: a
+            # quit that is CLAIMED but never torn down is the worst state
+            # available — quit_ready is never set, so every later surface waits
+            # out its backstop before the app can die at all.
+            logger.warning("quit: the on-claim hook failed", exc_info=True)
 
     def _finished() -> None:
         # Set BEFORE the surface's own action, because that action is typically
@@ -644,10 +666,15 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
     quitting would be worse than ignoring the link. The in-flight case rides
     `quit_action`'s return (begin_quit's claim bool) rather than reading
     state["quitting"] here: that flag's check-then-set is only atomic under
-    _quit_lock, and begin_quit already owns that critical section. Spawning
-    only after a claimed quit is safe because the teardown drains for seconds
-    (bounded by QUIT_HARD_DEADLINE_S) — the relauncher is parked long before
-    the process can die."""
+    _quit_lock, and begin_quit already owns that critical section.
+
+    The spawn is handed to the quit as its `on_claim` hook rather than run after
+    it returns, and that is load-bearing, not tidiness: since D355 the quit ends
+    in `os._exit` off a watchdog thread, so an instance with nothing to unmount
+    can be dead before a statement after `quit_action()` finishes — and a
+    relauncher that was never spawned means the app quits with no successor.
+    "The teardown drains for seconds" used to make this safe by accident; the
+    hook makes it safe by construction."""
     if bundle is None:
         bundle = bundle_path()
     if bundle is None:
@@ -663,12 +690,11 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
         logger.info("relaunch deep link ignored: running %s, disk %s — nothing to swap",
                     running, installed)
         return False
-    if not quit_action():
-        logger.info("relaunch deep link ignored: quit already in progress")
-        return False
     if spawn is None:
         spawn = spawn_relauncher
-    spawn(bundle, os.getpid())
+    if not quit_action(on_claim=lambda: spawn(bundle, os.getpid())):
+        logger.info("relaunch deep link ignored: quit already in progress")
+        return False
     return True
 
 
@@ -678,12 +704,13 @@ def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None)
     dict. Module-level (not a `main()` closure) so it is testable without AppKit;
     it takes `main()`'s `state` dict because the server and its thread only exist
     once the bootstrap thread has published them."""
-    def _do_quit() -> bool:
+    def _do_quit(on_claim=None) -> bool:
         # The claim bool matters to one caller — begin_relaunch only parks a
-        # relauncher behind a quit THIS call started. The menu/popover surfaces
-        # ignore it.
+        # relauncher behind a quit THIS call started, and hands its spawn in as
+        # `on_claim` so it happens before anything can exit. The menu/popover
+        # surfaces pass nothing and ignore the bool.
         return begin_quit(state, terminate=terminate, start=start,
-                          remove_pidfile=remove_pidfile)
+                          remove_pidfile=remove_pidfile, on_claim=on_claim)
 
     return _do_quit
 

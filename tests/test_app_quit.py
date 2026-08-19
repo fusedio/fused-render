@@ -1014,6 +1014,61 @@ def test_begin_quit_starts_one_teardown_and_flags_ready_before_terminating(
     assert order == ["pidfile", "terminate"]
 
 
+def test_begin_quit_runs_the_claim_hook_before_the_teardown_can_start(
+        quit_state):
+    """The ordering guarantee `begin_relaunch` needs (D355 took away the one it
+    used to get for free).
+
+    The quit now ends in os._exit off a watchdog thread with no main-thread hop,
+    so "do this before we die" cannot mean "do it after begin_quit returns": an
+    instance with nothing mounted can finish its teardown and exit while the
+    caller is still inside a fork+exec. `on_claim` runs inside the claim, before
+    anything that could terminate exists."""
+    order = []
+
+    def _start(server, *, terminate, server_thread=None, **kw):
+        order.append("teardown")
+        terminate()  # a teardown with nothing to do, finishing instantly
+
+    started = app_mod.begin_quit(
+        quit_state, terminate=lambda: order.append("terminate"),
+        start=_start, remove_pidfile=lambda: order.append("pidfile"),
+        on_claim=lambda: order.append("claim-hook"))
+
+    assert started is True
+    assert order == ["pidfile", "claim-hook", "teardown", "terminate"]
+
+
+def test_the_claim_hook_does_not_run_for_a_quit_that_joined_another(quit_state):
+    # Same rule the claim bool already encodes: only the surface that STARTED
+    # the teardown gets to hang work off it.
+    assert app_mod.begin_quit(quit_state, start=_FakeStart(),
+                              remove_pidfile=lambda: None) is True
+    ran = []
+
+    assert app_mod.begin_quit(quit_state, start=_FakeStart(),
+                              remove_pidfile=lambda: None,
+                              on_claim=lambda: ran.append(True)) is False
+    assert ran == []
+
+
+def test_a_raising_claim_hook_still_tears_down_and_quits(quit_state):
+    # A quit that is already CLAIMED but never torn down is the worst outcome
+    # available: quit_ready is never set, so every later surface waits out its
+    # backstop. So the hook is best-effort, exactly like the teardown steps.
+    start = _FakeStart()
+
+    def _boom():
+        raise RuntimeError("Popen failed")
+
+    started = app_mod.begin_quit(quit_state, terminate=lambda: None,
+                                 start=start, remove_pidfile=lambda: None,
+                                 on_claim=_boom)
+
+    assert started is True
+    assert start.calls == [("srv", "thr")]
+
+
 def test_begin_quit_joins_a_teardown_already_in_flight(quit_state):
     assert app_mod.begin_quit(quit_state, start=_FakeStart(),
                               remove_pidfile=lambda: None) is True
