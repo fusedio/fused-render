@@ -6390,10 +6390,15 @@ async function annRecBegin() {
   // the other way (annWireTarget's branch below) — arm it if the reader went
   // straight for the mic without sliding Comment on first.
   if (!annOn) annSetMode(true);
-  annRecChunks = [];
+  // The sink is THIS session's array, closed over — not the global name.
+  // The enders snapshot the globals and reset them before their await, and
+  // a push routed through the global would land the recorder's FINAL
+  // dataavailable in the next session's (or nobody's) array (Bugbot, PR #665).
+  const chunks = [];
+  annRecChunks = chunks;
   annRecIds = [];
   annRecorder = new MediaRecorder(stream);
-  annRecorder.ondataavailable = (e) => { if (e.data.size) annRecChunks.push(e.data); };
+  annRecorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
   annRecorder.onstop = () => stream.getTracks().forEach((t) => t.stop());
   annRecStartedAt = performance.now();
   annRecorder.start();
@@ -6574,7 +6579,20 @@ async function annRecEnd() {
   // this function went on to send the walkthrough it tried to throw away.
   // With the flags (and the face) gone first, that click is a no-op on a
   // seat that is already leaving.
+  // The WHOLE session is snapshotted synchronously here (Bugbot, PR #665):
+  // the flags drop before the await, and Esc re-enables the seat, so a NEW
+  // recording can begin while this one settles — every global read after
+  // the await would be the new session's. Chunks, ids, timer and epoch are
+  // captured now and the globals handed back fresh; from here down this
+  // function touches only its own session.
   const recorder = annRecorder;
+  const chunks = annRecChunks;
+  const ids = annRecIds;
+  const armed = annArmEpoch;
+  clearInterval(annRecTimerId);
+  annRecTimerId = null;
+  annRecChunks = [];
+  annRecIds = [];
   annRecorder = null;
   annRecOn = false;
   // The face goes with the flags — the trash and the stop clock leave the
@@ -6602,37 +6620,40 @@ async function annRecEnd() {
   const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
   recorder.stop();
   await stopped;
-  clearInterval(annRecTimerId);
-  annRecTimerId = null;
   // The chunks are complete here: the recorder's final dataavailable fires
-  // before its stop event resolves the await above.
-  const blob = new Blob(annRecChunks, { type: recorder.mimeType || "" });
-  const ids = annRecIds;
-  annRecIds = [];
+  // before its stop event resolves the await above, and it landed in THIS
+  // session's captured array — annRecBegin's sink is a closure, not the
+  // global name this function already reset.
+  const blob = new Blob(chunks, { type: recorder.mimeType || "" });
   // Ending a walkthrough puts the whole mode away (Akshil, 2026-08-19):
   // record → talk → stop is the complete gesture, and a comment layer left
   // armed after it swallows the reading clicks that usually come next. The
-  // epoch pins WHICH arming this disarm belongs to: transcription is an await,
-  // and a user who re-armed Comment (or opened a draft) meanwhile owns a NEW
-  // arming this stale disarm must not close (Bugbot, PR #644). It also keeps
-  // the disarm from echoing when annSetMode's own disarm called us (annOn is
-  // already false there). Nothing recorded: disarm and go.
-  const armed = annArmEpoch;
+  // epoch — captured at ENTRY, before the settle a new arming can slip into
+  // — pins WHICH arming this disarm belongs to (Bugbot, PR #644/#665): a
+  // user who re-armed meanwhile owns a NEW arming this stale disarm must
+  // not close. It also keeps the disarm from echoing when annSetMode's own
+  // disarm called us (annOn is already false there). Nothing recorded:
+  // disarm and go.
   if (!blob.size) {   // nothing said: no transcript to fetch
     // The status leaves with this path's own hands — the transcription's
     // finally never runs here. The disarm below renames the seat; the
     // epoch-skipped case (someone re-armed mid-stop) is renamed by the
     // annSetMode(true) that re-armed it.
-    annCta.classList.remove("busy");
-    annRecLbl.textContent = "";
-    annBtn.disabled = false;
-    // Derived from the state, not assumed armed (Bugbot, PR #665): an Esc
-    // in the settle already idle-named the seat through annSetMode, and a
-    // blind Done restore here would dress a Comment face in Done's name.
-    annBtn.setAttribute("aria-label", annOn
-      ? "Done — send the notes and finish commenting"
-      : "Comment on the " + paneNoun);
-    annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
+    // A NEW session that began during the settle owns the seat now — its
+    // labels, its clock — and this stale path must not repaint it. The
+    // no-op disarm below is already epoch-guarded.
+    if (!annRecOn) {
+      annCta.classList.remove("busy");
+      annRecLbl.textContent = "";
+      annBtn.disabled = false;
+      // Derived from the state, not assumed armed (Bugbot, PR #665): an Esc
+      // in the settle already idle-named the seat through annSetMode, and a
+      // blind Done restore here would dress a Comment face in Done's name.
+      annBtn.setAttribute("aria-label", annOn
+        ? "Done — send the notes and finish commenting"
+        : "Comment on the " + paneNoun);
+      annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
+    }
     if (annOn && annArmEpoch === armed) annSetMode(false);
     return;
   }
@@ -6689,17 +6710,22 @@ async function annRecEnd() {
     console.warn("spoken annotation transcription failed:", err.message);
   } finally {
     annRecBtn.disabled = false;
-    annBtn.disabled = false;
-    annCta.classList.remove("busy");
-    annRecLbl.textContent = "";   // "Transcribing…" only ever describes now
-    // The disarm below renames the seat on the normal path; when the guards
-    // skip it (the user re-armed mid-transcription, or Esc already disarmed)
-    // the name must come back by hand — derived from the state, so an idle
-    // face is never dressed in Done's name (Bugbot, PR #665).
-    annBtn.setAttribute("aria-label", annOn
-      ? "Done — send the notes and finish commenting"
-      : "Comment on the " + paneNoun);
-    annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
+    // A NEW session that began mid-transcription owns the seat — its stop
+    // face, its clock — and this stale finally must not repaint or re-name
+    // it (Bugbot, PR #665). Everything here is that session's to clean up.
+    if (!annRecOn) {
+      annBtn.disabled = false;
+      annCta.classList.remove("busy");
+      annRecLbl.textContent = "";   // "Transcribing…" only ever describes now
+      // The disarm below renames the seat on the normal path; when the guards
+      // skip it (re-armed mid-transcription, or Esc already disarmed) the
+      // name comes back by hand — derived from the state, so an idle face is
+      // never dressed in Done's name.
+      annBtn.setAttribute("aria-label", annOn
+        ? "Done — send the notes and finish commenting"
+        : "Comment on the " + paneNoun);
+      annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
+    }
   }
   // The other half of the stop-disarms rule above: transcript fetched (or
   // failed — the notes stay in the transcript either way), walkthrough done,
@@ -6723,7 +6749,17 @@ annRecBtn.addEventListener("click",
 // click racing the discard cannot resurrect the walkthrough.
 async function annRecDiscard() {
   if (!annRecOn || !annRecorder) return;
+  // The whole session is snapshotted synchronously, like annRecEnd's: a new
+  // recording can begin while this one's stop settles, and every global read
+  // after the await would be the new session's — its marks deleted, its
+  // timer killed (Bugbot, PR #665).
   const recorder = annRecorder;
+  const ids = new Set(annRecIds);
+  const armed = annArmEpoch;
+  clearInterval(annRecTimerId);
+  annRecTimerId = null;
+  annRecChunks = [];
+  annRecIds = [];
   annRecorder = null;
   annRecOn = false;
   // The face goes BEFORE the await, like annRecEnd's: the trash and the
@@ -6744,25 +6780,31 @@ async function annRecDiscard() {
   const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
   recorder.stop();   // onstop releases the mic tracks, same as a kept stop
   await stopped;
-  clearInterval(annRecTimerId);
-  annRecTimerId = null;
-  annRecChunks = [];
-  annCta.classList.remove("busy");
-  annRecLbl.textContent = "";
-  annBtn.disabled = false;
-  // Derived, same reason as annRecEnd's restores: Esc during this settle
-  // has already idle-named the seat, and the disarm below is epoch-guarded.
-  annBtn.setAttribute("aria-label", annOn
-    ? "Done — send the notes and finish commenting"
-    : "Comment on the " + paneNoun);
-  annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
-  const ids = new Set(annRecIds);
-  annRecIds = [];
+  // A NEW session that began during the settle owns the seat now — leave its
+  // busy state, labels and clock alone (Bugbot, PR #665).
+  if (!annRecOn) {
+    annCta.classList.remove("busy");
+    annRecLbl.textContent = "";
+    annBtn.disabled = false;
+    // Derived, same reason as annRecEnd's restores: Esc during this settle
+    // has already idle-named the seat.
+    annBtn.setAttribute("aria-label", annOn
+      ? "Done — send the notes and finish commenting"
+      : "Comment on the " + paneNoun);
+    annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
+  }
+  // The marks die with the recording whatever the mode is doing now — they
+  // are THIS session's, captured above — and the repaint must not wait on a
+  // disarm that an Esc during the settle already spent (the pins/chips would
+  // stay on screen for notes that no longer exist).
   if (ids.size) {
     annotations = annotations.filter((a) => !ids.has(a.id));
     annSave();
+    renderAnn();
   }
-  if (annOn) annSetMode(false);
+  // Epoch-guarded like annRecEnd's disarm: a new arming that slipped into
+  // the settle is not this discard's to close.
+  if (annOn && annArmEpoch === armed) annSetMode(false);
 }
 annDiscardBtn.addEventListener("click", () => annRecDiscard());
 

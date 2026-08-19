@@ -250,19 +250,30 @@ def test_discard_throws_the_walkthrough_away(html):
     view = _block(html, '<div id="anncta">', "</div>")
     assert view.index('id="anndiscard"') < view.index('id="annbtn"')
     body = _block(html, "async function annRecDiscard()", "\n}\n")
-    # the flags AND the face drop BEFORE the await, closing the door on
-    # annRecEnd and on a second click — and annRecEnd mirrors the order, or a
-    # discard click inside ITS await passed the guard, threw InvalidStateError
-    # on the settled recorder, and the walkthrough sent anyway (Bugbot, #665)
-    assert body.index("annRecOn = false;") < body.index("await stopped;")
+    # the SESSION is snapshotted before the await — flags, face, chunks, ids,
+    # timer, epoch — because a new recording can begin while this one's stop
+    # settles, and a global read after the await would be the new session's
+    # (its marks deleted, its timer killed, its transcript overwritten). Both
+    # enders follow the same order (Bugbot, #665, three rounds of it).
+    for fn in (body, _block(html, "async function annRecEnd()", "\n}\n")):
+        stop = fn.index("await stopped;")
+        assert fn.index("annRecOn = false;") < stop
+        assert fn.index("clearInterval(annRecTimerId);") < stop
+        assert fn.index("const armed = annArmEpoch;") < stop
+        assert fn.index("annRecIds = [];") < stop
     assert body.index('annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");') \
         < body.index("await stopped;")
-    end = _block(html, "async function annRecEnd()", "\n}\n")
-    assert end.index("annRecOn = false;") < end.index("await stopped;")
-    assert end.index('classList.remove("on")') < end.index("await stopped;")
+    # ...and the recorder's final dataavailable lands in the SESSION's array:
+    # annRecBegin's sink is a closure, not the global the enders reset
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
+    assert "const chunks = [];" in begin
+    assert "annRecChunks = chunks;" in begin
+    assert "(e) => { if (e.data.size) chunks.push(e.data); }" in begin
     assert "annotations = annotations.filter((a) => !ids.has(a.id));" in body
+    assert "renderAnn();" in body, "discarded pins leave the screen even if Esc already disarmed"
     assert "fused.ai.transcribe" not in body and "annAutoSubmit" not in body
-    assert "if (annOn) annSetMode(false);" in body
+    assert "if (annOn && annArmEpoch === armed) annSetMode(false);" in body, \
+        "a new arming that slipped into the settle is not this discard's to close"
     assert 'annDiscardBtn.addEventListener("click", () => annRecDiscard());' in html
 
 
