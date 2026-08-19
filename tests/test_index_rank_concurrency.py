@@ -3,8 +3,8 @@
 The rank read path is lock-free, so the only thing a concurrent scan can take
 from it is CPU: up to ten detached worker processes, each with a 16-thread
 stat pool, plus a DuckDB compaction that defaults to every core. The scan
-therefore yields — it nices itself — and `/api/index/rank` keeps answering in
-tens of milliseconds.
+therefore yields — it nices itself and caps the compaction's threads — and
+`/api/index/rank` keeps answering in tens of milliseconds.
 """
 import os
 import subprocess
@@ -12,10 +12,10 @@ import sys
 
 import pytest
 
-from fused_render.index import worker
+from fused_render.index import store, worker
 
 
-# -- the scan nices itself ----------------------------------------------
+# -- the two knobs, unit-tested ----------------------------------------------
 
 def test_the_worker_nices_itself_at_startup(monkeypatch, tmp_path):
     """Self-nicing in the child, never a preexec_fn: this repo's spawns must
@@ -48,3 +48,10 @@ def test_renicing_really_lowers_a_real_process_priority():
          "_renice_self();print(os.getpriority(os.PRIO_PROCESS, 0))"],
         capture_output=True, text=True, check=True)
     assert int(out.stdout.strip()) >= worker.SCAN_NICE_INCREMENT
+
+
+def test_the_compaction_connection_caps_its_threads():
+    con = store.background_connect()
+    got = int(con.execute("SELECT current_setting('threads')").fetchone()[0])
+    assert got == store.compaction_threads()
+    assert 1 <= got <= store.MAX_COMPACTION_THREADS
