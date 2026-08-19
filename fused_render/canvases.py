@@ -238,15 +238,29 @@ def _kick_workbench_skills() -> None:
     Rate limiting stays in `skill_plugin` (`_attempt_due`), so repeated opens
     cost a lock check and nothing else. Nothing here can fail a canvas open:
     the thread swallows everything and the caller never waits on it.
+
+    Also retires the pre-rename `fused` plugin, on this thread and this trigger —
+    see the call below for why supplying the new skills is only half the fix.
     """
     if not _SKILLS_FETCH_LOCK.acquire(blocking=False):
         return  # one already running — its result serves this caller too
 
     def run() -> None:
         try:
-            from fused_render.skill_plugin import sync_workbench_plugin
+            from fused_render.skill_plugin import (retire_legacy_fused_plugin,
+                                                   sync_workbench_plugin)
 
             sync_workbench_plugin()
+            # Same thread and the same trigger, because it is the same problem
+            # from the other side: supplying the current `workbench:*` skills
+            # does nothing while the pre-rename `fused` plugin is still enabled
+            # globally and shadowing them with stale copies under the prefix an
+            # old seeded CLAUDE.md names. Gated on the canvas path like the fetch
+            # — a user who never opens a canvas gets their config left alone —
+            # and idempotent, so the repeat opens that re-arm the watcher cost a
+            # settings read. Ordered AFTER the fetch on purpose: the flip removes
+            # the fallback answer, so do it once the real one is on disk.
+            retire_legacy_fused_plugin()
         except Exception:  # noqa: BLE001 — never surface out of a helper thread
             logger.debug("workbench skills sync failed", exc_info=True)
         finally:
@@ -2272,6 +2286,19 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
     # those sessions with no workbench skills at all. Rate-limited and
     # off-thread; see _kick_workbench_skills.
     _kick_workbench_skills()
+    # Re-seed CLAUDE.md for the same reason, and it is the other half of the same
+    # bug: seeding otherwise runs at /clone and after a CLI force pull only, so a
+    # canvas cloned before a text change keeps the OLD file forever. Concretely,
+    # clones from before D360 still name the pre-rename `fused:*` skills — and a
+    # user who once ran the `fused claude plugin add` that the older text told
+    # them to has that stale plugin installed globally, so the session finds
+    # `fused:canvas-toml` in its skill list, uses it, and never touches the
+    # current `workbench:*` root we hand it per-run. Nothing warns: stale skills
+    # load cleanly. Invisible to the sync — both basenames are excluded from the
+    # fingerprint, hash and merge-base walks (_SYNC_IGNORED_BASENAMES) and from
+    # every push (.fusedignore) — and shim-gated inside the helper, so the
+    # external-CLI leg still cannot churn on it.
+    _seed_clone_claude_files(_canvas_dir(name), name)
     manager = _sync_manager(name, create=True)
     return manager.status()
 

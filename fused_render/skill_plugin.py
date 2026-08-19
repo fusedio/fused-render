@@ -515,6 +515,105 @@ def export_workbench_plugin_env() -> str | None:
     return root
 
 
+# -- retiring the LEGACY `fused` plugin ---------------------------------------
+#
+# Before the rename (D360) the canvas skills shipped as a `fused` plugin the user
+# was told to install themselves, via a `fused claude plugin add` printed in the
+# seeded CLAUDE.md of the day. That instruction is long gone and the app now hands
+# the skills to a canvas session itself — but an install the user performed then
+# is still installed NOW, globally, and its skills are stale copies of the ones
+# under a live `workbench:` prefix.
+#
+# Stale skills are the worst failure shape available here, because they do not
+# look like one: they load cleanly and teach a canvas.toml format that no longer
+# exists. Worse, the old CLAUDE.md named the `fused:` prefix, so a clone seeded
+# back then points its session straight at them. Disabling is therefore not
+# tidying — it is the removal of a wrong answer that outranks the right one.
+#
+# This DOES mutate the user's global Claude config, which D360 refused to do for
+# the install side and the refusal still stands there: adding skills to every
+# session on the machine is a leak, and `--plugin-dir` exists so we never have
+# to. Retiring a plugin the app itself told the user to install is the opposite
+# transaction — we are taking back our own footprint, not planting a new one —
+# and it is done in the narrowest, most reversible form there is:
+#
+#   * ONLY `fused@fused-marketplace`, matched exactly. Never a prefix or
+#     marketplace-wide sweep: `agent-core@fused-marketplace` and friends are
+#     live plugins from the same marketplace and none of our business.
+#   * Only when the key is ALREADY present and truthy. A machine that never had
+#     it keeps a settings.json we never touched — writing `false` for an absent
+#     plugin would state on disk that something is installed-and-off when
+#     nothing is installed at all.
+#   * Flipped to `false`, never deleted. `false` is exactly what the
+#     Preferences page's own toggle writes, so the plugin stays listed there and
+#     one click puts it back; a delete would make it vanish with no trace of
+#     what happened or how to undo it.
+#
+# Serialized through `claude_config.lib.config_lock()` — the same thread lock +
+# flock pair the Preferences page takes — because that page can be rewriting
+# settings.json from another request (or another process) at this exact moment,
+# and a read-modify-write without it drops whichever change lost the race.
+LEGACY_PLUGIN_ID = "fused@fused-marketplace"
+
+
+def retire_legacy_fused_plugin() -> bool:
+    """Disable the legacy `fused@fused-marketplace` plugin if it is enabled.
+
+    True when this call flipped it, False for every other outcome — already off,
+    never installed, or a config we could not read or write. Never raises: this
+    runs beside the skills fetch on a canvas open, where nothing may fail the
+    open, and a user whose Claude config we cannot parse still deserves a working
+    canvas.
+
+    Idempotent by construction (the second call finds it already `false` and
+    writes nothing), so callers need no bookkeeping of their own.
+    """
+    try:
+        from fused_render.claude_config import lib
+    except Exception:  # noqa: BLE001 — never worth failing a caller over
+        logger.debug("could not import the claude config helpers", exc_info=True)
+        return False
+    try:
+        with lib.config_lock():
+            settings = lib.read_settings()
+            enabled = settings.get("enabledPlugins")
+            if not isinstance(enabled, dict) or not enabled.get(LEGACY_PLUGIN_ID):
+                return False
+            settings["enabledPlugins"] = {**enabled, LEGACY_PLUGIN_ID: False}
+            lib.write_json(lib.SETTINGS_PATH, settings)
+            _commit_legacy_retirement(lib)
+    except Exception:  # noqa: BLE001 — a read-only Claude dir, malformed JSON…
+        logger.warning("could not disable the legacy %s plugin",
+                       LEGACY_PLUGIN_ID, exc_info=True)
+        return False
+    logger.info("disabled the legacy %s plugin: its canvas skills are stale "
+                "copies of the workbench ones this app supplies itself",
+                LEGACY_PLUGIN_ID)
+    return True
+
+
+def _commit_legacy_retirement(lib) -> None:
+    """Record the flip in the Claude-config git history, but ONLY if that history
+    already exists.
+
+    `lib.commit` calls `ensure_repo`, which `git init`s `~/.claude` and writes a
+    .gitignore into it. That is right when the user pressed a button in a config
+    UI built around versioning; it is not something an unattended canvas open may
+    do to their home directory behind their back. So: a repo already there gets
+    the audit trail (the user is using it, and an unexplained settings change is
+    exactly what they'd go looking for), and a machine without one stays without
+    one. A failure here is not a failure of the retirement — the setting is
+    already written and that is the part that matters."""
+    if not os.path.isdir(os.path.join(lib.CLAUDE_DIR, ".git")):
+        return
+    try:
+        lib.commit(f"Disable legacy plugin {LEGACY_PLUGIN_ID} (superseded by "
+                   "the workbench skills fused-render supplies per-session)")
+    except Exception:  # noqa: BLE001
+        logger.debug("could not commit the legacy plugin retirement",
+                     exc_info=True)
+
+
 def sync_workbench_plugin() -> str | None:
     """Fetch/refresh the skills clone and publish the resulting root.
 

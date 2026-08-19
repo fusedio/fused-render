@@ -953,3 +953,184 @@ def test_both_canvas_entry_points_fetch_and_neither_can_fail_over_it():
     assert "except Exception" in helper
     assert "daemon=True" in helper
     assert "acquire(blocking=False)" in helper
+
+
+# -- retiring the legacy `fused@fused-marketplace` plugin ----------------------
+#
+# The pre-rename plugin the app itself once told users to install. It is still
+# installed on those machines, its canvas skills are stale copies of the
+# `workbench:*` ones, and an old seeded CLAUDE.md names its `fused:` prefix — so
+# it does not merely sit there, it actively wins. Disabling it is a mutation of
+# the user's GLOBAL Claude config, which is exactly what D360 refused for the
+# install side, so the blast radius is pinned hard below: one exact id, only when
+# already enabled, `false` rather than deleted, and no git init of a home dir
+# that isn't already a repo.
+
+@pytest.fixture
+def claude_home(tmp_path, monkeypatch):
+    """A scratch CLAUDE_DIR. `lib` resolves its paths from the env once at import
+    (deliberately — they are process constants), so setting the var in a test is
+    too late; every path derived at import gets repointed, since missing one
+    writes into the developer's real ~/.claude."""
+    from fused_render.claude_config import lib
+
+    root = tmp_path / "claude-home"
+    root.mkdir()
+    monkeypatch.setattr(lib, "CLAUDE_DIR", str(root))
+    monkeypatch.setattr(lib, "SETTINGS_PATH", str(root / "settings.json"))
+    monkeypatch.setattr(lib, "_LOCK_PATH", str(root / ".config-ui.lock"))
+    return root
+
+
+def _write_settings(root, value: dict) -> None:
+    with open(os.path.join(str(root), "settings.json"), "w", encoding="utf-8") as f:
+        json.dump(value, f)
+
+
+def _read_settings(root) -> dict:
+    with open(os.path.join(str(root), "settings.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def test_retire_disables_an_enabled_legacy_plugin(claude_home):
+    """The whole point: enabled → False, so the stale `fused:*` skills stop
+    loading into every session on the machine."""
+    _write_settings(claude_home, {"enabledPlugins": {
+        skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    assert skill_plugin.retire_legacy_fused_plugin() is True
+    enabled = _read_settings(claude_home)["enabledPlugins"]
+    assert enabled[skill_plugin.LEGACY_PLUGIN_ID] is False
+
+
+def test_retire_writes_false_rather_than_deleting_the_key(claude_home):
+    """`false` is what the Preferences page's own toggle writes, so the plugin
+    stays listed there and one click puts it back. A delete would make it vanish
+    with no trace of what happened or how to undo it."""
+    _write_settings(claude_home, {"enabledPlugins": {
+        skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    skill_plugin.retire_legacy_fused_plugin()
+    assert skill_plugin.LEGACY_PLUGIN_ID in _read_settings(claude_home)["enabledPlugins"]
+
+
+def test_retire_leaves_every_other_plugin_alone(claude_home):
+    """Matched EXACTLY — never a prefix, never a marketplace-wide sweep.
+    `agent-core@fused-marketplace` is a live plugin from the same marketplace and
+    none of our business, and a name that merely contains ours is not ours."""
+    others = {
+        "agent-core@fused-marketplace": True,
+        "fused-render@fused-render": True,
+        "fused@other-marketplace": True,
+        "fused-extra@fused-marketplace": True,
+    }
+    _write_settings(claude_home, {"enabledPlugins": {
+        **others, skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    skill_plugin.retire_legacy_fused_plugin()
+    enabled = _read_settings(claude_home)["enabledPlugins"]
+    for pid in others:
+        assert enabled[pid] is True, pid
+
+
+def test_retire_does_not_add_the_key_when_it_was_never_installed(claude_home):
+    """A machine that never installed it keeps a settings.json we never touched.
+    Writing `false` for an absent plugin would state on disk that something is
+    installed-and-off when nothing is installed at all."""
+    _write_settings(claude_home, {"enabledPlugins": {"other@mkt": True}})
+    before = _read_settings(claude_home)
+    assert skill_plugin.retire_legacy_fused_plugin() is False
+    assert _read_settings(claude_home) == before
+
+
+def test_retire_is_a_no_op_on_a_settings_file_with_no_plugins_at_all(claude_home):
+    """No `enabledPlugins` key, and the shape it does have is not a dict in every
+    install — neither may raise out of a canvas open."""
+    for value in ({}, {"enabledPlugins": None}, {"enabledPlugins": []},
+                  {"model": "opus"}):
+        _write_settings(claude_home, value)
+        assert skill_plugin.retire_legacy_fused_plugin() is False
+        assert _read_settings(claude_home) == value
+
+
+def test_retire_survives_a_missing_or_malformed_settings_file(claude_home):
+    """Absent is normal (a fresh Claude install). Malformed is not, but a config
+    we cannot parse must still leave the canvas open working — every other write
+    path in the app treats corruption as a hard error precisely because a USER is
+    waiting on the answer; nobody is waiting on this one."""
+    assert skill_plugin.retire_legacy_fused_plugin() is False
+    with open(os.path.join(str(claude_home), "settings.json"), "w") as f:
+        f.write("{not json")
+    assert skill_plugin.retire_legacy_fused_plugin() is False
+
+
+def test_retire_is_idempotent(claude_home):
+    """The canvas hooks repeat — every open, and every poll that re-arms the
+    watcher. The second call must find it already off and write nothing, so
+    callers need no bookkeeping."""
+    _write_settings(claude_home, {"enabledPlugins": {
+        skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    assert skill_plugin.retire_legacy_fused_plugin() is True
+    mtime = os.path.getmtime(os.path.join(str(claude_home), "settings.json"))
+    assert skill_plugin.retire_legacy_fused_plugin() is False
+    assert os.path.getmtime(os.path.join(str(claude_home), "settings.json")) == mtime
+
+
+def test_retire_never_git_inits_the_users_claude_dir(claude_home):
+    """`lib.commit` calls `ensure_repo`, which `git init`s ~/.claude and writes a
+    .gitignore into it. Right when the user pressed a button in a config UI built
+    around versioning; NOT something an unattended canvas open may do to their
+    home directory behind their back."""
+    _write_settings(claude_home, {"enabledPlugins": {
+        skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    assert skill_plugin.retire_legacy_fused_plugin() is True
+    assert not os.path.exists(os.path.join(str(claude_home), ".git"))
+    assert not os.path.exists(os.path.join(str(claude_home), ".gitignore"))
+
+
+def test_retire_records_the_flip_when_a_config_repo_already_exists(claude_home,
+                                                                  monkeypatch):
+    """The user versioning their Claude config is the user who will go looking
+    for an unexplained settings change — so when the history is already there,
+    the flip lands in it."""
+    from fused_render.claude_config import lib
+
+    seen = []
+    monkeypatch.setattr(lib, "commit", lambda msg, **kw: seen.append(msg))
+    os.makedirs(os.path.join(str(claude_home), ".git"))
+    _write_settings(claude_home, {"enabledPlugins": {
+        skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    assert skill_plugin.retire_legacy_fused_plugin() is True
+    assert len(seen) == 1 and skill_plugin.LEGACY_PLUGIN_ID in seen[0]
+
+
+def test_a_failed_commit_does_not_undo_the_retirement(claude_home, monkeypatch):
+    """The setting is already written and that is the part that matters — the
+    audit trail is a nicety and its failure must not report the flip as failed
+    (a caller that retried on False would keep re-reading a config it already
+    fixed)."""
+    from fused_render.claude_config import lib
+
+    def boom(*a, **kw):
+        raise RuntimeError("no git here")
+
+    monkeypatch.setattr(lib, "commit", boom)
+    os.makedirs(os.path.join(str(claude_home), ".git"))
+    _write_settings(claude_home, {"enabledPlugins": {
+        skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    assert skill_plugin.retire_legacy_fused_plugin() is True
+    assert _read_settings(claude_home)["enabledPlugins"][
+        skill_plugin.LEGACY_PLUGIN_ID] is False
+
+
+def test_the_legacy_id_is_the_pre_rename_plugin_and_not_the_live_one():
+    """A seam: `LEGACY_PLUGIN_ID` names the plugin we RETIRE and
+    `WORKBENCH_PLUGIN_SUBDIR` the one we SUPPLY. Should these ever come to name
+    the same thing, the canvas hook would disable the skills it just fetched."""
+    assert skill_plugin.LEGACY_PLUGIN_ID.startswith("fused@")
+    assert not skill_plugin.LEGACY_PLUGIN_ID.startswith(
+        skill_plugin.WORKBENCH_PLUGIN_SUBDIR + "@")

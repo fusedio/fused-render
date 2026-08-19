@@ -1566,6 +1566,66 @@ def test_clone_seeds_claude_md_and_fusedignore(harness, tmp_path, monkeypatch):
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
+def test_opening_a_canvas_retires_the_legacy_fused_plugin(harness, tmp_path,
+                                                          monkeypatch):
+    """The other half of the stale-skills fix, wired to the same hook as the
+    fetch. Supplying the current `workbench:*` skills achieves nothing while the
+    pre-rename `fused` plugin is still enabled globally and shadowing them under
+    the very prefix an old seeded CLAUDE.md names — so the canvas paths do both.
+
+    Asserted through the real function rather than a spy on the name, because a
+    spy would keep passing if the call were moved somewhere it never runs.
+    """
+    from fused_render import skill_plugin
+    from fused_render.claude_config import lib
+
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    with open(lib.SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump({"enabledPlugins": {skill_plugin.LEGACY_PLUGIN_ID: True,
+                                      "keep-me@mkt": True}}, f)
+
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"},
+                        headers=GUARD)
+    # The kick runs off-thread — wait for it rather than sleeping a guess.
+    deadline = time.time() + 5
+    enabled = {}
+    while time.time() < deadline:
+        with open(lib.SETTINGS_PATH, encoding="utf-8") as f:
+            enabled = (json.load(f).get("enabledPlugins") or {})
+        if enabled.get(skill_plugin.LEGACY_PLUGIN_ID) is False:
+            break
+        time.sleep(0.05)
+    assert enabled.get(skill_plugin.LEGACY_PLUGIN_ID) is False, enabled
+    # And nothing else was touched on the way past.
+    assert enabled.get("keep-me@mkt") is True, enabled
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"},
+                        headers=GUARD)
+
+
+def test_sync_start_reseeds_a_stale_claude_md(harness, tmp_path, monkeypatch):
+    """Opening a canvas rewrites CLAUDE.md, so a clone made before a text change
+    stops carrying the old one. This is the field bug: clones from before D360
+    name the pre-rename `fused:*` skills, and a user who once installed that
+    plugin globally has a stale copy the session happily loads instead of the
+    `workbench:*` root the app hands it — silently, because stale skills load
+    fine. /clone and the force-pull legs cannot reach an existing clone; open
+    can, and does it on every open (and every watcher re-arm)."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    claude_md = harness.root / "alpha" / "CLAUDE.md"
+    claude_md.write_text("stale: load fused:canvas-toml\n", encoding="utf-8")
+
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    text = claude_md.read_text()
+    assert "workbench:canvas-toml" in text
+    assert "fused:canvas-toml" not in text
+    time.sleep(0.4)
+    # Rewriting it is still invisible to the sync — no push fired.
+    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
 def test_clean_pull_reseeds_claude_md(harness, tmp_path, monkeypatch):
     # The CLI's `pull --force` deletes the seeded files (not in the bundle);
     # the pull leg puts them back.

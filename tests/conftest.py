@@ -368,6 +368,42 @@ def _no_schedule_loop_thread(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_claude_config_writes(tmp_path_factory, monkeypatch):
+    """No test may read or write the DEVELOPER's own ~/.claude.
+
+    Sibling of `_no_real_workbench_skills_clone` above and reachable the same
+    way: the canvas kick now also calls `skill_plugin.retire_legacy_fused_plugin`,
+    which rewrites `enabledPlugins` in settings.json, and several tests POST
+    /api/canvases/clone or /api/canvases/sync/start. Unredirected, a test run
+    would silently disable a plugin in the config of whoever ran it — the suite
+    reaching out and changing the machine, which is worse than the network clone
+    this fixture is modelled on.
+
+    `claude_config.lib` resolves these from the env ONCE at import (deliberately:
+    they are process constants), so setting CLAUDE_DIR here would be too late.
+    Every path derived at import is repointed instead — miss one and that one
+    file is still the real one.
+
+    Session-scoped tmp dir, function-scoped patch: the point is "not the real
+    home", not isolation between tests, and the tests that actually care about
+    the contents bring their own dir (this file's `claude_home`,
+    test_claude_config_api's `claude_dir`), whose patch is applied after this one
+    and therefore wins.
+    """
+    from fused_render.claude_config import lib
+
+    root = tmp_path_factory.mktemp("claude-home-guard")
+    monkeypatch.setattr(lib, "CLAUDE_DIR", str(root))
+    monkeypatch.setattr(lib, "SETTINGS_PATH", str(root / "settings.json"))
+    monkeypatch.setattr(lib, "INSTALLED_PLUGINS_PATH",
+                        str(root / "plugins" / "installed_plugins.json"))
+    monkeypatch.setattr(lib, "KNOWN_MARKETPLACES_PATH",
+                        str(root / "plugins" / "known_marketplaces.json"))
+    monkeypatch.setattr(lib, "MARKETPLACES_DIR", str(root / "plugins" / "marketplaces"))
+    monkeypatch.setattr(lib, "_LOCK_PATH", str(root / ".config-ui.lock"))
+
+
+@pytest.fixture(autouse=True)
 def _no_background_mount_threads(monkeypatch):
     """`create_app` starts two daemon threads that reach for a real rclone;
     neither may run in a test.
