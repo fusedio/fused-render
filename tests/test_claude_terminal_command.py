@@ -92,7 +92,6 @@ def test_the_resume_flag_still_rides_along(agent, target, monkeypatch):
     """The PATH prefix must not displace anything the command already carried."""
     monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", "/bin/fused-bin")
     monkeypatch.setattr(agent, "_plugin_argv", lambda: ["--plugin-dir", "/p"])
-    monkeypatch.setattr(agent, "_migrate_session", lambda *a, **k: None)
     monkeypatch.setattr(agent.os, "name", "posix")
     command = agent._terminal_command(target, "sess-A")["command"]
     assert "--resume sess-A" in command
