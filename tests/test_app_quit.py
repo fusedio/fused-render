@@ -16,9 +16,21 @@ Three defects were funnelling through the old one-liner quit (INCIDENT
      `DuckDBPyConnection` destructs there, touching the Python C-API ->
      Py_FatalError -> abort().
 
-These tests pin the fix: the ordering (server drain -> duckdb stash close ->
-unmount -> reap rcd), the non-blocking entry point with its hard deadline, and
-per-mount isolation. Nothing macOS-only is exercised — rumps/AppKit are never
+Defect C came back on 2026-08-19 (crash report
+FusedRender-2026-08-19-133416.ips) in its general shape: the teardown had fully
+succeeded, and the process still aborted in exit()'s `__cxa_finalize` — this
+time destructing duckdb's DEFAULT connection, which 1.5.5 creates eagerly at
+IMPORT, so no stash and no reader run were involved at all. Two fixes, and only
+the second one stops the crash: quit also closes that connection (correct
+shutdown of a handle we own — but measured on the shipped interpreter, the abort
+happens with or without it), and the quit never hands control back to C exit()
+at all. It ends in `hard_exit` (os._exit), which skips atexit, Python
+finalization and `__cxa_finalize` entirely — which is the only fix that also
+covers every other native extension we load (GDAL/rasterio, pyarrow, torch).
+
+These tests pin the fix: the ordering (server drain -> duckdb closes ->
+unmount -> reap rcd), the non-blocking entry point with its hard deadline,
+per-mount isolation, and that every quit surface dies by hard exit. Nothing macOS-only is exercised — rumps/AppKit are never
 imported (app.py imports them lazily inside `main()`), and the mount ladder is
 faked at the rc/subprocess boundary exactly like tests/test_shell_mounts.py and
 tests/test_mounts_rcd_owner.py do, so no real rclone, mount or `umount` runs.
@@ -208,9 +220,13 @@ def test_quit_close_swallows_a_raising_reader_hook(monkeypatch):
 # what the bundle ships) builds its default connection EAGERLY AT IMPORT and
 # holds it in a C++ global, so a process that merely `import duckdb`s — which
 # the in-process server does for /api/index, parquet, search, git_repos, h3,
-# excel, tableau — aborts in __cxa_finalize with no stash ever created. Measured
-# on the shipped interpreter: `import duckdb` then exit() off-thread => SIGABRT;
-# the same with `duckdb.default_connection().close()` first => rc 0.
+# excel, tableau — aborts in __cxa_finalize with no stash ever created.
+#
+# Closing it is NOT what stops the abort (the hard exit below is): measured on
+# the shipped interpreter, `import duckdb` then exit() off-thread aborts with or
+# without `duckdb.default_connection().close()` — the Python-level close does
+# not take the C++ global with it. What these tests pin is the correct shutdown
+# of a handle we own, and that neither half of the close can break the quit.
 
 
 def _fake_duckdb(default_connection):
@@ -853,6 +869,66 @@ def test_the_tile_daemons_are_quiesced_once_before_the_mounts_fan_out(ladder):
     # requests hit already-dead ports and fail immediately.
 
 
+# --------------------------------------------------- the hard exit (defect C)
+# The 2026-08-19 recurrence (crash report FusedRender-2026-08-19-133416.ips):
+# a fully successful teardown ("quit teardown finished in 11.5s (steps: server,
+# duckdb, unmount, rcd)"), then SIGABRT 20ms later inside
+# -[NSApplication terminate:] -> exit() -> __cxa_finalize_ranges ->
+# ~DuckDBPyConnection -> PyEval_SaveThread -> Py_FatalError. Closing connections
+# one by one is whack-a-mole across every native extension we load (duckdb,
+# GDAL/rasterio, pyarrow, torch), so the quit stops handing control back to C
+# exit() at all.
+
+# Captured BEFORE the autouse stub below replaces the module global — the tests
+# of hard_exit itself need the real function.
+_REAL_HARD_EXIT = app_mod.hard_exit
+
+
+@pytest.fixture(autouse=True)
+def no_real_exit(monkeypatch):
+    """Safety net for the WHOLE module: nothing here may actually _exit the
+    pytest worker. Every quit surface now ends in `hard_exit`, and a test that
+    forgot to inject a stub would take the run down with it — silently, since an
+    os._exit'd worker is not a test failure. Returns the recorded exit codes."""
+    codes = []
+    monkeypatch.setattr(app_mod, "hard_exit", lambda code=0: codes.append(code))
+    return codes
+
+
+def test_hard_exit_calls_os_exit_with_the_code():
+    exits = []
+
+    _REAL_HARD_EXIT(3, exit_process=exits.append)
+
+    assert exits == [3]
+
+
+def test_hard_exit_flushes_logging_before_dying(monkeypatch):
+    # os._exit runs no atexit handler, and logging's flush IS one: without this
+    # the last lines of the quit log — exactly what a crash report is read
+    # against — can be lost.
+    order = []
+    monkeypatch.setattr(app_mod.logging, "shutdown",
+                        lambda: order.append("logging"))
+
+    _REAL_HARD_EXIT(0, exit_process=lambda code: order.append(("exit", code)))
+
+    assert order == ["logging", ("exit", 0)]
+
+
+def test_hard_exit_still_exits_when_the_log_flush_raises(monkeypatch):
+    # Dying is not optional: a flush that raises must not leave the app alive.
+    def _boom():
+        raise RuntimeError("handler already closed")
+
+    monkeypatch.setattr(app_mod.logging, "shutdown", _boom)
+    exits = []
+
+    _REAL_HARD_EXIT(0, exit_process=exits.append)
+
+    assert exits == [0]
+
+
 # ------------------------------------------- AppKit's own quit surfaces (D34)
 # The app is a REGULAR app (setup_py2app.py sets no LSUIElement: Dock icon AND
 # menu bar item, D34), so the Dock icon's right-click Quit, ⌘Q and logout/restart
@@ -881,6 +957,40 @@ class _FakeStart:
 @pytest.fixture()
 def quit_state():
     return {"server": "srv", "server_thread": "thr"}
+
+
+def _wait_for(recorded, timeout=3.0):
+    """Block until a background quit thread records something (or give up)."""
+    deadline = time.monotonic() + timeout
+    while not recorded and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+class _StubExit:
+    """Stands in for hard_exit in the threaded cases.
+
+    A plain recorder is not faithful: the real one never returns, so a recorder
+    that does makes the hook take its last-resort `reply` branch. This records
+    the code and then blocks forever, which is what "the process died here"
+    looks like to the daemon thread that called it."""
+
+    def __init__(self):
+        self.codes = []
+        self._dead = threading.Event()
+
+    def __call__(self, code):
+        self.codes.append(code)
+        self._dead.wait()  # never set: this thread is "gone"
+
+    def release(self):
+        self._dead.set()
+
+
+@pytest.fixture()
+def stub_exit():
+    stub = _StubExit()
+    yield stub
+    stub.release()  # let the parked daemon thread unwind at teardown
 
 
 def test_begin_quit_starts_one_teardown_and_flags_ready_before_terminating(
@@ -914,88 +1024,157 @@ def test_begin_quit_joins_a_teardown_already_in_flight(quit_state):
     assert second.calls == []
 
 
-def test_appkit_quit_starts_the_same_teardown_and_replies_when_it_is_done(
-        quit_state):
+def test_appkit_quit_starts_the_same_teardown_and_hard_exits_when_it_is_done(
+        quit_state, stub_exit):
     start = _FakeStart()
-    replies = []
+    exits, replies = stub_exit.codes, []
     hook = app_mod.make_appkit_terminate_hook(
         quit_state, reply=replies.append, start=start,
-        remove_pidfile=lambda: None)
+        remove_pidfile=lambda: None, exit_now=stub_exit)
 
-    assert hook() == app_mod.NS_TERMINATE_LATER  # AppKit waits for our reply
+    assert hook() == app_mod.NS_TERMINATE_LATER  # AppKit waits while we tear down
     assert start.calls == [("srv", "thr")]       # ...on the ONE teardown
     time.sleep(0.05)
-    assert replies == [], "must not resume termination before teardown finishes"
+    assert exits == [], "must not die before the teardown finishes"
 
     start.finish()
 
-    deadline = time.monotonic() + 3.0
-    while not replies and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert replies == [True]
+    _wait_for(exits)
+    assert exits == [0]
+    # NOT replyToApplicationShouldTerminate:, which resumes AppKit's exit() and
+    # aborts in __cxa_finalize (the 2026-08-19 crash). The teardown is done, so
+    # there is nothing left a graceful termination would still do for us.
+    assert replies == []
 
 
 def test_appkit_quit_during_a_tray_teardown_does_not_start_a_second_one(
-        quit_state):
+        quit_state, stub_exit):
     start = _FakeStart()
     tray_terminated = []
     app_mod.make_quit_action(quit_state, terminate=lambda: tray_terminated.append(True),
                              start=start, remove_pidfile=lambda: None)()
     second = _FakeStart()
-    replies = []
+    exits, replies = stub_exit.codes, []
     hook = app_mod.make_appkit_terminate_hook(
         quit_state, reply=replies.append, start=second,
-        remove_pidfile=lambda: None)
+        remove_pidfile=lambda: None, exit_now=stub_exit)
 
     assert hook() == app_mod.NS_TERMINATE_LATER
     assert second.calls == []  # converged on the tray's teardown
 
     start.finish()
 
-    deadline = time.monotonic() + 3.0
-    while not replies and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert replies == [True]
+    _wait_for(exits)
+    assert exits == [0]
+    assert replies == []
     assert tray_terminated == [True]
 
 
 def test_appkit_terminate_after_our_own_teardown_finished_is_immediate(quit_state):
-    # The tray path ends by calling terminate: itself, which re-enters this hook.
-    # Nothing is left to wait for, so answering LATER would hang the quit.
+    # A second Quit after one completed. Nothing is left to wait for, so this
+    # dies on the spot rather than answering LATER (which would hang the quit)
+    # or NOW (which hands control to exit() and aborts).
     start = _FakeStart()
     app_mod.make_quit_action(quit_state, terminate=lambda: None, start=start,
                              remove_pidfile=lambda: None)()
     start.finish()
 
     second = _FakeStart()
+    exits = []
+
+    def _exit_and_die(code):
+        # Faithful to the real one: it does not come back. SystemExit is a
+        # BaseException, so the hook's `except Exception` guards cannot swallow
+        # it — which is how this test proves the reply branch is never reached
+        # on the normal path.
+        exits.append(code)
+        raise SystemExit(code)
+
     hook = app_mod.make_appkit_terminate_hook(
         quit_state, reply=lambda ok: pytest.fail("no reply is owed"),
-        start=second, remove_pidfile=lambda: None)
+        start=second, remove_pidfile=lambda: None, exit_now=_exit_and_die)
 
-    assert hook() == app_mod.NS_TERMINATE_NOW
+    with pytest.raises(SystemExit):
+        hook()
+    assert exits == [0]
     assert second.calls == []
 
 
-def test_appkit_reply_is_not_left_pending_if_ready_is_never_set(quit_state,
-                                                               monkeypatch):
-    # Defence in depth: an app AppKit is waiting on a reply for is unquittable, so
-    # the waiter gives up on the event rather than waiting forever.
+def test_an_immediate_appkit_terminate_answers_now_if_the_exit_hands_back(
+        quit_state):
+    # The unreachable-in-the-app return value, pinned anyway: if a stubbed or
+    # broken exit ever lets control back, NSTerminateNow is the honest answer —
+    # it is what the hook meant before the hard exit existed.
+    start = _FakeStart()
+    app_mod.make_quit_action(quit_state, terminate=lambda: None, start=start,
+                             remove_pidfile=lambda: None)()
+    start.finish()
+
+    hook = app_mod.make_appkit_terminate_hook(
+        quit_state, reply=lambda ok: pytest.fail("no reply is owed"),
+        start=_FakeStart(), remove_pidfile=lambda: None,
+        exit_now=lambda code: None)
+
+    assert hook() == app_mod.NS_TERMINATE_NOW
+
+
+def test_appkit_quit_is_not_left_pending_if_ready_is_never_set(quit_state,
+                                                               monkeypatch,
+                                                               stub_exit):
+    # Defence in depth, unchanged in intent by the hard exit: an app AppKit is
+    # waiting on is unquittable, so the waiter gives up on the event and dies
+    # anyway. The teardown had its bounded chance (this backstop sits past the
+    # quit deadline), and a mount left attached beats an app that cannot quit.
     monkeypatch.setattr(app_mod, "QUIT_APPKIT_REPLY_WAIT_S", 0.2)
-    replies = []
+    exits, replies = stub_exit.codes, []
     hook = app_mod.make_appkit_terminate_hook(
         quit_state, reply=replies.append, start=lambda *a, **k: None,
-        remove_pidfile=lambda: None)
+        remove_pidfile=lambda: None, exit_now=stub_exit)
 
     assert hook() == app_mod.NS_TERMINATE_LATER
 
-    deadline = time.monotonic() + 3.0
-    while not replies and time.monotonic() < deadline:
-        time.sleep(0.01)
+    _wait_for(exits)
+    assert exits == [0]
+    assert replies == []
+
+
+def test_a_hard_exit_that_somehow_returns_falls_back_to_replying(quit_state,
+                                                                 monkeypatch):
+    # `reply` is not a dead parameter: it is the last resort for the one case
+    # where the process is still alive after exit_now. os._exit cannot fail, but
+    # a future hard_exit that grew a bug would otherwise leave AppKit waiting
+    # forever on a reply we owe it.
+    monkeypatch.setattr(app_mod, "QUIT_APPKIT_REPLY_WAIT_S", 0.1)
+    replies = []
+    hook = app_mod.make_appkit_terminate_hook(
+        quit_state, reply=replies.append, start=lambda *a, **k: None,
+        remove_pidfile=lambda: None, exit_now=lambda code: None)
+
+    assert hook() == app_mod.NS_TERMINATE_LATER
+
+    _wait_for(replies)
+    assert replies == [True]
+
+
+def test_a_failing_hard_exit_still_replies_and_does_not_raise(quit_state,
+                                                              monkeypatch):
+    monkeypatch.setattr(app_mod, "QUIT_APPKIT_REPLY_WAIT_S", 0.1)
+
+    def _boom(_code):
+        raise RuntimeError("os._exit is gone")
+
+    replies = []
+    hook = app_mod.make_appkit_terminate_hook(
+        quit_state, reply=replies.append, start=lambda *a, **k: None,
+        remove_pidfile=lambda: None, exit_now=_boom)
+    assert hook() == app_mod.NS_TERMINATE_LATER
+
+    _wait_for(replies)
     assert replies == [True]
 
 
 def test_appkit_reply_failure_does_not_raise_into_the_thread(quit_state,
-                                                            monkeypatch):
+                                                             monkeypatch):
     monkeypatch.setattr(app_mod, "QUIT_APPKIT_REPLY_WAIT_S", 0.1)
 
     def _boom(_ok):
@@ -1003,7 +1182,7 @@ def test_appkit_reply_failure_does_not_raise_into_the_thread(quit_state,
 
     hook = app_mod.make_appkit_terminate_hook(
         quit_state, reply=_boom, start=lambda *a, **k: None,
-        remove_pidfile=lambda: None)
+        remove_pidfile=lambda: None, exit_now=lambda code: None)
     assert hook() == app_mod.NS_TERMINATE_LATER
     time.sleep(0.3)  # the waiter thread must die quietly
 
@@ -1055,12 +1234,17 @@ def _enclosing_functions(tree, predicate):
     return found
 
 
-def test_quit_application_is_only_ever_called_from_the_terminate_hop():
-    """Structural, because the bypass is invisible in behavior: any code path that
-    calls rumps.quit_application() directly gets AppKit's exit() with NO teardown
-    — no drain, no duckdb close, no unmount, no rcd reap. The readiness-failure
-    abort in _bootstrap_server did exactly that (the server has been up for as
-    long as 15s by then, so run_automount has had ample time to attach mounts)."""
+def test_no_code_path_reaches_nsapplication_terminate_any_more():
+    """Structural, because both bypasses are invisible in behavior.
+
+    rumps.quit_application() -> -[NSApplication terminate:] was BOTH failure
+    modes at once: called directly it skips the teardown entirely (no drain, no
+    duckdb close, no unmount, no rcd reap — the readiness-failure abort in
+    _bootstrap_server did exactly that), and called at the END of the teardown it
+    still lands in C exit(), whose __cxa_finalize destructs native globals with
+    the GIL released and aborts (the 2026-08-19 crash, after a teardown that had
+    fully succeeded). There is no longer any correct caller: the quit dies via
+    hard_exit, so no call site may exist at all."""
     import ast
 
     def is_quit_call(node):
@@ -1068,8 +1252,20 @@ def test_quit_application_is_only_ever_called_from_the_terminate_hop():
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "quit_application")
 
-    assert set(_enclosing_functions(_app_source_tree(), is_quit_call)) == {
-        "_terminate"}
+    assert _enclosing_functions(_app_source_tree(), is_quit_call) == []
+
+
+def test_the_terminate_hop_hard_exits():
+    """The other half of the property above: the tray/popover/relaunch quit still
+    ENDS somewhere, and that end is hard_exit rather than AppKit's termination."""
+    import ast
+
+    def is_hard_exit_call(node):
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "hard_exit")
+
+    assert "_terminate" in _enclosing_functions(_app_source_tree(),
+                                                is_hard_exit_call)
 
 
 def test_the_readiness_failure_abort_goes_through_the_quit_action():

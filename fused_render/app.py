@@ -132,19 +132,25 @@ def _close_duckdb_default_connection() -> None:
 
     Closing the reader's stash was necessary and not sufficient. duckdb 1.5.5
     (what the bundle ships) creates its default connection EAGERLY AT IMPORT and
-    holds it in a C++ global, which `__cxa_finalize` destructs during exit().
-    So a process that merely `import duckdb`s — which the in-process server does
-    for /api/index, parquet, search, git_repos, h3, excel and tableau, none of
-    which ever touch the reader's stash — aborts exactly like a process that
-    left the stash open. Measured on the shipped interpreter
-    (Contents/MacOS/python): `import duckdb` + exit() off-thread => SIGABRT;
-    the same run with this close first => rc 0.
+    holds it in a C++ global that `__cxa_finalize` destructs during exit(), so a
+    process that merely `import duckdb`s — which the in-process server does for
+    /api/index, parquet, search, git_repos, h3, excel and tableau, none of which
+    ever touch the reader's stash — aborts exactly like one that left the stash
+    open.
+
+    HONEST ABOUT WHAT THIS BUYS, because it is less than it looks: measured on
+    the shipped interpreter (Contents/MacOS/python, duckdb 1.5.5), `import
+    duckdb` + `exit()` from a non-main thread aborts, AND SO DOES THE SAME RUN
+    WITH THIS CLOSE FIRST. The Python-level `close()` does not take the C++
+    global with it. So this is correct shutdown hygiene — release the handle
+    while the interpreter is healthy and holding the GIL, which is what any
+    later exit path would want — and NOT the fix for the crash. `hard_exit` is
+    the fix: the quit never reaches `__cxa_finalize` at all.
 
     `default_connection` is a builtin FUNCTION in 1.5.5, but the attribute has
     changed shape across duckdb releases (and may be gone in a future one), so
     both a callable and a bare connection object are accepted rather than
-    assuming: guessing wrong costs an aborted quit, and handling both costs one
-    `callable()`."""
+    assuming: it costs one `callable()`."""
     duckdb = sys.modules.get("duckdb")
     default = getattr(duckdb, "default_connection", None)
     if default is None:
@@ -167,11 +173,13 @@ def _close_duckdb_stash() -> None:
     — and everything is swallowed (duckdb missing, unreadable reader, a raising
     close): a failure here must not block the quit.
 
-    Note this is now belt AND braces: since the quit path ends in `hard_exit`,
-    `__cxa_finalize` never runs at all. Both remain, because closing a
-    connection while Python is healthy and holding the GIL is the correct
-    shutdown, and because this function is also the one place that would keep
-    the quit clean if a future surface ever reached a normal exit()."""
+    Neither close is what stops the abort any more — `hard_exit` is, by never
+    reaching `__cxa_finalize` (and measurement says the default-connection close
+    alone would NOT have been enough anyway; see there). They stay because
+    releasing a connection while the interpreter is healthy and holding the GIL
+    is the correct shutdown: the reader's HTTP connection holds a socket against
+    an rclone serve that the very next teardown step reaps, and any future path
+    that does reach a normal exit() starts from a cleaner state."""
     if "duckdb" not in sys.modules:
         return
     try:
@@ -307,6 +315,53 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     return server, thread
+
+
+# ---- how the process actually dies (SPEC DM-9; INCIDENT 2026-08-19) ---------
+# EVERY quit surface ends here, and none of them returns control to C `exit()`.
+#
+# The mechanism, measured twice now: `-[NSApplication terminate:]` ends in
+# `exit()`, which runs `__cxa_finalize` over the static destructors of every
+# loaded dylib. pyobjc releases the GIL for the duration of an ObjC call, so
+# those destructors run on the main thread WITHOUT the GIL — and a native
+# extension's C++ global that touches the Python C-API on the way out (duckdb's
+# `~DuckDBPyConnection` -> `PyEval_SaveThread`) hits `_Py_FatalErrorFunc` and
+# `abort()`s. The 2026-07-29 fix closed the one connection we knew about; on
+# 2026-08-19 the app aborted 20ms after a teardown that had FULLY succeeded,
+# because duckdb 1.5.5 also holds a default connection created at import — and
+# measured on the shipped interpreter, closing THAT one does not help either:
+# `import duckdb` + exit() off-thread aborts with or without the close. Every
+# native extension the server loads (GDAL/rasterio, pyarrow, torch) is the same
+# hazard, so chasing handles is whack-a-mole against a game we cannot win. The
+# durable fix is to never reach `__cxa_finalize`. Same measurement, dying via
+# os._exit instead: rc 0.
+#
+# `os._exit` skips atexit handlers, Python finalization (interpreter shutdown,
+# gc, module teardown) and `__cxa_finalize`. That is safe here, and ONLY because
+# quit already does its shutdown explicitly and in order: `quit_teardown` drains
+# the server, closes duckdb, detaches every mount and reaps rcd BEFORE this runs,
+# and `begin_quit` removes the pidfile on the calling thread. What is given up is
+# work we either do not have or do not want: the tree registers no `atexit`
+# handler (logging's flush is the one that matters, and it is done here by hand);
+# Python finalization would only free memory the kernel reclaims anyway; and
+# AppKit's own termination is precisely the step that aborts.
+
+
+def hard_exit(code: int = 0, *, exit_process=os._exit) -> None:
+    """Kill this process immediately, skipping every finalizer (see above).
+
+    Never returns. `exit_process` is injectable so tests can pin the behavior
+    without killing the pytest worker. The log flush is guarded: dying is not
+    optional, so a logging handler that raises on shutdown must not leave a
+    half-quit app alive."""
+    try:
+        # os._exit runs no atexit handler, and logging's flush IS one — without
+        # this the tail of the quit log, exactly what a crash report gets read
+        # against, can be lost.
+        logging.shutdown()
+    except Exception:
+        pass
+    exit_process(code)
 
 
 # ---- quit teardown (SPEC DM-7; INCIDENT 2026-07-29) -------------------------
@@ -640,15 +695,18 @@ def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None)
 NS_TERMINATE_NOW = 1
 NS_TERMINATE_LATER = 2
 
-# Backstop on the wait for `quit_ready` in the AppKit reply thread. An app AppKit
-# is still waiting on a reply for cannot be quit at all, so a teardown that
-# somehow never signals must not strand it: reply anyway. Past the quit deadline,
-# since a teardown that hits the deadline DOES signal.
+# Backstop on the wait for `quit_ready` in the AppKit quit thread. An app AppKit
+# is still waiting on an answer from cannot be quit at all, so a teardown that
+# somehow never signals must not strand it: die anyway. Past the quit deadline,
+# since a teardown that hits the deadline DOES signal — so reaching this backstop
+# means the teardown thread is wedged somewhere unbudgeted, and it has already
+# had more than its bounded chance. A mount left attached beats an unquittable
+# app (the same trade QUIT_HARD_DEADLINE_S makes).
 QUIT_APPKIT_REPLY_WAIT_S = QUIT_HARD_DEADLINE_S + 5.0
 
 
 def make_appkit_terminate_hook(state: dict, *, reply, start=None,
-                               remove_pidfile=None):
+                               remove_pidfile=None, exit_now=None):
     """`applicationShouldTerminate:` for the quit surfaces AppKit owns itself.
 
     The app is a REGULAR app — `scripts/setup_py2app.py` deliberately sets no
@@ -659,39 +717,67 @@ def make_appkit_terminate_hook(state: dict, *, reply, start=None,
     the teardown exists to fix was fully live on those surfaces, and none of them
     passes through the tray action.
 
-    The canonical Cocoa answer, and the only one that keeps the teardown off the
-    main thread: return NSTerminateLater, do the work, then call
-    `replyToApplicationShouldTerminate:` — which is what `reply` is (main-thread
-    only, so `main()` hands us a callAfter hop).
+    Half of the canonical Cocoa answer applies: return NSTerminateLater so the
+    teardown runs off the main thread while AppKit waits. The other half —
+    `replyToApplicationShouldTerminate:`, which resumes `terminate:` and lands in
+    `exit()` — is exactly the step that aborts (see `hard_exit`), and so is the
+    NSTerminateNow that AppKit would act on the same way. Once dying is correct
+    we therefore `exit_now` (hard_exit) instead of answering. AppKit is not owed
+    a tidy shutdown: the ordered teardown has already done everything AppKit's
+    termination would have given us, and more.
+
+    `reply` survives as the LAST RESORT only, on the one path where the process
+    is somehow still alive after `exit_now` returned or raised. `os._exit` cannot
+    fail, so this is unreachable in practice, but an app AppKit never hears back
+    from cannot be quit at all — that property is worth a two-line fallback
+    rather than a comment claiming it can't happen.
 
     Three cases, all of which must end in the process dying exactly once:
-      * teardown already finished — this terminate: IS our own end-of-teardown
-        action re-entering, or a second Quit after one completed: NSTerminateNow,
-        nothing to wait for (answering Later here would hang the quit forever).
+      * teardown already finished — a second Quit after one completed: die on the
+        spot, nothing to wait for (answering Later here would hang the quit).
       * a teardown in flight (a tray/popover Quit first) — do NOT start a second;
-        wait for the shared event and reply. Its own terminate action may reach
-        exit() first; whichever wins, the other is moot.
+        wait for the shared event, then die. Its own end-of-teardown hard exit
+        may win the race; whichever does, the other is moot.
       * nothing started yet — AppKit is the first surface: start the same
-        teardown, with the reply as its ending instead of a nested terminate:.
+        teardown, with the hard exit as its ending.
     """
-    def _reply_when_ready(ready: threading.Event) -> None:
-        if not ready.wait(QUIT_APPKIT_REPLY_WAIT_S):
-            logger.warning("quit: teardown never signalled; replying to AppKit "
-                           "anyway rather than leaving the app unquittable")
+    if exit_now is None:
+        exit_now = hard_exit
+
+    def _die() -> None:
+        try:
+            exit_now(0)
+        except Exception:
+            logger.warning("quit: the hard exit failed", exc_info=True)
+        # Unreachable while exit_now is os._exit-backed. If we do get here the
+        # process is still alive and AppKit may still be waiting on the reply we
+        # owe it, so give it one — an aborting quit beats an unquittable app.
         try:
             reply(True)
         except Exception:
-            # Nothing is left to try: quit_ready is set, so the NEXT Quit from
-            # any surface answers NSTerminateNow and exits immediately.
             logger.warning("quit: replying to AppKit failed", exc_info=True)
+
+    def _exit_when_ready(ready: threading.Event) -> None:
+        if not ready.wait(QUIT_APPKIT_REPLY_WAIT_S):
+            logger.warning("quit: teardown never signalled; exiting anyway "
+                           "rather than leaving the app unquittable")
+        _die()
 
     def _should_terminate() -> int:
         ready = _quit_ready_event(state)
         if ready.is_set():
+            # No reply is owed on this path (we never answered Later), so `_die`
+            # would call one nobody is waiting for: exit directly. The return is
+            # unreachable in the app and is the honest answer if a stubbed or
+            # broken exit ever hands control back.
+            try:
+                exit_now(0)
+            except Exception:
+                logger.warning("quit: the hard exit failed", exc_info=True)
             return NS_TERMINATE_NOW
         begin_quit(state, start=start, remove_pidfile=remove_pidfile)
-        threading.Thread(target=_reply_when_ready, args=(ready,), daemon=True,
-                         name="quit-appkit-reply").start()
+        threading.Thread(target=_exit_when_ready, args=(ready,), daemon=True,
+                         name="quit-appkit-exit").start()
         return NS_TERMINATE_LATER
 
     return _should_terminate
@@ -891,10 +977,12 @@ def main() -> None:
     # surfaces that never touch our menu item — see make_appkit_terminate_hook for
     # why they would otherwise reach exit() with no teardown at all.
     def _reply_to_appkit(should_terminate: bool) -> None:
-        # replyToApplicationShouldTerminate: is AppKit, so main-thread only, and
-        # we are on the reply thread. callAfter is delivered in the run loop's
-        # common modes, which includes the mode AppKit runs while it waits for
-        # this reply.
+        # The hook's LAST RESORT only — it hard-exits instead of replying, and
+        # this runs solely if that somehow did not kill us (see
+        # make_appkit_terminate_hook). replyToApplicationShouldTerminate: is
+        # AppKit, so main-thread only, and we are on the quit thread. callAfter
+        # is delivered in the run loop's common modes, which includes the mode
+        # AppKit runs while it waits for this reply.
         from AppKit import NSApplication
         from PyObjCTools import AppHelper
 
@@ -986,17 +1074,14 @@ def main() -> None:
         subprocess.run(["open", "-R", log_path()], check=False)
 
     def _terminate():
-        # rumps.quit_application() -> NSApplication.terminate:, which is AppKit
-        # and therefore main-thread-only; we are called from the quit watchdog
-        # thread, so hop back via the run loop.
-        try:
-            from PyObjCTools import AppHelper
-
-            AppHelper.callAfter(rumps.quit_application)
-        except Exception:
-            logger.warning("callAfter unavailable; terminating off the main thread",
-                           exc_info=True)
-            rumps.quit_application()
+        # NOT rumps.quit_application() -> NSApplication.terminate: -> exit(),
+        # which aborts in __cxa_finalize after a teardown that already succeeded
+        # (see hard_exit). By the time this runs, begin_quit has set quit_ready
+        # and quit_teardown has drained the server, closed duckdb, detached the
+        # mounts and reaped rcd — there is nothing AppKit's termination would
+        # still do for us. os._exit is thread-safe and needs no main thread, so
+        # the callAfter hop this used to need is gone with it.
+        hard_exit()
 
     # Returns immediately — the AppKit run loop must not block here — and lets
     # quit_teardown do the blocking work off-thread under a hard deadline.
