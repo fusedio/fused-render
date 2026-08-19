@@ -1370,7 +1370,18 @@ def test_clean_pull_reseeds_claude_md(harness, tmp_path, monkeypatch):
     shims.set_manifest("t2")
     status = _wait_status(harness, lambda s: s["pull_seq"] >= 1)
     assert status and status["pull_seq"] >= 1, status
-    assert (harness.root / "alpha" / "CLAUDE.md").exists()
+    # `pull_seq` is NOT the postcondition this test is about. `_poll_remote`
+    # bumps it the moment `--force` returns and re-seeds only after the
+    # dry-run recheck — deliberately, so the never-bundled helper files do
+    # not read as a perpetual diff — so there is a whole subprocess between
+    # the counter this waits on and the file it asserts. Waiting on the file
+    # itself is the honest condition; asserting it off the counter failed
+    # roughly half the time.
+    seeded = harness.root / "alpha" / "CLAUDE.md"
+    deadline = time.time() + 8
+    while not seeded.exists() and time.time() < deadline:
+        time.sleep(0.05)
+    assert seeded.exists()
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
