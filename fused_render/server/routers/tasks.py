@@ -1829,17 +1829,21 @@ def api_task_delete(patch: DeletePatch):
     absent from the listing, the pulse, the calendar and the full thread in one
     decision, exactly the way `_is_task` already drops shells.
 
-    THE RULES, FOUND WIDER THAN ARCHIVE FINDS THEM (bugbot, 2026-08-19).
-    Archive's `_rules_behind` reads template ids off PENDING occurrences only —
-    right for archive, whose cancelled runs must not reach past the task. But
-    the materialiser mints lazily: between a run going out and the next tick a
-    live rule has NO pending row, so that discovery walks straight past the
-    machine that will mint the next occurrence — with a `created` stamp newer
-    than the tombstone, which is the revival rule's front door (`_deleted`).
-    Delete therefore uses `_every_rule_behind`: every rule any of this task's
-    entries came from, whatever state those entries are in now, plus every
-    still-live rule that names this task's session — and kills the rule itself,
-    so nothing is left that can mint the row back into existence.
+    THE RULES, FOUND BY WHERE THEIR NEXT RUN WOULD LAND (bugbot, 2026-08-19,
+    twice — once in each direction). Archive's `_rules_behind` reads template
+    ids off PENDING occurrences only — right for archive, whose cancelled runs
+    must not reach past the task, but blind to a live rule BETWEEN occurrences:
+    the materialiser mints lazily, so such a rule has no pending row, survives
+    the delete, and its next mint carries a `created` stamp newer than the
+    tombstone — the revival rule's front door (`_deleted`). The over-correction
+    was as wrong the other way: harvesting `template_id` off every entry
+    whatever its state cancelled a `new_task_each_run` SERIES because one of
+    its spent runs happened to be the task being deleted — a series whose
+    future runs mint into fresh sessions and were never going to touch this
+    row. So `_every_rule_behind` asks the one question that matters: would this
+    rule's next run land back ON THIS TASK? Those rules die with the row;
+    every other rule survives it, and only this task's own pending entries are
+    withdrawn.
 
     REFUSED WHILE THE TASK IS RUNNING (409). A live turn cannot be cancelled
     (`sending` is refused by schedule.cancel, a running job is the registry's
@@ -1873,7 +1877,7 @@ def api_task_delete(patch: DeletePatch):
             detail="that task is running — stop the run first, then delete")
 
     cancelled = 0
-    for template_id in _every_rule_behind(key, task["entries"]):
+    for template_id in _every_rule_behind(key):
         if schedule.cancel(template_id) is not None:
             cancelled += 1
     for entry in task["entries"]:
@@ -1888,31 +1892,28 @@ def api_task_delete(patch: DeletePatch):
             "erased_transcript": False}
 
 
-def _every_rule_behind(key: str, entries: list[dict]) -> list[str]:
+def _every_rule_behind(key: str) -> list[str]:
     """Every recurring rule that could put this task back on the board, named
-    once. DELETE's discovery — deliberately wider than `_rules_behind`.
+    once. DELETE's discovery, and a different question from `_rules_behind`'s.
 
-    Two ways a rule is tied to the task, and both have to be followed because
-    either alone misses real cases:
+    The tie that matters is WHERE THE RULE'S NEXT RUN LANDS, not which task its
+    old runs ended up in — so the predicate is the rule's own session resolving
+    to this task's key, read with `_entry_session` exactly as `_collect` files
+    entries. That finds a same-session rule even between occurrences, when the
+    materialiser has minted nothing and the rule leaves no pending row to read
+    a `template_id` off (its next mint would land back on this key, `created`
+    newer than the tombstone, and revive the row — `_deleted`).
 
-    * **any entry's `template_id`, whatever its state.** A rule is live even
-      when its next occurrence has not been minted yet (the materialiser runs
-      lazily), so the only trace of it in the task can be a SENT or MISSED
-      occurrence. Reading pending rows only — archive's rule — walks past it.
-    * **a still-`recurring` template that names this task's session**, read
-      with `_entry_session` exactly as `_collect` files entries, so a rule
-      whose every occurrence has been swept away (or that has minted nothing
-      at all yet) is still found through the same identity the calendar's
-      upcoming[] projection ties its future days to.
+    What it deliberately does NOT do is follow `template_id` off the task's own
+    entries: a `new_task_each_run` series mints every future run into a FRESH
+    session, so one of its spent runs being this task ties the series to the
+    task's PAST, not its future — deleting that one run's row must not kill the
+    live series, nor the pending occurrences that belong to other tasks. Those
+    rules keep minting; only this task's own rows go.
 
-    `schedule.cancel` refuses ids that are not pending or recurring, so a
-    template that is already cancelled or spent costs nothing here — it simply
-    is not counted."""
+    `schedule.cancel` cancels a recurring template together with its pending
+    occurrence, so a matched rule dies whole."""
     rules: list[str] = []
-    for entry in entries:
-        template_id = str(entry.get("template_id") or "")
-        if template_id and template_id not in rules:
-            rules.append(template_id)
     for entry in schedule.list_entries():
         if entry.get("state") != schedule.RECURRING:
             continue

@@ -1981,6 +1981,48 @@ def test_deleting_kills_a_rule_even_between_its_occurrences(client,
     assert "sess-a" not in _by_key(client)
 
 
+def test_deleting_one_run_of_a_fresh_session_series_spares_the_series(
+        client, projects_dir):
+    """The other edge of the same knife (bugbot, 2026-08-19). A
+    `new_task_each_run` rule mints every future run into a FRESH session, so
+    each spent run is its own task — and deleting one of them must not reach
+    up its `template_id` and kill the live series, nor take the pending
+    occurrence that belongs to a different (future) task with it. The rule is
+    behind this task's PAST, not its future: nothing it ever mints can land on
+    the deleted key, so the tombstone holds without the series dying."""
+    _write_transcript(projects_dir, "sess-b", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("tpl", "every day", T9, state=schedule.RECURRING,
+               repeats="0 9 * * *", new_task_each_run=True),
+        # Yesterday's run: it started a fresh session, which is the task
+        # being deleted.
+        _entry("e1", "every day", T9, state=schedule.SENT, fired=T9,
+               turn="ok", template_id="tpl", claude_session_id="sess-b",
+               new_task_each_run=True),
+        # The next run, already minted, session still unwritten — a different
+        # task (its own pending: row), not the one being deleted.
+        _entry("e2", "every day", T12, template_id="tpl",
+               new_task_each_run=True),
+    ])
+    assert client.post("/api/tasks/archive",
+                       json={"key": "sess-b"}).status_code == 200
+    r = client.post("/api/tasks/delete", json={"key": "sess-b"})
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] == 0, "nothing of this task's own was pending"
+
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["tpl"] == schedule.RECURRING, "the series lives on"
+    assert states["e2"] == schedule.PENDING, "the next task's run is untouched"
+    assert states["e1"] == schedule.SENT
+
+    # And the series keeps working: the materialiser still has its template
+    # (e2 pending means nothing new to mint), while the deleted row stays gone.
+    schedule._materialize(schedule._now())
+    by_key = _by_key(client)
+    assert "sess-b" not in by_key
+    assert tasks_store.pending_key("e2") in by_key
+
+
 def test_deleting_a_running_task_is_refused(client, projects_dir):
     """A live turn cannot be cancelled, so deleting now would hide work that
     is still happening. 409, row untouched, nothing cancelled."""
