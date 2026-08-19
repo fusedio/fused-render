@@ -2856,20 +2856,6 @@
     white-space: nowrap;
     flex: 1;
   }
-  /* The provenance tag on a row this chat did not start (source "cli"). Quiet
-     on purpose: it is a footnote about where a chat came from, not a category
-     the reader is meant to sort by — the rows are ONE list, which is the point
-     of merging them. Only those rows carry the span at all (addChatRow), so
-     there is no "template" styling for it to be consistent with. */
-  .chat-row .row-tag {
-    color: var(--faint);
-    font-size: 10.5px;
-    letter-spacing: .04em;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0 4px;
-    flex-shrink: 0;
-  }
   .chat-row .row-sub { color: var(--faint); font-size: 12px; flex-shrink: 0; }
 
   /* ── skeleton loading placeholders ── */
@@ -5066,6 +5052,113 @@ function annTargetDoc() {
 // disappears when the host shows a listing (annPollTarget).
 const annCapable = () => (CHAT_ONLY ? !!annFrame : !noPane);
 
+// ── a marked frame we cannot enter: point notes over its picture (D349) ──
+// The /canvases workspace marks its hosted-workbench iframe, and that document
+// is CROSS-ORIGIN: no layer injection, no element anchors, no shotPane clone —
+// every mechanism above is walled off. What is NOT walled off is the frame's
+// BOX in the host's own document, and a point note (D344) never needed more
+// than a spot and some words. So this state gets its own overlay: a layer in
+// the HOST document (same origin — it marked the frame for us), positioned
+// over the iframe's rect, catching clicks only while comment mode is armed.
+// Every click is a `kind: "point"` note whose x/y are OVERLAY-relative (the
+// frame's content scroll/pan is unreadable, so there is no page coordinate to
+// convert through — ANN_XO_SCROLL is the zero-scroll stand-in annPointXY needs).
+// `shot: null` stays null forever: there is nothing we are allowed to
+// rasterise. The element tool, the hover ring and the screenshot buttons all
+// hide — offering them would be promising exactly what cross-origin forbids.
+//
+// Before this branch, marking a cross-origin frame produced the WORST state:
+// annCapable() said yes (the mark is readable), the layer injection silently
+// failed, and the switch armed a mode whose clicks went nowhere.
+let annXO = false;       // the marked frame's document is out of reach
+let annXOHost = null;    // the overlay's host element, in the PARENT's document
+const ANN_XO_SCROLL = { scrollX: 0, scrollY: 0 };
+// DECLARED HERE, beside the state it belongs to, and not with its users in
+// the screenshot section: annXORemove below runs during the script's own
+// boot (annSetMode → renderAnn → annSyncTarget), and a `let` further down
+// the file would be a temporal-dead-zone ReferenceError that kills the
+// whole script — no model pills, no poll, an overlay stuck armed. It did.
+let annXOStream = null;
+function annXOStreamStop() {
+  if (!annXOStream) return;
+  try { for (const t of annXOStream.getTracks()) t.stop(); } catch (err) { /* gone */ }
+  annXOStream = null;
+}
+
+function annXORemove() {
+  // The capture stream goes with the overlay: a target that stopped being
+  // cross-origin (or went away) has shotPane's own path back, and holding a
+  // tab share open past its use is a recording indicator with no purpose.
+  annXOStreamStop();
+  if (!annXOHost) return;
+  try { annXOHost.remove(); } catch (err) { /* parent torn down first */ }
+  annXOHost = null;
+}
+
+// Build (or re-find) the overlay and lay it over the frame's current rect.
+// Called from annSyncTarget on every render and every poll, which is what
+// tracks the splitter drag and a window resize without an observer of its own.
+// Returns the same {root, pins, hl, stage} shape annInjectLayer does, so the
+// pins, the composer portal and annPlacePop need no second code path — the
+// stage is the overlay host itself, whose box IS the frame's box.
+function annXOLayer() {
+  let pdoc = null;
+  try { pdoc = window.parent.document; } catch (err) { return null; }
+  if (!pdoc || !pdoc.body || !annFrame) return null;
+  let host = annXOHost;
+  // A host the parent re-rendered away, or one without its shadow tree:
+  // start again rather than trust it (same posture as annInjectLayer).
+  if (host && (!host.isConnected || !host.shadowRoot)) { annXORemove(); host = null; }
+  if (!host) {
+    host = pdoc.createElement("div");
+    host.setAttribute(ANN_LAYER_MARK, "xo-layer");
+    host.setAttribute("style", "position: fixed; display: block; margin: 0;"
+      + " padding: 0; border: 0; z-index: 2147483646; pointer-events: none;");
+    const root = host.attachShadow({ mode: "open" });
+    const style = pdoc.createElement("style");
+    // The catcher is the one element the shared sheet does not know: the full
+    // overlay surface that swallows clicks while the mode is armed. Its cursor
+    // is the crosshair ALWAYS — over here every click is a spot.
+    style.textContent = ANN_LAYER_CSS
+      + "\n.catch { position: absolute; inset: 0; cursor: crosshair;"
+      + " pointer-events: auto; }";
+    const catcher = pdoc.createElement("div");
+    catcher.className = "catch";
+    const hl = pdoc.createElement("div");
+    hl.className = "hl";
+    const pins = pdoc.createElement("div");
+    pins.className = "pins";
+    root.append(style, catcher, hl, pins);
+    catcher.addEventListener("click", (e) => {
+      if (!annOn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const r = host.getBoundingClientRect();
+      const x = Math.round(e.clientX - r.left), y = Math.round(e.clientY - r.top);
+      // Overlay-relative from birth, `win` deliberately null: there is no
+      // scroll to fold in (see ANN_XO_SCROLL above).
+      if (annRecOn) { annRecMarkPoint(x, y, null); return; }
+      annOpenComposer(x, y, { kind: "point", x, y, shot: null }, null);
+    });
+    pdoc.body.appendChild(host);
+    annXOHost = host;
+  }
+  const r = annFrame.getBoundingClientRect();
+  host.style.left = r.left + "px";
+  host.style.top = r.top + "px";
+  host.style.width = r.width + "px";
+  host.style.height = r.height + "px";
+  // Disarmed, the overlay must not eat a single event — the reader is USING
+  // the framed app. `display`, not pointer-events, so a hidden catcher can
+  // never intercept a drag that started while armed.
+  const catcher = host.shadowRoot.querySelector(".catch");
+  if (catcher) catcher.style.display = annOn ? "" : "none";
+  return { root: host.shadowRoot,
+           pins: host.shadowRoot.querySelector(".pins"),
+           hl: host.shadowRoot.querySelector(".hl"),
+           stage: host };
+}
+
 // The annotation layer, in CHAT_ONLY, cannot live in this document: the target
 // is a sibling iframe somewhere else in the host's layout, and an overlay here
 // would be pins drawn over the chat. So it is INJECTED into the target's own
@@ -5240,12 +5333,17 @@ function annSyncTarget() {
   // time never "moved" at all.
   if (next) annWatchTarget(next);
   const doc = annTargetDoc();
+  // A marked frame whose document is unreachable is the cross-origin overlay
+  // case (see annXOLayer); a same-origin frame mid-navigation reads the same
+  // for a beat and simply resolves on the next sync.
+  annXO = !!(next && !doc);
+  if (!annXO) annXORemove();
   // The re-render observer follows the target from here, because THIS is the
   // function that knows where the target is. Re-selecting an already-wired frame
   // never reaches annWireTarget, so that path cannot be the only one that moves
   // it. Idempotent, so the cost on an ordinary render is one comparison.
   annObserveTarget(doc);
-  const layer = annInjectLayer(doc);
+  const layer = doc ? annInjectLayer(doc) : (annXO ? annXOLayer() : null);
   annPins = layer && layer.pins;
   annHl = layer && layer.hl;
   annStageEl = layer && layer.stage;
@@ -5436,7 +5534,10 @@ function renderAnn() {
       // No element to resolve — the anchor IS the coordinate, converted back
       // through whatever the CURRENT scroll is (annPointXY), same as an
       // element's own getBoundingClientRect() is always current.
-      const p = annPointXY(c, doc && doc.defaultView);
+      // Cross-origin overlay: the coords are overlay-relative and there is no
+      // window to read a scroll off — the zero-scroll stand-in keeps the one
+      // converter honest (see ANN_XO_SCROLL).
+      const p = annPointXY(c, (doc && doc.defaultView) || (annXO ? ANN_XO_SCROLL : null));
       if (!p) return;
       x = p.x; y = p.y;
     } else {
@@ -5500,7 +5601,9 @@ function renderAnn() {
         // A point HAS a coordinate even with nothing to resolve — reuse it
         // rather than falling all the way to the generic thirds a truly
         // unresolvable element note is stuck with.
-        const p = c.kind === "point" ? annPointXY(c, d && d.defaultView) : null;
+        const p = c.kind === "point"
+          ? annPointXY(c, (d && d.defaultView) || (annXO ? ANN_XO_SCROLL : null))
+          : null;
         const el2 = !p && d ? annResolve(c, d) : null;
         const r = el2 && el2.getBoundingClientRect();
         const w = host ? host.clientWidth : 0, h = host ? host.clientHeight : 0;
@@ -5885,7 +5988,11 @@ async function annCommit() {
   // rule), so a pane the reader scrolled while typing still crops the spot the
   // note is about — and a composer that was cancelled costs no capture at all.
   if (saved && saved.kind === "point" && !saved.shot) {
-    const win = annTargetDoc() && annTargetDoc().defaultView;
+    // The cross-origin overlay's zero-scroll stand-in, exactly as the pin
+    // painter uses it: the coords are overlay-relative and the crop comes off
+    // the tab capture (shotXOPane), which shares that coordinate space.
+    const win = (annTargetDoc() && annTargetDoc().defaultView)
+      || (annXO ? ANN_XO_SCROLL : null);
     const p = annPointXY(saved, win);
     if (p) await annRecPointShot(saved, p.x, p.y);
   }
@@ -6039,6 +6146,9 @@ const annIdleTitle = () =>
 // the pending hide instead of being hidden by it.
 let annToolHideTimer = null;
 function annToolShow() {
+  // Cross-origin target: every click is a spot (annXO, D355), so a recording
+  // there gets no picker — the one door that could raise it refuses.
+  if (annXO) return;
   if (annToolHideTimer) { clearTimeout(annToolHideTimer); annToolHideTimer = null; }
   annToolEl.classList.remove("out");
   annToolEl.hidden = false;
@@ -6106,8 +6216,19 @@ function annSetMode(on) {
   // a typed comment pins the default tool and never asks, so plain comment
   // mode shows no picker — annRecBegin reveals it, annRecEnd puts it away.
   // This call only ever HIDES (mode off implies recording over, annSetMode's
-  // disarm below ends a live one); it must not show the picker on arm.
-  if (!(annOn && annRecOn)) annToolHide();
+  // disarm below ends a live one); it must not show the picker on arm. A
+  // cross-origin target (annXO, D355) has no choice to offer either — no
+  // element can be resolved over there, every click is a spot — so it hides
+  // here too, and annToolShow refuses to raise the picker over one.
+  if (!(annOn && annRecOn) || annXO) annToolHide();
+  // Arming over a cross-origin target is the natural moment to raise the ONE
+  // share prompt the tab-capture screenshots need (annXOStreamGet keeps the
+  // stream after it): the click that armed the mode is the user activation
+  // getDisplayMedia requires, where a later capture — a mic commit, a
+  // walkthrough click's fire-and-forget crop — may have none. Swallowed
+  // whole: a declined prompt just means notes without pictures, and each
+  // capture path already degrades to exactly that.
+  if (annOn && annXO) annXOStreamGet().catch(() => { /* declined: words only */ });
   // The label is the static markup "Comment" in BOTH states — the track's
   // accent fill is what says armed. It used to flip to "Commenting", but a
   // label that changes width makes the whole right-anchored row shuffle on
@@ -6842,6 +6963,9 @@ if (CHAT_ONLY) {
     const doc = annTargetDoc();
     const host = doc && doc.querySelector("[" + ANN_LAYER_MARK + "]");
     if (host) host.remove();
+    // The cross-origin overlay is OUR node in the PARENT's document — same
+    // orphaning risk as the layer above, same synchronous DOM-only removal.
+    annXORemove();
     if (annFrame) annFrame.__fusedAnnWatched = false;
     if (doc) doc.__fusedAnnWired = false;
   });
@@ -7734,11 +7858,88 @@ async function shotEncode(pane, rect, limits) {
   return null;
 }
 
+// ── the cross-origin pane's picture: tab capture, cropped to the frame ──
+// shotPane's clone-and-rasterise needs a readable document, and the annXO
+// target has none (D349). What the browser can still hand over is the TAB's
+// own pixels: getDisplayMedia with preferCurrentTab, one frame grabbed off
+// the video track and cropped to the marked iframe's rect — the same box the
+// overlay (and so every point coordinate) lives in, so the crops and the
+// whole-pane shot line up with the pins for free.
+//
+// The stream is KEPT between captures: the share prompt is paid once, not
+// once per note — a walkthrough clicking ten spots must not raise ten
+// pickers. Released when the user ends the share (`ended`), when the target
+// stops being cross-origin, and on pagehide (annXORemove covers both).
+// `annXOStream` and its stop() live with the annXO state up top — the
+// teardown runs at boot, long before this section — see the note there.
+async function annXOStreamGet() {
+  if (annXOStream
+      && annXOStream.getVideoTracks().some((t) => t.readyState === "live")) {
+    return annXOStream;
+  }
+  annXOStreamStop();
+  annXOStream = await navigator.mediaDevices.getDisplayMedia({
+    video: { displaySurface: "browser" },
+    audio: false,
+    // Chromium's current-tab hints: preselect THIS tab, offer no switching,
+    // no monitors. The crop below is only ever computed against this tab's
+    // own layout, so any other surface would be cropped wrong — the hints
+    // make the right choice the one-click one (they are ignored, not fatal,
+    // where unsupported).
+    preferCurrentTab: true,
+    selfBrowserSurface: "include",
+    surfaceSwitching: "exclude",
+    monitorTypeSurfaces: "exclude",
+  });
+  const track = annXOStream.getVideoTracks()[0];
+  if (track) track.addEventListener("ended", annXOStreamStop, { once: true });
+  return annXOStream;
+}
+// Same answer shape as shotPane, so every consumer — shotEncode's crops,
+// shotEncodeMarked's crosshair, shotCapturePane's whole-pane shot and the
+// three caveat writers — runs unchanged: a capture off live pixels has no
+// style walk, no image inlining and no WebGL readback to caveat, so the
+// doubt fields are simply clean. Null (not a throw) for every "cannot":
+// the callers already read null as "nothing to capture".
+async function shotXOPane() {
+  if (!annXO || !annFrame || !navigator.mediaDevices
+      || !navigator.mediaDevices.getDisplayMedia) return null;
+  let host;
+  try { host = window.parent; void host.innerWidth; } catch (err) { return null; }
+  const stream = await annXOStreamGet();
+  const video = document.createElement("video");
+  video.muted = true;
+  video.srcObject = stream;
+  await video.play();
+  // One PAINTED frame — play() resolving does not mean pixels arrived.
+  if (video.requestVideoFrameCallback) {
+    await new Promise((res) => video.requestVideoFrameCallback(res));
+  } else {
+    await new Promise((res) => setTimeout(res, 150));
+  }
+  // The captured frame is the tab's viewport at the capture's own resolution;
+  // the iframe's rect in that viewport, scaled the same way, is the crop.
+  const sx = video.videoWidth / host.innerWidth;
+  const sy = video.videoHeight / host.innerHeight;
+  const r = annFrame.getBoundingClientRect();
+  const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(video,
+    r.left * sx, r.top * sy, r.width * sx, r.height * sy, 0, 0, w, h);
+  video.srcObject = null;
+  return { canvas, width: w, height: h, blanks: [],
+           styled: 0, incomplete: false, imagesMissing: 0 };
+}
+
 // Rasterise the visible left pane once. Returns
 // {canvas, width, height, blanks, styled, incomplete} or null when there is no
 // readable app document to capture. `deadline` is a Date.now() stamp the style
 // walk stops at — the capture's share of SHOT_TIMEOUT_MS, enforced INSIDE the
 // walk because that is the only place that can enforce it (see shotInlineStyles).
+// A cross-origin target takes the tab-capture path above instead — pixels off
+// the screen, since there is no document to clone.
 //
 // Why the clone is styled from the LIVE tree, which is what creates the race
 // shotInlineStyles has to defend against: a clone is detached, and a detached
@@ -7749,6 +7950,7 @@ async function shotEncode(pane, rect, limits) {
 // mutate the page the user is looking at. So the live tree is the only source of
 // truth for computed style, and the race is detected rather than avoided.
 async function shotPane(deadline) {
+  if (annXO) return shotXOPane();
   const win = appWindow();
   const doc = win && win.document;
   const body = doc && doc.body;
@@ -12080,7 +12282,7 @@ async function pollLoop(run_id) {
   let tick = 0;
   try {
     while (true) {
-      const data = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+      const data = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
       // Not awaited, for the same reason the app-state answer below is not: a
       // strip of chips may never hold up the streaming reply by a single frame.
@@ -13188,7 +13390,7 @@ async function resumeRun(run_id, opts) {
   if (sending) return;
   sending = true;
   try {
-    let probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+    let probe = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
     if (probe.error === "unknown run_id" && retryUnknown) {
       // A frame handed a run id by its EMBEDDER (the canvases workspace's
       // "Fix with Claude" navigates this iframe with ?run= the moment the
@@ -13197,12 +13399,14 @@ async function resumeRun(run_id, opts) {
       // retries tell the two apart; only then is the id written off.
       for (let i = 0; i < 5 && probe.error === "unknown run_id"; i++) {
         await new Promise((r) => setTimeout(r, 700));
-        probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+        probe = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
       }
     }
-    if (probe.error === "unknown run_id") {
-      // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach
-      // to, and nothing to hand annotations back to: resolve any stragglers
+    if (probe.error === "unknown run_id" || probe.error === "run is for another target") {
+      // stale param — a bookmarked mid-run URL, a pruned tmp, or a run id that
+      // survived onto a DIFFERENT target's page (the agent refuses those now,
+      // same recovery) — nothing to attach to, and nothing to hand annotations
+      // back to: resolve any stragglers
       fused.params.set("run", "", { history: "replace", default: "" });
       annResolveSent();
       return;
@@ -13324,7 +13528,7 @@ box.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitChat(); }
 });
 
-// ── home: big input + this file's sidecar sessions ──
+// ── home: big input + this file's past sessions ──
 document.getElementById("card").onsubmit = (e) => {
   e.preventDefault();
   if (activeRun) { stopRun(); return; }
@@ -13454,38 +13658,19 @@ function sessionTitle(s) {
   return text || carried.join(MARKER_JOIN) || (s && s.id) || "";
 }
 
-// One row for one past chat, from EITHER store (agent.py `_sessions` merges
-// them and stamps `source`). There is deliberately no second row shape and no
-// second section: a chat about this folder is a chat about this folder, and
-// splitting the list by which surface started it would ask the reader to
-// remember something they have no reason to have kept.
-//
-// What the two do NOT share is the click, and only because they cannot: a
-// "cli" row is resumable when its transcript is in this cwd's project dir,
+// One row for one past chat — every transcript in this cwd's project dir,
+// whether it started in this page or in a terminal (agent.py `_sessions`).
+// A row is resumable because its transcript is in this cwd's project dir,
 // which is precisely where `_cli_sessions` found it — so the SAME `history`
-// read and the same `--resume` on the next send work on it untouched, and the
-// row needs no special case at all. See `_cli_sessions` for why that is true
-// rather than lucky.
+// read and the same `--resume` on the next send work on it untouched.
 function addChatRow(list, s) {
   const row = document.createElement("div");
   row.className = "chat-row";
   row.setAttribute("role", "button");
   row.tabIndex = 0;
   row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span>' +
-                  '<span class="row-tag" hidden></span><span class="row-sub"></span>';
+                  '<span class="row-sub"></span>';
   row.querySelector(".row-title").textContent = sessionTitle(s);
-  if (s.source === "cli") {
-    const tag = row.querySelector(".row-tag");
-    tag.hidden = false;
-    tag.textContent = "cli";
-    // The tag says three letters; the title says what they mean. All the
-    // sidecar can actually prove is that THIS chat did not start the session —
-    // a terminal run is the usual reason, a chat about a sibling file under the
-    // same cwd is the other one — so the wording claims only that. "here", not
-    // a noun, for the same reason the footnote says it: this sink derives no
-    // kind (setTargetNoun is the only writer that may name one).
-    tag.title = "Started outside this chat — a Claude Code session here";
-  }
   row.querySelector(".row-sub").textContent = ago(s.last_used || s.created_at || 0);
   const open = async () => {
     fused.params.set("session_id", s.id);
@@ -13581,9 +13766,10 @@ async function loadRecent() {
     if (error) throw new Error(error);
     list.innerHTML = "";  // drop the skeleton now that we know the real state
     // Name the snapshot runs from the SAME strings these rows are labelled with,
-    // even for an empty list: a file can have chains in the store and no chats in
-    // its sidecar, and the reverse — an empty session list is still an answer the
-    // snapshots panel wants (it means "name nothing"), not a reason to skip.
+    // even for an empty list: a file can have chains in the store and no chats
+    // in its project dir, and the reverse — an empty session list is still an
+    // answer the snapshots panel wants (it means "name nothing"), not a reason
+    // to skip.
     let named = false;
     for (const s of sessions) {
       // The SAME string the row is labelled with (sessionTitle, not the raw
@@ -13875,8 +14061,8 @@ function snapAgo(sec) {
 // timeline the write returned and both facts have to survive that.
 let snapTimeline = null;
 let snapOpenId = null;
-// sessionId → the name that session's chat goes by, filled from the sidecar by
-// `loadRecent` and read by `snapRunHead`. A Map rather than a lookup through the
+// sessionId → the name that session's chat goes by, filled from the session
+// list by `loadRecent` and read by `snapRunHead`. A Map rather than a lookup through the
 // session list itself, because the snapshots panel must not depend on that list
 // having been fetched, or on its order.
 const snapNames = new Map();
@@ -13986,7 +14172,7 @@ function snapRuns(versions) {
 
 // The heading over one run: WHOSE chain this is, and how long.
 //
-// The name comes from the sidecar's session list — the very same `preview` string
+// The name comes from the session list — the very same `preview` string
 // the "Recent chats" rows above are labelled with (`addChatRow`), so a chain the
 // user had in this app is named by what they asked for in it, and the two sections
 // agree. `loadRecent()` fills that map, and because it RACES this panel's read
@@ -13994,10 +14180,10 @@ function snapRuns(versions) {
 // (see there). This function therefore never waits for anything: it names what is
 // known at paint time and gets called again if that changes.
 //
-// A MISS is ordinary rather than a bug:
-// this store records every Claude Code session that touched the file, including
-// ones started from a terminal or from another file's page, and those were never
-// in this file's sidecar. So the fallback says only what is certain — that it was
+// A MISS is ordinary rather than a bug: the file-history store records every
+// Claude Code session that touched the file, including ones from another
+// folder's page, whose transcripts are not in this cwd's project dir. So the
+// fallback says only what is certain — that it was
 // another chat — and puts the session's short id beside the count, because that id
 // is the one handle that distinguishes two unnamed chains.
 function snapRunHead(run) {
@@ -14006,8 +14192,8 @@ function snapRunHead(run) {
   const name = document.createElement("span");
   name.className = "snap-run-name";
   const known = snapNames.get(run.session);
-  // "chat", not "another chat": on a file whose chains all come from outside this
-  // app — the common case, since the sidecar only knows chats started here — that
+  // "chat", not "another chat": on a file whose chains all come from outside
+  // this app — a common case — that
   // word repeats down the whole panel, and five headings saying "another chat" is
   // noise pretending to be information. The distinguishing fact is the id, and it
   // sits in the quiet half of the line beside the count.
@@ -14101,17 +14287,14 @@ function snapDiff(plan) {
 // One button, armed by a click rather than acting on it. The confirm is inline
 // so the diff being confirmed stays on screen underneath it, and the cost is
 // stated BEFORE the click: when the bytes on disk are in no snapshot this write
-// destroys the only copy, and whether a copy is kept is the plan's `stash`
-// answer rather than a permanent hedge.
+// destroys the only copy.
 function snapAction(plan) {
   const bar = document.createElement("div");
   bar.className = "snap-act";
   const gone = plan.action === "delete";
   const risk = !plan.unique_current ? ""
-    : plan.stash
-      ? "What is on disk now is in no snapshot — a copy of it is kept for you."
-      : "What is on disk now is in no snapshot, and "
-        + (plan.stash_note || "no copy of it can be kept") + ".";
+    : "What is on disk now is in no snapshot — going back destroys the only "
+      + "copy of it.";
   const arm = document.createElement("button");
   arm.type = "button";
   arm.className = "snap-go";
@@ -14166,9 +14349,7 @@ async function snapGoBack(plan, bar) {
     document.getElementById("snapsnote").textContent =
       (out.action === "delete"
         ? "Removed — that is how it was at this snapshot."
-        : "Back at this snapshot.")
-      + (out.stashed ? " The previous content was kept, in case."
-                     : out.stash_note ? " " + out.stash_note : "");
+        : "Back at this snapshot.");
   } catch (err) {
     bar.textContent = "";
     bar.append(snapErr(err.message));

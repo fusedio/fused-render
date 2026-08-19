@@ -1109,7 +1109,30 @@
     applyBtn.addEventListener("click", () => { if (!isDirty()) applyFilter(); });
     resetBtn.addEventListener("click", () => { if (!isDirty()) clearSortFilters(); });
 
-    fused.params.onChange(load);
+    // Reload on a param this grid's query is actually built from, and NOTHING
+    // else. `params.onChange` fires for every visible param on the host URL, and
+    // that URL is not this pane's alone: in the file view the content pane and
+    // the `claude` sidebar write to the SAME shell URL (no param boundary between
+    // them), so the sidebar's `annotations` write — one per note the reader makes,
+    // templates/claude/template.html's annSave — reached an unconditional
+    // `onChange(load)` here as a full reload. Every pin re-ran reader.py, and on a
+    // CSV it also WIPED the grid: keepGrid above needs a parquet schema cache, so
+    // a non-parquet file went back to "Loading…" mid-annotation.
+    //
+    // Compared as a key of the watched values rather than by listening to
+    // specific keys, because that is the question being asked — did anything the
+    // query reads move? — and it makes a no-op rewrite (the same `table` written
+    // over itself) free as well. Same shape as templates/las.
+    const QUERY_PARAMS = ["_file", "table", "offset", "sort", "filters"];
+    const queryKey = () =>
+      QUERY_PARAMS.map((k) => fused.params.get(k) ?? "").join("\u0000");
+    let loadedParams = queryKey();
+    fused.params.onChange(() => {
+      const key = queryKey();
+      if (key === loadedParams) return;
+      loadedParams = key;
+      load();
+    });
     load();
   </script>
 </body>

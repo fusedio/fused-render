@@ -17,8 +17,9 @@ tests used to be — and the handoff as a whole is now unreachable twice over
 longer resolves). What is left pins annotate's own source, which still holds the
 review model worth keeping.
 
-The sidecar writer next door has its own behavioural tests
-(tests/test_annotate_comments.py).
+The comment store those tests also covered is gone outright (D359): comments
+live in the URL and nowhere else, so annotate.py's behavioural tests are the
+revert ones next door (tests/test_annotate_revert.py).
 """
 import json
 import os
@@ -150,7 +151,7 @@ def test_the_send_handler_stamps_and_saves_before_it_navigates(source):
     # be in that string yet. Writing it back verbatim would undo them and
     # re-send the same comments next time; the persisted list is re-asserted.
     assert 'params.set("comments", JSON.stringify(persisted));' in body
-    assert "return arr;" in _block(source, "function save(arr, deletedIds, keep, opts) {",
+    assert "return arr;" in _block(source, "function save(arr, keep, opts) {",
                                    "return arr;")
 
 
@@ -290,7 +291,7 @@ def test_a_comment_being_sent_is_never_the_eviction_victim(source, tmp_path):
 def test_the_send_protects_its_own_payload_from_eviction(source):
     body = _block(source, 'document.getElementById("toclaude").addEventListener',
                   "window.top.location.href = top.pathname")
-    assert ("const persisted = save(all, undefined, "
+    assert ("const persisted = save(all, "
             "new Set(payload.map((c) => c.id)));") in body
     # An over-budget write that keeps every comment is the accepted outcome —
     # trading a live comment for a flag is not — and the send still proceeds.
@@ -299,7 +300,7 @@ def test_the_send_protects_its_own_payload_from_eviction(source):
 
 
 def test_the_budget_loop_uses_that_order_and_still_stops(source):
-    body = _block(source, "function save(arr, deletedIds, keep, opts) {", "URL size limit")
+    body = _block(source, "function save(arr, keep, opts) {", "URL size limit")
     assert "const oldest = evictTarget(arr, keep);" in body
     assert "if (!oldest) break;" in body  # an all-open list must not spin forever
     assert "resolved/sent" in body  # the bar note names both tiers now

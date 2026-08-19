@@ -4,7 +4,7 @@
 Like appenv.py next to it this is a stdlib-only TEMPLATE module, not a package
 module — a template child under the fused engine has no PYTHONPATH, so it can
 never be `import fused_render...`ed (see annotate.py's docstring). These load it
-by path the way test_annotate_comments.py loads annotate.py.
+by path the way test_annotate_revert.py loads annotate.py.
 
 Every test runs against a synthetic store under CLAUDE_CONFIG_DIR (the
 `claude_home` fixture); nothing here may read the real ~/.claude, which is the
@@ -486,7 +486,7 @@ def test_a_directory_target_is_refused(claude_home, tmp_path):
 @skip_root
 def test_a_read_only_file_is_not_reverted(claude_home, tmp_path):
     """os.replace goes through the DIRECTORY, so it would happily overwrite a
-    chmod -w file — the same trap _sidecar_writable documents."""
+    chmod -w file, which is why the target's own writability is probed."""
     fh = _load()
     f = _target(tmp_path, "current\n")
     write_version(claude_home, "s", f, "wanted\n")

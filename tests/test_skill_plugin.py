@@ -445,3 +445,158 @@ def test_appenv_names_the_var_the_server_exports():
     appenv = open(os.path.join(REPO_ROOT, "fused_render", "templates", "shared",
                                "appenv.py"), encoding="utf-8").read()
     assert skill_plugin.PLUGIN_DIR_ENV in appenv
+
+
+# -- the WORKBENCH plugin: the app hands over the canvas skills itself ---------
+#
+# A canvas clone's CLAUDE.md names `workbench:canvas-toml` and friends. It used
+# to handle "not installed" by telling the USER to run a shell command, which a
+# Claude session in a chat pane cannot act on and a user reading it there should
+# never have been handed. So the app finds the plugin and passes it per-run, over
+# the same repeatable `--plugin-dir` flag it already uses for its own skills.
+
+
+def _load_agent():
+    """The claude template's agent.py as a module (it is not importable as part
+    of the package — SPEC PY-15 — so it is loaded from its path, the same way
+    every other test of it does)."""
+    path = os.path.join(REPO_ROOT, "fused_render", "templates", "claude", "agent.py")
+    spec = importlib.util.spec_from_file_location("claude_agent_for_plugins", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _plugin_tree(root, skills, name="workbench"):
+    """A minimal but LOADABLE plugin root."""
+    os.makedirs(os.path.join(root, skill_plugin.MANIFEST_DIR), exist_ok=True)
+    with open(os.path.join(root, skill_plugin.MANIFEST_DIR,
+                           skill_plugin.MANIFEST_NAME), "w", encoding="utf-8") as fh:
+        json.dump({"name": name}, fh)
+    for skill in skills:
+        d = os.path.join(root, skill_plugin.SKILLS_SUBDIR, skill)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "SKILL.md"), "w", encoding="utf-8") as fh:
+            fh.write("# %s\n" % skill)
+    return root
+
+
+def test_the_workbench_plugin_is_found_in_the_marketplace_checkout(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+    root = _plugin_tree(
+        tmp_path / "plugins" / "marketplaces" / "fused-marketplace" / "workbench",
+        skill_plugin.WORKBENCH_SKILLS)
+    assert skill_plugin.find_workbench_plugin() == str(root)
+
+
+def test_the_versioned_cache_copy_is_the_fallback(tmp_path, monkeypatch):
+    """The installed copy sits under a version hash that changes on every
+    update, so it is usable but never preferred — and the NEWEST version wins."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+    cache = tmp_path / "plugins" / "cache" / "fused-marketplace" / "workbench"
+    _plugin_tree(cache / "aaa111", skill_plugin.WORKBENCH_SKILLS)
+    newest = _plugin_tree(cache / "zzz999", skill_plugin.WORKBENCH_SKILLS)
+    assert skill_plugin.find_workbench_plugin() == str(newest)
+
+    # With a marketplace checkout present too, that one wins.
+    checkout = _plugin_tree(
+        tmp_path / "plugins" / "marketplaces" / "fused-marketplace" / "workbench",
+        skill_plugin.WORKBENCH_SKILLS)
+    assert skill_plugin.find_workbench_plugin() == str(checkout)
+
+
+def test_a_gutted_plugin_tree_is_not_offered(tmp_path, monkeypatch):
+    """The manifest alone is not evidence: a root missing the very skills the
+    CLAUDE.md names would load cleanly and teach the model nothing — exactly the
+    silent failure this mechanism exists to remove."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+    _plugin_tree(tmp_path / "plugins" / "marketplaces" / "m" / "workbench",
+                 ["canvas-toml"])  # manifest + one skill, not the set
+    assert skill_plugin.find_workbench_plugin() is None
+
+
+def test_nothing_installed_is_a_normal_outcome(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "empty"))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+    assert skill_plugin.find_workbench_plugin() is None
+    assert skill_plugin.export_workbench_plugin_env() is None
+    assert skill_plugin.WORKBENCH_PLUGIN_DIR_ENV not in os.environ
+
+
+def test_the_explicit_override_wins(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    _plugin_tree(tmp_path / "plugins" / "marketplaces" / "m" / "workbench",
+                 skill_plugin.WORKBENCH_SKILLS)
+    mine = _plugin_tree(tmp_path / "mine", skill_plugin.WORKBENCH_SKILLS)
+    monkeypatch.setenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, str(mine))
+    assert skill_plugin.find_workbench_plugin() == str(mine)
+    # And an override pointing at nothing does not silently fall back.
+    monkeypatch.setenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, str(tmp_path / "nope"))
+    assert skill_plugin.find_workbench_plugin() is None
+
+
+def test_the_export_publishes_the_root_and_clears_it_again(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+    root = _plugin_tree(tmp_path / "plugins" / "marketplaces" / "m" / "workbench",
+                        skill_plugin.WORKBENCH_SKILLS)
+    assert skill_plugin.export_workbench_plugin_env() == str(root)
+    assert os.environ[skill_plugin.WORKBENCH_PLUGIN_DIR_ENV] == str(root)
+    # Plugin uninstalled → the var must go, or every later session is handed a
+    # --plugin-dir pointing at a tree that is no longer there.
+    shutil.rmtree(root)
+    assert skill_plugin.export_workbench_plugin_env() is None
+    assert skill_plugin.WORKBENCH_PLUGIN_DIR_ENV not in os.environ
+
+
+def test_the_lookup_runs_no_subprocess(tmp_path, monkeypatch):
+    """Same rule as the skill-plugin export: this is on the pre-bind startup
+    path, and blocking there is a server the desktop supervisor kills."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
+
+    def no_spawn(*a, **kw):
+        raise AssertionError("the workbench plugin lookup must not spawn")
+
+    for name in ("run", "Popen", "check_output", "call", "check_call"):
+        monkeypatch.setattr(subprocess, name, no_spawn)
+    skill_plugin.export_workbench_plugin_env()
+
+
+def test_the_claude_template_passes_both_roots(monkeypatch):
+    """`--plugin-dir` is repeatable, which is what lets the two plugins compose
+    without merging trees. Either can be absent independently."""
+    agent = _load_agent()
+    monkeypatch.setattr(agent, "_skill_plugin_dir", lambda: "/a/own")
+    monkeypatch.setattr(agent, "_workbench_plugin_dir", lambda: "/b/workbench")
+    assert agent._plugin_argv() == ["--plugin-dir", "/a/own",
+                                    "--plugin-dir", "/b/workbench"]
+    monkeypatch.setattr(agent, "_workbench_plugin_dir", lambda: None)
+    assert agent._plugin_argv() == ["--plugin-dir", "/a/own"]
+    monkeypatch.setattr(agent, "_skill_plugin_dir", lambda: None)
+    assert agent._plugin_argv() == []
+    monkeypatch.setattr(agent, "_workbench_plugin_dir", lambda: "/b/workbench")
+    assert agent._plugin_argv() == ["--plugin-dir", "/b/workbench"]
+
+
+def test_appenv_names_the_workbench_var_too():
+    appenv = open(os.path.join(REPO_ROOT, "fused_render", "templates", "shared",
+                               "appenv.py"), encoding="utf-8").read()
+    assert skill_plugin.WORKBENCH_PLUGIN_DIR_ENV in appenv
+    src = open(os.path.join(REPO_ROOT, "fused_render", "templates", "claude",
+                            "agent.py"), encoding="utf-8").read()
+    assert "from appenv import workbench_plugin_dir as _workbench_plugin_dir" in src
+
+
+def test_the_server_exports_it_before_serving():
+    """The var has to be set before any child is spawned, or a session inherits
+    nothing — same contract as every other FUSED_RENDER_* export."""
+    src = open(os.path.join(REPO_ROOT, "fused_render", "server", "app.py"),
+               encoding="utf-8").read()
+    export = src[src.index("def export_app_env"):]
+    assert "export_workbench_plugin_env()" in export
+
+

@@ -1573,7 +1573,7 @@ console.log(JSON.stringify({wire: wire, stripped: stripBlocks(wire)}));
     assert "/tmp/fr/shots/20260804-A.png" in out["wire"]
     assert out["stripped"] == "fix this"
     # agent.py's half of the same wire: it strips the app-state block for
-    # meta.json (the sidecar preview, the commit subject, the re-attach match),
+    # meta.json (the session-list preview, the commit subject, the re-attach match),
     # and the annotation block is the page's to strip — but NEITHER may leave a
     # path behind in what it hands on.
     meta = agent._strip_app_state(out["wire"])

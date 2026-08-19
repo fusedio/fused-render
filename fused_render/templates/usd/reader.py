@@ -47,19 +47,6 @@ def _cache_dir(source):
     return os.path.join(CACHE_ROOT, f"{safe}-{key}")
 
 
-def _sidecar_writable(file):
-    """True iff the JS-side settings sidecar (home_dir()/sidecar/<mapped
-    path>.json, SPEC §13.5 RO-6, D83-reversal) can be written: an existing
-    sidecar needs W_OK on itself, a fresh one needs W_OK on its nearest
-    existing ancestor dir (the subtree under home_dir()/sidecar/ usually
-    doesn't exist yet)."""
-    from appenv import nearest_existing_dir, sidecar_path
-    path = sidecar_path(file)
-    if os.path.exists(path):
-        return os.access(path, os.W_OK)
-    return os.access(nearest_existing_dir(os.path.dirname(path)), os.W_OK)
-
-
 def _read_json(path):
     try:
         with open(path) as f:
@@ -206,17 +193,13 @@ def main(action: str = "inspect", file: str = "", budget: int = 1000000,
     direct = direct_splat or direct_mesh
 
     if action == "inspect":
-        # Remote URLs have no on-disk sidecar target — report writable so the
-        # template never shows a spurious read-only badge for them.
-        sidecar_ok = True if is_url else _sidecar_writable(file)
         if direct:
             return {"kind": "mesh-direct" if direct_mesh else "splat-direct",
                     "ext": ext, "ready": True,
-                    "size": None if is_url else os.path.getsize(file),
-                    "sidecar_writable": sidecar_ok}
+                    "size": None if is_url else os.path.getsize(file)}
         cd = _cache_dir(file)
         out = _state(cd, budget, crop)
-        out.update({"kind": "usd", "ext": ext, "sidecar_writable": sidecar_ok})
+        out.update({"kind": "usd", "ext": ext})
         return out
 
     if action == "prepare":

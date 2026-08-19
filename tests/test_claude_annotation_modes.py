@@ -146,15 +146,20 @@ def test_the_tool_picker_follows_the_recording(html):
     """Shown while a walkthrough RECORDS, hidden otherwise (Akshil,
     2026-08-19): a typed comment pins the default tool and never asks, so the
     picker is a property of recorded clicks — annRecBegin reveals it,
-    annRecEnd and annSetMode's disarm put it away."""
+    annRecEnd and annSetMode's disarm put it away. A cross-origin target
+    (annXO, D355) hides it even mid-recording: no element can ever be resolved
+    over there, so there is no choice to offer — every click is a spot."""
     assert 'id="anntool" role="radiogroup"' in html
-    assert "if (!(annOn && annRecOn)) annToolHide();" in html
+    assert "if (!(annOn && annRecOn)) || annXO" not in html  # guard shape below
+    assert "if (!(annOn && annRecOn) || annXO) annToolHide();" in html
     begin = _block(html, "async function annRecBegin()", "\n}\n")
     assert "annToolShow();" in begin
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert "annToolHide();" in end
     # stopping the walkthrough puts the whole mode away, both exits
     assert end.count("if (annOn) annSetMode(false);") == 2, end
+    # the cross-origin refusal lives in the one door that can raise the picker
+    assert "if (annXO) return;" in _block(html, "function annToolShow()", "\n}\n")
 
 
 def test_the_tool_picker_survives_the_hosted_layout(html):
@@ -271,3 +276,94 @@ def test_the_warm_up_is_opportunistic_never_load_bearing(html):
     assert "if (!asr.default) return;" in body
     assert '{ capability: "automatic-speech-recognition" }' in body
     assert "console.warn" in body
+
+
+# --------------------------------- the cross-origin target's point overlay
+
+def test_a_cross_origin_target_gets_a_point_overlay_in_the_host_document(html):
+    """D355: a marked frame whose document is out of reach (the /canvases
+    workspace marks its HOSTED workbench iframe) used to be the worst state —
+    annCapable() said yes off the mark alone, the layer injection silently
+    failed, and the switch armed a mode whose clicks went nowhere. Now that
+    state is a mode of its own: an overlay in the HOST's document (same
+    origin — it marked the frame for us), laid over the iframe's box, where
+    every armed click is a `kind: "point"` note. Element anchors and the hover
+    ring stay off — both need a document cross-origin forbids; the pictures
+    come off the TAB instead (see the tab-capture test below)."""
+    # The state is derived in the ONE sync everything else already trusts,
+    # and the overlay replaces the injected layer through the same variable.
+    assert "annXO = !!(next && !doc);" in html
+    assert ("const layer = doc ? annInjectLayer(doc)"
+            " : (annXO ? annXOLayer() : null);") in html
+    body = _block(html, "function annXOLayer()", "\n}\n\n")
+    # Same {root, pins, hl, stage} shape annInjectLayer answers, so the pins,
+    # the composer portal and annPlacePop need no second code path.
+    assert "stage: host" in body
+    # The click is a point note from birth — overlay-relative, `win` null (no
+    # scroll to fold in), shot null until the save-time crop — and a recording
+    # click takes the same walkthrough path a same-origin point does.
+    assert "annRecMarkPoint(x, y, null)" in body
+    assert 'annOpenComposer(x, y, { kind: "point", x, y, shot: null }, null);' in body
+    # Disarmed, the overlay must not eat a single event.
+    assert 'catcher.style.display = annOn ? "" : "none";' in body
+
+
+def test_the_point_overlay_coordinates_resolve_through_a_zero_scroll_stub(html):
+    """annPointXY is the ONE converter from a point's stored coords to pixels,
+    and it refuses a null window. The overlay's coords are overlay-relative
+    with no scroll to convert through, so both readers (the pin painter and
+    the chip's edit-click) hand it the zero-scroll stand-in rather than
+    growing a second converter."""
+    assert "const ANN_XO_SCROLL = { scrollX: 0, scrollY: 0 };" in html
+    assert html.count("annXO ? ANN_XO_SCROLL : null") == 3
+
+
+def test_the_overlay_is_torn_down_with_the_layer_it_stands_in_for(html):
+    """The overlay is OUR node in the PARENT's document — the same orphaning
+    risk the injected layer's pagehide teardown exists for, so it is removed
+    there too, and whenever the target stops being cross-origin (the mark
+    moved to a same-origin frame, or away entirely)."""
+    assert "if (!annXO) annXORemove();" in html
+    teardown = _block(html, 'window.addEventListener("pagehide"', "\n  });")
+    assert "annXORemove();" in teardown
+
+
+def test_a_cross_origin_capture_comes_off_the_tab_not_the_document(html):
+    """The screenshots work over the cross-origin target too: shotPane — the
+    ONE rasteriser every capture path shares — branches to shotXOPane, which
+    grabs a frame off a getDisplayMedia tab share and crops the marked
+    iframe's rect out of it. Same {canvas, width, height, ...} shape, clean
+    doubt fields (no style walk, no image inlining, no WebGL readback), so
+    the crops, the crosshair burner and the whole-pane shot run unchanged."""
+    pane = _block(html, "async function shotPane(deadline)", "const clone")
+    assert "if (annXO) return shotXOPane();" in pane
+    body = _block(html, "async function shotXOPane()", "\n}\n\n")
+    assert "getBoundingClientRect()" in body
+    assert "blanks: []" in body and "incomplete: false" in body
+    # The share prompt is paid ONCE — the stream is cached and reused — and
+    # raised at ARM time, where the user activation actually is (a mic commit
+    # or a walkthrough click's fire-and-forget crop may have none).
+    assert "if (annOn && annXO) annXOStreamGet().catch" in html
+    getter = _block(html, "async function annXOStreamGet()", "\n}\n")
+    assert 'readyState === "live"' in getter
+    assert "preferCurrentTab: true" in getter
+    # And released with the overlay: ended share, target no longer
+    # cross-origin, pagehide (annXORemove covers all three).
+    remove = _block(html, "function annXORemove()", "\n}\n")
+    assert "annXOStreamStop();" in remove
+    # The save-time crop fires for an overlay note too, through the same
+    # zero-scroll stub the pin painter uses.
+    commit = _block(html, "async function annCommit()", "\n}\n")
+    assert "annXO ? ANN_XO_SCROLL : null" in commit
+
+
+def test_the_capture_stream_state_is_declared_before_its_boot_time_teardown(html):
+    """Regression: annXORemove (which calls annXOStreamStop) runs during the
+    script's own boot — annSetMode → renderAnn → annSyncTarget — so the
+    stream's `let` must be ABOVE it. It was first declared 2700 lines later
+    in the screenshot section, and the temporal-dead-zone ReferenceError
+    killed the whole script at boot: empty model pills, no target poll, an
+    overlay stuck armed over the workbench."""
+    assert html.index("let annXOStream = null;") \
+        < html.index("function annXORemove()") \
+        < html.index('annSetMode(fused.params.get("annmode") === "1");')
