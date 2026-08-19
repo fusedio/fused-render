@@ -979,6 +979,13 @@ a.bookmark-name::after {
   background: rgba(var(--tint), 0.12);
 }
 
+/* Installed state: the row is a status line, not a toggle — nothing to click. */
+.update-badge-row-static,
+.update-badge-row-static:hover {
+  background: rgba(var(--tint), 0.07);
+  cursor: default;
+}
+
 .update-badge-dot {
   width: 7px;
   height: 7px;

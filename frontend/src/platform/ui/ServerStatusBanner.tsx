@@ -173,8 +173,7 @@ export default function ServerStatusBanner() {
           fused-render v{installedVersion} is installed
         </div>
         <div className="server-status-body">
-          The app is still running v{version}. Restart fused-render to finish the update —
-          refreshing this page isn't enough.
+          The app is still running v{version}. Restart fused-render to finish the update.
         </div>
         {/* fused-render://relaunch: the OS hands the link to the running app,
             which quits through the normal teardown and respawns from the
