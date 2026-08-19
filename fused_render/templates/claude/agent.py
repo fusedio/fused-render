@@ -16,17 +16,12 @@ process inherited (_claude_bin); detaching, liveness and cancel each take the
 win32 route where the POSIX one is absent or destructive (_DETACH, _alive,
 _cancel).
 
-Sessions are per-file. Every conversation started from this template is
-recorded in a sidecar under home_dir()/sidecar/<mapped path>.json
-(D83-reversal, D205 — see shared/appenv.py's sidecar_path), never beside
-the target. Claude runs with cwd = the target file's directory and an
-appended system prompt that scopes it (softly) to the file.
+Sessions are per-file. Claude runs with cwd = the target file's directory and
+an appended system prompt that scopes it (softly) to the file.
 
-The session LIST is wider than that sidecar, and only that list is: it also
-carries the transcripts already sitting in this cwd's ~/.claude/projects dir
-that no sidecar claims — the chats the user had in a terminal about the same
-folder. Still not the global history; still scoped to this one cwd. See
-`_sessions`.
+The session LIST is the transcripts sitting in this cwd's ~/.claude/projects
+dir — every chat about the same folder, whether started here or in a terminal.
+Still not the global history; still scoped to this one cwd. See `_sessions`.
 
 Tool approvals are the browser's to give: claude is spawned with a
 `--permission-prompt-tool` pointing at `permission_server.py` (a one-tool stdio
@@ -51,19 +46,18 @@ Actions:
   main(action="app_state", run_id=..., request_id=..., state=<json string>)
                                       -> {"answered": ...}
   main(action="sessions", file=...)   -> {"sessions": [...]}
-      every session about this target, newest first: the sidecar's own, plus
-      the transcripts in the same project dir that this chat did not start
-      (`source`: "template" | "cli" — see _sessions)
+      every session about this target, newest first: the transcripts in this
+      cwd's project dir (see _sessions)
   main(action="history", file=..., session_id=...) -> {"turns": [...]}
   main(action="snapshots", file=..., enrich=..., deltas=...)
       -> file_history.timeline(...) — Claude Code's checkpoints for this FILE
          (enrich="1" reads transcripts for the creation boundary; deltas="0"
           declines the per-version difflib, which is ~99% of the read)
   main(action="snapshot_plan", file=..., version_id=...)
-      -> what going back to that snapshot would do (diff, counts, stash
-         predicate), or `ok: False` + `error` saying why it cannot
+      -> what going back to that snapshot would do (diff, counts),
+         or `ok: False` + `error` saying why it cannot
   main(action="snapshot_revert", file=..., version_id=..., confirm_unique=...)
-      -> {"ok": True, "action": "restore"|"delete", "stashed": bool,
+      -> {"ok": True, "action": "restore"|"delete",
           "timeline": {...}}  # version_id MUST come from a snapshot_plan call
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
@@ -188,8 +182,8 @@ PERMISSION_TOOL = "approve"
 # with no decision in it, once per edit.
 APP_STATE_TOOL = "app_state"
 # The delimiters the PAGE wraps its send-time snapshot in. Stripped from every
-# user-facing copy of a message (the run's `meta.json`, hence the sidecar
-# preview, the commit subject and a re-attach match — plus the restored
+# user-facing copy of a message (the run's `meta.json`, hence the commit
+# subject and a re-attach match — plus the restored
 # transcript in `_history`), because the user typed the message, not the block.
 # Duplicated in template.html, which writes it; a test asserts the two agree
 # (D146: a duplicated rule needs a test, not a comment).
@@ -553,9 +547,8 @@ def _workdir(file: str) -> str:
     """Claude's cwd (and the session-store key) for a target. A directory
     target — this template's app-folder role opens whole project folders — IS
     the working directory; a file target keeps the historical rule: its
-    parent. Everything keyed on the cwd (the ~/.claude/projects munge, the
-    sidecar `cwd` field) goes through this one rule so files and folders
-    can't drift apart."""
+    parent. Everything keyed on the cwd (the ~/.claude/projects munge) goes
+    through this one rule so files and folders can't drift apart."""
     return file if os.path.isdir(file) else os.path.dirname(file)
 
 
@@ -759,137 +752,11 @@ def _split_system_prompt(file: str, pane: bool) -> str:
     )
 
 
-# ------------------------------------------------------------- sidecar store
-
-def _sidecar_path(file: str) -> str:
-    # home_dir()/sidecar/<mapped path>.json (D83-reversal, D205), never a
-    # sibling of the target. A folder target used to keep its session index
-    # INSIDE the folder under a reserved dotfile name — `<folder>.json` as a
-    # sibling would have collided with an ordinary user file (a `todo` project
-    # beside a real `todo.json`) — but that collision risk doesn't exist once
-    # the sidecar lives in its own tree under home_dir(), so a directory target
-    # maps through the exact same function as a file target.
-    from appenv import sidecar_path
-    return sidecar_path(file)
-
-
-def _load_sidecar(file: str) -> dict:
-    # Preserve every key we don't own (bookmarkHistory, lastSession, ...) so a
-    # claude turn round-trips them instead of clobbering them off disk. Only the
-    # claudeSessions key is normalised to a list. The remaining loss window is a
-    # true read-modify-write interleave between the two writers (both read the
-    # old file, both write) — acceptable under D3 (single local user, both
-    # writes human-paced).
-    try:
-        with open(_sidecar_path(file), encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        data = None
-    if not isinstance(data, dict):
-        data = {}
-    if not isinstance(data.get("claudeSessions"), list):
-        data["claudeSessions"] = []
-    return data
-
-
-def _save_sidecar(file: str, data: dict) -> None:
-    path = _sidecar_path(file)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-        os.replace(tmp, path)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def _record_session(file: str, session_id: str, message: str,
-                    resumed_from: str) -> None:
-    """Add/refresh a sidecar entry.
-
-    Plain --resume keeps the session id, but --fork-session (and older
-    claude versions) mint a new one — a resumed turn therefore replaces the
-    old entry's id in place (keeping created_at/preview) so one conversation
-    stays one row. `cwd` tracks where the transcript lives so a moved file
-    can migrate it (see _migrate_session); refreshed every turn.
-
-    No mount-read-only check anymore (D83-reversal, D205): the sidecar lives
-    under home_dir()/sidecar/ now, never on `file`'s own mount, so a
-    read-only remote source no longer has any bearing on whether its sidecar
-    can be written.
-    """
-    data = _load_sidecar(file)
-    now = time.time()
-    cwd = _workdir(file)
-    for entry in data["claudeSessions"]:
-        if entry.get("id") in (session_id, resumed_from):
-            entry["id"] = session_id
-            entry["last_used"] = now
-            entry["cwd"] = cwd
-            return _save_sidecar(file, data)
-    data["claudeSessions"].append({
-        "id": session_id,
-        "preview": message.strip()[:80],
-        "created_at": now,
-        "last_used": now,
-        "cwd": cwd,
-    })
-    _save_sidecar(file, data)
-
-
-# ---------------------------------------------------------- session transfer
-
 def _munge(path: str) -> str:
     """A cwd's project-dir name under ~/.claude/projects: every
     non-alphanumeric char becomes '-' (claude-code's own rule, verified
     against real project dirs — '/', '.', '_' all map to '-')."""
     return re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(path))
-
-
-def _migrate_session(file: str, session_id: str) -> None:
-    """Copy-on-resume: claude's --resume only finds transcripts under the
-    CURRENT cwd's project dir, so when the target file has moved (and its
-    sidecar's mapped location along with it, purely by recomputation — the
-    sidecar itself never physically moves), copy the transcript from the
-    sidecar's recorded `cwd` into the new directory's project dir. No-op
-    when it is already there; never
-    overwrites an existing destination (the destination is where new turns
-    append — it is always the newer copy). Best-effort: any failure just
-    means claude reports the session as not found."""
-    if _bad_id(session_id):
-        return
-    new_cwd = _workdir(file)
-    dest_dir = os.path.join(PROJECTS, _munge(new_cwd))
-    dest = os.path.join(dest_dir, session_id + ".jsonl")
-
-    data = _load_sidecar(file)
-    entry = next((e for e in data["claudeSessions"] if e.get("id") == session_id), None)
-
-    if not os.path.exists(dest):
-        old_cwd = (entry or {}).get("cwd", "")
-        if not old_cwd or os.path.abspath(old_cwd) == os.path.abspath(new_cwd):
-            return  # nowhere to copy from
-        src = os.path.join(PROJECTS, _munge(old_cwd), session_id + ".jsonl")
-        if not os.path.isfile(src):
-            return  # transcript gone; claude will surface the error
-        try:
-            os.makedirs(dest_dir, exist_ok=True)
-            shutil.copy2(src, dest)
-        except OSError:
-            return
-
-    # keep the sidecar's cwd truthful so later resumes skip straight through
-    if entry is not None and entry.get("cwd") != new_cwd:
-        entry["cwd"] = new_cwd
-        try:
-            _save_sidecar(file, data)
-        except OSError:
-            pass
 
 
 def _terminal_command(file: str, session_id: str = "") -> dict:
@@ -939,7 +806,6 @@ def _terminal_command(file: str, session_id: str = "") -> dict:
     if session_id:
         if _bad_id(session_id):
             return {"error": "malformed session id"}
-        _migrate_session(file, session_id)
         argv += ["--resume", session_id]
     cli_dir = _fused_cli_dir()
     if os.name == "nt":
@@ -1639,8 +1505,6 @@ def _start(file: str, message: str, session_id: str, model: str,
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
     if not os.path.exists(file):
         return {"error": f"target not found: {file}"}
-    if session_id:
-        _migrate_session(file, session_id)
 
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
     run_dir = os.path.join(RUNS, run_id)
@@ -1763,15 +1627,15 @@ def _start(file: str, message: str, session_id: str, model: str,
     if effort:
         cmd += ["--effort", effort]
 
-    # poll() records the session into the sidecar once claude reports its id;
-    # it needs the file + first message, so stash them with the run.
+    # poll() records the session id with the run once claude reports it;
+    # it needs the file + first message, so keep them with the run.
     # `mode` is the mode this process was SPAWNED with, and it is recorded
     # because nothing else can reconstruct it: the picker's URL param is what
     # the *next* turn will use, so reading that back mid-turn describes a
     # session that does not exist yet. See `_live_mode`.
     # `message` here is the USER-FACING one: the page prepends a live-app-state
     # block for the model, and everything fed from meta.json is a copy of what
-    # the user said — the sidecar preview, the commit subject, and the message a
+    # the user said — the commit subject, and the message a
     # re-attaching page compares against the bubble on screen (which shows the
     # typed text only, so an unstripped copy silently stopped matching). Stripped
     # here, once, rather than at each of those three readers.
@@ -1863,11 +1727,11 @@ def _commit_turn(file: str, message: str) -> None:
             encoding="utf-8", errors="replace")
 
     try:
-        # Legacy defense (D83-reversal, D205): sidecars now live under
-        # home_dir()/sidecar/, never inside the app dir, so a fresh repo never
-        # grows one of these files — but a repo from before the relocation may
-        # still have an old co-located sidecar sitting in its tree, and this
-        # sweep's add -A would commit it into app history. Mirror
+        # Legacy defense: nothing writes these files any more — the sidecar
+        # they belonged to is deleted outright (D359), and it had already moved
+        # out of the app dir before that (D83-reversal, D205) — but a repo from
+        # either era may still have one sitting in its tree, and this sweep's
+        # add -A would commit it into app history. Mirror
         # app_git._ensure_excludes: append missing patterns to the repo-local
         # .git/info/exclude (never the user's .gitignore). Keep the pattern
         # list in step with app_git._GITIGNORE.
@@ -1932,8 +1796,7 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
     one. Two ids can identify the same chat — the session the run resumed
     (`resumed_from` in meta.json) and the session the CLI minted for it (written
     to the `session` file by the first poll that sees one, because
-    `--fork-session` can hand back a NEW id and the sidecar row then points at
-    that one) — so either matching is a match.
+    `--fork-session` can hand back a NEW id) — so either matching is a match.
 
     `limit` is how many run dirs (newest first) the scan reads; `limit=None`
     reads all of them. The default cap is right for the ORIGINAL caller — a page
@@ -2409,12 +2272,35 @@ def _segments_from_rows(rows: list) -> list:
     return out
 
 
-def _poll(run_id: str) -> dict:
+def _poll(run_id: str, file: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
                 "permissions": [], "app_state": [], "skills": [], "retry": None,
                 "retry_total": 0, "retry_status": 0, "segments": []}
+
+    # A page may only attach to a run about ITS OWN target. Run ids are global
+    # (RUNS is one flat dir), and the `run` url param survives some hops the
+    # target does not — the listing pane retargeting `_file` on a selection
+    # change is the reported one — so an id alone must not be enough: without
+    # this check a stale param re-attached a live run's whole conversation
+    # under whichever folder the pane was pointed at next. Refused ONLY on a
+    # provable mismatch: `file` is optional (claude_spawn's bookkeeping loop
+    # polls with no page and no target), and a meta.json without `file` — or
+    # unreadable entirely — proves nothing and keeps the historical behavior.
+    # The wire shape matches "unknown run_id" so the page's existing stale-param
+    # recovery (clear the param, no error banner) covers this case too.
+    if file:
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                run_file = json.load(fh).get("file", "")
+        except (OSError, ValueError):
+            run_file = ""
+        if run_file and os.path.abspath(run_file) != os.path.abspath(file):
+            return {"text": "", "done": True, "session_id": "",
+                    "error": "run is for another target",
+                    "permissions": [], "app_state": [], "skills": [], "retry": None,
+                    "retry_total": 0, "retry_status": 0, "segments": []}
 
     text_parts = []
     result_text = None
@@ -2522,7 +2408,7 @@ def _poll(run_id: str) -> dict:
         # Dead without a `result` row = abnormal exit (crash, OOM, cancel),
         # even if some text streamed first. Report it as an error regardless
         # of partial text, so the UI doesn't render a truncated reply as a
-        # clean success and the sidecar-record guard below skips it.
+        # clean success and the session-record guard below skips it.
         done = True
         try:
             tail = open(os.path.join(run_dir, "err.log"), encoding="utf-8",
@@ -2591,7 +2477,7 @@ def _poll(run_id: str) -> dict:
 
     # First poll that sees the run finished CLEANLY sweeps anything left
     # uncommitted into the app's repo (one-shot via a marker, like the
-    # sidecar record below). This is a FALLBACK: the app's CLAUDE.md tells
+    # session record below). This is a FALLBACK: the app's CLAUDE.md tells
     # claude to commit as it works and end every turn with a clean tree, so
     # when it honoured that this add -A finds nothing and no commit happens.
     # Errored turns are skipped — a crash mid-edit is not a state worth
@@ -2608,23 +2494,20 @@ def _poll(run_id: str) -> dict:
         except OSError:
             pass  # another poll claimed it, or the run dir is going away
 
-    # First poll that sees the session id writes it to the sidecar (marker
+    # First poll that sees the session id records it in the run dir (marker
     # file keeps the write one-shot across the remaining polls).
     marker = os.path.join(run_dir, "recorded")
     if new_session and not error and not os.path.exists(marker) and "file" in meta:
         try:
-            _record_session(meta["file"], new_session, meta.get("message", ""),
-                            meta.get("resumed_from", ""))
             # The id the CLI minted for this run, next to the id it resumed.
-            # `--fork-session` makes those two different, and _record_session
-            # then repoints the sidecar row at the NEW one — so a page that
+            # `--fork-session` makes those two different — so a page that
             # later asks "is anything running for this chat?" (see _live_run)
             # would be holding an id meta.json has never heard of.
             with _private_open(os.path.join(run_dir, "session")) as fh:
                 fh.write(new_session)
             open(marker, "w", encoding="utf-8").close()
         except OSError:
-            pass  # sidecar bookkeeping must never break the chat itself
+            pass  # session bookkeeping must never break the chat itself
 
     # The streamed deltas are the full turn; the `result` row holds only the
     # LAST assistant message, so swapping to it after a tool-using turn threw
@@ -2777,7 +2660,7 @@ _CLI_HEAD_BYTES = 131072
 
 
 def _cli_preview(path: str, workdir: str) -> str:
-    """The first thing a HUMAN said in one transcript, truncated like a sidecar
+    """The first thing a HUMAN said in one transcript, truncated to an 80-char
     preview — or "" for a transcript this list has no business showing.
 
     Read from the file's HEAD only, and only far enough to find that message:
@@ -2853,23 +2736,15 @@ def _cli_preview(path: str, workdir: str) -> str:
     return ""
 
 
-def _cli_sessions(file: str, known: set) -> list:
-    """Claude sessions about this target's folder that did NOT start in this
-    chat — the ones the user ran in a terminal, plus any this template holds
-    under a DIFFERENT target in the same folder.
+def _cli_sessions(file: str) -> list:
+    """Claude sessions about this target's folder — every transcript in this
+    cwd's project dir, whether it started in this page or in a terminal.
 
     They need no import, no copy and no new resume path, which is the whole
     reason this is a dozen lines: a session's home is its cwd's project dir
     (`_munge(_workdir(file))`), the template keys on exactly the same dir, so
     these transcripts are already sitting where `_history` reads and where
-    `--resume` looks from. `_migrate_session` sees the destination present and
-    no-ops. Resuming one records it in the sidecar (`_record_session`), after
-    which it is an ordinary template session and `known` keeps it from
-    appearing twice.
-
-    "cli" is therefore a claim about PROVENANCE, not about the tool: it means
-    "this chat did not start it". That is all the sidecar can prove, and the row
-    says only that much.
+    `--resume` looks from.
     """
     workdir = os.path.abspath(_workdir(file))
     proj = os.path.join(PROJECTS, _munge(workdir))
@@ -2885,7 +2760,7 @@ def _cli_sessions(file: str, known: set) -> list:
         # `_bad_id` because the id becomes a path again on resume (and a URL
         # param on the way there); a filename we cannot round-trip is not
         # offered at all.
-        if sid in known or _bad_id(sid):
+        if _bad_id(sid):
             continue
         try:
             found.append((os.path.getmtime(os.path.join(proj, name)), sid))
@@ -2899,39 +2774,24 @@ def _cli_sessions(file: str, known: set) -> list:
         preview = _cli_preview(os.path.join(proj, sid + ".jsonl"), workdir)
         if not preview:
             continue
-        # `created_at`/`last_used` rather than a `mtime` of its own: the page's
-        # row renderer already reads those two off a sidecar entry, and one
-        # shape for both sources is what lets the list merge at all. mtime is
-        # the only timestamp a transcript offers for free — it is the last
-        # activity, so it lands on `last_used` and `created_at` borrows it.
-        out.append({"id": sid, "source": "cli", "preview": preview,
+        # mtime is the only timestamp a transcript offers for free — it is the
+        # last activity, so it lands on `last_used` and `created_at` borrows it.
+        out.append({"id": sid, "preview": preview,
                     "created_at": mtime, "last_used": mtime,
-                    "cwd": workdir, "resumable": True})
+                    "cwd": workdir})
     return out
 
 
 def _sessions(file: str) -> dict:
     """Every Claude session about this target, newest activity first.
 
-    ONE list, from two stores, because the user has one memory: a chat they had
-    about this folder is a chat they had about this folder, and it being in a
-    terminal an hour ago rather than in this page does not make it a different
-    thing to go back to. The page used to show only the sidecar, so the session
-    the user was in five minutes ago was missing from the list of their sessions.
-
-    The sidecar stays authoritative for the entries it owns — it carries the
-    real `created_at`, the preview as typed, and the id continuity that
-    `--fork-session` breaks (see `_record_session`) — and the disk scan only
-    fills in what the sidecar never saw. Every row carries `source` so the page
-    can say which is which; nothing else about them differs.
+    ONE list, from the cwd's project dir, because the user has one memory: a
+    chat they had about this folder is a chat they had about this folder, and
+    it being in a terminal an hour ago rather than in this page does not make
+    it a different thing to go back to.
     """
     file = os.path.abspath(file)
-    # Copies, not the loaded dicts: `_load_sidecar`'s result is the same shape
-    # `_save_sidecar` writes back, and `source` is ours, not the store's.
-    mine = [dict(s, source="template") for s in _load_sidecar(file)["claudeSessions"]]
-    sessions = mine + _cli_sessions(file, {s.get("id") for s in mine})
-    # `or 0`, not a default: a sidecar entry written by an older version can
-    # carry an explicit null, which a `.get(k, 0)` hands straight to sorted().
+    sessions = _cli_sessions(file)
     sessions.sort(key=lambda s: s.get("last_used") or s.get("created_at") or 0,
                   reverse=True)
     return {"sessions": sessions}
@@ -2995,16 +2855,6 @@ def _snapshots(file: str, enrich: bool, deltas: bool) -> dict:
 
 # ------------------------------------------------- going back to a snapshot
 
-#: Stash entries kept in the sidecar. Small on purpose: this is an "oh no, undo
-#: the undo" buffer, not a version store — the file-history store already is one
-#: — and the sidecar is a small JSON file this template rewrites constantly.
-STASH_KEEP = 3
-#: Content above this is NOT copied into the sidecar. Better a revert with no
-#: stash (and the caller told, so the confirm step can be firmer) than a
-#: multi-megabyte sidecar every other writer of it then has to round-trip.
-STASH_BYTE_CAP = 256 * 1024
-
-
 def _snap_target(file: str) -> str:
     """Empty when this panel may touch `file`, else the sentence saying why not.
 
@@ -3038,118 +2888,6 @@ def _snap_target(file: str) -> str:
     return ""
 
 
-def _stash_plan(file: str) -> tuple:
-    """(will_stash, note, raw_bytes) — WITHOUT writing anything.
-
-    Split from `_stash` so the confirm step can state the truth BEFORE the
-    click: the one genuinely unrecoverable combination — content in no
-    checkpoint AND no stash — must not be something the user finds out about in
-    the past tense. The predicate is cheap (a stat, a read, a decode), and
-    `_stash` consumes this same function, so the promise and the action cannot
-    drift apart.
-
-    Each refusal is reported separately and truthfully: folding an EACCES into
-    "not UTF-8 text" describes a fixable machine problem as a fact about the
-    content. The read is BINARY with an explicit decode — text mode's
-    universal-newline translation would stash a CRLF file as LF, i.e. not the
-    bytes that are about to be destroyed.
-    """
-    try:
-        size = os.path.getsize(file)
-    except FileNotFoundError:
-        return False, "nothing on disk to stash", None
-    except OSError as exc:
-        return False, ("could not measure the previous content — %s"
-                       % _snap_why(exc, file)), None
-    if size > STASH_BYTE_CAP:
-        return False, ("previous content (%d bytes) is too large to stash in "
-                       "the sidecar — it is not recoverable from here"
-                       % size), None
-    try:
-        with open(file, "rb") as fh:
-            raw = fh.read()
-    except OSError as exc:
-        return False, ("previous content could not be read — %s"
-                       % _snap_why(exc, file)), None
-    try:
-        raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return False, ("previous content is not UTF-8 text — not stashed, and "
-                       "not recoverable from here"), None
-    if not _sidecar_writable(file):
-        return False, "%r is read-only — nothing stashed" % _sidecar_path(file), None
-    return True, "", raw
-
-
-def _snap_why(exc, path) -> str:
-    errno = getattr(exc, "errno", None)
-    reason = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
-    return "%s: %s%s" % (path, reason,
-                         "" if errno is None else " (errno %d)" % errno)
-
-
-def _sidecar_writable(file: str) -> bool:
-    """True iff `_save_sidecar` would succeed.
-
-    An existing sidecar needs W_OK on ITSELF — `_save_sidecar`'s os.replace goes
-    through the directory and would otherwise sail straight past a read-only
-    bit. A fresh one needs W_OK on the nearest existing parent, since mkstemp
-    and replace both land there. No mount check: the sidecar lives under
-    home_dir()/sidecar/ (D205), never on the target's own mount.
-    """
-    path = _sidecar_path(os.path.abspath(file))
-    if os.path.exists(path):
-        return os.access(path, os.W_OK)
-    from appenv import nearest_existing_dir
-    return os.access(nearest_existing_dir(os.path.dirname(path)), os.W_OK)
-
-
-def _stash(file: str, version_id: str) -> tuple:
-    """Copy the CURRENT content into the sidecar's `revertStash`, newest last.
-
-    Called before the write lands, because after it there is nothing left to
-    copy. Returns (stashed, note) rather than raising: a revert the user
-    confirmed — having been told by `_stash_plan` whether a copy would be kept —
-    must not then be blocked by a sidecar we could not write.
-
-    `size` is the BYTE count of what was on disk and `content` decodes back to
-    exactly those bytes; the two must agree or a hand-recovery from the sidecar
-    restores something that was never there.
-    """
-    ok, note, raw = _stash_plan(file)
-    if not ok:
-        return False, note
-    content = raw.decode("utf-8")
-    data = _load_sidecar(file)
-    stash = data.get("revertStash")
-    if not isinstance(stash, list):
-        stash = []
-    stash.append({"version_id": version_id, "at": time.time(),
-                  "size": len(raw), "lines": len(content.splitlines()),
-                  "content": content})
-    data["revertStash"] = stash[-STASH_KEEP:]
-    try:
-        _save_sidecar(file, data)
-    except OSError as exc:
-        return False, "could not write the stash: %s" % exc
-    return True, ""
-
-
-def _snap_plan(file: str, version_id: str, fh) -> dict:
-    """`file_history.revert_plan` completed with the stash predicate.
-
-    The reader has no business knowing the sidecar exists, and the panel has no
-    business guessing whether a copy will be kept, so the bridge that owns the
-    sidecar is where the two facts meet.
-    """
-    plan = fh.revert_plan(file, version_id)
-    if plan.get("ok"):
-        ok, note, _raw = _stash_plan(file)
-        plan["stash"] = ok
-        plan["stash_note"] = note
-    return plan
-
-
 def _snapshot_plan(file: str, version_id: str) -> dict:
     """What going back to `version_id` would do — what the expanded row shows.
 
@@ -3172,7 +2910,7 @@ def _snapshot_plan(file: str, version_id: str) -> dict:
         return {"error": "file history helper (../shared/file_history.py) "
                          "is not available"}
     try:
-        return _snap_plan(file, version_id, file_history)
+        return file_history.revert_plan(file, version_id)
     except Exception as exc:  # noqa: BLE001 — a state to render, never an overlay
         return {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -3192,11 +2930,6 @@ def _snapshot_revert(file: str, version_id: str, confirm_unique: bool) -> dict:
         be true. Deliberately NOT demanded for an ordinary step back, where
         nothing unrecorded is lost: a token the caller always passes is a token
         nobody reads.
-
-    The writability re-read happens BEFORE the stash by design: `_stash` runs
-    first (after the write there is nothing left to copy), so an unwritable
-    target must be refused here or the stash lands and `apply_revert` then
-    raises — a failed revert that still mutated the sidecar.
     """
     bad = _snap_target(file)
     if bad:
@@ -3210,7 +2943,7 @@ def _snapshot_revert(file: str, version_id: str, confirm_unique: bool) -> dict:
         return {"error": "file history helper (../shared/file_history.py) "
                          "is not available"}
     try:
-        plan = _snap_plan(file, version_id, file_history)
+        plan = file_history.revert_plan(file, version_id)
         if not plan.get("ok"):
             return plan
         if plan.get("writable") is False:
@@ -3222,10 +2955,7 @@ def _snapshot_revert(file: str, version_id: str, confirm_unique: bool) -> dict:
                              "back would destroy the only copy — confirm once "
                              "the user has been shown that",
                     "plan": plan}
-        stashed, note = _stash(file, plan["id"])
         res = file_history.apply_revert(file, plan["id"])
-        res["stashed"] = stashed
-        res["stash_note"] = note
     except Exception as exc:  # noqa: BLE001 — a state to render, never an overlay
         return {"error": f"{type(exc).__name__}: {exc}"}
     # The POST-write timeline, in the same response: without it the row list
@@ -3275,7 +3005,6 @@ def _history(file: str, session_id: str) -> dict:
     if _bad_id(session_id):
         return {"turns": []}
     file = os.path.abspath(file)
-    _migrate_session(file, session_id)
     path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
     if not os.path.isfile(path):
@@ -3408,7 +3137,10 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _start(file, message, session_id, model, effort, permission_mode,
                       has_pane=None if has_pane == "" else has_pane != "0")
     if action == "poll":
-        return _poll(run_id)
+        # `file` rides along so the poll can refuse a run that is not about
+        # this page's target (see _poll) — optional, because not every caller
+        # has a page (claude_spawn's record loop).
+        return _poll(run_id, file)
     if action == "decide":
         # `answers` arrives as a JSON string for the same reason `state` does
         # below — params cross into python string-shaped — and is only read for

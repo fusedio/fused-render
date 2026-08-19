@@ -438,7 +438,7 @@ def test_reporting_failures_never_break_a_send(target, monkeypatch):
 
 
 def test_the_watcher_wraps_the_recorder_rather_than_replacing_it(target, monkeypatch):
-    """The sidecar write and the commit live in record_session_when_ready and
+    """The session-id record and the commit live in record_session_when_ready and
     must happen whether or not anything is observing, so the watcher goes
     THROUGH it and only adds the observer."""
     seen = {}
@@ -456,7 +456,7 @@ def test_the_watcher_wraps_the_recorder_rather_than_replacing_it(target, monkeyp
 
 
 def test_an_observer_that_raises_does_not_abandon_the_run(monkeypatch):
-    """record_session_when_ready owns the sidecar write; an observer's exception
+    """record_session_when_ready owns the session-id record; an observer's exception
     must not stop the poll before it happens."""
     ticks = []
 

@@ -2419,49 +2419,13 @@ async function runPy(code, out) {
   }
 }
 
-// Scripts live in the shared sidecar (home_dir()/sidecar/<mapped path>.json,
-// D83-reversal) under the "excel" key, so other templates' keys in the same
-// sidecar round-trip untouched.
-async function loadSidecar() {
-  try {
-    const data = JSON.parse(await fused.readFile(await window._fusedSidecarPath(currentFile())));
-    return data && typeof data === "object" ? data : {};
-  } catch { return {}; }
-}
-async function loadScripts() {
-  const data = await loadSidecar();
-  return (data.excel && data.excel.scripts) || [];
-}
-async function saveScripts(scripts) {
-  const data = await loadSidecar();
-  data.excel = { ...(data.excel || {}), scripts };
-  try {
-    await fused.writeFile(await window._fusedSidecarPath(currentFile()), JSON.stringify(data, null, 2));
-  } catch (err) {
-    // A read-only `<file>.json` sidecar 403s (SPEC RO-2); scripts still run,
-    // they just won't persist — non-fatal.
-    if (err && err.type === "readonly") {
-      setStatus("Script not saved — the scripts sidecar file is read-only.", "err");
-      return;
-    }
-    throw err;
-  }
-}
+// Scripts are session-only: they live in memory for the lifetime of the page
+// and are lost on reload.
+const sessionScripts = [];
 
 async function openScriptEditor() {
   if (!book) return;
-  const scripts = await loadScripts();
-  // _fusedSidecarPath rejects when sidecarRoot never resolved (a failed
-  // /api/config fetch) — this is a click handler with nothing above it to
-  // catch a rejection, so it silently "did nothing" instead of the status
-  // toast every other failure in this file gets (Bugbot).
-  let sidecarName;
-  try {
-    sidecarName = (await window._fusedSidecarPath(currentFile())).split("/").pop();
-  } catch (e) {
-    setStatus("Could not open the script editor — " + ((e && e.message) || "unknown error"), "err");
-    return;
-  }
+  const scripts = sessionScripts;
   openModal("Script editor", `
     <div class="srow">
       <select id="scriptSel"></select>
@@ -2473,7 +2437,7 @@ async function openScriptEditor() {
       <button class="action" id="closeModal2" style="margin-left:auto">Close</button>
     </div>
     <textarea id="scriptCode" spellcheck="false"></textarea>
-    <pre id="scriptOut">Output appears here. Scripts are saved in the workbook's sidecar, ${sidecarName}</pre>
+    <pre id="scriptOut">Output appears here. Saved scripts last for this session only.</pre>
     <div class="help"><b>JS API</b>: <code>sheet.get(r,c)</code> · <code>sheet.set(r,c,v)</code> · <code>sheet.rows</code> raw 2D ·
       <code>sheet.values()</code> computed 2D · <code>book.sheet(name)</code> · <code>book.add(name)</code> · <code>log(...)</code> — 0-indexed.<br>
       <b>Python</b>: mutate <code>sheets</code> (list of <code>{"name", "rows"}</code>); anything you <code>print()</code> shows here.
@@ -2494,17 +2458,16 @@ async function openScriptEditor() {
   selEl.onchange = showScript;
   langEl.onchange = () => { if (+selEl.value === -1) showScript(); };
   $("runScript").onclick = () => (langEl.value === "js" ? runJs(codeEl.value, out) : runPy(codeEl.value, out));
-  $("saveScript").onclick = async () => {
+  $("saveScript").onclick = () => {
     const entry = { name: nameEl.value.trim() || "unnamed", lang: langEl.value, code: codeEl.value };
     const i = scripts.findIndex((s2) => s2.name === entry.name);
     if (i >= 0) scripts[i] = entry; else scripts.push(entry);
-    await saveScripts(scripts);
     fillSel(i >= 0 ? i : scripts.length - 1);
-    out.className = ""; out.textContent = `Saved "${entry.name}"`;
+    out.className = ""; out.textContent = `Saved "${entry.name}" (this session only)`;
   };
-  $("delScript").onclick = async () => {
+  $("delScript").onclick = () => {
     const i = +selEl.value; if (i < 0) return;
-    scripts.splice(i, 1); await saveScripts(scripts); fillSel(-1); showScript();
+    scripts.splice(i, 1); fillSel(-1); showScript();
   };
   $("closeModal2").onclick = closeModal;
 }

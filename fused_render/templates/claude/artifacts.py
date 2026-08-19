@@ -69,7 +69,6 @@ _SHARED = os.path.join(os.path.dirname(HERE), "shared")
 if _SHARED not in sys.path:
     sys.path.insert(0, _SHARED)
 from appenv import origin as _origin
-from appenv import sidecar_path as _sidecar_path
 
 # Claude Code's own data dir, and it must be the SAME one the CLI writes to or
 # `live` reads a transcript that does not exist. CLAUDE_CONFIG_DIR wins where
@@ -135,65 +134,6 @@ def _text(value):
 
 # ------------------------------------------------------------------ list
 
-def _sidecar_sessions(target: str) -> set:
-    """The claude session ids recorded against EXACTLY this file-or-folder.
-
-    The claude template writes one entry per chat it starts into the target's
-    sidecar (`agent.py:_record_session` -> `appenv.sidecar_path(target)` ->
-    `{"claudeSessions": [{"id": ...}, ...]}`), which makes the sidecar the only
-    record of WHICH TARGET a conversation was opened on. `cwd` cannot answer
-    that — a chat on a file and a chat on its folder run in the same directory
-    and are indistinguishable by cwd alone.
-
-    Same helper the writer uses, so the mapping can never drift. An absent,
-    unreadable or malformed sidecar is an ordinary "no chats here": the empty
-    set, never an exception.
-    """
-    try:
-        with open(_sidecar_path(target), encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
-        return set()
-    if not isinstance(data, dict):
-        return set()
-    entries = data.get("claudeSessions")
-    if not isinstance(entries, list):
-        return set()
-    found = set()
-    for entry in entries:
-        if isinstance(entry, dict):
-            found.add(_text(entry.get("id")))
-    found.discard(None)
-    return found
-
-
-def _claimed_by_child_files(folder: str) -> set:
-    """Session ids that belong to a FILE inside this folder — the chats a folder
-    listing must not absorb.
-
-    Direct children only, and only non-directories: a chat on a subfolder runs
-    with that subfolder as its cwd, so the server's `cwd` scoping has already
-    excluded it and there is nothing left here to exclude. Recursing would turn
-    one landing-screen read into a walk of the tree for no change in the answer.
-
-    Best-effort per entry: an unreadable directory or a `DT_UNKNOWN` stat that
-    fails contributes nothing rather than failing the listing.
-    """
-    claimed = set()
-    try:
-        entries = list(os.scandir(folder))
-    except OSError:
-        return claimed
-    for entry in entries:
-        try:
-            if entry.is_dir():
-                continue
-        except OSError:
-            continue
-        claimed |= _sidecar_sessions(entry.path)
-    return claimed
-
-
 def _list(file: str) -> dict:
     """The artifacts published while working on THIS target, newest first.
 
@@ -207,20 +147,10 @@ def _list(file: str) -> dict:
     as noise. `exists` None (a mount-backed path the server refuses to stat) is
     not "gone" — those rows stay and open their hosted page.
 
-    TWO, strict per-target scoping, in the two directions a target can be:
-
-    * a FILE shows only the chats started ON that file (its own sidecar's
-      session ids). It never inherits its folder's artifacts — the folder's
-      chats were about the folder, and a file that has published nothing must
-      say so even when its neighbours have published plenty.
-    * a FOLDER shows the chats that are about the folder: everything running in
-      it EXCEPT the sessions some child file has claimed as its own. Its own
-      sidecar's sessions are re-admitted unconditionally, because a chat can be
-      recorded against both (a session resumed onto the folder), and the
-      folder's own record is the more specific fact here. A session in nobody's
-      sidecar — a chat started from a terminal in this directory — is
-      folder-related by default and stays: the alternative is hiding real work
-      for the sole reason that it did not come through this template.
+    The per-target session scoping this used to add on top (which chats were
+    started on THIS file vs its folder) went with the per-file sidecar (D359):
+    `cwd` is the only record left, so a file and its folder now show the same
+    cwd-scoped list.
     """
     workdir = _workdir(file)
     if not workdir:
@@ -249,16 +179,7 @@ def _list(file: str) -> dict:
     # the page opens their hosted url instead of claiming a local file.
     artifacts = [a for a in artifacts
                  if isinstance(a, dict) and a.get("exists") is not False]
-
-    if os.path.isdir(file):
-        own = _sidecar_sessions(file)
-        claimed = _claimed_by_child_files(file) - own
-        return {"artifacts": [a for a in artifacts
-                              if a.get("session_id") not in claimed]}
-    mine = _sidecar_sessions(file)
-    # `mine` never holds None, so an artifact whose transcript did not state a
-    # sessionId simply is not this file's.
-    return {"artifacts": [a for a in artifacts if a.get("session_id") in mine]}
+    return {"artifacts": artifacts}
 
 
 # ------------------------------------------------------------------ live

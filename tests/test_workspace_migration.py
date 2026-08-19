@@ -26,11 +26,6 @@ def machine(tmp_path, monkeypatch):
     return legacy, new, tmp_path / ".fused-render"
 
 
-def _sidecar_dir(home, abs_path):
-    parts = [p for p in storage._sidecar_subpath(str(abs_path)).split("/") if p]
-    return os.path.join(str(home), "sidecar", *parts)
-
-
 # ------------------------------------------------------------- the folder move
 
 def test_moves_the_workspace_when_only_the_legacy_dir_exists(machine):
@@ -110,57 +105,6 @@ def test_a_move_failure_does_not_raise(machine, monkeypatch):
     wm.run()  # must not raise: startup continues even when migration cannot
 
     assert legacy.is_dir()
-
-
-# ---------------------------------------------------------------- the sidecars
-
-def test_renames_the_sidecar_subtree(machine):
-    legacy, new, home = machine
-    legacy.mkdir(parents=True)
-    (legacy / "a.parquet").write_text("", encoding="utf-8")
-    old_side = _sidecar_dir(home, legacy)
-    os.makedirs(os.path.join(old_side, "sub"), exist_ok=True)
-    with open(os.path.join(old_side, "a.parquet.json"), "w", encoding="utf-8") as f:
-        json.dump({"comments": [{"id": "c1", "text": "keep me"}]}, f)
-
-    wm.run()
-
-    new_side = _sidecar_dir(home, new)
-    assert not os.path.exists(old_side)
-    with open(os.path.join(new_side, "a.parquet.json"), encoding="utf-8") as f:
-        assert json.load(f)["comments"][0]["text"] == "keep me"
-    assert os.path.isdir(os.path.join(new_side, "sub"))
-
-
-def test_sidecars_outside_the_workspace_are_untouched(machine):
-    legacy, new, home = machine
-    legacy.mkdir(parents=True)
-    other = _sidecar_dir(home, legacy.parent / "Elsewhere")
-    os.makedirs(other, exist_ok=True)
-    with open(os.path.join(other, "z.json"), "w", encoding="utf-8") as f:
-        json.dump({"k": 1}, f)
-
-    wm.run()
-
-    assert os.path.isfile(os.path.join(other, "z.json"))
-
-
-def test_an_existing_new_sidecar_subtree_is_never_clobbered(machine):
-    legacy, new, home = machine
-    legacy.mkdir(parents=True)
-    old_side = _sidecar_dir(home, legacy)
-    new_side = _sidecar_dir(home, new)
-    os.makedirs(old_side, exist_ok=True)
-    os.makedirs(new_side, exist_ok=True)
-    with open(os.path.join(old_side, "old.json"), "w", encoding="utf-8") as f:
-        json.dump({"old": 1}, f)
-    with open(os.path.join(new_side, "new.json"), "w", encoding="utf-8") as f:
-        json.dump({"new": 1}, f)
-
-    wm.run()
-
-    assert os.path.isfile(os.path.join(old_side, "old.json"))
-    assert os.path.isfile(os.path.join(new_side, "new.json"))
 
 
 # ------------------------------------------------------------- the state files
@@ -457,8 +401,7 @@ def test_a_stray_file_at_the_legacy_path_changes_nothing(machine):
 # ---------------------------------------------------- path shapes (no real fs)
 # These drive the pure helpers directly with Windows-shaped and
 # backslash-bearing POSIX input, so they assert the cross-platform behaviour on
-# any host — the same discipline storage._sidecar_subpath (ntpath) and
-# _view_url_codec are written for.
+# any host — the same discipline _view_url_codec is written for.
 
 def test_a_windows_view_url_is_remapped_despite_the_backslashed_source():
     """The url decodes to a FORWARD-slashed drive path while the legacy dir
@@ -507,46 +450,6 @@ def test_a_posix_sibling_is_not_matched_through_a_backslash():
     dst = "/Users/x/Fused"
 
     assert wm._remap("/Users/x/Documents/Fused\\evil", src, dst) is None
-
-
-# ------------------------------------------ the workspace's own sidecar (#3)
-
-def test_moves_the_sidecar_of_the_workspace_directory_itself(machine):
-    """A directory is bookmarkable (bookmarks._fs_path_from_url takes "a file
-    OR a directory listing"), so the workspace dir has its own sidecar — and
-    it is a SIBLING file of the subtree, `<...>/Documents/Fused.json`, which
-    the subtree rename walks straight past."""
-    legacy, new, home = machine
-    legacy.mkdir(parents=True)
-    old_file = _sidecar_dir(home, legacy) + ".json"
-    os.makedirs(os.path.dirname(old_file), exist_ok=True)
-    with open(old_file, "w", encoding="utf-8") as f:
-        json.dump({"bookmarkHistory": [{"at": "2026-01-01"}]}, f)
-
-    wm.run()
-
-    new_file = _sidecar_dir(home, new) + ".json"
-    assert not os.path.exists(old_file)
-    with open(new_file, encoding="utf-8") as f:
-        assert json.load(f)["bookmarkHistory"][0]["at"] == "2026-01-01"
-
-
-def test_an_existing_new_workspace_sidecar_file_is_never_clobbered(machine):
-    legacy, new, home = machine
-    legacy.mkdir(parents=True)
-    old_file = _sidecar_dir(home, legacy) + ".json"
-    new_file = _sidecar_dir(home, new) + ".json"
-    for p, payload in ((old_file, {"old": 1}), (new_file, {"new": 1})):
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-
-    wm.run()
-
-    with open(old_file, encoding="utf-8") as f:
-        assert json.load(f) == {"old": 1}
-    with open(new_file, encoding="utf-8") as f:
-        assert json.load(f) == {"new": 1}
 
 
 # --------------------------------------------- untrusted values in state JSON

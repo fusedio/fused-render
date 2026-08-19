@@ -112,9 +112,9 @@ def test_another_session_of_the_same_file_is_not_adopted(agent, target):
 
 
 def test_a_forked_session_id_still_matches(agent, target):
-    """`--fork-session` hands back a NEW session id and `_record_session`
-    repoints the sidecar row at it — so the id the page holds may be the one in
-    the run's `session` file OR the `resumed_from` in meta.json. Both identify
+    """`--fork-session` hands back a NEW session id, which the run's poll
+    writes to its `session` file — so the id the page holds may be that one OR
+    the `resumed_from` in meta.json. Both identify
     the same chat, so either matching is a match — and an id that is neither
     still does not."""
     _run_dir(agent, "20260817-120000-ddd", file=target, resumed_from="sess-old",
