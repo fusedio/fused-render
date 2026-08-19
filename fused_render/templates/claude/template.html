@@ -9793,8 +9793,19 @@ document.getElementById("back").onclick = () => {
   // sessionStorage mirror keeps them for the session's next open — persistQueue
   // is deliberately NOT called (the params below are about to be cleared, and
   // persisting an empty list under the leaving session's key would erase the
-  // mirror this is counting on). The rows themselves go with the log wipe.
+  // mirror this is counting on). The bubbles are removed here by hand: #queue
+  // is a SIBLING of #log, so the transcript wipe below never touches them, and
+  // a bubble that outlived its entry reappeared on the next enterChat,
+  // detached from everything (Bugbot, PR #653).
+  for (const q of queuedMsgs) q.el.remove();
   queuedMsgs.length = 0;
+  // The abandoned turn's sendMessage/resumeRun still holds `sending` until its
+  // loop bails (one poll away) — long enough for the landing composer's submit
+  // to hit `if (sending) return` and drop the click (Bugbot, PR #653). The
+  // landing is a new life for the flag, so it releases HERE; the old loop's
+  // cleanup is ownership-guarded, so its late finally cannot strip a run this
+  // page starts in the meantime.
+  sending = false;
   // `{default: ""}`, because this button is live on a chat that has no session
   // yet — "New chat" enters the chat view and `session_id` is not written until
   // the first turn's poll answers. Clearing an already-absent param is a
@@ -12439,11 +12450,16 @@ async function pollLoop(run_id, gen = logGen) {
     if (w.el.isConnected) w.el.remove();
     // Nothing is interruptible any more. Cleared even when the loop threw: an
     // Escape landing after this must not cancel a finished run and then mislabel
-    // the NEXT turn's ending as a stop.
-    activeRun = null;
-    activeWorking = null;
-    activeSegBody = null;
-    setRunningUi(false);
+    // the NEXT turn's ending as a stop. OWNERSHIP-GUARDED (Bugbot, PR #653):
+    // a loop that bailed because the reader left finishes after the leave — by
+    // then a new turn may own this chrome, and an unconditional clear here
+    // stripped the new run's Stop square and its Escape target.
+    if (activeRun === run_id) {
+      activeRun = null;
+      activeWorking = null;
+      activeSegBody = null;
+      setRunningUi(false);
+    }
   }
 }
 
