@@ -197,12 +197,14 @@ def test_BOTH_models_are_configured_with_the_SAME_measured_thread_count(
     and it was pinned to a single thread.
 
     Measured on a 216-second recording, 10-core Apple Silicon, everything else
-    identical and the output byte-identical at every setting (48 turns, 6
-    speakers): 26.64s at one thread, 14.80s at two, 11.55s at four, 16.79s at
+    identical: 26.64s at one thread, 14.80s at two, 11.55s at four, 16.79s at
     eight. One thread is therefore a 2.3x pessimisation of the phase the user
     waits on, and eight is slower than four — which is why the cap exists and
     why `os.cpu_count()` uncapped would be the same mistake in the other
-    direction.
+    direction. The output was identical at all four settings (48 turns, 6
+    speakers) — on that one machine and that one recording, which is evidence
+    that the reductions are stable under threading rather than a guarantee that
+    they must be; `diarizer` writes down what is and is not promised.
 
     Read off BOTH configs, because the value has to come from ONE constant:
     `mlx_whisper` and `parakeet_mlx` both import this module, and a segmenter

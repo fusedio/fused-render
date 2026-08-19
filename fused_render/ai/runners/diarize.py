@@ -107,10 +107,17 @@ MIN_DURATION_OFF = 0.5
 #: It was `1`, under a comment that thought it was restating a library default.
 #: The segmentation pass is the dominant cost of a diarized transcription, not
 #: the footnote the CPU-provider note below used to call it: on a 216-second
-#: recording on a 10-core Apple Silicon machine, with the output byte-identical
-#: at every setting (48 turns, 6 speakers), it ran in 26.64s on one thread,
+#: recording on a 10-core Apple Silicon machine it ran in 26.64s on one thread,
 #: 14.80s on two and 11.55s on four. Embedding and clustering together measured
 #: ~0s, so this number is essentially the whole of the phase's wall clock.
+#:
+#: **The output was identical at 1, 2, 4 and 8 threads** — the same 48 turns and
+#: the same 6 speakers — which is the evidence that made this safe to change, and
+#: the limit of that evidence is one machine and one recording. It is not a
+#: guarantee: ONNX Runtime's intra-op parallelism can in principle reorder
+#: floating-point reductions, which would perturb the posteriors and so the turn
+#: boundaries, and this value is host-dependent by design. `diarizer` states what
+#: is and is not promised as a result.
 #:
 #: **The cap of 4 is load-bearing, and this is the reason it is not a magic
 #: number:** eight threads measured 16.79s — SLOWER than four's 11.55s — on that
@@ -233,9 +240,25 @@ def diarizer(segmentation_path, embedding_path, speakers):
       instead, so voices merge by cosine distance and the count falls out.
 
     The fixed branch is spelled exactly as it was before the other one existed,
-    with no `threshold` passed: a caller who gives the count must get the same
-    transcript they got yesterday, byte for byte, and the surest way to promise
-    that is to leave its call untouched.
+    with no `threshold` passed: a caller who gives the count must not have their
+    clustering quietly re-tuned by a feature they did not ask for, and the surest
+    way to promise that is to leave its call untouched.
+
+    **That promise is about the CALL, not about the bytes**, and the distinction
+    is not pedantry — it used to read "the same transcript they got yesterday,
+    byte for byte", which is more than this file can honestly claim now that
+    `NUM_THREADS` derives from `os.cpu_count()`. ONNX Runtime's intra-op
+    parallelism can in principle change the order of floating-point reductions,
+    and a different order perturbs the segmentation posteriors and therefore the
+    turn boundaries. What was actually established is narrower than a guarantee
+    and is worth writing down as such: on ONE machine and ONE 216-second
+    recording, 1, 2, 4 and 8 threads produced identical output — the same 48
+    turns and the same 6 speakers. That is real evidence that this model's
+    reductions are stable under threading, and it is not proof that they must be
+    on every part and every recording. A transcript that differs across machines
+    by a few milliseconds of turn boundary is the accepted cost of the phase
+    taking 11.5s instead of 26.6s (see `NUM_THREADS`); what is NOT accepted is
+    the label set changing, which is what the count-fixing branch above pins.
 
     CPU provider explicitly, and NOT because this is cheap — it is not. The
     segmentation pass is the dominant cost of a diarized transcription (26.6s of
