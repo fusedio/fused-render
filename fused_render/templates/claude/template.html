@@ -6626,8 +6626,13 @@ async function annRecEnd() {
     annCta.classList.remove("busy");
     annRecLbl.textContent = "";
     annBtn.disabled = false;
-    annBtn.setAttribute("aria-label", "Done — send the notes and finish commenting");
-    annBtn.title = ANN_ARMED_TITLE;
+    // Derived from the state, not assumed armed (Bugbot, PR #665): an Esc
+    // in the settle already idle-named the seat through annSetMode, and a
+    // blind Done restore here would dress a Comment face in Done's name.
+    annBtn.setAttribute("aria-label", annOn
+      ? "Done — send the notes and finish commenting"
+      : "Comment on the " + paneNoun);
+    annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
     if (annOn && annArmEpoch === armed) annSetMode(false);
     return;
   }
@@ -6687,11 +6692,14 @@ async function annRecEnd() {
     annBtn.disabled = false;
     annCta.classList.remove("busy");
     annRecLbl.textContent = "";   // "Transcribing…" only ever describes now
-    // The disarm below renames the seat on the normal path; when the epoch
-    // guard skips it (the user re-armed mid-transcription), the armed name
-    // must come back by hand or the seat keeps saying "Transcribing".
-    annBtn.setAttribute("aria-label", "Done — send the notes and finish commenting");
-    annBtn.title = ANN_ARMED_TITLE;
+    // The disarm below renames the seat on the normal path; when the guards
+    // skip it (the user re-armed mid-transcription, or Esc already disarmed)
+    // the name must come back by hand — derived from the state, so an idle
+    // face is never dressed in Done's name (Bugbot, PR #665).
+    annBtn.setAttribute("aria-label", annOn
+      ? "Done — send the notes and finish commenting"
+      : "Comment on the " + paneNoun);
+    annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
   }
   // The other half of the stop-disarms rule above: transcript fetched (or
   // failed — the notes stay in the transcript either way), walkthrough done,
@@ -6742,8 +6750,12 @@ async function annRecDiscard() {
   annCta.classList.remove("busy");
   annRecLbl.textContent = "";
   annBtn.disabled = false;
-  annBtn.setAttribute("aria-label", "Done — send the notes and finish commenting");
-  annBtn.title = ANN_ARMED_TITLE;
+  // Derived, same reason as annRecEnd's restores: Esc during this settle
+  // has already idle-named the seat, and the disarm below is epoch-guarded.
+  annBtn.setAttribute("aria-label", annOn
+    ? "Done — send the notes and finish commenting"
+    : "Comment on the " + paneNoun);
+  annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
   const ids = new Set(annRecIds);
   annRecIds = [];
   if (ids.size) {
