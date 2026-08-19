@@ -5723,12 +5723,27 @@ an AI Models page that could say what was on disk but not what was *running*.
   `OSError`s, so the tuple names them without importing them) and never
   `Cancelled`, which is an ordinary `Exception` — a bare `except Exception` there
   turned a Stop into a fresh multi-gigabyte download. **First download behaviour
-  is unchanged, and a partial cache must never be mistaken for a complete one**:
-  three layers say so — the local attempt is made with the same patterns and
-  arguments the real fetch would use, an interrupted download's markers (hf's
-  `.incomplete`, our `.fusedpart`) in the repo folder disqualify the cache
-  outright, and huggingface_hub ≥1.27 independently verifies snapshot completeness
-  against its cached tree listing. **The trade is stated rather than
+  is unchanged, and a partial or narrower cache must never be mistaken for a
+  complete one.** hf's own completeness check is NOT the guarantee — it verifies
+  against `trees/<commit>.json`, hf's code says that without one "we cannot tell,
+  so we do nothing", and this app's segmented fetch (the normal path) writes
+  `refs/` and blobs but never a tree — so two rules the disk can actually answer
+  carry it instead. **A SCOPED call skips the fast path entirely**: `_write_ref`
+  runs after the last file lands, so a ref means "the requested set is here", but
+  that set is whatever `allow_patterns` asked for and no amount of looking settles
+  whether a wider request is satisfied (`diffusers_image` scopes to
+  `recipe["keep"]` and expects that list to grow — served from the cache, the next
+  download would return the old snapshot and `from_pretrained` would fail on a
+  missing config instead of fetching it). **Every snapshot entry must resolve and
+  be settled**: a blob pruned or never copied leaves a dangling symlink, and
+  short-circuiting before the listing would make that state permanent — before
+  this, pressing Download again re-listed and re-fetched what was missing, which
+  is the app's only repair route. An interrupted download's markers (hf's
+  `.incomplete`, our `.fusedpart` and its sidecar) are checked per BLOB rather than
+  per repo, because a part file is the resume state (AI-5i) and a repo-wide scan
+  let one cancelled quantization void the fast path for every other file in a
+  multi-GGUF repo. Measured: the verification costs 0.05-0.88ms depending on file
+  count, end to end 0.2-1.1ms against 483ms. **The trade is stated rather than
   discovered: a complete cached model does not pick up a newer Hub revision under
   the same branch** until something forces a re-check. That is chosen — bring-up
   latency and offline operation over revision freshness — because these are

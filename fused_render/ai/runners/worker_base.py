@@ -1454,7 +1454,42 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
 # below it — the metadata call, the total, the segmented fetch, the progress
 # reporting — runs exactly as it did before.
 #
-# **Two rules the first cut of this got wrong, both about not doing MORE than
+# **What "complete" can and cannot mean without a listing** — this is the part a
+# code review corrected, and the correction is the reason for the two rules
+# below. hf's own completeness check (`_raise_if_incomplete_snapshot`) verifies
+# the snapshot against `trees/<commit>.json`, and hf's own comment says that with
+# no tree listing cached "we cannot tell, so we do nothing". `_segmented_fetch`
+# never writes one: it publishes blobs and hand-writes `refs/<branch>`
+# (`_write_ref`), and it is the NORMAL path — hf's downloader runs only on
+# fallback. So for essentially every repo this app fetched itself, hf's check is a
+# no-op, and it must not be counted as evidence. It was, in the first cut of this,
+# and the claim that the gap was unreachable was simply wrong.
+#
+# What IS evidence, and what the two rules are:
+#
+# * **The scope must not be relative to a pattern list.** `_write_ref` runs after
+#   the last file lands, so a ref means "the requested set is here" — but the
+#   requested set is whatever `allow_patterns`/`ignore_patterns` asked for, and
+#   whether a WIDER request is already satisfied cannot be answered from the disk:
+#   the expected names come from the listing this path exists to skip.
+#   `diffusers_image` downloads with `allow_patterns=list(recipe["keep"])` and its
+#   own comment anticipates that list growing; served from the cache, the first
+#   download after such a change would return the old, now-insufficient snapshot
+#   and `from_pretrained` would fail on a missing config instead of fetching it.
+#   So a scoped call skips the fast path entirely and keeps exactly the behaviour
+#   it had before this existed.
+# * **Every entry in the snapshot must actually resolve, and be settled.** A blob
+#   removed under a complete-looking snapshot — `hf cache` pruning, a partial copy
+#   of a cache, a cleanup script — leaves a dangling symlink. Before the fast path,
+#   pressing Download again re-listed and re-fetched what was missing; returning
+#   the folder unread would make that unrepairable and every later load fail on a
+#   file the cache claims to have. One walk of the snapshot directory (tens of
+#   entries) answers it, and it is the check that makes "complete-looking" mean
+#   something. The same walk asks `_settled` per entry, which is where an
+#   interrupted download's part files are ruled out — per BLOB rather than per
+#   repo, for the reason `_settled` gives.
+#
+# **Two further rules the first cut got wrong, both about not doing MORE than
 # looking.** (1) A repo the cache has never held must not reach a hub download
 # function at all, not even with `local_files_only=True`: `tests/test_ai_hub_
 # fetch.py` states the invariant that pressing Stop must not start a download,
@@ -1490,24 +1525,31 @@ _NOT_CACHED = (OSError, ImportError)
 _HF_PART_SUFFIX = ".incomplete"
 
 
-def _has_partial_files(folder):
-    """Whether an interrupted download left anything behind in `folder`.
+def _settled(path):
+    """Whether the file at `path` is finished rather than mid-download.
 
-    Recent `huggingface_hub` verifies snapshot completeness against its own
-    cached tree listing and raises `LocalEntryNotFoundError` for a partial one —
-    but a runner venv resolves `huggingface_hub` unpinned, so this file does not
-    get to assume that check exists, and the cost of trusting a partial cache is
-    a `load()` that fails on a missing shard instead of a download that finishes.
-    The marker files are right there, so ruling it out is one cheap walk of a
-    folder that holds tens of files.
+    **Per BLOB, deliberately, and this replaced a repo-wide scan.** A leftover
+    part file is not a fact about a repo, it is a fact about one blob — and it
+    persists BY DESIGN, because it is the resume state (AI-5i). Scanning the whole
+    repo folder therefore let one cancelled download disable the fast path for
+    every unrelated, fully-cached file in the same repo, forever: a multi-GGUF repo
+    where the user stopped one quantization kept paying the ~450ms this exists to
+    remove for the dozen it already had.
+
+    The three names are spelled out rather than matched by suffix, which also
+    settles an old inconsistency (`endswith(PART_SUFFIX)` here against
+    `PART_SUFFIX in name` in `_clear_parts`): our part file, its offsets sidecar
+    — `<part>.json`, which a suffix test misses — and hf's own marker. hf 1.x also
+    writes uuid-named `.incomplete` blobs that no per-blob name can predict, and
+    that is covered from the other side: an unfinished blob is not a file
+    `try_to_load_from_cache` or a snapshot symlink resolves to at all.
+
+    `realpath` first, because the caller holds a snapshot entry and the markers sit
+    beside the BLOB it links into.
     """
-    if not folder:
-        return False
-    for _dirpath, _dirs, files in os.walk(folder):
-        for name in files:
-            if name.endswith(_HF_PART_SUFFIX) or name.endswith(PART_SUFFIX):
-                return True
-    return False
+    blob = os.path.realpath(path)
+    return not any(os.path.lexists(blob + suffix) for suffix in
+                   (PART_SUFFIX, PART_SUFFIX + ".json", _HF_PART_SUFFIX))
 
 
 def _has_cached_snapshot(folder):
@@ -1529,6 +1571,29 @@ def _has_cached_snapshot(folder):
         return False
 
 
+def _snapshot_is_intact(snapshot):
+    """Whether every entry in a resolved snapshot directory really is there.
+
+    `os.path.exists` FOLLOWS symlinks, which is the whole point: a snapshot entry
+    is a link into `blobs/`, and a blob pruned or never copied leaves the link
+    behind. An empty directory is not intact either — it satisfies every
+    existence check and holds no weights, which is what an interrupted first
+    download can leave once its part files are cleared.
+
+    Walked rather than counted, because a repo's files can sit in subdirectories
+    (`transformer/`, `onnx/`) and a top-level listing would miss exactly the
+    component a scoped recipe cares about.
+    """
+    found = False
+    for dirpath, _dirs, files in os.walk(snapshot):
+        for name in files:
+            found = True
+            entry = os.path.join(dirpath, name)
+            if not os.path.exists(entry) or not _settled(entry):
+                return False
+    return found
+
+
 def _cached_path(model_id, resolve):
     """`resolve()`'s answer if the cache can serve it with NO network, else None.
 
@@ -1544,18 +1609,21 @@ def _cached_path(model_id, resolve):
     the whole point of this file's degradation rules is that a ✕ is the one
     failure that must not be answered by starting a download.
 
-    The path is checked before it is trusted: it comes from a call this file did
-    not make itself, and a cache directory removed under a resolved ref would
-    otherwise be handed to `load()` as a snapshot.
+    The answer is verified before it is trusted, and not only that it exists:
+    every entry under it has to resolve (see `_snapshot_is_intact` and the note
+    above this section). It comes from a call this file did not make itself, and a
+    snapshot whose blobs went away is exactly the state that must send the
+    download back to the Hub rather than be handed to `load()`.
     """
-    folder = repo_folder(model_id)
-    if not _has_cached_snapshot(folder) or _has_partial_files(folder):
+    if not _has_cached_snapshot(repo_folder(model_id)):
         return None
     try:
         path = resolve()
     except _NOT_CACHED:
         return None
-    return path if path and os.path.exists(path) else None
+    if not path or not os.path.isdir(path) or not _snapshot_is_intact(path):
+        return None
+    return path
 
 
 def _cached_file(repo_id, filename):
@@ -1578,13 +1646,13 @@ def _cached_file(repo_id, filename):
         from huggingface_hub import try_to_load_from_cache
     except ImportError:
         return None
-    if _has_partial_files(repo_folder(repo_id)):
-        return None
     try:
         path = try_to_load_from_cache(repo_id, filename)
     except _NOT_CACHED:
         return None
-    return path if isinstance(path, str) and os.path.isfile(path) else None
+    if not isinstance(path, str) or not os.path.isfile(path):
+        return None
+    return path if _settled(path) else None
 
 
 def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwargs):
@@ -1604,18 +1672,19 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     def local():
         from huggingface_hub import snapshot_download
 
-        return snapshot_download(model_id, allow_patterns=allow_patterns,
-                                 ignore_patterns=ignore_patterns,
-                                 local_files_only=True, **kwargs)
+        return snapshot_download(model_id, local_files_only=True)
 
-    # Already on disk, in scope and complete? Then there is nothing to download
-    # and nothing to report: no metadata call, no etag revalidation, no bar that
-    # fills in one tick. See the note above this function for what that costs in
-    # revision freshness. The patterns and any extra kwargs go through unchanged,
-    # so what the cache is asked for is exactly what would have been fetched.
-    cached = _cached_path(model_id, local)
-    if cached:
-        return cached
+    # Already on disk and complete? Then there is nothing to download and nothing
+    # to report: no metadata call, no etag revalidation, no bar that fills in one
+    # tick. See the note above this section for what that costs in revision
+    # freshness — and for why a SCOPED or otherwise argued call is excluded rather
+    # than passed through: "complete" is then relative to a pattern list, and no
+    # amount of looking at the disk settles whether a wider request is already
+    # satisfied. Those calls run exactly as they did before this existed.
+    if not allow_patterns and not ignore_patterns and not kwargs:
+        cached = _cached_path(model_id, local)
+        if cached:
+            return cached
 
     # ONE listing, serving the bar's total, the list to fetch AND the revision
     # to fetch it at. Asking twice is a second round trip before any byte moves;

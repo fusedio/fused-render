@@ -887,26 +887,98 @@ def test_a_model_that_is_NOT_cached_downloads_exactly_as_before(base, monkeypatc
     assert ticks, "the networked path must still report progress"
 
 
-def test_a_PARTIAL_download_is_not_mistaken_for_a_cached_one(base, monkeypatch,
-                                                             tmp_path):
-    """An interrupted download leaves hf's `.incomplete` blobs and our own
-    `.fusedpart` segments in the cache folder. Recent huggingface_hub verifies
-    snapshot completeness against its own tree listing and raises — but that
-    check is not something this file gets to assume of every version a runner
-    venv might resolve, and the consequence of trusting a partial cache is a
-    load that fails on a missing weight file instead of a download that
-    finishes. Cheap to rule out: the marker files are right there."""
-    hub = _LocalHub(cached=["u/x"], snapshot=_snapshot_dir(tmp_path))
-    _local_hub(monkeypatch, base, hub,
-               folder=_cache_folder(tmp_path, partial=True))
+def _blob_backed(tmp_path, folder, name, etag="e7ag", part=False, hf_part=False):
+    """A snapshot entry that is a SYMLINK into `blobs/`, the way hf files one.
+
+    The link is what makes the difference between "this file is here" and "this
+    file's blob is here", and the part files beside the blob are what says a
+    download is still writing it — both of which the fast path has to read
+    correctly, so neither can be faked with a plain file.
+    """
+    blob = folder / "blobs" / etag
+    blob.write_bytes(b"weights")
+    if part:
+        (folder / "blobs" / (etag + ".fusedpart")).write_bytes(b"half")
+        (folder / "blobs" / (etag + ".fusedpart.json")).write_bytes(b"{}")
+    if hf_part:
+        (folder / "blobs" / (etag + ".incomplete")).write_bytes(b"half")
+    snapshot = folder / "snapshots" / "c0mm1t"
+    entry = snapshot / name
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.symlink_to(blob)
+    return str(snapshot), str(entry)
+
+
+def test_a_part_file_for_THIS_blob_is_not_mistaken_for_a_cached_one(
+        base, monkeypatch, tmp_path):
+    """An interrupted download leaves our `.fusedpart` (and its offsets sidecar)
+    or hf's `.incomplete` beside the blob it is writing.
+
+    Trusting the cache then means handing `load()` a file that is still being
+    written, and it must not be papered over by hf's own completeness check
+    either: that check is a no-op without a cached tree listing, and the segmented
+    fetch — the normal path — never writes one.
+    """
+    folder = _cache_folder(tmp_path, snapshot=False)
+    snapshot, entry = _blob_backed(tmp_path, folder, "weights.safetensors",
+                                   part=True)
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot, file_path=entry)
+    _local_hub(monkeypatch, base, hub, folder=folder)
     monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
 
     base.download_snapshot("u/x")
-    base.download_file("u/x", "w.bin")
 
-    assert ("snapshot", True) not in hub.calls, hub.calls
-    assert hub.lookups == [], "a partial cache must not answer a file either"
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
+@pytest.mark.parametrize("marker", ["part", "hf_part"])
+def test_a_FILE_whose_blob_is_still_being_written_is_not_served(
+        base, monkeypatch, tmp_path, marker):
+    """The single-file half of the same rule, in its own test because the fallback
+    the other one takes CLEARS our part files on its way out (`_clear_parts`, by
+    design — hf is about to fetch those files itself), so asserting both in one
+    test would assert the second one against a cache the first one tidied.
+
+    Both markers are driven: ours, and hf's `.incomplete`.
+    """
+    folder = _cache_folder(tmp_path, snapshot=False)
+    snapshot, entry = _blob_backed(tmp_path, folder, "weights.safetensors",
+                                   part=marker == "part",
+                                   hf_part=marker == "hf_part")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot, file_path=entry)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_file("u/x", "weights.safetensors")
+
+    assert ("file", False) in hub.calls, "a blob still being written was served"
+
+
+def test_a_part_file_for_an_UNRELATED_blob_does_not_disable_the_fast_path(
+        base, monkeypatch, tmp_path):
+    """The degradation the repo-wide scan caused, and why the check is per BLOB.
+
+    A multi-GGUF repo (`unsloth/FLUX.2-klein-4B-GGUF` publishes a dozen
+    quantizations of one model) keeps an abandoned `.fusedpart` on purpose: it is
+    the resume state for the download the user cancelled (AI-5i). Scanning the
+    whole repo folder let that one file disable the fast path for every unrelated,
+    fully-cached file in the repo — forever, since nothing ever clears it — so the
+    ~450ms this exists to remove came back precisely for the repos where
+    cancelling is most likely.
+    """
+    folder = _cache_folder(tmp_path, snapshot=False)
+    (folder / "blobs" / "0ther.fusedpart").write_bytes(b"a cancelled sibling")
+    (folder / "blobs" / "0ther.incomplete").write_bytes(b"and one of hf's")
+    snapshot, entry = _blob_backed(tmp_path, folder, "q4.gguf", etag="m1ne")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot, file_path=entry)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+
+    assert base.download_file("u/x", "q4.gguf") == entry
+    assert hub.calls == [], hub.calls
+    assert base.download_snapshot("u/x") == snapshot
+    assert hub.calls == [("snapshot", True)]
 
 
 def test_a_local_answer_that_is_not_actually_THERE_is_not_trusted(
@@ -924,29 +996,85 @@ def test_a_local_answer_that_is_not_actually_THERE_is_not_trusted(
     assert ("snapshot", False) in hub.calls, hub.calls
 
 
-def test_the_fast_path_is_SCOPED_like_the_download_it_replaces(base, monkeypatch,
-                                                               tmp_path):
-    """`allow_patterns`/`ignore_patterns` change WHAT is fetched, and they reach
-    the local attempt too — so a repo cached whole still answers locally for a
-    scoped request, and one cached only outside the scope does not. A local
-    attempt that dropped them could hand back a snapshot missing exactly the
-    files the caller asked for."""
-    hub = _LocalHub(cached=["u/x"], snapshot=_snapshot_dir(tmp_path))
-    seen = {}
-    real = hub.snapshot_download
+def test_a_SCOPED_download_is_never_answered_from_the_cache(base, monkeypatch,
+                                                            tmp_path):
+    """`allow_patterns` changes WHAT a complete download contains, and whether the
+    cache already holds that set is not a question the disk can answer: the
+    expected names come from the Hub listing this path exists to skip.
 
-    def spy(model_id, allow_patterns=None, ignore_patterns=None, **kw):
-        seen.update(allow=allow_patterns, ignore=ignore_patterns)
-        return real(model_id, allow_patterns=allow_patterns,
-                    ignore_patterns=ignore_patterns, **kw)
-
-    hub.snapshot_download = spy
+    The concrete failure is `diffusers_image`, which downloads with
+    `allow_patterns=list(recipe["keep"])` and whose own comment anticipates that
+    list growing (a `tokenizer_2`). With the fast path serving scoped requests,
+    the first `download()` after such a change returns the OLD, now-insufficient
+    snapshot in 0.2ms and `from_pretrained` fails on a missing config instead of
+    fetching it. So a scoped caller keeps exactly the behaviour it had before the
+    fast path existed, and the win is claimed only where "complete" is not
+    relative to a pattern list.
+    """
+    hub = _LocalHub(cached=["u/x"], snapshot=_snapshot_dir(tmp_path, "config.json"))
     _local_hub(monkeypatch, base, hub, folder=_cache_folder(tmp_path))
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
 
-    base.download_snapshot("u/x", allow_patterns=["*.json"],
-                           ignore_patterns=["*.bin"])
+    base.download_snapshot("u/x", allow_patterns=["*.json"])
+    assert [call for call in hub.calls if call[1] is True] == [], hub.calls
 
-    assert seen == {"allow": ["*.json"], "ignore": ["*.bin"]}
+    hub.calls.clear()
+    base.download_snapshot("u/x", ignore_patterns=["*.bin"])
+    assert [call for call in hub.calls if call[1] is True] == [], hub.calls
+
+    # …and an unscoped request for the same repo still takes it.
+    hub.calls.clear()
+    assert base.download_snapshot("u/x") == hub.snapshot
+    assert hub.calls == [("snapshot", True)]
+
+
+def test_a_snapshot_with_a_DANGLING_entry_sends_the_download_back_to_the_hub(
+        base, monkeypatch, tmp_path):
+    """The self-repair this path must not take away.
+
+    A blob removed under a complete-looking snapshot — `hf cache` pruning, a
+    partial copy of somebody's cache, a cleanup script — leaves the snapshot's
+    symlink pointing at nothing. Before the fast path, pressing Download again
+    re-listed the repo and re-fetched what was missing; a fast path that returns
+    the snapshot folder unread makes that unrepairable, and every load from then
+    on fails on a file the cache claims to have.
+
+    hf's own completeness check does NOT cover this: `_raise_if_incomplete_
+    snapshot` is a no-op unless `trees/<commit>.json` is cached, and this app's
+    segmented fetch (the normal path — hf's downloader runs only on fallback)
+    writes `refs/` and the blobs, never a tree listing.
+    """
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_bytes(b"{}")
+    (snapshot / "weights.safetensors").symlink_to(tmp_path / "gone-blob")
+    hub = _LocalHub(cached=["u/x"], snapshot=str(snapshot))
+    _local_hub(monkeypatch, base, hub, folder=_cache_folder(tmp_path))
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
+def test_an_EMPTY_snapshot_directory_is_not_a_cached_model(base, monkeypatch,
+                                                           tmp_path):
+    """A directory with nothing in it satisfies every existence check and holds no
+    weights. It is what an interrupted first download can leave once its part
+    files are cleared, and returning it would hand `load()` a path with no model
+    at it."""
+    empty = tmp_path / "snap"
+    empty.mkdir()
+    hub = _LocalHub(cached=["u/x"], snapshot=str(empty))
+    _local_hub(monkeypatch, base, hub, folder=_cache_folder(tmp_path))
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
 
 
 # -- the heartbeat --------------------------------------------------------------
