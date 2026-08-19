@@ -98,6 +98,31 @@ EMBEDDING_FILE = formats.COMPONENT_REPOS[EMBEDDING_REPO]["file"]
 MIN_DURATION_ON = 0.3
 MIN_DURATION_OFF = 0.5
 
+#: How many CPU threads BOTH ONNX models get. One constant for the two of them,
+#: for the reason `MIN_DURATION_ON` is one: two engines read this module and a
+#: segmenter configured apart from its embedder is drift no behavioural test
+#: would catch. Unlike those two, this value is **not** sherpa's default and is
+#: not restating anything upstream chose — it is measured here.
+#:
+#: It was `1`, under a comment that thought it was restating a library default.
+#: The segmentation pass is the dominant cost of a diarized transcription, not
+#: the footnote the CPU-provider note below used to call it: on a 216-second
+#: recording on a 10-core Apple Silicon machine, with the output byte-identical
+#: at every setting (48 turns, 6 speakers), it ran in 26.64s on one thread,
+#: 14.80s on two and 11.55s on four. Embedding and clustering together measured
+#: ~0s, so this number is essentially the whole of the phase's wall clock.
+#:
+#: **The cap of 4 is load-bearing, and this is the reason it is not a magic
+#: number:** eight threads measured 16.79s — SLOWER than four's 11.55s — on that
+#: same 10-core part. Every current Apple Silicon design is performance cores
+#: plus efficiency cores, so threads past the P-core count land on the slow ones
+#: and the segmentation pass ends up waiting for them. `os.cpu_count()` uncapped
+#: is therefore a pessimisation on every machine this runner ships to, in the
+#: same way `1` was in the other direction. `or 1` because `os.cpu_count()` is
+#: documented to be able to return None, and `num_threads=None` is a C++ config
+#: field this process would abort on rather than raise about.
+NUM_THREADS = min(4, os.cpu_count() or 1)
+
 #: How much of a lead counts as a real one when two speakers overlap a segment.
 #: Overlaps are differences of floats and two turns that are equal on paper
 #: rarely are in binary, so a bare `==` tie-break would never fire and the
@@ -212,10 +237,17 @@ def diarizer(segmentation_path, embedding_path, speakers):
     transcript they got yesterday, byte for byte, and the surest way to promise
     that is to leave its call untouched.
 
-    CPU provider explicitly, for `vad.py`'s reason: 33MB of ONNX that runs in
-    seconds does not need a second accelerator backend beside the one holding
-    the Whisper weights, and onnxruntime's provider-fallback warnings would land
-    in the worker log on every transcription.
+    CPU provider explicitly, and NOT because this is cheap — it is not. The
+    segmentation pass is the dominant cost of a diarized transcription (26.6s of
+    a 216-second recording on one thread; see `NUM_THREADS`), and the sentence
+    that used to sit here — "33MB of ONNX that runs in seconds" — asserted a
+    timing this phase never had. What survives that correction is the rest of
+    `vad.py`'s reason, which does not depend on the size of the model: a second
+    accelerator backend beside the one holding the Whisper weights buys nothing
+    measured (CoreML measured SLOWER than CPU for ASR — sherpa-onnx#2910), and
+    onnxruntime's provider-fallback warnings would land in the worker log on
+    every transcription. The answer to the cost is `NUM_THREADS`, not a
+    different provider.
     """
     import sherpa_onnx
 
@@ -231,9 +263,9 @@ def diarizer(segmentation_path, embedding_path, speakers):
         segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
                 model=segmentation_path),
-            num_threads=1, provider="cpu"),
+            num_threads=NUM_THREADS, provider="cpu"),
         embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-            model=embedding_path, num_threads=1, provider="cpu"),
+            model=embedding_path, num_threads=NUM_THREADS, provider="cpu"),
         clustering=(
             sherpa_onnx.FastClusteringConfig(num_clusters=int(speakers))
             if speakers is not None else

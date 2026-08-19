@@ -1186,9 +1186,12 @@ def generate(body):
     total = round(len(audio) / SAMPLE_RATE, 2) or None
 
     # PHASE ONE-AND-A-HALF — who is speaking, over the whole waveform. Before
-    # the VAD and independent of it (see `_speaker_turns`), and a fast pre-pass:
-    # seconds on a recording that will take minutes to transcribe, which is why
-    # it gets its own `detail` line rather than a share of the transcript's bar.
+    # the VAD and independent of it (see `_speaker_turns`). It gets its own
+    # `detail` line rather than a share of the transcript's bar because it
+    # produces no transcript, NOT because it is quick — it is not: measured at
+    # 11.5s on a 216-second recording the decode itself finishes in 9s (see
+    # `diarize.NUM_THREADS`), so on a diarized run this is a phase the user
+    # genuinely waits on, which is exactly why it must say something.
     turns = _speaker_turns(audio, speakers, job, row) if diarizing else None
 
     # The ETA's clock starts HERE, not at `started`: the audio decode produced
