@@ -243,6 +243,11 @@ def test_the_busy_seat_is_a_status_not_a_button(html):
     assert "annBtn.disabled = true;" in end
     assert 'annBtn.setAttribute("aria-label", "Transcribing the walkthrough");' in end
     assert "annBtn.disabled = false;" in end
+    # ...and any mode TRANSITION ends the status's claim early: Esc during a
+    # transcription disarms through annSetMode, which must not leave the seat
+    # inert until the finally, or the epoch-guarded re-arm is blocked
+    mode = _block(html, "function annSetMode(on) {", "\nannBtn.addEventListener")
+    assert "annBtn.disabled = false;" in mode
 
 
 def test_a_noun_resolving_mid_mode_does_not_rename_the_done_seat(html):

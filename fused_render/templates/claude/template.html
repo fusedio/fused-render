@@ -6197,6 +6197,12 @@ function annSetMode(on) {
   }
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
+  // Any mode transition ends the transcribing status's claim on the seat
+  // (Bugbot, PR #665): Esc during a transcription disarms HERE, and a seat
+  // left disabled until annRecEnd's finally would block exactly the re-arm
+  // the epoch guard is written to protect. annRecEnd's finally still covers
+  // the no-transition case.
+  annBtn.disabled = false;
   // The tool picker follows the MODE (Akshil, 2026-08-19): typed comments and
   // recorded walkthroughs both pin what it says, so arming slides it in and
   // disarming puts it away — whichever door armed the mode. A cross-origin
