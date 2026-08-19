@@ -314,22 +314,38 @@ function probeReadiness(): Promise<SelfFixReadiness> {
     // unhappy does not throw away the other's answer: a health probe that
     // cannot report is not a finding (the strip makes the same call), and it
     // must not cost the read-only wording that has nothing to do with it.
-    readinessProbe = Promise.allSettled([getConfig(), getClaudeHealth()]).then(
-      ([config, health]) => {
-        const ready = {
-          readOnly:
-            config.status === "fulfilled" && config.value.read_only === true,
-          claudeMissing:
-            health.status === "fulfilled" && health.value.found === false,
-        };
-        // A failed read is not remembered as an answer — the next mount asks
-        // again rather than inheriting a shrug for the rest of the session.
-        if (config.status === "rejected" || health.status === "rejected") {
-          readinessProbe = null;
-        }
-        return ready;
+    const probe: Promise<SelfFixReadiness> = Promise.allSettled([
+      getConfig(),
+      getClaudeHealth(),
+    ]).then(([config, health]) => {
+      const ready = {
+        readOnly:
+          config.status === "fulfilled" && config.value.read_only === true,
+        claudeMissing:
+          health.status === "fulfilled" && health.value.found === false,
+      };
+      // A failed read is not remembered as an answer — the next mount asks
+      // again rather than inheriting a shrug for the rest of the session.
+      //
+      // Cleared only if the cache STILL HOLDS THIS PROBE. A probe that has
+      // already been replaced — by `recheck`, or by the test seam — is no
+      // longer the cache's answer, and its failure is no longer the cache's
+      // business: a slow first read that fails after a good recheck would
+      // otherwise throw away the fresh answer it knows nothing about, and the
+      // next mount would re-ask and race the listeners all over again. The
+      // generation guards above stop a stale answer being PAINTED; this stops
+      // a stale failure DELETING a current one. Identity rather than the
+      // generation counter because that is the exact claim being made — not
+      // "nothing has happened since", but "this entry is mine to remove".
+      if (
+        (config.status === "rejected" || health.status === "rejected") &&
+        readinessProbe === probe
+      ) {
+        readinessProbe = null;
       }
-    );
+      return ready;
+    });
+    readinessProbe = probe;
   }
   return readinessProbe;
 }
