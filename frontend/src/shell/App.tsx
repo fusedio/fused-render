@@ -590,7 +590,7 @@ export default function App({ config }: { config: Config }) {
                     : isClaudeConfig
                       ? "Claude Config"
                       : isCanvases
-                      ? "Canvases"
+                      ? "Workbench Canvases"
                       : canvasWorkspaceName
                       ? `Canvas: ${canvasWorkspaceName}`
                       : isBookmark || bookmarkFile

@@ -1,6 +1,6 @@
-// The sidebar's Workbench canvases entry: one destination, named the same in
-// both places it appears, shown as primary nav only once this machine is signed
-// in, and never lit twice at once (D358).
+// The sidebar's Canvases entry: one destination, named the same in every place
+// it appears, shown as primary nav only once this machine is signed in, and
+// never lit twice at once (D358, renamed in D372).
 //
 // Read out of the source, the way sidebar-tasks.test.ts reads its own wiring
 // claims: the parts that matter here are WHICH gate each site is behind and
@@ -16,15 +16,20 @@ const SIDEBAR = readFileSync(join(SHELL, "GlobalSidebar.tsx"), "utf8");
 const STORE = readFileSync(join(SHELL, "../apps/canvases/logged-in.ts"), "utf8");
 const PAGE = readFileSync(join(SHELL, "../apps/canvases/Canvases.tsx"), "utf8");
 
-describe("the sidebar's Workbench canvases entry", () => {
-  it("is called the same thing everywhere, and never plain 'Canvases'", () => {
+describe("the sidebar's Canvases entry", () => {
+  it("is 'Canvases' in the sidebar and 'Workbench Canvases' on the page", () => {
     // The menu item, the expanded row and the collapsed rail's tooltip: three
     // sites, one destination, so a reader who found it in one place recognises
-    // it in the others.
-    const named = SIDEBAR.match(/"Workbench canvases"/g) ?? [];
+    // it in the others. Anchored on the `label:`/`label=` forms because the bare
+    // word also appears as a route, a CSS class and a component name.
+    const named = SIDEBAR.match(/label(?::|=)\s*"Canvases"/g) ?? [];
     expect(named.length).toBe(3);
-    expect(SIDEBAR).not.toMatch(/label: "Canvases"/);
-    expect(SIDEBAR).not.toMatch(/label="Canvases"/);
+    // Nav says the short name — it sits under Home/Tasks, where "Workbench" was
+    // the longest label in the rail for the least product meaning. The PAGE
+    // carries the qualified name instead, so the destination still says which
+    // canvases these are once you are on it (D372).
+    expect(SIDEBAR).not.toMatch(/Workbench canvases/i);
+    expect(PAGE).toMatch(/<h1 className="canvases-title">Workbench Canvases<\/h1>/);
   });
 
   it("shows the row and the rail icon behind the SAME sign-in gate", () => {
@@ -47,7 +52,7 @@ describe("the sidebar's Workbench canvases entry", () => {
   it("keeps the menu entry but stops it lighting the Preferences trigger too", () => {
     // Both asks stay true: the menu still lists the destination by name, and
     // the trigger does not light beside an already-lit primary row.
-    expect(SIDEBAR).toMatch(/\{ href: "\/canvases", label: "Workbench canvases"/);
+    expect(SIDEBAR).toMatch(/\{ href: "\/canvases", label: "Canvases"/);
     expect(SIDEBAR).toMatch(/!\(canvasesLoggedIn && e\.href === "\/canvases"\)/);
   });
 

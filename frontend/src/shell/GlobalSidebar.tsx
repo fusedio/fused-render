@@ -1,10 +1,10 @@
 // THE sidebar — one for the whole app, on every route. Replaces the old pair
 // (ShellSidebar app-switcher on shell routes, ExplorerSidebar on fs routes):
-// primary nav on top (Home / Tasks, plus Workbench canvases once this machine
-// is signed in to Fused), the explorer's Bookmarks below it,
-// and a single Settings trigger pinned to the
-// bottom that opens a menu holding everything else (Config / App Basics for
-// now, plus Templates / Mounts / AI Models / Preferences).
+// primary nav on top (Home / Tasks, plus Canvases once this machine is signed
+// in to Fused), the explorer's Bookmarks below it, and a single Settings
+// trigger pinned to the bottom that opens a menu holding everything else
+// (Config / App Basics for now, plus Templates / Mounts / AI Models /
+// Preferences).
 //
 // Lives in the shell layer on purpose: it composes both platform chrome
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
@@ -367,7 +367,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // here even while the primary row above is showing — the menu is where
     // someone looks for a named destination — and `prefsActive` below drops it
     // instead, so the two never light at once.
-    { href: "/canvases", label: "Workbench canvases", icon: CANVASES_ICON },
+    { href: "/canvases", label: "Canvases", icon: CANVASES_ICON },
     { href: "/ai-models", label: "AI Models", icon: AI_MODELS_ICON, extra: residentDot },
     { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
   );
@@ -415,7 +415,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       ? [
           {
             key: "canvases",
-            label: "Workbench canvases",
+            label: "Canvases",
             icon: CANVASES_ICON,
             href: "/canvases",
             active: canvasesActive,
@@ -466,7 +466,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             <NavItem
               href="/canvases"
               id="canvases-link"
-              label="Workbench canvases"
+              label="Canvases"
               icon={CANVASES_ICON}
               active={canvasesActive}
             />

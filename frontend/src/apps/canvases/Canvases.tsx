@@ -160,7 +160,7 @@ export default function Canvases() {
     void refresh();
   }, [refresh]);
 
-  // The sidebar's Workbench canvases row reads the same fact this page does, so
+  // The sidebar's Canvases row reads the same fact this page does, so
   // hand it every status this page learns — the first read, the login poll's
   // flip, the 401 downgrade, the sign-out — rather than leaving it to notice on
   // its own minute-long poll. The whole status goes over, not just the boolean:
@@ -292,7 +292,7 @@ export default function Canvases() {
     <div className="canvases-page">
       <div className="canvases-inner">
         <div className="canvases-head">
-          <h1 className="canvases-title">Canvases</h1>
+          <h1 className="canvases-title">Workbench Canvases</h1>
           {status?.logged_in && (
             <div className="canvases-head-actions">
               <input
