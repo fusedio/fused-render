@@ -93,9 +93,10 @@ class Sink:
     and its side effects are not wanted.
     """
 
-    def __init__(self, path: str | None, turns=None, cancelled=()):
+    def __init__(self, path: str | None, turns=None, spans=None, cancelled=()):
         self.path = path or None
         self._turns = turns
+        self._spans = spans
         self._cancelled = tuple(cancelled)
         self._handle = None
 
@@ -117,8 +118,19 @@ class Sink:
         # come from a pre-pass over the full waveform that finished before the
         # first word was decoded (D309), and it is the SAME arithmetic, so the
         # label a page renders now is the one the final file will carry.
+        #
+        # **`spans` is part of "the same arithmetic", not a refinement of it.**
+        # `mlx_whisper` packs VAD regions into one decode (AI-10f, D358), so a
+        # segment can straddle a pause that was never transcribed, and the final
+        # `assign_speakers` masks its scoring to where the speech actually was.
+        # Without the same mask here the two labellings disagree on exactly those
+        # segments — the page renders the speaker who was heard in the removed
+        # silence and then watches the name and the colour change when the run
+        # finishes, which is the failure the paragraph above claims cannot happen.
+        # None (every engine that drops no silence) scores the whole span.
         if self._turns is not None:
-            index = diarize.speaker_for(line["start"], line["end"], self._turns)
+            index = diarize.speaker_for(line["start"], line["end"], self._turns,
+                                        spans=self._spans)
             line["speaker"] = None if index is None else diarize.label(index)
         if self._handle is None:
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
@@ -175,11 +187,16 @@ class Sink:
         return False
 
 
-def sink(path: str | None, turns=None, cancelled=()) -> Sink:
+def sink(path: str | None, turns=None, spans=None, cancelled=()) -> Sink:
     """A `Sink` for `path`, or a working no-op one when `path` is falsy.
 
     The no-op is what keeps this additive: a worker request from before this
     feature carries no `outPartial`, and it must run exactly as it did — no
     file, no directory made, and no `if partial:` branch in either decode loop.
+
+    `spans` is `diarize.speaker_for`'s scoring mask, passed through so a caller
+    that drops silence out of the middle of its clips says so ONCE — to this and
+    to `assign_speakers` — rather than having two labellings that agree only for
+    as long as somebody keeps them in step.
     """
-    return Sink(path, turns=turns, cancelled=cancelled)
+    return Sink(path, turns=turns, spans=spans, cancelled=cancelled)

@@ -1351,7 +1351,10 @@ def generate(body):
     # and the partial file is duplicate bytes; a `Cancelled` means the user does
     # not want this transcript at all; anything else LEAVES the file, which is
     # the only salvage from a run that died halfway. See `runners/partial.py`.
-    with partial.sink(out_partial, turns=turns,
+    # `spans` for the reason `assign_speakers` gets it below: the sink labels each
+    # line as it lands, and a live label scored over a dropped pause is a speaker
+    # the page has to un-render when the final file disagrees.
+    with partial.sink(out_partial, turns=turns, spans=regions or None,
                       cancelled=(worker_base.Cancelled,)) as progressive:
         # PHASE THREE — transcribe each clip, ticked from here and watched from
         # inside, with every timestamp mapped back to original-recording time.

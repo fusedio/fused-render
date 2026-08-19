@@ -1761,6 +1761,40 @@ def test_segments_reach_the_partial_file_in_ORIGINAL_recording_time(
     assert not os.path.exists(request["outPartial"])
 
 
+def test_the_LIVE_speaker_label_agrees_with_the_final_one_across_a_join(
+        monkeypatch, loaded, tmp_path):
+    """The two labellings of one segment, end to end: the line the sink writes as
+    it decodes, and the `speaker` the final `.json` carries.
+
+    They can only disagree where this runner drops silence out of the middle of a
+    segment — a packed join — and that is exactly where they did: the final
+    labelling masks its scoring to the speech (D358) and the sink was still
+    scoring the whole span, so a page rendered the speaker heard inside the
+    removed pause and then watched the name and the colour change when the run
+    finished. `partial.sink` gets the same `spans` as `assign_speakers`, and this
+    is the wiring, not the arithmetic (`tests/test_ai_partial_transcript.py` owns
+    that).
+    """
+    worker, _ = loaded(windows=(100,), audio_seconds=40.0,
+                       segments=[_segment(3.0, 6.0, "either side of the pause")])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
+    _diarizes(monkeypatch, worker, [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)])
+    request = _request(tmp_path, diarize=True, speakers=2,
+                       outPartial=str(tmp_path / "out.partial.jsonl"))
+    seen = []
+    monkeypatch.setattr(
+        worker.partial.Sink, "add",
+        lambda self, segment, _real=worker.partial.Sink.add: (
+            _real(self, segment),
+            seen.append(_partial_lines(self.path)[-1]))[0])
+
+    worker.generate(request)
+
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert [line["speaker"] for line in seen] == ["Speaker 1"]
+    assert [s["speaker"] for s in written["segments"]] == ["Speaker 1"]
+
+
 def test_a_segment_the_remap_DROPS_never_reaches_the_partial_file(
         monkeypatch, loaded, tmp_path):
     """A segment starting past its region is omitted from the transcript (it
