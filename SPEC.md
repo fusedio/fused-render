@@ -5752,7 +5752,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   its record never appear — the very failure this prevents, caused by tidying. The
   name carries a random token as well as the pid, because two containers over one
   mounted cache have their own pid namespaces and a reused pid would let two writers
-  interleave into one file and `os.replace` publish mixed JSON as truth. **The
+  interleave into one file and `os.replace` publish mixed JSON as truth — which also
+  makes a hard-kill leftover PERMANENT, accepted as a few hundred bytes written
+  inside a ~1ms window, invisible to every consumer, and removed by the same
+  `hf cache delete` that removes the record and the weights, against a by-age sweep
+  that could strike a live writer and cost the cold repo this exists to prevent. **The
   skipped-record line is a diagnostic, not an error**: it fires on a download that
   succeeded, so it says so, and says the next load re-resolves over the network. **Scoping is a property of the
   on-disk STATE, not of the call**, which is why refusing scoped CALLS was not

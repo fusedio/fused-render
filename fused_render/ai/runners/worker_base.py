@@ -1612,6 +1612,19 @@ _FETCH_RECORD = ".fused-fetch-%s.json"
 #: repo stay permanently cold, which is the failure the record exists to prevent.
 #: A pid AND a random token keep two writers off each other's file; each cleans up
 #: only its own.
+#:
+#: **A temp left by a HARD KILL is therefore permanent, and that is the accepted
+#: trade rather than an oversight.** With the token, no other writer can tell a
+#: leftover from a live stage, so the only safe automatic reclamation would be by
+#: AGE — and the thing being reclaimed is a few hundred bytes written inside a
+#: window of about a millisecond (one `json.dump` of a name list, then `os.replace`),
+#: invisible to `_all_present`, `_recorded_files`, `_has_fetch_record` and
+#: `_clear_parts`, and counted by `bytes_on_disk` only as its own length. So the
+#: exposure is one file per crash that lands inside that window per repo, against a
+#: delete that can strike a live writer and cost exactly the permanently cold repo
+#: this record exists to prevent. The user's own reaper takes them either way:
+#: `hf cache delete` and an `rm -rf` of the repo folder remove the temp with the
+#: record and the weights.
 _RECORD_TEMP = ".writing"
 
 
@@ -1683,7 +1696,11 @@ def _record_fetch(folder, commit, names, snapshot, allow=None, ignore=None):
     repo with no record is merely cold, which is where it was before this existed.
     The shortfall is named on stderr because silence is what would make it
     invisible: a repo that never warms up is otherwise indistinguishable from one
-    nobody loaded twice.
+    nobody loaded twice. **That applies to the two ANOMALIES — a shortfall, and a
+    fetch that returned no snapshot path — and deliberately not to the ordinary
+    nothings** (no cache folder, a revision that is not a commit, a listing that
+    selected nothing), which are shapes the world produces rather than signs
+    something went wrong, and which would be noise on every `local_dir` download.
 
     **Best-effort, and never in the way.** A finished download must not fail
     because a record could not be written: the weights are there either way, and
@@ -1692,12 +1709,27 @@ def _record_fetch(folder, commit, names, snapshot, allow=None, ignore=None):
     the old record or none — never half of one that a later fast path would read as
     truth, and never another process's file (see `_RECORD_TEMP`).
     """
-    if not folder or not commit or not names or not snapshot:
-        # `snapshot` belongs in this list rather than defaulted below: joined onto a
-        # falsy path, every presence check becomes CWD-relative, and a process whose
-        # working directory happens to hold a matching name — `config.json` is not
-        # far-fetched — would pass the shortfall check and record a fetch whose
-        # snapshot nobody had located.
+    if not folder or not commit or not names:
+        # Three ORDINARY nothings, and silent for that reason: no folder is a venv
+        # with no huggingface_hub, no commit is `_commit_of` refusing a path that is
+        # not a sha (a `local_dir` download, say), and no names is a listing that
+        # selected nothing. None of them is a fetch that went wrong.
+        return
+    if not snapshot:
+        # An ANOMALY, unlike the three above: both callers reach here only after a
+        # fetch returned, so a fetch that returned no path at all is a bug in this
+        # file rather than a shape the world produces — and it is named for the same
+        # reason the shortfall below is, that a repo which never warms up is
+        # otherwise indistinguishable from one nobody loaded twice.
+        #
+        # It cannot be defaulted to `""` and joined: every presence check would
+        # become CWD-relative, and a process whose working directory happens to hold
+        # a matching name — `config.json` is not far-fetched — would pass the
+        # shortfall check and record a fetch whose snapshot nobody had located.
+        sys.stderr.write(
+            f"[fused] the download of {commit[:12]} succeeded but reported no "
+            f"snapshot path, so it is not recorded for the cached-model fast path. "
+            f"This is not a failure: the next load re-resolves over the network.\n")
         return
     # Presence only, deliberately: `_settled` is a READ-time question — a part file
     # can appear beside a blob after this runs, and `_all_present` asks both at the
@@ -1730,8 +1762,10 @@ def _record_fetch(folder, commit, names, snapshot, allow=None, ignore=None):
             json.dump(payload, handle)
         os.replace(temporary, path)
     except OSError:
-        # Ours and ours alone — the pid is in the name — so cleaning it up here
-        # cannot take a record another process is in the middle of writing.
+        # Ours and ours alone — the random TOKEN in the name is what makes that
+        # true, not the pid, which two containers over one mounted cache can share
+        # (see `_temp_record`) — so cleaning it up here cannot take a record
+        # another writer is in the middle of staging.
         _remove(temporary)
 
 

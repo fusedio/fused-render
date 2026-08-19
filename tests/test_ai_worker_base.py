@@ -1208,8 +1208,16 @@ def test_a_record_is_never_written_for_a_snapshot_with_NO_path(
     name — `config.json` is not far-fetched — passed the shortfall check and wrote a
     record for a snapshot whose location was never known.
 
-    A missing path is missing, and belongs in the early return beside a missing
-    folder or commit rather than papered over with a default.
+    A missing path is missing, and belongs in the early return rather than papered
+    over with a default.
+
+    **And it is NAMED on stderr**, unlike the ordinary nothings beside it (no cache
+    folder, a revision that is not a commit, a listing that selected nothing). Both
+    callers reach the writer only after a fetch returned, so a fetch that returned no
+    path is a bug in that file rather than a shape the world produces — and a repo
+    left permanently cold with no diagnostic is the invisibility the stderr line
+    exists to prevent. The first version of this test asserted silence here, which
+    contradicted the docstring one paragraph above the code; all three now agree.
     """
     elsewhere = tmp_path / "cwd"
     elsewhere.mkdir()
@@ -1222,8 +1230,27 @@ def test_a_record_is_never_written_for_a_snapshot_with_NO_path(
 
     assert not base._has_fetch_record(str(folder)), \
         "a record was written for a snapshot nobody located"
-    assert capsys.readouterr().err == "", \
-        "and it is not a shortfall to report — there was nothing to look in"
+    said = capsys.readouterr().err
+    assert said.count("no snapshot path") == 2, said
+    # …and it reads as the diagnostic it is, not as a broken download.
+    assert "succeeded" in said and "not a failure" in said, said
+
+
+def test_the_ORDINARY_nothings_are_declined_in_SILENCE(base, tmp_path, capsys):
+    """The other half of that decision, so the line above cannot creep into noise.
+
+    No cache folder is a venv without huggingface_hub, a commit of None is
+    `_commit_of` refusing a path that is not a sha — every `local_dir` download — and
+    an empty name list is a listing that selected nothing. Those are shapes the world
+    produces, not signs a fetch went wrong, and a stderr line on each would train a
+    user to ignore the two that mean something."""
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+
+    base._record_fetch(None, COMMIT, ["config.json"], snapshot)
+    base._record_fetch(str(tmp_path), None, ["config.json"], snapshot)
+    base._record_fetch(str(tmp_path), COMMIT, [], snapshot)
+
+    assert capsys.readouterr().err == ""
 
 
 def test_a_caller_supplied_REVISION_wins_over_the_pin(base, monkeypatch, tmp_path):
