@@ -235,6 +235,23 @@ def test_a_mousedown_on_the_strip_does_not_drop_the_open_draft(html):
     assert 't.closest("#anntool")' in body
 
 
+def test_the_busy_seat_is_a_status_not_a_button(html):
+    """While "Transcribing…" is the whole face, the seat must not still act
+    as Done (Bugbot, PR #665): disabled and named for what is happening; the
+    finally re-enables it and the disarm renames it."""
+    end = _block(html, "async function annRecEnd()", "\n}\n")
+    assert "annBtn.disabled = true;" in end
+    assert 'annBtn.setAttribute("aria-label", "Transcribing the walkthrough");' in end
+    assert "annBtn.disabled = false;" in end
+
+
+def test_a_noun_resolving_mid_mode_does_not_rename_the_done_seat(html):
+    """applyPaneNoun's aria write is gated on the mode being OFF, like its
+    title write (Bugbot, PR #665): the armed writers own the armed names."""
+    body = _block(html, "function applyPaneNoun()", "\n}\n")
+    assert 'if (!annOn) annBtn.setAttribute("aria-label", "Comment on the " + paneNoun);' in body
+
+
 def test_the_live_recording_is_never_announced_as_done(html):
     """annSetMode(true) names the mic seat Done (annRecOn is still false when
     annRecBegin arms the mode), so the recording writers must claim the

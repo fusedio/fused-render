@@ -4381,7 +4381,12 @@ let paneNoun = "preview";
 // and — live, because they are built per message — the chip's label, the receipt
 // thumbnail's `alt` and the two block preambles further down.
 function applyPaneNoun() {
-  annBtn.setAttribute("aria-label", "Comment on the " + paneNoun);
+  // Gated like the title below (Bugbot, PR #665): while a mode is on the seat
+  // IS Done (or the stop clock), and a noun resolving mid-mode must not make
+  // assistive tech announce Comment over a Done face. The armed writers own
+  // the armed names; annSetMode's disarm re-runs the idle one with the noun
+  // this function just stored.
+  if (!annOn) annBtn.setAttribute("aria-label", "Comment on the " + paneNoun);
   // Not written directly: annSetMode rewrites this title on every disarm, so the
   // idle wording has to have exactly one definition or the noun comes back wrong
   // the first time the user toggles the switch off. That is how it broke here.
@@ -6577,8 +6582,14 @@ async function annRecEnd() {
   }
   annRecBtn.disabled = true;
   // `.busy` is the one state the buttons' own classes cannot say (recording
-  // over, mode still armed, words on their way): it yields the word "Comment"
-  // to the "Transcribing…" status in #annreclbl.
+  // over, mode still armed, words on their way): it yields every glyph and
+  // word to the "Transcribing…" status in #annreclbl. The seat is a STATUS
+  // while it says so — disabled and named for what is happening, because a
+  // face with no affordance must not still act as Done (Bugbot, PR #665);
+  // the finally below re-enables it and the disarm renames it.
+  annBtn.disabled = true;
+  annBtn.setAttribute("aria-label", "Transcribing the walkthrough");
+  annBtn.title = "Transcribing the walkthrough — the notes send themselves when the words land";
   annCta.classList.add("busy");
   annRecLbl.textContent = "Transcribing…";
   try {
@@ -6625,6 +6636,7 @@ async function annRecEnd() {
     console.warn("spoken annotation transcription failed:", err.message);
   } finally {
     annRecBtn.disabled = false;
+    annBtn.disabled = false;
     annCta.classList.remove("busy");
     annRecLbl.textContent = "";   // "Transcribing…" only ever describes now
   }
