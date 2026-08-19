@@ -101,6 +101,7 @@ import {
 } from "react";
 import {
   archiveTask,
+  deleteTask,
   getTaskMessages,
   getTasksScheduled,
   markTaskMessageRead,
@@ -215,6 +216,16 @@ export const ICON_ARCHIVE = icon(
   <><rect x="2" y="3" width="20" height="5" rx="1" />
     <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
     <path d="M10 12h4" /></>);
+// Gone for good — lucide `trash-2`, the glyph the New task modal's own delete
+// wears (NewJobModal.ICON_TRASH), redrawn at this file's icon size. Distinct
+// from the archive box on purpose: the box keeps, the can does not, and the
+// two verbs share one header slot across different task states.
+export const ICON_TRASH = icon(
+  <><path d="M3 6h18" />
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+    <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    <line x1="10" y1="11" x2="10" y2="17" />
+    <line x1="14" y1="11" x2="14" y2="17" /></>);
 // No repeat / skip / cancel glyphs any more (Akshil, 2026-08-19). The repeat
 // arrows doubled the recurrence sentence they sat next to, and the skip/cancel
 // pair left with the per-row actions they decorated — see the popover's thread
@@ -501,21 +512,31 @@ function ChipPopover({
   //
   //   done / failed  -> Archive — the same `api.archiveTask(task.key)` call the
   //                     List's row button and the Board's drop make, so the
-  //                     three views file a task through one door;
-  //   running        -> nothing — no destructive verb mid-run;
-  //   upcoming,      -> the design says Delete, but the app has NO delete-task
-  //   archived          endpoint (archiving is deliberately the only filing
-  //                     verb — api.ts: "nothing was destroyed either way, which
-  //                     is the whole point of archiving rather than deleting").
-  //                     Rather than inventing an endpoint or mislabelling
-  //                     cancel-one-entry as Delete, the slot stays empty for
-  //                     these states until the server grows the verb.
+  //                     three views file a task through one door. No confirm,
+  //                     for the reason the List and Board ask none: archiving
+  //                     is reversible by design (unarchiveTask);
+  //   upcoming,      -> Delete — `api.deleteTask(task.key)`: the pending work
+  //   archived          is cancelled and the ROW is tombstoned off every view.
+  //                     The transcript survives (D306 — the server says so in
+  //                     every answer), but the row does not come back on its
+  //                     own, so this one is armed by its FIRST press and fired
+  //                     by the SECOND — the same two-press confirm the template
+  //                     editor's Disable uses (RowEditorModal), which keeps a
+  //                     modal from stacking on a popover;
+  //   running        -> nothing. No destructive verb mid-run — the server
+  //                     refuses a running delete with a 409 anyway, and a
+  //                     button whose only outcome is a refusal is worse than
+  //                     no button.
   //
-  // No confirm step on Archive for the same reason the List and Board ask none:
-  // it is reversible by design (unarchiveTask), and the one confirm the design
-  // asked for belongs to Delete, which does not exist yet.
+  // ONE slot means the two verbs never show together: a settled outcome takes
+  // Archive (it wins the overlap), and Delete waits for the task in the
+  // Archive lane — done/failed work is a result somebody may still want filed,
+  // not walked straight past to the shredder.
   const col = taskColumn(task);
   const canArchive = !liveNow && (task.failed || col === "done" || col === "failed");
+  const canDelete =
+    !liveNow && !canArchive && (col === "upcoming" || col === "archived");
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const archive = async () => {
     setRunning(true);
     setError("");
@@ -530,6 +551,36 @@ function ChipPopover({
       // The server's own sentence, in the quiet line the run button already
       // uses, and a reload so the grid corrects itself either way.
       setError((e as Error).message);
+      onReload();
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const doDelete = async () => {
+    // The confirm step: the first press only ARMS (the button goes red and its
+    // name changes to say what the next press does), the second one deletes.
+    // Closing the popover disarms it for free — the state unmounts with the
+    // panel — so a stale "armed" can never greet the next open.
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    setRunning(true);
+    setError("");
+    try {
+      await deleteTask(task.key);
+      // The task's chips are about to leave the grid entirely — the same
+      // close-and-reload archiving does, for the stronger reason.
+      onReload();
+      onClose();
+    } catch (e) {
+      // A 409 lands here too ("that task is running — stop the run first"):
+      // the server's own sentence in the quiet line, and the button DISARMS,
+      // so the next press starts the two-step over rather than firing on
+      // stale consent.
+      setError((e as Error).message);
+      setConfirmDelete(false);
       onReload();
     } finally {
       setRunning(false);
@@ -697,6 +748,24 @@ function ChipPopover({
               onClick={() => void archive()}
             >
               {ICON_ARCHIVE}
+            </button>
+          )}
+          {canDelete && (
+            // The two-press confirm: the VISIBLE state and the accessible name
+            // change together, so what a screen reader hears is exactly what
+            // the red is saying — the next press is the one that deletes.
+            <button
+              type="button"
+              className={
+                "schedule-cal-pop-tool schedule-cal-pop-tool--danger" +
+                (confirmDelete ? " is-armed" : "")
+              }
+              title={confirmDelete ? "Click again to delete" : "Delete"}
+              aria-label={confirmDelete ? "Click again to delete" : "Delete"}
+              disabled={running}
+              onClick={() => void doDelete()}
+            >
+              {ICON_TRASH}
             </button>
           )}
         </div>

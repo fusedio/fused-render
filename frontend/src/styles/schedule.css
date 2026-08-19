@@ -878,6 +878,26 @@
   cursor: default;
 }
 
+/* The Delete half of the slot: quiet like its neighbours at rest, RED under
+   the pointer — the hover is where a destructive control declares itself
+   (the same contract .cc-iconbtn-danger keeps in the Claude config pane).
+   Placed after the base hover rule so equal specificity resolves to red. */
+.schedule-cal-pop-tool--danger:hover:not(:disabled),
+.schedule-cal-pop-tool--danger:focus-visible {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  color: var(--error);
+}
+
+/* ARMED — the first press landed and the next one deletes. Red WITHOUT the
+   pointer, because the state has to survive the cursor drifting off between
+   the two presses: the button is saying "I heard you" and must keep saying it
+   until pressed again or the popover closes (the component's state unmounts
+   with the panel, so armed never outlives it). */
+.schedule-cal-pop-tool--danger.is-armed {
+  background: color-mix(in srgb, var(--error) 16%, transparent);
+  color: var(--error);
+}
+
 /* The task title as the popover's headline: body colour, a step up, room to
    wrap over three lines and then an ellipsis.
 
