@@ -1823,11 +1823,23 @@ class DeletePatch(BaseModel):
 def api_task_delete(patch: DeletePatch):
     """Take the row away for good: cancel its pending work, tombstone its key.
 
-    Archive's first half verbatim — the rules first, then every pending entry,
-    for the reason documented there — and then `tasks_store.mark_deleted`
-    where archive writes triage: the tombstone is what `_collect` reads, so
-    the task is absent from the listing, the pulse, the calendar and the full
-    thread in one decision, exactly the way `_is_task` already drops shells.
+    Archive's first half — the rules first, then every pending entry, for the
+    reason documented there — and then `tasks_store.mark_deleted` where archive
+    writes triage: the tombstone is what `_collect` reads, so the task is
+    absent from the listing, the pulse, the calendar and the full thread in one
+    decision, exactly the way `_is_task` already drops shells.
+
+    THE RULES, FOUND WIDER THAN ARCHIVE FINDS THEM (bugbot, 2026-08-19).
+    Archive's `_rules_behind` reads template ids off PENDING occurrences only —
+    right for archive, whose cancelled runs must not reach past the task. But
+    the materialiser mints lazily: between a run going out and the next tick a
+    live rule has NO pending row, so that discovery walks straight past the
+    machine that will mint the next occurrence — with a `created` stamp newer
+    than the tombstone, which is the revival rule's front door (`_deleted`).
+    Delete therefore uses `_every_rule_behind`: every rule any of this task's
+    entries came from, whatever state those entries are in now, plus every
+    still-live rule that names this task's session — and kills the rule itself,
+    so nothing is left that can mint the row back into existence.
 
     REFUSED WHILE THE TASK IS RUNNING (409). A live turn cannot be cancelled
     (`sending` is refused by schedule.cancel, a running job is the registry's
@@ -1861,7 +1873,7 @@ def api_task_delete(patch: DeletePatch):
             detail="that task is running — stop the run first, then delete")
 
     cancelled = 0
-    for template_id in _rules_behind(task["entries"]):
+    for template_id in _every_rule_behind(key, task["entries"]):
         if schedule.cancel(template_id) is not None:
             cancelled += 1
     for entry in task["entries"]:
@@ -1874,6 +1886,40 @@ def api_task_delete(patch: DeletePatch):
     tasks_store.mark_deleted(key)
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": False}
+
+
+def _every_rule_behind(key: str, entries: list[dict]) -> list[str]:
+    """Every recurring rule that could put this task back on the board, named
+    once. DELETE's discovery — deliberately wider than `_rules_behind`.
+
+    Two ways a rule is tied to the task, and both have to be followed because
+    either alone misses real cases:
+
+    * **any entry's `template_id`, whatever its state.** A rule is live even
+      when its next occurrence has not been minted yet (the materialiser runs
+      lazily), so the only trace of it in the task can be a SENT or MISSED
+      occurrence. Reading pending rows only — archive's rule — walks past it.
+    * **a still-`recurring` template that names this task's session**, read
+      with `_entry_session` exactly as `_collect` files entries, so a rule
+      whose every occurrence has been swept away (or that has minted nothing
+      at all yet) is still found through the same identity the calendar's
+      upcoming[] projection ties its future days to.
+
+    `schedule.cancel` refuses ids that are not pending or recurring, so a
+    template that is already cancelled or spent costs nothing here — it simply
+    is not counted."""
+    rules: list[str] = []
+    for entry in entries:
+        template_id = str(entry.get("template_id") or "")
+        if template_id and template_id not in rules:
+            rules.append(template_id)
+    for entry in schedule.list_entries():
+        if entry.get("state") != schedule.RECURRING:
+            continue
+        entry_id = str(entry.get("id") or "")
+        if entry_id and entry_id not in rules and _entry_session(entry) == key:
+            rules.append(entry_id)
+    return rules
 
 
 def _rules_behind(entries: list[dict]) -> list[str]:

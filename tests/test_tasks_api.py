@@ -1949,6 +1949,38 @@ def test_deleting_stops_the_rule_behind_the_next_occurrence(client,
     assert _tasks(client) == []
 
 
+def test_deleting_kills_a_rule_even_between_its_occurrences(client,
+                                                            projects_dir):
+    """The materialiser mints lazily, so between a run going out and the next
+    tick a live rule has NO pending occurrence. A delete that only reads
+    template ids off pending rows walks straight past the machine that will
+    mint the next one — with a `created` stamp newer than the tombstone, which
+    is the revival rule's front door. The rule itself has to die (bugbot,
+    2026-08-19)."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("tpl", "every day", T9, state=schedule.RECURRING,
+               repeats="0 9 * * *", claude_session_id="sess-a"),
+        # The rule's only trace in the task: an occurrence that already ran.
+        _entry("e1", "every day", T9, state=schedule.SENT, fired=T9,
+               turn="ok", template_id="tpl", claude_session_id="sess-a"),
+    ])
+    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] == 1, "the rule itself is what gets called off"
+
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["tpl"] == schedule.CANCELLED
+    assert states["e1"] == schedule.SENT, "what already ran is left alone"
+
+    # The scheduler's next materialisation pass now has nothing to mint from:
+    # no new occurrence appears, so nothing can postdate the tombstone, and the
+    # deleted row stays deleted.
+    schedule._materialize(schedule._now())
+    assert {e["id"] for e in schedule.list_entries()} == {"tpl", "e1"}
+    assert "sess-a" not in _by_key(client)
+
+
 def test_deleting_a_running_task_is_refused(client, projects_dir):
     """A live turn cannot be cancelled, so deleting now would hide work that
     is still happening. 409, row untouched, nothing cancelled."""
