@@ -12291,6 +12291,7 @@ async function pollLoop(run_id) {
   activeRun = run_id;
   activeWorking = w;
   setRunningUi(true);
+  noteChatActivity();
   let reply = null;
   let typer = null;
   let segBody = null;    // the element the segment views are rendered into
@@ -12412,7 +12413,27 @@ async function pollLoop(run_id) {
     activeWorking = null;
     activeSegBody = null;
     setRunningUi(false);
+    noteChatActivity();
   }
+}
+
+// Tell every OTHER document on this origin that a turn just started or ended
+// here. Interactive turns make no sys:schedule job, so nothing else tells the
+// tasks surfaces about them: the shell's tasks store (frontend
+// tasksPulse.CHAT_ACTIVITY_KEY) listens for this stamp's `storage` event and
+// re-reads /api/tasks, so the Tasks page and the sidebar flip to In Progress /
+// unread the moment a follow-up goes out rather than on their next 20-30s poll
+// (Akshil, 2026-08-19: "the task's unread status does not update"). A storage
+// event only fires on a CHANGED value and never in the writing document, which
+// is exactly the shape needed: this frame has nothing to update, and the clock
+// plus a nonce means two panes stamping in the same millisecond cannot swallow
+// each other's poke. Best-effort — a blocked store (private mode, locked-down
+// webview) costs the poke, never the turn; the polls still cover it.
+function noteChatActivity() {
+  try {
+    localStorage.setItem("fused-render:chat-activity",
+      Date.now() + ":" + Math.random().toString(36).slice(2));
+  } catch (err) { /* the 20-30s polls remain the fallback */ }
 }
 
 // The composer's send buttons double as stop buttons while a run is live: the

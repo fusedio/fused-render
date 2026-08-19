@@ -27,7 +27,7 @@ import { useThemeSync } from "@platform/lib/theme";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import NotificationHost from "@platform/ui/NotificationHost";
 import QueueDock from "@shell/QueueDock";
-import { pokeTasks } from "@shell/tasksPulse";
+import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
@@ -424,6 +424,19 @@ export default function App({ config }: { config: Config }) {
   // tick — handed in from here because that store is shell's and platform may
   // not import up.
   useScheduleEvents(pokeTasks);
+
+  // The INTERACTIVE half of the same promise. A follow-up typed into a chat
+  // creates no sys:schedule job and no schedule event, so neither wiring above
+  // fires — the Tasks page and the sidebar sat on stale unread until their next
+  // slow poll (Akshil, 2026-08-19). The chat template stamps CHAT_ACTIVITY_KEY
+  // in localStorage when a turn starts or ends; the chat is its own iframe
+  // document, so THIS document receives the `storage` event and pokes the
+  // shared store (which forwards to the mounted Tasks page's own reload).
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => pokeOnChatActivity(e.key);
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   // Keep <html data-theme> in step with the appearance preference for the
   // page's lifetime (SPEC §30): another window's override, and — while the
