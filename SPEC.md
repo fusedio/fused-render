@@ -5709,13 +5709,26 @@ an AI Models page that could say what was on disk but not what was *running*.
   source of the "You are sending unauthenticated requests to the HF Hub" line in
   every worker log. Both helpers now try `local_files_only=True` FIRST — 0.13ms
   and 0.14ms for the same two answers — and fall through to the whole networked
-  path (metadata call, total, segmented fetch, progress) on any failure. **First
-  download behaviour is unchanged, and a partial cache must never be mistaken for
-  a complete one**: three layers say so — the local attempt is made with the same
-  patterns and arguments the real fetch would use, an interrupted download's
-  markers (hf's `.incomplete`, our `.fusedpart`) in the repo folder disqualify the
-  cache outright, and huggingface_hub ≥1.27 independently verifies snapshot
-  completeness against its cached tree listing. **The trade is stated rather than
+  path (metadata call, total, segmented fetch, progress) when the cache cannot
+  answer. **A repo the cache has never held reaches no hub download function at
+  all**, not even one carrying `local_files_only=True`: the gate is a filesystem
+  look first (a `snapshots/` directory for the repo; `try_to_load_from_cache`,
+  which cannot download, for the single-file path), and hf is asked only to
+  CONFIRM what the disk already suggested. That is AI-5e's rule holding at a new
+  site — the ✕ must never be answered by starting a download, and
+  `test_ai_hub_fetch.py` enforces it by counting calls rather than bytes, which is
+  the right test: "we only passed `local_files_only`" is exactly the claim a later
+  refactor breaks. For the same reason the local attempt catches only what means
+  "not cached" (hf's `LocalEntryNotFoundError`/`IncompleteSnapshotError` are both
+  `OSError`s, so the tuple names them without importing them) and never
+  `Cancelled`, which is an ordinary `Exception` — a bare `except Exception` there
+  turned a Stop into a fresh multi-gigabyte download. **First download behaviour
+  is unchanged, and a partial cache must never be mistaken for a complete one**:
+  three layers say so — the local attempt is made with the same patterns and
+  arguments the real fetch would use, an interrupted download's markers (hf's
+  `.incomplete`, our `.fusedpart`) in the repo folder disqualify the cache
+  outright, and huggingface_hub ≥1.27 independently verifies snapshot completeness
+  against its cached tree listing. **The trade is stated rather than
   discovered: a complete cached model does not pick up a newer Hub revision under
   the same branch** until something forces a re-check. That is chosen — bring-up
   latency and offline operation over revision freshness — because these are

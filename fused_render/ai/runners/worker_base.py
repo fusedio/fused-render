@@ -1453,6 +1453,38 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
 # the local attempt either answers completely or it is discarded, and everything
 # below it — the metadata call, the total, the segmented fetch, the progress
 # reporting — runs exactly as it did before.
+#
+# **Two rules the first cut of this got wrong, both about not doing MORE than
+# looking.** (1) A repo the cache has never held must not reach a hub download
+# function at all, not even with `local_files_only=True`: `tests/test_ai_hub_
+# fetch.py` states the invariant that pressing Stop must not start a download,
+# and it enforces it by counting `snapshot_download`/`hf_hub_download` calls —
+# correctly, because "we only passed local_files_only" is precisely the kind of
+# claim that stops being true when an argument gets dropped in a refactor. So the
+# gate is a plain filesystem look FIRST (`_has_cached_snapshot`,
+# `try_to_load_from_cache`), and hf is consulted only once the cache is known to
+# hold something for this repo. (2) `Cancelled` must never be read as "not
+# cached". It is an ordinary `Exception`, so a bare `except Exception` here turned
+# a ✕ into "fall back to the network" — which is the one degradation this file
+# forbids everywhere else, because it starts a fresh multi-gigabyte download out
+# of pressing Stop. `_NOT_CACHED` is therefore an explicit tuple, and every hub
+# answer that means "the cache cannot serve this" is inside it.
+
+#: What "the cache cannot answer" arrives as, and nothing else.
+#:
+#: Both of hf's own verdicts are `OSError` subclasses, checked against
+#: huggingface_hub 1.28: `LocalEntryNotFoundError` is
+#: `(EntryNotFoundError, FileNotFoundError)` and `IncompleteSnapshotError` — a
+#: snapshot its tree listing says is missing files — derives from that. A cache
+#: directory this process cannot read is an `OSError` too, and an `ImportError` is
+#: what a venv without the library looks like.
+#:
+#: **Named as a tuple rather than caught broadly on purpose**: `Cancelled` is a
+#: plain `Exception` and is exactly what must NOT be swallowed here (see above),
+#: and neither is a `KeyboardInterrupt` or a bug in this file. A hub version that
+#: invents a new not-cached error outside this tuple costs a slow bring-up; a
+#: `Cancelled` inside it costs the user a download they pressed Stop on.
+_NOT_CACHED = (OSError, ImportError)
 
 #: hf's own marker for a blob it is still writing. Ours is `PART_SUFFIX`.
 _HF_PART_SUFFIX = ".incomplete"
@@ -1478,33 +1510,81 @@ def _has_partial_files(folder):
     return False
 
 
+def _has_cached_snapshot(folder):
+    """Whether the cache holds ANY snapshot directory for this repo.
+
+    The purely-local gate in front of every hub call on the fast path, and the
+    reason it exists is the invariant above: a repo this machine has never
+    downloaded must not reach `snapshot_download` at all. `snapshots/` is hf's own
+    layout — the same one `bytes_on_disk` and `_clear_parts` already walk — and if
+    hf ever moves it this answers False, which costs the fast path and takes the
+    networked one. Slower, never wrong.
+    """
+    if not folder:
+        return False
+    try:
+        with os.scandir(os.path.join(folder, "snapshots")) as entries:
+            return any(entry.is_dir() for entry in entries)
+    except OSError:
+        return False
+
+
 def _cached_path(model_id, resolve):
     """`resolve()`'s answer if the cache can serve it with NO network, else None.
 
     `resolve` is the hf call with `local_files_only=True` — the same function and
     the same arguments the networked path uses, so the local answer cannot be a
-    differently-scoped one.
+    differently-scoped one. It is reached only once the cache is known to hold a
+    snapshot for this repo and to carry no interrupted download's leftovers,
+    because on the fast path hf is asked to CONFIRM something the filesystem
+    already suggested rather than asked to go and look.
 
-    **Every failure is a None**, deliberately broad: hf raises
-    `LocalEntryNotFoundError` for a cache that cannot answer (verified against
-    huggingface_hub 1.28 — an absent repo comes back in 0.08ms), an `OSError` for
-    a cache directory it cannot read, and an `ImportError` is what a venv without
-    the library looks like. None of those is a failure worth reporting, because
-    the answer to all of them is the networked path this returns to — which does
-    its own error handling and its own degradation. Catching narrowly here would
-    turn a new hub error type into a broken bring-up instead of a slow one.
+    Failures come back as None so the caller takes the networked path — but only
+    the ones in `_NOT_CACHED`. Anything else propagates, `Cancelled` above all:
+    the whole point of this file's degradation rules is that a ✕ is the one
+    failure that must not be answered by starting a download.
 
     The path is checked before it is trusted: it comes from a call this file did
     not make itself, and a cache directory removed under a resolved ref would
     otherwise be handed to `load()` as a snapshot.
     """
-    if _has_partial_files(repo_folder(model_id)):
+    folder = repo_folder(model_id)
+    if not _has_cached_snapshot(folder) or _has_partial_files(folder):
         return None
     try:
         path = resolve()
-    except Exception:  # noqa: BLE001 - see the docstring: the answer is always the networked path
+    except _NOT_CACHED:
         return None
     return path if path and os.path.exists(path) else None
+
+
+def _cached_file(repo_id, filename):
+    """One file's path if the cache already holds it, else None.
+
+    `try_to_load_from_cache` rather than `hf_hub_download(local_files_only=True)`,
+    because it is hf's own read-only cache lookup: it resolves the ref and the
+    blob off the disk and CANNOT download, so the "pressing Stop starts a
+    download" invariant holds by construction rather than by an argument that a
+    later edit might drop. Measured at 0.6ms for a hit and 0.1ms for a repo the
+    cache has never seen.
+
+    It has three answers and only one of them is a path: a `str`, `None` for "not
+    cached", and a `_CACHED_NO_EXIST` sentinel for "the Hub said this file does
+    not exist and that was cached too". The `isinstance` check covers the
+    sentinel without importing a private name, and the `isfile` covers a blob
+    deleted under a ref that still points at it.
+    """
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except ImportError:
+        return None
+    if _has_partial_files(repo_folder(repo_id)):
+        return None
+    try:
+        path = try_to_load_from_cache(repo_id, filename)
+    except _NOT_CACHED:
+        return None
+    return path if isinstance(path, str) and os.path.isfile(path) else None
 
 
 def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwargs):
@@ -1590,18 +1670,14 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
     and reopened as a running download of something the user never asked for
     while the row they ARE watching says nothing. See `fetch_with_progress`.
     """
-    def local():
-        from huggingface_hub import hf_hub_download
-
-        return hf_hub_download(repo_id=repo_id, filename=filename,
-                               local_files_only=True)
-
     # The same fast path `download_snapshot` takes, and it matters most for the
     # SMALL components: the 2MB speech detector and the two diarization models
     # are fetched inside a transcription, so on a warm cache their 456ms each was
     # latency a user waits through on the way to a transcript they already had
-    # the bytes for.
-    cached = _cached_path(repo_id, local)
+    # the bytes for. One file needs no snapshot completeness question, so this is
+    # hf's read-only cache lookup rather than a download function told not to
+    # download — see `_cached_file`.
+    cached = _cached_file(repo_id, filename)
     if cached:
         return cached
 
