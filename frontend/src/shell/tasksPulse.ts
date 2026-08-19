@@ -126,6 +126,41 @@ function schedule() {
   timer = window.setTimeout(poll, pulse.running > 0 ? ACTIVE_MS : IDLE_MS);
 }
 
+/** The window event a poke sends when a feeder page owns the poll: the store
+ *  may not fetch over a feeder (that is the double-poll again), so it asks THE
+ *  PAGE to run its own reload now. Scheduled.tsx listens for exactly this and
+ *  publishes back through publishTasks, the same round trip as its timer. */
+export const TASKS_POKE_EVENT = "fused-render:tasks-poke";
+
+/**
+ * "Something just changed — re-read NOW rather than on the next tick."
+ *
+ * Called by the surfaces that learn a scheduled run ended long before any timer
+ * here would: the queue card's job snapshot (about a second behind the turn —
+ * QueueDock) and the schedule's own done/failed events (App wiring
+ * useScheduleEvents). Without this the sidebar and the Tasks page sat out
+ * their 10–30s cadences while the bottom-right corner already said finished —
+ * the same run, two answers, for most of a minute (Akshil, 2026-08-19: "if
+ * finished in one, finished in the other").
+ *
+ * The feeder contract is honoured, not bypassed: while the Tasks page is
+ * feeding this store the store must not fetch (that is the double-poll the
+ * feeder exists to prevent), so the poke is forwarded to the page as a window
+ * event and the page's OWN reload answers. Unfed, the store polls itself
+ * immediately — poll() already carries the in-flight and generation guards, so
+ * a poke can never land a stale answer over a fresher one.
+ */
+export function pokeTasks() {
+  if (feeders > 0) {
+    window.dispatchEvent(new Event(TASKS_POKE_EVENT));
+    return;
+  }
+  // Nobody reading and nobody feeding: nothing on screen to update, and a
+  // fetch for an unmounted sidebar is the waste schedule() already refuses.
+  if (listeners.size === 0) return;
+  void poll();
+}
+
 /** Hand over a known-fresh answer — what the Tasks page's own poll returned. */
 export function publishTasks(next: TaskPulseTask[]) {
   generation += 1;

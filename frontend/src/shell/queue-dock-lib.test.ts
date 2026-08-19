@@ -20,6 +20,7 @@ import {
   queueRows,
   roleText,
   rowCancelKind,
+  scheduleRunsEnded,
   showCancelAll,
   withdrawableCount,
   type QueueRow,
@@ -567,5 +568,51 @@ describe("one scheduled run, one row, at every step of its life", () => {
     expect(jobsSummary(failed, queueCount([]))).toBe("1 running");
     expect(shownRows([], []).length).toBe(0);
     expect(jobRows([], drawnIds([]))).toEqual([]);
+  });
+});
+
+describe("scheduleRunsEnded: the moment the two surfaces sync", () => {
+  // A scheduled run's status lives on two surfaces at two cadences: this card's
+  // job snapshot (~1s behind the turn) and the Tasks page's own poll (20s, plus
+  // the server's liveness window on top). "If finished in one, finished in the
+  // other" (Akshil, 2026-08-19) — so the running→terminal flip detected here is
+  // what QueueDock pokes the shared tasks store with (tasksPulse.pokeTasks).
+  const running = () => job({ id: `${SCHEDULE_JOB_PREFIX}e1` });
+
+  it("fires on a run flipping running → terminal", () => {
+    for (const state of ["done", "error", "cancelled"] as const) {
+      expect(scheduleRunsEnded([running()], [job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state })])).toBe(
+        true,
+      );
+    }
+  });
+
+  it("fires on a running run vanishing — a Clear between polls still ended it", () => {
+    expect(scheduleRunsEnded([running()], [])).toBe(true);
+  });
+
+  it("does not fire on history: a job first seen already terminal is not news", () => {
+    // The card mounts onto whatever the registry still displays. Poking on that
+    // would refetch the tasks on every mount for a run that ended an hour ago.
+    expect(scheduleRunsEnded([], [job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state: "done" })])).toBe(
+      false,
+    );
+    expect(scheduleRunsEnded([], [])).toBe(false);
+  });
+
+  it("stays quiet while the run is still going, stalled included", () => {
+    expect(scheduleRunsEnded([running()], [running()])).toBe(false);
+    // Stalled is the app admitting it stopped hearing, not the turn ending.
+    expect(
+      scheduleRunsEnded([running()], [job({ id: `${SCHEDULE_JOB_PREFIX}e1`, stalled: true })]),
+    ).toBe(false);
+  });
+
+  it("only scheduled runs count — a download finishing is not a task event", () => {
+    expect(
+      scheduleRunsEnded([job({ id: "sys:ai-model:repo" })], [
+        job({ id: "sys:ai-model:repo", state: "done" }),
+      ]),
+    ).toBe(false);
   });
 });

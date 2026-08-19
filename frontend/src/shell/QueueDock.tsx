@@ -60,9 +60,11 @@ import {
   queueRows,
   roleText,
   rowCancelKind,
+  scheduleRunsEnded,
   showCancelAll,
   type QueueRow,
 } from "@shell/queue-dock-lib";
+import { pokeTasks } from "@shell/tasksPulse";
 
 // Fast enough that a row appears near the moment it comes due, slow enough to be
 // a permanent background poll in every shell. The queue moves on the scheduler's
@@ -292,6 +294,21 @@ export default function QueueDock() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  // The previous snapshot, for the ended-run comparison below. A ref rather than
+  // reading `jobs` in the callback: the callback is handed down once, and a state
+  // read inside it would compare against whatever render it was created in.
+  const prevJobs = useRef<Job[]>([]);
+  // The snapshot is also this corner's earliest knowledge that a run ENDED —
+  // about a second behind the turn, where the Tasks page's own poll is up to
+  // 20s behind and the status it reads can lag the liveness window on top. So a
+  // running→terminal flip on a sys:schedule:* job pokes the shared tasks store
+  // (which re-reads, or asks the open Tasks page to): "if finished in one,
+  // finished in the other" (Akshil, 2026-08-19).
+  const onJobs = useCallback((next: Job[]) => {
+    if (scheduleRunsEnded(prevJobs.current, next)) pokeTasks();
+    prevJobs.current = next;
+    setJobs(next);
+  }, []);
 
   // What this half still owns: its rows minus any live one whose run the registry
   // says has ended. Without that the outcome row would wait for the next queue read
@@ -341,8 +358,9 @@ export default function QueueDock() {
         // hands a live run back to the job half instead of losing it.
         drawn: drawnIds(rows),
         // And the way back: the card's job snapshot, which is how this half learns a
-        // run ended without waiting for its own slower read (see `rows` above).
-        onJobs: setJobs,
+        // run ended without waiting for its own slower read (see `rows` above) —
+        // and how the Tasks page learns it too (the poke in onJobs above).
+        onJobs,
         rows: rows.map((row) => (
           <Row
             key={row.entry.id}

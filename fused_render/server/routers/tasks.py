@@ -711,6 +711,47 @@ def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
     return live or (bool(session_id) and session_id in busy)
 
 
+def _verdict_outvotes_live(messages: list[dict]) -> bool:
+    """Is the transcript's liveness just the echo of a run that has already
+    reported its verdict?
+
+    THE 45-SECOND WINDOW LIES IN EXACTLY ONE DIRECTION (Akshil, 2026-08-19: "if
+    finished in one, finished in the other"). The bottom-right queue card flips
+    to finished within seconds of the result row landing — the watcher records
+    the turn's verdict the moment it sees it — while this page kept answering In
+    Progress for the rest of the liveness window, because the transcript's tail
+    had been written to seconds ago. Of course it had: the records were the
+    finished turn's OWN closing rows. Counting a run's obituary as a pulse is
+    how the two surfaces disagreed about the same run for up to a minute.
+
+    So: when the newest thing that actually HAPPENED in this thread is a
+    scheduled run that has spoken (`_message_verdict` — done or failed), and no
+    message claims to be running by its own state, bare liveness has nothing
+    left to attest and the caller sets it aside. `ran_at` is the comparison on
+    both sides because it is the one stamp that means "happened": a prompt the
+    user types after the run is a chat message with a newer `ran_at`, so a
+    genuinely new turn keeps its In Progress. The tie goes to the verdict — the
+    prompt a scheduled run fired is consumed by the join (`_merge`) and cannot
+    also stand on the chat side, so an equal stamp is the run's own.
+
+    Deliberately NOT consulted: `busy_sessions`. The scheduler holding a send in
+    flight is an independent claim and `_running_now` keeps asking it whatever
+    this answers — this function only decides whether the TRANSCRIPT gets a
+    vote.
+    """
+    if any(_message_running(m) for m in messages):
+        return False  # something really is in flight; liveness corroborates it
+    verdict_at = 0.0
+    other_at = 0.0
+    for message in messages:
+        happened = message["ran_at"] or 0.0
+        if message["kind"] == "scheduled" and _message_verdict(message) is not None:
+            verdict_at = max(verdict_at, happened)
+        else:
+            other_at = max(other_at, happened)
+    return verdict_at > 0.0 and verdict_at >= other_at
+
+
 def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
             busy: set[str]) -> str:
     """The status a task sits in — ONE decision, made here, for every view.
@@ -726,7 +767,9 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
        independent because each is wrong on its own in a different direction: a
        turn thinking through a long tool call appends nothing for minutes and
        reads as not-live, and a session a human is typing into has no busy entry
-       at all.
+       at all. The transcript's vote is withdrawn by the caller for exactly one
+       case — the tail's freshness is the finished run's own closing records —
+       see `_verdict_outvotes_live`.
     2. **Archived is a filing state.** The task the user put away is archived,
        and so is a task whose every message ended up filed (cancelling the last
        live message in a thread archives the task, without anybody having to say
@@ -1146,6 +1189,17 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # in the last three of a list it is in the same order as. Their ids follow
     # from the total, whatever else is below them.
     merged = _merge(prompts, task["entries"], live)
+    # A run that has already reported its verdict does not keep the row In
+    # Progress off its own closing transcript records: the queue card in the
+    # corner says finished within seconds of the result row, and this page
+    # saying In Progress for the rest of the 45-second liveness window was the
+    # two surfaces disagreeing about one run. Decided off the WHOLE merged
+    # thread, before the tail is cut, and spent by everything below that reads
+    # `live` — the status, the newest chat message's turn, and the row's own
+    # `live` flag — so the row cannot half-agree with itself. See
+    # `_verdict_outvotes_live` for why a genuinely new turn is safe.
+    if live and _verdict_outvotes_live(merged):
+        live = False
     # BEFORE the cut, from the whole set: the one fact about the future that the
     # three-message window cannot be trusted to hold. See `_next_run`.
     next_run, next_run_entry = _next_run(task["entries"])

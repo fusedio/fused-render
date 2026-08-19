@@ -27,6 +27,7 @@ import { useThemeSync } from "@platform/lib/theme";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import NotificationHost from "@platform/ui/NotificationHost";
 import QueueDock from "@shell/QueueDock";
+import { pokeTasks } from "@shell/tasksPulse";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
@@ -417,8 +418,12 @@ export default function App({ config }: { config: Config }) {
 
   // The same shape, for scheduled messages: nobody is looking at /tasks when
   // one fires, so "it ran" / "it failed" / "it was missed" has to arrive on its
-  // own rather than wait to be discovered.
-  useScheduleEvents();
+  // own rather than wait to be discovered. pokeTasks rides along: a done/failed
+  // event means a task's row just changed, so the shared tasks store (and the
+  // open Tasks page, through its feeder) re-reads now instead of on its next
+  // tick — handed in from here because that store is shell's and platform may
+  // not import up.
+  useScheduleEvents(pokeTasks);
 
   // Keep <html data-theme> in step with the appearance preference for the
   // page's lifetime (SPEC §30): another window's override, and — while the
