@@ -1198,7 +1198,23 @@ def _manager(name="alpha"):
     return canvases_mod._syncs[name]
 
 
-def _wait_for(predicate, timeout=8):
+# Every SCAN_INTERVAL_S/DEBOUNCE_S/PULL_POLL_S tick of canvases.py's manager
+# loop spawns a fresh subprocess for the stub CLI (manifest probes, zip
+# downloads, pulls, pushes, and validation calls are all
+# `subprocess.run([sys.executable, ...])` — see SyncShims/Harness above).
+# Windows process creation is several times slower than Linux/macOS
+# fork+exec, and GitHub's windows-latest runners add Defender's real-time
+# scan of every new process on top of that, so an 8s budget tuned against
+# Linux's process-spawn cost is not automatically enough there. This is slack
+# for "did the async op finish at all" in the common wait helpers below, not
+# a precision measurement of how FAST it had to be — widening it on Windows
+# costs nothing but wall-clock time in CI. (A couple of tests below pin their
+# own tighter timeout on purpose, to prove something resolved quickly rather
+# than merely at all; those are left alone.)
+_WAIT_TIMEOUT_S = 20 if sys.platform == "win32" else 8
+
+
+def _wait_for(predicate, timeout=_WAIT_TIMEOUT_S):
     """Spin until `predicate()` or the deadline. Returns whether it held."""
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -1211,7 +1227,7 @@ def _wait_for(predicate, timeout=8):
     return False
 
 
-def _wait_status(harness, predicate, timeout=8):
+def _wait_status(harness, predicate, timeout=_WAIT_TIMEOUT_S):
     deadline = time.time() + timeout
     status = None
     while time.time() < deadline:
@@ -2620,7 +2636,10 @@ def test_pulling_covers_the_merges_writes_but_not_its_zip_download(
     assert _wait_for(
         lambda: harness.client.get(
             "/api/canvases/sync/status?name=alpha").json()["pulling"] is True,
-        timeout=3,
+        # Tighter than _WAIT_TIMEOUT_S on purpose (the flag should flip almost
+        # immediately) but still widened on Windows for the same subprocess-
+        # spawn-latency reason as that constant.
+        timeout=3 if sys.platform != "win32" else _WAIT_TIMEOUT_S,
     ), "status never reported pulling while the merge was writing"
     status = _wait_status(harness, lambda s: s["merge_seq"] >= 1)
     assert status and status["merge_seq"] >= 1, status

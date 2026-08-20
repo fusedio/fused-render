@@ -284,9 +284,25 @@ def pathfs():
 _DIR = "/definitely/not/here/on/disk/mnt-dir"
 
 
-def test_map_discover_remote_file_descends_to_parent(pathfs):
+def _abs_dir_and_file(name):
+    """The (directory, file) pair every one of these readers actually queries
+    the fake fs/stat+list server with — NOT the raw `_DIR` literal.
+
+    Each reader's own first line is `path = os.path.abspath(...)`, so on POSIX
+    this is a no-op and `_DIR` round-trips unchanged, but on Windows abspath
+    prepends the checkout's current drive letter and swaps in backslashes
+    (`D:\\definitely\\...`) before the path ever reaches `_stat`/`_list_remote`.
+    `_PathFakeFS` matches the query path by exact string, so the fake server's
+    `dir_path`/`file_path` — and any assertion against the reader's returned
+    dir/path field — have to be built through that SAME abspath, exactly like
+    `test_map_discover_remote_file_descends_to_parent` below already does.
+    """
     directory = os.path.abspath(_DIR)
-    file_path = os.path.join(directory, "scene.nitf")
+    return directory, os.path.join(directory, name)
+
+
+def test_map_discover_remote_file_descends_to_parent(pathfs):
+    directory, file_path = _abs_dir_and_file("scene.nitf")
     server = pathfs(
         directory,
         [_ent("sub", is_dir=True), _ent("scene.nitf", size=10)],
@@ -302,50 +318,55 @@ def test_map_discover_remote_file_descends_to_parent(pathfs):
 
 
 def test_excel_listdir_remote_file_descends_to_parent(pathfs):
-    fp = _DIR + "/book.xlsx"
-    s = pathfs(_DIR, [_ent("sub", is_dir=True), _ent("book.xlsx", size=10)], fp)
+    directory, fp = _abs_dir_and_file("book.xlsx")
+    s = pathfs(directory, [_ent("sub", is_dir=True), _ent("book.xlsx", size=10)], fp)
     res = excel._listdir(fp, origin=s.src)
     assert "error" not in res
-    assert res["path"] == _DIR
+    # excel._listdir forward-slashes its own abspath'd `path` before returning
+    # it (D99-style "/"-only crumb/join contract) — canonicalize the same way.
+    assert res["path"] == directory.replace(os.sep, "/")
     assert res["dirs"] == ["sub"]
     assert [f["name"] for f in res["files"]] == ["book.xlsx"]
 
 
 def test_docs_listdir_remote_file_descends_to_parent(pathfs):
-    fp = _DIR + "/report.docx"
-    s = pathfs(_DIR, [_ent("sub", is_dir=True), _ent("report.docx")], fp)
+    directory, fp = _abs_dir_and_file("report.docx")
+    s = pathfs(directory, [_ent("sub", is_dir=True), _ent("report.docx")], fp)
     res = docs.main(action="listdir", path=fp, src=s.src)
-    assert res["path"] == _DIR
+    assert res["path"] == directory.replace(os.sep, "/")
     assert res["dirs"] == ["sub"]
     assert res["files"] == ["report.docx"]
 
 
 def test_latex_browse_remote_file_descends_to_parent(pathfs):
-    fp = _DIR + "/main.tex"
-    s = pathfs(_DIR, [_ent("sub", is_dir=True), _ent("main.tex")], fp)
+    directory, fp = _abs_dir_and_file("main.tex")
+    s = pathfs(directory, [_ent("sub", is_dir=True), _ent("main.tex")], fp)
     res = engine.main(action="browse", path=fp, src=s.src)
     assert "error" not in res
-    assert res["dir"] == _DIR
+    # Unlike the *_listdir readers above, latex's "browse" action returns its
+    # raw os.path.abspath'd `d` untouched (no forward-slash pass) — compare
+    # against the native-separator form, not a POSIX-forced one.
+    assert res["dir"] == directory
     names = {e["name"] for e in res["entries"]}
     assert names == {"sub", "main.tex"}
 
 
 def test_pdf_studio_listdir_remote_file_descends_to_parent(pathfs):
-    fp = _DIR + "/doc.pdf"
-    s = pathfs(_DIR, [_ent("sub", is_dir=True), _ent("doc.pdf", size=10)], fp)
+    directory, fp = _abs_dir_and_file("doc.pdf")
+    s = pathfs(directory, [_ent("sub", is_dir=True), _ent("doc.pdf", size=10)], fp)
     res = pdf_studio._listdir(fp, origin=s.src)
     assert "error" not in res
-    assert res["path"] == _DIR
+    assert res["path"] == directory.replace(os.sep, "/")
     assert res["dirs"] == ["sub"]
     assert [f["name"] for f in res["files"]] == ["doc.pdf"]
 
 
 def test_tableau_listdir_remote_file_descends_to_parent(pathfs):
-    fp = _DIR + "/wb.twb"
-    s = pathfs(_DIR, [_ent("sub", is_dir=True), _ent("wb.twb", size=10)], fp)
+    directory, fp = _abs_dir_and_file("wb.twb")
+    s = pathfs(directory, [_ent("sub", is_dir=True), _ent("wb.twb", size=10)], fp)
     res = tableau._listdir(fp, origin=s.src)
     assert "error" not in res
-    assert res["path"] == _DIR
+    assert res["path"] == directory.replace(os.sep, "/")
     assert res["dirs"] == ["sub"]
     assert [f["name"] for f in res["files"]] == ["wb.twb"]
 
@@ -376,11 +397,11 @@ def slides_mod():
 
 
 def test_slides_listdir_remote_file_descends_to_parent(pathfs, slides_mod):
-    fp = _DIR + "/deck.pptx"
-    s = pathfs(_DIR, [_ent("sub", is_dir=True), _ent("deck.pptx", size=10)], fp)
+    directory, fp = _abs_dir_and_file("deck.pptx")
+    s = pathfs(directory, [_ent("sub", is_dir=True), _ent("deck.pptx", size=10)], fp)
     res = slides_mod.main(action="listdir", path=fp, src=s.src)
     assert "error" not in res
-    assert res["path"] == _DIR
+    assert res["path"] == directory.replace(os.sep, "/")
     assert res["dirs"] == ["sub"]
     assert res["files"] == ["deck.pptx"]
 
