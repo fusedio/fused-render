@@ -1,0 +1,74 @@
+# The transformers text runner's environment — the ROCm variant (SPEC §40, PY-16).
+#
+# Identical to `transformers_text/pyproject.toml` except for where torch comes
+# from and the one extra line that follows from it. Read that file first — it
+# carries the reasoning for the dependency list, the ceilings, `explicit = true`
+# and the three-folder shape.
+#
+# AMD cards on Linux. The wheels live only on
+# `download.pytorch.org/whl/rocm7.1`; there is no ROCm torch on PyPI, and none for
+# macOS or Windows anywhere, so this variant is a Linux one by construction and the
+# registry offers it there.
+#
+# **`triton-rocm` is declared, and deleting it breaks the install.**
+# `torch 2.13.0+rocm7.1` carries `Requires-Dist: triton-rocm==3.7.1` — note the
+# rename; it was `pytorch-triton-rocm` through the 2.x series — and that
+# distribution is published ONLY on the ROCm index. `[tool.uv.sources]` governs
+# declared dependencies, not transitive ones, so with the line removed uv looks for
+# `triton-rocm` on PyPI, finds nothing, and the whole sync fails with
+#
+#     there is no version of triton-rocm==3.7.1
+#
+# which reads like a broken pin rather than a missing index. Declaring it is what
+# brings it under the source rule. It is deliberately UNBOUNDED: torch's own `==`
+# pin is the version, and a ceiling here could only ever contradict it — the same
+# argument `faster_whisper/pyproject.toml` makes for `sherpa-onnx-core`, and it
+# needs the same exemption in `UNBOUNDED_RUNNER_DEPENDENCIES`
+# (`tests/test_ai_runtime.py`).
+#
+# The `sys_platform == 'linux'` marker is not decoration. A universal resolution
+# considers macOS and Windows too, and there is no `triton-rocm` wheel for either;
+# without the marker uv has to satisfy a requirement that cannot be satisfied on
+# platforms this variant was never for.
+#
+# **What `explicit = true` buys here is larger than on the CPU index.** The ROCm
+# mirror carries its own copies of numpy, pillow, sympy and more. Left implicit it
+# would win those by being listed first, and this venv would quietly differ from
+# every other runner's in packages that have nothing to do with AMD. Explicit means
+# the two names below come from the mirror and the other 42 of the 45 packages
+# locked here come from PyPI.
+#
+# Nothing in `runners/torch_text.py` knows about any of this, and `_placement()` is
+# unchanged on purpose: ROCm torch reports through `torch.cuda.is_available()` and
+# wants the device string `"cuda"`. So `/health` says `cuda` on an AMD card. That is
+# torch's own naming (HIP presents the CUDA API surface), and correcting it here
+# would mean a device string the rest of the code does not recognise.
+[project]
+name = "fused-render-runner-transformers-text-rocm"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.13,<3",
+    "triton-rocm; sys_platform == 'linux'",
+    "transformers>=4.51,<6",
+    "accelerate>=1.14,<2",
+    "sentencepiece",
+    "protobuf",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
+
+# The ROCm wheels. `explicit` keeps this index out of every other requirement's
+# candidate list — see the header.
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm7.1"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-rocm" }
+triton-rocm = { index = "pytorch-rocm" }

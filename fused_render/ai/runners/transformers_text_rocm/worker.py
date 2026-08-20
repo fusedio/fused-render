@@ -1,13 +1,13 @@
-"""The CPU image runner (SPEC §40).
+"""The ROCm text runner (SPEC §40).
 
 Five lines of code and a `pyproject.toml`, and the manifest is the whole of it:
-this folder installs the CPU-only build from
-`download.pytorch.org/whl/cpu`. Its siblings
-`diffusers_image_cuda/` and `diffusers_image_rocm/` declare the same
+this folder installs the ROCm build from
+`download.pytorch.org/whl/rocm7.1`. Its siblings
+`transformers_text/` and `transformers_text_cuda/` declare the same
 dependencies at the same versions and differ ONLY in which index torch comes
-from; the runner itself is `runners/torch_image.py`, shared by all three, because
+from; the runner itself is `runners/torch_text.py`, shared by all three, because
 which wheel a user installed is a fact about the hardware they picked on the
-Engines tab and never about how a denoising loop runs.
+Engines tab and never about how a token loop runs.
 
 A folder rather than a flag because `uv sync` runs BARE (`_env_install_worker`)
 with cwd set to the runner folder: everything about an environment has to be
@@ -28,7 +28,7 @@ import sys
 # The shared runner sits one directory up, in `runners/` — see mlx_text/worker.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import torch_image  # noqa: E402 - the whole runner; see runners/torch_image.py
+import torch_text  # noqa: E402 - the whole runner; see runners/torch_text.py
 
 if __name__ == "__main__":
-    torch_image.main()
+    torch_text.main()

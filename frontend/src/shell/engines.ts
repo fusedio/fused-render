@@ -45,10 +45,15 @@ export function capabilityLabel(capability: string): string {
 export function servingLine(row: CapabilityEngine): string {
   if (!row.effective) return "Not available on this machine.";
   // The SHORT name. This line sits directly under the picker, whose options
-  // carry "(Apple Silicon)" and "(PyTorch)" because that is where the reader
-  // is choosing between backends; saying it again one line below is the
-  // repetition the qualifier-free name exists to remove. `ignoredWarning`
-  // below is the opposite case and stays long — it quotes an option back.
+  // carry "(Apple Silicon)" because that is where the reader is choosing
+  // between backends; saying it again one line below is the repetition the
+  // qualifier-free name exists to remove. A HARDWARE qualifier is the exception
+  // and comes through here — the CPU/CUDA/ROCm torch rows carry "(CUDA)" in the
+  // short name too, because it is the engine's identity rather than a fact about
+  // this machine, and three rows reading "Using Diffusers." would be one row.
+  // The backend decides that; nothing here strips or adds a qualifier.
+  // `ignoredWarning` below is the opposite case and stays long — it quotes an
+  // option back.
   return `Using ${row.effectiveShortLabel ?? row.effectiveLabel ?? row.effective}.`;
 }
 
@@ -94,9 +99,10 @@ export function choiceReason(choice: EngineChoice): string | null {
 
 /** What running on the backend that is SERVING this capability is like, or null.
  *
- *  Three of the six runners have something to say — MLX FLUX reserves much more
- *  memory than Diffusers and is untested below 32GB, MLX Whisper transcribes on
- *  the GPU, PyTorch wants an NVIDIA card — and the FLUX one is a caution, not a
+ *  Most runners have something to say — MLX FLUX reserves much more memory than
+ *  Diffusers and is untested below 32GB, MLX Whisper transcribes on the GPU, the
+ *  CPU torch rows state the speed they cost, the CUDA and ROCm rows state the
+ *  download they cost — and the FLUX one is a caution, not a
  *  fact: it is the sentence that tells somebody on a 16GB Mac to move back to
  *  Diffusers, which is precisely the switch the control above it makes.
  *

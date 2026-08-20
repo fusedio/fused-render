@@ -589,7 +589,7 @@ def _has_torch_weights(snapshot_dir: str) -> bool:
     A WALK, like `_weight_files`, and for the same reason: a diffusers pipeline
     keeps its weights per component. The suffixes are `formats.TORCH_WEIGHTS`
     rather than a list spelled here — this is the page's copy of the question
-    `transformers_text/worker.py` asks before it refuses a repo.
+    `runners/torch_text.py` asks before it refuses a repo.
     """
     for _dirpath, _dirnames, filenames in os.walk(snapshot_dir):
         if any(name.endswith(formats.TORCH_WEIGHTS) for name in filenames):
@@ -967,8 +967,14 @@ def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str |
     # way. Both reasons are actionable and they are different actions — one is
     # "this needs another machine", the other "this needs the other engine,
     # which is one tab away on the page this sentence is printed on".
-    runner = next((r for r in candidates if r.available().ok), candidates[0])
-    status = runner.available()
+    # ONE probe per candidate, and the chosen row's status is the one already
+    # read — never `available()` again on the winner (D382). These probes read
+    # live device state now, so a second call can straddle a `modprobe` or a
+    # container restart and answer differently: `available: false` with
+    # `reason: null` (a card refusing to load with nothing saying why) or an
+    # `ok` status still carrying the refusal that picked this row.
+    probed = [(runner, runner.available()) for runner in candidates]
+    runner, status = next((pair for pair in probed if pair[1].ok), probed[0])
     reason = status.reason or None
     if status.ok and serving is not None:
         # Names the TAB, not a settings page: the engine picker moved onto
