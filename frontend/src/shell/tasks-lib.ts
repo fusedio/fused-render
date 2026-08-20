@@ -36,10 +36,11 @@
 // the server), and every key is a time the server itself sent.
 import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 import {
+  addDays,
   BOARD_COLUMNS,
   explorerUrl,
   isProjected,
-  runStatus,
+  startOfDay,
   taskStatus,
   turnPhase,
 } from "./schedule-lib";
@@ -2775,48 +2776,132 @@ export function isRunningIn(task: Task, messages: TaskMessage[]): boolean {
 }
 
 /**
+ * ONE DAY OF A REPEATING TASK, as one of the app's five words (Akshil,
+ * 2026-08-20, raised twice).
+ *
+ * A repeating task has NO SINGLE TRUTHFUL STATUS, and that is the whole reason
+ * this function exists rather than some reading of the task. An hourly rule is
+ * simultaneously finished (09:00), working (10:00) and promised (11:00 through
+ * 23:00), so any one word about the RULE is wrong about most of it — which is
+ * how the popover came to say "Upcoming" over a day whose runs had all already
+ * happened. The clicked chip is not the rule: it is the rule ON ONE DAY, and a
+ * day IS a thing a single word can be true of. So the pill answers for the day.
+ *
+ * THE RULE, and it is deliberately three cases about TIME before it is anything
+ * about messages, because the day's position relative to now is what decides
+ * which question is even askable:
+ *
+ *   - A DAY STILL AHEAD -> Upcoming. Nothing on it has happened by definition;
+ *     whatever rows it holds are cron arithmetic or promises, and both are the
+ *     same word.
+ *   - TODAY, with runs still owed -> Upcoming (or In Progress if one is
+ *     actually going). This is the case the old newest-run reading got wrong in
+ *     the other direction too: the newest row on today is the 23:00 slot, so a
+ *     day that had already run nine times read as a pure promise. "Owed" is
+ *     asked of the slot's TIME, not of its row's kind, so a materialized
+ *     pending and a ghost count the same — they are both the day saying it is
+ *     not finished.
+ *   - A DAY THAT IS OVER, or today after its last slot -> the day's OUTCOME,
+ *     rolled up: any failure makes the day Failed (one broken run is the thing
+ *     you need to see, and burying it under nine green ones is how a rule
+ *     silently rots), otherwise anything that ran makes it Done.
+ *
+ * IN PROGRESS OUTRANKS ALL OF IT. `live` is the caller's isRunningIn reading of
+ * this same day — the exact list the grid chip shimmers by — and a run in
+ * flight is a fact about right now that no rollup should be allowed to
+ * overwrite. A row whose own tone is `in_progress` (a `sending` message the
+ * task-level reading has not caught up with) counts the same way.
+ *
+ * THE FALLBACK IS "ARCHIVE", NOT "UPCOMING", and it is the case worth being
+ * explicit about: a past day can hold nothing but slots that went by unrun —
+ * past ghosts (`missed` + template_id) that the rule skipped while the app was
+ * closed, or pendings nobody ever marked. Those are not outcomes, so the two
+ * rollup arms above pass over them; calling the day Upcoming afterwards is the
+ * original bug wearing a different hat. `archived` is already this app's word
+ * for a recurring slot that was due and did not run — it is what
+ * `messageTone` files those rows under and what greys their rings in the
+ * thread right below the pill — so the day inherits it rather than inventing a
+ * sixth state.
+ *
+ * Pure, and every input is an argument (`now` included) so the six cases above
+ * are six unit tests rather than six clock settings.
+ */
+export function dayPill(
+  occurrences: TaskMessage[],
+  day: Date,
+  now: Date,
+  live: boolean,
+): RunStatus {
+  if (live) return taskStatus("in_progress", false);
+
+  const start = startOfDay(day).getTime();
+  const end = startOfDay(addDays(day, 1)).getTime();
+  const at = now.getTime();
+  if (at < start) return taskStatus("upcoming", false);
+
+  const tones = occurrences.map((m) => messageTone(m));
+  if (tones.some((t) => t.column === "in_progress")) {
+    return taskStatus("in_progress", false);
+  }
+
+  // Does the day still owe a run? Only askable while the day is running; after
+  // midnight every slot is behind us and an unrun one is a fact, not a promise.
+  const nowSec = Math.floor(at / 1000);
+  const owed =
+    at < end &&
+    occurrences.some((m, i) => m.at > nowSec && tones[i].column === "upcoming");
+  if (owed) return taskStatus("upcoming", false);
+
+  if (tones.some((t) => t.failed)) return taskStatus("done", true);
+  if (tones.some((t) => t.column === "done")) return taskStatus("done", false);
+  if (tones.some((t) => t.column === "archived")) return taskStatus("archived", false);
+  // Nothing written down and nothing owed: an empty day, which in practice only
+  // happens before the rule's first slot. Upcoming is the honest word for it.
+  return taskStatus("upcoming", false);
+}
+
+/**
  * The calendar popover header's PILL, in the app's five words (Akshil,
- * 2026-08-19).
+ * 2026-08-19; day-scoped since 2026-08-20).
  *
  * Two different nouns, depending on what kind of task was clicked:
  *
  * A ONE-OFF is its task — one run, so "the task's status" and "this
  * occurrence's status" are the same fact, and the pill keeps saying exactly
  * what the List's row and the Board's card say: `taskStatus(taskColumn, failed)`.
+ * Untouched by the day rule below, and it should be: a one-off has exactly one
+ * day, so rolling it up could only ever restate the task.
  *
  * A REPEATING task is a rule, and a rule's task-level column is nearly always
  * `upcoming` — the next run is always scheduled — which made the pill useless
  * on the one grid that is ABOUT individual days: click last Tuesday's failed
- * run and the pill said "Upcoming". So for a recurring task the pill answers
- * for the clicked OCCURRENCE instead:
+ * run and the pill said "Upcoming". So a recurring task's pill is `dayPill`
+ * over THE CLICKED CHIP'S OWN DAY, whose reasoning lives on that function.
  *
- *   - actually working right now  -> In Progress (`live`, the isRunningIn
- *     reading the chip's own shimmer uses — same rule, same moment);
- *   - a projected/future day      -> Upcoming (cron arithmetic, or a
- *     materialized run that has not gone yet — runStatus says Upcoming for
- *     those too, so both future arms land on the same word);
- *   - a past day                  -> that day's outcome, from the NEWEST real
- *     run on the day (`runStatus` + `messageTone`, the exact pair the thread
- *     rows under the pill are painted with, so the pill can never disagree
- *     with the top row it summarizes). Ghost rows are cron math, never an
- *     outcome, and are filtered before "newest" is asked.
+ * WHY THIS GREW A `day` AND A `now`. The first cut of this (PR #645) answered
+ * from the NEWEST real row on the day, which is right for a day that is over
+ * and wrong for every day that is not: the newest row on today is tonight's
+ * 23:00 promise, so a rule that had already run nine times today wore
+ * "Upcoming", and a past day whose rows were never marked wore it too. "Newest"
+ * was standing in for a verdict; the verdict needed to know where the day sits
+ * relative to now, so now it is told.
  *
  * Always SOLID: whatever the word, the pill never inherits the projected
- * chip's dashes — a status is a word, not a drawing of a day.
+ * chip's dashes — a status is a word, not a drawing of a day. `projected` is
+ * therefore not an argument any more either: it was the last thing reaching in
+ * from the chip's DRAWING, and dayPill decides future-ness from the calendar
+ * rather than from whether anything was written down.
  */
 export function popoverPill(
   task: Task,
   recurring: boolean,
-  projected: boolean,
   live: boolean,
   dayMessages: TaskMessage[],
+  day: Date,
+  now: Date,
 ): RunStatus {
   if (!recurring) return taskStatus(taskColumn(task), task.failed);
-  if (live) return taskStatus("in_progress", false);
-  const real = dayMessages.filter((m) => !isProjected(m));
-  if (projected || real.length === 0) return taskStatus("upcoming", false);
-  const newest = real.reduce((a, b) => (b.at > a.at ? b : a));
-  return runStatus(newest, messageTone(newest));
+  return dayPill(dayMessages, day, now, live);
 }
 
 // ---- the sidebar's two-number summary of this page ----------------------------

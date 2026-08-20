@@ -612,29 +612,40 @@ function ChipPopover({
   // words, and the full reasoning is on that function: a ONE-OFF's pill is its
   // task's status (taskColumn + failed, exactly what the List's row and the
   // Board's card hand StatusIcon); a REPEATING task's pill answers for the
-  // clicked OCCURRENCE — In Progress while THIS DAY works (`liveToday`, the
-  // chip's own reading; `liveNow` would say In Progress on every day of a rule
-  // whose run is live somewhere else), Upcoming for a projected or not-yet-run
-  // day, and a past day's own outcome (Done/Failed) from the newest real run
-  // among the rows drawn right below it (Akshil, 2026-08-19: a rule's
+  // clicked DAY — In Progress while THIS DAY works (`liveToday`, the chip's own
+  // reading; `liveNow` would say In Progress on every day of a rule whose run
+  // is live somewhere else), Upcoming for a day still ahead or a today that
+  // still owes runs, and the day's ROLLED-UP outcome (any failure -> Failed,
+  // else Done) once the day is finished (Akshil, 2026-08-19: a rule's
   // task-level column is nearly always "upcoming", which made the pill useless
   // on the one view that is about days).
+  //
+  // A DAY, NOT THE NEWEST ROW (Akshil, 2026-08-20, raised twice). The first cut
+  // read the newest real row on the day — and the newest row on TODAY is
+  // tonight's last promise, so an hourly rule that had already run nine times
+  // wore "Upcoming" over a day of finished work. `chip.time` (which day was
+  // clicked) and a live `now` are what let dayPill tell the three cases apart.
   //
   // AND ALWAYS SOLID (Akshil, 2026-08-19). The pill used to inherit the clicked
   // chip's dashes through `chip.projected`; the dashes are a DAY-scoped drawing
   // ("nothing written down yet") and stay on the grid's ghost chips and the
-  // ghost rings on the occurrence rows — never on a status word.
+  // ghost rings on the occurrence rows — never on a status word. `chip.projected`
+  // has left the pill's inputs entirely: dayPill asks the CALENDAR whether the
+  // day is ahead of us, which is the fact that was being approximated.
   const recurring = Boolean(chip.recurring || repeat);
   // What the pill (word and shimmer alike) means by "running": the clicked
   // day's occurrences for a rule, the task itself for a one-off — so the pill
   // and the chip it was opened from can never disagree about the same day.
   const pillLive = recurring ? liveToday : liveNow;
-  const pill = useMemo(
-    () => popoverPill(task, recurring, chip.projected, pillLive, today),
-    [task, recurring, chip.projected, pillLive, today],
-  );
 
   const nowSec = Math.floor(Date.now() / 1000);
+  // One `now` for the whole render, and it is a dependency rather than a call
+  // inside the memo: the panel re-renders on every poll, so the pill re-decides
+  // as the day moves past its last slot without needing a clock of its own.
+  const pill = useMemo(
+    () => popoverPill(task, recurring, pillLive, today, chip.time, new Date(nowSec * 1000)),
+    [task, recurring, pillLive, today, chip.time, nowSec],
+  );
 
   const row = (m: TaskMessage, sameDayRow: boolean) => {
     const status = runStatus(m, taskMessageTone(m));
