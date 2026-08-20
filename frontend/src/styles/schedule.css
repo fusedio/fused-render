@@ -274,14 +274,17 @@
    schedule pair — sits on a transparent toolbar over the page's own --bg, so
    painting the active half --bg-alt reads as a fill a shade lighter than its
    surroundings. This ONE toggle lives inside `.schedule-cal-bar`, whose
-   ambient background (`.schedule-cal`, above) already IS --bg-alt — so the
-   same fill landed on a backdrop of itself and vanished. `.schedule-cal`
-   has no ambient a step lighter to borrow (it is the lightest surface this
-   card has), so the only existing token left is --bg, the one step DARKER
-   than the bar itself: same vocabulary (a flat fill, no new colour, no
-   weight change), the other direction. */
-.schedule-cal-bar-end .schedule-form-seg .btn.is-active,
-.prefs-section .schedule-cal-bar-end .schedule-form-seg .btn.btn-secondary.is-active {
+   ambient background (`.schedule-cal`, above) already IS --bg-alt — the same
+   fill landed on a backdrop of itself and vanished.
+
+   The fix rebuilds the main tabbar's exact relationship instead of picking a
+   different active fill (a darker active was tried first and read as the
+   INVERSE of the view switcher — Akshil, 2026-08-20, "invert the colors,
+   follow same css"): the segment CONTAINER takes --bg, the page ground every
+   other seg already sits on, and the generic --bg-alt active rule above then
+   works here unmodified — active lighter than its rail, identical to
+   List / Board / Calendar. */
+.schedule-cal-bar-end .schedule-form-seg {
   background: var(--bg);
 }
 
