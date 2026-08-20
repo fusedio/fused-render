@@ -521,7 +521,7 @@ def _get(url: str) -> tuple[httpx.Response | None, str | None]:
         return None, f"Could not reach {urlsplit(hub_endpoint()).netloc}: {e.__class__.__name__}"
     if response.status_code == 401 or response.status_code == 403:
         return None, ("The Hub refused this request. A private or gated repo needs a token — "
-                      "sign in to Hugging Face in Preferences, or set HF_TOKEN.")
+                      "sign in to Hugging Face in Preferences → AI, or set HF_TOKEN.")
     if response.status_code == 429:
         return None, "The Hub is rate-limiting this machine. Try again in a minute."
     if response.status_code >= 400:

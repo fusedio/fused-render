@@ -1,12 +1,7 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
 // from the sidebar's bottom-left gear. Its tabs (D125), the count deliberately
 // not stated here since it has been wrong three times:
-//   Render preferences — Appearance, Default model (which Claude model the
-//     chat and fused.ai reach for when nothing else has said), Hugging Face
-//     (signing in to the Hub for model downloads — and NOT a preference: the
-//     token belongs to huggingface_hub, which stores it, so that section talks
-//     to /api/hf/* and holds no state of this page's), Call log
-//     (capture/redaction/retention for
+//   Render preferences — Appearance, Call log (capture/redaction/retention for
 //     fused_render/calls.py), and Accessibility. Always present; the
 //     default (clean URL). No Tour button — the tour still runs itself on a
 //     first visit (App.tsx's maybeAutoStartTour); it is onboarding, not a
@@ -14,6 +9,16 @@
 //     temp-dir output (D68) reached from the desktop tray's "Open app logs", and a
 //     second "Logs" heading next to the Call log section only ever read as the
 //     call log's own settings.
+//   AI — Default model (which Claude model the chat and fused.ai reach for when
+//     nothing else has said) and Hugging Face (signing in to the Hub for model
+//     downloads — and NOT a preference: the token belongs to huggingface_hub,
+//     which stores it, so that section talks to /api/hf/* and holds no state of
+//     this page's). Both moved off the Render tab (D402): neither is about
+//     rendering, which is the same reason inference engines left this page
+//     entirely, and a reader looking for either was reading past four sections
+//     that answer a different question. Grouped rather than each given a tab
+//     because they are one question asked twice — which model, and with whose
+//     credentials.
 // **Inference engines used to be a tab here and is not any more** — it is the
 // Engines tab of /ai-models (shell/AiModelsEngines.tsx). It was the one control
 // on this page about MODELS rather than about rendering, and every consequence
@@ -49,7 +54,7 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
 
-type PrefsTab = "render" | "indexing";
+type PrefsTab = "render" | "ai" | "indexing";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -272,9 +277,9 @@ function HuggingFaceSection() {
       <h2>Hugging Face</h2>
       <p className="deploy-muted">
         Sign in to download AI models. Without an account the Hub serves this machine
-        anonymously — a lower rate limit, slower downloads, and no access to gated or private
-        repos. Signing in hands the token to <code>huggingface_hub</code>, which stores it the
-        same way <code>hf auth login</code> does and keeps it renewed; this app never holds it.
+        anonymously, meaning a lower rate limit, slower downloads, and no access to gated or
+        private repos. Signing in hands the token to <code>huggingface_hub</code>, which stores
+        it the same way <code>hf auth login</code> does.
       </p>
       {!auth && !error && <SkeletonLines rows={2} label="Loading Hugging Face status" />}
       {auth && (
@@ -338,19 +343,22 @@ function HuggingFaceSection() {
               )}
             </div>
           )}
-          <div className="deploy-muted">
-            {locked ? (
-              <>
-                Using the token in <code>{auth.forcedByVar}</code> from this app&apos;s
-                environment — hf reads that ahead of its own store, so signing in here would
-                change nothing until the variable is removed.
-              </>
-            ) : auth.signedIn ? (
-              <>Model downloads and Hub search use this account.</>
-            ) : (
-              <>Not signed in — requests to the Hub go out anonymously.</>
-            )}
-          </div>
+          {/* Nothing under a successful sign-in: "Signed in as X" beside a Log
+              out button is the whole state, and a line saying downloads use it
+              only repeated what the paragraph above already promised. The two
+              cases that DO need a sentence are the ones the controls cannot
+              show — a variable overriding the store, and what anonymous costs. */}
+          {locked ? (
+            <div className="deploy-muted">
+              Using the token in <code>{auth.forcedByVar}</code> from this app&apos;s
+              environment — hf reads that ahead of its own store, so signing in here would
+              change nothing until the variable is removed.
+            </div>
+          ) : !auth.signedIn ? (
+            <div className="deploy-muted">
+              Not signed in — requests to the Hub go out anonymously.
+            </div>
+          ) : null}
           {/* The last attempt's failure: denied, expired, or the network. Kept
               until the next attempt replaces it, so a login that failed while
               the user was authorizing in another tab can still say why. */}
@@ -520,7 +528,8 @@ export default function Preferences() {
   // /ai-models?tab=engines before this page renders, which is why an unknown
   // tab falling back to "render" is not the answer for that one — a bookmark
   // pointing at the engine picker should land ON the engine picker.
-  const tab: PrefsTab = requested === "indexing" ? "indexing" : "render";
+  const tab: PrefsTab =
+    requested === "indexing" ? "indexing" : requested === "ai" ? "ai" : "render";
   const setTab = (next: PrefsTab) => {
     const params = new URLSearchParams(location.search);
     if (next === "render") params.delete("tab");
@@ -546,6 +555,16 @@ export default function Preferences() {
             >
               Render preferences
             </button>
+            {/* AI — which model, and with whose credentials (D402). Named for
+                the subject rather than for the two controls in it, so adding a
+                third does not rename the tab. */}
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "ai" ? " active" : "")}
+              onClick={() => setTab("ai")}
+            >
+              AI
+            </button>
             {/* Indexing — the file index behind the explorer's search. Always
                 present: needs no opt-in, and a user looking for "why is search
                 finding/missing this" has nowhere else to go. */}
@@ -561,10 +580,14 @@ export default function Preferences() {
             {tab === "render" && (
               <>
                 <AppearanceSection />
-                <ModelSection prefs={prefs} onChange={setPrefs} />
-                <HuggingFaceSection />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
+              </>
+            )}
+            {tab === "ai" && (
+              <>
+                <ModelSection prefs={prefs} onChange={setPrefs} />
+                <HuggingFaceSection />
               </>
             )}
             {tab === "indexing" && <IndexingPanel />}

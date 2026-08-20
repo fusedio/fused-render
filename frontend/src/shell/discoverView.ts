@@ -217,7 +217,7 @@ export function gateChrome(
         ? "Gated: this repo's owner grants access by hand — request it on the Hub page. "
         : "Gated: sign in on the Hub page and accept this repo's licence. ") +
       "Downloading it here also needs a token on this machine — sign in to Hugging " +
-      "Face in Preferences, or set HF_TOKEN.",
+      "Face in Preferences → AI, or set HF_TOKEN.",
     canDownload: false,
     action: manual ? "Request access" : "Accept terms",
   };

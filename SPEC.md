@@ -1166,12 +1166,13 @@ never imports server).
   project's sessions/settings > the pref > `sonnet`; the template reads it with
   a plain `GET /api/prefs`, like its other `/api/…` reads. Read per request, so
   a change applies without a restart.
-- **PF-1c** **The Hugging Face section is on this page and is NOT a preference**
-  (D401). It is a **Log in to Hugging Face** button, it talks to `/api/hf/*`
-  rather than `/api/prefs`, and **this app stores no Hub token at all**: the
-  button drives `huggingface_hub`'s own device-code browser login and hf persists
-  what comes back, in hf's files, with hf's modes, alongside the refresh token hf
-  renews by itself. So there is nothing here to store, mask, validate, or hand a
+- **PF-1c** **The Hugging Face section is on this page — the AI tab
+  (§20.5/PF-9a) — and is NOT a preference** (D401). It is a **Log in to
+  Hugging Face** button, it talks to `/api/hf/*` rather than `/api/prefs`, and
+  **this app stores no Hub token at all**: the button drives
+  `huggingface_hub`'s own device-code browser login and hf persists what comes
+  back, in hf's files, with hf's modes, alongside the refresh token hf renews
+  by itself. So there is nothing here to store, mask, validate, or hand a
   subprocess — and `/api/prefs` carries no `hf` block, because a payload that
   advertised one would invite a page to write a credential this app would then
   own.
@@ -1215,13 +1216,13 @@ never imports server).
   incidental guarantee that `worker_base` was stdlib-only *because hf was absent
   from CI*, so that rule is now enforced by reading the module's own imports
   (`test_ai_worker_base.py`).
-- **PF-1a** The page renders its sections in this order: **Appearance**,
-  **Default model**, **Hugging Face** (PF-1c — a sign-in, not a preference),
-  **Call log**,
+- **PF-1a** The **Render preferences** tab renders its sections in this order:
+  **Appearance**, **Call log**,
   **Accessibility**, and last
   **Execution engine** — last because it is the setting a user is least likely
   to have come here to change (builtin suits almost everyone, and an env var
-  pins it where it matters). There is **no Tour button**: the tour still runs
+  pins it where it matters). **Default model** and **Hugging Face** are NOT here:
+  they are the **AI** tab (§20.5/PF-9a, D402). There is **no Tour button**: the tour still runs
   itself on a first visit (`maybeAutoStartTour`), because it is onboarding
   rather than a preference. (The spec subsection numbering below is
   organizational, not the visual order.) *(A **Deploy to Fused account**
@@ -1306,7 +1307,17 @@ in-app affordance to gate.
 
 - **PF-9** The page is split into tabs, active tab in the URL
   (default clean-URL tab is **Render preferences** —
-  Logs/Execution engine/Tour, unchanged). *(A second **Fused account** tab —
+  Logs/Execution engine/Tour, unchanged).
+- **PF-9a** (D402) The **AI** tab, `?tab=ai`, holds **Default model** (PF-1b)
+  and **Hugging Face** (PF-1c–PF-1f). Neither is about rendering — the same
+  reason the engine picker left this page for /ai-models — and on the Render
+  tab a reader after either one read past four sections answering a different
+  question. They share a tab rather than getting one each because they are one
+  question asked twice: which model, and with whose credentials. The tab is
+  named for that subject and not for its two controls, so a third does not
+  rename it. Render preferences stays the clean-URL default: an unknown `?tab=`
+  still falls back to it, and no redirect is owed to a `/preferences` bookmark
+  — the page it named still exists, with two fewer sections on it. *(A second **Fused account** tab —
   §27's account panel, `?tab=account`, offered only while the PF-8 Deploy
   toggle was on — used to sit alongside Render preferences here, and the
   sidebar footer's signed-in dot pointed at it (formerly AC-1). Both the tab

@@ -259,14 +259,16 @@ where a first model comes from.
     the Hub publishes for the weights. Other files in the repo aren't counted,
     and a repo the Hub has no such metadata for shows no size rather than a
     guess.
-  - If this machine has a Hub token — from **Preferences → Hugging Face**, an
+  - If this machine has a Hub token — from **Preferences → AI → Hugging Face**, an
     `HF_TOKEN` in the environment, or a `hf auth login` — it is used. That is
     what makes gated and private repos searchable and downloadable, and it
     raises the rate limit.
 
 ## Preferences
 
-The gear at the sidebar's bottom-left opens **Preferences**:
+The gear at the sidebar's bottom-left opens **Preferences**, whose controls
+are split across tabs — **Render preferences** (the one it opens on), **AI**,
+and **Indexing**:
 
 - **Appearance** — System (follows your desktop), Light or Dark. Applies
   immediately — to the app and to every open built-in view, with no reload —
@@ -277,13 +279,16 @@ The gear at the sidebar's bottom-left opens **Preferences**:
   buttons. **Your own `.html` views are never touched** — their CSS stays
   entirely yours; see the authoring skill for how to follow the desktop
   preference if you want to.
-- **Hugging Face** — **Log in to Hugging Face** to download AI models. Without
-  an account the Hub serves this machine anonymously: a lower rate limit, slower
-  downloads, no gated or private repos, and a "you are sending unauthenticated
-  requests" warning in every model log. The button opens huggingface.co to
-  authorize (confirm the short code it shows you); the token is then held by
-  `huggingface_hub` — the same place `hf auth login` puts it, kept renewed — so
-  **fused-render never stores it**, and any other Hugging Face tool on your
+- **AI › Default model** — which Claude model the chat and `fused.ai()` reach
+  for when nothing else has said. A page's own `model` argument still wins, and
+  a project's Claude settings win for the chat.
+- **AI › Hugging Face** — **Log in to Hugging Face** to download AI models.
+  Without an account the Hub serves this machine anonymously: a lower rate
+  limit, slower downloads, no gated or private repos, and a "you are sending
+  unauthenticated requests" warning in every model log. The button opens
+  huggingface.co to authorize (confirm the short code it shows you); the token
+  is then held by `huggingface_hub` — the same place `hf auth login` puts it —
+  so **fused-render never stores it**, and any other Hugging Face tool on your
   machine is signed in too. Model downloads and Hub search use it from the next
   request, with no restart. **Log out** signs the machine out of that account.
   If `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) is set in the environment, that
