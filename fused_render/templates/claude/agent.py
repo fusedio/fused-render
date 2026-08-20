@@ -1710,6 +1710,25 @@ def _start(file: str, message: str, session_id: str, model: str,
     # mean what the model actually typed on that command line.
     spawn_env = os.environ.copy()
     spawn_env.pop("FUSED_ENV", None)
+    # File-history checkpoints are OFF by default in a non-interactive session,
+    # and this run is always non-interactive (`-p`). Without this the snapshots
+    # panel (SPEC §34) can only ever show versions written by a TERMINAL claude
+    # in that folder, and reports "no recorded versions" for every file this
+    # chat itself edited — the panel's own reason to exist. D385.
+    #
+    # An ENV VAR, not a setting: the CLI's `fileHistoryEnabled` takes a separate
+    # branch when `isInteractive()` is false, and that branch reads only these
+    # two variables — the `fileCheckpointingEnabled` config that governs the
+    # interactive case is not consulted, so `--settings` cannot reach it. Named
+    # for the SDK and absent from the public settings docs, so it may move; what
+    # to re-check if snapshots go quiet again is that branch.
+    #
+    # setdefault, because a user who exported it themselves means it: the CLI
+    # coerces the value properly (`1/true/yes/on`, everything else false), so a
+    # deliberate `=0` is an opt-out rather than a truthy string. Their
+    # CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING still wins inside the CLI either
+    # way — it is ANDed into the same branch — so this cannot override it.
+    spawn_env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
     try:
         with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
              _private_open(os.path.join(run_dir, "err.log")) as err:
