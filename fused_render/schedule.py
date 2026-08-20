@@ -561,7 +561,8 @@ def _from_local(when: datetime) -> datetime:
 def create(target: str, message: str, due=None, session_id: str = "",
            permission_mode: str = "", repeats: str = "",
            rule: dict | None = None, title=None, description=None,
-           new_task_each_run=None, session_learned=None) -> dict:
+           new_task_each_run=None, session_learned=None,
+           create_target: bool = False) -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
     `title` and `description` are the user's own words about the work, both
@@ -610,6 +611,26 @@ def create(target: str, message: str, due=None, session_id: str = "",
     rewritten on every materialization to mirror the next occurrence, and a
     series numbered from a moving anchor would renumber itself every tick.
 
+    `create_target` opts the caller into ONE new folder: a target whose last
+    segment does not exist yet is made here, provided its parent already does.
+    The New task form offers this (it shows the path as a new folder while you
+    type it), so the endpoint behind that form passes it; every other caller
+    leaves it off and keeps the plain "no such file or directory" refusal. It is
+    a flag rather than the default precisely because of the re-send path
+    (`resend` below), where a target that has since been deleted is a fact the
+    user needs told — silently re-making a deleted FILE's name as a directory
+    would be the worst possible answer.
+
+    Exactly one level, never `-p`: two missing segments means the user is not
+    naming a new folder in a place they know, they are typing into a tree that
+    is not there, and inventing both is how a typo becomes a real directory.
+
+    The folder is CHECKED where the target is resolved and MADE at the very
+    bottom, immediately before the entry is stored — so a request refused by a
+    later validation (a cron line, a due date, a permission mode) leaves nothing
+    on disk. Ordering rather than a rollback: an unlink after the fact could
+    remove a directory something else had already raced into.
+
     Raises ValueError for everything a caller can get wrong (the router maps it
     to a 400). The one validation deliberately NOT here is "is this path
     mount-backed" — that needs the mounts registry, which lives above this
@@ -620,8 +641,27 @@ def create(target: str, message: str, due=None, session_id: str = "",
     if not isinstance(target, str) or not target.strip():
         raise ValueError("target: required")
     target = os.path.abspath(os.path.expanduser(target))
+    # The new folder is only CHECKED here; it is made at the very bottom, right
+    # before the entry is stored. Everything between this point and there can
+    # still refuse the request (a cron line that will not parse, an unreadable
+    # due date, an unknown permission mode), and a directory made up here would
+    # outlive that refusal — the user gets a 400 and an empty folder they never
+    # asked for. Deciding now and acting last keeps the create path all-or-
+    # nothing without a rollback that could delete someone else's work.
+    make_target = False
     if not os.path.exists(target):
-        raise ValueError(f"target: no such file or directory: {target}")
+        if not create_target:
+            raise ValueError(f"target: no such file or directory: {target}")
+        parent = os.path.dirname(target)
+        # abspath has already collapsed "." and "..", so a basename of either is
+        # only reachable at the filesystem root — where there is nothing to make.
+        if not os.path.basename(target) or os.path.basename(target) in (".", ".."):
+            raise ValueError(f"target: no such file or directory: {target}")
+        if not os.path.isdir(parent):
+            raise ValueError(
+                f"target: only one new folder can be created, and {parent} "
+                "does not exist either")
+        make_target = True
 
     repeats = (repeats or "").strip()
     if rule is not None and repeats:
@@ -748,6 +788,24 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # scheduled. Counting only the ones that fired would quietly extend the
         # series every time the app was closed at the wrong moment.
         entry["made"] = 0
+    if make_target:
+        # LAST, after every validation above has had its chance to refuse: from
+        # here on the only thing left is writing the entry, so the folder and
+        # the task appear together or neither does.
+        try:
+            # mkdir, not makedirs: the one-level rule is enforced by the call
+            # itself, so a parent that vanished since the check above raises
+            # rather than being invented.
+            os.mkdir(target)
+        except FileExistsError:
+            # Someone else made it in the meantime, which is the outcome asked
+            # for. Only a non-directory is a problem, and os.path.exists above
+            # would not have missed one that was already there.
+            if not os.path.isdir(target):
+                raise ValueError(
+                    f"target: {target} exists and is not a folder") from None
+        except OSError as exc:
+            raise ValueError(f"target: could not create {target}: {exc}") from exc
     with _lock:
         entries = _read()
         entries.append(entry)

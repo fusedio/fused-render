@@ -1768,7 +1768,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # and this run is always non-interactive (`-p`). Without this the snapshots
     # panel (SPEC §34) can only ever show versions written by a TERMINAL claude
     # in that folder, and reports "no recorded versions" for every file this
-    # chat itself edited — the panel's own reason to exist. D393.
+    # chat itself edited — the panel's own reason to exist. D394.
     #
     # An ENV VAR, not a setting: the CLI's `fileHistoryEnabled` takes a separate
     # branch when `isInteractive()` is false, and that branch reads only these

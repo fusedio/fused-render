@@ -4673,7 +4673,7 @@ wanting "what has this file been through" wants §33.
         ANNOTATION-ONLY sends, whose preview stripped to "" — and `_cli_sessions`
         drops a session with no preview, so the same "" had already taken both
         chats out of "Recent chats" above. The fallback did its job and hid a
-        different bug behind a legitimate empty state (D394).
+        different bug behind a legitimate empty state (D395).
   - **The read declines BOTH of the reader's costs.** Enrichment reads session
     transcripts (5 MB+), so the panel takes the unenriched timeline — which is why
     it never claims a chain is complete (FH-3). The exact deltas are `difflib` per
@@ -4711,7 +4711,7 @@ wanting "what has this file been through" wants §33.
     has no recorded versions of this file". A panel whose whole promise is
     undoing what the agent just did could answer only for edits it did not make.
     `_start`'s `spawn_env` therefore carries
-    `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` (D393).
+    `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` (D394).
     - **An env var, not a setting, and not a hook.** That non-interactive branch
       consults only the two env vars — the `fileCheckpointingEnabled` config
       governing the interactive case is never read — so `--settings` cannot

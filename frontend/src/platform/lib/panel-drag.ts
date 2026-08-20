@@ -34,13 +34,13 @@ export type ImpliedWidth = number;
  * chevron rather than a gesture; see `OPEN_PULL`.
  *
  * Scaling with the floor rather than fixing a number is the part worth keeping.
- * The two panels here have different floors (180px for the global sidebar, 280px
- * for the preview's companion column) because they hold different things, and a
- * shared constant would mean the wider panel resisted proportionally less — the
- * bigger the panel, the cheaper it would be to lose. Half the floor keeps the
- * overshoot in proportion to what is at stake: 90px on the sidebar, 140px on the
- * column. Both are past the reach of an accident and inside one continuous drag,
- * which is the whole specification.
+ * The two panels here have different floors (180px for the global sidebar, 380px
+ * for the preview's companion column — apps/explorer/lib/side-width's MIN_W)
+ * because they hold different things, and a shared constant would mean the wider
+ * panel resisted proportionally less — the bigger the panel, the cheaper it
+ * would be to lose. Half the floor keeps the overshoot in proportion to what is
+ * at stake: 90px on the sidebar, 190px on the column. Both are past the reach of
+ * an accident and inside one continuous drag, which is the whole specification.
  */
 export function closeOverdrag(min: number): number {
   return Math.floor(min / 2);

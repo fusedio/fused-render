@@ -120,6 +120,59 @@ def test_create_rejects_what_a_caller_can_get_wrong(target):
                         permission_mode="bypassPermissions")
 
 
+def test_create_target_makes_one_folder_and_only_one(target):
+    """`create_target` is opt-in, and one level deep. Off, a missing target is
+    the same refusal it always was — which is what the re-send path relies on:
+    a target that has since been deleted is a fact its user needs told, not one
+    to paper over with an empty directory (and re-making a deleted FILE's name
+    as a folder would be the worst answer available)."""
+    schedule.create(str(target / "ABC1"), "hi", _in(600), create_target=True)
+    assert (target / "ABC1").is_dir()
+
+    # Two levels is a tree, not a folder — and nothing is left behind.
+    with pytest.raises(ValueError, match="only one new folder"):
+        schedule.create(str(target / "new1" / "new2"), "hi", _in(600),
+                        create_target=True)
+    assert not (target / "new1").exists()
+
+    # Off by default, so every other caller is unchanged.
+    with pytest.raises(ValueError, match="no such file or directory"):
+        schedule.create(str(target / "ABC2"), "hi", _in(600))
+    assert not (target / "ABC2").exists()
+
+
+def test_a_refused_create_leaves_no_new_folder_behind(target):
+    """The folder is made LAST, after every other validation has had its chance
+    to refuse. A request that 400s on its cron line, its due date or its
+    permission mode used to leave the leaf directory on disk anyway — an empty
+    folder the user never got a task for, and never asked for."""
+    for kwargs, match in (
+        ({"repeats": "not a cron line"}, "cron|field|repeats"),
+        ({"due": "next tuesday"}, "ISO 8601"),
+        ({"permission_mode": "bypassPermissions"}, "permission_mode"),
+        ({"rule": {"freq": "day"}, "due": None}, "due"),
+    ):
+        due = kwargs.pop("due", _in(600))
+        leaf = target / "leaf"
+        with pytest.raises(ValueError, match=match):
+            schedule.create(str(leaf), "hi", due, create_target=True, **kwargs)
+        assert not leaf.exists(), f"{kwargs} left {leaf} behind"
+
+    # And the happy path still makes it, so the reorder did not just drop it.
+    schedule.create(str(target / "leaf"), "hi", _in(600), create_target=True)
+    assert (target / "leaf").is_dir()
+
+
+def test_create_target_leaves_an_existing_target_alone(target):
+    """The flag is permission to create, not an instruction to. Something that is
+    already there is used as-is — including a FILE target, which stays legal
+    (a task can run against one; the agent works in its parent)."""
+    entry = schedule.create(str(target / "index.html"), "hi", _in(600),
+                            create_target=True)
+    assert entry["target"] == str(target / "index.html")
+    assert (target / "index.html").is_file()
+
+
 def test_a_due_time_days_in_the_past_is_accepted_and_recorded_as_given(target):
     """This used to be REFUSED, and the refusal was right while catch-up was
     bounded: an entry the next tick would sweep to `missed` is better refused
