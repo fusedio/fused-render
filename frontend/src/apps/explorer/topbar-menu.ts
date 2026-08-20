@@ -28,7 +28,13 @@
 // the chrome, or the preview whose actions are in the topbar. A preview pane
 // inside a folder view, or a listing embedded in one, has its own chrome and
 // must not answer for the window's bar.
-export type TopbarMenuOpener = (x: number, y: number) => void;
+// `crumb` is set when the right-click landed on an ANCESTOR crumb rather than on
+// the bar at large: the path of that folder, which is NOT the folder the view is
+// showing. The owner then opens the small ancestor menu (lib/bar-menus'
+// crumbMenu) instead of its own list — its own list acts on the CURRENT
+// directory, so on an ancestor crumb it answered about the wrong folder. The bar
+// decides which crumb (it owns the strip); the owner still renders the menu.
+export type TopbarMenuOpener = (x: number, y: number, crumb?: string) => void;
 
 type Publisher = { open: TopbarMenuOpener };
 
@@ -50,10 +56,10 @@ export function publishTopbarMenu(open: TopbarMenuOpener): () => void {
 // the bar (a static label bar, a view still resolving its stat) — the caller
 // then leaves the event alone, so the browser's own menu shows rather than
 // nothing at all.
-export function openTopbarMenu(x: number, y: number): boolean {
+export function openTopbarMenu(x: number, y: number, crumb?: string): boolean {
   const owner = publishers[publishers.length - 1];
   if (!owner) return false;
-  owner.open(x, y);
+  owner.open(x, y, crumb);
   return true;
 }
 

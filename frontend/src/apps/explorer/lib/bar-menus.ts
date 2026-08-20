@@ -48,6 +48,28 @@ export function folderBarMenu(
   return [...background, "separator", ...splitItems(onSplit)];
 }
 
+export interface CrumbActions {
+  onReveal: () => void;
+  onOpenInNewTab: () => void;
+}
+
+// Right-click on an ANCESTOR crumb in the path strip — a folder you are not in.
+// Exactly the two items a folder ROW gets (useFileOps.rowMenu's isDir branch),
+// and for the same reason: the only things that make sense on a folder you are
+// pointing at rather than standing in are "open it elsewhere" and "hand it to
+// the OS". What it must NOT be is the bar's own folder menu — that list acts on
+// the CURRENT directory (New File, Paste, Refresh), so on an ancestor crumb it
+// answered about the wrong folder entirely, which is the bug this fixes.
+//
+// The current folder's crumb keeps the bar menu: there the two are the same
+// folder, and the full list is right.
+export function crumbMenu(actions: CrumbActions): MenuEntry[] {
+  return [
+    { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: actions.onReveal },
+    { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: actions.onOpenInNewTab },
+  ];
+}
+
 export interface FileBarActions {
   onRename: () => void;
   onOpenInClaude: () => void;

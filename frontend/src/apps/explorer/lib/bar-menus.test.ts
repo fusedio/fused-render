@@ -1,10 +1,10 @@
-// The crumb bar's two right-click menus (lib/bar-menus). No DOM and no React
+// The crumb bar's right-click menus (lib/bar-menus). No DOM and no React
 // renderer in this suite — the builders return plain data, which is the reason
 // they are builders (see the module header).
 import { expect, test } from "bun:test";
 
 import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
-import { fileBarMenu, folderBarMenu, splitItems } from "@apps/explorer/lib/bar-menus";
+import { crumbMenu, fileBarMenu, folderBarMenu, splitItems } from "@apps/explorer/lib/bar-menus";
 
 // Labels in order, with separators spelled out — the whole point of these tests
 // is the SHAPE of the list, so a divider is part of the expectation.
@@ -54,6 +54,21 @@ test("folderBarMenu is the folder's own menu plus the splits", () => {
   // Passed through untouched, disabled state included (Paste with an empty
   // clipboard is a listed-but-dead row, not a missing one).
   expect(item(items, "Paste").disabled).toBe(true);
+});
+
+test("crumbMenu is exactly the two ancestor items, in the row menu's order", () => {
+  const called: string[] = [];
+  const items = crumbMenu({
+    onReveal: () => called.push("reveal"),
+    onOpenInNewTab: () => called.push("newtab"),
+  });
+  // Two items and NOTHING else — no New File/Paste/Refresh (they act on the
+  // current folder, not the crumb) and no splits.
+  expect(labels(items)).toEqual(["Reveal in Finder", "Open in New Tab"]);
+  item(items, "Reveal in Finder").onClick?.();
+  item(items, "Open in New Tab").onClick?.();
+  expect(called).toEqual(["reveal", "newtab"]);
+  for (const i of items) expect(i === "separator" ? null : i.icon).not.toBeNull();
 });
 
 test("fileBarMenu lists rename, Claude, the path pair and the splits", () => {

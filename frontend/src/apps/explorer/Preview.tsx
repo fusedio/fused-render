@@ -33,7 +33,7 @@ import {
   friendlyFsError,
   claudeTerminalCommand,
 } from "@apps/explorer/lib/fs-actions";
-import { fileBarMenu } from "@apps/explorer/lib/bar-menus";
+import { crumbMenu, fileBarMenu } from "@apps/explorer/lib/bar-menus";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
@@ -441,12 +441,33 @@ function usePreviewFileMenu(
   // would churn the registry (topbar-menu.ts). A DIRECTORY opened here renders an
   // embedded <Listing> that claims the bar and publishes its own folder menu —
   // this one stands down rather than racing it.
-  const openBarMenuRef = useRef<(x: number, y: number) => void>(() => {});
-  openBarMenuRef.current = (x, y) => setMenu({ x, y, items: barMenuItems() });
+  //
+  // A right-click on an ANCESTOR crumb names that folder (Breadcrumb's
+  // onBarContextMenu) and gets the ancestor pair, not this file's menu: the
+  // crumb the pointer is on is a directory two levels up, and Rename/Copy Path
+  // about the open file is not what it asked.
+  const openBarMenuRef = useRef<(x: number, y: number, crumb?: string) => void>(() => {});
+  openBarMenuRef.current = (x, y, crumb) =>
+    setMenu({
+      x,
+      y,
+      items: crumb
+        ? crumbMenu({
+            onReveal: () =>
+              revealPath(crumb).catch((e) =>
+                pushToast({
+                  msg: friendlyFsError(e, { verb: "reveal", name: basename(crumb) }),
+                  tone: "error",
+                })
+              ),
+            onOpenInNewTab: () => window.open(urlForFsPath(crumb), "_blank", "noopener"),
+          })
+        : barMenuItems(),
+    });
   const ownsBar = !!actionsInTopbar && !stat.is_dir;
   useEffect(() => {
     if (!ownsBar) return;
-    return publishTopbarMenu((x, y) => openBarMenuRef.current(x, y));
+    return publishTopbarMenu((x, y, crumb) => openBarMenuRef.current(x, y, crumb));
   }, [ownsBar]);
 
   const overlays = (

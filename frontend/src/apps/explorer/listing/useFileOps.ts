@@ -38,7 +38,7 @@ import {
   claudeTerminalCommand,
 } from "@apps/explorer/lib/fs-actions";
 import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
-import { folderBarMenu } from "@apps/explorer/lib/bar-menus";
+import { crumbMenu, folderBarMenu } from "@apps/explorer/lib/bar-menus";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import {
@@ -737,6 +737,14 @@ export function useFileOps({
     "separator",
     { label: "Refresh", icon: MenuIcons.refresh, onClick: refetch },
     { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(normDir(base)) },
+    // Beside Reveal, for the same reason it sits beside it in the folder ROW
+    // menu: both are "this folder, but elsewhere". Here the folder is the one
+    // being listed, so the new tab opens on the current directory.
+    {
+      label: "Open in New Tab",
+      icon: MenuIcons.newTab,
+      onClick: () => doOpenInNewTab(normDir(base)),
+    },
     { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(normDir(base)) },
     {
       label: "Copy Claude session command",
@@ -757,11 +765,26 @@ export function useFileOps({
   // function would go stale within a keystroke — and re-running the effect on
   // every change would churn the publish/release pair for no reason. The
   // published thunk is stable and reads the current one.
-  const openBarMenuRef = useRef<(x: number, y: number) => void>(() => {});
-  openBarMenuRef.current = (x, y) => setMenu({ x, y, items: barMenu() });
+  //
+  // `crumb` is an ANCESTOR crumb the right-click landed on (Breadcrumb's
+  // onBarContextMenu): a folder that is not `base`, so the folder menu above —
+  // New File, Paste, Refresh, all about `base` — is the wrong list for it. It
+  // gets the ancestor pair instead.
+  const openBarMenuRef = useRef<(x: number, y: number, crumb?: string) => void>(() => {});
+  openBarMenuRef.current = (x, y, crumb) =>
+    setMenu({
+      x,
+      y,
+      items: crumb
+        ? crumbMenu({
+            onReveal: () => doReveal(crumb),
+            onOpenInNewTab: () => doOpenInNewTab(crumb),
+          })
+        : barMenu(),
+    });
   useEffect(() => {
     if (!ownsBar) return;
-    return publishTopbarMenu((x, y) => openBarMenuRef.current(x, y));
+    return publishTopbarMenu((x, y, crumb) => openBarMenuRef.current(x, y, crumb));
   }, [ownsBar]);
 
   return {
