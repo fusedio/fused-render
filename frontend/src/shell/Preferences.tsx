@@ -343,22 +343,20 @@ function HuggingFaceSection() {
               )}
             </div>
           )}
-          {/* Nothing under a successful sign-in: "Signed in as X" beside a Log
-              out button is the whole state, and a line saying downloads use it
-              only repeated what the paragraph above already promised. The two
-              cases that DO need a sentence are the ones the controls cannot
-              show — a variable overriding the store, and what anonymous costs. */}
-          {locked ? (
+          {/* No sentence under EITHER ordinary state, because the controls
+              already are the state: "Signed in as X" beside a Log out button
+              says it, and so does a bare Log in button — and the paragraph
+              above already says what anonymous costs, so repeating it here was
+              the same fact twice, shorter. The one case that needs words is the
+              one no control can show: a variable overriding hf's store, where
+              the button is present and would change nothing. */}
+          {locked && (
             <div className="deploy-muted">
               Using the token in <code>{auth.forcedByVar}</code> from this app&apos;s
               environment — hf reads that ahead of its own store, so signing in here would
               change nothing until the variable is removed.
             </div>
-          ) : !auth.signedIn ? (
-            <div className="deploy-muted">
-              Not signed in — requests to the Hub go out anonymously.
-            </div>
-          ) : null}
+          )}
           {/* The last attempt's failure: denied, expired, or the network. Kept
               until the next attempt replaces it, so a login that failed while
               the user was authorizing in another tab can still say why. */}
