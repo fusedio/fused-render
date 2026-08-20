@@ -318,6 +318,45 @@ def test_a_signed_out_state_never_carries_a_stale_account_name(client, monkeypat
     assert body["account"] is None
 
 
+def test_an_oauth_login_from_an_earlier_run_is_named_without_hfs_prefix(client, monkeypatch):
+    """The account label after a RESTART, which is the only time it is derived
+    rather than remembered.
+
+    A device-code login with no display name is filed by hf as
+    `oauth-<username>`; that prefix is hf's filing convention, not part of
+    anybody's name. With `_account` empty — a fresh process reading a login made
+    before it started — the label comes from the stored name, and it has to come
+    back as the username.
+    """
+    monkeypatch.setattr(hf_auth, "_account", None)
+    _store("oauth-isaac", "hf_from_a_previous_run")
+    body = client.get("/api/hf/auth").json()
+    assert body["signedIn"] is True
+    assert body["account"] == "isaac"
+
+
+def test_logging_out_cannot_remove_a_token_hf_never_filed(client, monkeypatch, tmp_path):
+    """A token file with no matching entry in hf's stored-tokens index.
+
+    Not hypothetical: `huggingface_hub` 0.25 wrote `token` and nothing else, so
+    every machine that logged in before hf's named-token store existed is in
+    exactly this state until it logs in again. `_logout_from_token` takes a name,
+    and there is no name here — so this says so instead of raising, or worse,
+    deleting a file it cannot account for.
+    """
+    from huggingface_hub import constants
+
+    with open(constants.HF_TOKEN_PATH, "w", encoding="utf-8") as handle:
+        handle.write("hf_written_by_an_older_hf\n")
+    assert client.get("/api/hf/auth").json()["signedIn"] is True
+    reply = client.post("/api/hf/logout", headers=FUSED)
+    assert reply.status_code == 409
+    assert "stored logins" in reply.json()["error"]
+    # ...and the file is left exactly where it was, not half-removed.
+    with open(constants.HF_TOKEN_PATH, encoding="utf-8") as handle:
+        assert handle.read().strip() == "hf_written_by_an_older_hf"
+
+
 def test_logging_out_twice_is_not_an_error(client):
     _store("fused-render", "hf_ours")
     assert client.post("/api/hf/logout", headers=FUSED).json()["signedIn"] is False
