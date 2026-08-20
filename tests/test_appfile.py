@@ -1,0 +1,222 @@
+"""The .fused single-file app export/open (SPEC §43, D384-D386): export walks
+the whole app folder into a manifest+payload zip, open extracts it hardened,
+read-only, content-addressed, and the shared view-URL codec routes a
+double-clicked .fused through the /openfused confirm page."""
+
+import io
+import json
+import os
+import zipfile
+
+import pytest
+
+from fused_render import appfile
+from fused_render._view_url_codec import embed_url_path, view_url_path
+
+MARKER = '<meta charset="utf-8" />\n<meta name="fused-app" />'
+
+
+def make_app(tmp_path, name="demo"):
+    d = tmp_path / name
+    d.mkdir()
+    (d / "index.html").write_text(
+        f"<html><head>{MARKER}<title>Demo</title></head><body>hi</body></html>"
+    )
+    (d / "data.py").write_text("def main():\n    return {'ok': True}\n")
+    (d / "assets").mkdir()
+    (d / "assets" / "logo.svg").write_text("<svg/>")
+    return d
+
+
+def test_export_then_open_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    app = make_app(tmp_path)
+    out = tmp_path / "demo.fused"
+    manifest = appfile.export_app_file(str(app), str(out))
+    assert manifest["fused_app_file"] == 1
+    assert manifest["entry"] == "index.html"
+    assert manifest["name"] == "demo"
+
+    with zipfile.ZipFile(out) as zf:
+        names = set(zf.namelist())
+    assert names == {
+        "manifest.json",
+        "files/index.html",
+        "files/data.py",
+        "files/assets/logo.svg",
+    }
+
+    result = appfile.open_app_file(str(out))
+    assert result["reused"] is False
+    assert os.path.isfile(result["entry"])
+    assert result["entry"].startswith(result["dir"])
+    # RO-7 posture: every extracted file is read-only.
+    assert not os.access(result["entry"], os.W_OK)
+    assert not os.access(os.path.join(result["dir"], "data.py"), os.W_OK)
+
+    # Same bytes, same content key: the second open re-uses the extract.
+    again = appfile.open_app_file(str(out))
+    assert again["reused"] is True
+    assert again["dir"] == result["dir"]
+
+
+def test_export_skips_machinery_and_hidden(tmp_path):
+    app = make_app(tmp_path)
+    (app / ".git").mkdir()
+    (app / ".git" / "HEAD").write_text("ref")
+    (app / ".env").write_text("SECRET=1")
+    (app / "CLAUDE.md").write_text("authoring contract")
+    (app / "node_modules").mkdir()
+    (app / "node_modules" / "x.js").write_text("x")
+    (app / "__pycache__").mkdir()
+    (app / "__pycache__" / "d.pyc").write_bytes(b"\x00")
+    out = tmp_path / "demo.fused"
+    appfile.export_app_file(str(app), str(out))
+    with zipfile.ZipFile(out) as zf:
+        names = set(zf.namelist())
+    assert not any(
+        ".git" in n or ".env" in n or "CLAUDE" in n or "node_modules" in n or "pycache" in n
+        for n in names
+    )
+
+
+def test_export_refuses_non_app_folder(tmp_path):
+    d = tmp_path / "plain"
+    d.mkdir()
+    (d / "index.html").write_text("<html><head></head></html>")  # no marker
+    with pytest.raises(appfile.AppFileError, match="not a fused app"):
+        appfile.export_app_file(str(d), str(tmp_path / "x.fused"))
+
+
+def test_export_rejects_fused_ai_pages(tmp_path):
+    app = make_app(tmp_path)
+    (app / "chat.html").write_text("<html><script>fused.ai('hi')</script></html>")
+    with pytest.raises(appfile.AppFileError, match="fused.ai"):
+        appfile.export_app_file(str(app), str(tmp_path / "x.fused"))
+
+
+def test_export_refuses_existing_out_path(tmp_path):
+    app = make_app(tmp_path)
+    out = tmp_path / "demo.fused"
+    out.write_text("occupied")
+    with pytest.raises(appfile.AppFileError, match="overwrite"):
+        appfile.export_app_file(str(app), str(out))
+    assert out.read_text() == "occupied"
+
+
+def _zip_bytes(entries: dict[str, str]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, content in entries.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def test_open_rejects_zip_slip(tmp_path, monkeypatch):
+    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    bad = tmp_path / "evil.fused"
+    bad.write_bytes(
+        _zip_bytes(
+            {
+                "manifest.json": json.dumps(
+                    {"fused_app_file": 1, "root": "files", "name": "evil", "entry": "index.html"}
+                ),
+                "files/index.html": f"<html><head>{MARKER}</head></html>",
+                "../escape.txt": "outside",
+            }
+        )
+    )
+    with pytest.raises(appfile.AppFileError, match="escape|rejected"):
+        appfile.open_app_file(str(bad))
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_open_rejects_manifest_traversal_entry(tmp_path):
+    bad = tmp_path / "evil.fused"
+    bad.write_bytes(
+        _zip_bytes(
+            {
+                "manifest.json": json.dumps(
+                    {"fused_app_file": 1, "root": "files", "name": "e", "entry": "../../x.html"}
+                )
+            }
+        )
+    )
+    with pytest.raises(appfile.AppFileError, match="invalid entry"):
+        appfile.read_manifest(str(bad))
+
+
+def test_open_rejects_markerless_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    bad = tmp_path / "nomarker.fused"
+    bad.write_bytes(
+        _zip_bytes(
+            {
+                "manifest.json": json.dumps(
+                    {"fused_app_file": 1, "root": "files", "name": "n", "entry": "index.html"}
+                ),
+                "files/index.html": "<html><head></head></html>",
+            }
+        )
+    )
+    with pytest.raises(appfile.AppFileError, match="fused-app"):
+        appfile.open_app_file(str(bad))
+
+
+def test_open_rejects_non_fused_zip(tmp_path):
+    plain = tmp_path / "plain.fused"
+    plain.write_bytes(_zip_bytes({"readme.txt": "hello"}))
+    with pytest.raises(appfile.AppFileError, match="manifest"):
+        appfile.read_manifest(str(plain))
+
+
+def test_codec_routes_fused_files_to_confirm_page():
+    assert view_url_path("/tmp/My App.fused") == (
+        "/openfused?file=" + "%2Ftmp%2FMy%20App.fused"
+    )
+    # Case-insensitive like .bookmark's check.
+    assert view_url_path("/a/B.FUSED").startswith("/openfused?file=")
+    # And the embed path an opened app lands on is chrome-free.
+    assert embed_url_path("/x/demo/index.html") == "/explorer/embed/x/demo/index.html"
+
+
+def test_routes_export_info_open(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from fused_render.server.app import create_app
+
+    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    app_dir = make_app(tmp_path)
+
+    r = client.get("/api/appfile/export", params={"path": str(app_dir)})
+    assert r.status_code == 200
+    assert "demo.fused" in r.headers["content-disposition"]
+    fused_path = tmp_path / "demo.fused"
+    fused_path.write_bytes(r.content)
+
+    r = client.get("/api/appfile/info", params={"file": str(fused_path)})
+    assert r.status_code == 200
+    assert r.json()["name"] == "demo"
+    assert r.json()["entry"] == "index.html"
+
+    # The confirm page serves without I/O.
+    r = client.get("/openfused", params={"file": str(fused_path)})
+    assert r.status_code == 200
+    assert "run Python code" in r.text
+
+    # Open is X-Fused guarded.
+    r = client.post("/api/appfile/open", json={"file": str(fused_path)})
+    assert r.status_code == 403
+    r = client.post(
+        "/api/appfile/open", json={"file": str(fused_path)}, headers={"X-Fused": "1"}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["view"].startswith("/explorer/embed/")
+    assert os.path.isfile(body["entry"])
+
+    # A bad export target answers 400 with the reason.
+    r = client.get("/api/appfile/export", params={"path": str(tmp_path / "nope")})
+    assert r.status_code == 400
+    assert "error" in r.json()

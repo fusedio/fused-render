@@ -446,6 +446,12 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.deeplink import router as deeplink_router
 
     app.include_router(deeplink_router)
+    # .fused single-file app export/open (SPEC §43, D384-D386): GET
+    # /api/appfile/export download, GET /openfused confirm page,
+    # POST /api/appfile/open extract-and-render.
+    from fused_render.server.routers.appfile import router as appfile_router
+
+    app.include_router(appfile_router)
     # Canvases (canvases.py) — local development on legacy-workbench canvases:
     # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
     # sync loop, and the access token the workspace iframe is seeded with.

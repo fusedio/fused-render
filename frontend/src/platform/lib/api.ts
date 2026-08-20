@@ -1486,6 +1486,36 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
   }
 }
 
+// Download an app folder as a single `.fused` app file (SPEC §43, D384).
+// fetch + blob rather than a bare <a download>, same reason as the templates
+// export above: a non-2xx JSON error (not an app, fused.ai() page, over
+// budget) surfaces to the caller instead of saving as a corrupt file.
+export async function downloadAppFile(path: string, name: string): Promise<void> {
+  const res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));
+  if (!res.ok) {
+    let message = `export failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === "string") message = body.error;
+    } catch {
+      /* non-JSON error body — keep the status-based message */
+    }
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name + ".fused";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+}
+
 // Delete one USER template folder (core templates are read-only, 404 here).
 // With cleanRegistry the USER registry is also swept of bindings referencing
 // the name (a user key whose value is emptied by the sweep is removed — revert

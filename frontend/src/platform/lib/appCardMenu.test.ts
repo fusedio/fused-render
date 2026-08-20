@@ -76,6 +76,7 @@ test("the card menu offers Finder-order entries, Open in Explorer second", () =>
     "Open in Explorer",
     "separator",
     "Reveal in Finder",
+    "Export App File",
     "Copy Path",
   ]);
 });

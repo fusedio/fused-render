@@ -46,8 +46,22 @@ def view_url_path(fs_path: str) -> str:
     norm = canonical_fs_path(fs_path)
     if fs_path.lower().endswith(".bookmark"):
         return "/explorer/view/_bookmark?file=" + quote(norm, safe="")
+    if fs_path.lower().endswith(".fused"):
+        # A .fused app file is never previewed directly (same posture as
+        # .bookmark): it routes to the server-served confirm page, which
+        # extracts and opens the app only on the explicit confirm click
+        # (SPEC §43, D385).
+        return "/openfused?file=" + quote(norm, safe="")
     segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
     return "/explorer/view/" + "/".join(segments)
+
+
+def embed_url_path(fs_path: str) -> str:
+    """Chrome-free embed URL path for an absolute fs path — the page alone,
+    no sidebar/breadcrumb/header. What an opened .fused app lands on."""
+    norm = canonical_fs_path(fs_path)
+    segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
+    return "/explorer/embed/" + "/".join(segments)
 
 
 def view_url(port: int, fs_path: str | None) -> str:

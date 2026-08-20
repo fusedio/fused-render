@@ -14,7 +14,7 @@
 // the app rather than use it. For one release the two landed in the same place
 // (D264's card opened the folder) and this entry was kept for the lone non-page
 // `entry` case alone; it has its own job back.
-import { revealPath, type AppInfo } from "./api";
+import { downloadAppFile, revealPath, type AppInfo } from "./api";
 import { openApp } from "./appEntry";
 import { copyToClipboard } from "./clipboard";
 import { navigate } from "./router";
@@ -41,6 +41,18 @@ export function appCardMenu(app: AppInfo): MenuEntry[] {
       onClick: () => {
         revealPath(app.path).catch((e: Error) =>
           pushToast({ msg: "Could not reveal " + app.name + ": " + e.message, tone: "error" }),
+        );
+      },
+    },
+    {
+      // The whole app as one double-clickable `.fused` file (SPEC §43, D384).
+      // Errors (not an app, a page calls fused.ai(), over budget) come back
+      // as a toast rather than a corrupt download — downloadAppFile throws.
+      label: "Export App File",
+      icon: MenuIcons.compress,
+      onClick: () => {
+        downloadAppFile(app.path, app.name).catch((e: Error) =>
+          pushToast({ msg: "Could not export " + app.name + ": " + e.message, tone: "error" }),
         );
       },
     },

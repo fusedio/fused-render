@@ -7385,3 +7385,56 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   template never knows, being a page rendered inside the app. An agent that catches the app deducing wrong about
   its own state has reason to discount the rest of the brief, so the line says
   only what holds everywhere.
+
+## 43. Single-File App Export — the `.fused` App File (D384, D385, D386)
+
+One app, one double-clickable file. Exporting a fused app produces
+`<app name>.fused` — a zip holding `manifest.json` (`fused_app_file: 1`, the
+app's name, and its entry page resolved by the shared entry rule,
+`app_listing.app_entry`) plus a `files/` payload dir mirroring the whole app
+folder (bundle v2's payload shape). Opening one lands the recipient in the app
+experience and nothing else: no editor, no Claude, no explorer chrome.
+
+- **AF-1** Export walks the app FOLDER (`appfile.export_app_file`), not a
+  per-page dependency scan: every page, `.py`, asset and `pyproject.toml`/
+  `uv.lock` ships. Skipped: dotted names (`.git`, `.claude`, `.venv`, `.env`),
+  `node_modules`, `__pycache__`, symlinks, and `CLAUDE.md` (the authoring
+  contract stays home). Budgets 4000 files / 512 MB; loud `AppFileError`s.
+- **AF-2** A folder with no marker-carrying page is not exportable — a
+  `.fused` must have an entry to open (the marker is the only signal, D301).
+- **AF-3** RH-11 holds file-wide: any page in the payload containing
+  `fused.ai(` blocks the export (same textual match as the hosted exporter;
+  a `fused.env` guard does not exempt it).
+- **AF-4** The trigger is the app card menu's **Export App File**, which
+  downloads via GET `/api/appfile/export?path=` (fetch + blob so a 400's JSON
+  error surfaces as a toast, never saves as a corrupt file). The route builds
+  into a per-request temp dir, deleted after the response; non-destructive
+  everywhere.
+- **AF-5** A double-clicked `.fused` never renders directly: the shared
+  view-URL codec (`_view_url_codec.view_url_path`, all platform entry points)
+  routes it to `GET /openfused?file=`, a self-contained confirm page (the
+  D110 clone-confirm posture). The page previews via read-only
+  `GET /api/appfile/info` (manifest only, nothing extracted) and states that
+  the app can run Python on this machine; only its explicit button fires the
+  X-Fused-guarded `POST /api/appfile/open`.
+- **AF-6** Open extracts through `zip_import`'s hardened extractor (zip-slip,
+  symlink entries, count/size caps on bytes actually written) into a
+  content-addressed dir under `~/.fused-render/appfiles/`
+  (`<name-slug>-<sha256[:16]>` — same bytes re-use the extract, a re-export
+  lands fresh). The manifest's entry must exist in the payload and still carry
+  the fused-app marker, or the open is refused.
+- **AF-7** Every extracted file is chmod 0444 (RO-7's bit): `stat` answers
+  `writable: false`, `/api/fs/write` refuses, `fused.writeFile` rejects with
+  the existing `readonly` type. The no-edit contract is enforced by the
+  read-only machinery of §13.5, not a new mode.
+- **AF-8** The open answers the entry's **embed** URL
+  (`/explorer/embed/<entry>`): chrome-free by page-load mode — the app as it
+  is. Rendering the entry records the open (D301), which for a folder outside
+  the workspace is hub registration (`registered_apps.record_open`), so the
+  opened app appears on /apps and in recents through the existing pipeline.
+- **AF-9** `.fused` is an owned file type on all three platforms: macOS
+  Owner-rank document type + exported UTI `io.fused.render.app` (conforms to
+  `public.data`, not the zip UTI, so archive tools don't claim it); Windows
+  and Linux associations via the `winopen.extensions()` seed (the extension
+  can never appear in `templates/registry.json` — it is not a preview
+  template).
