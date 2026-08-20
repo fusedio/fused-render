@@ -14,7 +14,10 @@ import {
   toggleSidebarCollapsed,
   SIDEBAR_MIN_WIDTH,
   SIDEBAR_MAX_WIDTH,
+  SIDEBAR_RAIL_WIDTH,
+  type SidebarState,
 } from "@platform/lib/sidebarstate";
+import { reopenWidth, resizeWidth } from "@platform/lib/panel-drag";
 import { useSidebarState } from "@platform/lib/hooks";
 
 /** One icon on the collapsed rail, and it is always a DESTINATION: click
@@ -123,7 +126,37 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
   // True only while the handle is captured — used to suppress the collapse
   // transition and text selection mid-drag.
   const [resizing, setResizing] = useState(false);
-  const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  // `fromCollapsed` fixes which RULE the whole gesture is read by — the seam of an
+  // open panel (`resizeWidth`) or the edge of a shut one (`reopenWidth`) — decided
+  // once at pointerdown rather than re-decided from the live collapsed flag on
+  // every move. Re-deciding oscillates: the two thresholds sit at different
+  // implied widths on purpose (platform/lib/panel-drag), so a gesture that switched
+  // rules the instant the panel opened would find itself immediately past the
+  // close threshold, shut, be past the open threshold again, and flap once per
+  // pointermove across the whole band between them.
+  //
+  // `startEdge` and `restoreWidth` are TWO NUMBERS because they are two facts, and
+  // one field holding both was a bug. `startEdge` is where the panel's outer edge
+  // physically STOOD at pointerdown, which the implied width is measured from —
+  // and on the collapsed rail that is 44px, not the width the panel remembers.
+  // `restoreWidth` is the width the panel gets BACK if this drag shuts it.
+  //
+  // Conflated, a reopen drag measured its pull from the remembered width (≥180 by
+  // definition, since that is the floor), so `implied` cleared the open threshold
+  // at zero travel: the rail sprang to full width on a 2px twitch, and OPEN_PULL
+  // guarded nothing at all.
+  //
+  // The restore half is its own rule: dragging a sidebar shut is not the same act
+  // as making it narrow, and one gesture should not quietly do both. Shut it from
+  // 320px and the button brings back 320px, not the floor the drag stuck at on the
+  // way through.
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startEdge: number;
+    restoreWidth: number;
+    fromCollapsed: boolean;
+  } | null>(null);
 
   // Double-press-to-collapse is detected manually here: preventDefault on
   // pointerdown (needed to stop a text selection starting before the
@@ -143,7 +176,15 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
       return;
     }
     lastHandlePressRef.current = { time: e.timeStamp, x: e.clientX };
-    dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startWidth: sidebarWidth };
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      // Where the edge IS, which while collapsed is the rail — never the width
+      // the panel is remembering behind it. See `dragRef`.
+      startEdge: sidebarCollapsed ? SIDEBAR_RAIL_WIDTH : sidebarWidth,
+      restoreWidth: sidebarWidth,
+      fromCollapsed: sidebarCollapsed,
+    };
     e.currentTarget.setPointerCapture(e.pointerId);
     setResizing(true);
   };
@@ -153,12 +194,26 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
     if (!drag || e.pointerId !== drag.pointerId) return;
     // A real drag isn't the first half of a double-press.
     if (Math.abs(e.clientX - drag.startX) >= 5) lastHandlePressRef.current = null;
-    const width = Math.min(
-      SIDEBAR_MAX_WIDTH,
-      Math.max(SIDEBAR_MIN_WIDTH, drag.startWidth + (e.clientX - drag.startX))
+    // IMPLIED WIDTH — how wide the pointer is asking this panel to be, which for a
+    // LEFT-hand panel grows with clientX. Measured from where the panel's outer
+    // edge stood when the drag began (the rail's 44px when it began collapsed), so
+    // the seam stays under the cursor rather than jumping to it.
+    const implied = drag.startEdge + (e.clientX - drag.startX);
+    const next = drag.fromCollapsed
+      ? reopenWidth(implied, SIDEBAR_RAIL_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+      : resizeWidth(implied, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
+    // `null` = the gesture wants the panel SHUT. The width it keeps while shut is
+    // the one it had at pointerdown, not the floor it stuck at on the way down —
+    // see `dragRef`.
+    const value: SidebarState =
+      next === null
+        ? { width: drag.restoreWidth, collapsed: true }
+        : { width: next, collapsed: false };
+    // Not persisted per move — the settled state is written at drag end.
+    setSidebarState(
+      (s) => (s.width === value.width && s.collapsed === value.collapsed ? s : value),
+      false
     );
-    // Not persisted per move — the final width is written at drag end.
-    setSidebarState((s) => (s.width === width ? s : { ...s, width }), false);
   };
 
   const onHandlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -171,6 +226,35 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
     saveSidebarState(getSidebarState());
   };
 
+  // THE SEAM, and it is ONE element in both states — rendered here, beside the
+  // <nav> rather than inside it, and reconciled into the same DOM node whichever
+  // subtree the nav is currently showing.
+  //
+  // That is a requirement and not a tidiness preference. The collapsed rail and
+  // the expanded sidebar are different subtrees, so a handle rendered inside each
+  // would be UNMOUNTED at the exact moment a reopen drag crosses its threshold —
+  // and unmounting the element that holds the pointer capture ends the gesture
+  // mid-stroke. The user would pull the rail out to 180px, let go of nothing, and
+  // find the drag already over. Kept out here, one node holds the capture from
+  // pointerdown to pointerup across any number of open/close flips.
+  //
+  // Position: fixed (styles/sidebar.css), so being a sibling of #sidebar rather
+  // than a child costs it nothing in the flex row — and it is why the sidebar's
+  // own overflow-y scroll cannot clip it.
+  const handle = (
+    <div
+      className={"sidebar-resize-handle" + (resizing ? " resizing" : "")}
+      style={{ left: (sidebarCollapsed ? SIDEBAR_RAIL_WIDTH : sidebarWidth) - 3 }}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={sidebarCollapsed ? "Drag to show the sidebar" : "Drag to resize the sidebar"}
+      onPointerDown={onHandlePointerDown}
+      onPointerMove={onHandlePointerMove}
+      onPointerUp={onHandlePointerUp}
+      onPointerCancel={onHandlePointerUp}
+    />
+  );
+
   if (sidebarCollapsed) {
     // Collapsed: an icon RAIL, not the old anonymous 20px strip (which read as
     // a full-height bar whose only content was an arrow). The expand control
@@ -180,7 +264,13 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
     // and the rail stays collapsed — the chevron alone expands.
     //
     // Still the same #sidebar node, so the <=700px media hide applies.
+    //
+    // The rail carries the SEAM too (`handle`, below the nav): the button is not
+    // the only way back. Pulling the rail's outer edge is the exact reverse of the
+    // drag that shut it, which is the whole point — a gesture that only works in
+    // one direction teaches you not to trust it.
     return (
+      <>
       <nav id="sidebar" className={"sidebar-collapsed" + (resizing ? " sidebar-no-transition" : "")}>
         <button
           type="button"
@@ -223,13 +313,16 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
           </div>
         )}
       </nav>
+      {handle}
+      </>
     );
   }
 
   return (
-    // The collapse/expand width change glides (shell.css); a pointer DRAG must
-    // not, or every pointermove would chase a 200ms transition and the handle
-    // would lag the cursor. `sidebar-no-transition` is that suppression.
+    <>
+    {/* The collapse/expand width change glides (shell.css); a pointer DRAG must
+        not, or every pointermove would chase a 200ms transition and the handle
+        would lag the cursor. `sidebar-no-transition` is that suppression. */}
     <nav
       id="sidebar"
       className={resizing ? "sidebar-no-transition" : undefined}
@@ -278,20 +371,14 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
       </div>
 
       {children}
-
-      {/* Resize handle riding the right border: drag to resize (pointer
-          capture keeps the gesture even when the cursor leaves the strip),
-          double-press to collapse (detected in pointerdown — see
-          lastHandlePressRef). */}
-      <div
-        className={"sidebar-resize-handle" + (resizing ? " resizing" : "")}
-        style={{ left: sidebarWidth - 3 }}
-        onPointerDown={onHandlePointerDown}
-        onPointerMove={onHandlePointerMove}
-        onPointerUp={onHandlePointerUp}
-        onPointerCancel={onHandlePointerUp}
-      />
     </nav>
+    {/* Resize handle riding the right border: drag to resize, drag PAST the
+        floor to collapse (platform/lib/panel-drag), double-press to collapse
+        (detected in pointerdown — see lastHandlePressRef). Pointer capture keeps
+        the gesture even when the cursor leaves the strip; rendered outside the
+        nav so it also survives the collapse — see `handle` above. */}
+    {handle}
+    </>
   );
 }
 

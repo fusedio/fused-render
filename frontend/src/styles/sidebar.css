@@ -40,7 +40,15 @@
 
 /* Drag handle riding the sidebar's right border. Fixed-positioned (the
    component sets `left` inline) so the sidebar's own overflow-y scroll can't
-   clip or move it; a 6px hit area around the 1px border line. */
+   clip or move it; a 6px hit area around the 1px border line.
+ *
+ * ON THE COLLAPSED RAIL TOO, at its 44px edge — the drag reads both ways, so the
+ * gesture that shut the sidebar is the gesture that brings it back. It is also
+ * why the element is rendered as a SIBLING of #sidebar rather than a child
+ * (SidebarFrame): the rail and the expanded sidebar are different subtrees, and
+ * a handle inside each would be unmounted mid-drag at the exact moment the pull
+ * crosses its threshold — which is capture lost, and a gesture that dies on
+ * success. */
 .sidebar-resize-handle {
   position: fixed;
   top: 0;
@@ -164,9 +172,16 @@ a.sidebar-rail-btn {
   flex: 1 1 auto;
 }
 
-/* Phones: give the whole width to the rendered view */
+/* Phones: give the whole width to the rendered view.
+ *
+ * The handle goes with it, and has to be named separately now that it is a
+ * SIBLING of #sidebar rather than a child (SidebarFrame — see the handle's own
+ * rule above for why it moved out). Left behind, it would be a 6px col-resize
+ * strip floating down the left edge of a phone layout, resizing a sidebar that
+ * is not on screen. */
 @media (max-width: 700px) {
-  #sidebar {
+  #sidebar,
+  .sidebar-resize-handle {
     display: none;
   }
 }

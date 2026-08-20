@@ -48,7 +48,12 @@ import {
   MIN_W,
   CONTENT_MIN_W,
 } from "@apps/explorer/lib/side-width";
-import { getSideWidth, setSideWidth } from "@apps/explorer/lib/side-store";
+import {
+  getSideWidth,
+  setSideWidth,
+  subscribeSideWidth,
+} from "@apps/explorer/lib/side-store";
+import { resizeWidth } from "@platform/lib/panel-drag";
 
 // The split container's class, and the drag's frame of reference. Looked up from
 // the divider with `closest` rather than handed down as a ref: the two live in
@@ -175,6 +180,21 @@ export default function PreviewSidebar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // A width written to the store by SOMETHING ELSE, while this column is up.
+  // There is exactly one such writer and one such moment: the reopen drag
+  // (SideReopenEdge) that just brought this component into existence and is
+  // still running, its strip already unmounted, its pointer still down. Without
+  // this the second half of that gesture would move the cursor and not the edge.
+  //
+  // Nothing else needs it — the divider above owns its own width and only writes
+  // the store at pointer-up (where this fires with the value it already has, and
+  // the identity check below makes it a no-op). The store's header argues the
+  // choice of channel.
+  useEffect(() => subscribeSideWidth(() => {
+    const w = getSideWidth();
+    if (w !== null) setWidth((prev) => (prev === w ? prev : w));
+  }), []);
+
   // Pointer capture, like the listing's divider (listing/pane.ts): without it
   // the drag dies the moment the cursor crosses into either iframe, which is
   // most of what is on either side of this handle.
@@ -188,12 +208,32 @@ export default function PreviewSidebar({
     // choice (lib/side-store), and a click on the divider that moves nothing must
     // not turn the measured default into a remembered number.
     let dragged: number | null = null;
+    // Once this gesture has shut the column, it is over. Losing the capture with
+    // the divider usually ends the event stream on its own, but "usually" is not
+    // a thing to hang a URL write on: a second `onClose` is a second
+    // `replaceSearch` for a param that already says `off`.
+    let closed = false;
     const onMove = (ev: PointerEvent) => {
+      if (closed) return;
       const rect = splitEl()?.getBoundingClientRect();
       if (!rect) return;
       const max = rect.width - CONTENT_MIN_W;
       if (max < MIN_W) return; // container too narrow to express a split
-      const next = Math.min(max, Math.max(MIN_W, rect.right - ev.clientX));
+      // IMPLIED WIDTH — how wide the pointer is asking this column to be. A
+      // RIGHT-hand panel grows as the cursor moves LEFT, which is the whole of
+      // the mirroring; `resizeWidth` speaks only in widths and never learns
+      // which edge of the window it is on (platform/lib/panel-drag).
+      const next = resizeWidth(rect.right - ev.clientX, MIN_W, max);
+      if (next === null) {
+        // Dragged clean through the floor: the gesture means SHUT, and it hands
+        // off to the same `_side=off` the header's chevron writes. Deliberately
+        // WITHOUT recording a width — `dragged` stays null, so the column keeps
+        // whatever width it had and the opener brings that back rather than the
+        // floor the drag stuck at on its way down. Shutting a panel is not the
+        // same act as making it narrow, and one drag should not do both.
+        onClose();
+        return;
+      }
       dragged = next;
       setWidth((w) => (w === next ? w : next));
     };

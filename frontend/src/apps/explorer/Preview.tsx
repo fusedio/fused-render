@@ -68,7 +68,7 @@ import {
   type RevSelection,
 } from "@apps/explorer/lib/preview-rev";
 import { ModeMenu } from "@apps/explorer/BarMenu";
-import { SideToggleButton } from "@apps/explorer/SideChrome";
+import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
@@ -1448,6 +1448,14 @@ function TemplatePreview({
           />,
           sideSlot
         )}
+      {/* And when it is SHUT, the seam it left behind, into the same slot: drag
+          the split's right edge to pull the column back (SideChrome's
+          SideReopenEdge, which argues why a gesture is allowed here when a second
+          button would not be). Gated on exactly what the opener button is gated
+          on — a file with no companion at all gets no edge, because there would
+          be nothing on the other side of it. */}
+      {sideTargetEntry && !activeSide && sideSlot &&
+        createPortal(<SideReopenEdge onOpen={toggleSide} />, sideSlot)}
       {fileMenu.overlays}
     </>
   );
