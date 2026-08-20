@@ -73,7 +73,12 @@ class MCPServer:
         self.proc = subprocess.Popen(
             [str(a) for a in argv],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env={**os.environ, **(env or {})})
+            # encoding, not bare text=True: the real client is Node, which writes
+            # `JSON.stringify(msg) + "\n"` as UTF-8 with non-ASCII unescaped. A
+            # locale-encoded pipe here would make a non-ASCII payload depend on
+            # the runner's LANG instead of pinning what the server actually
+            # receives (test_a_windows_locale_stdio_still_parks_a_non_ascii_write).
+            text=True, encoding="utf-8", env={**os.environ, **(env or {})})
         self._lock = threading.Lock()
         self._next_id = 0
         self._pending = {}      # id -> Pending, awaiting a response

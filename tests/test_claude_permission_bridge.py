@@ -135,6 +135,55 @@ def _result_payload(response):
 # claim and it is no longer true of any shipping server.
 
 
+def test_a_windows_locale_stdio_still_parks_a_non_ascii_write(tmp_path, agent):
+    """A payload with typographic characters must survive a NON-UTF-8 locale.
+
+    The Windows bug, reproduced on any platform by giving the child the stdio
+    encoding Windows gives it. The CLI's client is Node — raw UTF-8 on the wire,
+    non-ASCII unescaped — while Python decodes a pipe at the locale encoding,
+    which on Windows is the ANSI code page. cp1252 leaves 0x9D undefined, and
+    0x9D is the third byte of U+201D, so `Write`-ing an index.html with a curly
+    quote in it raised UnicodeDecodeError in the read loop: the server died
+    BEFORE parking the request, so no card ever reached the chat, the CLI's
+    pending `approve` call went down with the transport, and the turn stopped
+    with nothing to answer. Model-written HTML has curly quotes in it as a
+    matter of course, which is why this read as "it gets stuck writing
+    index.html".
+
+    Asserts the whole round trip, not just that the process survived: the parked
+    request has to carry the content the CLI sent, character for character, and
+    the allow has to hand that same content back — `updatedInput` is what the
+    tool then writes to disk, so a mojibake'd or replacement-charactered payload
+    here would silently corrupt the user's file instead of hanging their turn.
+    """
+    perm_dir = tmp_path / "perm"
+    # PYTHONIOENCODING rather than a real Windows box: it sets exactly what is
+    # wrong there (the std streams' codec) and nothing else, and it also OUTRANKS
+    # UTF-8 mode — so this pins the in-process reconfigure on its own, without
+    # the PYTHONUTF8 that agent.py stamps into the server's env.
+    s = _Server(perm_dir, env={"PYTHONIOENCODING": "cp1252"})
+    try:
+        s.call("initialize", {"protocolVersion": "2025-06-18",
+                              "capabilities": {}, "clientInfo": {"name": "test"}})
+        content = ('<h1>Caf\u00e9 \u2014 \u201cwelcome\u201d</h1>\n'
+                   '<p>na\u00efve \u2192 r\u00e9sum\u00e9 \U0001f600</p>\n')
+        tool_input = {"file_path": "C:/Users/x/app/index.html", "content": content}
+        pending = s.send_async("tools/call", {
+            "name": "approve",
+            "arguments": {"tool_name": "Write", "input": tool_input,
+                          "tool_use_id": "toolu_utf8"}})
+
+        req = _wait_for_request(perm_dir)
+        assert req["input"]["content"] == content
+        assert agent._write_decision(str(perm_dir), req["id"],
+                                     {"decision": "allow", "scope": "once"})
+        payload = _result_payload(pending.result(10))
+        assert payload["behavior"] == "allow"
+        assert payload["updatedInput"] == tool_input
+    finally:
+        s.close()
+
+
 def test_allow_round_trip_returns_the_tool_input_unchanged(tmp_path, agent, server):
     perm_dir = tmp_path / "perm"
     tool_input = {"command": "ls -la", "description": "list"}
@@ -1528,6 +1577,24 @@ def test_start_asks_the_cli_to_route_permissions_here(agent, tmp_path, monkeypat
     # in first and reports an MCP timeout instead of "nobody answered".
     assert entry["timeout"] > agent.PERMISSION_WAIT * 1000
     assert entry["env"]["FUSED_RENDER_PERMISSION_TIMEOUT"] == str(agent.PERMISSION_WAIT)
+
+
+def test_the_mcp_config_forces_utf8_stdio_on_the_server(agent, tmp_path):
+    """The spawn's half of the encoding fix.
+
+    permission_server reconfigures its own streams, but the config is where the
+    variable has to be NAMED: the CLI's MCP client hands the child an allowlist
+    of env vars plus this dict and nothing else, so an ambient PYTHONUTF8 (or
+    a UTF-8 mode the server itself was started in) does not reach it. Belt and
+    braces with the reconfigure — either alone is enough, and the failure they
+    prevent is a dead permission bridge on Windows the moment a payload carries
+    a curly quote.
+    """
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir / "perm")
+    config = json.loads(open(agent._write_mcp_config(str(run_dir))).read())
+    env = config["mcpServers"][agent.PERMISSION_SERVER]["env"]
+    assert env["PYTHONUTF8"] == "1"
 
 
 def test_the_server_path_resolves_when_the_engine_execs_us_without_dunder_file(tmp_path):
