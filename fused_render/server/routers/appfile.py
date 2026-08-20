@@ -12,6 +12,11 @@ that template calls the internal X-Fused-guarded ``POST /api/appfile/open``
 here — extract-or-reuse (hardened, content-addressed, read-only; see
 ``appfile.open_app_file``) — then iframes the entry page's embed URL it
 answers with. No gate anywhere (D389's owner call stands).
+
+Clone (D397) is the way OUT of the read-only artifact: GET reports where the
+file would land in the workspace and whether it is already there, POST does the
+copy. The pair backs one button in the preview header, which flips between
+"Clone" and "Go to local version" on the GET's ``cloned``.
 """
 
 from __future__ import annotations
@@ -128,6 +133,43 @@ def api_appfile_preview(path: str = ""):
         return _error("this app file has no preview image", status=404)
     return Response(raw, media_type="image/png",
                     headers={"Cache-Control": "no-cache"})
+
+
+@router.get("/api/appfile/clone")
+def api_appfile_clone_state(path: str = ""):
+    """Where the ``.fused`` at ``path`` would clone to, and whether it already
+    has: ``{name, slug, path, cloned}`` (D397). The preview header's Clone
+    button reads this on mount to pick its label — "Clone" or "Go to local
+    version" — so it must stay a cheap read-only probe: one bounded manifest
+    read and one isdir, no extraction. Unguarded like the preview GET; it
+    reports a path and touches nothing."""
+    if not path or not os.path.isabs(path):
+        return _error("path must be an absolute .fused file path")
+    try:
+        return appfile.clone_target(path)
+    except appfile.AppFileError as exc:
+        return _error(str(exc))
+
+
+@router.post("/api/appfile/clone")
+def api_appfile_clone(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Copy the ``.fused`` at ``file`` into ``<workspace>/local/<slug>`` as an
+    editable app folder and answer where it landed (D397). ``cloned: true``
+    means the folder was ALREADY there and nothing was copied — the caller
+    navigates to it either way, so a second Clone is a no-op that opens the
+    existing copy rather than an error or a second folder.
+
+    X-Fused-guarded, unlike the GET beside it: this one writes."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    file = str(body.get("file") or "")
+    if not file or not os.path.isabs(file):
+        return _error("file must be an absolute .fused file path")
+    try:
+        return appfile.clone_app_file(file)
+    except appfile.AppFileError as exc:
+        return _error(str(exc))
 
 
 @router.post("/api/appfile/open")

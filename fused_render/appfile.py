@@ -292,6 +292,19 @@ def read_preview(fused_path: str) -> bytes | None:
     return raw
 
 
+def _slug(name: str, fallback: str = "app") -> str:
+    """A manifest ``name`` reduced to one path-safe segment.
+
+    The name comes out of an attacker-controlled zip, so this is the ONLY thing
+    that may turn it into a filesystem path: the character class admits no
+    separator, no dot and no drive letter, which is what makes ``"../evil"``
+    and ``"C:\\evil"`` collapse to ordinary segments instead of escaping the
+    directory they are joined to. Shared by the extract cache key and the clone
+    destination so the two cannot drift on what an app is called.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or fallback
+
+
 def _file_key(fused_path: str, name: str) -> str:
     """Cache dir name: slug of the app name + content hash. Content-addressed
     so re-opening the same bytes re-uses the extract and an edited/re-exported
@@ -300,8 +313,7 @@ def _file_key(fused_path: str, name: str) -> str:
     with open(fused_path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "app"
-    return f"{slug}-{h.hexdigest()[:16]}"
+    return f"{_slug(name)}-{h.hexdigest()[:16]}"
 
 
 def _make_read_only(root: str) -> None:
@@ -409,3 +421,99 @@ def _lift_read_only(root: str) -> None:
                 os.chmod(os.path.join(dirpath, fname), 0o644)
             except OSError:
                 continue
+
+
+def clone_dir() -> str:
+    """The workspace tag dir a clone lands in: ``<workspace>/local``. The same
+    dir the showcase Clone installs into (community.COMMUNITY_TAG_DIR), and for
+    the same reason — ``local`` is where a copy you own for editing belongs, as
+    against the read-only artifact it came from."""
+    from fused_render.shell.seed import fused_dir
+
+    return os.path.join(fused_dir(), "local")
+
+
+def clone_target(fused_path: str) -> dict:
+    """Where the ``.fused`` at ``fused_path`` would clone to, and whether that
+    is already there: ``{"name", "slug", "path", "cloned"}``.
+
+    A read-only probe — one bounded manifest read plus one ``isdir`` — so the
+    header button can pick its label without extracting anything.
+
+    **Presence at the destination IS the "already cloned" signal** (owner's
+    call): there is no records file to consult, so the answer survives a
+    restart, a moved ``.fused`` and a re-export of the same app, none of which
+    a stored record keyed on path or content hash survives together. The named
+    cost is the converse — an UNRELATED folder the user happens to keep at
+    ``local/<slug>`` reads as this app's clone, and the button then offers to
+    open it. Accepted deliberately over a suffixed ``-2`` folder (which the
+    owner rejected: it invents a path nobody asked for) and over a state store
+    (which would go stale against the folder it describes).
+    """
+    fused_path = os.path.abspath(fused_path)
+    if not os.path.isfile(fused_path):
+        raise AppFileError(f"no such file: {fused_path}")
+    manifest = read_manifest(fused_path)
+    name = manifest.get("name") if isinstance(manifest.get("name"), str) else ""
+    # The FILE STEM is the fallback, not a shared literal: two differently
+    # named app files with no manifest name would otherwise collide on one
+    # `local/app` folder and the second would read as the first's clone.
+    stem = os.path.splitext(os.path.basename(fused_path))[0]
+    slug = _slug(name, fallback=_slug(stem))
+    dest = os.path.join(clone_dir(), slug)
+    return {
+        "name": name or stem,
+        "slug": slug,
+        "path": dest.replace(os.sep, "/"),
+        "cloned": os.path.isdir(dest),
+    }
+
+
+def clone_app_file(fused_path: str) -> dict:
+    """Copy the ``.fused`` at ``fused_path`` into ``<workspace>/local/<slug>``
+    as an ordinary, editable app folder. Answers ``clone_target``'s shape, with
+    ``cloned`` True when the destination was ALREADY there and nothing was
+    copied — a re-clone is a no-op that reports where the copy lives, never a
+    second folder and never an overwrite of the user's edits.
+
+    The payload comes from ``open_app_file``'s extract, not from a second unzip
+    of our own: one hardened extractor for every archive this app accepts
+    (D386), and a file never opened before simply extracts on the way through.
+
+    Plain files, no ``git init`` (owner's call) — unlike the showcase Clone,
+    which inits a repo to diff against upstream. There is no upstream here: a
+    ``.fused`` is a snapshot, so the baseline a repo would provide is the copy
+    itself, and the app-git machinery will pick the folder up on its own once
+    it is edited.
+    """
+    target = clone_target(fused_path)
+    if target["cloned"]:
+        return target
+    src = open_app_file(fused_path)["dir"]
+    local = clone_dir()
+    os.makedirs(local, exist_ok=True)
+    # Staged INSIDE the destination tag dir so the claim is a same-filesystem
+    # rename (community._install's reason: a home-dir staging area can sit on
+    # another volume, where os.rename fails outright).
+    staging = tempfile.mkdtemp(dir=local, prefix=f".clone-{target['slug']}-")
+    try:
+        staged_app = os.path.join(staging, target["slug"])
+        shutil.copytree(src, staged_app)
+        # copytree carries the extract's 0o444 across, which would ship an
+        # UNEDITABLE "development copy" — the whole point of cloning. Lifted in
+        # staging, before the rename, so a clone is never briefly visible in
+        # the workspace as read-only.
+        _lift_read_only(staged_app)
+        dest = os.path.join(local, target["slug"])
+        try:
+            os.rename(staged_app, dest)
+        except OSError:
+            # Lost a race with a concurrent clone of the same app (or the user
+            # created the folder meanwhile). Same answer as finding it there to
+            # begin with: taken means cloned.
+            if not os.path.isdir(dest):
+                raise AppFileError(f"could not place the cloned app at {dest}")
+            return {**target, "cloned": True}
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return {**target, "cloned": False}

@@ -7468,7 +7468,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   its own state has reason to discount the rest of the brief, so the line says
   only what holds everywhere.
 
-## 43. Single-File App Export — the `.fused` App File (D385, D386, D387, D396)
+## 43. Single-File App Export — the `.fused` App File (D385, D386, D387, D396, D397)
 
 One app, one double-clickable file. Exporting a fused app produces
 `<app name>.fused` — a zip holding `manifest.json` (`fused_app_file: 1`, the
@@ -7576,3 +7576,27 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   previewable extension — `.fused` IS a registry key now (D390 made it the
   `fusedapp` template's binding), so the D387-era `winopen.extensions()`
   hardcoded seed is gone.
+- **AF-12** (D397) A `.fused` CLONES into the workspace: an "Export App"-style
+  preview-header button copies the payload to `<workspace>/local/<slug>` as an
+  ordinary editable app folder and navigates to it. `GET /api/appfile/clone`
+  is the read-only probe the button reads on mount (one bounded manifest read
+  + one isdir → `{name, slug, path, cloned}`); the X-Fused
+  `POST /api/appfile/clone` does the copy. The source is `open_app_file`'s
+  extract, so the one hardened extractor runs (a never-opened file extracts on
+  the way through) and the 0444 payload bits are lifted to 0644 IN STAGING —
+  a clone that shipped them read-only would be an uneditable development copy.
+  Staged inside the destination tag dir so the claim is a same-filesystem
+  rename. **The destination folder EXISTING is what "already cloned" means** —
+  no records file — so the button reads "Go to local version" and only
+  navigates, a second Clone is a reporting no-op that never overwrites the
+  user's edits and never makes a suffixed second folder, and the answer
+  survives a restart, a moved `.fused` and a re-export. Named cost: an
+  unrelated `local/<slug>` folder reads as this app's clone. The manifest
+  `name` is attacker-controlled zip data and reaches the filesystem only
+  through `appfile._slug` (no separator, dot or drive letter survives it,
+  shared with the extract cache key); an empty name falls back to the FILE
+  STEM, not a shared `app` literal, so two unnamed app files do not collide on
+  one folder. Plain files — no `git init`, unlike the showcase Clone, which
+  has an upstream to diff against. Header-only, so an embed-opened `.fused`
+  (a Finder double-click) shows no Clone: reaching it means opening the file
+  in the explorer.

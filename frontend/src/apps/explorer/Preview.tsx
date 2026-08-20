@@ -7,6 +7,8 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import { createPortal } from "react-dom";
 import {
   getAppEntry,
+  getAppFileCloneTarget,
+  cloneAppFile,
   rawUrl,
   statPath,
   resolveConditions,
@@ -174,6 +176,69 @@ function CloneCommunityButton({ slug }: { slug: string }) {
     >
       {busy && <span className="mode-icon-spinner" />}
       {busy ? "Cloning…" : "Clone"}
+    </button>
+  );
+}
+
+// "Clone" in the preview header of a `.fused` app file: copy the payload into
+// the workspace (Fused/local/<slug>) as an ordinary editable app and open it —
+// the way OUT of an artifact whose own files are 0444 by construction (D397).
+// Once a copy is there the same button reads "Go to local version" and only
+// navigates, so the artifact never becomes a way to overwrite your own edits.
+//
+// Whether a copy exists is the destination folder EXISTING — no records file —
+// which is why this probes on mount and re-probes per file rather than trusting
+// anything cached.
+//
+// Header-only, like ExportAppButton beside it, and with the same consequence
+// worth knowing: embed mode hides the whole topbar, so a `.fused` opened by
+// double-click shows no Clone. Reaching it means opening the file in the
+// explorer (owner's call — the embed stays chrome-free, D386/D390).
+function CloneAppFileButton({ fsPath }: { fsPath: string }) {
+  const [target, setTarget] = useState<{ path: string; cloned: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setTarget(null);
+    getAppFileCloneTarget(fsPath)
+      .then((r) => alive && setTarget({ path: r.path, cloned: r.cloned }))
+      .catch(() => {
+        /* unreadable file / not a .fused — no button rather than a broken one */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath]);
+  if (!target) return null;
+  const go = async () => {
+    if (busy) return;
+    // Already cloned: this is pure navigation, so it never needs the spinner
+    // or the write route.
+    if (target.cloned) return navigate(target.path, { isDir: true });
+    setBusy(true);
+    try {
+      const r = await cloneAppFile(fsPath);
+      navigate(r.path, { isDir: true });
+    } catch (e) {
+      pushToast({ msg: (e as Error).message || "clone failed", tone: "error" });
+      setBusy(false);
+    }
+    // Success navigates away and unmounts this button; no busy reset needed.
+  };
+  return (
+    <button
+      type="button"
+      className="bar-ctl bar-ctl-bordered"
+      title={
+        target.cloned
+          ? "Open your editable copy at " + target.path
+          : "Copy this app into " + target.path + " and open it for editing"
+      }
+      onClick={go}
+      disabled={busy}
+    >
+      {busy && <span className="mode-icon-spinner" />}
+      {busy ? "Cloning…" : target.cloned ? "Go to local version" : "Clone"}
     </button>
   );
 }
@@ -1245,6 +1310,13 @@ function TemplatePreview({
       {/* Showcase app: Clone copies it into Fused/local so catalog refreshes
           never touch your copy. */}
       {communitySlug && !stat.is_dir && <CloneCommunityButton slug={communitySlug} />}
+      {/* A `.fused` app file: Clone unpacks it into Fused/local as an editable
+          app, or opens the copy that is already there (D397). Keyed off the
+          extension, which is what routes this file to the fusedapp template in
+          the first place. */}
+      {!stat.is_dir && fsPath.toLowerCase().endsWith(".fused") && (
+        <CloneAppFileButton fsPath={fsPath} />
+      )}
       {/* The containing app as one .fused file (SPEC §43 AF-4) — rendered only
           when this page is its folder's app entry (the component asks the
           server). Embed mode hides the whole header/topbar, so an opened

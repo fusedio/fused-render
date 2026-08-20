@@ -1541,6 +1541,32 @@ export async function downloadAppFile(
   }
 }
 
+// Where a `.fused` would clone to in the workspace, and whether it already has
+// (D397). `cloned` is decided by the destination folder EXISTING — there is no
+// records file — so it survives a restart, a moved .fused and a re-export, at
+// the named cost that an unrelated `local/<slug>` folder reads as this app's
+// clone. The GET touches nothing; the POST does the copy and answers the same
+// shape, with `cloned: true` meaning "was already there, nothing copied".
+export interface AppFileCloneTarget {
+  /** The app's manifest name, or the file's stem when it has none. */
+  name: string;
+  /** That name reduced to one path-safe segment — the folder under local/. */
+  slug: string;
+  /** Absolute destination, forward-slashed. */
+  path: string;
+  cloned: boolean;
+}
+
+export function getAppFileCloneTarget(path: string): Promise<AppFileCloneTarget> {
+  return getJson<AppFileCloneTarget>(
+    "/api/appfile/clone?path=" + encodeURIComponent(path),
+  );
+}
+
+export function cloneAppFile(file: string): Promise<AppFileCloneTarget> {
+  return postJson<AppFileCloneTarget>("/api/appfile/clone", { file });
+}
+
 // Delete one USER template folder (core templates are read-only, 404 here).
 // With cleanRegistry the USER registry is also swept of bindings referencing
 // the name (a user key whose value is emptied by the sweep is removed — revert
