@@ -80,6 +80,16 @@ export const MenuIcons: Record<string, ReactNode> = {
       <path d="M10 12h4" />
     </svg>
   ),
+  // Download — arrow dropping into a tray. Distinct from `compress` (an
+  // archive box): exporting an app file is a download to the user, while
+  // Compress writes an archive beside the folder and never leaves the disk.
+  download: (
+    <svg {...svgProps}>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M12 15V3" />
+    </svg>
+  ),
   // Cut — scissors.
   cut: (
     <svg {...svgProps}>
