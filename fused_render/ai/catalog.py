@@ -309,6 +309,84 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "of the pick above it.",
         },
     ],
+    # llama.cpp / GGUF (SPEC AI-11, D402) — opt-in, and the only runner here
+    # whose ids are NOT Hub repo ids: a GGUF repo publishes two dozen
+    # quantizations of one model (`unsloth/Qwen3.5-9B-GGUF` alone sums to
+    # 147.81GB across every file it holds), so the id is the curated key
+    # `runners/llamacpp_text.py`'s `_GGUF_RECIPES` maps to one `(repo, file)`
+    # pair — see that module's docstring for why this is not a `repo:quant`
+    # grammar. **That is also why Hub search cannot populate this list**: the
+    # Discover tab's search hands back a bare repo id, this runner has no rule
+    # for picking one file out of thirty, and only the ids curated here ever
+    # load — the same limitation `formats.COMPONENT_REPOS`'s repos already
+    # have, for the same reason.
+    #
+    # **`gguf.architecture = "qwen35"` on every entry here, which is worth
+    # spelling out because it is the whole reason this list can offer
+    # CURRENT-GENERATION Qwen at all.** llama.cpp converts and runs the TEXT
+    # TOWER of the `Qwen3_5ForConditionalGeneration` family — the same
+    # language model `transformers-text`'s list above serves in full
+    # precision — so a machine too small for the 19.3GB Qwen3.5 9B bf16
+    # download can still run the same model's answers at a fraction of the
+    # size, not a smaller model wearing the same name.
+    #
+    # Sizes verified against the Hub's `?blobs=true` metadata on 2026-08-21,
+    # summing ONLY the one GGUF file `download_file` fetches (never the whole
+    # repo) plus nothing else — these unsloth repos ship no external
+    # tokenizer/config files at their root, so there is no second download to
+    # add in (see `runners/llamacpp_text.py`). Every file checked is a single
+    # root-level `.gguf`, not a `-00001-of-0000N` shard — `download_file` takes
+    # one filename, so a sharded tier would have been silently unloadable and
+    # was excluded before it could ship (the 27B repo's own BF16 tier IS
+    # sharded, which is one reason its shortlist entry is the aggressively
+    # quantized UD-Q3_K_XL rather than anything closer to full precision).
+    # Every repo checked `gated: false`. **No sub-4B entries** — the user's own
+    # standing rule that a text model under 4B parameters is not worth using,
+    # and every model here is a Qwen3.5-or-newer 4B, 9B or 27B.
+    #
+    # **One line each**, per the rule the transformers list above states, and
+    # hardware-neutral for the same reason: this runner is CPU-only in this
+    # change, but a note should not need rewriting the day that changes.
+    "llamacpp-text": [
+        {
+            "id": "Qwen3.5-4B-Q5_K_M.gguf",
+            "label": "Qwen3.5 4B (Q5_K_M)",
+            "size_gb": 3.1,
+            "note": "The smallest here and the one a bare call loads — Qwen3.5 "
+                    "4B (Q8_0) below is the same model at higher fidelity for "
+                    "1.3GB more.",
+        },
+        {
+            "id": "Qwen3.5-4B-Q8_0.gguf",
+            "label": "Qwen3.5 4B (Q8_0)",
+            "size_gb": 4.5,
+            "note": "The same 4B near full precision, for a third more "
+                    "download than Q5_K_M above.",
+        },
+        {
+            "id": "Qwen3.5-9B-Q4_K_M.gguf",
+            "label": "Qwen3.5 9B (Q4_K_M)",
+            "size_gb": 5.7,
+            "note": "Current-gen Qwen at under a third of the unquantized 9B "
+                    "download `transformers-text` suggests — the strongest "
+                    "pick here for the size.",
+        },
+        {
+            "id": "Qwen3.5-9B-Q8_0.gguf",
+            "label": "Qwen3.5 9B (Q8_0)",
+            "size_gb": 9.5,
+            "note": "The 9B at higher fidelity than Q4_K_M above, for nearly "
+                    "double the download.",
+        },
+        {
+            "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
+            "label": "Qwen3.8 27B (UD-Q3_K_XL)",
+            "size_gb": 13.1,
+            "note": "The newest and largest model here, quantized hard to fit "
+                    "the download — expect a bigger quality hit than the "
+                    "9B above.",
+        },
+    ],
     "diffusers-image": [
         {
             "id": "tonera/FLUX.2-klein-4B-int8-diffusers",

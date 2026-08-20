@@ -727,6 +727,40 @@ _RUNNERS: tuple[Runner, ...] = (
              "larger download.",
         _available=_rocm,
     ),
+    # A fourth text runner (SPEC AI-11, AI-2a, D402) — GGUF via llama.cpp,
+    # BELOW all three transformers rows so `auto` resolution never moves: on
+    # every platform a bare "auto" reaches MLX or a transformers row exactly
+    # as it did before this runner existed
+    # (`test_AUTO_STAYS_ON_THE_CPU_ROW_EVEN_WITH_AN_ACCELERATOR` is the named
+    # test of that property, and it asserts nothing about this row precisely
+    # because nothing about it should change). Reaching this runner is
+    # therefore always a CHOICE made on the Engines tab, never a fallthrough —
+    # which is the point: `llamacpp_text/pyproject.toml` documents that the
+    # maintainer's wheel index is a coin-flip per release on macOS arm64
+    # (roughly 4 of 16 sampled releases pass an integrity check), so a
+    # capability whose INSTALL can silently fail must never be what a machine
+    # gets without asking for it, however sound the pinned version itself is
+    # once verified. `_always` because the pin this runner declares is CPU
+    # wheels on every platform it ships (no CUDA/ROCm/Metal variant in this
+    # change) — the same shape `_always` already states for Diffusers CPU and
+    # Faster Whisper.
+    Runner(
+        code="llamacpp-text",
+        capability=TEXT_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "llamacpp_text"),
+        label="llama.cpp (GGUF)",
+        short_label="llama.cpp",
+        # ONE LINE, per the rule the transformers row states. Leads with the
+        # reason to pick it (current-generation Qwen at a fraction of the bf16
+        # download) and folds the packaging caveat into the same sentence,
+        # since that is the fact this row's `_available` cannot express —
+        # `_always` answers "does the wheel exist for this platform", not
+        # "was THIS release's wheel intact when it was built".
+        note="Runs current Qwen GGUF quantizations at a fraction of the "
+             "unquantized download — opt-in because its wheels come from the "
+             "maintainer's own index rather than PyPI.",
+        _available=_always,
+    ),
     # Image generation is arranged like the other two: MLX takes the Macs
     # (D310). One 4.6GB repo against the ~10.1GB two-repo split the torch
     # recipe needs, ~8x quicker to load, ~15-20% quicker per image, measured

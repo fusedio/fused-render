@@ -1,0 +1,113 @@
+# The llama.cpp / GGUF text runner's environment — OPT-IN, CPU-only (SPEC §40,
+# AI-2a, AI-11, D402).
+#
+# **Why this folder exists at all when AI-11 refused llama.cpp outright.**
+# `llama-cpp-python` publishes an sdist and NO wheels on PyPI, which is what
+# AI-2a's wheels-only rule was written to bar — cmake and a C++ toolchain
+# between a user and the Download button, MSVC on Windows. That refusal held
+# until the maintainer's OWN index
+# (`https://abetlen.github.io/llama-cpp-python/whl/cpu/`) was checked rather
+# than assumed: it publishes complete, current `py3-none` wheels — a prebuilt
+# shared library behind ctypes, no compiler involved — so the NEW FACT is
+# "PyPI is still sdist-only, but a maintainer index is not". `explicit = true`
+# below is the same confinement `transformers_text/pyproject.toml` uses for
+# `download.pytorch.org/whl/cpu`: without it this index becomes a candidate for
+# every requirement in the graph, and with it the override reaches exactly
+# `llama-cpp-python` and nothing else.
+#
+# **The RESIDUAL RISK that does not go away, and it is worse than "a second
+# host to trust".** A full sweep of every macOS arm64 wheel this index has ever
+# published for `llama-cpp-python` found the corruption is not a regression
+# with a clean cutoff — it is roughly a coin flip per release. Only 4 of 16
+# releases sampled (0.3.18, 0.3.24, 0.3.26, 0.3.29) pass `zipfile.testzip()` on
+# their `macosx_11_0_arm64` wheel; the rest fail, USUALLY on a bundled
+# `libggml-base*.dylib` (three different corruption signatures were seen across
+# versions — bad CRC-32, bad uncompressed size, bad zip64 offset — so it is not
+# one bug with one fingerprint), and every failing wheel's sha256 matched its
+# own published GitHub digest, so this is not a CDN or a transient fetch —
+# upstream is publishing corrupt bytes about two releases in three. Wheel SIZE
+# is not a proxy: PASS and FAIL sizes interleave across the version list.
+# Root-caused to upstream issue #1650 — the Release job's artifact-merge step
+# corrupts wheels that were fine when built, a community member diagnosed this
+# in Aug 2024, and it is still open. issue #2352's claim that "0.3.30 is
+# unaffected" is FALSE — checked directly, its macOS arm64 wheel is corrupt too.
+#
+# **THIS PIN IS INTEGRITY-AUDITED, and that is not a one-time fact.** Every
+# platform tag this runner actually ships (macOS arm64, both manylinux_2_17
+# tags, win_amd64) was downloaded from the exact GitHub release asset this
+# index redirects to and round-tripped through `zipfile.ZipFile(...).testzip()`
+# on 2026-08-21, for `llama-cpp-python==0.3.29`:
+#
+#     macosx_11_0_arm64                              PASS
+#     manylinux2014_x86_64.manylinux_2_17_x86_64     PASS
+#     manylinux2014_aarch64.manylinux_2_17_aarch64   PASS
+#     win_amd64                                      PASS
+#
+# **ANY version bump of this pin MUST repeat that audit before landing** — this
+# is not a rule a resolver can enforce, `test_ai_runner_deps.py` can only check
+# that the index declaration stays `explicit = true` on a wheel-shaped source,
+# never that a specific version's bytes are intact, and a `uv sync` that
+# resolves and installs cleanly on ONE platform proves nothing about the other
+# three (an intact mac wheel implied nothing about win_amd64 here — they are
+# independent per-release coin flips). Download each of the four wheels for the
+# candidate version directly from
+# `github.com/abetlen/llama-cpp-python/releases/download/v<version>/...`,
+# run `zipfile.ZipFile(path).testzip()` on each, and if any of the four is not
+# `None`, do not bump — find the newest version where all four pass, exactly
+# as this pin was chosen (0.3.34 and 0.3.35, the two newest at the time, were
+# BOTH corrupt on macOS arm64 across five checked versions before 0.3.29 was
+# found intact on every platform this runner ships).
+#
+# **This is why the engine is opt-in and registered FOURTH, never the
+# default** (`registry.py`): a capability whose install can silently be a
+# coin-flip on the maintainer's own release process is not something `auto`
+# should ever reach for, however good the wheels themselves are once verified.
+#
+# `llama-cpp-python` is MIT and needs no license acceptance; its vendored
+# llama.cpp at 0.3.29 is commit `f05cf467` (2026-06-13), new enough to compile
+# `qwen35`/`qwen35moe` — confirmed both in `src/llama-arch.cpp` at that commit
+# and by `strings` on the installed `libllama.dylib`, which is what lets this
+# engine serve the current Qwen3.5 GGUF family at all (SPEC AI-11, the
+# `_GGUF_RECIPES` table in `runners/llamacpp_text.py`).
+#
+# CPU only, deliberately — no CUDA/ROCm/Metal variant of this runner in this
+# change. `jinja2` renders the chat template the GGUF carries in its own
+# metadata (`Llama.metadata["tokenizer.chat_template"]`); it is already an
+# indirect dependency of `llama-cpp-python` itself (its own chat-format
+# machinery uses it) and is declared directly here because this runner's own
+# code imports it too — an indirect dependency is not a contract.
+#
+# `huggingface_hub` fetches the one GGUF file this runner ever downloads
+# (`worker_base.download_file`); no snapshot download of a tokenizer/config
+# slice runs alongside it, because the curated repos this runner reads
+# (unsloth's GGUF conversions) ship no external tokenizer files at their
+# root — the vocabulary and the chat template are inside the one `.gguf`
+# already fetched, which is the whole point of the format being single-file.
+[project]
+name = "fused-render-runner-llamacpp-text"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "llama-cpp-python==0.3.29",
+    # `<4` — this runner renders the GGUF's own chat template through it, so a
+    # major bump changing Jinja's rendering semantics is exactly the "lands on
+    # users with no commit behind it" risk the ceiling rule exists for.
+    "jinja2>=3,<4",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
+
+# The maintainer's CPU wheel index. `explicit = true` keeps it from becoming a
+# candidate for anything but the one name listed under `[tool.uv.sources]` —
+# see the header for why that confinement matters here specifically.
+[[tool.uv.index]]
+name = "llamacpp-cpu"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cpu/"
+explicit = true
+
+[tool.uv.sources]
+llama-cpp-python = { index = "llamacpp-cpu" }

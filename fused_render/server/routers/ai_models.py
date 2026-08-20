@@ -744,9 +744,12 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     # too — "text generation", unconditionally — which put a Load button on
     # `unsloth/FLUX.2-klein-4B-GGUF`, an image model, and is the precise failure
     # `capability_for_task` warns about. A GGUF is a container, not a modality,
-    # and no runner that ships loads a GGUF-only repo anyway (transformers
-    # refuses one by name), so the guess could never have been right in a way
-    # that mattered: it only ever produced a button that fails.
+    # so this still does not set `meta.task` — `cached_capability`'s
+    # `meta.loaders` fallback below is what now correctly resolves a
+    # GGUF-only repo to text generation (SPEC AI-11: `llamacpp-text` reads one
+    # decisively, `formats.DECISIVE`), the same way an unlabelled directory of
+    # safetensors resolves through the two TEXT runners' shared capability
+    # rather than through this field.
     if any(n.lower().endswith(".gguf") for n in names):
         library = library or "gguf"
 

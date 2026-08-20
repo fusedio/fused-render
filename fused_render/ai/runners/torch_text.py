@@ -111,10 +111,10 @@ def _config(path):
 def _weights_here(path):
     """Does this snapshot hold weights transformers can open?
 
-    A repo of nothing but `.gguf` is llama.cpp's format. transformers can read
-    one, but it DEQUANTIZES to float32 on the way in — a 4GB quantized file
-    becomes ~16GB of RAM — so a load that "worked" would OOM the machine or swap
-    it to a standstill, which is a worse answer than a refusal.
+    A repo of nothing but `.gguf` is llama.cpp's format (SPEC AI-11). transformers
+    can read one, but it DEQUANTIZES to float32 on the way in — a 4GB quantized
+    file becomes ~16GB of RAM — so a load that "worked" would OOM the machine or
+    swap it to a standstill, which is a worse answer than a refusal.
     """
     for _dirpath, _dirnames, filenames in os.walk(path):
         for name in filenames:
@@ -150,11 +150,17 @@ def _refuse_unloadable(model_id, path):
             f"{model_id} is {_UNLOADABLE_QUANT[method.lower()]}. {_TRY_INSTEAD}")
 
     if not _weights_here(path):
+        # Used to end here with "try an unquantized checkpoint instead" — a
+        # dead end for someone who specifically wanted this GGUF repo. Since
+        # SPEC AI-11 this app CAN read one: point at the engine that does
+        # rather than only away from the one that cannot.
         raise RuntimeError(
             f"{model_id} has no safetensors weights — a repo of GGUF files is "
             "llama.cpp's format, and transformers can only read one by "
-            f"expanding it to float32, which costs four times the memory. "
-            f"{_TRY_INSTEAD}")
+            "expanding it to float32, which costs four times the memory. "
+            "Switch this capability to the llama.cpp engine on the AI Models "
+            "page, which reads GGUF directly — it is opt-in, so it will not "
+            "already be selected.")
 
 
 def _placement():

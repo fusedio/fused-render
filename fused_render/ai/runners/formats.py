@@ -200,6 +200,16 @@ def component(repo_id: str) -> dict | None:
 #: cheap header, which is why the page counts parameters only from safetensors.
 TORCH_WEIGHTS = (".safetensors", ".bin", ".pt")
 
+#: llama.cpp's single-file weights format (SPEC AI-11, `runners/llamacpp_text.py`).
+#: Unlike every other format in this module a `.gguf` needs no companion
+#: config to identify — the vocabulary, the architecture and the model's own
+#: chat template all live inside the one file's key-value metadata, which is
+#: the reason GGUF is one file at all. So the check is the extension, at the
+#: SNAPSHOT ROOT: `torch_text.py`'s own refusal already treats "nothing but
+#: GGUF here" as the wrong-format case for transformers, and this is that same
+#: evidence read the other way round, by the engine that actually wants it.
+GGUF_EXTENSION = ".gguf"
+
 #: Quantizations `runners/torch_text.py` refuses BY NAME, each with the
 #: sentence it refuses them with: what transformers raises for an AWQ repo with
 #: no autoawq installed is a bare ImportError several frames inside a loader,
@@ -236,7 +246,13 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
             "diffusers-image-cuda", "diffusers-image-rocm",
             # A NeMo ASR `target` is as decisive as a `weights.npz`: the config
             # names an ASR class, and nothing else in this app can read it.
-            "parakeet-mlx")
+            "parakeet-mlx",
+            # A root-level `.gguf` is llama.cpp's format and nothing else in
+            # this app reads one for TEXT (SPEC AI-11) — the diffusers image
+            # runner's own GGUF use is a swapped-in COMPONENT of an otherwise
+            # ordinary pipeline (`COMPONENT_REPOS`), not a snapshot whose root
+            # is a bare `.gguf`, so the two cannot collide.
+            "llamacpp-text")
 
 
 def is_mlx_checkpoint(config: dict) -> bool:
@@ -258,6 +274,13 @@ def unloadable_quant(config: dict) -> str | None:
 
 def has_ct2_weights(names) -> bool:
     return CT2_WEIGHTS in names
+
+
+def has_gguf_weights(names) -> bool:
+    """A `.gguf` file at the snapshot ROOT — `names` is a top-level listing,
+    never a recursive walk, so this cannot fire on a GGUF sitting inside some
+    other pipeline's subfolder (`COMPONENT_REPOS`'s FLUX transformer is one)."""
+    return any(str(name).lower().endswith(GGUF_EXTENSION) for name in names)
 
 
 def has_mlx_whisper_weights(names) -> bool:
@@ -376,6 +399,14 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool)
         # would claim it too and the page would offer to load a speech model
         # as a chat model — the failure `DECISIVE` exists to prevent, arriving
         # by a new route.
+        return tuple(found)
+    if has_gguf_weights(names):
+        found.append("llamacpp-text")
+        # …and NOTHING else. A GGUF-only snapshot has no `.safetensors` for the
+        # text branch below to claim, but the return is explicit rather than
+        # relied upon — `DECISIVE` says nothing else in this app reads a root
+        # `.gguf` for text, and a future branch added above the text check
+        # should not have to remember this one is exclusive too.
         return tuple(found)
     # The two text runners read the same directory of safetensors, and which of
     # them gets it is a platform-and-preference question rather than a format
