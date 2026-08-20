@@ -6739,7 +6739,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   the bug being fixed.
 - **AI-11d** **Reasoning is OFF by default, because it is invisible and the CPU
   path cannot afford it.** Qwen3's chat template defaults `enable_thinking` to
-  true and three of the four curated models are Qwen3, so an ordinary question
+  true and half the curated models are Qwen (Qwen3.5 since the 2026-08-21
+  refresh), so an ordinary question
   emits a `<think>` block first — hundreds of tokens the caller cannot tell
   apart from the answer, since `/generate` streams whatever the model produces.
   At a few tokens a second on the CPU this runner exists to serve, that is
@@ -6748,10 +6749,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   in the Jinja render context, so a template that never mentions it does not
   read it, and a tokenizer whose signature rejects it outright retries without —
   a model that will not take the hint should still answer, just verbosely. The
-  same class of trap as the version floor beside it: `transformers>=4.51` is
-  what knows a `qwen3` exists, and an older resolution installs perfectly and
-  then fails every Qwen3 Download with `KeyError: 'qwen3'`, which reads as a
-  broken model rather than an environment one version too old.
+  same class of trap as the version floor beside it: `transformers>=5.15` is a
+  release that knows a `qwen3_5` exists, and a 4.x resolution installs perfectly
+  and then fails every Qwen3.5 Download with `KeyError: 'qwen3_5'`, which reads
+  as a broken model rather than an environment a major version too old.
 - **AI-11b** **The device is reported, because a model on a CPU works and looks
   broken.** torch runs on whatever it can see, and what it can see is not
   knowable from outside the process: **the default torch rows pin the `whl/cpu`

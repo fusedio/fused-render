@@ -15,7 +15,7 @@ down beside each entry.
 **Keyed by RUNNER, not by capability, and that is what makes it correct on more
 than one platform.** A suggestion is only meaningful for the backend that will
 load it: `mlx-community/Qwen3.5-9B-MLX-4bit` is packed for Metal kernels and is
-unloadable rubbish on a Windows box, while `Qwen/Qwen3-4B-Instruct-2507` is the
+unloadable rubbish on a Windows box, while `Qwen/Qwen3.5-4B` is the
 right answer there and the wrong one on a Mac that has MLX. One capability with
 two BACKENDS (text generation since D293, speech to text since D302) therefore
 has two lists — hardware variants of one backend share theirs, since the wheel
@@ -67,8 +67,12 @@ not be promoted into the "safe, small, starts quickly" slot.
 **The cost of that rule is deliberate and was chosen by the user with the
 trade-off in front of them (2026-08-16).** A no-model call now gets the LEAST
 ACCURATE model rather than the recommended one — `Systran/faster-whisper-tiny.en`
-instead of `deepdml/faster-whisper-large-v3-turbo-ct2`, `Qwen/Qwen3-1.7B` instead
-of `Qwen/Qwen3-4B-Instruct-2507`. The alternative — a separate `default: True`
+instead of `deepdml/faster-whisper-large-v3-turbo-ct2`, and the smallest text
+entry instead of the strongest one (`Qwen/Qwen3.5-4B` rather than
+`Qwen/Qwen3.5-9B` after the 2026-08-21 refresh; the pair the user was actually
+shown was `Qwen/Qwen3-1.7B` against `Qwen/Qwen3-4B-Instruct-2507`, both since
+retired, which is why the rule is stated in terms of POSITION and not of
+names). The alternative — a separate `default: True`
 field, so the list could be ordered one way and the default picked another — was
 offered and rejected: one rule that a reader can verify by eye beats two that can
 silently disagree. **Do not "fix" this back** by reordering a list so the good
@@ -237,13 +241,22 @@ SUGGESTIONS: dict[str, list[dict]] = {
     #
     # * **Unquantized safetensors only.** Every other format on the Hub needs
     #   something this runner does not ship — GGUF is llama.cpp's, AWQ and GPTQ
-    #   need their own packages, bitsandbytes needs an NVIDIA card — and a
+    #   need their own packages, and bitsandbytes is a package this runner
+    #   deliberately does not install (it WOULD install: MIT and wheel-only
+    #   everywhere. Measured 2026-08-21, NF4 on a CPU generates correctly at
+    #   3.6x SLOWER than the bf16 it replaces, so it is refused on speed rather
+    #   than on availability — `runners/formats.py` carries the numbers) — and a
     #   suggestion the loader then refuses is the trap AI-10 describes for
     #   CTranslate2 and the whisper runner had to write an error message about.
-    # * **Ungated.** `google/gemma-3-*` and `meta-llama/*` need a licence
-    #   accepted on the Hub first, so Download 401s partway through for a user
-    #   who has done nothing wrong. The MLX list above gets away with gemma only
-    #   because the `mlx-community` re-uploads are not gated.
+    # * **Ungated.** `google/gemma-3-*` and `meta-llama/*` still need a licence
+    #   accepted on the Hub first (both `gated: "manual"`, rechecked
+    #   2026-08-21), so Download 401s partway through for a user who has done
+    #   nothing wrong. The MLX list above gets away with gemma-3 only because
+    #   the `mlx-community` re-uploads are not gated. **Gemma 4 is the
+    #   exception and no longer belongs in that sentence**:
+    #   `google/gemma-4-12b-it` is `gated: False` and apache-2.0 (checked
+    #   2026-08-21), so the gate is not why it is absent — see the
+    #   `gemma4_unified` paragraph below for the reason that actually holds.
     # * **Sized for the machine that will actually run them.** The accepted v1
     #   trade is that the default torch row installs the `whl/cpu` build on
     #   every non-Apple machine (D381, see this runner's `pyproject.toml`), so
@@ -252,7 +265,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     #   afterthought. The accelerated rows share this very list (`catalog.py`'s
     #   `_SHARED_SUGGESTIONS`), so it is the CPU that sets its ceiling.
     #
-    # Sizes sum every file in the Hub snapshot (2026-08-14) and round the byte
+    # Sizes sum every file in the Hub snapshot (2026-08-21) and round the byte
     # total to one decimal GB. That makes them download estimates rather than
     # filesystem measurements, but unlike parameter arithmetic they include the
     # tokenizer, configs, split weights and any other payload the whole-repo
@@ -279,34 +292,74 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # one unit this file defines — every byte the download fetches — and a
     # reader comparing it against their own machine is doing arithmetic these
     # sentences cannot do for them.
+    # **Refreshed 2026-08-21, and half this list is now multimodal — which the
+    # runner loads anyway, and the reason is worth writing down because the
+    # obvious reading of `AutoModelForCausalLM` says it should not.** Both Qwen
+    # entries are `Qwen3_5ForConditionalGeneration` checkpoints carrying a
+    # `vision_config`. They load, and they load as the LANGUAGE TOWER ALONE:
+    # transformers 5.x maps `qwen3_5` to `Qwen3_5ForCausalLM` in
+    # `MODEL_FOR_CAUSAL_LM_MAPPING_NAMES` — the entry is literally tagged
+    # `# VLM compatibility` — and that class's `config_class` is
+    # `Qwen3_5TextConfig`, which is exactly the test `auto_factory`'s
+    # `from_pretrained` applies before building anything: when the resolved
+    # class's `config_class` equals `config.sub_configs["text_config"]` it swaps
+    # in `config.get_text_config()`. So the vision tower is never constructed,
+    # the text tower loads with zero missing and zero unexpected keys, and the
+    # vision and MTP tensors are downloaded and dropped.
+    #
+    # **That dead weight is measured, not estimated** (per-tensor byte sums from
+    # the safetensors headers, 2026-08-21): the 4B is 7.2% vision + 2.6%
+    # multi-token-prediction, the 9B 4.7% + 2.5%. It is the same honest cost the
+    # `mlx-text` list above documents and for the same reason — there is no
+    # text-only conversion of Qwen3.5 on the Hub — so the `size_gb` column stays
+    # the whole download and the notes say where the bytes go. **Olmo 3 and
+    # Granite are the contrast and that is why they are here**: `Olmo3ForCausalLM`
+    # and `GraniteForCausalLM`, text-only, no vision config, every byte fetched
+    # is a byte used. A reader comparing 14.6 against 19.3 is comparing unlike
+    # things unless the notes say so, so they do.
+    #
+    # **`google/gemma-4-12b-it` is still rejected, and no longer for the reason
+    # the bullet above used to give.** It is ungated and apache-2.0 (checked
+    # 2026-08-21), so licence acceptance is not the obstacle. The obstacle is
+    # the mechanism two paragraphs up, failing: `gemma4_unified` maps to
+    # `Gemma4UnifiedForConditionalGeneration`, whose `config_class` is
+    # `Gemma4UnifiedConfig` — the COMPOSITE config, not the
+    # `Gemma4UnifiedTextConfig` sub-config — so `auto_factory`'s equality test
+    # is False, the swap does not fire, and the vision AND audio towers
+    # (`sub_configs` carries all three) are built and held resident for a text
+    # generation this runner will never point at them. `qwen3_5` gets the swap;
+    # `gemma4_unified` does not. That is the whole difference, and it is a
+    # one-line check to redo when transformers is next bumped.
     "transformers-text": [
         {
-            "id": "Qwen/Qwen3-1.7B",
-            "label": "Qwen3 1.7B",
-            "size_gb": 4.1,
+            "id": "Qwen/Qwen3.5-4B",
+            "label": "Qwen3.5 4B",
+            "size_gb": 9.3,
             "note": "The smallest here and the one a bare call loads — quickest "
-                    "to fetch and quickest to answer.",
+                    "to fetch and to answer, though a tenth of it is vision "
+                    "weights the text loader drops.",
         },
         {
-            "id": "microsoft/Phi-4-mini-instruct",
-            "label": "Phi-4 mini (3.8B)",
-            "size_gb": 7.7,
-            "note": "Punches above its size on reasoning and maths, and MIT "
-                    "licensed.",
+            "id": "allenai/Olmo-3-7B-Instruct",
+            "label": "Olmo 3 7B Instruct",
+            "size_gb": 14.6,
+            "note": "Text-only, so every byte fetched is a byte used — and "
+                    "fully open training data, unlike anything else here.",
         },
         {
-            "id": "Qwen/Qwen3-4B-Instruct-2507",
-            "label": "Qwen3 4B Instruct",
-            "size_gb": 8.1,
-            "note": "The best all-round pick: clearly stronger than the small "
-                    "ones without being the largest download here.",
+            "id": "ibm-granite/granite-4.1-8b",
+            "label": "Granite 4.1 8B",
+            "size_gb": 17.6,
+            "note": "Text-only like the Olmo above, and tuned for instruction "
+                    "following and tool calls rather than chat.",
         },
         {
-            "id": "Qwen/Qwen3-8B",
-            "label": "Qwen3 8B",
-            "size_gb": 16.4,
-            "note": "Best quality here, and twice the download and the memory "
-                    "of the pick above it.",
+            "id": "Qwen/Qwen3.5-9B",
+            "label": "Qwen3.5 9B",
+            "size_gb": 19.3,
+            "note": "The strongest answers here, for the largest download — of "
+                    "which about 7% is vision and MTP weight that is fetched "
+                    "and dropped.",
         },
     ],
     "diffusers-image": [

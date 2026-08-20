@@ -1585,10 +1585,10 @@ def test_no_hardware_variant_holds_its_own_suggestion_list():
 
 def test_transformers_and_whisper_suggestions_show_snapshot_size_estimates():
     expected = {
-        "Qwen/Qwen3-4B-Instruct-2507": 8.1,
-        "microsoft/Phi-4-mini-instruct": 7.7,
-        "Qwen/Qwen3-1.7B": 4.1,
-        "Qwen/Qwen3-8B": 16.4,
+        "Qwen/Qwen3.5-4B": 9.3,
+        "allenai/Olmo-3-7B-Instruct": 14.6,
+        "ibm-granite/granite-4.1-8b": 17.6,
+        "Qwen/Qwen3.5-9B": 19.3,
         "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
         "Systran/faster-whisper-tiny.en": 0.08,
         "Systran/faster-whisper-small": 0.5,
@@ -1636,7 +1636,7 @@ def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch)
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
-    assert catalog.default_for(registry.TEXT_GENERATION) == "Qwen/Qwen3-1.7B"
+    assert catalog.default_for(registry.TEXT_GENERATION) == "Qwen/Qwen3.5-4B"
     assert catalog.default_for(registry.SPEECH_TO_TEXT) == \
         "Systran/faster-whisper-tiny.en"
 
@@ -5478,7 +5478,7 @@ def test_a_runner_with_no_suggestions_offers_the_disk_and_recommends_nothing(
     **The no-suggestions condition is CONSTRUCTED, and the construction is asserted.**
     The first version of this test emptied `SUGGESTIONS["mlx-text"]` by name, which
     is the runner a Mac resolves — so on Linux it emptied a list nobody was reading,
-    `transformers-text` answered with `Qwen/Qwen3-1.7B` at position 0, and the test
+    `transformers-text` answered with its own position 0 (`Qwen/Qwen3.5-4B`), and the test
     failed on its conclusion for a premise that was never true. Both resolutions now
     run, the list emptied is the one the row actually resolved, and the premise is
     checked before the conclusion so a future change to resolution fails loudly on
