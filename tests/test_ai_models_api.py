@@ -253,6 +253,32 @@ def test_a_file_that_vanishes_mid_scan_is_skipped(client, hub, monkeypatch):
     assert out["files"] == 1
 
 
+def test_a_file_that_vanishes_between_the_two_stats_is_skipped(
+        client, hub, monkeypatch):
+    """On win32 the scan takes a SECOND, uncached os.stat to get real
+    st_nlink/st_ino (DirEntry.stat reports 0 for both there, which would
+    silently disable hardlink dedup). That is another trip to the filesystem,
+    so the same mid-download deletion the test above covers can land in this
+    narrower window instead — and must be skipped like any other, not abort
+    the whole listing."""
+    repo = _repo(hub, "models--org--m", blobs={"stays": 100, "vanishes": 50})
+    gone = str(repo / "blobs" / "vanishes")
+    real_stat = os.stat
+
+    def fake_stat(path, *args, **kwargs):
+        if str(path) == gone:
+            raise FileNotFoundError(2, "No such file or directory")
+        return real_stat(path, *args, **kwargs)
+
+    # The DirEntry.stat() in the loop still succeeds for both blobs — only the
+    # win32-only re-stat finds this one gone.
+    monkeypatch.setattr(ai_models_mod.sys, "platform", "win32")
+    monkeypatch.setattr(ai_models_mod.os, "stat", fake_stat)
+    (out,) = _get(client)["repos"]
+    assert out["size"] == 100
+    assert out["files"] == 1
+
+
 # -- no cache at all -----------------------------------------------------------
 
 

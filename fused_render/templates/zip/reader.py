@@ -91,6 +91,7 @@ def _extract_one(zf, info, dest_root, readonly=False):
             shutil.copyfileobj(src, dst)
         return os.path.realpath(target)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target) or dest_root)
+    prior_mode = None  # the stale target's mode, for the failure path below
     try:
         with zf.open(info) as src, os.fdopen(fd, "wb") as dst:
             shutil.copyfileobj(src, dst)
@@ -107,11 +108,23 @@ def _extract_one(zf, info, dest_root, readonly=False):
         # replacement file's own 0444 (set above) is what ends up on disk
         # either way.
         try:
+            prior_mode = os.stat(target).st_mode & 0o777
             os.chmod(target, 0o644)
         except OSError:
-            pass
+            prior_mode = None
         os.replace(tmp, target)
     except BaseException:
+        # The swap did NOT happen, so the stale copy above is still the live
+        # preview — put the read-only bit we just cleared back on it. Without
+        # this, a failed replace (on Windows, a sharing violation from the old
+        # preview still being open somewhere) left that copy 0644: the one
+        # property `readonly=True` exists to guarantee, silently dropped on
+        # the error path.
+        if prior_mode is not None:
+            try:
+                os.chmod(target, prior_mode)
+            except OSError:
+                pass
         try:
             os.unlink(tmp)
         except OSError:

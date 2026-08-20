@@ -64,6 +64,43 @@ def _list(src, path):
         return ("error", None)
 
 
+def _crumbs(dir):
+    """Breadcrumb segments [{"label", "path"}, ...] from root to `dir`.
+
+    `dir` is forward-slash canonical (see main()), so the TAIL is a plain
+    split — but the ROOT is not a segment like the others and cannot be built
+    by joining:
+
+      * a Windows drive root is "C:/", never "C:". A bare "C:" is
+        DRIVE-RELATIVE — it names the current directory on that drive rather
+        than its top — so crumbing the root as "C:" made a click on it land
+        wherever the serving process last happened to be on C:.
+      * a UNC root is "//server/share". The leading "//" is eaten by the
+        empty-segment filter, and a bare "//server" is not a path at all, so
+        the share belongs to the root crumb instead of being crumbed alone.
+      * a POSIX root contributes no crumb of its own: "/a/b" crumbs as
+        "a" -> "/a", "b" -> "/a/b".
+
+    A module-level helper rather than inline in main() so the two roots above
+    can be tested directly — neither is constructible on a POSIX test host,
+    where `dir` always comes back from os.path.abspath as "/...".
+    """
+    parts, acc, rest = [], "", dir
+    if len(dir) > 1 and dir[1] == ":" and dir[0].isalpha():
+        acc = dir[:2] + "/"               # "C:/", the real root of the drive
+        parts.append({"label": dir[:2], "path": acc})
+        rest = dir[2:]
+    elif dir.startswith("//"):
+        unc = [s for s in dir[2:].split("/") if s]
+        acc = "//" + "/".join(unc[:2])    # server AND share, one root crumb
+        parts.append({"label": acc, "path": acc})
+        rest = "/".join(unc[2:])
+    for seg in [s for s in rest.split("/") if s]:
+        acc = (acc.rstrip("/") + "/" + seg) if acc else "/" + seg
+        parts.append({"label": seg, "path": acc})
+    return parts
+
+
 def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False,
          store_exts: str = ".zarr", src: str = ""):
     import os
@@ -151,21 +188,12 @@ def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False,
     dirs.sort(key=lambda e: e["name"].lower())
     files.sort(key=lambda e: e["name"].lower())
 
-    # breadcrumb segments: [(label, path), ...] from root to here. `dir` is
-    # forward-slash canonical (above), so this is a plain split — EXCEPT a
-    # drive letter ("C:") IS the root segment on Windows and must not get a
-    # POSIX-style leading "/" prepended, or "C:/Users" would crumb as
-    # "/C:", "/C:/Users" — neither a valid drive path nor a valid POSIX one.
-    segments = [s for s in dir.split("/") if s]
-    parts, acc = [], ""
-    for i, seg in enumerate(segments):
-        acc = seg if i == 0 and seg.endswith(":") else acc + "/" + seg
-        parts.append({"label": seg, "path": acc})
+    crumbs = _crumbs(dir)
 
     return {
         "dir": dir,
         "parent": os.path.dirname(dir),
-        "crumbs": parts,
+        "crumbs": crumbs,
         "dirs": dirs,
         "files": files,
         "n_hidden_files": 0 if show_all else None,

@@ -197,7 +197,18 @@ def _scan_repo(root: str) -> _RepoScan:
                 # the extra syscall is paid only here — once per real file,
                 # Windows only — never on the POSIX path above, where
                 # DirEntry.stat() already answers this correctly for free.
-                st = os.stat(entry.path, follow_symlinks=False)
+                #
+                # Guarded like the entry.stat() above, and for the same
+                # reason: this is a SECOND trip to the filesystem, so a blob
+                # that a live download (or a `hf` cache cleanup) removes
+                # between the scandir and here raises FileNotFoundError. Left
+                # unguarded that aborted the whole listing — the exact
+                # "report what we could see rather than failing the page"
+                # contract the enclosing loop is built on.
+                try:
+                    st = os.stat(entry.path, follow_symlinks=False)
+                except OSError:
+                    continue
             if st.st_nlink > 1:
                 key = (st.st_dev, st.st_ino)
                 if key in seen:

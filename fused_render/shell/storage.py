@@ -32,10 +32,17 @@ def home_dir() -> str:
 def read_json(path: str):
     """Parse the JSON at `path`; return None if it is absent OR corrupt. The
     None-vs-value distinction lets a caller tell 'never written' from an empty
-    resource (e.g. the bookmarks `exists` flag / one-time import gate)."""
-    try:
+    resource (e.g. the bookmarks `exists` flag / one-time import gate).
+
+    The read is retried on a Windows sharing violation — a concurrent
+    write_json's os.replace can transiently refuse a reader's open() there;
+    see _retrying_on_sharing_violation. FileNotFoundError still returns None
+    on the first try, un-retried."""
+    def _once():
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
+    try:
+        return _retrying_on_sharing_violation(_once)
     except (FileNotFoundError, ValueError):
         return None
 
@@ -97,13 +104,33 @@ def _replace_atomic(tmp: str, path: str) -> None:
     the call itself always succeeds" contract POSIX gets for free — a dropped
     write here is not "last write wins", it is data loss. Gated on os.name so
     POSIX keeps the exact single-call behavior it always had."""
+    return _retrying_on_sharing_violation(lambda: os.replace(tmp, path))
+
+
+def _retrying_on_sharing_violation(op):
+    """`op()`, retried briefly when Windows reports a sharing violation.
+
+    Both HALVES of the read/write race need this, not just the write:
+    Windows' os.replace holds the destination for the duration of the swap and
+    a plain open() grants no FILE_SHARE_DELETE, so a concurrent READER can be
+    refused with PermissionError just as a concurrent writer can. Retrying only
+    the writer left the reader raising into whatever request touched it — the
+    Windows CI run showed exactly that, a PermissionError escaping read_json
+    through mounts/rcd.py's `_rcd_auth` (a live request path, not just a test).
+
+    PermissionError ONLY: a missing file must stay instant (read_json's
+    "absent → None" is a hot path — retrying it for the whole budget would be
+    a real slowdown on the common never-written case), and a parse error is
+    not a race. Gated on os.name so POSIX keeps its exact single-call
+    behavior. A violation that outlives the budget still raises: at that point
+    it is a genuinely unreadable/unwritable file, not a millisecond of
+    contention, and silently reporting it as absent would degrade auth rather
+    than surface a real problem."""
     if os.name != "nt":
-        os.replace(tmp, path)
-        return
+        return op()
     for attempt in range(_REPLACE_RETRIES):
         try:
-            os.replace(tmp, path)
-            return
+            return op()
         except PermissionError:
             if attempt == _REPLACE_RETRIES - 1:
                 raise
