@@ -95,6 +95,21 @@ def _extract_one(zf, info, dest_root, readonly=False):
         with zf.open(info) as src, os.fdopen(fd, "wb") as dst:
             shutil.copyfileobj(src, dst)
         os.chmod(tmp, 0o444)
+        # Clear the read-only bit on a STALE target before the swap: POSIX's
+        # rename(2) only cares about the parent directory's write permission
+        # and happily replaces a 0444 file, but Windows' MoveFileExW (what
+        # os.replace becomes there) refuses to replace a destination that
+        # carries the read-only ATTRIBUTE — so a re-preview of a changed
+        # member, which is this whole function's reason for going through a
+        # temp file rather than a plain open("wb"), would otherwise fail
+        # every time on Windows once the first preview had landed. A no-op on
+        # POSIX and on a first preview (target doesn't exist yet); the
+        # replacement file's own 0444 (set above) is what ends up on disk
+        # either way.
+        try:
+            os.chmod(target, 0o644)
+        except OSError:
+            pass
         os.replace(tmp, target)
     except BaseException:
         try:

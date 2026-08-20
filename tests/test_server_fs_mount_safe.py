@@ -27,6 +27,7 @@ redirected per test.
 """
 import json
 import os
+import sys
 
 import pytest
 from fastapi.responses import JSONResponse
@@ -448,6 +449,17 @@ def test_rename_local_readonly_src_refused_with_mount_dst(home, monkeypatch, tmp
 
 
 @skip_root
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the readonly guard falls back to os.access(parent, os.W_OK) for a "
+           "dst that doesn't exist yet (mount._writable), and Windows' "
+           "directory read-only attribute is largely vestigial — long used "
+           "only by Explorer's folder-customization UI — so it does not gate "
+           "creating entries inside the directory the way a POSIX missing "
+           "write-bit does. os.access keeps reporting the chmod'd ro_dir "
+           "writable and the copy proceeds, so the 403 this test expects "
+           "cannot occur there (see test_server_fs_mutate.py's "
+           "test_mkdir_readonly_parent_403).")
 def test_copy_local_readonly_dst_refused_with_mount_src(home, monkeypatch, tmp_path):
     mp = _mount("rw", read_only=False)
     _no_kernel_on_mount(monkeypatch, mp)

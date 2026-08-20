@@ -215,8 +215,10 @@ def test_a_chat_opened_on_a_file_targets_that_file(
     ])
 
     task = _tasks(client)[0]
-    assert task["target"] == str(file)
-    assert task["project"] == str(proj)
+    # The API canonicalizes project/target (tasks.py: canonical_fs_path) — a
+    # forward-slash form, unlike the raw native-separator str(Path) on Windows.
+    assert task["target"] == tasks_mod.canonical_fs_path(str(file))
+    assert task["project"] == tasks_mod.canonical_fs_path(str(proj))
     assert task["messages"][0]["body"] == "make the wave faster"
 
 
@@ -231,8 +233,8 @@ def test_a_pane_file_that_is_gone_falls_back_to_the_folder(
     ])
 
     task = _tasks(client)[0]
-    assert task["target"] == str(proj)
-    assert task["project"] == str(proj)
+    assert task["target"] == tasks_mod.canonical_fs_path(str(proj))
+    assert task["project"] == tasks_mod.canonical_fs_path(str(proj))
 
 
 def test_a_scheduled_entry_target_beats_the_pane_file(
@@ -254,7 +256,7 @@ def test_a_scheduled_entry_target_beats_the_pane_file(
     ])
 
     task = _tasks(client)[0]
-    assert task["target"] == str(proj / "report.py")
+    assert task["target"] == tasks_mod.canonical_fs_path(str(proj / "report.py"))
 
 
 def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
@@ -551,8 +553,8 @@ def test_a_pending_scheduled_message_is_a_task_with_no_session(client,
     assert task["task_id"] == "TASK-001"
     # A task on a FILE belongs to the folder (§2) — files and folders do not get
     # separate session pools — and keeps the file as its displayed target.
-    assert task["project"] == str(target.parent)
-    assert task["target"] == str(target)
+    assert task["project"] == tasks_mod.canonical_fs_path(str(target.parent))
+    assert task["target"] == tasks_mod.canonical_fs_path(str(target))
     assert task["status"] == "upcoming"
     assert task["message_count"] == 1
     message = task["messages"][0]

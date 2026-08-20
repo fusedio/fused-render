@@ -133,6 +133,17 @@ def _write_target(src, target, dest_root, readonly):
         with src, os.fdopen(fd, "wb") as dst:
             shutil.copyfileobj(src, dst)
         os.chmod(tmp, 0o444)
+        # Clear the read-only bit on a STALE target before the swap — see
+        # zip/reader.py's `_extract_one`, the identical pattern: POSIX's
+        # rename(2) doesn't care about the destination file's own mode, but
+        # Windows' MoveFileExW (os.replace there) refuses to replace a
+        # read-only ATTRIBUTE'd file, which would fail every re-preview of a
+        # changed member on Windows once the first preview had landed. A
+        # no-op on POSIX and on a first preview (target doesn't exist yet).
+        try:
+            os.chmod(target, 0o644)
+        except OSError:
+            pass
         os.replace(tmp, target)
     except BaseException:
         try:
