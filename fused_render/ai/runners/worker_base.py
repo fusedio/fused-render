@@ -421,6 +421,30 @@ SEGMENT_MIN_BYTES = 32 * 1024 * 1024
 #: shared queue: a worker that finishes early pulls the next chunk rather than
 #: finding nothing assigned to it, so a slow connection only ever delays its
 #: own current 32MB, never the tail of the whole download.
+#:
+#: **Two costs this accepts, deliberately, both raised in review and both
+#: judged worth it rather than left unexamined.**
+#:
+#: (1) A 4.6GB shard is now ~144 requests instead of 4 — 144 TCP/TLS
+#: handshakes rather than 4, since `urllib` opens a fresh connection per
+#: `_open` call. Against a 32MB transfer per chunk that overhead is a small
+#: percentage, and it buys the one property size/N could not have at any
+#: chunk count: MORE units of work than `MAX_CONNECTIONS`, which is what
+#: makes stealing possible at all. A pool with only as many items as workers
+#: — four shares on eight connections — can never exhibit the failure this
+#: fixes, no matter how the four are sized.
+#:
+#: (2) `work` is built file-by-file (`_segmented_fetch`), so with one file's
+#: chunk count at or above `MAX_CONNECTIONS`, all 8 connections work that ONE
+#: file before the next file's chunks start — files finish roughly in
+#: submission order rather than interleaved. That is a scheduling preference,
+#: not a correctness gap: the cap still holds, nothing waits on a connection
+#: sitting idle, and a multi-file repo still finishes strictly faster than
+#: before this change. Round-robining chunks ACROSS files instead would
+#: trade "finishes files one at a time" for "every file creeps up together",
+#: which is not obviously better and was not what the tail bug asked for —
+#: left as a real option for whoever next has a reason to prefer it, not
+#: implemented speculatively here.
 CHUNK_BYTES = 32 * 1024 * 1024
 #: Across everything — the ONE number that bounds how many sockets a download
 #: opens. A pool per file would multiply the caps together.
@@ -1275,7 +1299,26 @@ def _resolve(repo_id, filenames, revision):
 
 def _run_segment(fetch, seg):
     """One unit of work in the pool: fill a segment, and finalise if it was the
-    last one its file was waiting on."""
+    last one its file was waiting on.
+
+    **`force=True` on every completion, so a 4.6GB shard now forces ~144
+    sidecar fsyncs instead of 4 — raised in review and judged not worth
+    changing yet.** The data most of that fsync flushes is already clean:
+    `_drain`'s own periodic `flush()` (no `force`) runs throughout the
+    segment on the same 1-second cadence regardless of chunk size, so a
+    completed 32MB chunk typically has little UNFLUSHED data behind it and
+    this call's real job is durably recording the LAST partial tick — the
+    bytes written since that periodic flush last fired, which on a fast link
+    can be most of the chunk. If this ever shows up in profiling on real
+    storage, the change to make is dropping `force` here entirely and
+    letting the periodic flush alone catch a finished segment: correctness
+    would not regress (a segment whose completion lands between two
+    periodic ticks just resumes as its last-recorded, slightly earlier
+    offset — a bigger but still bounded re-fetch, not a corrupt one), only
+    resume-efficiency would give up a little in exchange for far fewer
+    forced fsyncs. Not made speculatively because nothing here has measured
+    it as a real cost.
+    """
     try:
         try:
             fetch.run(seg)
