@@ -446,9 +446,9 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.deeplink import router as deeplink_router
 
     app.include_router(deeplink_router)
-    # .fused single-file app export/open (SPEC §43, D384-D386): GET
-    # /api/appfile/export download, GET /openfused confirm page,
-    # POST /api/appfile/open extract-and-render.
+    # .fused single-file app export/open (SPEC §43, D384-D388): GET
+    # /api/appfile/export download, GET /openfused gate-less
+    # extract-and-redirect to the entry's embed URL.
     from fused_render.server.routers.appfile import router as appfile_router
 
     app.include_router(appfile_router)

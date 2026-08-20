@@ -1,26 +1,29 @@
-"""Routes behind the ``.fused`` single-file app export/open (SPEC §43, D384-D386).
+"""Routes behind the ``.fused`` single-file app export/open (SPEC §43, D384-D388).
 
 Export is a GET download (the card menu navigates to it, so the browser's own
 download UI handles the file) of a zip built into a per-request temp dir and
 deleted after the response — read-only against the app folder, nothing
 persisted server-side, same unguarded-GET posture as the template-pack export.
 
-Open is split across the same trust boundary as the deep-link clone (D110):
-``GET /openfused`` serves the static confirm page (no I/O), ``GET
-/api/appfile/info`` is the page's read-only preview (manifest only, nothing
-extracted), and only the X-Fused-guarded ``POST /api/appfile/open`` extracts
-and answers with the embed URL to land on.
+Open is ONE hop with no gate (D388 removed D385's confirm page, owner call):
+``GET /openfused?file=`` — what the shared view-URL codec routes a
+double-clicked or explorer-clicked ``.fused`` to — extracts the payload
+(hardened, content-addressed, read-only; see ``appfile.open_app_file``) and
+302-redirects straight to the entry page's chrome-free embed URL. The GET
+mutates only the app's own cache dir, idempotently — the same posture as
+GET /render recording an open.
 """
 
 from __future__ import annotations
 
+import html
 import os
 import shutil
 import tempfile
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Header
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from starlette.background import BackgroundTask
 
 from fused_render import appfile
@@ -28,21 +31,9 @@ from fused_render._view_url_codec import embed_url_path
 
 router = APIRouter()
 
-_OPENFUSED_PAGE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static", "openfused.html"
-)
-
 
 def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
-
-
-def _require_fused(x_fused: str | None) -> JSONResponse | None:
-    # Same D3 guard as server._require_fused, duplicated like deeplink.py's:
-    # a router module must not import the app factory that includes it.
-    if x_fused != "1":
-        return _error("missing or invalid X-Fused header", status=403)
-    return None
 
 
 @router.get("/api/appfile/export")
@@ -75,47 +66,27 @@ def api_appfile_export(path: str = ""):
 
 
 @router.get("/openfused")
-def openfused_page(file: str = ""):
-    # The confirm page is self-contained (no shell, no external assets): it
-    # reads ?file= client-side, previews via GET /api/appfile/info, and only
-    # its explicit Open button fires the guarded POST. Serving it does no I/O.
-    return FileResponse(_OPENFUSED_PAGE)
+def openfused(file: str = ""):
+    """Open the ``.fused`` file at ``file``: extract (or re-use the extract)
+    and redirect to the entry page's embed URL. No confirm gate (D388).
 
-
-@router.get("/api/appfile/info")
-def api_appfile_info(file: str = ""):
-    """Read-only preview for the confirm page: the manifest, the file size,
-    and where the extract would land. Nothing is extracted."""
+    Errors render as a minimal same-tab HTML page rather than JSON — this URL
+    is reached by OS double-click navigation, where a JSON body reads as a
+    broken download."""
     if not file or not os.path.isabs(file):
-        return _error("file must be an absolute .fused file path")
-    try:
-        manifest = appfile.read_manifest(file)
-        size = os.path.getsize(file)
-    except appfile.AppFileError as exc:
-        return _error(str(exc))
-    except OSError as exc:
-        return _error(f"cannot read {file}: {exc}")
-    return {
-        "name": manifest.get("name"),
-        "entry": manifest.get("entry"),
-        "size": size,
-        "dest_root": appfile.appfiles_root(),
-    }
-
-
-@router.post("/api/appfile/open")
-def api_appfile_open(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    file = str(body.get("file") or "")
-    if not file or not os.path.isabs(file):
-        return _error("file must be an absolute .fused file path")
+        return _openfused_error("missing or relative ?file= parameter")
     try:
         result = appfile.open_app_file(file)
     except appfile.AppFileError as exc:
-        return _error(str(exc))
-    # No explicit hub registration here: rendering the marker-carrying entry
-    # records the open (D301), which for a folder outside the workspace IS the
-    # registration (registered_apps.record_open) — deliberate, D386.
-    return {**result, "view": embed_url_path(result["entry"])}
+        return _openfused_error(str(exc))
+    return RedirectResponse(embed_url_path(result["entry"]), status_code=302)
+
+
+def _openfused_error(message: str) -> HTMLResponse:
+    return HTMLResponse(
+        "<!doctype html><meta charset='utf-8'>"
+        "<body style=\"font:15px/1.5 -apple-system,sans-serif;padding:40px\">"
+        "<h1 style='font-size:18px'>Could not open app</h1>"
+        f"<pre style='white-space:pre-wrap'>{html.escape(message)}</pre></body>",
+        status_code=400,
+    )

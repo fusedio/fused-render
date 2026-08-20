@@ -30,11 +30,11 @@ is, nothing else). Extraction rides the one hardened unzip implementation
 (``zip_import``): a ``.fused`` that arrived by mail is exactly as untrusted as
 an uploaded template pack.
 
-The trust boundary is the confirm page (``static/openfused.html``, served by
-GET /openfused — same posture as the deep-link clone confirm, D110): a
-double-click alone never executes anything; only the explicit confirm click
-fires the X-Fused-guarded POST /api/appfile/open, and the page says plainly
-that the app can run Python on this machine.
+There is deliberately NO confirm gate (D388, owner call, removing D385's
+confirm page): GET /openfused extracts and 302-redirects straight to the
+entry's embed URL — a double-clicked app opens like a document. The accepted
+consequence is that opening a ``.fused`` from an untrusted source runs its
+Python on first render, same as opening any folder of pages someone sent you.
 """
 
 from __future__ import annotations

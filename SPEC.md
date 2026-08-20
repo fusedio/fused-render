@@ -7414,13 +7414,16 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   error surfaces as a toast, never saves as a corrupt file). The route builds
   into a per-request temp dir, deleted after the response; non-destructive
   everywhere.
-- **AF-5** A double-clicked `.fused` never renders directly: the shared
-  view-URL codec (`_view_url_codec.view_url_path`, all platform entry points)
-  routes it to `GET /openfused?file=`, a self-contained confirm page (the
-  D110 clone-confirm posture). The page previews via read-only
-  `GET /api/appfile/info` (manifest only, nothing extracted) and states that
-  the app can run Python on this machine; only its explicit button fires the
-  X-Fused-guarded `POST /api/appfile/open`.
+- **AF-5** Opening is ONE hop with no gate (D388, which removed D385's
+  confirm page — owner call): the shared view-URL codec
+  (`_view_url_codec.view_url_path`, all platform entry points, mirrored in
+  `router.ts urlForFsPath` for in-explorer clicks) routes a `.fused` to
+  `GET /openfused?file=`, which extracts (or re-uses the cached extract) and
+  302-redirects to the entry page's embed URL. Errors answer a minimal
+  human-readable HTML page (the URL is reached by OS navigation, where JSON
+  reads as a broken download). The accepted trade: a `.fused` from an
+  untrusted source runs its Python on first render, like any folder of pages
+  someone sent you.
 - **AF-6** Open extracts through `zip_import`'s hardened extractor (zip-slip,
   symlink entries, count/size caps on bytes actually written) into a
   content-addressed dir under `~/.fused-render/appfiles/`

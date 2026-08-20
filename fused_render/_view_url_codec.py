@@ -48,9 +48,9 @@ def view_url_path(fs_path: str) -> str:
         return "/explorer/view/_bookmark?file=" + quote(norm, safe="")
     if fs_path.lower().endswith(".fused"):
         # A .fused app file is never previewed directly (same posture as
-        # .bookmark): it routes to the server-served confirm page, which
-        # extracts and opens the app only on the explicit confirm click
-        # (SPEC §43, D385).
+        # .bookmark): it routes through GET /openfused, which extracts the
+        # payload (or re-uses the cached extract) and redirects straight to
+        # the entry page's embed URL — no gate (SPEC §43, D388).
         return "/openfused?file=" + quote(norm, safe="")
     segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
     return "/explorer/view/" + "/".join(segments)

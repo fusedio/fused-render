@@ -210,7 +210,7 @@ def test_codec_routes_fused_files_to_confirm_page():
     assert embed_url_path("/x/demo/index.html") == "/explorer/embed/x/demo/index.html"
 
 
-def test_routes_export_info_open(tmp_path, monkeypatch):
+def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     from fused_render.server.app import create_app
@@ -225,38 +225,37 @@ def test_routes_export_info_open(tmp_path, monkeypatch):
     fused_path = tmp_path / "demo.fused"
     fused_path.write_bytes(r.content)
 
-    r = client.get("/api/appfile/info", params={"file": str(fused_path)})
-    assert r.status_code == 200
-    assert r.json()["name"] == "demo"
-    assert r.json()["entry"] == "index.html"
-
-    # The confirm page serves without I/O.
-    r = client.get("/openfused", params={"file": str(fused_path)})
-    assert r.status_code == 200
-    assert "run Python code" in r.text
-
-    # Open is X-Fused guarded.
-    r = client.post("/api/appfile/open", json={"file": str(fused_path)})
-    assert r.status_code == 403
-    r = client.post(
-        "/api/appfile/open", json={"file": str(fused_path)}, headers={"X-Fused": "1"}
+    # D388: GET /openfused is gate-less — it extracts and 302s straight to
+    # the entry page's embed URL.
+    r = client.get(
+        "/openfused", params={"file": str(fused_path)}, follow_redirects=False
     )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["view"].startswith("/explorer/embed/")
-    assert os.path.isfile(body["entry"])
+    assert r.status_code == 302
+    view = r.headers["location"]
+    assert view.startswith("/explorer/embed/")
+    extracted = appfile.open_app_file(str(fused_path))
+    assert extracted["reused"] is True  # the GET above already extracted
 
     # A bad export target answers 400 with the reason.
     r = client.get("/api/appfile/export", params={"path": str(tmp_path / "nope")})
     assert r.status_code == 400
     assert "error" in r.json()
 
+    # A bad .fused answers a human-readable error page, not JSON (the URL is
+    # reached by OS double-click navigation).
+    junk = tmp_path / "junk.fused"
+    junk.write_bytes(b"not a zip")
+    r = client.get("/openfused", params={"file": str(junk)})
+    assert r.status_code == 400
+    assert "Could not open app" in r.text
+
     # AF-8: rendering the extracted entry records the open (D301), which for a
     # folder outside the workspace IS hub registration.
-    r = client.get("/render", params={"path": body["entry"]})
+    r = client.get("/render", params={"path": extracted["entry"]})
     assert r.status_code == 200
     from fused_render import registered_apps
 
     assert any(
-        os.path.abspath(e["path"]) == body["dir"] for e in registered_apps.read_entries()
+        os.path.abspath(e["path"]) == extracted["dir"]
+        for e in registered_apps.read_entries()
     )
