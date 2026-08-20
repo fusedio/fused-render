@@ -48,6 +48,16 @@ export const MenuIcons: Record<string, ReactNode> = {
       <path d="M4 8V6a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z" />
     </svg>
   ),
+  // Open in New Tab — browser window (tab strip across the top) with a plus in
+  // the body. Distinct from `open` (an arrow out of a box: this same page
+  // navigating) and from `folder`: the target lands in ANOTHER tab.
+  newTab: (
+    <svg {...svgProps}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9h18" />
+      <path d="M12 12v5M9.5 14.5h5" />
+    </svg>
+  ),
   // Delete — trash can with lid + two ribs.
   trash: (
     <svg {...svgProps}>
