@@ -210,8 +210,9 @@ class Worker:
     resident_bytes: int | None = None
     #: "cuda" | "mps" | "cpu", as the WORKER reported it — never as this process
     #: worked it out. The supervisor can see that a machine has a GPU and not
-    #: whether the runner's torch was built to use it, and on Windows those
-    #: differ by default (the PyPI wheel is CPU-only). Same argument AI-8 makes
+    #: whether the runner's torch was built to use it, and since D381 those
+    #: differ BY DEFAULT everywhere: the default torch rows pin the `whl/cpu`
+    #: build and the accelerated ones are opt-in. Same argument AI-8 makes
     #: about resident bytes: only the process holding the weights knows.
     device: str = ""
     loaded_at: float | None = None

@@ -1,14 +1,43 @@
-# The diffusers image runner's environment (SPEC §40, PY-16).
+# The diffusers image runner's environment — the CPU variant (SPEC §40, PY-16).
 #
-# This folder exists so that torch and diffusers are named in exactly one place
-# and live in exactly one interpreter — not fused-render's. They are several GB;
-# a file explorer that could not start without them would be a worse file
-# explorer, and `envinstall` (PY-18) builds this on first use with the same
-# detached `uv sync` and the same verbatim errors any declaring folder gets.
+# This folder exists so that torch and diffusers are named in one place and live
+# in their own interpreter — not fused-render's. They are several GB; a file
+# explorer that could not start without them would be a worse file explorer, and
+# `envinstall` (PY-18) builds this on first use with the same detached `uv sync`
+# and the same verbatim errors any declaring folder gets.
 #
-# **This first install is genuinely large** — a torch wheel alone is 2-3GB — so
-# it is a reported stage rather than a silent wait, and the AI Models page shows
-# it as "Preparing Diffusers (PyTorch)…" before any weights are fetched.
+# **This is one of THREE folders that install the same runner.** `torch` is the
+# only line that differs between them: here it comes from
+# `download.pytorch.org/whl/cpu`, in `diffusers_image_cuda/` from PyPI (whose torch
+# IS the CUDA build), in `diffusers_image_rocm/` from
+# `download.pytorch.org/whl/rocm7.1`. The code they run is `runners/torch_image.py`
+# — one file, shared, because a denoising loop does not know what it is multiplying
+# on. Three folders rather than one manifest with a switch because
+# `_env_install_worker` runs a BARE `uv sync` with cwd set to the runner folder
+# (PY-18): a user never types a uv command, so there is no place to pass an index
+# from, and everything about an environment has to be expressible in the
+# `pyproject.toml` beside it. The Engines tab is where the user picks.
+#
+# **CPU is the DEFAULT, which is the change this folder carries.** Before the
+# split, torch came from PyPI for everyone, so a Linux machine paid several GB of
+# `nvidia-*` wheels whether or not it owned a card and a Windows machine got a
+# CPU-only build it could not opt out of. On macOS nothing changes: the CPU index
+# carries the ordinary `2.13.0` wheel there — no local version, the same file PyPI
+# ships, MPS compiled in — so Apple Silicon keeps its GPU, which this runner needs
+# because it is what a Mac falls back to when `mflux_image` is unavailable.
+#
+# **This first install is genuinely large even on CPU** — a torch wheel is
+# hundreds of MB and the pipeline weights are GB — so it is a reported stage
+# rather than a silent wait, and the AI Models page shows it as "Preparing
+# Diffusers (CPU)…" before any weights are fetched.
+#
+# **`explicit = true` is the whole of the confinement.** Without it the CPU index
+# becomes a candidate for EVERY requirement, and diffusers, transformers, numpy and
+# the rest would come from a mirror that only mirrors what PyTorch builds. With it
+# the override reaches exactly the names under `[tool.uv.sources]` and nothing
+# else — verified against a real resolution: of the 53 packages locked here, 50
+# come from PyPI and only torch comes from the mirror (as two entries,
+# `2.13.0+cpu` and the darwin `2.13.0`).
 #
 # **Every dependency here must be installable as a WHEEL, and that is a rule
 # rather than a preference.** A source build runs a build backend in a subprocess
@@ -25,7 +54,7 @@
 # re-resolved from PyPI on every new venv key and a major bump lands on users
 # with no commit behind it. The FLOORS are left where they were — `diffusers`
 # keeps `>=0.39` rather than gaining the installed patch, and `transformers`
-# gains a ceiling with NO floor added, because this runner has never declared one
+# carries a ceiling with NO floor added, because this runner has never declared one
 # and inventing one here would forbid versions that are currently allowed while
 # also disagreeing with `transformers_text`'s deliberate `>=4.51`. A ceiling only
 # removes the future; a floor removes the present.
@@ -38,12 +67,12 @@
 #                  git+https://github.com/huggingface/diffusers.git for exactly
 #                  that class, back when it existed only on main (D266). `<0.40`
 #                  because a pre-1.0 minor is where this library moves pipeline
-#                  signatures, and `worker.py` drives one directly.
+#                  signatures, and `torch_image.py` drives one directly.
 #   transformers   the text encoder every text-to-image pipeline puts in front
 #   accelerate     device placement / offload for models bigger than the GPU
 #   sentencepiece  the tokenizer format those text encoders use
 #   protobuf       sentencepiece's model format needs it at load time
-#   gguf           reads the quantized single-file transformer (see worker.py)
+#   gguf           reads the quantized single-file transformer (see torch_image.py)
 #   pillow         writes the PNG
 #   huggingface_hub downloads
 #   psutil         answers "how much memory is this costing"
@@ -67,3 +96,13 @@ dependencies = [
 # Not a distribution — a folder of scripts, not something to build and install.
 [tool.uv]
 package = false
+
+# The CPU wheels. `explicit` keeps this index out of every other requirement's
+# candidate list — see the header.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

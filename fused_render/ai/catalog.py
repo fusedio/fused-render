@@ -17,12 +17,14 @@ than one platform.** A suggestion is only meaningful for the backend that will
 load it: `mlx-community/Qwen3.5-9B-MLX-4bit` is packed for Metal kernels and is
 unloadable rubbish on a Windows box, while `Qwen/Qwen3-4B-Instruct-2507` is the
 right answer there and the wrong one on a Mac that has MLX. One capability with
-two runners (text generation since D293, speech to text since D302) therefore
-has two lists, and the registry's resolution decides which one a machine sees —
-the same mechanism, asked the same question, so the page cannot offer a model
-the loader would then refuse.
+two BACKENDS (text generation since D293, speech to text since D302) therefore
+has two lists — hardware variants of one backend share theirs, since the wheel
+changes and the readable format does not (`_SHARED_SUGGESTIONS`) — and the
+registry's resolution decides which one a machine sees, the same mechanism
+asked the same question, so the page cannot offer a model the loader would then
+refuse.
 
-**Which means the suggestion list now moves when a PREFERENCE moves**, not only
+**Which means the suggestion list CAN move when a PREFERENCE moves**, not only
 when the hardware differs: a user who switches speech to text from MLX to
 CTranslate2 on the Preferences page is shown four different repos next time they
 open the AI Models page, and the ones they may already have downloaded stop
@@ -30,8 +32,20 @@ being offered. That is correct — a suggestion is only meaningful for the backe
 that will load it — but it must not be silent, which is why `describe()` reports
 the resolved runner's LABEL beside every list and the page shows it.
 
-Sizes are the on-disk download, and the notes are frank about the trade — "tight
-on 16GB" is the sentence that stops someone starting an 8GB pull they will regret.
+**"Can", because since the per-hardware split some engine switches move the
+label and leave the list exactly where it is.** CPU -> CUDA -> ROCm is a change
+of wheel, not of weights format, so those rows share one list by construction
+(`_SHARED_SUGGESTIONS`) and the page correctly shows the same repos under a new
+engine name. The rule underneath is unchanged and is the one to reason from: the
+list belongs to the FORMAT a backend reads, and it moves when and only when that
+format does.
+
+Sizes are the on-disk download, and the notes are frank about the trade — which
+since the per-hardware runner split means frank about the MODEL and never about
+the machine: one list is shown by three engines (CPU, CUDA, ROCm), and a note
+saying "tight on 16GB" would mean system RAM under one of them and VRAM under
+the others. `size_gb` is the field that answers the budget question, in the one
+unit this file defines; see the rule above the transformers list.
 
 **`size_gb` IS EVERY BYTE THE DOWNLOAD FETCHES, ACROSS EVERY REPO IT TOUCHES.**
 Not the weights file, not the interesting part, not one of the two repos — the
@@ -231,10 +245,12 @@ SUGGESTIONS: dict[str, list[dict]] = {
     #   who has done nothing wrong. The MLX list above gets away with gemma only
     #   because the `mlx-community` re-uploads are not gated.
     # * **Sized for the machine that will actually run them.** The accepted v1
-    #   trade is that torch from PyPI is CPU-only on Windows (see this runner's
-    #   `pyproject.toml`), so the list has to be usable with no GPU at all
-    #   rather than assuming one — which is why the smallest entry is here on
-    #   merit and not as an afterthought.
+    #   trade is that the default torch row installs the `whl/cpu` build on
+    #   every non-Apple machine (D381, see this runner's `pyproject.toml`), so
+    #   the list has to be usable with no GPU at all rather than assuming one —
+    #   which is why the smallest entry is here on merit and not as an
+    #   afterthought. The accelerated rows share this very list (`catalog.py`'s
+    #   `_SHARED_SUGGESTIONS`), so it is the CPU that sets its ceiling.
     #
     # Sizes sum every file in the Hub snapshot (2026-08-14) and round the byte
     # total to one decimal GB. That makes them download estimates rather than
@@ -247,13 +263,29 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # the single thing that would change the choice and stops, with the rest
     # left to the model card the name links to. The older lists in this file
     # predate the rule and still run to three sentences.
+    #
+    # **THE NOTES ARE HARDWARE-NEUTRAL, and that is a rule rather than a style.**
+    # This one list is what the CPU, CUDA and ROCm builds of Transformers all
+    # show (see `_SHARED_SUGGESTIONS`), so a note that mentions a device is
+    # wrong on two rows out of three: "the one to pick with no GPU" is a
+    # tautology on the CPU engine, and "the only one that needs a GPU" reads as
+    # "do not pick this" inside a list whose only purpose is to be picked from.
+    # A memory claim is worse than wrong, it is ambiguous — "fits a 16GB
+    # machine" means SYSTEM RAM on the CPU row and VRAM on the accelerated
+    # ones, which are different numbers on the same physical machine, and on
+    # ROCm they are not even the number on the box (pytorch#184880 has a 16GB
+    # RX 9060 XT reporting ~7915MB usable, so an 8.1GB entry that "fits 16GB"
+    # does not fit that row). **`size_gb` carries the budget question**, in the
+    # one unit this file defines — every byte the download fetches — and a
+    # reader comparing it against their own machine is doing arithmetic these
+    # sentences cannot do for them.
     "transformers-text": [
         {
             "id": "Qwen/Qwen3-1.7B",
             "label": "Qwen3 1.7B",
             "size_gb": 4.1,
-            "note": "The smallest here and the one a bare call loads — the one "
-                    "to pick with no GPU.",
+            "note": "The smallest here and the one a bare call loads — quickest "
+                    "to fetch and quickest to answer.",
         },
         {
             "id": "microsoft/Phi-4-mini-instruct",
@@ -266,14 +298,15 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "id": "Qwen/Qwen3-4B-Instruct-2507",
             "label": "Qwen3 4B Instruct",
             "size_gb": 8.1,
-            "note": "The best all-round pick: the strongest one that still fits "
-                    "a 16GB machine.",
+            "note": "The best all-round pick: clearly stronger than the small "
+                    "ones without being the largest download here.",
         },
         {
             "id": "Qwen/Qwen3-8B",
             "label": "Qwen3 8B",
             "size_gb": 16.4,
-            "note": "Best quality here, and the only one that needs a GPU.",
+            "note": "Best quality here, and twice the download and the memory "
+                    "of the pick above it.",
         },
     ],
     "diffusers-image": [
@@ -286,8 +319,16 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # the actual pull was 18.6, and the field two lists down means the
             # whole download; see the module docstring's rule (D308).
             "size_gb": 10.8,
-            "note": "Quantized transformer (Q4_K_M) instead of the ~8GB bf16 "
-                    "original — the full-precision one OOMs on 16GB machines.",
+            # Hardware-neutral, per the rule the transformers list above states:
+            # this one list serves the CPU, CUDA and ROCm Diffusers rows, and
+            # the sentence used to say the full-precision pipeline "OOMs on
+            # 16GB machines" — a claim about system RAM on one row and about
+            # VRAM on the others, and on ROCm about neither (a 16GB card can
+            # report half that usable). What survives the move is the fact that
+            # decides the choice anyway: this is the smaller thing to fetch and
+            # to hold.
+            "note": "Quantized transformer (Q4_K_M) rather than the bf16 "
+                    "original — several GB less to fetch and to hold in memory.",
         },
     ],
     # The same model, converted for MLX — and unloadable by the runner above,
@@ -437,6 +478,35 @@ SUGGESTIONS: dict[str, list[dict]] = {
     ],
 }
 
+#: Hardware variant -> the runner whose list it SHARES. Resolved by `for_runner`
+#: rather than copied into `SUGGESTIONS`, and the direction of that choice is the
+#: point.
+#:
+#: **This file is keyed by runner because a repo belongs to a BACKEND** — the
+#: docstring's argument is about weights formats, `mlx-community/…` against
+#: `Qwen/…`, and two lists exist because neither backend can open the other's
+#: files. A CUDA build of Transformers reads byte for byte what the CPU build
+#: reads; the split between them is which wheel gets installed, and nothing
+#: about which repos are loadable. So their lists must be identical BY
+#: CONSTRUCTION. Four copied literals would be identical only until somebody
+#: edited one of them, and the failure that produces — a curated model offered
+#: on the CPU engine and missing on the CUDA one, or worse, sized for a
+#: different budget — is silent on the page.
+#:
+#: An alias also keeps two invariants this file states elsewhere true: every id
+#: still appears in exactly ONE list (`capability_of` reads that), and
+#: `all_suggested_ids()` is not four copies deduplicated by luck.
+#:
+#: What must NOT be aliased is a runner that reads a different format. That is
+#: the whole keying rule, and it is why this table names the specific pairs
+#: instead of stripping a suffix off a code.
+_SHARED_SUGGESTIONS = {
+    "transformers-text-cuda": "transformers-text",
+    "transformers-text-rocm": "transformers-text",
+    "diffusers-image-cuda": "diffusers-image",
+    "diffusers-image-rocm": "diffusers-image",
+}
+
 
 def _runner_for(capability: str) -> registry.Runner | None:
     """The runner whose suggestions apply to `capability` HERE.
@@ -455,7 +525,12 @@ def _runner_for(capability: str) -> registry.Runner | None:
 
 
 def for_runner(code: str) -> list[dict]:
-    return list(SUGGESTIONS.get(code, ()))
+    """The curated list for a runner, following the hardware-variant alias.
+
+    A copy of the list, as it always was — callers append to it (the router's
+    cached-repo union does) and must not be editing the curation.
+    """
+    return list(SUGGESTIONS.get(_SHARED_SUGGESTIONS.get(code, code), ()))
 
 
 def for_capability(capability: str) -> list[dict]:
@@ -503,6 +578,15 @@ def capability_of(repo_id: str) -> str | None:
     registry rather than being restated here — one repo id belongs to exactly
     one runner's list, and three mutually unloadable Whisper conversions are why
     that list is per-backend in the first place.
+
+    **That one-list-per-id invariant survives the hardware variants only because
+    they are ALIASED rather than copied** (`_SHARED_SUGGESTIONS`): a CUDA
+    Transformers row shares the CPU row's entries instead of holding its own,
+    so no id appears under two keys and this loop cannot see the same repo
+    twice. Copying the lists would not have broken the ANSWER — the variants of
+    one backend share a capability, so first-match-wins returns the same string
+    — but it would have made the sentence above false, which is how a later
+    reader ends up trusting an invariant nothing enforces.
     """
     for code, entries in SUGGESTIONS.items():
         if any(entry["id"] == repo_id for entry in entries):
@@ -534,7 +618,7 @@ def describe() -> list[dict]:
             {
                 "capability": capability,
                 "runner": runner.code if runner else None,
-                # The backend in words ("Transformers (PyTorch)"), because with
+                # The backend in words ("Transformers (CUDA)"), because with
                 # two runners per capability the code alone stopped being
                 # something a page could show a person.
                 "runnerLabel": runner.label if runner else None,

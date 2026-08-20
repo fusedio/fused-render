@@ -1,9 +1,9 @@
-"""The CPU image runner (SPEC §40).
+"""The CUDA image runner (SPEC §40).
 
 Five lines of code and a `pyproject.toml`, and the manifest is the whole of it:
-this folder installs the CPU-only build from
-`download.pytorch.org/whl/cpu`. Its siblings
-`diffusers_image_cuda/` and `diffusers_image_rocm/` declare the same
+this folder installs PyPI's default torch, which IS the
+CUDA build. Its siblings
+`diffusers_image/` and `diffusers_image_rocm/` declare the same
 dependencies at the same versions and differ ONLY in which index torch comes
 from; the runner itself is `runners/torch_image.py`, shared by all three, because
 which wheel a user installed is a fact about the hardware they picked on the

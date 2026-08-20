@@ -346,8 +346,9 @@ function Suggested({
           <div className="am-subgroup-head">
             <h3 className="am-subgroup-title">{group.capability.replace(/-/g, " ")}</h3>
             {/* WHICH backend will load these, named. One capability can have
-                two runners now (text generation: MLX on Apple Silicon, PyTorch
-                everywhere else), and the shortlist below differs completely
+                several runners now (text generation: MLX on Apple Silicon, and
+                the CPU/CUDA/ROCm torch builds elsewhere — the accelerated ones
+                by explicit choice), and the shortlist below differs completely
                 between them — so a heading that said only "text generation"
                 left the reader with no way to tell which list they were looking
                 at, or why it was not the one in the docs. Since D302 that
