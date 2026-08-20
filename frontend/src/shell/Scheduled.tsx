@@ -369,14 +369,8 @@ export default function Scheduled() {
       {loadError && <ErrorBanner>Failed to load tasks: {loadError}</ErrorBanner>}
       {!state && !loadError && <SkeletonLines rows={2} label="Loading tasks" />}
 
-      {/* `schedule-main--list` widens this section to the full page so the
-          List's scroller can run edge to edge and catch the wheel in the empty
-          margins either side of the card; the 1050px measure moves onto the
-          children (styles/tasks.css). Board and Calendar keep the capped
-          section they have always had — their scrollers are the lane body and
-          the week grid, and both already fill it. */}
       {state && (
-        <section className={"prefs-section schedule-main" + (view === "list" ? " schedule-main--list" : "")}>
+        <section className="prefs-section schedule-main">
           <div className="schedule-toolbar">
             {/* The view toggle leads, at the far left of every view — it is the
                 one control that must never change address, and anchoring it to
