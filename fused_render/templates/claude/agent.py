@@ -1435,6 +1435,60 @@ def _strip_ann_block(text: str) -> str:
     return text[close_at + len(_ANN_FENCE_CLOSE):].lstrip("\n")
 
 
+def _ann_notes(text: str) -> str:
+    """The words the user typed INSIDE their pins, for a send that carried no
+    free text at all — or "" when there are none.
+
+    NOT part of `_strip_machinery`, deliberately. That function answers "what
+    did the human TYPE in the composer", it is duplicated in
+    `tasks_store.strip_machinery`, and the two are pinned character-identical
+    over a corpus — so widening it to reach into an annotation payload would
+    change every one of its readers at once. This is a SECOND source, consulted
+    only where a nameless row is worse than an approximate one.
+
+    Annotations carry a `content` field — the note the user wrote on the pin —
+    which the block strip drops with the rest of the payload. A send that is
+    ONLY annotations is therefore words the user typed, sitting in the record,
+    that no reader would show: the chat vanished from "Recent chats" entirely
+    (a `_cli_preview` of "" drops the session, not just its name) and its
+    snapshot runbox could only call it "chat" plus a short id. Both from the
+    same "".
+
+    Joined in `t` order across pins, because that is the order the walkthrough
+    was given in and the caller truncates to 80 chars anyway. A wordless send —
+    a pin with no note, a bare screenshot — still yields "": there is nothing
+    to name it with, which is the one case the empty answer was always for.
+    """
+    out = (text or "").strip()
+    while True:
+        match = _LEADING_MACHINERY.match(out)
+        if not match:
+            break
+        out = out[match.end():].strip()
+    if not out.startswith(_ANN_PREAMBLE):
+        return ""
+    open_at = out.find(_ANN_FENCE_OPEN)
+    if open_at == -1:
+        return ""
+    close_at = out.find(_ANN_FENCE_CLOSE, open_at + len(_ANN_FENCE_OPEN))
+    if close_at == -1:
+        return ""
+    try:
+        pins = json.loads(out[open_at + len(_ANN_FENCE_OPEN):close_at])
+    except ValueError:
+        return ""
+    if not isinstance(pins, list):
+        return ""
+    notes = []
+    for pin in pins:
+        if not isinstance(pin, dict):
+            continue
+        note = pin.get("content")
+        if isinstance(note, str) and note.strip():
+            notes.append(note.strip())
+    return " · ".join(notes)
+
+
 def _strip_machinery(text: str) -> str:
     """What a human actually typed in one transcript record — every
     machine-written PREFIX peeled off — or "" if they typed no words at all.
@@ -2845,7 +2899,10 @@ def _cli_preview(path: str, workdir: str) -> str:
                                if isinstance(b, dict) and b.get("type") == "text")
         if not isinstance(content, str):
             continue
-        content = _strip_machinery(content)
+        # The pins are the fallback, not the first choice: a send that carried
+        # both free text and annotations is named by the text (see `_ann_notes`
+        # for why that reading is not folded into the stripper).
+        content = _strip_machinery(content) or _ann_notes(content)
         if not content:
             continue
         return content[:80] if cwd_seen else ""

@@ -4667,6 +4667,13 @@ wanting "what has this file been through" wants §33.
       count, that id being the one handle that separates two unnamed chains. The
       full id stays on the heading's `title`, and on each row's, so a row read out
       of context can still say which "v2" it is.
+      - **A miss being ordinary is not licence to stop asking WHY one missed.**
+        The first two chains this panel ever showed for a real canvas both fell
+        back to "chat", and neither was from another folder: their sessions were
+        ANNOTATION-ONLY sends, whose preview stripped to "" — and `_cli_sessions`
+        drops a session with no preview, so the same "" had already taken both
+        chats out of "Recent chats" above. The fallback did its job and hid a
+        different bug behind a legitimate empty state (D386).
   - **The read declines BOTH of the reader's costs.** Enrichment reads session
     transcripts (5 MB+), so the panel takes the unenriched timeline — which is why
     it never claims a chain is complete (FH-3). The exact deltas are `difflib` per
