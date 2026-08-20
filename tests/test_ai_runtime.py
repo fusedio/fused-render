@@ -503,6 +503,7 @@ def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
     # Switching also moves the suggestion list, since a repo belongs to a
     # backend: the MLX conversion is unloadable by diffusers and vice versa.
     assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
+        "tonera/FLUX.2-klein-4B-int8-diffusers",
         "black-forest-labs/FLUX.2-klein-4B"]
 
     # Windows and Linux never see the MLX row at all, preference or none.

@@ -2278,6 +2278,25 @@ export function searchHubModels(opts: {
   });
 }
 
+/** One repo's TOTAL size on the Hub — everything in it, not just the weights.
+ *
+ *  The fallback for a row whose `estimatedSize` is null (GGUF, mflux, a
+ *  LoRA): no dtype map means nothing for the search to measure, and the Hub
+ *  will only expand this field one repo at a time. `usedStorage` is null when
+ *  the Hub does not measure the repo either. */
+export interface HubModelSizeResult {
+  id: string;
+  usedStorage: number | null;
+  error?: string;
+}
+
+/** One repo's total size. ONE round trip per call — the Hub's list endpoint
+ *  refuses this field, so callers ask lazily (a card that has scrolled into
+ *  view) and never for a whole page of results at once. */
+export function getHubModelSize(id: string): Promise<HubModelSizeResult> {
+  return postJson<HubModelSizeResult>("/api/ai-models/hub/size", { id });
+}
+
 export interface HubTask {
   /** The Hub's own pipeline tag — what the filter actually sends. */
   tag: string;
