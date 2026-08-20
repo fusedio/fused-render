@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<!-- The .fused app-file template (SPEC §43, D389). Opening a .fused IS the
+     ordinary template path: /explorer/view/<path>.fused renders this inside
+     the explorer shell, /explorer/embed/<path>.fused (what a Finder
+     double-click maps to via the view-URL codec) renders it chrome-free.
+     There is no gate (D388): on load it POSTs the internal
+     /api/appfile/open (extract-or-reuse, hardened + read-only, appfile.py)
+     and fills the viewport with an iframe of the entry page's embed URL.
+     Extraction stays server-side, single implementation — this page must not
+     re-implement any of it (and must not import fused_render, SPEC PY-15). -->
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Fused app</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed; --fg-muted: #9aa0a6; --bg: #131417; --error: #ff6b6b;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023; --fg-muted: #61656c; --bg: #ffffff; --error: #c62828;
+  }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg); background: var(--bg);
+  }
+  iframe { display: block; width: 100%; height: 100%; border: 0; }
+  .state { padding: 40px; }
+  .state h1 { font-size: 16px; margin: 0 0 10px; }
+  .muted { color: var(--fg-muted); }
+  .error { color: var(--error); white-space: pre-wrap;
+           font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="state" id="state"><span class="muted">Opening app…</span></div>
+<script>
+  const state = document.getElementById("state");
+  const file = fused.params.get("_file");
+
+  function fail(msg) {
+    state.innerHTML = "";
+    const h = document.createElement("h1");
+    h.textContent = "Could not open app";
+    const pre = document.createElement("div");
+    pre.className = "error";
+    pre.textContent = msg;
+    state.append(h, pre);
+  }
+
+  async function open() {
+    if (!file) return fail("No .fused file selected.");
+    let resp, data;
+    try {
+      resp = await fetch("/api/appfile/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Fused": "1" },
+        body: JSON.stringify({ file }),
+      });
+      data = await resp.json();
+    } catch (e) {
+      return fail("Open request failed: " + e);
+    }
+    if (!resp.ok) return fail(data.error || "Not a valid .fused file.");
+    const frame = document.createElement("iframe");
+    frame.src = data.view; // the entry page's chrome-free embed URL
+    frame.allow = "clipboard-read; clipboard-write; fullscreen";
+    state.remove();
+    document.body.appendChild(frame);
+  }
+
+  open();
+</script>
+</body>
+</html>

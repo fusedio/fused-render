@@ -33,6 +33,7 @@ TIER_ONE_TEMPLATES = (
     "claude",
     "code",
     "duckdb",
+    "fusedapp",
     "git",
     "graph",
     "joblib_model",

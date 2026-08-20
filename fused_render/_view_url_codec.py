@@ -47,11 +47,13 @@ def view_url_path(fs_path: str) -> str:
     if fs_path.lower().endswith(".bookmark"):
         return "/explorer/view/_bookmark?file=" + quote(norm, safe="")
     if fs_path.lower().endswith(".fused"):
-        # A .fused app file is never previewed directly (same posture as
-        # .bookmark): it routes through GET /openfused, which extracts the
-        # payload (or re-uses the cached extract) and redirects straight to
-        # the entry page's embed URL — no gate (SPEC §43, D388).
-        return "/openfused?file=" + quote(norm, safe="")
+        # An OS-delivered .fused open (Finder double-click, Explorer "Open
+        # with") lands on the file's own EMBED URL: the fusedapp preview
+        # template extracts and renders the app chrome-free — the app
+        # experience, not the explorer (SPEC §43, D389). An in-explorer click
+        # uses the ordinary /explorer/view prefix (shell chrome kept), which
+        # needs no special case anywhere.
+        return embed_url_path(fs_path)
     segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
     return "/explorer/view/" + "/".join(segments)
 

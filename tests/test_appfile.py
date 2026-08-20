@@ -200,13 +200,14 @@ def test_sweep_never_evicts_live_extracts(tmp_path, monkeypatch):
     assert not os.path.isdir(stale)  # the stale staging dir did not
 
 
-def test_codec_routes_fused_files_to_confirm_page():
-    assert view_url_path("/tmp/My App.fused") == (
-        "/openfused?file=" + "%2Ftmp%2FMy%20App.fused"
-    )
+def test_codec_routes_os_opened_fused_to_embed():
+    # A Finder/Explorer double-click lands on the file's own EMBED url — the
+    # fusedapp template renders the app chrome-free (D389). In-explorer clicks
+    # use the ordinary view prefix and need no special case.
+    assert view_url_path("/tmp/My App.fused") == "/explorer/embed/tmp/My%20App.fused"
     # Case-insensitive like .bookmark's check.
-    assert view_url_path("/a/B.FUSED").startswith("/openfused?file=")
-    # And the embed path an opened app lands on is chrome-free.
+    assert view_url_path("/a/B.FUSED") == "/explorer/embed/a/B.FUSED"
+    # And the embed path the template iframes the entry into is the same codec.
     assert embed_url_path("/x/demo/index.html") == "/explorer/embed/x/demo/index.html"
 
 
@@ -225,29 +226,38 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
     fused_path = tmp_path / "demo.fused"
     fused_path.write_bytes(r.content)
 
-    # D388: GET /openfused is gate-less — it extracts and 302s straight to
-    # the entry page's embed URL.
-    r = client.get(
-        "/openfused", params={"file": str(fused_path)}, follow_redirects=False
+    # D389: no user-facing open route — the fusedapp template calls the
+    # X-Fused-guarded POST and iframes the answered embed URL.
+    r = client.post("/api/appfile/open", json={"file": str(fused_path)})
+    assert r.status_code == 403
+    r = client.post(
+        "/api/appfile/open", json={"file": str(fused_path)}, headers={"X-Fused": "1"}
     )
-    assert r.status_code == 302
-    view = r.headers["location"]
-    assert view.startswith("/explorer/embed/")
+    assert r.status_code == 200
+    assert r.json()["view"].startswith("/explorer/embed/")
     extracted = appfile.open_app_file(str(fused_path))
-    assert extracted["reused"] is True  # the GET above already extracted
+    assert extracted["reused"] is True  # the POST above already extracted
 
     # A bad export target answers 400 with the reason.
     r = client.get("/api/appfile/export", params={"path": str(tmp_path / "nope")})
     assert r.status_code == 400
     assert "error" in r.json()
 
-    # A bad .fused answers a human-readable error page, not JSON (the URL is
-    # reached by OS double-click navigation).
+    # A junk .fused answers the error the template renders as its fail state.
     junk = tmp_path / "junk.fused"
     junk.write_bytes(b"not a zip")
-    r = client.get("/openfused", params={"file": str(junk)})
+    r = client.post(
+        "/api/appfile/open", json={"file": str(junk)}, headers={"X-Fused": "1"}
+    )
     assert r.status_code == 400
-    assert "Could not open app" in r.text
+    assert "error" in r.json()
+
+    # The .fused extension resolves to the fusedapp template on stat, which is
+    # what makes /explorer/view|embed/<path>.fused render the app at all.
+    r = client.get("/api/fs/stat", params={"path": str(fused_path)}, headers={"X-Fused": "1"})
+    assert r.status_code == 200
+    modes = [t["mode"] for t in r.json().get("templates") or []]
+    assert "fusedapp" in modes
 
     # AF-8: rendering the extracted entry records the open (D301), which for a
     # folder outside the workspace IS hub registration.

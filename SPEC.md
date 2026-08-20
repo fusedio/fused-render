@@ -7414,16 +7414,17 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   error surfaces as a toast, never saves as a corrupt file). The route builds
   into a per-request temp dir, deleted after the response; non-destructive
   everywhere.
-- **AF-5** Opening is ONE hop with no gate (D388, which removed D385's
-  confirm page — owner call): the shared view-URL codec
-  (`_view_url_codec.view_url_path`, all platform entry points, mirrored in
-  `router.ts urlForFsPath` for in-explorer clicks) routes a `.fused` to
-  `GET /openfused?file=`, which extracts (or re-uses the cached extract) and
-  302-redirects to the entry page's embed URL. Errors answer a minimal
-  human-readable HTML page (the URL is reached by OS navigation, where JSON
-  reads as a broken download). The accepted trade: a `.fused` from an
-  untrusted source runs its Python on first render, like any folder of pages
-  someone sent you.
+- **AF-5** A `.fused` renders at its own explorer URL — there is no dedicated
+  open route and no gate (D388/D389). `.fused` is a preview template binding
+  (`registry.json` → `templates/fusedapp`): the template reads `_file`, calls
+  the internal X-Fused-guarded `POST /api/appfile/open` (extract-or-reuse),
+  and fills the viewport with an iframe of the entry page's embed URL the
+  POST answers. An in-explorer open is `/explorer/view/<path>.fused` (shell
+  chrome kept); an OS double-click maps via the shared view-URL codec
+  (`_view_url_codec.view_url_path`) to `/explorer/embed/<path>.fused` —
+  chrome-free, the app experience. Errors render as the template's own fail
+  state. The accepted trade: a `.fused` from an untrusted source runs its
+  Python on first render, like any folder of pages someone sent you.
 - **AF-6** Open extracts through `zip_import`'s hardened extractor (zip-slip,
   symlink entries, count/size caps on bytes actually written) into a
   content-addressed dir under `~/.fused-render/appfiles/`
@@ -7442,6 +7443,7 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
 - **AF-9** `.fused` is an owned file type on all three platforms: macOS
   Owner-rank document type + exported UTI `io.fused.render.app` (conforms to
   `public.data`, not the zip UTI, so archive tools don't claim it); Windows
-  and Linux associations via the `winopen.extensions()` seed (the extension
-  can never appear in `templates/registry.json` — it is not a preview
-  template).
+  and Linux associations flow from `templates/registry.json` like every other
+  previewable extension — `.fused` IS a registry key now (D389 made it the
+  `fusedapp` template's binding), so the D386-era `winopen.extensions()`
+  hardcoded seed is gone.

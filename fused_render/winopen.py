@@ -369,10 +369,7 @@ def extensions() -> list[str]:
     ".*.json" becomes ".json". Directory sentinels and zarr members drop out."""
     with open(_REGISTRY_JSON, encoding="utf-8") as f:
         registry = json.load(f)
-    # Own formats with no preview template behind them, so they never appear
-    # as registry keys: `.fused` (the single-file app, SPEC §43, D384) routes
-    # through the /openfused confirm page via the shared view-URL codec.
-    exts = {".fused"}
+    exts = set()
     for key in registry:
         if not key.startswith(".") or "/" in key or key in _NOT_EXTENSIONS:
             continue

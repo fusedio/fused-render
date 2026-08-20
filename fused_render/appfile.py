@@ -30,11 +30,13 @@ is, nothing else). Extraction rides the one hardened unzip implementation
 (``zip_import``): a ``.fused`` that arrived by mail is exactly as untrusted as
 an uploaded template pack.
 
-There is deliberately NO confirm gate (D388, owner call, removing D385's
-confirm page): GET /openfused extracts and 302-redirects straight to the
-entry's embed URL — a double-clicked app opens like a document. The accepted
-consequence is that opening a ``.fused`` from an untrusted source runs its
-Python on first render, same as opening any folder of pages someone sent you.
+There is deliberately NO confirm gate and no dedicated open URL (D388/D389,
+owner calls): a ``.fused`` renders at its own ``/explorer/view|embed/<path>``
+URL through the ``fusedapp`` preview template (``templates/fusedapp``), which
+calls the internal POST /api/appfile/open and iframes the entry's embed URL —
+a double-clicked app opens like a document. The accepted consequence is that
+opening a ``.fused`` from an untrusted source runs its Python on first
+render, same as opening any folder of pages someone sent you.
 """
 
 from __future__ import annotations
