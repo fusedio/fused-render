@@ -51,18 +51,16 @@ def normalize_remote_path(value: str) -> str:
 def locator_name(value: str) -> str:
     """The final path segment of *value*, whatever kind of locator it is.
 
-    A URL's name lives in its path — reading it off the whole string would
-    pick up the query — and a Windows path uses the separator `Path` only
-    understands on Windows, so both are normalized here rather than in each
-    engine that asks.
+    A remote locator's name lives in its path — reading it off the whole
+    string would pick up the query, and a signed `/vsicurl/` or `s3://` URL
+    carries one just as an `https://` one does — and a Windows path uses the
+    separator `Path` only understands on Windows. Both are normalized here
+    rather than in each engine that asks.
     """
     path = urlsplit(value).path if is_http_url(value) else value
+    if is_remote_path(path):
+        path = path.split("?", 1)[0]
     return Path(path.replace("\\", "/")).name
-
-
-def locator_suffix(value: str) -> str:
-    """The lowercased extension of *value*, query strings excluded."""
-    return Path(locator_name(value)).suffix.lower()
 
 
 def raw_url(origin: str, path: str) -> str:
@@ -113,6 +111,8 @@ def resolve_source(request: dict[str, Any], target: str) -> str:
 # other locator classification, so the light callers that only need to
 # ROUTE a target do not import the engine that reads one.
 MULTIDIM_SUFFIXES = {".nc", ".nc4", ".zarr", ".h5", ".hdf5", ".he5", ".hdf"}
+
+
 def multidim_suffix(target: str) -> str:
     """The store format *target* names, or "" when it is not a multidim store.
 
@@ -122,7 +122,7 @@ def multidim_suffix(target: str) -> str:
     store.
     """
     name = locator_name(target).lower()
-    if name.endswith(".zarr") or ".zarr-" in name:
+    if re.search(r"\.zarr(-[^.]*)?$", name):
         return ".zarr"
     if name == ".zmetadata" or (name == "zarr.json" and _is_zarr_metadata(target)):
         return ".zarr"
@@ -162,7 +162,7 @@ def zarr_store(source: str) -> str:
         name = Path(parts.path).name.lower()
         if name not in {".zmetadata", "zarr.json"}:
             return source
-        parent = parts.path[: -(len(name) + 1)]
+        parent = parts.path[: -(len(name) + 1)] or "/"
         return urlunsplit(parts._replace(path=parent))
     name = locator_name(source).lower()
     if name in {".zmetadata", "zarr.json"}:

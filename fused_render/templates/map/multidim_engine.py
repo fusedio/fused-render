@@ -19,9 +19,8 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote
 
 from geo_paths import (
     is_http_url,
@@ -44,6 +43,8 @@ MULTIDIM_RUNTIME = {
     "fsspec": "fsspec",
     "numpy": "numpy",
     "rio_tiler": "rio-tiler",
+    "scipy": "scipy",
+    "cftime": "cftime",
 }
 # One loaded slice serves every tile of a selection from memory. Beyond this
 # budget the slice stays lazy — each tile reads its own window from the store —
@@ -61,6 +62,18 @@ MAX_DIMS_META = 32
 
 _Y_NAMES = {"lat", "latitude", "y"}
 _X_NAMES = {"lon", "longitude", "x"}
+
+
+class Ungeoreferenced(ValueError):
+    """The grid is readable but carries no usable CRS.
+
+    The one failure GDAL is worth asking about: it reads georeferencing this
+    engine cannot (subdataset transforms, projected NetCDF without CF
+    grid_mapping), and when it cannot either, its `not_georeferenced` card
+    tells the user the same thing in the words the rest of the app uses.
+    Every other failure here is one this engine understands and GDAL does
+    not, so its message must survive.
+    """
 
 
 def _spatial_dims(da: Any) -> tuple[str, str] | None:
@@ -95,10 +108,21 @@ def _require_rectilinear(da: Any, ydim: str, xdim: str) -> None:
                 "coordinates), which is not supported yet."
             )
     if ydim not in da.coords or xdim not in da.coords:
-        raise ValueError(
+        raise Ungeoreferenced(
             f"Dimensions {ydim!r}/{xdim!r} carry no coordinate values, so the "
             "grid cannot be georeferenced."
         )
+
+
+def _degree_direction(units: str) -> str:
+    """Which compass direction a ``degree*`` unit names, "" when it names none."""
+    tail = units[len("degree"):].lstrip("s").lstrip("_")
+    for direction, initials in (("north", "n"), ("east", "e")):
+        if tail == direction or tail == initials:
+            return direction
+    if tail in {"south", "s", "west", "w"}:
+        return "reversed"
+    return "" if not tail else "other"
 
 
 def _looks_geographic(da: Any, ydim: str, xdim: str) -> bool:
@@ -119,11 +143,11 @@ def _looks_geographic(da: Any, ydim: str, xdim: str) -> bool:
         return (
             dim.lower() in names
             or str(attrs.get("standard_name", "")).lower() == standard
-            # CF blesses degrees_north but real files write degree_north,
-            # degrees_N and friends; any degree-with-direction spelling counts.
-            or (units.startswith("degree") and (
-                direction in units or units.endswith(direction[0])
-            ))
+            # CF blesses degrees_north, but real files write degree_north,
+            # degrees_N, or just degrees. Accept a degree unit that either
+            # names this axis's direction or names none at all; a unit that
+            # names the OTHER direction is a mislabelled axis, not this one.
+            or (units.startswith("degree") and _degree_direction(units) in {direction, ""})
         )
 
     if not declared(ydim, {"lat", "latitude"}, "latitude", "north"):
@@ -138,6 +162,25 @@ def _looks_geographic(da: Any, ydim: str, xdim: str) -> bool:
         and x.min() >= -180.5
         and x.max() <= 360.5
     )
+
+
+def _sample_windows(da: Any, span: int = 512, spots: int = 3) -> Any:
+    """Values from a few chunk-sized windows spread across a lazy slice."""
+    import numpy as np
+
+    height, width = int(da.sizes["y"]), int(da.sizes["x"])
+    taken = []
+    for row in range(spots):
+        for column in range(spots):
+            top = min(max(0, height * (2 * row + 1) // (2 * spots) - span // 2),
+                      max(0, height - span))
+            left = min(max(0, width * (2 * column + 1) // (2 * spots) - span // 2),
+                       max(0, width - span))
+            window = da.isel(
+                y=slice(top, top + span), x=slice(left, left + span)
+            ).values
+            taken.append(np.asarray(window).ravel())
+    return np.concatenate(taken)
 
 
 def _spatial_variables(ds: Any) -> list[dict[str, Any]]:
@@ -342,10 +385,12 @@ class MultidimEngine:
             # frames below this one — locals and datasets included. Consumed
             # here, so drop them.
             error.__traceback__ = None
-            return error_descriptor(
+            descriptor = error_descriptor(
                 artifact_id, message,
                 detected_type="multidimensional dataset",
             )
+            descriptor["gdal_may_georeference"] = isinstance(error, Ungeoreferenced)
+            return descriptor
 
     def _open(self, store: str, suffix: str) -> tuple[Any, str]:
         import xarray as xr
@@ -544,8 +589,19 @@ class MultidimEngine:
                 f"Selection left {da.ndim} dimensions {tuple(map(str, da.dims))}; "
                 "a renderable slice must be 2D."
             )
+        if not geographic and da.rio.crs is None:
+            # Checked before the read, not after: a projected remote slice
+            # would otherwise download in full and be thrown away.
+            raise Ungeoreferenced(
+                "The grid has no CRS and its coordinates do not look like "
+                "degrees; the file needs CF grid_mapping metadata or a "
+                "sidecar."
+            )
         if da.size <= MAX_SLICE_CELLS:
             da = da.load()
+            loaded = True
+        else:
+            loaded = False
         renames = {dim: name for dim, name in ((ydim, "y"), (xdim, "x")) if dim != name}
         if renames:
             da = da.rename(renames)
@@ -555,14 +611,18 @@ class MultidimEngine:
                 # Assuming degrees here would render a projected grid at a
                 # nonsense location; erroring instead sends the file to the
                 # GDAL fallback, which reports not_georeferenced honestly.
-                raise ValueError(
+                raise Ungeoreferenced(
                     "The grid has no CRS and its coordinates do not look like "
                     "degrees; the file needs CF grid_mapping metadata or a "
                     "sidecar."
                 )
             da = da.rio.write_crs("EPSG:4326")
         if da.rio.crs.is_geographic and float(da.x.max()) > 180:
-            da = da.assign_coords(x=(da.x + 180) % 360 - 180).sortby("x")
+            # In float64 whatever the axis dtype: rolling a float32 longitude
+            # in its own precision leaves ~6e-5 of jitter, which the spacing
+            # check below reads as a seam gap on any grid finer than 0.1deg.
+            rolled = (da.x.values.astype("float64") + 180.0) % 360.0 - 180.0
+            da = da.assign_coords(x=rolled).sortby("x")
             # A 0..360-INCLUSIVE grid ships the seam column twice — 0 and 360
             # roll to the same longitude — and the duplicate x would read as
             # a spacing jump below. Keep the first of any duplicated column.
@@ -585,6 +645,10 @@ class MultidimEngine:
                 )
         if da.rio.nodata is None and da.dtype.kind == "f":
             da = da.rio.write_nodata(float("nan"))
+        # The seam dedup can drop a column, so size alone no longer answers
+        # "was this materialized"; every later budget and stretch decision
+        # reads this flag instead of re-deriving one that disagrees.
+        da.attrs["_fused_loaded"] = loaded
         return da
 
     def _slice(self, store: str, suffix: str, variable: str, sel: dict[str, int]) -> Any:
@@ -601,7 +665,7 @@ class MultidimEngine:
         def loaded_bytes(da: Any) -> int:
             # _prepare materializes exactly the slices at or under the cell
             # budget; larger ones stay lazy and cost only their window reads.
-            return int(da.nbytes) if da.size <= MAX_SLICE_CELLS else 0
+            return int(da.nbytes) if da.attrs.get("_fused_loaded") else 0
 
         return self._build_cached(
             self.slices,
@@ -669,7 +733,7 @@ class MultidimEngine:
             requested_sel if isinstance(requested_sel, dict) else {},
         )
         da = self._slice(store, suffix, variable, sel)
-        lazy = da.size > MAX_SLICE_CELLS
+        lazy = not da.attrs.get("_fused_loaded")
 
         reader = XarrayReader(da)
         bounds = [float(value) for value in reader.get_geographic_bounds("EPSG:4326")]
@@ -686,13 +750,11 @@ class MultidimEngine:
         elif lazy:
             # A strided subsample of a lazy slice touches every chunk — the
             # full download the cell budget exists to avoid — so the stretch
-            # is estimated from one contiguous center window instead.
-            center_y, center_x = da.sizes["y"] // 2, da.sizes["x"] // 2
-            window = da.isel(
-                y=slice(max(0, center_y - 512), center_y + 512),
-                x=slice(max(0, center_x - 512), center_x + 512),
-            )
-            rescale = band_ranges(window.values[None])
+            # is estimated from a few contiguous windows instead. More than
+            # one, because a single central window over a land-masked or
+            # region-masked variable can be entirely nodata, and an all-nodata
+            # sample stretches the layer to a flat saturated wash.
+            rescale = band_ranges(_sample_windows(da)[None])
             auto_rescale = True
         else:
             step_y = max(1, da.sizes["y"] // 512)

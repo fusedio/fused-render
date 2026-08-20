@@ -229,7 +229,10 @@ def test_backend_files_cover_the_multidim_engine():
     raster = _load("raster_engine", "raster_engine.py")
     stems = {os.path.basename(str(path)) for path in mr.BACKEND_FILES}
     assert "multidim_engine.py" in stems
-    assert {".nc4", ".hdf5", ".he5"} <= raster.RASTER_SUFFIXES
+    # The GDAL fallback is only reachable for spellings the raster engine
+    # also claims, so every non-zarr multidim format must appear there.
+    paths = _load("geo_paths", "geo_paths.py")
+    assert paths.MULTIDIM_SUFFIXES - {".zarr"} <= raster.RASTER_SUFFIXES
     for target in ("air.nc4", "scene.hdf5", "swath.he5", r"C:\data\era5.zarr"):
         assert mr._looks_like_raster(target), target
 
@@ -356,7 +359,13 @@ def test_worker_adopts_a_not_georeferenced_raster_fallback(tmp_path):
 
     class MultidimStub:
         def try_describe(self, request, obj=None):
-            return {"status": "error", "message": "no CRS"}
+            # The engine says its failure WAS a georeferencing gap, which is
+            # the only case GDAL's amber card is a better answer than ours.
+            return {
+                "status": "error",
+                "message": "no CRS",
+                "gdal_may_georeference": True,
+            }
 
     class RasterStub:
         def try_describe(self, request, obj=None):
@@ -380,6 +389,46 @@ def test_worker_adopts_a_not_georeferenced_raster_fallback(tmp_path):
         multidim_engine=MultidimStub(),
     )
     assert descriptor["status"] == "not_georeferenced"
+
+
+def test_a_non_georeferencing_error_keeps_its_own_message(tmp_path):
+    # GDAL answers "not georeferenced" for any HDF5 it can open, so adopting
+    # that unconditionally replaced "this grid is curvilinear" and "no
+    # mappable variables" — which name the real problem — with advice about
+    # assigning a CRS.
+    worker = _load("map_worker", "worker.py")
+
+    class MultidimStub:
+        def try_describe(self, request, obj=None):
+            return {
+                "status": "error",
+                "message": "This variable sits on a curvilinear grid",
+                "gdal_may_georeference": False,
+            }
+
+    class RasterStub:
+        def try_describe(self, request, obj=None):
+            return {
+                "status": "not_georeferenced",
+                "kind": None,
+                "bounds": None,
+                "data": {},
+                "message": "Raster has no directly usable CRS.",
+                "warnings": [],
+            }
+
+    descriptor = worker.build(
+        {
+            "target": str(tmp_path / "curvi.nc"),
+            "artifact_dir": str(tmp_path),
+            "artifact_id": "art",
+            "opts": {},
+        },
+        raster_engine=RasterStub(),
+        multidim_engine=MultidimStub(),
+    )
+    assert descriptor["status"] == "error"
+    assert "curvilinear" in descriptor["message"]
 
 
 def test_empty_dim_gives_a_readable_error(eng, tmp_path):
@@ -479,3 +528,52 @@ def test_zarr_metadata_locator_keeps_its_query_string(eng):
     assert me.zarr_store("https://h/s.zarr/zarr.json") == "https://h/s.zarr"
     assert me.zarr_store("https://h/s.zarr") == "https://h/s.zarr"
     assert me.zarr_store(os.path.join("C:", "d", "s.zarr", "zarr.json")).endswith("s.zarr")
+
+
+def test_fine_float32_global_grid_is_not_read_as_antimeridian(eng, tmp_path):
+    # Rolling a float32 longitude in its own precision leaves ~6e-5 of jitter,
+    # which the seam check read as a gap on any grid finer than 0.1 degrees —
+    # rejecting ordinary global products (CHIRPS, ESA-CCI SST, MODIS CMG).
+    path = tmp_path / "fine.nc"
+    lon = np.arange(0, 360, 0.05, dtype="float32")
+    lat = np.arange(20, -20, -0.5, dtype="float32")
+    data = np.zeros((lat.size, lon.size), dtype="float32")
+    xr.Dataset(
+        {"p": (("lat", "lon"), data)}, coords={"lat": lat, "lon": lon}
+    ).to_netcdf(path, engine="h5netcdf")
+    descriptor = _describe(eng, path)
+    assert descriptor["status"] == "ok", descriptor.get("message")
+    assert -181 <= descriptor["bounds"][0] and descriptor["bounds"][2] <= 181
+
+
+def test_a_lookalike_zarr_name_is_left_to_the_other_engines(eng, tmp_path):
+    # ".zarr-" matched anywhere in the name, so a GeoTIFF called
+    # archive.zarr-old.tif was claimed, failed to open as a store, and its
+    # error descriptor then blocked both the raster and the vector fallback.
+    paths = _load("geo_paths", "geo_paths.py")
+    assert paths.multidim_suffix("archive.zarr-old.tif") == ""
+    assert paths.multidim_suffix("notes.zarr-2024.txt") == ""
+    assert paths.multidim_suffix("store.zarr-v3") == ".zarr"
+    assert paths.multidim_suffix("store.zarr") == ".zarr"
+
+
+def test_signed_remote_locators_keep_their_suffix(eng):
+    # A query string rides on /vsicurl and s3 locators too, and dropping the
+    # suffix there took multidim stores out of map_render's "never one-shot a
+    # raster" guard.
+    paths = _load("geo_paths", "geo_paths.py")
+    assert paths.multidim_suffix("/vsicurl/https://h/x.nc?sig=abc") == ".nc"
+    assert paths.multidim_suffix("s3://b/x.h5?versionId=3") == ".h5"
+    assert paths.zarr_store("https://h/zarr.json?sig=a") == "https://h/?sig=a"
+
+
+def test_bare_degree_units_still_read_as_geographic(eng, tmp_path):
+    path = tmp_path / "bare_units.nc"
+    xr.Dataset(
+        {"t": (("y", "x"), np.zeros((6, 6), dtype="float32"))},
+        coords={
+            "y": ("y", np.linspace(50, 40, 6), {"units": "degrees"}),
+            "x": ("x", np.linspace(0, 10, 6), {"units": "degrees"}),
+        },
+    ).to_netcdf(path, engine="h5netcdf")
+    assert _describe(eng, path)["status"] == "ok"

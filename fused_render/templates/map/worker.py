@@ -207,18 +207,20 @@ def build(
         ):
             # xarray needs CF-shaped coordinates; GDAL reads some files it
             # cannot (a projected single-grid NetCDF, an HDF5 with only
-            # subdataset georeferencing). Give those the raster path, and
-            # adopt whatever honest answer it returns — ok, or
-            # not_georeferenced (an actionable amber card) — but keep the
-            # multidim error, which names variables and dimensions, when the
-            # raster path fails too. Zarr stays out: GDAL wants a
-            # ZARR:-prefixed locator, so its attempt only doubles the
-            # latency of an already-failed remote open.
+            # subdataset georeferencing), so a failure here is worth a second
+            # opinion. A rendered answer always wins. GDAL's amber
+            # `not_georeferenced` card only wins when the engine agrees the
+            # problem was georeferencing: GDAL says that about any HDF5 it
+            # can open, so adopting it unconditionally replaced "this grid is
+            # curvilinear" and "no mappable variables" — messages that name
+            # the real problem — with advice about assigning a CRS. Zarr
+            # stays out: GDAL wants a ZARR:-prefixed locator, so its attempt
+            # only doubles the latency of an already-failed remote open.
             fallback = raster_engine.try_describe(request, obj=obj)
-            if fallback is not None and fallback.get("status") in {
-                "ok",
-                "not_georeferenced",
-            }:
+            accepted = {"ok"}
+            if descriptor.get("gdal_may_georeference"):
+                accepted.add("not_georeferenced")
+            if fallback is not None and fallback.get("status") in accepted:
                 descriptor = fallback
         if descriptor is None and raster_engine is not None:
             descriptor = raster_engine.try_describe(request, obj=obj)

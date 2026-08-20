@@ -315,7 +315,14 @@ def _imported_dists(text: str) -> set[str]:
 def _template_files() -> list[str]:
     out = []
     for dirpath, _dirnames, filenames in os.walk(_TEMPLATES):
-        if "__pycache__" in dirpath or os.sep + "vendor" in dirpath:
+        if (
+            "__pycache__" in dirpath
+            or os.sep + "vendor" in dirpath
+            # A template's venv is a build artifact, not its source: it
+            # holds every dependency's own imports, which this guardrail
+            # would then demand the template declare.
+            or os.sep + ".venv" in dirpath
+        ):
             continue
         out += [
             os.path.relpath(os.path.join(dirpath, f), _TEMPLATES)
@@ -411,7 +418,14 @@ def _runpython_targets() -> frozenset[str]:
     """
     targets = set()
     for dirpath, _dirnames, filenames in os.walk(_TEMPLATES):
-        if "__pycache__" in dirpath or os.sep + "vendor" in dirpath:
+        if (
+            "__pycache__" in dirpath
+            or os.sep + "vendor" in dirpath
+            # A template's venv is a build artifact, not its source: it
+            # holds every dependency's own imports, which this guardrail
+            # would then demand the template declare.
+            or os.sep + ".venv" in dirpath
+        ):
             continue
         prose = ""
         for name in filenames:
