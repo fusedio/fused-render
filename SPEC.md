@@ -7538,9 +7538,12 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   nudge, but NO not-ready states: an unanswerable index is zero exported rows,
   never a failed listing), unioned with the appfile recents so a just-opened
   export appears before any rescan. Rows carry the reserved virtual tag
-  `exported` and `kind: "appfile"`; `entry` is the `.fused` path itself
+  `Fused-App` and `kind: "appfile"`; `entry` is the `.fused` path itself
   (a card click lands on the fusedapp view), `entry_html` null (never
-  live-iframed). Opened exports join Home's recents row
+  live-iframed). The tag prints on the card's own tag line but is NOT a Repo
+  facet chip — that facet groups by source and an app file has none
+  (`repoChips` excludes `kind: "appfile"`; an explicit `?tag=` URL and the
+  search box still reach the rows). Opened exports join Home's recents row
   (`exported_apps.recent_exported_apps`, recents-only — no duckdb on the
   Home path).
 - **AF-11** (D396) The exported card's thumbnail is the payload's

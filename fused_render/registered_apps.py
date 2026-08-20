@@ -23,7 +23,7 @@ one entry: a re-open updates `openedAt` in place.
 One carve-out (D396): a ``.fused`` extract dir (under ``appfile.appfiles_root``)
 is refused on write and filtered on read. Rendering an opened app file's entry
 still hits the D301 recorder, but its identity on the hub is the ``.fused``
-FILE (exported_apps.py, tag ``exported``) — registering the cache dir too would
+FILE (exported_apps.py, tag ``Fused-App``) — registering the cache dir too would
 double-list the app under ``linked`` with a path the user never chose.
 
 A registry over a symlink into the workspace, for the same reasons as before:

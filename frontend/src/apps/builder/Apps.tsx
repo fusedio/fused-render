@@ -18,7 +18,7 @@ import { runCommunity, SHOWCASE_TAG } from "@platform/lib/community";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
-import { orderCategories } from "@apps/builder/app-categories";
+import { orderCategories, repoChips } from "@apps/builder/app-categories";
 import { useNavEpoch } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { HomeHero } from "./HomeHero";
@@ -148,7 +148,9 @@ export default function Apps({ config }: { config: Config }) {
   // and the workspace scan picks it up like any other tag dir. No synthetic
   // chip, no separate catalog surface.
   const all = apps.status === "ok" ? apps.data : [];
-  const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);
+  // Repo chips, minus the exported `.fused` rows — see repoChips for why an
+  // app FILE contributes none.
+  const tags = useMemo(() => repoChips(all), [all]);
   // Categories scanned from the apps themselves (metadata.json `category`).
   // Apps without one carry null and so only ever appear under All. Ordered by
   // orderCategories: learn-first so the tutorial and starter chips lead the

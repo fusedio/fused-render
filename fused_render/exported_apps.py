@@ -7,7 +7,8 @@ Being a FILE with a known extension, its discovery is an INDEX FACT, exactly
 like git_repos.py's ".git dirs row" fact: one duckdb query over the files
 table (``ext = 'fused'``), zero walks, zero stats beyond a per-row existence
 check. The /apps hub merges the results in under the reserved virtual tag
-``exported``.
+``Fused-App`` — printed on each card's tag line, but deliberately absent from
+the Repo facet chips (see the EXPORTED_TAG comment and Apps.tsx's repoChips).
 
 Two deliberate deviations from the git_repos posture:
 
@@ -51,10 +52,19 @@ from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
 
-# The reserved virtual tag exported app files share on the /apps hub — the
-# "Repo" facet chip. Same posture as registered_apps.REGISTERED_TAG: a
-# workspace folder literally named `exported/` merges chips with it, accepted.
-EXPORTED_TAG = "exported"
+# The reserved virtual tag exported app files share on the /apps hub. It is
+# printed VERBATIM on each card's tag line (AppPreviewCard renders `app.tag`;
+# there is no label table anywhere), so the string is the user-visible name of
+# the artifact and names what the file IS — a Fused App — rather than the act
+# that produced it.
+#
+# Unlike registered_apps.REGISTERED_TAG this is NOT a Repo facet chip: that
+# facet groups by SOURCE (the workspace tag dir a folder was scanned out of,
+# or `linked`) and a `.fused` sitting anywhere on disk has none. The exclusion
+# lives in the frontend, keyed on `kind: "appfile"` rather than on this text —
+# see Apps.tsx / app-categories.repoChips — so rewording here cannot put the
+# chip back.
+EXPORTED_TAG = "Fused-App"
 
 # Same cap posture as APP_RECENTS_CAP / REGISTERED_APPS_CAP: the store is
 # user-writable and otherwise unbounded.

@@ -1,6 +1,6 @@
 """Exported apps (fused_render/exported_apps.py): ``.fused`` files anywhere on
 disk, discovered through the file index and listed on /apps under the virtual
-"exported" tag, with recency recorded by POST /api/appfile/open into
+"Fused-App" tag, with recency recorded by POST /api/appfile/open into
 ~/.fused-render/appfile_recents.json (D396).
 
 Like the git-repos tests, the index store is built by hand (a files parquet +
@@ -100,7 +100,9 @@ def test_indexed_fused_files_become_exported_rows(tmp_path):
     rows = exported_apps.exported_apps()
     assert len(rows) == 1
     (row,) = rows
-    assert row["tag"] == "exported"
+    # The chip prints the tag verbatim, so this string IS the user-visible name
+    # of the artifact — the literal is the point, not exported_apps.EXPORTED_TAG.
+    assert row["tag"] == "Fused-App"
     assert row["kind"] == "appfile"
     assert row["name"] == "sine"
     assert row["path"] == row["entry"] == str(f).replace(os.sep, "/")
@@ -205,7 +207,7 @@ def test_api_apps_serves_exported_rows_and_survives_no_index(client, tmp_path):
     f = _fused_file(tmp_path, "x.fused")
     _write_files_index([str(f)])
     tags = {a["tag"] for a in client.get("/api/apps").json()["apps"]}
-    assert "exported" in tags
+    assert "Fused-App" in tags
 
 
 def test_api_apps_without_index_still_answers(client):

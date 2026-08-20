@@ -259,7 +259,7 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
 
     monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
     # Isolated home: the open below records into appfile_recents.json (D396),
-    # and a write into the session-shared home would leak an "exported" row
+    # and a write into the session-shared home would leak a "Fused-App" row
     # into every later /api/apps assertion.
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     client = TestClient(create_app(start_dir=str(tmp_path)))

@@ -3,7 +3,7 @@
 // before the topical ones. Everything below is about that boundary holding —
 // including for authored spellings that differ only in case or separators.
 import { describe, expect, it } from "bun:test";
-import { learnRank, orderCategories } from "./app-categories";
+import { learnRank, orderCategories, repoChips } from "./app-categories";
 
 describe("orderCategories", () => {
   it("puts learn categories first, in the authored priority order", () => {
@@ -52,5 +52,42 @@ describe("orderCategories", () => {
     const input = ["zebra", "starters"];
     orderCategories(input);
     expect(input).toEqual(["zebra", "starters"]);
+  });
+});
+
+// The Repo facet groups by SOURCE, and an exported `.fused` has none — so its
+// "Fused-App" tag must never become a chip, however many such files the index
+// turns up.
+describe("repoChips", () => {
+  const folder = (tag: string) => ({ tag });
+  const appfile = (tag: string) => ({ tag, kind: "appfile" });
+
+  it("drops appfile rows and keeps every folder-shaped tag", () => {
+    expect(
+      repoChips([folder("showcase"), appfile("Fused-App"), folder("linked")]),
+    ).toEqual(["linked", "showcase"]);
+  });
+
+  it("leaves no chip behind when the hub holds nothing but app files", () => {
+    expect(repoChips([appfile("Fused-App"), appfile("Fused-App")])).toEqual([]);
+  });
+
+  it("excludes by kind, not by the tag text — rewording cannot restore the chip", () => {
+    // A folder that happens to carry the same tag string still gets its chip:
+    // the rule is about what the row IS, not what it is called.
+    expect(repoChips([appfile("anything"), folder("Fused-App")])).toEqual([
+      "Fused-App",
+    ]);
+  });
+
+  it("dedups repeats and survives an empty list", () => {
+    expect(repoChips([])).toEqual([]);
+    expect(repoChips([folder("showcase"), folder("showcase")])).toEqual(["showcase"]);
+  });
+
+  it("leaves the input array untouched", () => {
+    const input = [folder("zebra"), appfile("Fused-App")];
+    repoChips(input);
+    expect(input).toHaveLength(2);
   });
 });

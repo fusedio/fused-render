@@ -1693,9 +1693,10 @@ export interface AppInfo {
   // undefined on older backends — both fall back to updated_at in sortApps.
   opened_at?: number | null;
   // "appfile" for an exported `.fused` FILE discovered via the file index
-  // (tag "exported", D396) — `path`/`entry` are the file itself, so surfaces
-  // must not offer folder actions (open-folder, export) on it. Undefined for
-  // every folder-shaped app and on older backends.
+  // (tag "Fused-App", D396) — `path`/`entry` are the file itself, so surfaces
+  // must not offer folder actions (open-folder, export) on it, and it
+  // contributes no Repo chip (repoChips). Undefined for every folder-shaped
+  // app and on older backends.
   kind?: "appfile";
 }
 
