@@ -62,18 +62,37 @@ def app(tmp_path):
 
 @pytest.fixture
 def hidden_tomllib(monkeypatch):
-    """Make `tomllib` unimportable and `tomli` answer instead.
+    """Count the `tomli` requests the modules make with `tomllib` unavailable.
 
     `requires-python` is >=3.10 and `tomllib` is 3.11+ stdlib, so on the 3.10
-    lane these modules get `tomli` (a dependency for `python_version < "3.11"`).
-    This suite runs on 3.11+, where the fallback branch is otherwise never
-    executed — and an unconditional `import tomllib` is exactly what turned this
-    file into 14 collection errors on that lane.
+    lane these modules genuinely get `tomli` (a dependency declared for
+    `python_version < "3.11"`), while on 3.11+ that branch is otherwise never
+    executed. This fixture makes ONE test cover both, which is the only honest
+    shape: the thing being tested is the fallback, so the version where the
+    fallback is REAL must not be the version where the test errors.
+
+    * **On 3.11+** it simulates: `tomllib` is denied and `tomli` is answered
+      with the stdlib module standing in for it (this interpreter has no reason
+      to carry the real one).
+    * **On 3.10** there is nothing to simulate — `tomllib` does not exist and
+      `tomli` is installed — so the real one answers and only the counting is
+      added.
+
+    The stand-in is resolved BEFORE the patch either way: resolving it inside
+    `deny` would re-enter the patch. And note the first version of this fixture
+    was itself the bug it was written to prevent — a bare `import tomllib` at
+    setup, which errored on the one lane that mattered.
     """
     import builtins
-    import tomllib as stand_in  # captured BEFORE the patch: the module the
-    # fallback is handed, standing in for the tomli this interpreter has no
-    # reason to carry. Resolving it inside `deny` would re-enter the patch.
+
+    try:
+        import tomllib as stand_in
+    except ImportError:  # 3.10: no simulation needed, the real tomli answers
+        # importorskip, not a bare import: on 3.10 `tomli` is a declared
+        # dependency and present in CI, but a hand-made 3.10 venv without it has
+        # nothing for this test to exercise — a skip says that, an ImportError
+        # would read as a failure of the code under test.
+        stand_in = pytest.importorskip("tomli")
 
     real_import = builtins.__import__
     calls = []
