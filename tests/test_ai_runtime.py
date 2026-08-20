@@ -5112,16 +5112,49 @@ def test_a_cached_repo_no_engine_reads_is_refused_by_name(client, hub, dispatche
     assert dispatched == []
 
 
+def _gguf_bytes(architecture: str) -> bytes:
+    """A minimal, real GGUF header declaring `general.architecture` — enough
+    for `formats.gguf_architecture` to read, which is what `loaders()` now
+    requires before calling a root `.gguf` decisively `llamacpp-text`
+    (code review finding 4: presence of the extension alone is not enough,
+    since GGUF is a container format shared with image and speech models)."""
+    import struct
+
+    pairs = [("general.architecture", architecture)]
+    buf = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + \
+        struct.pack("<Q", len(pairs))
+    for key, value in pairs:
+        buf += struct.pack("<Q", len(key.encode())) + key.encode()
+        buf += struct.pack("<I", 8)  # GGUF string type
+        buf += struct.pack("<Q", len(value.encode())) + value.encode()
+    return buf
+
+
 def test_a_cached_gguf_repo_now_loads_as_text_via_llamacpp(client, hub, dispatched):
     """The other half of the story the test above used to tell alone: since
-    SPEC AI-11 a root-level `.gguf` IS decisively `llamacpp-text`'s
-    (`formats.DECISIVE`), so `cached_capability`'s `meta.loaders` fallback
-    resolves it to text generation with no task label needed — the same
-    mechanism `test_a_cached_repo_with_no_task_but_readable_weights_is_text`
-    exercises for a bare directory of safetensors."""
-    _cached_repo(hub, "org/gguf-only", files=("model.gguf", "README.md"))
+    SPEC AI-11 a root-level `.gguf` whose OWN `general.architecture` is a
+    recognised text one IS decisively `llamacpp-text`'s (`formats.DECISIVE`),
+    so `cached_capability`'s `meta.loaders` fallback resolves it to text
+    generation with no task label needed — the same mechanism
+    `test_a_cached_repo_with_no_task_but_readable_weights_is_text` exercises
+    for a bare directory of safetensors."""
+    repo_dir = _cached_repo(hub, "org/gguf-only", files=("model.gguf", "README.md"))
+    (repo_dir / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("qwen35"))
     assert _load(client, {"model": "org/gguf-only"}).status_code == 200
     assert dispatched[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_a_cached_gguf_repo_with_a_non_text_architecture_is_still_refused(
+        client, hub, dispatched):
+    """`city96/FLUX.1-dev-gguf`'s own shape, verified 2026-08-21
+    (`general.architecture = "flux"`) — a root `.gguf` alone must not be
+    enough, or this app would offer a Load button for an image model under
+    the text-generation capability (code review finding 4)."""
+    repo_dir = _cached_repo(hub, "org/flux-gguf", files=("model.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("flux"))
+    response = _load(client, {"model": "org/flux-gguf"})
+    assert response.status_code == 400
+    assert dispatched == []
 
 
 def test_an_explicit_capability_still_wins_over_the_format(client, hub, dispatched):
@@ -5300,6 +5333,60 @@ def test_a_curated_repo_that_is_not_on_disk_says_so(client, hub):
     assert row["models"]
     assert all(m["downloaded"] is False for m in row["models"])
     assert all(m["source"] == "curated" for m in row["models"])
+
+
+def test_a_llamacpp_curated_id_is_marked_downloaded_and_not_duplicated(
+        client, hub, monkeypatch):
+    """The regression code review found (finding 3): `formats.GGUF_RECIPES`
+    keys `llamacpp-text`'s catalog entries by FILENAME, and
+    `_catalog_with_downloads`'s `on_disk` set holds REPO ids — so
+    `entry["id"] in on_disk` could never be true for one of these entries,
+    and the SAME downloaded bytes then reappeared a second time as an
+    undifferentiated "cached" row under the bare repo id, whose Load button
+    failed (finding 2). Both symptoms must be gone together: the curated
+    entry reads `downloaded: true`, and the repo does not also appear as a
+    plain cached row.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+
+    entry_id = "Qwen3.5-9B-Q4_K_M.gguf"
+    recipe = formats.GGUF_RECIPES[entry_id]
+    repo = _cached_repo(hub, recipe["repo"], files=(recipe["file"],))
+    (repo / "snapshots" / "c0ffee" / recipe["file"]).write_bytes(
+        _gguf_bytes("qwen35"))
+
+    row = _catalog(client)[registry.TEXT_GENERATION]
+    curated_match = next(m for m in row["models"] if m["id"] == entry_id)
+    assert curated_match["downloaded"] is True
+    assert curated_match["source"] == "curated"
+    # The repo id itself must NOT also appear as a second, "cached" row.
+    assert not any(m["id"] == recipe["repo"] for m in row["models"])
+
+
+def test_a_llamacpp_curated_id_with_a_sibling_quant_not_downloaded_is_told_apart(
+        client, hub, monkeypatch):
+    """`unsloth/Qwen3.5-4B-GGUF` curates TWO catalog entries (Q5_K_M and
+    Q8_0) — downloading one must not mark the OTHER "downloaded" too, since
+    `CachedModel.files` is checked per FILE, not per repo."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+
+    downloaded_id = "Qwen3.5-4B-Q5_K_M.gguf"
+    other_id = "Qwen3.5-4B-Q8_0.gguf"
+    recipe = formats.GGUF_RECIPES[downloaded_id]
+    repo = _cached_repo(hub, recipe["repo"], files=(recipe["file"],))
+    (repo / "snapshots" / "c0ffee" / recipe["file"]).write_bytes(
+        _gguf_bytes("qwen35"))
+
+    row = _catalog(client)[registry.TEXT_GENERATION]
+    by_id = {m["id"]: m for m in row["models"]}
+    assert by_id[downloaded_id]["downloaded"] is True
+    assert by_id[other_id]["downloaded"] is False
+    # Still no duplicate cached row for the shared repo.
+    assert not any(m["id"] == recipe["repo"] for m in row["models"])
 
 
 def test_a_component_repo_an_engine_fetched_is_never_offered_as_a_model(client, hub):

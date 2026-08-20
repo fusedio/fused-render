@@ -34,9 +34,19 @@ def worker(monkeypatch):
     base = types.ModuleType("worker_base")
     base.CANCEL = threading.Event()
     base.download_file = lambda repo, filename, **kw: f"/blobs/{repo}/{filename}"
-    base.serve = lambda **kw: None
+    base.serve_calls = []
+    base.serve = lambda **kw: base.serve_calls.append(kw)
     base.recorded = {}
     base.set_state = lambda **fields: base.recorded.update(fields)
+    # A read-only cache lookup in real life (`worker_base._cached_file`,
+    # `try_to_load_from_cache` underneath — cannot start a download). The
+    # fake mirrors that contract: a dict of already-cached (repo, file)
+    # pairs a test populates, and a miss returns None rather than fetching
+    # anything.
+    base.cached_files = set()
+    base._cached_file = (
+        lambda repo, filename: f"/blobs/{repo}/{filename}"
+        if (repo, filename) in base.cached_files else None)
 
     monkeypatch.setitem(sys.modules, "worker_base", base)
     spec = importlib.util.spec_from_file_location(
@@ -78,22 +88,73 @@ def test_load_refuses_an_uncurated_id_before_importing_llama_cpp(worker):
     assert "llama_cpp" not in sys.modules
 
 
-def test_every_curated_recipe_is_also_in_the_catalog():
+def test_a_repo_id_resolves_to_its_already_cached_recipe(worker):
+    """The regression code review found: `unsloth/Qwen3.5-9B-GGUF` downloaded
+    through the filename id `Qwen3.5-9B-Q4_K_M.gguf` is what the AI Models
+    page then offers a Load button for UNDER ITS REPO ID (the local cache is
+    keyed by repo, not by this table's filenames) — and before this fix that
+    second Load died with the "not curated" refusal for the exact model a
+    user just fetched through this engine."""
+    worker.worker_base.cached_files.add(
+        ("unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q4_K_M.gguf"))
+    path = worker.download("unsloth/Qwen3.5-9B-GGUF")
+    assert path == "/blobs/unsloth/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf"
+
+
+def test_a_repo_id_with_exactly_one_recipe_resolves_even_cold(worker):
+    """No ambiguity to refuse when a repo curates only one quantization —
+    `unsloth/Qwen3.8-27B-GGUF` has exactly one entry in the catalog."""
+    path = worker.download("unsloth/Qwen3.8-27B-GGUF")
+    assert path == ("/blobs/unsloth/Qwen3.8-27B-GGUF/"
+                    "Qwen3.8-27B-UD-Q3_K_XL.gguf")
+
+
+def test_a_repo_id_with_two_recipes_and_nothing_cached_is_refused_by_name(worker):
+    """`unsloth/Qwen3.5-4B-GGUF` curates TWO quantizations
+    (Q5_K_M and Q8_0) — with neither on disk yet, a bare repo id is genuinely
+    ambiguous, and guessing would risk a multi-gigabyte download of the wrong
+    one rather than a `FileNotFoundError`."""
+    with pytest.raises(RuntimeError, match="ambiguous"):
+        worker.download("unsloth/Qwen3.5-4B-GGUF")
+
+
+def test_load_also_resolves_a_repo_id_the_same_way(worker, monkeypatch):
+    """`load`'s own curation check must not regress independently of
+    `download`'s — both call `_resolve_model_id`."""
+    fake_llama_cpp = types.ModuleType("llama_cpp")
+
+    class Llama:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.metadata = {}
+
+    fake_llama_cpp.Llama = Llama
+    monkeypatch.setitem(sys.modules, "llama_cpp", fake_llama_cpp)
+    worker.worker_base.cached_files.add(
+        ("unsloth/Qwen3.8-27B-GGUF", "Qwen3.8-27B-UD-Q3_K_XL.gguf"))
+
+    worker.load("unsloth/Qwen3.8-27B-GGUF", "/blobs/whatever.gguf")
+    assert worker._loaded["llm"].kwargs["model_path"] == "/blobs/whatever.gguf"
+
+
+def test_every_curated_recipe_is_also_in_the_catalog(worker):
     """The two tables answer different questions — this one "how do I fetch
     it", the catalog "should I suggest it" — and a model this runner can load
     that the catalog never mentions (or the reverse) is exactly the drift
-    `formats.COMPONENT_REPOS`'s docstring warns about one level up."""
+    `formats.COMPONENT_REPOS`'s docstring warns about one level up.
+
+    Uses the `worker` fixture rather than a second hand-rolled import: an
+    EARLIER version of this test loaded the module a second time with
+    `sys.modules.setdefault("worker_base", ...)`, which is not undone by
+    `setdefault` and is not `monkeypatch`-tracked either — an empty stub
+    module survived for the rest of the xdist worker's session and was ready
+    to be handed to the next test's bare `import worker_base`, an
+    order-dependent flake nothing here was exercising on purpose. The fixture
+    already does this safely (`monkeypatch.setitem`).
+    """
     from fused_render.ai import catalog
 
-    spec = importlib.util.spec_from_file_location(
-        "llamacpp_text_for_catalog_check", WORKER_PATH)
-    module = importlib.util.module_from_spec(spec)
-    # `worker_base` is imported at module scope; a bare stub is enough since
-    # nothing here calls into it.
-    sys.modules.setdefault("worker_base", types.ModuleType("worker_base"))
-    spec.loader.exec_module(module)
-
-    recipe_ids = set(module._GGUF_RECIPES)
+    recipe_ids = set(worker._GGUF_RECIPES)
     catalog_ids = {entry["id"] for entry in catalog.SUGGESTIONS["llamacpp-text"]}
     assert recipe_ids == catalog_ids
 
@@ -101,13 +162,40 @@ def test_every_curated_recipe_is_also_in_the_catalog():
 # -- the chat template, rendered from the GGUF's own metadata ---------------
 
 
+class _FakeLlamaModel:
+    """Mirrors `llama_cpp._internals.LlamaModel`, reachable as `Llama._model`
+    — the surface this runner actually calls. `Llama` ITSELF has no
+    `token_get_text`/`add_bos_token`/`add_eos_token` (checked against the
+    installed 0.3.29): a fake that put those methods directly on `_FakeLlama`
+    would be MORE capable than the real object, which is exactly what let a
+    call to the wrong one pass every test while raising `AttributeError` in
+    production (code review finding 1)."""
+
+    def __init__(self, texts=None, add_bos=True, add_eos=False):
+        self._texts = {1: "<bos>", 2: "<eos>"} if texts is None else texts
+        self._add_bos = add_bos
+        self._add_eos = add_eos
+
+    def token_get_text(self, token_id):
+        return self._texts.get(token_id, "")
+
+    def add_bos_token(self):
+        return self._add_bos
+
+    def add_eos_token(self):
+        return self._add_eos
+
+
 class _FakeLlama:
     """Enough of `llama_cpp.Llama` to answer what this runner asks of it."""
 
-    def __init__(self, chunks=(), metadata=None, tokens=5):
+    def __init__(self, chunks=(), metadata=None, tokens=5,
+                add_bos_token=True, add_eos_token=False):
         self._chunks = list(chunks)
         self.metadata = metadata or {}
         self._tokens = tokens
+        self._model = _FakeLlamaModel(add_bos=add_bos_token, add_eos=add_eos_token)
+        self.tokenize_calls = []
 
     def token_bos(self):
         return 1
@@ -115,10 +203,8 @@ class _FakeLlama:
     def token_eos(self):
         return 2
 
-    def token_get_text(self, token_id):
-        return {1: "<bos>", 2: "<eos>"}.get(token_id, "")
-
     def tokenize(self, data, add_bos=True):
+        self.tokenize_calls.append(add_bos)
         return list(range(self._tokens))
 
     def create_completion(self, prompt, **kwargs):
@@ -172,11 +258,88 @@ def test_a_model_with_no_chat_template_falls_back_to_a_plain_join(worker):
 
 
 def test_a_broken_template_falls_back_rather_than_failing_the_reply(worker):
-    """A bad template must cost the RENDER, never the generation."""
+    """A bad template must cost the RENDER, never the generation.
+
+    `jinja2.exceptions.UndefinedError` (raised by `{{ undefined.attr }}`) IS a
+    `TemplateError` subclass — confirmed against the installed jinja2 — so
+    `_prompt_text`'s narrowed `except jinja2.exceptions.TemplateError` still
+    catches this real template defect and only this real template defect;
+    see the "only a template's own failure is caught" tests below for what
+    it must NOT catch.
+    """
     llm = _FakeLlama(metadata={"tokenizer.chat_template": "{{ undefined.attr }}"})
     rendered = worker._prompt_text(
         llm, [{"role": "user", "content": "hi"}], "")
     assert rendered == "hi"
+
+
+def test_a_programming_bug_in_render_is_not_swallowed_as_a_template_failure(worker):
+    """The exact regression code review finding 1 named: `_prompt_text` used
+    to catch bare `Exception`, so a call to a method that does not exist on
+    the real `Llama` (see `_FakeLlamaModel`'s docstring) silently produced
+    the plain-join fallback on EVERY chat request, with nothing on screen
+    saying why. A `TypeError` from this module's own code must propagate."""
+    llm = _FakeLlama(metadata={"tokenizer.chat_template": _TEMPLATE})
+
+    def boom(*_args, **_kwargs):
+        raise TypeError("not a template problem")
+
+    import jinja2
+
+    real_environment = jinja2.Environment
+    try:
+        jinja2.Environment = boom
+        with pytest.raises(TypeError, match="not a template problem"):
+            worker._prompt_text(llm, [{"role": "user", "content": "hi"}], "")
+    finally:
+        jinja2.Environment = real_environment
+
+
+def test_bos_and_eos_tokens_reach_the_template_via_the_internal_model(worker):
+    """The exact call path code review finding 1 named: `Llama` itself has no
+    `token_get_text` (checked against the installed 0.3.29), so this has to
+    reach `llm._model.token_get_text` — and the fake mirrors that shape
+    rather than shortcutting it, so a regression to the wrong call raises
+    `AttributeError` here instead of silently falling back to the plain join.
+
+    `add_bos_token=False`/`add_eos_token=False`: the template has to render
+    the literal text itself for a model that does not auto-add either, which
+    is the one case `_bos_token_for_template`/`_eos_token_for_template` hand
+    back a non-empty string.
+    """
+    llm = _FakeLlama(
+        metadata={"tokenizer.chat_template": "{{ bos_token }}mid{{ eos_token }}"},
+        add_bos_token=False, add_eos_token=False)
+    assert worker._prompt_text(llm, [], "") == "<bos>mid<eos>"
+
+
+def test_bos_token_is_omitted_when_create_completion_will_add_it_itself(worker):
+    """`create_completion` decides on its own, every call, whether to
+    prepend the real BOS token (`Llama._model.add_bos_token()`) — a template
+    that ALSO renders the literal `bos_token` string would then put two BOS
+    tokens in the sequence. `add_bos_token=True` (the common case) must
+    render an EMPTY bos_token so the template's own text carries none."""
+    llm = _FakeLlama(
+        metadata={"tokenizer.chat_template": "[{{ bos_token }}]"},
+        add_bos_token=True)
+    assert worker._prompt_text(llm, [], "") == "[]"
+
+
+def test_a_model_with_no_content_or_multimodal_content_does_not_crash_the_fallback(worker):
+    """The fallback join is the HOT path once finding 1 is fixed (a model
+    with no chat template still needs it), and `content` is not always a
+    string on the wire: `None` (a tool-call-only turn) and a multimodal parts
+    list both reached `"\n\n".join(...)` before this and raised `TypeError`
+    on the one path that had no chat template to fall back FROM."""
+    llm = _FakeLlama(metadata={})
+    rendered = worker._prompt_text(llm, [
+        {"role": "user", "content": None},
+        {"role": "user", "content": [
+            {"type": "text", "text": "hi"},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]},
+    ], "")
+    assert rendered == "\n\nhi"
 
 
 # -- prompt token counting (SPEC AI-3) ---------------------------------------
@@ -193,6 +356,20 @@ def test_a_tokenizer_that_raises_costs_the_metric_not_the_generation(worker):
             raise RuntimeError("no")
 
     assert worker._prompt_tokens(Boom(), "hello") is None
+
+
+def test_the_token_count_follows_the_models_own_bos_policy(worker):
+    """A fixed `add_bos=True` counted a token `create_completion` might not
+    actually add — metric drift on every model whose GGUF turns its own
+    auto-BOS off, which is the same flag `_bos_token_for_template` reads for
+    the same reason (code review finding 8)."""
+    auto_bos = _FakeLlama(add_bos_token=True)
+    worker._prompt_tokens(auto_bos, "hello")
+    assert auto_bos.tokenize_calls == [True]
+
+    manual_bos = _FakeLlama(add_bos_token=False)
+    worker._prompt_tokens(manual_bos, "hello")
+    assert manual_bos.tokenize_calls == [False]
 
 
 # -- streaming and cancellation ----------------------------------------------
@@ -296,3 +473,13 @@ def test_memory_defers_entirely_to_rss(worker):
     default), so there is no second accounting system to add on top — unlike
     torch's CUDA/MPS allocators, which `worker_base` takes the larger of."""
     assert worker.memory() is None
+
+
+def test_memory_is_actually_wired_into_serve(worker):
+    """`memory()` returning None is only meaningful if `worker_base.serve`
+    is actually told about it — `torch_text.main`/`torch_image.main` both
+    pass `memory=memory`, and this runner's own `main()` used to omit the
+    kwarg entirely, which made the function dead code no future real
+    measurement could ever reach (code review finding 7)."""
+    worker.main()
+    assert worker.worker_base.serve_calls[-1]["memory"] is worker.memory

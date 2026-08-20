@@ -431,6 +431,13 @@ class _RepoMeta:
     # imports anything. Empty is a real answer and the most useful one: no
     # backend that ships reads this repo.
     loaders: tuple[str, ...] = ()
+    # The snapshot's own top-level filenames. Carried for
+    # `_catalog_with_downloads`'s benefit (ai_runtime.py): a curated id keyed
+    # by FILENAME (`formats.GGUF_RECIPES`) can only tell whether it is
+    # "downloaded" by checking one of these names, since the repo-level
+    # `on_disk` set that check used for every other runner cannot see which
+    # of a repo's several curated quantizations is actually present.
+    names: frozenset[str] = frozenset()
 
 
 def _front_matter(snapshot_dir: str) -> dict[str, str]:
@@ -744,12 +751,16 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     # too — "text generation", unconditionally — which put a Load button on
     # `unsloth/FLUX.2-klein-4B-GGUF`, an image model, and is the precise failure
     # `capability_for_task` warns about. A GGUF is a container, not a modality,
-    # so this still does not set `meta.task` — `cached_capability`'s
-    # `meta.loaders` fallback below is what now correctly resolves a
-    # GGUF-only repo to text generation (SPEC AI-11: `llamacpp-text` reads one
-    # decisively, `formats.DECISIVE`), the same way an unlabelled directory of
-    # safetensors resolves through the two TEXT runners' shared capability
-    # rather than through this field.
+    # so this still does not set `meta.task` for one — the LIBRARY tag here is
+    # honest about any GGUF repo whatever it contains, but a TASK (and so a
+    # Load button) only ever comes from `meta.loaders` below, which since
+    # SPEC AI-11 asks the file's OWN `general.architecture` metadata
+    # (`formats.is_text_gguf`) before ever calling one decisively
+    # `llamacpp-text` — the FLUX.2 klein case this comment used to warn about
+    # stays capability-less (its `general.architecture` is not a text one),
+    # while a real Qwen3.5 GGUF resolves through `cached_capability`'s
+    # `meta.loaders` fallback, the same way an unlabelled directory of
+    # safetensors resolves through the two TEXT runners' shared capability.
     if any(n.lower().endswith(".gguf") for n in names):
         library = library or "gguf"
 
@@ -800,6 +811,19 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     meta.params_estimated = estimated
     meta.library = library
 
+    # A root `.gguf`'s OWN architecture metadata, read once here rather than
+    # inside `formats.loaders` — that module is a pure evidence classifier
+    # with no file I/O of its own (see its docstring), and this function
+    # already has the snapshot path and the listing. Sorted so the answer is
+    # deterministic when a repo somehow carries more than one root `.gguf`
+    # (this app never produces one, but a Hub repo is not this app's to
+    # control) — the first is representative, since every curated recipe
+    # this runner reads means one file per repo per id.
+    gguf_architecture = None
+    gguf_files = sorted(n for n in names if n.lower().endswith(formats.GGUF_EXTENSION))
+    if gguf_files:
+        gguf_architecture = formats.gguf_architecture(os.path.join(snapshot, gguf_files[0]))
+
     # Which backend's `load()` would accept this, by format alone. Cached with
     # everything else because it reads the same listing and the same config —
     # and asked of `formats`, never re-derived here: a second copy of "what a
@@ -811,7 +835,15 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         dirnames=dirnames,
         config=config,
         torch_weights=_has_torch_weights(snapshot),
+        gguf_architecture=gguf_architecture,
     )
+    # The snapshot's own top-level listing, carried past this function for
+    # the one caller that needs it beyond format inference:
+    # `_catalog_with_downloads` (ai_runtime.py) has to know whether a
+    # SPECIFIC curated file is present, not merely whether the repo is —
+    # `formats.GGUF_RECIPES` keys entries by filename precisely because one
+    # repo can curate more than one quantization.
+    meta.names = frozenset(names)
 
     _META_CACHE[snapshot] = (stamp, meta)
     return meta
@@ -1097,6 +1129,11 @@ class CachedModel(NamedTuple):
     capability: str | None
     size: int
     loaders: tuple[str, ...] = ()
+    # The snapshot's own top-level filenames — see `_RepoMeta.names`, whose
+    # value this carries verbatim. Needed by the same caller for the same
+    # reason: `on_disk` (a set of repo ids) cannot say WHICH of a repo's
+    # curated quantizations is present, only that the repo is.
+    files: frozenset[str] = frozenset()
 
 
 #: `cached_models()`'s memo: cache dir -> (read time, signature, answer). See the
@@ -1235,9 +1272,10 @@ def cached_models() -> list[CachedModel]:
         # capability cannot answer: would the backend serving that capability here
         # actually open this repo? `_repo_meta` is memoised on the snapshot mtime,
         # and `cached_capability` above has already paid for it.
-        loaders = _repo_meta(repo_dir).loaders
+        repo_meta = _repo_meta(repo_dir)
         size = _repo_size(repo_dir, by_dir[name])
-        models.append(CachedModel(repo_id, reading.capability, size, loaders))
+        models.append(CachedModel(
+            repo_id, reading.capability, size, repo_meta.loaders, repo_meta.names))
     _CACHED_MODELS[cache_dir] = (_now(), signature, models)
     return models
 

@@ -43,7 +43,7 @@ from fused_render.ai import catalog, registry, supervisor
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
 # rule here costs nothing.
-from fused_render.ai.runners import diarize, engine_options, partial, preview
+from fused_render.ai.runners import diarize, engine_options, formats, partial, preview
 from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
@@ -331,10 +331,27 @@ def _catalog_with_downloads() -> list[dict]:
     downloaded and is not duplicated as a cached one. `loaded` is read live from the
     supervisor rather than from the memoised scan, because residency changes on a
     second's notice and the disk inventory does not.
+
+    **One runner's curated ids are FILENAMES, not repo ids, and this function is
+    where that stops being invisible.** `formats.GGUF_RECIPES` keys
+    `llamacpp-text`'s catalog entries by the GGUF's own filename — the module
+    docstring there explains why a repo id alone cannot address one of a
+    repo's several curated quantizations — so `entry["id"] in on_disk`
+    (a set of REPO ids) can never be true for one of those entries: a
+    downloaded `Qwen3.5-9B-Q4_K_M.gguf` showed "Download" forever, while the
+    same bytes appeared a SECOND time as a plain "cached" row keyed by
+    `unsloth/Qwen3.5-9B-GGUF`, whose Load button then failed (that repo id is
+    not itself a `GGUF_RECIPES` key). `_downloaded` below resolves a
+    filename-keyed entry through the recipe's `(repo, file)` pair and
+    `CachedModel.files` (the snapshot's own filenames) instead of `on_disk`
+    alone; `curated_repo_ids` then removes the SAME repo from the "cached"
+    tail below whenever any of ITS curated entries resolved as downloaded, so
+    the two halves cannot show the one download twice under two different ids.
     """
     rows = catalog.describe()
     cached = cached_models()
     on_disk = {model.repo_id for model in cached}
+    models_by_repo = {model.repo_id: model for model in cached}
     resident = supervisor.resident_models()
     by_capability: dict[str, list] = {}
     for model in cached:
@@ -344,13 +361,31 @@ def _catalog_with_downloads() -> list[dict]:
             # on the AI Models page, which is the surface for "what is on my disk".
             continue
         by_capability.setdefault(model.capability, []).append(model)
+
+    def _downloaded(entry_id: str) -> bool:
+        recipe = formats.GGUF_RECIPES.get(entry_id)
+        if recipe is None:
+            return entry_id in on_disk
+        model = models_by_repo.get(recipe["repo"])
+        return model is not None and recipe["file"] in model.files
+
     for row in rows:
         curated = [
-            dict(entry, source="curated", downloaded=entry["id"] in on_disk,
+            dict(entry, source="curated", downloaded=_downloaded(entry["id"]),
                  loaded=entry["id"] in resident)
             for entry in row["models"]
         ]
         curated_ids = {entry["id"] for entry in curated}
+        # Repo ids already spoken for by a DOWNLOADED filename-keyed curated
+        # entry — see the docstring. Built from `curated` (post-`_downloaded`)
+        # rather than re-checking `formats.GGUF_RECIPES` here, so this stays
+        # correct for any future runner whose ids work the same way without
+        # this function needing to know which one.
+        curated_repo_ids = {
+            formats.GGUF_RECIPES[entry["id"]]["repo"]
+            for entry in curated
+            if entry["downloaded"] and entry["id"] in formats.GGUF_RECIPES
+        }
         extra = [
             {
                 "id": model.repo_id,
@@ -367,6 +402,7 @@ def _catalog_with_downloads() -> list[dict]:
             }
             for model in sorted(by_capability.get(row["capability"], ()), key=_cached_order)
             if model.repo_id not in curated_ids
+            and model.repo_id not in curated_repo_ids
             # The per-runner invariant, enforced: this row's list belongs to the
             # runner `describe()` resolved, and a repo whose format that runner does
             # not read has no business in it. See the docstring for both real repos

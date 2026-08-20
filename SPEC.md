@@ -6862,21 +6862,41 @@ an AI Models page that could say what was on disk but not what was *running*.
   grammar that would touch every page, preference and cache tag treating a
   model id as a Hub repo id verbatim. Accepted and stated rather than fixed:
   Hub search on the Discover tab cannot populate this engine, since a typed
-  repo id supplies no filename and only the curated ids load — the same
-  limitation `formats.COMPONENT_REPOS`'s repos already carry. **No external
-  tokenizer download**: GGUF is single-file by design, so the vocabulary and
-  the model's own chat template live inside the one `.gguf`'s key-value
-  metadata (`llama_cpp.Llama.metadata`), which this runner renders by hand
-  with jinja2 and hands to `create_completion(stream=True)` — never
+  repo id supplies no filename and only the curated ids load — UNLESS the
+  repo is already cached under one of them, in which case the worker's own
+  `_resolve_model_id` reads the ONE recipe whose file `worker_base._cached_file`
+  finds on disk and loads that: the AI Models page's cache scan is keyed by
+  REPO id, never by this table's filename keys, so without that fallback the
+  exact model a user just downloaded through this engine became unloadable
+  again under the id its own Load button offered it by. A repo curating more
+  than one quantization with NEITHER cached is refused by name rather than
+  guessed at, naming the ids to pick from instead. **No external tokenizer
+  download**: GGUF is single-file by design, so the vocabulary and the
+  model's own chat template live inside the one `.gguf`'s key-value metadata
+  (`llama_cpp.Llama.metadata`), which this runner renders by hand with
+  jinja2 and hands to `create_completion(stream=True)` — never
   `create_chat_completion`, so the NDJSON contract stays identical to
   `torch_text.generate`'s. `enable_thinking=False` rides into the render
   context unconditionally, the same default AI-11d chose for the family of
   models this shares (Qwen3.5), because Jinja silently ignores a context
-  variable a template never reads. `formats.py` gains a DECISIVE branch (a
-  root-level `.gguf` identifies this engine and nothing else reads one for
-  text), and `torch_text._weights_here`'s refusal — which used to end at "a
-  repo of GGUF files is llama.cpp's format" with nowhere to go — now names
-  this engine as the answer.
+  variable a template never reads. **The chat template reads
+  `Llama._model.token_get_text`/`add_bos_token`, not the public `Llama`
+  surface** — `Llama` itself has no `token_get_text` at all, verified
+  against the installed 0.3.29, and `add_bos_token` decides whether
+  `create_completion` will prepend BOS itself; the rendered `bos_token` is
+  therefore left EMPTY whenever it will, so a template that also spells it
+  out cannot double it. `formats.py` gains a DECISIVE branch, but presence
+  of the extension is not enough on its own: a root-level `.gguf` is only
+  decisive when its OWN `general.architecture` metadata names a recognised
+  causal-text architecture (`formats.GGUF_TEXT_ARCHITECTURES`, read off
+  llama.cpp's own `LLM_ARCH_NAMES` at the vendored commit) — GGUF is a
+  container shared with image models (`city96/FLUX.1-dev-gguf`, architecture
+  `"flux"`) and speech ones, and the check is genuinely exclusive, evaluated
+  before the diffusers/mflux branches rather than after, so a snapshot that
+  happened to carry both a `model_index.json` and a root `.gguf` cannot read
+  as this engine's. `torch_text._weights_here`'s refusal — which used to end
+  at "a repo of GGUF files is llama.cpp's format" with nowhere to go — now
+  names this engine as the answer.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every

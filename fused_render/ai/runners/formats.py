@@ -29,6 +29,7 @@ invite.
 from __future__ import annotations
 
 import os
+import struct
 
 #: CTranslate2 writes one `model.bin` beside a plain-JSON config. Checked by
 #: name because the loader's own failure is `Unable to open file 'model.bin'`,
@@ -204,11 +205,202 @@ TORCH_WEIGHTS = (".safetensors", ".bin", ".pt")
 #: Unlike every other format in this module a `.gguf` needs no companion
 #: config to identify — the vocabulary, the architecture and the model's own
 #: chat template all live inside the one file's key-value metadata, which is
-#: the reason GGUF is one file at all. So the check is the extension, at the
-#: SNAPSHOT ROOT: `torch_text.py`'s own refusal already treats "nothing but
-#: GGUF here" as the wrong-format case for transformers, and this is that same
-#: evidence read the other way round, by the engine that actually wants it.
+#: the reason GGUF is one file at all. So the presence check is the
+#: extension, at the SNAPSHOT ROOT: `torch_text.py`'s own refusal already
+#: treats "nothing but GGUF here" as the wrong-format case for transformers,
+#: and this is that same evidence read the other way round, by the engine
+#: that actually wants it.
+#:
+#: **Presence is not enough to call it TEXT, and that is a real bug this
+#: module used to have.** GGUF is a container format, not a modality —
+#: `city96/FLUX.1-dev-gguf` is an image model, `ggerganov/whisper.cpp`
+#: publishes speech-recognition GGUFs, and a `has_gguf_weights` check alone
+#: would tag either as `llamacpp-text` and put a Load button on the AI Models
+#: page for a repo this runner cannot generate a token from — precisely the
+#: failure `ai_models.py` used to describe in a comment about
+#: `unsloth/FLUX.2-klein-4B-GGUF` before this runner existed to make the
+#: mistake newly possible. `is_text_gguf` is the gate: it reads the file's OWN
+#: `general.architecture` metadata (`gguf_architecture`) and checks it against
+#: `GGUF_TEXT_ARCHITECTURES`, so a snapshot is only ever decisively
+#: `llamacpp-text` when the GGUF itself says so — verified directly against a
+#: real `city96/FLUX.1-dev-gguf` file (`general.architecture = "flux"`, not in
+#: the table) and a real `unsloth/Qwen3.5-4B-GGUF` file (`"qwen35"`, in it),
+#: 2026-08-21.
 GGUF_EXTENSION = ".gguf"
+
+#: llama.cpp's own architecture identifiers (`general.architecture` in a
+#: GGUF's metadata) that denote a CAUSAL TEXT model — read directly off
+#: `LLM_ARCH_NAMES` in llama.cpp's `src/llama-arch.cpp` at the commit this
+#: runner vendors (SPEC AI-11, D402: llama-cpp-python 0.3.29 -> llama.cpp
+#: `f05cf467`, 2026-06-13), MINUS the entries in that same table that are not
+#: causal text generation: the BERT/T5 families (encoders and
+#: encoder-decoders), `wavtokenizer-dec` (an audio codec), the embedding
+#: variants (`gemma-embedding`, `llama-embed`, `pangu-embedded`), `clip`
+#: (the table's own comment: "dummy, only used by llama-quantize"), and the
+#: vision-language architectures whose text tower this runner has no code
+#: path for (`qwen2vl`, `qwen3vl`, `qwen3vlmoe`, `cogvlm`, `hunyuan_vl`,
+#: `paddleocr`, `deepseek2-ocr`).
+#:
+#: A DENYLIST would need updating every time llama.cpp adds an architecture
+#: this app has never heard of; this allowlist instead fails toward "not
+#: decisively text" for anything new, which just means a fresh architecture
+#: does not get a Load button here until this table is refreshed — a missed
+#: model, not a mislabelled one. Recheck against
+#: `https://raw.githubusercontent.com/ggml-org/llama.cpp/<vendored commit>/src/llama-arch.cpp`
+#: whenever the pin in `llamacpp_text/pyproject.toml` moves.
+GGUF_TEXT_ARCHITECTURES = frozenset({
+    "llama", "llama4", "deci", "falcon", "grok", "gpt2", "gptj", "gptneox",
+    "mpt", "baichuan", "starcoder", "refact", "bloom", "stablelm", "qwen",
+    "qwen2", "qwen2moe", "qwen3", "qwen3moe", "qwen3next", "qwen35",
+    "qwen35moe", "phi2", "phi3", "phimoe", "plamo", "plamo2", "plamo3",
+    "codeshell", "orion", "internlm2", "minicpm", "minicpm3", "gemma",
+    "gemma2", "gemma3", "gemma3n", "gemma4", "gemma4-assistant",
+    "starcoder2", "mamba", "mamba2", "jamba", "falcon-h1", "xverse",
+    "command-r", "cohere2", "dbrx", "olmo", "olmo2", "olmoe", "openelm",
+    "arctic", "deepseek", "deepseek2", "deepseek32", "chatglm", "glm4",
+    "glm4moe", "glm-dsa", "bitnet", "jais", "jais2", "nemotron",
+    "nemotron_h", "nemotron_h_moe", "exaone", "exaone4", "exaone-moe",
+    "rwkv6", "rwkv6qwen2", "rwkv7", "arwkv7", "granite", "granitemoe",
+    "granitehybrid", "chameleon", "plm", "bailingmoe", "bailingmoe2",
+    "dots1", "arcee", "afmoe", "ernie4_5", "ernie4_5-moe", "hunyuan-moe",
+    "hunyuan-dense", "smollm3", "gpt-oss", "lfm2", "lfm2moe", "dream",
+    "smallthinker", "llada", "llada-moe", "seed_oss", "grovemoe", "apertus",
+    "minimax-m2", "rnd1", "mistral3", "eagle3", "mistral4", "mimo2",
+    "step35", "maincoder", "kimi-linear", "talkie", "mellum",
+})
+
+#: GGUF value-type codes this app can read directly (fixed-width scalars),
+#: keyed to their byte width — from the GGUF spec's `gguf_type` enum.
+_GGUF_SCALAR_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1,
+                      10: 8, 11: 8, 12: 8}
+#: …and the two variable-width ones this app has to know how to SKIP: a
+#: length-prefixed string (8) and a typed array (9), which can itself hold
+#: strings — a GGUF's tokenizer vocabulary is exactly that, tens of thousands
+#: of them, which is why `_gguf_skip_value` has to walk it rather than assume
+#: a fixed width.
+_GGUF_TYPE_STRING = 8
+_GGUF_TYPE_ARRAY = 9
+
+#: How much of a GGUF's own header this app reads before giving up on finding
+#: `general.architecture`. Generous rather than tight: the key is written near
+#: the very START of every GGUF llama.cpp's own converters produce — verified
+#: directly (byte offset 70, key index 0) against a real
+#: `unsloth/Qwen3.5-4B-GGUF` file, 2026-08-21 — so 2MB is headroom for an
+#: unusual metadata ordering, not a budget this app expects to spend. A LOCAL
+#: file read, never a network fetch (the caller has already downloaded or is
+#: scanning an existing cache), so reading generously costs milliseconds, not
+#: bytes billed to anyone's download.
+_GGUF_HEADER_PEEK_BYTES = 2 * 1024 * 1024
+
+
+def _gguf_read_string(buf: bytes, offset: int) -> tuple[str, int]:
+    (length,) = struct.unpack_from("<Q", buf, offset)
+    offset += 8
+    text = buf[offset:offset + length].decode("utf-8", errors="replace")
+    return text, offset + length
+
+
+def _gguf_skip_value(buf: bytes, offset: int, value_type: int) -> int:
+    if value_type == _GGUF_TYPE_STRING:
+        _text, offset = _gguf_read_string(buf, offset)
+        return offset
+    if value_type == _GGUF_TYPE_ARRAY:
+        (item_type,) = struct.unpack_from("<I", buf, offset)
+        offset += 4
+        (length,) = struct.unpack_from("<Q", buf, offset)
+        offset += 8
+        for _ in range(length):
+            offset = _gguf_skip_value(buf, offset, item_type)
+        return offset
+    return offset + _GGUF_SCALAR_SIZES[value_type]
+
+
+def gguf_architecture(path: str) -> str | None:
+    """`general.architecture` out of a GGUF file's own header, or None.
+
+    A bounded LOCAL read (`_GGUF_HEADER_PEEK_BYTES`) and a hand-written
+    parser rather than the `gguf` package: this module is stdlib-only and
+    imported by every runner's own interpreter (see the module docstring),
+    and `gguf` is a dependency only `diffusers_image/pyproject.toml`
+    declares — pulling it in here would make every OTHER runner's venv able
+    to import a package it never asked for, or would make this call silently
+    unavailable in every venv that lacks it.
+
+    Fails toward None — a truncated read (the peek window ended mid-value), a
+    value type this app does not model, or a file that is not a GGUF at all
+    are all "cannot tell", never a crash and never a guess. None is read by
+    `is_text_gguf` as "not decisively text", which is the safe direction to
+    fail in: a real text GGUF this cannot classify loses a Load button, an
+    image or speech GGUF never gains one it would fail.
+    """
+    try:
+        with open(path, "rb") as handle:
+            buf = handle.read(_GGUF_HEADER_PEEK_BYTES)
+    except OSError:
+        return None
+    try:
+        if buf[:4] != b"GGUF":
+            return None
+        (kv_count,) = struct.unpack_from("<Q", buf, 16)
+        offset = 24
+        for _ in range(kv_count):
+            key, offset = _gguf_read_string(buf, offset)
+            (value_type,) = struct.unpack_from("<I", buf, offset)
+            offset += 4
+            if key == "general.architecture" and value_type == _GGUF_TYPE_STRING:
+                value, _offset = _gguf_read_string(buf, offset)
+                return value
+            offset = _gguf_skip_value(buf, offset, value_type)
+    except (struct.error, IndexError, UnicodeDecodeError):
+        return None
+    return None
+
+
+def is_text_gguf(path: str) -> bool:
+    """Would `llamacpp-text` actually load this GGUF — checked, not assumed
+    from the extension alone. See `GGUF_TEXT_ARCHITECTURES`'s docstring."""
+    return gguf_architecture(path) in GGUF_TEXT_ARCHITECTURES
+
+
+#: Curated `(repo, file)` pairs `runners/llamacpp_text.py` actually
+#: downloads, keyed by an OPAQUE id — the GGUF's own filename, never parsed
+#: for structure. See that module's docstring for why there is no
+#: `repo:quant` id grammar: a GGUF repo commonly publishes two dozen
+#: quantizations of one model, so a model here is really a `(repo, filename)`
+#: pair rather than something a bare repo id can address.
+#:
+#: **Here, in `formats.py`, for the reason `COMPONENT_REPOS` states about
+#: itself**: the runner is a separate venv the server process cannot import,
+#: and TWO readers need this exact mapping and must not be able to disagree
+#: about it — the AI Models page (deciding whether a curated entry is already
+#: "downloaded", by REPO id, since that is how the local Hub cache is keyed;
+#: and refusing to also show it as an undifferentiated second "cached" row)
+#: and the worker itself (resolving a bare repo id BACK to the recipe that
+#: fetched it, `llamacpp_text._resolve_model_id`, for the id shape the page's
+#: cache scan hands back). `test_ai_formats.py` asserts every id here also
+#: appears in `catalog.SUGGESTIONS["llamacpp-text"]`, so the two cannot drift.
+GGUF_RECIPES = {
+    "Qwen3.5-4B-Q5_K_M.gguf": {
+        "repo": "unsloth/Qwen3.5-4B-GGUF",
+        "file": "Qwen3.5-4B-Q5_K_M.gguf",
+    },
+    "Qwen3.5-4B-Q8_0.gguf": {
+        "repo": "unsloth/Qwen3.5-4B-GGUF",
+        "file": "Qwen3.5-4B-Q8_0.gguf",
+    },
+    "Qwen3.5-9B-Q4_K_M.gguf": {
+        "repo": "unsloth/Qwen3.5-9B-GGUF",
+        "file": "Qwen3.5-9B-Q4_K_M.gguf",
+    },
+    "Qwen3.5-9B-Q8_0.gguf": {
+        "repo": "unsloth/Qwen3.5-9B-GGUF",
+        "file": "Qwen3.5-9B-Q8_0.gguf",
+    },
+    "Qwen3.8-27B-UD-Q3_K_XL.gguf": {
+        "repo": "unsloth/Qwen3.8-27B-GGUF",
+        "file": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
+    },
+}
 
 #: Quantizations `runners/torch_text.py` refuses BY NAME, each with the
 #: sentence it refuses them with: what transformers raises for an AWQ repo with
@@ -279,7 +471,13 @@ def has_ct2_weights(names) -> bool:
 def has_gguf_weights(names) -> bool:
     """A `.gguf` file at the snapshot ROOT — `names` is a top-level listing,
     never a recursive walk, so this cannot fire on a GGUF sitting inside some
-    other pipeline's subfolder (`COMPONENT_REPOS`'s FLUX transformer is one)."""
+    other pipeline's subfolder (`COMPONENT_REPOS`'s FLUX transformer is one).
+
+    PRESENCE only — a container fact, not a modality one. `ai_models.py` uses
+    this alone for its cosmetic "library: gguf" tag, which is honest about
+    ANY GGUF repo whatever it contains. `loaders()` below asks the stricter
+    question (`is_text_gguf`) before calling one decisively `llamacpp-text`.
+    """
     return any(str(name).lower().endswith(GGUF_EXTENSION) for name in names)
 
 
@@ -366,19 +564,40 @@ DIFFUSERS_RUNNERS = ("diffusers-image", "diffusers-image-cuda",
                      "diffusers-image-rocm")
 
 
-def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool) -> tuple[str, ...]:
+def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
+           gguf_architecture: str | None = None) -> tuple[str, ...]:
     """Which runners' `load()` would accept this snapshot, by code.
 
     Format only: whether such a runner RUNS here, and whether the capability is
     one it serves, are the registry's questions and are asked by the caller.
 
     `names`/`dirnames` are the snapshot's top-level entries, `config` its
-    `config.json` (empty when absent), and `torch_weights` whether anything in
-    the tree is a file torch can open.
+    `config.json` (empty when absent), `torch_weights` whether anything in the
+    tree is a file torch can open, and `gguf_architecture` the caller's OWN
+    reading of `gguf_architecture()` for whichever root `.gguf` file is
+    present — passed in rather than read here because opening and parsing the
+    file is I/O this pure evidence-classifier has never otherwise done, and
+    the caller (`ai_models.py`) already has the snapshot path this needs.
+    `None` when there is no GGUF, or when the caller could not read one.
     """
     found: list[str] = []
     if has_ct2_weights(names):
         found.append("faster-whisper")
+    # Checked EARLY and returned on unconditionally, ahead of mflux/diffusers
+    # below: a `.gguf` at the root is llama.cpp's format and nothing else's
+    # (`DECISIVE`), and letting it fall through to those checks first is how
+    # a snapshot that happens to ALSO carry a `model_index.json` would have
+    # come back `(*DIFFUSERS_RUNNERS, "llamacpp-text")` — which, because this
+    # runner is registered ahead of the diffusers rows, would have labelled a
+    # diffusion pipeline as text generation (`ai_models._engine`'s
+    # `decisive[0]`). Gated on the architecture the GGUF itself declares
+    # (`GGUF_TEXT_ARCHITECTURES`), not the extension alone — see
+    # `is_text_gguf`'s docstring for the image/speech GGUF repos that check
+    # exists to keep out.
+    if (has_gguf_weights(names)
+            and gguf_architecture in GGUF_TEXT_ARCHITECTURES):
+        found.append("llamacpp-text")
+        return tuple(found)
     if is_mlx_whisper_snapshot(names, config):
         found.append("mlx-whisper")
         # …and NOTHING else, for the Parakeet branch's reason: the newer
@@ -399,14 +618,6 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool)
         # would claim it too and the page would offer to load a speech model
         # as a chat model — the failure `DECISIVE` exists to prevent, arriving
         # by a new route.
-        return tuple(found)
-    if has_gguf_weights(names):
-        found.append("llamacpp-text")
-        # …and NOTHING else. A GGUF-only snapshot has no `.safetensors` for the
-        # text branch below to claim, but the return is explicit rather than
-        # relied upon — `DECISIVE` says nothing else in this app reads a root
-        # `.gguf` for text, and a future branch added above the text check
-        # should not have to remember this one is exclusive too.
         return tuple(found)
     # The two text runners read the same directory of safetensors, and which of
     # them gets it is a platform-and-preference question rather than a format
