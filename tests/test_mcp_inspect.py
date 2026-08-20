@@ -397,6 +397,31 @@ def test_a_manifest_that_is_not_utf8_is_reported_not_raised(inspect_app, app):
     assert [f["file"] for f in report["files"]] == ["mail.py", "stats.py"]
 
 
+def test_no_toml_parser_is_reported_on_the_manifest_not_raised(inspect_app, app, monkeypatch):
+    # 3.10 without `tomli` (a project venv declares its own dependencies, SPEC
+    # PY-16): the app SURFACE is still readable and still worth drawing, so this
+    # is an error on the manifest sub-object rather than a failed report.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def deny(name, *args, **kwargs):
+        if name in ("tomllib", "tomli"):
+            raise ImportError("no TOML parser")
+        return real_import(name, *args, **kwargs)
+
+    with open(os.path.join(app, "mcp.toml"), "w", encoding="utf-8") as fh:
+        fh.write(_MANIFEST)
+    monkeypatch.setattr(builtins, "__import__", deny)
+
+    report = inspect_app.main(path=app)
+
+    assert report["ok"] is True
+    assert "tomli" in report["manifest"]["error"]
+    assert report["drift"] == []
+    assert [f["file"] for f in report["files"]] == ["mail.py", "stats.py"]
+
+
 def test_an_unparseable_manifest_is_reported_as_an_error(inspect_app, app):
     with open(os.path.join(app, "mcp.toml"), "w", encoding="utf-8") as fh:
         fh.write("[[tool]\nname =")

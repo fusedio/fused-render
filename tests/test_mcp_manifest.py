@@ -57,6 +57,54 @@ def app(tmp_path):
     return str(folder)
 
 
+# --------------------------------------------------- the parser on 3.10 vs 3.11
+
+
+@pytest.fixture
+def hidden_tomllib(monkeypatch):
+    """Make `tomllib` unimportable and `tomli` answer instead.
+
+    `requires-python` is >=3.10 and `tomllib` is 3.11+ stdlib, so on the 3.10
+    lane these modules get `tomli` (a dependency for `python_version < "3.11"`).
+    This suite runs on 3.11+, where the fallback branch is otherwise never
+    executed — and an unconditional `import tomllib` is exactly what turned this
+    file into 14 collection errors on that lane.
+    """
+    import builtins
+    import tomllib as stand_in  # captured BEFORE the patch: the module the
+    # fallback is handed, standing in for the tomli this interpreter has no
+    # reason to carry. Resolving it inside `deny` would re-enter the patch.
+
+    real_import = builtins.__import__
+    calls = []
+
+    def deny(name, *args, **kwargs):
+        if name == "tomllib":
+            raise ImportError("no tomllib on 3.10")
+        if name == "tomli":
+            calls.append(name)
+            return stand_in
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", deny)
+    return calls
+
+
+@pytest.fixture
+def no_toml_parser(monkeypatch):
+    """Neither parser importable — a project venv (SPEC PY-16) need not carry one."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def deny(name, *args, **kwargs):
+        if name in ("tomllib", "tomli"):
+            raise ImportError("no TOML parser")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", deny)
+
+
 _ONE = [{
     "name": "send_email",
     "description": "Send an email from the local mail app.",
@@ -67,10 +115,17 @@ _ONE = [{
 
 
 def _read_toml(app):
-    import tomllib
+    # Same two-name lookup the modules under test do: `tomllib` is 3.11+ stdlib
+    # and this repo supports 3.10, where the `tomli` dependency supplies it. An
+    # unconditional `import tomllib` here is what turned the whole file into
+    # collection errors on the 3.10 lane.
+    try:
+        import tomllib as toml
+    except ImportError:  # pragma: no cover — 3.10 only
+        import tomli as toml
 
     with open(os.path.join(app, "mcp.toml"), "rb") as fh:
-        return tomllib.load(fh)
+        return toml.load(fh)
 
 
 # ------------------------------------------------------------------- read/write
@@ -363,6 +418,47 @@ def test_the_two_signature_formatters_agree(manifest, tmp_path):
     for source in sources:
         fn = ast.parse(source).body[0]
         assert manifest._signature("main", fn) == inspect_app._signature("main", fn), source
+
+
+def test_tomli_serves_where_tomllib_does_not_exist(manifest, app, hidden_tomllib):
+    written = manifest.main(action="write", path=app, tools=_ONE)
+    back = manifest.main(action="read", path=app)
+
+    assert written["ok"] is True
+    assert back["ok"] is True
+    assert [t["name"] for t in back["tools"]] == ["send_email"]
+    # ...and it really went through the fallback rather than the stdlib. Twice:
+    # the write's verify-by-reparse, and the read. (The write's own pre-read
+    # needs no parser here — there was no manifest yet to preserve.)
+    assert hidden_tomllib == ["tomli", "tomli"]
+
+
+def test_no_parser_at_all_refuses_instead_of_raising(manifest, app, monkeypatch):
+    # A manifest that EXISTS is the case that needs a parser — an absent one is
+    # answered without parsing anything.
+    manifest.main(action="write", path=app, tools=_ONE)
+    before = open(os.path.join(app, "mcp.toml"), encoding="utf-8").read()
+
+    import builtins
+
+    real_import = builtins.__import__
+
+    def deny(name, *args, **kwargs):
+        if name in ("tomllib", "tomli"):
+            raise ImportError("no TOML parser")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", deny)
+
+    read = manifest.main(action="read", path=app)
+    assert read["ok"] is False and read["reason"] == "bad_manifest"
+    assert "tomli" in read["message"]
+
+    write = manifest.main(action="write", path=app, tools=_ONE)
+    assert write["ok"] is False
+    # The user's file is untouched: an environment that cannot PARSE the manifest
+    # must not have one written over it unverified.
+    assert open(os.path.join(app, "mcp.toml"), encoding="utf-8").read() == before
 
 
 def test_the_return_value_is_json_serialisable(manifest, app):

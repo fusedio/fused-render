@@ -122,6 +122,32 @@ def _fused_cli() -> str:
     return candidate if os.path.isfile(candidate) else ""
 
 
+def _toml():
+    """The TOML parser, or None: stdlib `tomllib` on 3.11+, else `tomli`.
+
+    `requires-python` is >=3.10 and `tomllib` only became stdlib in 3.11, so on
+    3.10 the `tomli` dependency supplies it — the same two-name lookup
+    `fused_render/projectenv.py::_load_manifest` does, and for the same reason a
+    template cannot just import the package's copy (SPEC PY-15).
+
+    None rather than a raise, because a template backend may also be running in a
+    PROJECT venv (SPEC PY-16), which declares its own dependencies and need not
+    carry `tomli`. Every caller has a payload for "no parser" — the module's
+    contract is that no exception escapes `main`.
+    """
+    try:
+        import tomllib
+
+        return tomllib
+    except ImportError:
+        try:
+            import tomli
+
+            return tomli
+        except ImportError:
+            return None
+
+
 def _refuse(reason: str, message: str) -> dict:
     """A refusal payload — the panel renders it (never an exception)."""
     return {"ok": False, "reason": reason, "message": message}
@@ -363,21 +389,25 @@ def _page_report(folder: str) -> dict:
 def _manifest_report(folder: str) -> dict:
     """The current `mcp.toml`'s `[[tool]]` tables, or the reason there are none.
 
-    Read with `tomllib` — the same parser the server uses — so the panel's idea
+    Read with the stdlib TOML parser (or `tomli` on 3.10) — the same parser the
+    server uses — so the panel's idea
     of what is curated cannot diverge from what `fused app serve` will load. An
     unparseable manifest is reported as an error on this sub-object rather than
     failing the whole report: the surface above it is still readable and still
     worth drawing.
     """
-    import tomllib
-
     path = os.path.join(folder, _MANIFEST)
     out = {"exists": os.path.isfile(path), "tools": [], "error": ""}
     if not out["exists"]:
         return out
+    toml = _toml()
+    if toml is None:
+        out["error"] = ("no TOML parser is available: tomllib needs Python 3.11+, "
+                        "and tomli is not installed in this folder's environment")
+        return out
     try:
         with open(path, "rb") as fh:
-            raw = tomllib.load(fh)
+            raw = toml.load(fh)
     except (OSError, ValueError) as exc:
         # ValueError covers BOTH tomllib.TOMLDecodeError (a subclass) and the
         # UnicodeDecodeError tomllib raises on a manifest that is not UTF-8 — a

@@ -52,9 +52,14 @@ import ast
 import json
 import os
 import tempfile
-import tomllib
 
 _MANIFEST = "mcp.toml"
+
+# Said to the user when neither parser is importable — a project venv (SPEC
+# PY-16) declares its own dependencies and need not carry `tomli`.
+_NO_PARSER = "%s" % (
+    "no TOML parser is available: tomllib needs Python 3.11+, and tomli is not "
+    "installed in this folder's environment")
 _DEFAULT_ENTRYPOINT = "main"
 
 # The keys this module owns in `mcp.toml`. Everything else in the file is the
@@ -73,6 +78,32 @@ _HEADER = (
     "# MCP tools for this app, curated in fused-render's MCP panel.\n"
     "# `fused app serve <this folder>` publishes one tool per [[tool]] table.\n"
 )
+
+
+def _toml():
+    """The TOML parser, or None: stdlib `tomllib` on 3.11+, else `tomli`.
+
+    `requires-python` is >=3.10 and `tomllib` only became stdlib in 3.11, so on
+    3.10 the `tomli` dependency supplies it — the same two-name lookup
+    `fused_render/projectenv.py::_load_manifest` does, and for the same reason a
+    template cannot just import the package's copy (SPEC PY-15).
+
+    None rather than a raise, because a template backend may also be running in a
+    PROJECT venv (SPEC PY-16), which declares its own dependencies and need not
+    carry `tomli`. Every caller has a payload for "no parser" — the module's
+    contract is that no exception escapes `main`.
+    """
+    try:
+        import tomllib
+
+        return tomllib
+    except ImportError:
+        try:
+            import tomli
+
+            return tomli
+        except ImportError:
+            return None
 
 
 def _ok(**extra) -> dict:
@@ -95,9 +126,12 @@ def _load(path: str):
     """`(tables, error)` for `<path>` — `({}, "")` when the file is absent."""
     if not os.path.isfile(path):
         return {}, ""
+    toml = _toml()
+    if toml is None:
+        return {}, "%s" % _NO_PARSER
     try:
         with open(path, "rb") as fh:
-            return tomllib.load(fh), ""
+            return toml.load(fh), ""
     except (OSError, ValueError) as exc:
         # ValueError covers BOTH tomllib.TOMLDecodeError (a subclass) and the
         # UnicodeDecodeError tomllib raises on a manifest that is not UTF-8 — a
@@ -395,9 +429,12 @@ def _write(folder: str, tools: list) -> dict:
 
     # Verify BEFORE replacing: the rendered file must parse, carry exactly the
     # intended tools, and still carry every key this module does not own.
+    toml = _toml()
+    if toml is None:
+        return _refuse("no_toml_parser", _NO_PARSER)
     try:
-        parsed = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
+        parsed = toml.loads(text)
+    except ValueError as exc:
         return _refuse(
             "render_failed",
             "the manifest this would write does not parse (%s) — nothing was "
