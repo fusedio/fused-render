@@ -7555,26 +7555,45 @@ app not running at all**. The serving half lives in the `fused` package
 manifest is the entire contract between them.
 
 - **MC-1** **The gate is the APP SHAPE, and it is folder-only** (CT-12,
-  `templates/mcp/condition.py`). A directory qualifies when it holds an
-  `index.html` **and** at least one top-level `.py` with a top-level `def main`:
-  the page is what makes the Python an app's entrypoints rather than someone's
-  library, and an entrypoint is what there is to curate. Either half alone is a
-  no — a page with no `main()` would open a panel with nothing in it. Folder-only
-  like `git` (GT-2) and for the same shape of reason: the manifest sits at the
-  folder's root and covers the folder, so a file has no separate question to ask,
-  and the file sidebar BORROWS the parent folder's entry
-  (`apps/explorer/lib/dir-mode.ts`) exactly as it borrows Git's. Mount-backed
-  paths are refused before any read (GT-4's rule): the panel reads every `.py` in
-  the folder and writes a file into it, which is the pattern that wedges a mount.
+  `templates/mcp/condition.py`). A directory qualifies when it holds a **tagged
+  entry page** — the first non-hidden top-level `.html` (name order) carrying
+  `<meta name="fused-app">`, the marker being the only signal (**D301**) —
+  **and** at least one top-level `.py` with a top-level `def main`: the page is
+  what makes the Python an app's entrypoints rather than someone's library, and
+  an entrypoint is what there is to curate. Either half alone is a no — a page
+  with no `main()` would open a panel with nothing in it. The marker check is
+  `shared/app_entry.has_fused_meta`, the same rule the `claude` and `app`
+  templates resolve an entry with, so no two surfaces can disagree about which
+  page an app folder has. Folder-only like `git` (GT-2) and for the same shape of
+  reason: the manifest sits at the folder's root and covers the folder, so a file
+  has no separate question to ask, and the file sidebar BORROWS the parent
+  folder's entry (`apps/explorer/lib/dir-mode.ts`) exactly as it borrows Git's.
+  Mount-backed paths are refused before any read (GT-4's rule): the panel reads
+  every `.py` in the folder and writes a file into it, which is the pattern that
+  wedges a mount.
 - **MC-1a** **This gate LISTS one directory level, which no peer gate does, and
-  it is ordered so that only an app pays for it.** There is no marker file to
-  probe for — an app's entrypoint may be called anything, which is the whole
-  reason a curation panel exists — so finding a `main()` needs the folder's names.
-  The `index.html` `isfile` therefore comes FIRST and eliminates almost every
-  directory the user opens at the cost of one stat; the listing is one level, is
-  never a walk, reads at most 24 candidate files, and stops at the first match.
-  `tests/test_mcp_condition.py` pins the ordering, because a refactor that
-  reversed it would make every folder in a home directory pay for a listing.
+  the listing serves both halves.** There is no constant name to probe for on
+  either side: the page is whatever the author tagged (D301 — `index.html` has no
+  special status, not even as a tiebreaker) and the entrypoint may be called
+  anything, which is the whole reason a curation panel exists. So one
+  `os.scandir` collects the top-level `.html` and `.py` names and the halves run
+  cheapest-first — a folder with neither kind in its NAMES is refused before a
+  single file is opened, and a folder with no `.py` never has a page read. The
+  reads are bounded (at most 24 files per half, first hit wins, 4 KiB for the
+  marker) and it is never a walk. A pathological folder whose only tagged page or
+  only `main` sits past the cap answers False: the gate is the UX and
+  `inspect_app.py` — which resolves the entry through `app_entry.entry_html`
+  itself, uncapped, once, on demand — is the guarantee (MD-11).
+  `tests/test_mcp_condition.py` pins the ordering and the caps.
+- **MC-1b** **An `index.html` `isfile` probe was tried first, and it was cheaper
+  and wrong.** One stat per directory is exactly what a peer gate costs, and it
+  bought two defects: a folder whose tagged entry is `mail.html` got no MCP pill
+  at all, and a folder with an untagged `index.html` beside a tagged `mail.html`
+  passed the gate while the panel drew its pin hints out of the wrong file. D301
+  deleted the name rule (`index.html`, else the first html) precisely because it
+  was a guess about intent read off a filename; a name rule kept for its I/O cost
+  is that guess sneaking back in, and this section recording it is the reason it
+  does not come back a third time.
 - **MC-2** **The panel reads the folder by AST, never by importing it**
   (`templates/mcp/inspect_app.py`). These are the folders whose modules open token
   files, hit a keychain, or talk to a localhost service at import time, so
@@ -7584,7 +7603,10 @@ manifest is the entire contract between them.
   `runPython` call sites with their literal arguments, the resolved `fused`
   executable, the current manifest, and the MC-4 drift verdict. It is a read: the
   write half is a separate module (the `git` view's `log.py`/`ops.py` split, GT-12).
-- **MC-2a** **The page's call arguments are a HINT, and they are what makes the
+- **MC-2a** **The page the hints come from is the TAGGED entry**, resolved by
+  `shared/app_entry.entry_html` (D301) — not `index.html`. Uncapped, unlike the
+  gate: this is one on-demand read of a folder the user has already opened.
+- **MC-2b** **The page's call arguments are a HINT, and they are what makes the
   proposal good.** `runPython("./mail.py", {op: "send"})` is the author already
   telling us that `mail.py` is a dispatcher and `send` is one of its operations —
   which is exactly one curated tool with `op` pinned. Extraction is a regex plus a
@@ -7616,14 +7638,25 @@ manifest is the entire contract between them.
   why this is a banner with a re-curate affordance and not a blocker. Saving
   re-records the snapshots, so Save is also the fix.
 - **MC-5** **Registration goes through the existing Claude-config MCP module,
-  and pins the RESOLVED `fused` path.** The panel POSTs
+  and pins the CLI THIS APP EXPORTED.** The panel POSTs
   `/api/claude-config/mcp` (`action=add`, name `fused-app-<folder>`, server json
-  `{command: <resolved fused>, args: ["app", "serve", <abs folder>]}`) — the same
+  `{command: <exported fused>, args: ["app", "serve", <abs folder>]}`) — the same
   module the Claude Config page uses, which owns the `claude mcp` CLI, the
   `--scope user` choice and the name guard. There is deliberately no second way to
-  write an MCP host entry. When no `fused` resolves on PATH, Register is DISABLED
-  with the reason stated: an entry whose `command` does not exist fails inside
-  Claude, where the user cannot see why.
+  write an MCP host entry. When no CLI is available, Register is DISABLED with the
+  reason stated: an entry whose `command` does not exist fails inside Claude,
+  where the user cannot see why.
+- **MC-5a** **The `fused` path comes from `appenv.fused_cli_dir()`, NEVER from a
+  PATH lookup** (**D334**). That env var is the directory the server exported
+  after vetting its own interpreter's CLI and baking `FUSED_ENV` — the same signal
+  the `claude` template uses to decide whether to promise the command at all.
+  `shutil.which("fused")` was what this did first, and it is the exact mechanism
+  D334 replaced: on a machine whose app venv lacks the `[fused]` extra but whose
+  PATH carries some other `fused` (a pipx shim, another project's venv), the panel
+  baked that unvetted binary into a **global** `~/.claude.json` entry, to be run
+  later with no `FUSED_ENV` and to fail where nobody is looking. The registration
+  target is a global, durable, unattended command; deriving it from ambient PATH
+  is the one place that matters most and the one place it was done.
 - **MC-6** **There is no gating layer beyond the MCP host's own per-call
   approval.** Every curated tool is callable, because the person who curated it is
   the person the host will ask. A second confirmation here would only be a false
@@ -7637,3 +7670,23 @@ manifest is the entire contract between them.
   `fused.ai` rejection (`ai_unavailable`, `model_loading`, the rest) is a status
   line, not a broken panel: manual entry is the full-capability path, and this app
   runs on machines with no Claude CLI at all.
+- **MC-8** **A PIN KEEPS ITS TYPE, from the panel to the entrypoint.** The
+  manifest is TOML and the server hands the pins to the entrypoint as JSON
+  (`_params.json`), so a `dry_run: bool = False` pinned "off" has to land as
+  `dry_run = false`. The panel derives the kind from the annotation first and the
+  default's literal shape second (`pinKind`), seeds the box with the parameter's
+  own default already typed (`seedPin`), and offers a boolean as two values
+  rather than as free text. The bug this fixes was not cosmetic: a pinned `False`
+  was written as the STRING `"False"`, which the server passes through verbatim
+  and Python reads as **truthy** — a pinned-off safety flag behaving as on.
+  `manifest.py` refuses a value with no JSON equivalent, `None` included: TOML has
+  no null, and a null pin used to be written as the string `"None"`.
+- **MC-9** **A registration failure reaches the user, and nothing is clickable
+  before there is a report.** `/api/claude-config/mcp` answers HTTP 200 with
+  `{ok: false}` for its own refusals, and `add`/`remove` carry the claude CLI's
+  `{stdout, stderr}` with no `error` key at all — so the panel reads
+  `error || stderr || stdout` and treats a false `ok` from `action=list` as the
+  warning it is, rather than as an empty server list. The action buttons are
+  disabled in the markup and enabled only by a successful load, so a click before
+  or after a failed one cannot dereference a report that is not there; Reload
+  stays enabled, because it is how the user retries.
