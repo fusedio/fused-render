@@ -136,6 +136,9 @@
 /* An <a>, not a button: middle-click / Cmd-click / "Open in new tab" have to
    work on a card, and the open rule itself lives in appEntry. */
 .app-pcard {
+  /* Positioning context for the hover export chip, which lives OUTSIDE the
+     aria-hidden thumb (assistive tech skips that subtree) but paints over it. */
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -202,14 +205,15 @@
   inset: 0;
 }
 
-/* Hover-revealed export button (SPEC §43 AF-4): hidden until the CARD is
-   hovered so the grid stays quiet, revealed as a small bordered chip in the
-   thumb's top-right corner. Above the shield (z-index) or the shield's
-   inset-0 span would swallow the click. Keyboard users get it without hover
-   via :focus-visible. */
+/* Hover-revealed export button (SPEC §43 AF-4, D391): hidden until the CARD
+   is hovered so the grid stays quiet, revealed as a small bordered chip in
+   the thumb's bottom-right corner. A sibling of the (aria-hidden) thumb,
+   positioned against the CARD, so assistive tech announces it; z-index lifts
+   it over the thumb and its pointer shield. Keyboard users get it without
+   hover via :focus-visible. */
 .app-pcard-export {
   position: absolute;
-  top: 8px;
+  bottom: 8px;
   right: 8px;
   z-index: 2;
   display: flex;

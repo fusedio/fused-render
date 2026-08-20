@@ -202,31 +202,34 @@ export function AppPreviewCard({
             <span className="app-pcard-shield" />
           </>
         ) : null}
-        {/* Hover-revealed export (SPEC §43 AF-4): the same action as the
-            right-click menu's "Export App File", surfaced so it is one
-            visible click. A <button> inside the card's <a>: it must both
-            preventDefault (or the card link opens the app) and
-            stopPropagation (or the click ALSO bubbles to onAppCardClick).
-            Sits after the shield in DOM order so the shield can't eat it. */}
-        <button
-          type="button"
-          className="app-pcard-export"
-          title={"Export " + (app.title || app.name) + " as a .fused app file"}
-          aria-label="Export app file"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            downloadAppFile(app.path, app.name).catch((err: Error) =>
-              pushToast({
-                msg: "Could not export " + app.name + ": " + err.message,
-                tone: "error",
-              }),
-            );
-          }}
-        >
-          {MenuIcons.compress}
-        </button>
       </span>
+      {/* Hover-revealed export (SPEC §43 AF-4, D391): the same action as the
+          right-click menu's "Export App File", surfaced so it is one visible
+          click. A SIBLING of the thumb, not a child: the thumb span is
+          aria-hidden (it is decoration), and a focusable button inside an
+          aria-hidden subtree is announced as nothing by assistive tech while
+          still taking tab focus. Positioned over the thumb via the card's own
+          positioning context. A <button> inside the card's <a>: it must both
+          preventDefault (or the card link opens the app) and stopPropagation
+          (or the click ALSO bubbles to onAppCardClick). */}
+      <button
+        type="button"
+        className="app-pcard-export"
+        title={"Export " + (app.title || app.name) + " as a .fused app file"}
+        aria-label="Export app file"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          downloadAppFile(app.path, app.name).catch((err: Error) =>
+            pushToast({
+              msg: "Could not export " + app.name + ": " + err.message,
+              tone: "error",
+            }),
+          );
+        }}
+      >
+        {MenuIcons.compress}
+      </button>
     </a>
   );
 }

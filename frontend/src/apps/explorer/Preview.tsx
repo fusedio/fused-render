@@ -184,13 +184,18 @@ function CloneCommunityButton({ slug }: { slug: string }) {
 function ExportAppButton({ fsPath }: { fsPath: string }) {
   const [isEntry, setIsEntry] = useState(false);
   const [busy, setBusy] = useState(false);
+  // The server answers os.path.abspath (backslashes on Windows) while fsPath
+  // is the shell's canonical forward-slash form — same drive-letter-only
+  // normalization rule as the URL codec (a backslash in a POSIX filename must
+  // not be rewritten).
+  const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
   useEffect(() => {
     let alive = true;
     setIsEntry(false);
     const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
     getAppEntry(dir)
       .then((r) => {
-        if (alive) setIsEntry(r.entry === fsPath);
+        if (alive) setIsEntry(r.entry != null && canon(r.entry) === fsPath);
       })
       .catch(() => {
         /* indeterminate reads as "not an entry" — no button for nothing */
