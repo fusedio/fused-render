@@ -1,6 +1,6 @@
 """What the Diffusers image runner FETCHES, and what it deliberately does not.
 
-The recipe in `diffusers_image/worker.py` swaps a 2.6GB GGUF transformer in for
+The recipe in `runners/torch_image.py` swaps a 2.6GB GGUF transformer in for
 the repo's own 7.8GB bf16 one, and the whole value of that swap is bytes not
 downloaded. It was silently worth nothing: the skip list named
 `transformer/*.safetensors`, and `black-forest-labs/FLUX.2-klein-4B` ALSO
@@ -27,7 +27,10 @@ RUNNERS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "fused_render", "ai", "runners",
 )
-WORKER_PATH = os.path.join(RUNNERS, "diffusers_image", "worker.py")
+#: The runner itself, at the runners ROOT — `diffusers_image/`,
+#: `diffusers_image_cuda/` and `diffusers_image_rocm/` each hold a five-line
+#: `worker.py` shell that imports it, so this is where the recipe lives.
+WORKER_PATH = os.path.join(RUNNERS, "torch_image.py")
 BASE_PATH = os.path.join(RUNNERS, "worker_base.py")
 
 MODEL = "black-forest-labs/FLUX.2-klein-4B"

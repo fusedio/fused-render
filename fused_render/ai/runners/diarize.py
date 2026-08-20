@@ -98,6 +98,38 @@ EMBEDDING_FILE = formats.COMPONENT_REPOS[EMBEDDING_REPO]["file"]
 MIN_DURATION_ON = 0.3
 MIN_DURATION_OFF = 0.5
 
+#: How many CPU threads BOTH ONNX models get. One constant for the two of them,
+#: for the reason `MIN_DURATION_ON` is one: two engines read this module and a
+#: segmenter configured apart from its embedder is drift no behavioural test
+#: would catch. Unlike those two, this value is **not** sherpa's default and is
+#: not restating anything upstream chose — it is measured here.
+#:
+#: It was `1`, under a comment that thought it was restating a library default.
+#: The segmentation pass is the dominant cost of a diarized transcription, not
+#: the footnote the CPU-provider note below used to call it: on a 216-second
+#: recording on a 10-core Apple Silicon machine it ran in 26.64s on one thread,
+#: 14.80s on two and 11.55s on four. Embedding and clustering together measured
+#: ~0s, so this number is essentially the whole of the phase's wall clock.
+#:
+#: **The output was identical at 1, 2, 4 and 8 threads** — the same 48 turns and
+#: the same 6 speakers — which is the evidence that made this safe to change, and
+#: the limit of that evidence is one machine and one recording. It is not a
+#: guarantee: ONNX Runtime's intra-op parallelism can in principle reorder
+#: floating-point reductions, which would perturb the posteriors and so the turn
+#: boundaries, and this value is host-dependent by design. `diarizer` states what
+#: is and is not promised as a result.
+#:
+#: **The cap of 4 is load-bearing, and this is the reason it is not a magic
+#: number:** eight threads measured 16.79s — SLOWER than four's 11.55s — on that
+#: same 10-core part. Every current Apple Silicon design is performance cores
+#: plus efficiency cores, so threads past the P-core count land on the slow ones
+#: and the segmentation pass ends up waiting for them. `os.cpu_count()` uncapped
+#: is therefore a pessimisation on every machine this runner ships to, in the
+#: same way `1` was in the other direction. `or 1` because `os.cpu_count()` is
+#: documented to be able to return None, and `num_threads=None` is a C++ config
+#: field this process would abort on rather than raise about.
+NUM_THREADS = min(4, os.cpu_count() or 1)
+
 #: How much of a lead counts as a real one when two speakers overlap a segment.
 #: Overlaps are differences of floats and two turns that are equal on paper
 #: rarely are in binary, so a bare `==` tie-break would never fire and the
@@ -208,14 +240,37 @@ def diarizer(segmentation_path, embedding_path, speakers):
       instead, so voices merge by cosine distance and the count falls out.
 
     The fixed branch is spelled exactly as it was before the other one existed,
-    with no `threshold` passed: a caller who gives the count must get the same
-    transcript they got yesterday, byte for byte, and the surest way to promise
-    that is to leave its call untouched.
+    with no `threshold` passed: a caller who gives the count must not have their
+    clustering quietly re-tuned by a feature they did not ask for, and the surest
+    way to promise that is to leave its call untouched.
 
-    CPU provider explicitly, for `vad.py`'s reason: 33MB of ONNX that runs in
-    seconds does not need a second accelerator backend beside the one holding
-    the Whisper weights, and onnxruntime's provider-fallback warnings would land
-    in the worker log on every transcription.
+    **That promise is about the CALL, not about the bytes**, and the distinction
+    is not pedantry — it used to read "the same transcript they got yesterday,
+    byte for byte", which is more than this file can honestly claim now that
+    `NUM_THREADS` derives from `os.cpu_count()`. ONNX Runtime's intra-op
+    parallelism can in principle change the order of floating-point reductions,
+    and a different order perturbs the segmentation posteriors and therefore the
+    turn boundaries. What was actually established is narrower than a guarantee
+    and is worth writing down as such: on ONE machine and ONE 216-second
+    recording, 1, 2, 4 and 8 threads produced identical output — the same 48
+    turns and the same 6 speakers. That is real evidence that this model's
+    reductions are stable under threading, and it is not proof that they must be
+    on every part and every recording. A transcript that differs across machines
+    by a few milliseconds of turn boundary is the accepted cost of the phase
+    taking 11.5s instead of 26.6s (see `NUM_THREADS`); what is NOT accepted is
+    the label set changing, which is what the count-fixing branch above pins.
+
+    CPU provider explicitly, and NOT because this is cheap — it is not. The
+    segmentation pass is the dominant cost of a diarized transcription (26.6s of
+    a 216-second recording on one thread; see `NUM_THREADS`), and the sentence
+    that used to sit here — "33MB of ONNX that runs in seconds" — asserted a
+    timing this phase never had. What survives that correction is the rest of
+    `vad.py`'s reason, which does not depend on the size of the model: a second
+    accelerator backend beside the one holding the Whisper weights buys nothing
+    measured (CoreML measured SLOWER than CPU for ASR — sherpa-onnx#2910), and
+    onnxruntime's provider-fallback warnings would land in the worker log on
+    every transcription. The answer to the cost is `NUM_THREADS`, not a
+    different provider.
     """
     import sherpa_onnx
 
@@ -231,9 +286,9 @@ def diarizer(segmentation_path, embedding_path, speakers):
         segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
                 model=segmentation_path),
-            num_threads=1, provider="cpu"),
+            num_threads=NUM_THREADS, provider="cpu"),
         embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-            model=embedding_path, num_threads=1, provider="cpu"),
+            model=embedding_path, num_threads=NUM_THREADS, provider="cpu"),
         clustering=(
             sherpa_onnx.FastClusteringConfig(num_clusters=int(speakers))
             if speakers is not None else
@@ -350,13 +405,33 @@ def label(speaker_index):
     return "Speaker %d" % (int(speaker_index) + 1)
 
 
-def speaker_for(start, end, turns):
+def speaker_for(start, end, turns, spans=None):
     """Which speaker `[start, end)` overlaps MOST, or None if it overlaps none.
 
     Overlap in TIME, not nearest-turn or midpoint-containment, because a
     Whisper segment is a sentence and a sentence routinely straddles a
     hand-over: "…yeah — no, I think" can begin in one person's turn and end in
     another's, and the person who said most of it is the honest label.
+
+    **`spans` masks the SCORING to the intervals where speech actually was**, and
+    it exists because a segment can now straddle time that was never transcribed.
+    `mlx_whisper` concatenates VAD regions into one `transcribe()` call (AI-10f,
+    D366), so Whisper hears one continuous sentence across a pause that is not in
+    the clip it was given and can emit a segment whose remapped start and end sit
+    in different regions. Its published start and end are RIGHT — the words
+    really do sit either side of the pause, and a page seeking a player wants the
+    real interval — but scoring the whole span is not: diarization runs on the
+    FULL waveform (deliberately, see the module docstring) and routinely has
+    turns inside the gap, so the label went to whoever the segmenter heard during
+    the silence rather than to whoever said the words. Masked, time inside a
+    dropped silence contributes zero to every speaker's total, and the segment is
+    labelled by its words.
+
+    **None means "score the whole span", and that is the default on purpose.**
+    `faster_whisper`, `parakeet_mlx` and a non-VAD `mlx_whisper` run drop no
+    silence out of the middle of a segment, so for them a span is contiguous and
+    a mask could only be a no-op with a risk attached. They pass nothing and are
+    byte-identical to before this argument existed.
 
     **Summed PER SPEAKER, not per turn.** One speaker can hold several turns
     inside one segment (a short interjection splits theirs in two), and taking
@@ -378,7 +453,7 @@ def speaker_for(start, end, turns):
     totals = {}
     earliest = {}
     for turn_start, turn_end, speaker in turns:
-        overlap = min(end, turn_end) - max(start, turn_start)
+        overlap = _overlap(max(start, turn_start), min(end, turn_end), spans)
         if overlap <= 0:
             continue
         totals[speaker] = totals.get(speaker, 0.0) + overlap
@@ -392,8 +467,32 @@ def speaker_for(start, end, turns):
     return min(tied, key=lambda speaker: (earliest[speaker], speaker))
 
 
-def assign_speakers(segments, turns):
+def _overlap(low, high, spans):
+    """How much of `[low, high)` counts, in seconds — never negative.
+
+    `spans` is `speaker_for`'s mask: the intervals where speech actually was, or
+    None for "all of it". Intersecting per span and summing is correct for the
+    only shape this is ever handed — `speech_regions`' output, which is ordered
+    and non-overlapping (`vad.py` merges anything the padding makes touch, and
+    everything downstream of it relies on that) — so no interval is counted
+    twice. An unordered or overlapping mask would over-count, which is why the
+    guarantee lives at the source rather than in a sort here.
+    """
+    if high <= low:
+        return 0.0
+    if spans is None:
+        return high - low
+    return sum(max(0.0, min(high, span_end) - max(low, span_start))
+               for span_start, span_end in spans)
+
+
+def assign_speakers(segments, turns, spans=None):
     """Put a `speaker` on every segment, and return the labels that landed.
+
+    `spans` is `speaker_for`'s scoring mask and is passed straight down, so a
+    caller that drops silence out of the middle of its clips says so ONCE rather
+    than reimplementing this loop. None — the default — is every engine that
+    drops nothing, scoring exactly as it did before the mask existed.
 
     Mutates in place, because the segments ARE the transcript both engines are
     about to write and copying them would leave two lists to keep in step.
@@ -408,7 +507,8 @@ def assign_speakers(segments, turns):
     """
     used = set()
     for segment in segments:
-        speaker = speaker_for(segment["start"], segment["end"], turns)
+        speaker = speaker_for(segment["start"], segment["end"], turns,
+                              spans=spans)
         segment["speaker"] = None if speaker is None else label(speaker)
         if speaker is not None:
             used.add(speaker)

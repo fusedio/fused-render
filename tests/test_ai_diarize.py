@@ -188,6 +188,42 @@ def test_a_missing_model_file_is_named_rather_than_aborting_the_process(
         diarize.diarizer(str(tmp_path / "nope.onnx"), str(tmp_path / "no.onnx"), 2)
 
 
+# -- how many threads the segmenter gets -----------------------------------------
+
+
+def test_BOTH_models_are_configured_with_the_SAME_measured_thread_count(
+        diarize, sherpa, models):
+    """The segmentation pass is the dominant cost of a diarized transcription,
+    and it was pinned to a single thread.
+
+    Measured on a 216-second recording, 10-core Apple Silicon, everything else
+    identical: 26.64s at one thread, 14.80s at two, 11.55s at four, 16.79s at
+    eight. One thread is therefore a 2.3x pessimisation of the phase the user
+    waits on, and eight is slower than four — which is why the cap exists and
+    why `os.cpu_count()` uncapped would be the same mistake in the other
+    direction. The output was identical at all four settings (48 turns, 6
+    speakers) — on that one machine and that one recording, which is evidence
+    that the reductions are stable under threading rather than a guarantee that
+    they must be; `diarizer` writes down what is and is not promised.
+
+    Read off BOTH configs, because the value has to come from ONE constant:
+    `mlx_whisper` and `parakeet_mlx` both import this module, and a segmenter
+    and an embedder that can be configured apart is exactly the drift a shared
+    constant prevents. Asserted against the rule rather than against a number,
+    because the count is the machine's — a two-core CI runner must not be told
+    it should have found four.
+    """
+    _session, config = diarize.diarizer(*models, 3)
+
+    assert config.segmentation.num_threads == diarize.NUM_THREADS
+    assert config.embedding.num_threads == diarize.NUM_THREADS
+    assert diarize.NUM_THREADS == min(4, os.cpu_count() or 1)
+    # The floor is a machine with one core; the cap is load-bearing (8 measured
+    # slower than 4 above), so a value outside this range is a regression
+    # whichever end it fell off.
+    assert 1 <= diarize.NUM_THREADS <= 4
+
+
 # -- what the clustering settled on ----------------------------------------------
 
 
@@ -343,6 +379,77 @@ def test_an_exact_TIE_goes_to_whoever_started_speaking_first(diarize):
     # …and the rule reads the TURNS, not the list order: the same tie with the
     # later-starting speaker listed first still answers with the earlier one.
     assert diarize.speaker_for(9.0, 11.0, list(reversed(turns))) == 0
+
+
+def test_time_in_a_DROPPED_SILENCE_scores_for_nobody(diarize):
+    """The bug packing introduced (mlx_whisper/worker.py), and it is a
+    MIS-LABEL, not a mis-timing.
+
+    Once VAD regions are concatenated into one `transcribe()` call, Whisper can
+    emit one segment whose remapped start and end sit in DIFFERENT regions — the
+    silence between them is not in the clip it was given, so it hears one
+    continuous sentence. The published interval is right (a page seeking a
+    player wants the real recording span), but the scoring must not be: the
+    diarizer ran on the FULL waveform and routinely has turns inside the gap, so
+    summed over the whole span the label goes to whoever the segmenter heard
+    during the pause rather than to whoever said the words.
+
+    Here the words are speaker 0's, two seconds of them either side of a
+    25-second pause; speaker 1 holds ten seconds in the middle of that pause and
+    said nothing that was transcribed. Unmasked, speaker 1 wins 10 to 3.
+    """
+    turns = [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)]
+    spans = [(0.0, 5.0), (30.0, 35.0)]
+
+    assert diarize.speaker_for(3.0, 31.0, turns, spans=spans) == 0
+
+
+def test_the_MASK_is_optional_and_absent_means_score_the_whole_span(diarize):
+    """The default has to be the old behaviour byte for byte: `faster_whisper`,
+    `parakeet_mlx` and a non-VAD `mlx_whisper` run all pass nothing, and none of
+    them drops any silence out of the middle of a segment — so for them a span
+    is contiguous and a mask would be a no-op with a risk attached."""
+    turns = [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)]
+
+    assert diarize.speaker_for(3.0, 31.0, turns) == 1
+    assert diarize.speaker_for(3.0, 31.0, turns, spans=None) == 1
+
+
+def test_a_mask_that_the_segment_lies_INSIDE_changes_nothing(diarize):
+    """Every segment of a packed run carries the same mask — the file's whole
+    region list — so the ordinary case is a segment sitting wholly inside one of
+    its intervals. That must score exactly as it did before the mask existed."""
+    turns = [(0.0, 10.0, 0), (10.0, 20.0, 1)]
+    spans = [(0.0, 20.0), (40.0, 50.0)]
+
+    assert diarize.speaker_for(9.0, 13.0, turns, spans=spans) == 1
+    assert diarize.speaker_for(9.0, 13.0, turns) == 1
+
+
+def test_a_segment_ENTIRELY_inside_a_dropped_silence_is_labelled_None(diarize):
+    """Not reachable from the packed runner — its segments are clamped into the
+    speech — but the rule has to terminate somewhere, and "nobody" is the same
+    honest answer this function already gives for a segment that overlaps no
+    turn at all."""
+    turns = [(10.0, 20.0, 1)]
+    spans = [(0.0, 5.0), (30.0, 35.0)]
+
+    assert diarize.speaker_for(12.0, 15.0, turns, spans=spans) is None
+
+
+def test_the_LEGEND_is_derived_from_the_masked_labels_too(diarize):
+    """`assign_speakers` takes the mask and passes it down, rather than each
+    caller reimplementing the loop. A speaker that only ever won on silence must
+    not appear in the legend either — a name in the legend that no segment
+    refers to reads as a bug in the page rendering it."""
+    segments = [{"start": 3.0, "end": 31.0, "text": "either side of the pause"}]
+    turns = [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)]
+
+    legend = diarize.assign_speakers(segments, turns,
+                                     spans=[(0.0, 5.0), (30.0, 35.0)])
+
+    assert legend == ["Speaker 1"]
+    assert [s["speaker"] for s in segments] == ["Speaker 1"]
 
 
 def test_a_tie_between_speakers_who_START_together_falls_back_to_the_index(diarize):

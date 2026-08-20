@@ -17,7 +17,7 @@ import {
   NO_TIME,
   PREVIEW_MESSAGES,
   UNREAD_LABEL,
-  archiveIntent,
+  filingIntent,
   basename,
   canCancel,
   canRunNow,
@@ -46,6 +46,7 @@ import {
   laneRolledUp,
   laneUnread,
   LIST_ORDER,
+  showsRowActions,
   sortByLane,
   laneTime,
   lastRunAt,
@@ -66,6 +67,7 @@ import {
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
+  popoverPill,
   parseLaneChoices,
   parseListMemory,
   projectOptions,
@@ -960,8 +962,12 @@ describe("taskColumn", () => {
     for (const col of BOARD_COLUMNS) {
       expect(taskColumn({ ...task(), status: col.key as Task["status"] })).toBe(col.key);
     }
+    // Lane order, left to right. Failed sits BEFORE Done (Akshil, 2026-08-18): a
+    // lane that wants a person's hands comes before one that wants only their
+    // eyes. The List reads the SAME sequence — LIST_ORDER's own test holds the two
+    // arrays equal.
     expect(BOARD_COLUMNS.map((c) => c.key)).toEqual([
-      "upcoming", "in_progress", "done", "failed", "archived",
+      "upcoming", "in_progress", "failed", "done", "archived",
     ]);
   });
 });
@@ -1060,20 +1066,36 @@ describe("dropLanes", () => {
     expect(dropLanes(t)).toEqual([]);
   });
 
-  it("Archived goes nowhere, even with a run pending", () => {
-    const t = upcoming([T9], { status: "archived" });
-    expect(canRunNow(t)).toBe(true);
+  it("locks Archive as a SOURCE — the Unarchive button is the only door", () => {
+    // (Akshil, 2026-08-19.) A drop target implies the reader picks the landing
+    // lane, and the lane is derived server-side, never picked. The button says
+    // what it does; a drag would lie about where the card goes.
+    const t = task({ status: "archived" });
     expect(dropLanes(t)).toEqual([]);
+    expect(isDraggable(t)).toBe(false);
+    for (const lane of ["upcoming", "in_progress", "done", "failed"] as const) {
+      expect(dropAction(t, lane)).toBeNull();
+    }
   });
 
-  it("locks the two lanes that are Claude's, not the reader's", () => {
+  it("refuses the drag even when a run would have been possible", () => {
+    // Locked means locked: neither a pending message nor a missing session
+    // re-opens the gesture. The button (filingIntent) is the way out.
+    const pending = upcoming([T9], { status: "archived" });
+    expect(canRunNow(pending)).toBe(true);
+    expect(dropLanes(pending)).toEqual([]);
+    const fresh = task({ key: "pending:e1", session_id: "", status: "archived" });
+    expect(dropAction(fresh, "done")).toBeNull();
+  });
+
+  it("locks In Progress, and locks Archive only as a DESTINATION", () => {
     // In Progress is a run in flight: a card leaves it when the run ends and at
-    // no other moment. Archive is where things rest, and there is no way back
-    // out by dragging — the row draws no Unarchive either.
-    for (const status of ["in_progress", "archived"] as const) {
-      expect(dropLanes(task({ status }))).toEqual([]);
-      expect(isDraggable(task({ status }))).toBe(false);
-    }
+    // no other moment. Archive is a locked destination for a card already in it
+    // — "archive this archived task" is not a move — while remaining the one
+    // lane a card may be dragged OUT of into anything.
+    expect(dropLanes(task({ status: "in_progress" }))).toEqual([]);
+    expect(isDraggable(task({ status: "in_progress" }))).toBe(false);
+    expect(dropAction(task({ status: "archived" }), "archived")).toBe(null);
   });
 
   it("offers Archive from every unlocked lane, session or no session", () => {
@@ -1112,7 +1134,10 @@ describe("dropLanes", () => {
     // Upcoming: a task cannot be un-run. Failed: it is something that HAPPENED,
     // and a lane you can drag a healthy task into is a lane whose count means
     // nothing. Done: a run says that, not a reader.
-    for (const status of ["upcoming", "in_progress", "done", "archived"] as const) {
+    // Archived is excluded: those three ARE legal places to let an archived card
+    // go, and the move is unarchive rather than "make it that lane" — see the
+    // unarchive cases above.
+    for (const status of ["upcoming", "in_progress", "done"] as const) {
       for (const lane of ["upcoming", "failed", "done"] as const) {
         expect(dropLanes(task({ status })).includes(lane)).toBe(false);
       }
@@ -1266,15 +1291,89 @@ describe("dropAction", () => {
     expect(dropAction(task({ status: "upcoming" }), "in_progress")).toBe(null);
     expect(dropAction(task({ status: "done" }), "failed")).toBe(null);
     expect(dropAction(upcoming([T9], { status: FAILED }), "done")).toBe(null);
-    // Both locked lanes refuse everything.
+    // In Progress refuses everything as a SOURCE; Archive refuses only itself.
     for (const lane of ["in_progress", "archived"] as const) {
       expect(dropAction(task({ status: "in_progress" }), lane)).toBe(null);
-      expect(dropAction(task({ status: "archived" }), lane)).toBe(null);
     }
+    expect(dropAction(task({ status: "archived" }), "archived")).toBe(null);
+    // And an archived card answers null everywhere: the button un-files, not
+    // the drag.
+    expect(dropAction(upcoming([T9], { status: "archived" }), "in_progress"))
+      .toBeNull();
     // A never-run task may now be filed as well as run: archiving is keyed by
     // task, not by session.
     const fresh = upcoming([T9], { key: "pending:e1", session_id: "" });
     expect(dropAction(fresh, "archived")).toEqual({ kind: "archive" });
+  });
+});
+
+// ---- dragging out of Archive ---------------------------------------------------
+// UNARCHIVE, and the whole point of the group is the two things the move is NOT:
+// it is not a choice of lane, and it is not a run.
+
+describe("the unarchive drag", () => {
+  const LANES = ["upcoming", "in_progress", "done", "failed"] as const;
+
+  it("is not a drag at all any more — the group pins the lock", () => {
+    // (Akshil, 2026-08-19.) The two things the move is NOT became three: not a
+    // choice of lane, not a run, and not a gesture. dropLanes is empty and the
+    // button carries the verb.
+    expect(dropLanes(task({ status: "archived" }))).toEqual([]);
+    expect(filingIntent(task({ status: "archived" }))?.kind).toBe("unarchive");
+  });
+
+  it("NEVER produces a run, whatever the archived task has pending", () => {
+    // The one thing this drag must not do. An archived task can hold a pending
+    // message — archiving cancels the work, but a card can be archived and then
+    // scheduled into, and an older filing may predate the cancel — and dropping
+    // it on In Progress must not fire it. "Put this back on the board" is not
+    // consent to send a message.
+    const pending = upcoming([T9], { status: "archived" });
+    expect(canRunNow(pending)).toBe(true);
+    for (const lane of LANES) {
+      expect(dropAction(pending, lane)?.kind).not.toBe("run");
+    }
+    // No lane on the whole board reads as a run for an archived card, which is
+    // what the Board's `runLane` hint asks — so it draws no run outline.
+    for (const col of BOARD_COLUMNS) {
+      expect(dropAction(pending, col.key)?.kind === "run").toBe(false);
+    }
+  });
+
+  it("still carries no lane on the button's intent", () => {
+    const intent = filingIntent(task({ status: "archived" }))!;
+    expect(intent.kind).toBe("unarchive");
+    expect(intent.lane).toBeNull();
+  });
+
+  it("does not make Archive a destination for an archived card", () => {
+    // "Archive this archived task" is not a move, and dropping a card back on
+    // the lane it came from must be a no-op rather than a wasted un-file.
+    expect(dropAction(task({ status: "archived" }), "archived")).toBe(null);
+    expect(dropLanes(task({ status: "archived" }))).not.toContain("archived");
+  });
+
+  it("leaves In Progress locked as a SOURCE", () => {
+    // Accepting a drop is not the same as releasing one. A run in flight is
+    // Claude's output and the card leaves that lane when the run ends.
+    expect(dropLanes(task({ status: "in_progress" }))).toEqual([]);
+    expect(isDraggable(task({ status: "in_progress" }))).toBe(false);
+  });
+
+  it("is the call the Board makes, and it sends no lane", () => {
+    // The handler's own half of the rule, read out of the source: one call over
+    // the task key, and the `lane` the drop was made on is not in it.
+    const from = VIEWS.indexOf('const drop = async (lane: BoardColumn)');
+    const handler = VIEWS.slice(from, VIEWS.indexOf("onReload();", from));
+    expect(handler).toContain('action.kind === "unarchive"');
+    // Through the shared helper — one call over the task key, and the `lane` the
+    // drop was made on is not in it.
+    expect(handler).toContain("performUnarchive(task.key)");
+    expect(handler).not.toMatch(/performUnarchive\(task\.key,/);
+    expect(VIEWS).toContain("async function performUnarchive(key: string)");
+    expect(VIEWS).toContain("await unarchiveTask(key)");
+    // And it says where the card actually went, because it may not be here.
+    expect(VIEWS).toContain("statusColumn(said.status)");
   });
 });
 
@@ -1464,9 +1563,10 @@ describe("taskRunIntent", () => {
 // kept" (D306), and that answer is only true while archiving is reachable. It
 // used to be one gesture on one view, onto a lane that starts COLLAPSED.
 
-describe("archiveIntent", () => {
+describe("filingIntent", () => {
   it("offers Archive on a task that has run", () => {
-    const a = archiveIntent(task({ status: "done" }))!;
+    const a = filingIntent(task({ status: "done" }))!;
+    expect(a.kind).toBe("archive");
     expect(a.label).toBe("Archive");
     expect(a.lane).toBe("archived");
     // The two halves a person reaching for Delete is actually asking about: the
@@ -1475,37 +1575,62 @@ describe("archiveIntent", () => {
     expect(a.title).toContain("calls off");
   });
 
-  it("offers no way back out of Archive", () => {
-    // Archive is a locked lane on the Board and the row draws no Unarchive, so
-    // there is one answer to "how do I get this back?" instead of two. It costs
-    // nothing: archiving destroys nothing (D306).
-    expect(archiveIntent(task({ status: "archived" }))).toBe(null);
+  it("offers Unarchive on an archived task, naming NO lane", () => {
+    // The way back is a button again (Akshil, 2026-08-19) — and the reason the
+    // old one was wrong is the field that is null here. Archive → In Progress
+    // asserted a verdict on work the reader had not watched; this asserts
+    // nothing, because the server derives where the task lands.
+    const a = filingIntent(task({ status: "archived" }))!;
+    expect(a.kind).toBe("unarchive");
+    expect(a.label).toBe("Unarchive");
+    expect(a.lane).toBe(null);
+    // Says the two things a person cannot see before pressing.
+    expect(a.title).toContain("Archive");
+    expect(a.title).toContain("nothing is re-run");
   });
 
-  it("offers nothing while a run is in flight", () => {
+  it("offers nothing while a run is in flight — the ONLY null now", () => {
     // In Progress is Claude's output. The card cannot leave that lane by any
     // gesture, and the button asks the same question the drop does.
-    expect(archiveIntent(task({ status: "in_progress" }))).toBe(null);
+    expect(filingIntent(task({ status: "in_progress" }))).toBe(null);
+    // Every other lane has a direction, which is the whole change: there is no
+    // longer a row whose filing simply cannot be changed.
+    for (const status of ["upcoming", "done", "archived", FAILED] as const) {
+      expect(filingIntent(task({ status }))).not.toBe(null);
+    }
   });
 
   it("offers Archive on a task with no session at all", () => {
     // `pending:<entry>` — the row the old session-keyed triage write could not
     // touch. Archiving is one verb over a TASK KEY now, and for a task that has
     // never run it means exactly "cancel the work", which the server does.
-    expect(archiveIntent(task({ key: "pending:e1", session_id: "", status: "upcoming" })))
+    expect(filingIntent(task({ key: "pending:e1", session_id: "", status: "upcoming" })))
       .not.toBe(null);
     const fresh = upcoming([T9], { key: "pending:e1", session_id: "" });
     expect(isDraggable(fresh)).toBe(true);
-    expect(archiveIntent(fresh)!.lane).toBe("archived");
+    expect(filingIntent(fresh)!.lane).toBe("archived");
+  });
+
+  it("offers Unarchive even where there is nothing to un-file server-side", () => {
+    // A card reads Archive because its every message was filed away, or because
+    // it has no session to hold a record at all. The button is still right: the
+    // server answers `unfiled: false` and the row lands in its derived lane,
+    // which is the outcome the press was asking for either way.
+    for (const t of [
+      task({ status: "archived", key: "pending:e1", session_id: "" }),
+      task({ status: "archived", messages: [msg({ state: "cancelled" })] }),
+    ]) {
+      expect(filingIntent(t)!.kind).toBe("unarchive");
+    }
   });
 
   it("is offered from every unlocked lane", () => {
     for (const status of ["upcoming", "done"] as const) {
-      expect(archiveIntent(task({ status }))).not.toBe(null);
+      expect(filingIntent(task({ status }))!.kind).toBe("archive");
     }
     // Including the one lane Done is refused from — filing a failed run away is
     // exactly what a person wants to do with it.
-    expect(archiveIntent(task({ status: FAILED }))!.lane).toBe("archived");
+    expect(filingIntent(task({ status: FAILED }))!.lane).toBe("archived");
   });
 
   it("never disagrees with the drop the Board already makes", () => {
@@ -1515,25 +1640,61 @@ describe("archiveIntent", () => {
       task({ status: "archived" }),
       task({ status: FAILED }),
       upcoming([T9]),
+      upcoming([T9], { status: "archived" }),
       upcoming([T18, T9], { status: FAILED }),
       task({ key: "pending:e1", session_id: "", status: "upcoming" }),
       upcoming([T9], { key: "pending:e1", session_id: "" }),
     ];
     for (const t of shapes) {
-      const a = archiveIntent(t);
-      for (const col of BOARD_COLUMNS) {
-        const action = dropAction(t, col.key);
-        if (a && col.key === a.lane) {
-          // The button makes the drop's call, on the drop's own lane.
-          expect(action).toEqual({ kind: "archive" });
-          expect(dropLanes(t)).toContain(a.lane);
-        } else if (!a) {
-          // Offering nothing is only correct while the drag has no filing move
-          // either — a run-now drop is a different verb and may still be legal.
+      const a = filingIntent(t);
+      // NO BUTTON ⇒ NO FILING DROP ANYWHERE, in either direction. A run-now drop
+      // is a different verb and may still be legal.
+      if (!a) {
+        for (const col of BOARD_COLUMNS) {
+          const action = dropAction(t, col.key);
           expect(action === null || action.kind === "run").toBe(true);
         }
+        continue;
       }
+      // ARCHIVE names the lane the drag aims at, and makes the drag's call on it.
+      if (a.kind === "archive") {
+        expect(a.lane).toBe("archived");
+        expect(dropAction(t, "archived")).toEqual({ kind: "archive" });
+        expect(dropLanes(t)).toContain("archived");
+        continue;
+      }
+      // UNARCHIVE names no lane AND has no drag: the button is the only door
+      // out of Archive (Akshil, 2026-08-19), so the agreement to check is that
+      // the drag offers nothing while the button offers the verb.
+      expect(a.lane).toBe(null);
+      expect(dropLanes(t)).toEqual([]);
     }
+  });
+});
+
+describe("showsRowActions", () => {
+  it("is false on an archived task and true everywhere else", () => {
+    // Akshil, 2026-08-19: only the unarchive button on archived rows. A task
+    // somebody put away has one decision left against it.
+    expect(showsRowActions(task({ status: "archived" }))).toBe(false);
+    for (const status of ["upcoming", "in_progress", "done", FAILED] as const) {
+      expect(showsRowActions(task({ status }))).toBe(true);
+    }
+  });
+
+  it("is about the ROW's chrome, not about whether the work exists", () => {
+    // The underlying intents keep answering honestly — the calendar popover and
+    // anything else that asks needs the truth — so this cannot be folded into
+    // them. An archived task with a pending message still HAS a run to make.
+    const filed = upcoming([T9], { status: "archived" });
+    expect(showsRowActions(filed)).toBe(false);
+    expect(taskRunIntent(filed)).not.toBe(null);
+  });
+
+  it("does not gate opening: Archive is a place to READ things", () => {
+    // D306 — the transcript is kept, so the row link and Open chat keep working.
+    const filed = task({ status: "archived", messages: [msg({ unread: true })] });
+    expect(openThreadIntent(filed, 1)).not.toBe(null);
   });
 });
 
@@ -1564,6 +1725,68 @@ const REDUCED_MOTION_CSS = readFileSync(
   join(SHELL, "../styles/reduced-motion.css"),
   "utf8",
 );
+
+describe("the calendar popover's slim rows", () => {
+  // 2026-08-19 (Akshil). The popover was carrying four things per occurrence —
+  // ring, time, the body's first line, a queue/late note — plus a per-row
+  // skip/cancel button and a ↻ in the header. A row is ring + time now, and
+  // these pins hold each removal so a well-meaning "restore the preview" edit
+  // has to argue with the design rather than just re-typing a className. The
+  // stylesheets are read stripped of comments: each mark's history is
+  // deliberately still written down where its rule used to live.
+  const css = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "");
+
+  it("prints no message body and no note in the row's ink", () => {
+    // The body was most often the panel's own title echoed; the note's words
+    // still exist — schedule-lib.msgNote feeds the row's title tooltip — so
+    // msgNote must stay CALLED even though its class is gone from the markup.
+    expect(CALENDAR).not.toContain('"schedule-cal-msg-body"');
+    expect(CALENDAR).not.toContain('"schedule-cal-msg-note"');
+    expect(CALENDAR).toContain("msgNote(m, kind)");
+    expect(CALENDAR).toMatch(/title=\{\[t\.toLocaleString\(\), status\.label, note\]/);
+    for (const src of [SCHEDULE_CSS, TASKS_CSS]) {
+      expect(css(src)).not.toContain("schedule-cal-msg-body");
+      expect(css(src)).not.toContain("schedule-cal-msg-note");
+    }
+  });
+
+  it("offers no per-row skip/cancel, and no held spinner standing in for one", () => {
+    // "let us hide skip for now." The spinner's only argument was holding the
+    // button's 24px box so the row did not jump queued → sending — no button,
+    // no box. The row's one press is the row itself, which must survive.
+    expect(CALENDAR).not.toContain("schedule-cal-msg-act");
+    expect(CALENDAR).not.toContain('"schedule-cal-msg-held"');
+    expect(CALENDAR).not.toContain("ICON_STARTING");
+    expect(CALENDAR).toContain('className={"schedule-cal-msg-open"');
+    for (const src of [SCHEDULE_CSS, TASKS_CSS]) {
+      expect(css(src)).not.toContain("schedule-cal-msg-act");
+      expect(css(src)).not.toContain("schedule-cal-msg-held");
+    }
+  });
+
+  it("says the recurrence and the folder as ONE muted line, not icon rows", () => {
+    // "Every 2 weeks on Monday · /path/to/folder" — the separator is markup, so
+    // it can be omitted when either side is absent, and the header's ↻ is gone
+    // because this line already says it in words.
+    expect(CALENDAR).toContain('className="schedule-pop-meta"');
+    expect(CALENDAR).not.toContain("schedule-pop-rows");
+    expect(CALENDAR).not.toContain("schedule-cal-pop-rep");
+    expect(CALENDAR).not.toContain("ICON_REPEAT");
+    expect(css(SCHEDULE_CSS)).not.toContain("schedule-cal-pop-rep");
+    expect(css(SCHEDULE_CSS)).toContain(".schedule-pop-meta");
+  });
+
+  it("keeps the thread as one continuous list under the one day header", () => {
+    // "Earlier in this thread" was a second labelled block; with rows slimmed
+    // to ring + time the label outweighed what it introduced. The day split
+    // itself survives in threadForDay (tested in schedule-lib.test.ts) and in
+    // the ink: the day's rows print clock times, the rest print dates.
+    expect(CALENDAR).not.toContain("Earlier in this thread");
+    expect(CALENDAR).toMatch(
+      /\{today\.map\(\(m\) => row\(m, true\)\)\}\s*\{rest\.map\(\(m\) => row\(m, false\)\)\}/,
+    );
+  });
+});
 
 describe("laneUnread", () => {
   const withUnread = (n: number, key: string) =>
@@ -3321,37 +3544,60 @@ describe("the archive action", () => {
   it("sits in the List row's hover-revealed group, conditional on the intent", () => {
     const from = VIEWS.indexOf('className={"tasks-row"');
     const row = VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
-    // Only when there is something to file — a session-less row grows nothing.
+    // Only when the filing can be changed at all — a mid-run row grows nothing.
     expect(row).toContain("{file && (");
-    // The same class Run now / Edit / Cancel wear, which is what makes it quiet.
-    expect(row).toContain("tasks-act--archive");
-    expect(row).toContain("ICON_ARCHIVE");
+    // The same class group Run now / Edit / Cancel wear, which is what makes it
+    // quiet — and the DIRECTION is a suffix, so one button covers both.
+    expect(row).toContain('"tasks-act tasks-act--" + file.kind');
+    expect(row).toContain("ICON_ARCHIVE : ICON_UNARCHIVE");
     // The words come from tasks-lib rather than from the row.
     expect(row).toContain("aria-label={file.label}");
   });
 
-  it("is one-way, on both views and in the drag", () => {
-    // Archive is a locked lane (tasks-lib's drag matrix), so there is no
-    // Unarchive anywhere: not a button, not a glyph, not a drop. It used to be
-    // written-but-hidden on the row and LIVE on the Board, which is two answers
-    // to one question — the divergence this page's vocabulary is written
-    // against.
-    expect(VIEWS).not.toContain("SHOW_UNARCHIVE");
-    expect(VIEWS).not.toContain("ICON_UNARCHIVE");
-    expect(archiveIntent(task({ status: "archived" }))).toBe(null);
-    expect(dropLanes(task({ status: "archived" }))).toEqual([]);
-    // BOTH views read the same intent, and neither composes a status: the
-    // server verb is one call over the task key.
+  it("goes BOTH ways now, from one intent, on both views", () => {
+    // The way back is a button again (Akshil, 2026-08-19). It used to be
+    // written-but-hidden on the row and LIVE on the Board — two answers to one
+    // question, which is the divergence this page's vocabulary is written
+    // against — so the thing to hold is that ONE function decides it and BOTH
+    // views draw it.
+    // The old flag is gone as CODE — it may be named in prose, because what it
+    // was is why this button is shaped the way it is.
+    expect(VIEWS).not.toMatch(/^\s*(const|let)\s+SHOW_UNARCHIVE/m);
+    expect(VIEWS).not.toMatch(/SHOW_UNARCHIVE\s*&&/);
+    expect((VIEWS.match(/const file = filingIntent\(task\);/g) ?? []).length).toBe(2);
     for (const src of [ROW, CARD]) {
       expect(src).toContain("{file && (");
+      // One button per view, branching on the direction rather than two buttons
+      // that could both render (or both not).
+      expect((src.match(/\{file && \(/g) ?? []).length).toBe(1);
+      // The direction is a class SUFFIX and a glyph choice, so neither view can
+      // draw one direction's skin over the other's action.
+      expect(src).toContain('tasks-act--" + file.kind');
+      expect(src).toContain("ICON_ARCHIVE : ICON_UNARCHIVE");
     }
-    expect((VIEWS.match(/const file = archiveIntent\(task\);/g) ?? []).length).toBe(2);
-    expect((VIEWS.match(/archiveTask\(task\.key\)/g) ?? []).length).toBe(3);
-    // Not hidden in CSS, the same rule the strip obeys: an `opacity: 0` button
-    // is still in the tab order.
-    expect(TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(
-      ".tasks-act--unarchive",
-    );
+    // And the old, wrong version of this button stays gone: its move named a
+    // lane (Archive → In Progress), and nothing here names one.
+    expect(filingIntent(task({ status: "archived" }))!.lane).toBe(null);
+    // And the DRAG stays locked: the button is the only door out of Archive.
+    expect(dropAction(task({ status: "archived" }), "done")).toBeNull();
+    // Both directions are one server verb over the task key, composed nowhere on
+    // the client. Lookbehind so `unarchiveTask` is not counted as an archive.
+    expect((VIEWS.match(/(?<!un)archiveTask\(task\.key\)/g) ?? []).length).toBe(3);
+    // Unarchive goes through ONE helper (performUnarchive), because all three
+    // gestures owe the reader the same sentence about where the card went — so the
+    // api call appears exactly once, inside it, and never at a call site.
+    expect((VIEWS.match(/unarchiveTask\(/g) ?? []).length).toBe(1);
+    expect((VIEWS.match(/performUnarchive\(task\.key\)/g) ?? []).length).toBe(3);
+    // The glyph exists and is the archive box opened — same lid, same width, so
+    // the two read as one pair in one slot.
+    expect(VIEWS).toContain("const ICON_UNARCHIVE = icon(");
+    const box = '<rect x="2" y="3" width="20" height="5" rx="1" />';
+    expect(VIEWS.split(box).length - 1).toBe(2);
+    // Skinned in CSS, and NOT hidden there: the same rule the strip obeys — an
+    // `opacity: 0` button is still in the tab order.
+    const live = TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(live).toContain(".tasks-act--unarchive:hover:not(:disabled)");
+    expect(live).not.toMatch(/\.tasks-act--unarchive[^{]*\{[^}]*display: none/);
   });
 
   it("is the ONE row action not behind SHOW_ROW_ACTIONS, on both views", () => {
@@ -3397,10 +3643,20 @@ describe("the archive action", () => {
     expect(TASKS_CSS.slice(head, TASKS_CSS.indexOf("}", head))).toContain("opacity: 0;");
     // ...and both a pointer and a keyboard bring it back, on the row...
     expect(TASKS_CSS).toContain(".tasks-row:hover .tasks-act");
-    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-act");
+    expect(TASKS_CSS).toContain(".tasks-row:has(.tasks-act:focus-visible) .tasks-act");
     // ...and on a board card, which is not a row and needs its own pair.
     expect(TASKS_CSS).toContain(".tasks-card-wrap:hover .tasks-card-act");
-    expect(TASKS_CSS).toContain(".tasks-card-wrap:focus-within .tasks-card-act");
+    expect(TASKS_CSS).toContain(
+      ".tasks-card-wrap:has(.tasks-card-act:focus-visible) .tasks-card-act",
+    );
+    // AND NEVER `:focus-within` ON THE CONTAINER (Akshil, 2026-08-18 — the stuck
+    // Archive). A row contains the chevron and the stretched rowlink, and a card
+    // wrap contains the card, all of them focusable by a plain click: `:focus-within`
+    // kept the reveal alive on a row the pointer had already left. Mouse-out must
+    // undo mouse-in.
+    expect(TASKS_CSS).not.toContain(":focus-within .tasks-act");
+    expect(TASKS_CSS).not.toContain(":focus-within .tasks-card-act");
+    expect(TASKS_CSS).not.toContain(":focus-within .tasks-rowmark");
     // Reachable with a visible ring either way.
     expect(TASKS_CSS).toContain(".tasks-act:focus-visible");
     // House rule: never the property that animates layout and skin together.
@@ -3410,7 +3666,7 @@ describe("the archive action", () => {
 
   it("gives the board card the same action, so the drag is not the only way", () => {
     const card = VIEWS.slice(VIEWS.indexOf("function TaskCard("));
-    expect(card).toContain("archiveIntent(task)");
+    expect(card).toContain("filingIntent(task)");
     expect(card).toContain("tasks-card-act");
     // A button cannot be nested inside a button, which is what the wrapper is
     // for — and what it is positioned against.
@@ -3454,11 +3710,12 @@ describe("the archive action", () => {
     expect(from).toBeGreaterThan(-1);
     const slot = VIEWS.slice(from, VIEWS.indexOf("</span>", from));
     expect(slot).toContain("<StatusIcon");
-    expect(slot).toContain("tasks-act--archive");
+    expect(slot).toContain('"tasks-act tasks-act--" + file.kind');
     // It is drawn BEFORE the row's id chip — i.e. at the leading edge, where the
-    // ring is — and there is exactly one archive button on a row.
+    // ring is — and there is exactly one filing button on a row, whichever
+    // direction it is.
     expect(from).toBeLessThan(VIEWS.indexOf("<IdChip id={task.task_id}"));
-    expect((ROW.match(/tasks-act--archive/g) ?? []).length).toBe(1);
+    expect((ROW.match(/\{file && \(/g) ?? []).length).toBe(1);
 
     // NOTHING MOVES when they swap, and that is a claim about the CSS: the slot is
     // exactly the rail's width and the button is out of flow inside it, so the
@@ -3471,10 +3728,10 @@ describe("the archive action", () => {
     // No z-index on the SLOT: the row's stretched link has to keep painting over
     // the ring's box, exactly as it did when the ring was the flex child.
     expect(mark).not.toContain("z-index");
-    const button = block(
-      TASKS_CSS,
-      ".tasks-rowmark .tasks-act--archive",
-    );
+    // Keyed on `.tasks-act` and NOT on one direction's class: the geometry is a
+    // fact about the slot and its single occupant, so an archived row's Unarchive
+    // lands in exactly the same 22px the archive button does.
+    const button = block(TASKS_CSS, ".tasks-rowmark .tasks-act");
     expect(button).toContain("position: absolute");
     expect(button).toContain("transform: translate(-50%, -50%)");
 
@@ -3486,14 +3743,21 @@ describe("the archive action", () => {
     );
     expect(fade).toContain("opacity: 0");
     expect(fade).toContain("pointer-events: none");
-    // Keyboard reachability is why `:focus-within` is in the trigger list — a tab
-    // onto the button reveals it, and the ring in front of it must get out of the
-    // way (the same rule the strip has always obeyed).
-    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-rowmark .schedule-ring");
+    // Keyboard reachability is why there is a second arm — a tab onto the button
+    // reveals it, and the ring in front of it must get out of the way (the same rule
+    // the strip has always obeyed). It asks for THAT BUTTON's `:focus-visible`, not
+    // the row's `:focus-within`, or a chevron click would fade the ring of a row
+    // nobody is pointing at any more.
+    expect(TASKS_CSS).toContain(
+      ".tasks-row .tasks-rowmark:has(.tasks-act:focus-visible) .schedule-ring",
+    );
     expect(TASKS_CSS).toContain(".tasks-act:focus-visible");
-    // A row with nothing to file keeps its ring under the pointer: a blank slot
-    // where the row's status was is worse than no swap at all.
-    expect(TASKS_CSS).toContain(":not(:has(.tasks-act--archive)) .schedule-ring");
+    // A row whose filing cannot be changed keeps its ring under the pointer: a
+    // blank slot where the row's status was is worse than no swap at all. Keyed on
+    // `.tasks-act`, or the archived row would keep its ring painted over the
+    // Unarchive button standing in the same box.
+    expect(TASKS_CSS).toContain(":not(:has(.tasks-act)) .schedule-ring");
+    expect(TASKS_CSS).not.toContain(":not(:has(.tasks-act--archive))");
 
     // AND THE INVISIBLE BUTTON CANNOT TAKE A PRESS (bugbot, 2026-08-18, HIGH).
     // `opacity: 0` alone left a live control at `z-index: 2` sitting over the
@@ -3513,12 +3777,92 @@ describe("the archive action", () => {
     );
   });
 
+  it("hands the slot back to the ring on the press, until the pointer leaves", () => {
+    // The hover swap used to keep swapping THROUGH the press (Akshil,
+    // 2026-08-19): clicking Archive keeps the pointer on the row, the intent
+    // flips on the reload, and the slot instantly redrew the OPPOSITE verb — an
+    // icon flip where a confirmation should be. A spent press now returns the
+    // RING (drawing the new state, which is the feedback) and keeps the button
+    // down until the pointer leaves the row; leave and return, and the reveal
+    // re-arms with the now-opposite action.
+    //
+    // CSS cannot say "hovered, but the hover already spent its press", so the
+    // ROW says it: a flag set on the filing press — on the press, not on the
+    // answer, and for BOTH directions, because Unarchive flipped just as
+    // instantly — and cleared by the row's own mouseleave.
+    expect(NODE).toContain("const [refiled, setRefiled] = useState(false);");
+    const refileAt = NODE.indexOf("const refile = async (intent: FilingIntent)");
+    const refile = NODE.slice(refileAt, NODE.indexOf("\n  };", refileAt));
+    expect(refile).toContain("setRefiled(true);");
+    expect(ROW).toContain('(refiled ? " is-refiled" : "")');
+    expect(ROW).toContain("onMouseLeave={() => setRefiled(false)}");
+    // The suppression outranks the reveal, is scoped to the MARK SLOT's occupant
+    // only, and takes the events down with the ink — so the button's enlarged
+    // ::after zone (which inherits pointer-events) goes intangible with it.
+    const down = block(
+      TASKS_CSS,
+      ".tasks-row.is-refiled:hover .tasks-rowmark .tasks-act:not(:focus-visible)",
+    );
+    expect(down).toContain("opacity: 0");
+    expect(down).toContain("pointer-events: none");
+    // And the ring comes back where the fade above took it away.
+    const back = block(
+      TASKS_CSS,
+      ".tasks-row.is-refiled:hover .tasks-rowmark:not(:has(.tasks-act:focus-visible)) .schedule-ring",
+    );
+    expect(back).toContain("opacity: 1");
+    // NEITHER HALF TOUCHES THE KEYBOARD: both step aside for the button's own
+    // `:focus-visible` — the same arm the reveal and the handover honour — so a
+    // tabbed-to button is never invisible over a faded ring. (That the two
+    // selectors above RESOLVE at all, `:not(:focus-visible)` guards included, is
+    // the claim; `block` throws on a selector list it cannot find.)
+  });
+
+  it("is bigger to aim at than it is to look at", () => {
+    // 22px was a small target for a control the pointer arrives at sideways, so the
+    // ZONE grows and the SKIN does not (Akshil, 2026-08-18). A pseudo-element and
+    // not padding: the button is out of flow and centred by a transform on its own
+    // box, so padding would move the centre and, worse, grow the box the hover fill
+    // paints.
+    const zone = block(TASKS_CSS, ".tasks-rowmark .tasks-act::after");
+    expect(zone).toContain("position: absolute");
+    // The painted box is untouched — still the 22px every `.tasks-act` is.
+    const button = block(TASKS_CSS, ".tasks-rowmark .tasks-act");
+    expect(button).not.toContain("padding");
+    expect(button).not.toContain("width");
+
+    // EVERY INSET IS DERIVED, NOT TYPED, and the reason is a bug a typed number
+    // caused: a `-10px` right reach lapped 3px OVER the id chip, so a press aimed
+    // at the id fired Archive (Bugbot, MEDIUM, 2026-08-18). The button already
+    // hangs `--tasks-archive-overhang` past its 16px slot before it grows at all,
+    // so the free space on a side is that side's spacing token LESS the overhang —
+    // and a typed number is the same mistake waiting for the next retune.
+    expect(zone).toContain("--tasks-archive-overhang: calc((22px - var(--tasks-rail-w)) / 2)");
+    expect(zone).toContain("var(--tasks-archive-overhang) - var(--tasks-row-pad-y)");
+    expect(zone).toContain("var(--tasks-archive-overhang) - var(--tasks-row-gap)");
+    // No literal length survives in the inset itself.
+    const insets = (zone.match(/inset: ([^;]+);/s) ?? ["", ""])[1].trim().split(/\s+/);
+    expect(insets).toHaveLength(4);
+    expect(insets.join(" ")).not.toMatch(/-?\d+px/);
+    // Top and bottom are the one vertical reach — the row's full height, never past
+    // it, or this button covers the NEIGHBOURING row's link.
+    expect(insets[0]).toBe("var(--tasks-archive-reach-y)");
+    expect(insets[2]).toBe("var(--tasks-archive-reach-y)");
+    // Right stops on the id chip's edge; left stops on the caret's enlarged zone,
+    // which sits at the same `z-index: 2` earlier in the DOM and would lose the
+    // overlap. Left is half a gap shorter than right, which is what keeps them apart.
+    expect(insets[1]).toBe("var(--tasks-archive-reach-r)");
+    expect(insets[3]).toBe("var(--tasks-archive-reach-l)");
+    expect(zone).toContain("var(--tasks-row-gap) / 2");
+    expect(zone).toContain("--tasks-archive-reach-l: 0px");
+  });
+
   it("leaves the board card's archive exactly where it was", () => {
     // The swap is the LIST's, and only the List's. A card's ring is not in a rail
     // and its head has an empty right end the strip was measured against
     // (`--tasks-card-head-h`), so moving the button there would be a change with
     // nothing behind it.
-    expect(CARD).toContain("tasks-card-act tasks-act--archive");
+    expect(CARD).toContain('"tasks-act tasks-card-act tasks-act--" + file.kind');
     expect(CARD).not.toContain("tasks-rowmark");
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
   });
@@ -3526,9 +3870,13 @@ describe("the archive action", () => {
   it("never paints it red — archiving destroys nothing", () => {
     // Cancel's hue is the destructive one and the two are one flick apart; using
     // it here would assert the very thing archiving exists to deny.
-    const at = TASKS_CSS.indexOf(".tasks-act--archive:hover");
-    expect(at).toBeGreaterThan(-1);
-    expect(TASKS_CSS.slice(at, TASKS_CSS.indexOf("}", at))).not.toContain("--error");
+    // Both directions, and they share one skin — see the CSS note: the two never
+    // appear together, so a hue telling them apart would contrast with nothing.
+    for (const sel of [".tasks-act--archive:hover", ".tasks-act--unarchive:hover"]) {
+      const at = TASKS_CSS.indexOf(sel);
+      expect(at).toBeGreaterThan(-1);
+      expect(TASKS_CSS.slice(at, TASKS_CSS.indexOf("}", at))).not.toContain("--error");
+    }
   });
 });
 
@@ -3727,7 +4075,7 @@ describe("the hidden row actions", () => {
     // The reveal rules are untouched — they are what the actions come back to, and
     // the stylesheet says so rather than being tidied away.
     expect(TASKS_CSS).toContain(".tasks-msg:hover .tasks-act");
-    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-act");
+    expect(TASKS_CSS).toContain(".tasks-row:has(.tasks-act:focus-visible) .tasks-act");
     // Edit and Cancel are still WRITTEN, just not rendered: the user's second pass
     // covered them too ("hide the hover actions for now, that's what I said", said
     // of the pencil on a message row), so they are behind the same flag.
@@ -3751,16 +4099,16 @@ describe("the hidden row actions", () => {
     for (const kept of [
       "markReadIntent(task, read, held)",
       "taskRunIntent(task)",
-      "archiveIntent(task)",
+      "filingIntent(task)",
       "openThreadIntent(task, unread)",
       "const markSeen = async () => {",
-      "const archive = async () => {",
+      "const refile = async (intent: FilingIntent) => {",
       "const openChat = (intent: OpenThreadIntent)",
     ]) {
       expect(VIEWS).toContain(kept);
     }
     expect(CARD).toContain("void runNow(run)");
-    expect(CARD).toContain("void archive()");
+    expect(CARD).toContain("void refile(file)");
   });
 
   it("keeps the strip's geometry, which is what it comes back to", () => {
@@ -4206,7 +4554,7 @@ describe("opening a thread, from either view", () => {
     const acts = CARD.slice(actsAt);
     expect(acts).not.toContain("onOpen");
     expect(acts).toContain("void runNow(run)");
-    expect(acts).toContain("void archive()");
+    expect(acts).toContain("void refile(file)");
   });
 
   it("is the row ITSELF now, and a real link at that", () => {
@@ -5742,7 +6090,17 @@ describe("sortByLane", () => {
       "done",
       "archived",
     ]);
-    // Same set as the Board's — a sixth lane cannot be silently unsortable.
+    // ONE ORDER FOR BOTH VIEWS (Akshil, 2026-08-18, the final ruling). The two
+    // briefly disagreed about Failed and Done — the List ranking work owed, the
+    // Board running a pipeline — and a reader moving between them carries one
+    // mental picture of where a status sits, so the disagreement was wrong in
+    // whichever view they were not looking at. The SEQUENCE is asserted identical,
+    // not merely the same set: that is what a drift would break.
+    // The literal above already pins Failed before Done, so this equality is the
+    // whole of the second view's order too — no separate per-array check, which
+    // would only be able to fail if this line had already failed.
+    expect(LIST_ORDER).toEqual(BOARD_COLUMNS.map((c) => c.key));
+    // Same set, so a sixth lane cannot be silently unsortable.
     expect([...LIST_ORDER].sort()).toEqual(
       BOARD_COLUMNS.map((c) => c.key).slice().sort(),
     );
@@ -6013,5 +6371,83 @@ describe("isRunningIn", () => {
     const CAL = readFileSync(join(SHELL, "ScheduleCalendar.tsx"), "utf8");
     expect(CAL).toContain('isRunningIn(chip.task, chip.messages) ? " is-running" : ""');
     expect(CAL).not.toContain("isRunningNow(chip.task, chip.anchor)");
+  });
+});
+
+// ---- the popover header's pill --------------------------------------------------
+// Akshil, 2026-08-19: a one-off's pill is its task; a REPEATING task's pill is
+// the clicked OCCURRENCE — In Progress while it works, Upcoming for a future or
+// projected day, a past day's own outcome otherwise. And never dashed: solid in
+// every state, because the pill is a word about status, not a drawing of a day.
+describe("popoverPill", () => {
+  const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const done = msg({
+    message_id: "MSG-001", at: at("2026-08-15T09:00:00"),
+    ran_at: at("2026-08-15T09:00:00"), state: "sent", turn: "done",
+  });
+  const broke = msg({
+    message_id: "MSG-002", at: at("2026-08-15T14:00:00"),
+    ran_at: at("2026-08-15T14:00:00"), state: "error", turn: "done",
+  });
+  const ghost = msg({
+    message_id: "GHOST-2026-08-20T09:00:00",
+    at: at("2026-08-20T09:00:00"), ran_at: 0, state: "pending",
+  });
+
+  it("a ONE-OFF keeps saying what the List's row and the Board's card say", () => {
+    const t = task({ status: "done", failed: false });
+    expect(popoverPill(t, false, false, false, t.messages)).toMatchObject({
+      label: "Done", column: "done",
+    });
+    // failed folds into the column, exactly as StatusIcon reads it...
+    const f = task({ status: "done", failed: true });
+    expect(popoverPill(f, false, false, false, f.messages).label).toBe("Failed");
+    // ...and the day's contents cannot move a one-off's word: it IS its task.
+    expect(popoverPill(t, false, false, false, [broke]).label).toBe("Done");
+  });
+
+  it("a REPEATING task answers for the clicked day, not for the rule", () => {
+    // The rule's task-level column is upcoming — the next run always is — which
+    // is exactly why the task-level word was useless on a grid about days.
+    const rule = task({ status: "upcoming", messages: [done, broke] });
+    // A past day whose NEWEST real run broke: Failed, matching the top row
+    // below — order of the hand-over must not matter.
+    expect(popoverPill(rule, true, false, false, [done, broke]).label).toBe("Failed");
+    expect(popoverPill(rule, true, false, false, [broke, done]).label).toBe("Failed");
+    // A day that ended clean: Done.
+    expect(popoverPill(rule, true, false, false, [done]).label).toBe("Done");
+    // A projected day is cron arithmetic: Upcoming — and so is a day holding
+    // nothing but ghosts, whichever of the two flags arrives first.
+    expect(popoverPill(rule, true, true, false, [ghost]).label).toBe("Upcoming");
+    expect(popoverPill(rule, true, false, false, [ghost]).label).toBe("Upcoming");
+    // Working right now beats everything: the pill is the shimmer's seat.
+    expect(popoverPill(rule, true, false, true, [done, broke]).label).toBe("In Progress");
+  });
+
+  it("is solid in every state — projected never reaches the pill", () => {
+    const rule = task({ status: "upcoming", messages: [done] });
+    for (const p of [
+      popoverPill(rule, true, true, false, [ghost]),
+      popoverPill(rule, true, false, false, [done, broke]),
+      popoverPill(task({ status: "upcoming" }), false, true, false, []),
+    ]) {
+      expect(p.projected).toBe(false);
+    }
+  });
+
+  it("is what the popover actually renders, shimmer seat and all", () => {
+    const CAL = readFileSync(join(SHELL, "ScheduleCalendar.tsx"), "utf8");
+    // The pill's "running" is DAY-scoped on a rule (bugbot, 2026-08-19): the
+    // clicked chip's own occurrences, the same list the grid chip shimmers
+    // by — never the whole merged thread, which lit every day of a rule
+    // whose run was live somewhere else. One-offs keep the task-level fact.
+    expect(CAL).toContain("const liveToday = isRunningIn(task, chip.messages);");
+    expect(CAL).toContain("const pillLive = recurring ? liveToday : liveNow;");
+    // The pill comes from this function, over the day's own rows...
+    expect(CAL).toContain("popoverPill(task, recurring, chip.projected, pillLive, today)");
+    // ...the running day's pill carries the shimmer class...
+    expect(CAL).toContain('pillLive ? " is-running" : ""');
+    // ...and the dashes can no longer reach it.
+    expect(CAL).not.toContain('pill.projected ? " is-projected"');
   });
 });

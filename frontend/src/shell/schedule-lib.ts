@@ -268,11 +268,21 @@ export function assignLanes<T extends { time: Date }>(
 // consistent." Failure used to be a red ring inside Done — a visual with no
 // word — which meant the calendar had to keep its own vocabulary to say what
 // had happened. It says it here instead, once, for every view.
+//
+// FAILED BEFORE DONE, swapped on 2026-08-18 (Akshil, "swap places for failed and
+// done status in list and kanban board"). The board is read left to right, and a
+// lane that wants a person's hands belongs on the near side of one that wants
+// only their eyes: a failed run needs a decision, a done run needs reading.
+//
+// THIS IS THE LIST'S ORDER TOO, and a test holds the two arrays to the same
+// sequence (tasks-lib.LIST_ORDER, whose note carries the argument): a reader
+// moving between the views carries ONE mental picture of where a status sits, so
+// the five facts are ranked here once and the list follows.
 export const BOARD_COLUMNS = [
   { key: "upcoming", label: "Upcoming" },
   { key: "in_progress", label: "In Progress" },
-  { key: "done", label: "Done" },
   { key: "failed", label: "Failed" },
+  { key: "done", label: "Done" },
   { key: "archived", label: "Archive" },
 ] as const;
 
@@ -1686,21 +1696,18 @@ export function runStatus(m: TaskMessage, tone: RunTone): RunStatus {
  * a task triaged to `done` whose newest run broke says Failed, and so does a
  * task the server already filed under `failed`.
  *
- * `projected` is the one DAY-scoped thing the pill still carries, and
- * deliberately not as a word: the dashes say "nothing on this day is written
- * down yet", a glance-level cue the chip itself also wears. Dropping a visual
- * distinction is not part of dropping a duplicated word.
+ * NEVER `projected` (Akshil, 2026-08-19). The pill used to inherit the clicked
+ * chip's dashes, but the dashes mean "nothing on this day is written down yet" —
+ * a DAY-scoped fact, and this pill states the TASK's status. Dashes belong to
+ * projected chips and the ghost rings on projected occurrence rows; a task is
+ * never itself a projection, so its pill is always solid.
  */
-export function taskStatus(
-  column: BoardColumn,
-  failed: boolean,
-  projected = false,
-): RunStatus {
+export function taskStatus(column: BoardColumn, failed: boolean): RunStatus {
   const c = failed ? "failed" : column;
   return {
     column: c,
     failed: c === "failed",
-    projected,
+    projected: false,
     label: columnLabel(c),
     // A task has no finer reading to keep: `detail` exists for the run-level
     // words runStatus folds away ("Missed", "Stopped reporting"), and a task's

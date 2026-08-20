@@ -1,7 +1,8 @@
 """Tasks over HTTP (server/routers/tasks.py).
 
 `GET /api/tasks` is the List page: every task, newest first, each carrying its
-three newest messages. `GET /api/tasks/{key}/messages` is Show more.
+three newest messages. `GET /api/tasks/pulse` is the global sidebar's compact
+projection. `GET /api/tasks/{key}/messages` is Show more.
 `POST /api/tasks/read` marks one message read.
 
 The rules under test are the ones that make a task and a session the same
@@ -138,6 +139,12 @@ def _by_key(client):
     return {t["key"]: t for t in _tasks(client)}
 
 
+def _pulse(client):
+    r = client.get("/api/tasks/pulse")
+    assert r.status_code == 200, r.text
+    return r.json()["tasks"]
+
+
 T9 = "2026-08-16T09:00:00Z"
 T10 = "2026-08-16T10:00:00Z"
 T11 = "2026-08-16T11:00:00Z"
@@ -180,6 +187,98 @@ def test_a_chat_session_is_a_task(client, projects_dir, state_dir):
     assert message["entry_id"] == ""
     assert message["anchor"] == "sess-a-0", "the record uuid, for scroll-to"
     assert message["unread"] is True
+
+
+def _pane_block(file_path):
+    from urllib.parse import quote
+    return ("<live-app-state>\nA snapshot of the preview the user is looking "
+            "at in the left pane.\n"
+            + json.dumps({"title": "t",
+                          "url": "/render?path=" + quote(file_path, safe=""),
+                          "dom_path": "/tmp/dom.json"})
+            + "\n</live-app-state>\n")
+
+
+def test_a_chat_opened_on_a_file_targets_that_file(
+        client, projects_dir, state_dir, tmp_path):
+    """The transcript's cwd is always a folder, but the pane's own
+    `<live-app-state>` block names the FILE the chat was opened on — and that
+    file, while it exists, is where opening the task should land."""
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    file = proj / "index.html"
+    file.write_text("<html></html>")
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user(_pane_block(str(file)) + "make the wave faster", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == str(file)
+    assert task["project"] == str(proj)
+    assert task["messages"][0]["body"] == "make the wave faster"
+
+
+def test_a_pane_file_that_is_gone_falls_back_to_the_folder(
+        client, projects_dir, state_dir, tmp_path):
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user(_pane_block(str(proj / "deleted.html")) + "hello", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == str(proj)
+    assert task["project"] == str(proj)
+
+
+def test_a_scheduled_entry_target_beats_the_pane_file(
+        client, projects_dir, state_dir, tmp_path):
+    """A scheduled entry's target is the thing the job was pointed at; the
+    pane file only speaks for chats that have no entry of their own."""
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    file = proj / "index.html"
+    file.write_text("<html></html>")
+    _seed_schedule([_entry("e1", "run the report", T9,
+                           target=str(proj / "report.py"),
+                           state=schedule.SENT,
+                           claude_session_id="sess-a")])
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user(_pane_block(str(file)) + "run the report", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == str(proj / "report.py")
+
+
+def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
+        client, projects_dir, state_dir):
+    """The sidebar gets the same state without downloading page-only content."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [
+        _user("a large message body the sidebar must not receive", T9),
+        _assistant("done", T10),
+        _ai_title("A page-only title"),
+    ])
+
+    full = _tasks(client)
+    pulse = _pulse(client)
+
+    pulse_fields = ("key", "status", "unread", "last_active")
+    assert pulse == [
+        {field: row[field] for field in pulse_fields}
+        for row in full
+    ]
+    assert set(pulse[0]) == set(pulse_fields)
+    assert "messages" not in pulse[0]
+    assert "title" not in pulse[0]
+    assert len(json.dumps(pulse)) < len(json.dumps(full)) / 2
 
 
 def test_the_last_ai_title_wins(client, projects_dir):
@@ -998,8 +1097,8 @@ def test_a_windowed_message_is_the_whole_task_message(client, tmp_path):
     item = _scheduled(client, DAY_START, DAY_END)[0]
     assert item["task_key"] == "pending:e1"
     assert set(item["message"]) == {
-        "message_id", "kind", "body", "at", "ran_at", "state", "unread",
-        "entry_id", "template_id", "turn", "anchor"}
+        "message_id", "kind", "body", "at", "ran_at", "state", "turn_at",
+        "unread", "entry_id", "template_id", "turn", "anchor"}
     assert item["message"]["kind"] == "scheduled"
     assert item["message"]["message_id"] == "MSG-001"
     assert item["message"]["entry_id"] == "e1"
@@ -1437,6 +1536,131 @@ def test_a_send_the_scheduler_is_still_waiting_on_reads_as_running(
     assert task["status"] == "in_progress"
 
 
+def _near_now(offset_sec: float) -> str:
+    """A transcript/schedule timestamp measured from NOW — the shape the
+    liveness tests below need, since the 45-second window is against the real
+    clock and the fixed T9..T12 stamps are years cold by construction."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                         time.gmtime(time.time() + offset_sec))
+
+
+def test_a_freshly_resolved_turn_outvotes_the_transcripts_liveness(
+        client, projects_dir):
+    """The popover/tasks-page split, closed on the server's side.
+
+    A scheduled run's closing records are the last thing written to the
+    transcript, so for the whole 45-second window after the verdict landed the
+    tail still read as "live" — and the row said In Progress while the queue
+    card in the corner had said finished within seconds of the result row. The
+    turn has SPOKEN; its own obituary is not a pulse (Akshil, 2026-08-19: "if
+    finished in one, finished in the other")."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-5)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="ok",
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is False, "the echo is set aside, not just outvoted"
+    assert task["status"] == "done"
+
+
+def test_a_failed_verdict_outvotes_liveness_the_same_way(client, projects_dir):
+    """Failed resolves a turn exactly as done does — the corner card flips to
+    the error row at once, and the task must land in Failed with it rather than
+    idling in In Progress for the rest of the window."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("it broke", _near_now(-5)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="failed",
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "failed"
+    assert task["live"] is False
+
+
+def test_a_new_turn_after_the_resolved_run_still_reads_as_running(
+        client, projects_dir):
+    """The guard on the rule above: only the resolved run's own echo is set
+    aside. A prompt the user types AFTER it is a chat message with a newer
+    `ran_at`, so the transcript's liveness is attesting genuinely new work and
+    keeps its vote — the task stays In Progress."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _user("one more thing", _near_now(-3), uuid="u2"),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="ok",
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is True
+    assert task["status"] == "in_progress"
+
+
+def test_transcript_activity_after_the_verdict_restores_the_pulse(
+        client, projects_dir):
+    """TASK-001 (Akshil, 2026-08-19): a task wore the green Done ring while
+    Claude was visibly mid-build in its session. The run's verdict had landed
+    (`turn: ok`, stamped `turn_at`) but the session KEPT WORKING — follow-up
+    turns and background work append real transcript records without adding a
+    single new prompt, so nothing on the chat side of the thread ever outdates
+    the verdict and the transcript's vote stayed suppressed for as long as the
+    work ran. The verdict may only silence its own echo: a tail meaningfully
+    newer than the moment the turn resolved is NEW work, and the task is In
+    Progress."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-40), uuid="u1"),
+        _assistant("first turn done", _near_now(-32)),
+        _assistant("still building the app", _near_now(-3)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-40), state=schedule.SENT,
+                           fired=_near_now(-40), turn="ok",
+                           turn_at=_near_now(-30),
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is True
+    assert task["status"] == "in_progress"
+
+
+def test_a_stamped_verdicts_own_echo_is_still_set_aside(client, projects_dir):
+    """The rule above must not reopen the split it was cut from: a tail whose
+    freshness IS the finished turn's closing records — written in the same
+    breath as the verdict — is the echo, and the task is done the moment the
+    corner card says so."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-6)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="ok",
+                           turn_at=_near_now(-5),
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is False
+    assert task["status"] == "done"
+
+
+def test_a_resolved_run_does_not_silence_a_sibling_still_in_flight(
+        client, projects_dir):
+    """A message that says it is running by its OWN state — sending, or sent
+    with the turn unreported — is real work whatever the newest verdict says,
+    and liveness corroborating it must not be withdrawn."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("first one done", _near_now(-5)),
+    ])
+    _seed_schedule([
+        _entry("e1", "go", _near_now(-30), state=schedule.SENT,
+               fired=_near_now(-30), turn="ok", claude_session_id="sess-a"),
+        _entry("e2", "and again", _near_now(-10), state=schedule.SENDING,
+               claude_session_id="sess-a"),
+    ])
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+
 def test_a_finished_run_is_not_in_progress_however_it_was_pinned(
         client, projects_dir, state_dir):
     """The stale-pin bug, gone by construction rather than by reaping.
@@ -1657,6 +1881,330 @@ def test_archiving_a_task_that_is_not_there_is_a_404(client):
 
 def test_archiving_without_a_key_is_a_400(client):
     assert client.post("/api/tasks/archive",
+                       json={"key": "  "}).status_code == 400
+
+
+# ------------------------------------------------------------- unarchiving it
+# `POST /api/tasks/unarchive` — the drag out of the Archive lane. ONE half of
+# archiving undone (the filing), no lane named, no run started.
+
+
+def test_unarchiving_drops_the_filing_and_the_task_lands_where_it_derives(
+        client, projects_dir, state_dir):
+    """The whole move. The user drops the card somewhere outside Archive; what
+    that MEANS is "not put away any more", and the lane it lands in is derived
+    from the thread — here `done`, because the one run ended."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "ran", T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a")])
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+
+    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": "sess-a", "unfiled": True,
+                        "status": "done"}
+    assert "status" not in json.loads(
+        (state_dir / "triage.json").read_text())["sess-a"]
+    assert _by_key(client)["sess-a"]["status"] == "done", "the derived lane is back"
+
+
+def test_unarchiving_reports_the_derived_lane_not_the_one_dropped_on(
+        client, projects_dir):
+    """A failed run derives `failed` however the card was dragged — and the verb
+    takes no lane to be told otherwise with, which is the design."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "broke", T12, state=schedule.SENT, fired=T12,
+                           turn="failed", claude_session_id="sess-a")])
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+
+    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "failed"
+    assert _by_key(client)["sess-a"]["status"] == "failed"
+
+
+def test_unarchiving_keeps_the_note_the_tag_and_the_read_mark(client,
+                                                              projects_dir,
+                                                              state_dir):
+    """`clear_triage` drops the STATUS and its stamp, nothing else: a note, a
+    tag or a read mark on that session is somebody else's data."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    triage_path = state_dir / "triage.json"
+    rec = json.loads(triage_path.read_text())
+    rec["sess-a"].update({"note": "keep me", "tags": ["blue"], "read": "1"})
+    triage_path.write_text(json.dumps(rec))
+
+    assert client.post("/api/tasks/unarchive",
+                       json={"key": "sess-a"}).status_code == 200
+    kept = json.loads(triage_path.read_text())["sess-a"]
+    assert kept == {"note": "keep me", "tags": ["blue"], "read": "1"}
+
+
+def test_unarchiving_starts_no_run_and_revives_no_cancelled_work(client,
+                                                                 projects_dir):
+    """The one thing this must never do. Archiving cancelled the run ahead; a
+    booked run that came back to life because somebody put the card back on the
+    board would be a message firing that nobody asked for twice."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("e1", "ran", T9, state=schedule.SENT, fired=T9, turn="ok",
+               claude_session_id="sess-a"),
+        _entry("e2", "tomorrow", T12, claude_session_id="sess-a"),
+    ])
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    before = {e["id"]: dict(e) for e in schedule.list_entries()}
+
+    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert {e["id"]: dict(e) for e in schedule.list_entries()} == before, \
+        "the schedule is not touched at all — nothing sent, nothing revived"
+    assert r.json()["status"] == "done", "no pending work, so nothing is Upcoming"
+
+
+def test_unarchiving_a_task_that_was_not_filed_says_so_and_still_answers(
+        client, projects_dir):
+    """A card that reads Archive because its every message was filed away
+    (cancelled) has no triage record to drop. The verb is a no-op rather than an
+    error — and the honest `unfiled: False` is how the client knows the lane it
+    is being told about is not going to change."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.CANCELLED,
+                           claude_session_id="sess-a")])
+    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["unfiled"] is False
+
+
+def test_unarchiving_a_task_with_no_session_only_answers(client, tmp_path):
+    """Nothing to un-file — the row had no session to file in the first place."""
+    _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
+    key = _tasks(client)[0]["key"]
+    r = client.post("/api/tasks/unarchive", json={"key": key})
+    assert r.status_code == 200, r.text
+    assert r.json()["unfiled"] is False
+    assert r.json()["status"] == "upcoming"
+    assert schedule.list_entries()[0]["state"] == schedule.PENDING
+
+
+def test_unarchiving_a_task_that_is_not_there_is_a_404(client):
+    assert client.post("/api/tasks/unarchive",
+                       json={"key": "nope"}).status_code == 404
+
+
+def test_unarchiving_without_a_key_is_a_400(client):
+    assert client.post("/api/tasks/unarchive",
+                       json={"key": "  "}).status_code == 400
+
+
+def test_unarchiving_takes_no_lane(client, projects_dir):
+    """The lane a card was dropped on is not this verb's business, and a caller
+    that sends one must not be able to steer the answer with it."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "ran", T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a")])
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive",
+                    json={"key": "sess-a", "status": "in_progress",
+                          "lane": "in_progress"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "done", "derived, not asserted"
+
+
+# ---------------------------------------------------------------- deleting it
+# `POST /api/tasks/delete` — archive's first half (cancel the pending work)
+# plus a tombstone instead of a triage record: the row is gone from every
+# listing, the transcript is not touched (D306), and activity newer than the
+# tombstone revives the row rather than running invisibly.
+
+
+def test_deleting_cancels_the_work_and_hides_the_row_everywhere(
+        client, projects_dir, state_dir):
+    path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "tomorrow", T12, claude_session_id="sess-a")])
+    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": "sess-a", "cancelled": 1,
+                        "erased_transcript": False}
+    # The row is gone from the listing AND the sidebar's pulse — one decision
+    # in _collect, so no surface has to know why.
+    assert _tasks(client) == []
+    assert _pulse(client) == []
+    # The work ahead was called off, not orphaned behind a hidden row...
+    assert schedule.list_entries()[0]["state"] == schedule.CANCELLED
+    # ...and the transcript is exactly where it was: D306, checked in fact and
+    # not only in the payload's promise.
+    assert path.exists()
+    rec = json.loads((state_dir / "deleted.json").read_text())["sess-a"]
+    assert rec["at"] > 0
+
+
+def test_deleting_stops_the_rule_behind_the_next_occurrence(client,
+                                                            projects_dir):
+    """Same reason as archiving: a rule that keeps materialising occurrences
+    would keep resurrecting the task — worse here, because each occurrence is
+    activity NEWER than the tombstone and would revive the row on its own."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("tpl", "every day", T9, state=schedule.RECURRING,
+               repeats="0 9 * * *", claude_session_id="sess-a"),
+        _entry("e2", "every day", T12, template_id="tpl",
+               claude_session_id="sess-a"),
+    ])
+    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["tpl"] == schedule.CANCELLED
+    assert states["e2"] == schedule.CANCELLED
+    assert _tasks(client) == []
+
+
+def test_deleting_kills_a_rule_even_between_its_occurrences(client,
+                                                            projects_dir):
+    """The materialiser mints lazily, so between a run going out and the next
+    tick a live rule has NO pending occurrence. A delete that only reads
+    template ids off pending rows walks straight past the machine that will
+    mint the next one — with a `created` stamp newer than the tombstone, which
+    is the revival rule's front door. The rule itself has to die (bugbot,
+    2026-08-19)."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("tpl", "every day", T9, state=schedule.RECURRING,
+               repeats="0 9 * * *", claude_session_id="sess-a"),
+        # The rule's only trace in the task: an occurrence that already ran.
+        _entry("e1", "every day", T9, state=schedule.SENT, fired=T9,
+               turn="ok", template_id="tpl", claude_session_id="sess-a"),
+    ])
+    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] == 1, "the rule itself is what gets called off"
+
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["tpl"] == schedule.CANCELLED
+    assert states["e1"] == schedule.SENT, "what already ran is left alone"
+
+    # The scheduler's next materialisation pass now has nothing to mint from:
+    # no new occurrence appears, so nothing can postdate the tombstone, and the
+    # deleted row stays deleted.
+    schedule._materialize(schedule._now())
+    assert {e["id"] for e in schedule.list_entries()} == {"tpl", "e1"}
+    assert "sess-a" not in _by_key(client)
+
+
+def test_deleting_one_run_of_a_fresh_session_series_spares_the_series(
+        client, projects_dir):
+    """The other edge of the same knife (bugbot, 2026-08-19). A
+    `new_task_each_run` rule mints every future run into a FRESH session, so
+    each spent run is its own task — and deleting one of them must not reach
+    up its `template_id` and kill the live series, nor take the pending
+    occurrence that belongs to a different (future) task with it. The rule is
+    behind this task's PAST, not its future: nothing it ever mints can land on
+    the deleted key, so the tombstone holds without the series dying."""
+    _write_transcript(projects_dir, "sess-b", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("tpl", "every day", T9, state=schedule.RECURRING,
+               repeats="0 9 * * *", new_task_each_run=True),
+        # Yesterday's run: it started a fresh session, which is the task
+        # being deleted.
+        _entry("e1", "every day", T9, state=schedule.SENT, fired=T9,
+               turn="ok", template_id="tpl", claude_session_id="sess-b",
+               new_task_each_run=True),
+        # The next run, already minted, session still unwritten — a different
+        # task (its own pending: row), not the one being deleted.
+        _entry("e2", "every day", T12, template_id="tpl",
+               new_task_each_run=True),
+    ])
+    assert client.post("/api/tasks/archive",
+                       json={"key": "sess-b"}).status_code == 200
+    r = client.post("/api/tasks/delete", json={"key": "sess-b"})
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] == 0, "nothing of this task's own was pending"
+
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["tpl"] == schedule.RECURRING, "the series lives on"
+    assert states["e2"] == schedule.PENDING, "the next task's run is untouched"
+    assert states["e1"] == schedule.SENT
+
+    # And the series keeps working: the materialiser still has its template
+    # (e2 pending means nothing new to mint), while the deleted row stays gone.
+    schedule._materialize(schedule._now())
+    by_key = _by_key(client)
+    assert "sess-b" not in by_key
+    assert tasks_store.pending_key("e2") in by_key
+
+
+def test_deleting_a_running_task_is_refused(client, projects_dir):
+    """A live turn cannot be cancelled, so deleting now would hide work that
+    is still happening. 409, row untouched, nothing cancelled."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.SENDING,
+                           claude_session_id="sess-a")])
+    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert r.status_code == 409, r.text
+    assert schedule.list_entries()[0]["state"] == schedule.SENDING
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+
+def test_deleting_an_archived_task_takes_the_row_out_of_archive(
+        client, projects_dir):
+    """The Archive lane is where deletable rows accumulate — a filed task is
+    settled by construction, so the delete goes through and the lane shrinks."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert _tasks(client) == []
+
+
+def test_deleting_a_task_with_no_session_leaves_no_shell(client, tmp_path):
+    """A message scheduled for tomorrow that never ran: cancelling it already
+    leaves nothing for a row to be about (_is_task), and the tombstone makes
+    the same answer hold even before the cancel settles."""
+    _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
+    key = _tasks(client)[0]["key"]
+    r = client.post("/api/tasks/delete", json={"key": key})
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] == 1
+    assert _tasks(client) == []
+
+
+def test_an_entry_created_after_the_delete_revives_the_task(client,
+                                                            projects_dir):
+    """The tombstone hides the row only while it is the newest thing about the
+    task: a message scheduled into the conversation AFTERWARDS brings the row
+    back — hidden work must never run invisibly. It is the entry's CREATED
+    stamp that answers, never its due time: a cancelled entry's future due is
+    a corpse with a date on it, not news."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert _tasks(client) == []
+    _seed_schedule([_entry("e9", "again", T12, claude_session_id="sess-a",
+                           created="2036-01-01T00:00:00Z")])
+    assert "sess-a" in _by_key(client)
+
+
+def test_a_transcript_that_grows_after_the_delete_revives_the_task(
+        client, projects_dir):
+    """The other kind of later activity: the user said something in the
+    session itself. Append-only files move their mtime for exactly one
+    reason, and it postdating the tombstone is what brings the row back."""
+    path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert _tasks(client) == []
+    future = time.time() + 60
+    os.utime(path, (future, future))
+    assert "sess-a" in _by_key(client)
+
+
+def test_deleting_a_task_that_is_not_there_is_a_404(client):
+    assert client.post("/api/tasks/delete",
+                       json={"key": "nope"}).status_code == 404
+
+
+def test_deleting_without_a_key_is_a_400(client):
+    assert client.post("/api/tasks/delete",
                        json={"key": "  "}).status_code == 400
 
 

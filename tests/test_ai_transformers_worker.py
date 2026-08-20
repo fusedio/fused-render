@@ -26,7 +26,11 @@ import pytest
 
 WORKER_PATH = str(
     Path(__file__).resolve().parents[1]
-    / "fused_render" / "ai" / "runners" / "transformers_text" / "worker.py"
+    # The runner itself, at the runners ROOT: three folders (CPU, CUDA, ROCm)
+    # each hold a five-line `worker.py` shell that imports this one module, so
+    # the behaviour under test has exactly one home and a test that loaded a
+    # shell would be testing a `sys.path` insert.
+    / "fused_render" / "ai" / "runners" / "torch_text.py"
 )
 
 

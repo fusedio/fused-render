@@ -6,7 +6,7 @@ thread does not care which; that is the whole point of collapsing the two stores
 the app used to keep side by side (the scheduled-message list it owns, and the
 session transcripts Claude Code owns, joined by one field).
 
-Three endpoints, and the split between the first two is the design constraint
+The endpoints, and the split between the first three is the design constraint
 this file is written around:
 
 * ``GET /api/tasks`` — every task, newest first, each carrying its **three most
@@ -17,6 +17,10 @@ this file is written around:
   row is deliberately NOT read from that window: `next_run` (with the entry it
   names) is `min(at)` over every pending entry, because the Board orders Upcoming
   by it and three messages cannot answer it. See `_next_run`.
+* ``GET /api/tasks/pulse`` — the same task states reduced to the four fields the
+  global sidebar needs. It deliberately carries no titles, paths, descriptions,
+  or message bodies; Home should not download the Tasks page just to draw its
+  status dot and unread count.
 * ``GET /api/tasks/{key}/messages`` — one task's FULL thread. This is the
   "Show more" click: a whole-transcript parse, which is affordable exactly
   because it happens for one task at a time and never for a listing.
@@ -29,6 +33,13 @@ this file is written around:
 * ``POST /api/tasks/archive`` — file one task away. ONE gesture with two halves
   (cancel the work, archive the session), which is why it is a verb here rather
   than a triage write the client composes. See the archiving section at the end.
+* ``POST /api/tasks/unarchive`` — take that filing back, and nothing else: the
+  work archiving cancelled stays cancelled, no run starts, and the task lands in
+  whatever lane it DERIVES into rather than one a caller names. Same section.
+* ``POST /api/tasks/delete`` — take the ROW away for good: cancel the pending
+  work exactly as archive does, then tombstone the key so no listing shows it.
+  The transcript is not touched (D306) and new activity in the conversation
+  revives the row rather than running invisibly. Same section.
 
 **What a message is.** A user prompt in the transcript, or a scheduled entry.
 Those two overlap: a scheduled message that fired IS a prompt in the transcript
@@ -414,6 +425,11 @@ def _scheduled_message(entry: dict, live: bool, at: float, ran_at: float,
         "at": at,
         "ran_at": ran_at,
         "state": _entry_state(entry),
+        # When the turn's verdict LANDED — 0.0 until it has (and for entries a
+        # pre-stamp version of the store wrote). `ran_at` is when the run
+        # started; this is when it was pronounced over, which is the moment
+        # `_verdict_outvotes_live` measures the transcript's tail against.
+        "turn_at": tasks_store.epoch(entry.get("turn_at")) or 0.0,
         "unread": False,
         "entry_id": str(entry.get("id") or ""),
         "template_id": str(entry.get("template_id") or ""),
@@ -436,6 +452,9 @@ def _chat_message(prompt: dict) -> dict:
         # A typed message was delivered the moment it was typed. The state
         # vocabulary is the schedule's, and `sent` is the word in it for that.
         "state": schedule.SENT,
+        # A typed message carries no verdict stamp — only the watcher writes
+        # one — and 0.0 is how every stamp here says "never".
+        "turn_at": 0.0,
         "unread": False,
         "entry_id": "",
         "template_id": "",
@@ -653,12 +672,15 @@ def _filed_at(record: dict) -> float:
 def _revived(messages: list[dict], filed_at: float) -> bool:
     """Has this task DONE something since it was filed away?
 
-    THE WAY OUT OF ARCHIVE IS ACTIVITY (Akshil, 2026-08-18): "if you want to
-    move it to in progress or done, just type in a message inside that chat and
-    it will automatically move". There is no unarchive control anywhere — the
-    lane is drag-locked and the row draws no button — so this is the only door,
-    and it has to be a real one: the filing is dropped (`clear_triage`), not
-    overlooked for one poll.
+    THE AUTOMATIC WAY OUT OF ARCHIVE IS ACTIVITY (Akshil, 2026-08-18): "if you
+    want to move it to in progress or done, just type in a message inside that
+    chat and it will automatically move". This door has to be a real one: the
+    filing is dropped (`clear_triage`), not overlooked for one poll.
+
+    The other door is the drag — a card lifted out of the Archive lane
+    (`api_task_unarchive`) — and it is the SAME drop of the SAME record, which is
+    why neither has to know about the other. Nothing here changes because a
+    gesture exists: activity still un-files a task nobody dragged.
 
     WHICH ACTIVITY, and the distinction is the whole function. `ran_at` is when
     a message actually happened, so:
@@ -701,6 +723,76 @@ def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
     return live or (bool(session_id) and session_id in busy)
 
 
+# How much newer than its verdict the transcript's tail must be before the tail
+# stops being the finished turn's own echo and starts being evidence of new
+# work. The closing records land in the same breath as the verdict (the watcher
+# stamps `turn_at` the moment the run reports done, seconds after the last real
+# record) — a couple of seconds absorbs that ordering jitter and clock skew,
+# while a session genuinely still working appends records well past it.
+_VERDICT_ECHO_SEC = 5.0
+
+
+def _verdict_outvotes_live(messages: list[dict], active: float) -> bool:
+    """Is the transcript's liveness just the echo of a run that has already
+    reported its verdict?
+
+    THE 45-SECOND WINDOW LIES IN EXACTLY ONE DIRECTION (Akshil, 2026-08-19: "if
+    finished in one, finished in the other"). The bottom-right queue card flips
+    to finished within seconds of the result row landing — the watcher records
+    the turn's verdict the moment it sees it — while this page kept answering In
+    Progress for the rest of the liveness window, because the transcript's tail
+    had been written to seconds ago. Of course it had: the records were the
+    finished turn's OWN closing rows. Counting a run's obituary as a pulse is
+    how the two surfaces disagreed about the same run for up to a minute.
+
+    So: when the newest thing that actually HAPPENED in this thread is a
+    scheduled run that has spoken (`_message_verdict` — done or failed), and no
+    message claims to be running by its own state, bare liveness has nothing
+    left to attest and the caller sets it aside. `ran_at` is the comparison on
+    both sides because it is the one stamp that means "happened": a prompt the
+    user types after the run is a chat message with a newer `ran_at`, so a
+    genuinely new turn keeps its In Progress. The tie goes to the verdict — the
+    prompt a scheduled run fired is consumed by the join (`_merge`) and cannot
+    also stand on the chat side, so an equal stamp is the run's own.
+
+    BUT THE VERDICT MAY ONLY SILENCE ITS OWN ECHO (TASK-001, Akshil,
+    2026-08-19: a task wore the green Done ring while Claude was visibly still
+    building the app in its session). A resolved turn is not the end of a
+    conversation — the session can keep working with no new prompt to show for
+    it (follow-up turns, background work), and none of that is a "message"
+    here, so the newest thing that HAPPENED stayed the verdict for as long as
+    the work ran and the suppression never lifted. `active` is the transcript's
+    own answer — the timestamp of its newest real (non-housekeeping) record —
+    and `turn_at` is the moment the watcher pronounced the turn over: a tail
+    meaningfully newer than the verdict (`_VERDICT_ECHO_SEC`) is new work, and
+    the transcript keeps its vote. An entry a pre-stamp store wrote has no
+    `turn_at` and keeps the old rule — by the time such an entry matters its
+    transcript has long gone stale anyway.
+
+    Deliberately NOT consulted: `busy_sessions`. The scheduler holding a send in
+    flight is an independent claim and `_running_now` keeps asking it whatever
+    this answers — this function only decides whether the TRANSCRIPT gets a
+    vote.
+    """
+    if any(_message_running(m) for m in messages):
+        return False  # something really is in flight; liveness corroborates it
+    verdict_at = 0.0
+    resolved_at = 0.0
+    other_at = 0.0
+    for message in messages:
+        happened = message["ran_at"] or 0.0
+        if message["kind"] == "scheduled" and _message_verdict(message) is not None:
+            verdict_at = max(verdict_at, happened)
+            resolved_at = max(resolved_at, message["turn_at"] or 0.0)
+        else:
+            other_at = max(other_at, happened)
+    if not (verdict_at > 0.0 and verdict_at >= other_at):
+        return False
+    if resolved_at > 0.0 and active > resolved_at + _VERDICT_ECHO_SEC:
+        return False  # written to well after the verdict: that is a pulse
+    return True
+
+
 def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
             busy: set[str]) -> str:
     """The status a task sits in — ONE decision, made here, for every view.
@@ -716,7 +808,9 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
        independent because each is wrong on its own in a different direction: a
        turn thinking through a long tool call appends nothing for minutes and
        reads as not-live, and a session a human is typing into has no busy entry
-       at all.
+       at all. The transcript's vote is withdrawn by the caller for exactly one
+       case — the tail's freshness is the finished run's own closing records —
+       see `_verdict_outvotes_live`.
     2. **Archived is a filing state.** The task the user put away is archived,
        and so is a task whose every message ended up filed (cancelling the last
        live message in a thread archives the task, without anybody having to say
@@ -955,9 +1049,54 @@ def _collect() -> dict[str, dict]:
         task["entries"].sort(key=_entry_at)
     # The drop happens HERE, once, rather than in each endpoint: the listing,
     # the full thread, the calendar window and the read endpoint all collect
-    # through this function, so a task that is no longer a task is absent from
-    # every one of them and no view has to know why.
-    return {key: task for key, task in tasks.items() if _is_task(task)}
+    # through this function, so a task that is no longer a task — or one the
+    # user deleted — is absent from every one of them and no view has to know
+    # why.
+    deleted = tasks_store.deleted_state()
+    return {key: task for key, task in tasks.items()
+            if _is_task(task) and not _deleted(task, deleted)}
+
+
+def _deleted(task: dict, deleted: dict) -> bool:
+    """Has the user deleted this task — and has nothing happened since?
+
+    The tombstone (`tasks_store.deleted_at`) carries its WHEN precisely so this
+    can be a comparison and not a verdict: the row stays gone only while the
+    tombstone is the newest thing about the task. Activity that postdates it
+    brings the row back, because the alternative is the one thing a hidden task
+    must never do — run invisibly. Two kinds of activity can postdate it:
+
+    * **an entry created after the deletion** — a message scheduled into the
+      same conversation later. `created` is the entry's own birth stamp; its
+      `due` is deliberately not read, because delete cancels pending entries
+      and a cancelled entry's future due time is not news, it is a corpse with
+      a date on it;
+    * **the transcript grew** — the user (or a run that was already in flight
+      when the delete landed, which the endpoint refuses but a race can slip)
+      said something in the session. Append-only files move their mtime for
+      exactly one reason. An unreadable mtime counts as no evidence, not as
+      revival: degrading widens nothing here because the tombstone still
+      answers, and a task wrongly hidden is recoverable while a delete that
+      silently failed is not — the endpoint's answer is the receipt.
+
+    This is `_revived` restated for a stronger filing — same promise, same
+    shape, different record.
+    """
+    at = tasks_store.deleted_at(deleted, task["key"])
+    if at <= 0:
+        return False
+    for entry in task["entries"]:
+        created = tasks_store.epoch(entry.get("created"))
+        if created is not None and created > at:
+            return False
+    path = task["path"]
+    if path:
+        try:
+            if os.path.getmtime(path) > at:
+                return False
+        except OSError:
+            pass
+    return True
 
 
 def _workdir(target: str) -> str:
@@ -977,12 +1116,21 @@ def _place(task: dict) -> None:
     The project is the transcript's own `cwd` where there is one — the encoded
     directory name is lossy (Claude Code turns literal hyphens into separators
     too), so it is only the fallback — and otherwise the folder of whatever the
-    scheduled message was pointed at."""
+    scheduled message was pointed at.
+
+    The target, for a chat with no scheduled entry, prefers the FILE the chat's
+    pane was on (`tasks_store.head`'s fourth answer, read out of the
+    `<live-app-state>` block) over the project folder: opening the task should
+    land where the user was actually looking. A scheduled entry's own target
+    still wins — it is the thing the job was pointed at — and a pane file that
+    no longer exists on disk falls back to the folder rather than opening a
+    view of nothing."""
     cwd = None
     first_ts = None
     prompt = ""
+    pane = ""
     if task["path"]:
-        cwd, first_ts, prompt = tasks_store.head(task["path"])
+        cwd, first_ts, prompt, pane = tasks_store.head(task["path"])
     task["first_prompt"] = prompt
     entries = task["entries"]
     target = str(entries[-1].get("target") or "") if entries else ""
@@ -991,7 +1139,8 @@ def _place(task: dict) -> None:
             sessions._decode_project_dir(os.path.basename(os.path.dirname(
                 task["path"]))) if task["path"] else "")
     task["project"] = tasks_store.project_of(cwd or "")
-    task["target"] = target or task["project"]
+    task["target"] = target or (
+        pane if pane and os.path.isfile(pane) else task["project"])
     if first_ts is None and entries:
         first_ts = (tasks_store.epoch(entries[0].get("created"))
                     or _entry_at(entries[0]))
@@ -1136,6 +1285,20 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # in the last three of a list it is in the same order as. Their ids follow
     # from the total, whatever else is below them.
     merged = _merge(prompts, task["entries"], live)
+    # A run that has already reported its verdict does not keep the row In
+    # Progress off its own closing transcript records: the queue card in the
+    # corner says finished within seconds of the result row, and this page
+    # saying In Progress for the rest of the 45-second liveness window was the
+    # two surfaces disagreeing about one run. Decided off the WHOLE merged
+    # thread, before the tail is cut, and spent by everything below that reads
+    # `live` — the status, the newest chat message's turn, and the row's own
+    # `live` flag — so the row cannot half-agree with itself. See
+    # `_verdict_outvotes_live` for why a genuinely new turn is safe.
+    # `active` rides along because it is the tie-breaker the bug demanded:
+    # a transcript still being written to meaningfully after the verdict is a
+    # session that kept working, and only the verdict's own echo is set aside.
+    if live and _verdict_outvotes_live(merged, active):
+        live = False
     # BEFORE the cut, from the whole set: the one fact about the future that the
     # three-message window cannot be trusted to hold. See `_next_run`.
     next_run, next_run_entry = _next_run(task["entries"])
@@ -1276,14 +1439,13 @@ def _unread_count(task: dict, total: int, unfired: list[dict],
                - waiting)
 
 
-@router.get("/api/tasks")
-def api_tasks():
-    """Every task, newest activity first, each with its three newest messages.
+def _task_rows() -> list[dict]:
+    """Build the authoritative task rows shared by the two listing shapes.
 
-    Includes tasks that have never been scheduled (a chat session is a task) and
-    tasks that have never run (a message scheduled for tomorrow is a task, §5).
-    Excludes the ones that stopped being tasks: no session, and nothing left to
-    run — see `_is_task`. That is an absence of a task, not a filter hiding one.
+    Keeping collection here makes the compact sidebar endpoint a projection of
+    exactly the same status, unread and activity decisions as the Tasks page.
+    FastAPI serializes only the projection returned by that endpoint, so the
+    large titles, descriptions and message bodies never cross the wire there.
     """
     triage = sessions._load_state("triage.json")
     read = tasks_store.read_state()
@@ -1324,7 +1486,34 @@ def api_tasks():
     if not tasks_store.initialized(read):
         tasks_store.initialize([(r["key"], r["message_count"]) for r in rows])
     rows.sort(key=lambda r: r["last_active"], reverse=True)
+    return rows
+
+
+@router.get("/api/tasks")
+def api_tasks():
+    """Every task, newest activity first, each with its three newest messages.
+
+    Includes tasks that have never been scheduled (a chat session is a task) and
+    tasks that have never run (a message scheduled for tomorrow is a task, §5).
+    Excludes the ones that stopped being tasks: no session, and nothing left to
+    run — see `_is_task`. That is an absence of a task, not a filter hiding one.
+    """
+    rows = _task_rows()
     return {"tasks": rows}
+
+
+_PULSE_FIELDS = ("key", "status", "unread", "last_active")
+
+
+@router.get("/api/tasks/pulse")
+def api_tasks_pulse():
+    """The compact task facts used by the global sidebar's status pulse."""
+    return {
+        "tasks": [
+            {field: row[field] for field in _PULSE_FIELDS}
+            for row in _task_rows()
+        ]
+    }
 
 
 def _thread(task: dict, read: dict, now: float) -> list[dict]:
@@ -1565,11 +1754,17 @@ def _read_whole_task(key: str) -> dict:
 # they end — see `_message_archived`. Nothing has to come back and finish the
 # job; the derivation simply answers differently once nothing is running.
 #
-# Deleting is still not on offer and never will be: a task IS a Claude session
-# and this app does not destroy transcripts (D306). The one place a row does
-# disappear is a task that never ran and has no session to keep — cancelling its
-# only message leaves nothing for a row to be about, which is `_is_task`'s rule
-# and predates this endpoint.
+# Deleting exists now (Akshil, 2026-08-19) and D306 still holds, because the
+# two were never actually in tension: what the user asks to delete is the ROW —
+# the task's place on the List, the Board, the calendar and the sidebar — and
+# what D306 protects is the TRANSCRIPT. So delete is archive's first half
+# (cancel the pending work, rules included) plus a TOMBSTONE in tasks_store
+# where archive writes a triage record; the transcript stays on disk, reachable
+# through Claude Code itself, and new activity in the conversation revives the
+# row (`_deleted`) rather than running behind a hidden task. A task that never
+# ran disappears the moment its work is cancelled anyway — `_is_task`'s rule,
+# older than either verb — and the tombstone is what extends that to tasks
+# that HAVE a session to keep.
 
 
 class ArchivePatch(BaseModel):
@@ -1612,6 +1807,170 @@ def api_task_archive(patch: ArchivePatch):
         sessions.write_triage(session_id, _FILED)
     return {"ok": True, "key": key, "cancelled": cancelled,
             "filed": bool(session_id)}
+
+
+class UnarchivePatch(BaseModel):
+    key: str
+
+
+@router.post("/api/tasks/unarchive")
+def api_task_unarchive(patch: UnarchivePatch):
+    """Take the filing back: drop the archive record, nothing else.
+
+    THE MOVE HAS ONE MEANING AND NO DESTINATION. Dragging a card out of the
+    Archive lane does not say which lane it should land in — the user drops it
+    somewhere because that is how a card leaves a lane, and where it goes is
+    DERIVED (`_status`) exactly as it is for every other task on the board. So
+    this verb takes a key and no status, and the lane the user happened to drop
+    on is not sent, not read and not honoured. `status` in the answer is where
+    the task actually landed, which is the one thing the client cannot work out
+    for itself before its next poll — and it may well not be the lane under the
+    cursor. That is correct: the board shows what the work is doing.
+
+    ONE HALF, unlike archiving's two. Archiving cancels the pending work AND
+    files the session; this only un-files. The cancelled runs stay cancelled —
+    a booked run that came back to life because somebody unarchived a card
+    would be a message firing that nobody asked for twice, and "put this back
+    on the board" is not consent to send it. Ask for the run again (or say
+    something in the conversation) if that is what is wanted.
+
+    NO RUN IS EVER STARTED HERE, which is why the drop onto In Progress is this
+    same call and not a run: In Progress is Claude's output, never a verdict a
+    reader hands down, so a card dropped there simply comes back and lands
+    wherever its thread puts it — Done, Failed or In Progress if a turn really
+    is live.
+
+    `clear_triage` keeps the rest of the record — a note, a tag, a read mark on
+    that session is somebody else's data and outlives the status the Board put
+    on it. Same function the revival rule calls (`_revived`), so the gesture and
+    the automatic way out of Archive drop the filing identically.
+    """
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    task = _collect().get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+
+    session_id = task["session_id"]
+    unfiled = bool(session_id) and sessions.clear_triage(session_id)
+    # Where it landed, read the same way the listing reads it — one row built
+    # from the same helpers, AFTER the filing is gone, so the answer is the lane
+    # the very next poll will draw rather than a guess about it.
+    _place(task)
+    row = _row(task, "", sessions._load_state("triage.json"),
+               tasks_store.read_state(), time.time(),
+               schedule.busy_sessions(schedule.list_entries()), [])
+    return {"ok": True, "key": key, "unfiled": unfiled,
+            "status": row["status"]}
+
+
+class DeletePatch(BaseModel):
+    key: str
+
+
+@router.post("/api/tasks/delete")
+def api_task_delete(patch: DeletePatch):
+    """Take the row away for good: cancel its pending work, tombstone its key.
+
+    Archive's first half — the rules first, then every pending entry, for the
+    reason documented there — and then `tasks_store.mark_deleted` where archive
+    writes triage: the tombstone is what `_collect` reads, so the task is
+    absent from the listing, the pulse, the calendar and the full thread in one
+    decision, exactly the way `_is_task` already drops shells.
+
+    THE RULES, FOUND BY WHERE THEIR NEXT RUN WOULD LAND (bugbot, 2026-08-19,
+    twice — once in each direction). Archive's `_rules_behind` reads template
+    ids off PENDING occurrences only — right for archive, whose cancelled runs
+    must not reach past the task, but blind to a live rule BETWEEN occurrences:
+    the materialiser mints lazily, so such a rule has no pending row, survives
+    the delete, and its next mint carries a `created` stamp newer than the
+    tombstone — the revival rule's front door (`_deleted`). The over-correction
+    was as wrong the other way: harvesting `template_id` off every entry
+    whatever its state cancelled a `new_task_each_run` SERIES because one of
+    its spent runs happened to be the task being deleted — a series whose
+    future runs mint into fresh sessions and were never going to touch this
+    row. So `_every_rule_behind` asks the one question that matters: would this
+    rule's next run land back ON THIS TASK? Those rules die with the row;
+    every other rule survives it, and only this task's own pending entries are
+    withdrawn.
+
+    REFUSED WHILE THE TASK IS RUNNING (409). A live turn cannot be cancelled
+    (`sending` is refused by schedule.cancel, a running job is the registry's
+    to stop), so deleting now would hide work that is still happening — a run
+    finishing into an invisible task is the exact failure the revival rule
+    exists to prevent, and the honest answer is "stop it first". The status
+    asked is the same derived row every view paints (`_row`), so this endpoint
+    cannot disagree with the pill the user is looking at.
+
+    WHAT IS AND IS NOT ERASED, in the answer as in fact: pending work is
+    cancelled (`cancelled` counts it), the row is gone everywhere, and the
+    TRANSCRIPT IS NOT TOUCHED (D306) — `erased_transcript` is always False and
+    is in the payload so the client never has to guess. The task's number is
+    likewise never reallocated (task_ids.json's "max seen plus one" rule), so
+    a deleted TASK-007 does not quietly become somebody else's name.
+    """
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    task = _collect().get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+
+    _place(task)
+    row = _row(task, "", sessions._load_state("triage.json"),
+               tasks_store.read_state(), time.time(),
+               schedule.busy_sessions(schedule.list_entries()), [])
+    if row["status"] == "in_progress":
+        raise HTTPException(
+            status_code=409,
+            detail="that task is running — stop the run first, then delete")
+
+    cancelled = 0
+    for template_id in _every_rule_behind(key):
+        if schedule.cancel(template_id) is not None:
+            cancelled += 1
+    for entry in task["entries"]:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        entry_id = str(entry.get("id") or "")
+        if entry_id and schedule.cancel(entry_id) is not None:
+            cancelled += 1
+
+    tasks_store.mark_deleted(key)
+    return {"ok": True, "key": key, "cancelled": cancelled,
+            "erased_transcript": False}
+
+
+def _every_rule_behind(key: str) -> list[str]:
+    """Every recurring rule that could put this task back on the board, named
+    once. DELETE's discovery, and a different question from `_rules_behind`'s.
+
+    The tie that matters is WHERE THE RULE'S NEXT RUN LANDS, not which task its
+    old runs ended up in — so the predicate is the rule's own session resolving
+    to this task's key, read with `_entry_session` exactly as `_collect` files
+    entries. That finds a same-session rule even between occurrences, when the
+    materialiser has minted nothing and the rule leaves no pending row to read
+    a `template_id` off (its next mint would land back on this key, `created`
+    newer than the tombstone, and revive the row — `_deleted`).
+
+    What it deliberately does NOT do is follow `template_id` off the task's own
+    entries: a `new_task_each_run` series mints every future run into a FRESH
+    session, so one of its spent runs being this task ties the series to the
+    task's PAST, not its future — deleting that one run's row must not kill the
+    live series, nor the pending occurrences that belong to other tasks. Those
+    rules keep minting; only this task's own rows go.
+
+    `schedule.cancel` cancels a recurring template together with its pending
+    occurrence, so a matched rule dies whole."""
+    rules: list[str] = []
+    for entry in schedule.list_entries():
+        if entry.get("state") != schedule.RECURRING:
+            continue
+        entry_id = str(entry.get("id") or "")
+        if entry_id and entry_id not in rules and _entry_session(entry) == key:
+            rules.append(entry_id)
+    return rules
 
 
 def _rules_behind(entries: list[dict]) -> list[str]:

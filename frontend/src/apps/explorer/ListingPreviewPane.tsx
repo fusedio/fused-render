@@ -43,6 +43,8 @@ import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideCloseButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
+import { dropStaleChatParams } from "@apps/explorer/listing/chat-params";
+import { pathFromSelParam } from "@apps/explorer/listing/selection";
 import Listing from "@apps/explorer/Listing";
 import {
   activePaneMode,
@@ -223,6 +225,34 @@ export default function ListingPreviewPane({
   // contract — platform/lib/frame-focus.ts). Also a hook, so also before the early
   // returns; the branches it guards are the ones that render a frame.
   const { rootRef, guardProps } = usePaneFocusGuard<HTMLDivElement>();
+
+  // Retargeting the chat takes its params off the URL (listing/chat-params.ts has
+  // the why). The condition mirrors the Claude branch below exactly, so the target
+  // is only claimed on renders where the chat iframe is actually up — a skeleton
+  // frame or a flip through Git never reads as a retarget. A hook, so above the
+  // early returns like the two before it. `urlNamed` — this target is the one the
+  // url's own `?sel=` (or its absence) points at, i.e. a seeded selection playing
+  // out rather than the user clicking away from a chat — is what keeps a deep
+  // link's params alive through the mount-time folder→row hop (chat-params.ts).
+  const chatTarget =
+    !undecided && side === "claude" && sideEntries.claude && sideEntries.claude.path !== null
+      ? paneSideTarget("claude", folder, row && !row.self ? row.path : null)
+      : null;
+  // `?sel=` decodes against the SAME base the rows are built on — Listing's
+  // fsPath with its trailing slash stripped (useListingSelection) — or the two
+  // spellings diverge exactly at the roots: "/" would decode `?sel=x` to "//x"
+  // while the row is "/x", and "C:/" likewise, so a seeded hop at a root would
+  // never count as url-named and a deep link's params would be stripped there.
+  const urlNamedTarget =
+    chatTarget !== null &&
+    chatTarget ===
+      (pathFromSelParam(
+        folder.replace(/\/$/, ""),
+        new URLSearchParams(location.search).get("sel")
+      ) ?? folder);
+  useEffect(() => {
+    dropStaleChatParams(chatTarget, urlNamedTarget);
+  }, [chatTarget, urlNamedTarget]);
 
   // --- the pane's modes (listing/pane-side.ts) --------------------------------
   // EVERY MODE THE PANE MAY BE ON, and never fewer: an unofferable COMPANION is

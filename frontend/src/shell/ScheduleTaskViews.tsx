@@ -40,10 +40,11 @@ import {
   resendScheduledMessage,
   runScheduledNow,
   archiveTask,
+  unarchiveTask,
 } from "@platform/lib/api";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
-import { BOARD_COLUMNS } from "./schedule-lib";
+import { BOARD_COLUMNS, columnLabel } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
@@ -51,12 +52,12 @@ import {
   LANE_CHOICE_KEY,
   LIST_MEMORY_KEY,
   UNREAD_LABEL,
-  archiveIntent,
   basename,
   cancelIntent,
   carryMarkToHeld,
   dropAction,
   dropLanes,
+  filingIntent,
   filterTasks,
   firstLine,
   groupByColumn,
@@ -68,6 +69,8 @@ import {
   laneRolledUp,
   laneUnread,
   sortByLane,
+  showsRowActions,
+  statusColumn,
   markAllRead,
   markRead,
   markReadIntent,
@@ -99,6 +102,7 @@ import {
   upcomingEditEntry,
 } from "./tasks-lib";
 import type {
+  FilingIntent,
   LaneChoices,
   ListMemory,
   OpenThreadIntent,
@@ -221,16 +225,27 @@ const ICON_RERUN = icon(
 // same glyph would read as a toggle that is currently checked.
 const ICON_MARK_READ = icon(
   <><path d="M18 6 7 17l-5-5" /><path d="m22 10-7.5 7.5L13 16" /></>, 13);
-// Filing away. lucide `archive`, and there is no counterpart: archiving is a
-// one-way door on every view now (tasks-lib's drag matrix — Archive is a locked
-// lane), so a second glyph would be an affordance for a gesture that does not
-// exist. It costs nothing, because the door being one-way does not make it a
-// shredder: the conversation and its transcript are kept (D306), and Archive is
-// a place to read them.
+// Filing away. lucide `archive`: a lidded box with a pull-slot in the front.
 const ICON_ARCHIVE = icon(
   <><rect x="2" y="3" width="20" height="5" rx="1" />
     <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
     <path d="M10 12h4" /></>, 13);
+// Taking it back out. lucide `archive-restore` — the SAME box, opened at the
+// front, with something lifting out of it. That kinship is the whole reason for
+// using the pair rather than inventing a mark: the two buttons occupy ONE slot on
+// a row (`.tasks-rowmark`), never both at once, so a reader has to be able to tell
+// which one they are pointing at from the shape alone, and "same box, arrow out"
+// answers that in a glance where a generic undo curl would not.
+//
+// The box's walls are two short paths rather than one closed body, which is what
+// leaves the gap the arrow comes through. Same 13px, same stroke, same lid as
+// above, so the two glyphs sit on each other exactly.
+const ICON_UNARCHIVE = icon(
+  <><rect x="2" y="3" width="20" height="5" rx="1" />
+    <path d="M4 8v11a2 2 0 0 0 2 2h2" />
+    <path d="M20 8v11a2 2 0 0 1-2 2h-2" />
+    <path d="m9 15 3-3 3 3" />
+    <path d="M12 12v9" /></>, 13);
 
 // ---- leaf components ---------------------------------------------------------
 
@@ -704,6 +719,31 @@ async function performRun(intent: TaskRunIntent): Promise<string> {
 }
 
 /**
+ * Take one task back out of Archive, and return the sentence to show for it.
+ *
+ * THE SENTENCE IS THE POINT, and it is why this is a function rather than a call.
+ * Unarchiving names no lane: the server drops the filing and DERIVES where the
+ * task belongs from its thread, so the card is about to appear somewhere the
+ * reader did not choose and cannot predict — a different lane on the Board, a
+ * different rank on the List, quite possibly off screen. Three gestures reach
+ * this (the List's button, the card's button, the drag out of the lane) and all
+ * three need the same sentence; three copies of it is how they start telling the
+ * reader three different things.
+ *
+ * Refusals THROW, exactly like performRun, so each caller puts them in its own
+ * note line.
+ */
+async function performUnarchive(key: string): Promise<string> {
+  const said = await unarchiveTask(key);
+  // `unfiled: false` is the server saying NOTHING CHANGED — no filing to clear,
+  // or a cancelled-only thread whose derived status is still Archive. Claiming
+  // "Unarchived — back in Archive" for that would be the note lying about a
+  // move that never happened (Bugbot, 2026-08-18).
+  if (!said.unfiled) return `Nothing to unarchive — still ${columnLabel(statusColumn(said.status))}.`;
+  return `Unarchived — back in ${columnLabel(statusColumn(said.status))}.`;
+}
+
+/**
  * Spend an OpenThreadIntent: the ONE place either view opens a conversation.
  *
  * Both gestures that go to a thread come through here — the Board card's click
@@ -846,6 +886,9 @@ export function TaskList({
   const [loaded, setLoaded] = useState<Record<string, TaskMessage[]>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // An unarchive's destination sentence, held by the PAGE: a status filter can
+  // unmount the very row the sentence sits on (see the render below).
+  const [pageNote, setPageNote] = useState("");
   const { read, clear, clearAll, carryAll, restoreAll, settleAll } = useReadSet();
 
   // The latest poll's tasks, readable from ACROSS an await. showMore closes over
@@ -1059,6 +1102,49 @@ export function TaskList({
     remember({ ...memory.current, expanded: [...expanded] });
   }, [expanded]);
 
+  // ---- the wheel works in the margins too -------------------------------------
+  // `.schedule-main` is capped at 1050px and centred, so a wide window leaves a
+  // band of empty page either side of the card — and the card is the scroller,
+  // so a wheel out in that band lands on `.schedule-page`, which is
+  // `overflow: hidden` and scrolls nothing: the reader had to aim at the card
+  // (Akshil, 2026-08-20). Making the scroller full-width instead was tried first
+  // and traded this for two worse bugs — the card's frame scrolled away with its
+  // content, and the reserved scrollbar gutters pushed the card off the
+  // toolbar's axis (bugbot, #678) — so the geometry stays exactly as it was and
+  // the wheel is forwarded: a wheel anywhere on this page that no scroller of
+  // its own claims is handed to the list. Board and Calendar mount their own
+  // components, so nothing here can touch their scrolling.
+  useEffect(() => {
+    // The page div, NOT via the ref: on the mount this effect runs after, the
+    // rows are usually still in flight and the ref is still null — the page
+    // ancestor is the one element of this pair that is always there. The ref is
+    // read again inside the handler, per wheel, for the same reason.
+    const page = document.querySelector<HTMLElement>(".schedule-page");
+    if (!page) return;
+    const onWheel = (e: WheelEvent) => {
+      const el = listRef.current;
+      if (!el || !(e.target instanceof Element) || e.deltaY === 0) return;
+      // Pinch-zoom arrives as ctrl+wheel; that is a zoom, not a scroll.
+      if (e.ctrlKey) return;
+      // Anything between the pointer and the page that scrolls for itself —
+      // the list, a menu, a popover — keeps its native wheel untouched.
+      for (let n: Element | null = e.target; n && n !== page; n = n.parentElement) {
+        const s = getComputedStyle(n);
+        if (
+          (s.overflowY === "auto" || s.overflowY === "scroll") &&
+          n.scrollHeight > n.clientHeight
+        ) {
+          return;
+        }
+      }
+      // deltaMode 1 is lines (Firefox with a wheel mouse); everything else
+      // that reaches a web page is already pixels.
+      el.scrollTop += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    };
+    page.addEventListener("wheel", onWheel, { passive: true });
+    return () => page.removeEventListener("wheel", onWheel);
+  }, []);
+
   const onScroll = () => {
     const el = listRef.current;
     if (!el) return;
@@ -1120,7 +1206,14 @@ export function TaskList({
   }
 
   return (
-    <div className="tasks-list" ref={listRef} onScroll={onScroll}>
+    <>
+      {/* WHERE AN UNARCHIVE WENT, at page level — the row's own note dies with
+          the row when a status filter unmounts it (an Archive-only filter always
+          does), and then the move reads as a disappearance (Bugbot, 2026-08-18).
+          The Board keeps this same sentence above its lanes for the same
+          reason. */}
+      {pageNote && <p className="schedule-tv-note tasks-list-note">{pageNote}</p>}
+      <div className="tasks-list" ref={listRef} onScroll={onScroll}>
       {/* ORDERED BY STATUS, NOT GROUPED BY IT (tasks-lib.sortByLane): Upcoming,
           In Progress, Failed, Done, Archive — rank order, server order inside
           each rank, and no headers, dividers or counts between them.
@@ -1147,6 +1240,7 @@ export function TaskList({
           error={errors[task.key]}
           onEditEntry={onEditEntry}
           onReload={onReload}
+          onPageNote={setPageNote}
           read={read}
           onRead={clear}
           onReadAll={clearAll}
@@ -1154,7 +1248,8 @@ export function TaskList({
           onSettleAll={settleAll}
         />
       ))}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -1172,6 +1267,7 @@ function TaskNode({
   error,
   onEditEntry,
   onReload,
+  onPageNote,
   read,
   onRead,
   onReadAll,
@@ -1204,6 +1300,9 @@ function TaskNode({
   error?: string;
   onEditEntry?: (entryId: string) => void;
   onReload?: () => void;
+  /** The List's page-level note — the only holder that survives this row being
+   * filtered out by the very move it announces (see TaskList's render). */
+  onPageNote: (s: string) => void;
   read: Set<string>;
   onRead: (taskKey: string, m: TaskMessage) => void;
   /** Clear this whole task's unread locally — the optimistic half of Mark read,
@@ -1283,18 +1382,24 @@ function TaskNode({
   // drop can never fire different messages; the re-send half is the case the
   // drag deliberately does not have, because a gesture cannot consent to
   // creating work that was never scheduled.
-  const run = taskRunIntent(task);
-  // Archive. The Board's drop onto the Archive lane, reachable without
-  // switching view, expanding a collapsed lane and dragging — which is what
-  // "archive it" used to cost, and the reason the honest answer to "can a task
-  // be deleted?" (no: it is archived, D306) was barely true. tasks-lib decides
-  // everything, by asking dropAction the same question the drag does — so a row
+  //
+  // NOT ON AN ARCHIVED ROW, and neither is anything else below (`showsRowActions`):
+  // a task somebody put away has one decision left against it, and that is
+  // whether it is still put away. Offering Re-run next to Unarchive would also
+  // invite the one misread this whole gesture is written against — that coming
+  // back out of Archive runs something.
+  const acts = showsRowActions(task);
+  const run = acts ? taskRunIntent(task) : null;
+  // FILING, either direction. The Board's drop onto — or out of — the Archive
+  // lane, reachable without switching view, expanding a collapsed lane and
+  // dragging, which is what those moves used to cost. tasks-lib decides
+  // everything, by asking dropAction the same questions the drag does, so a row
   // draws the button exactly when the card would take the drop.
-  const file = archiveIntent(task);
+  const file = filingIntent(task);
   // Mark read — the whole task at once, so clearing 89 unread messages is not 89
   // clicks through 89 transcripts. Asked of the count this row is DRAWING, so
   // the button leaves on its own press rather than on the next poll.
-  const seen = markReadIntent(task, read, held);
+  const seen = acts ? markReadIntent(task, read, held) : null;
 
   // The one cancel in flight, by message id, and whatever the server said about
   // the last one that failed. Per MESSAGE rather than per thread: the sentence
@@ -1308,6 +1413,17 @@ function TaskNode({
   // row would leave the reader working out which press each answered.
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
+  // THE FILING PRESS'S RECEIPT (Akshil, 2026-08-19). Clicking Archive keeps the
+  // pointer on the row, and the hover swap above kept right on swapping: the slot
+  // instantly redrew the OPPOSITE verb (Unarchive), so the press's only visible
+  // outcome was an icon flip — no sign the action landed at all. CSS cannot say
+  // "hovered, but the hover already spent its press", so the row says it: this
+  // flag goes up on the press and comes down when the pointer LEAVES the row
+  // (`onMouseLeave` below), and while it is up `.is-refiled` (tasks.css) hands
+  // the mark slot back to the STATUS RING — now drawing the new state, which is
+  // the confirmation — instead of the reveal. Leave and return, and the hover
+  // offers the (now opposite) action again, exactly like any other row.
+  const [refiled, setRefiled] = useState(false);
 
   const runNow = async (intent: TaskRunIntent) => {
     setActing(true);
@@ -1335,13 +1451,29 @@ function TaskNode({
     }
   };
 
-  // Archive. One call, and the same one the board's drop makes: the server
-  // cancels the work and files the session, so this side composes nothing.
-  const archive = async () => {
+  // Filing, either direction. One call each, and the same ones the board's drops
+  // make: the server cancels the work and files the session going in, and drops
+  // the filing coming out, so this side composes nothing but the sentence.
+  const refile = async (intent: FilingIntent) => {
     setActing(true);
     setNote("");
+    // On the PRESS, not on the answer: the ring under the suppressed button is
+    // this press's feedback either way — the new state when the call lands, the
+    // unchanged one (plus the note below) when the server refuses. Both
+    // directions, deliberately: Unarchive under a resting pointer flipped to
+    // Archive just as instantly.
+    setRefiled(true);
     try {
-      await archiveTask(task.key);
+      if (intent.kind === "archive") {
+        await archiveTask(task.key);
+      } else {
+        // WHERE IT WENT, said out loud — see performUnarchive. On a list sorted
+        // by lane the row is about to move somewhere the reader did not point
+        // at, and may even leave the current FILTER: the sentence goes to the
+        // page, because a note on the row dies with the row (Bugbot,
+        // 2026-08-18).
+        onPageNote(await performUnarchive(task.key));
+      }
     } catch (e) {
       // The server's own sentence, in the same quiet line run-now uses. A
       // refusal here is news, not a fault: nothing was destroyed either way,
@@ -1574,7 +1706,8 @@ function TaskNode({
     <div className="tasks-node">
       <div
         className={"tasks-row" + (open ? " is-open" : "")
-          + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")}
+          + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")
+          + (refiled ? " is-refiled" : "")}
         // The row is a CONTAINER now, not a control: when it has somewhere to go
         // the stretched `<a>` below is the button, the tab stop and the
         // accessible name, and hanging a second role and a second tab stop on
@@ -1597,6 +1730,11 @@ function TaskNode({
                 }
               }
         }
+        // The other half of the filing receipt (Akshil, 2026-08-19): leaving the
+        // row is what re-arms its hover reveal. Handled — not conditional — even
+        // while the flag is down, because a handler that appears and disappears
+        // with the state it clears is a re-render race waiting to be read about.
+        onMouseLeave={() => setRefiled(false)}
       >
         {/* The disclosure gutter is drawn WHETHER OR NOT there is a chevron in it.
             `--tasks-caret-w` is the first term of `--tasks-rail-x`, which every
@@ -1701,9 +1839,14 @@ function TaskNode({
             unread={unread > 0}
             count={unread}
           />
-          {/* The Board's drag onto Archive, as a press — and there is no way
-              back, because Archive is a locked lane (tasks-lib.archiveIntent
-              decides both halves and refuses the reverse).
+          {/* The Board's drag onto Archive — or out of it — as a press. ONE
+              button in this slot, never two: a task is either put away or it is
+              not, so tasks-lib.filingIntent answers with a direction and this
+              draws that direction's glyph and calls that direction's verb.
+
+              ON AN ARCHIVED ROW IT IS THE ONLY BUTTON (showsRowActions, above).
+              Unarchive beside a Re-run would suggest the two are related, and the
+              one thing this gesture must never be read as is starting work.
 
               THE ONE ROW ACTION NOT BEHIND SHOW_ROW_ACTIONS (Akshil, 2026-08-18:
               bring the archive button back, visible on hover). Filing a task away
@@ -1724,16 +1867,16 @@ function TaskNode({
           {file && (
             <button
               type="button"
-              className="tasks-act tasks-act--archive"
+              className={"tasks-act tasks-act--" + file.kind}
               title={file.title}
               aria-label={file.label}
               disabled={acting}
               onClick={(e) => {
                 e.stopPropagation();
-                void archive();
+                void refile(file);
               }}
             >
-              {ICON_ARCHIVE}
+              {file.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
             </button>
           )}
         </span>
@@ -2206,8 +2349,8 @@ export function TaskBoard({
     setDragging(null);
     setOverLane(null);
     if (!task || !allowed.has(lane)) return;
-    // Which of the two things this drop means — file the task, or run its next
-    // message early — is tasks-lib's decision, not this handler's.
+    // Which of the three things this drop means — file the task, un-file it, or
+    // run its next message early — is tasks-lib's decision, not this handler's.
     const action = dropAction(task, lane);
     if (!action) return;
     setNote(null);
@@ -2217,6 +2360,20 @@ export function TaskBoard({
         // left alone, so the thread reads as a run that happened early rather
         // than a schedule that was quietly rewritten.
         await runScheduledNow(action.entryId);
+      } else if (action.kind === "unarchive") {
+        // Archive → anywhere else. ONE meaning whatever `lane` is: the filing is
+        // dropped and the task lands in whatever lane it DERIVES to, which is
+        // frequently not the lane under the cursor. Nothing runs — including a
+        // drop onto In Progress, which is this same call: that lane is Claude's
+        // output, not a state a reader can assert, so the card goes there only
+        // if a turn genuinely is live.
+        //
+        // So the note says where it actually went — the same sentence the two
+        // buttons show (performUnarchive). There is no flash or scroll on this
+        // board to point at the card with, and a card that silently reappears in
+        // a lane the person was not looking at is a gesture that seems to have
+        // done nothing.
+        setNote(await performUnarchive(task.key));
       } else {
         // → Archive. ONE call for both halves — the pending work is cancelled
         // and the session is filed — because a card dropped here that still
@@ -2233,14 +2390,20 @@ export function TaskBoard({
     onReload();
   };
 
-  // The same archive call the drop above makes, asked for by a card's own
-  // button instead of a gesture. It lives up here rather than in TaskCard so the
-  // refusal lands in the board's ONE note line, beside the drag's: a sentence
-  // tucked inside a 260px lane under one card is a sentence nobody reads.
-  const file = async (task: Task) => {
+  // The same two calls the drop above makes, asked for by a card's own button
+  // instead of a gesture. It lives up here rather than in TaskCard so the refusal
+  // lands in the board's ONE note line, beside the drag's: a sentence tucked
+  // inside a 260px lane under one card is a sentence nobody reads. The unarchive
+  // note is the same one the drop writes, for the same reason — the card is about
+  // to appear in a lane nobody pointed at.
+  const refile = async (task: Task, intent: FilingIntent) => {
     setNote(null);
     try {
-      await archiveTask(task.key);
+      if (intent.kind === "archive") {
+        await archiveTask(task.key);
+      } else {
+        setNote(await performUnarchive(task.key));
+      }
     } catch (e) {
       setNote((e as Error).message);
     }
@@ -2460,7 +2623,7 @@ export function TaskBoard({
                       setDragging(null);
                       setOverLane(null);
                     }}
-                    onArchive={() => file(task)}
+                    onFile={(intent) => refile(task, intent)}
                     onRun={runNow}
                     onOpen={(intent) => openCard(task, intent)}
                   />
@@ -2501,7 +2664,7 @@ function TaskCard({
   isDragging,
   onDragStart,
   onDragEnd,
-  onArchive,
+  onFile,
   onRun,
   onOpen,
 }: {
@@ -2516,9 +2679,10 @@ function TaskCard({
   isDragging: boolean;
   onDragStart: () => void;
   onDragEnd: () => void;
-  /** File this card away, or bring it back — the board owns the call so its
-   * refusal lands in the board's own note line. */
-  onArchive: () => Promise<void>;
+  /** File this card away, or bring it back out — the direction comes from the
+   * card's own filingIntent, and the board owns the call so its refusal (and, for
+   * an unarchive, the lane it landed in) lands in the board's own note line. */
+  onFile: (intent: FilingIntent) => Promise<void>;
   /** Run the task's next message now, or re-send the one that failed. Same
    * arrangement and same reason as onTriage: the board makes the call. */
   onRun: (intent: TaskRunIntent) => Promise<void>;
@@ -2539,22 +2703,28 @@ function TaskCard({
   // click does nothing at all: no navigation, and no mark either, since nothing
   // was shown to the reader.
   const open = openThreadIntent(task, unread);
-  // Archive without dragging. The drag stays as the accelerator, but it cannot
-  // be the ONLY way: the lane it aims at is collapsed by default, so the whole
-  // gesture starts with "expand Archive first". Same predicate as the drop, by
-  // construction — archiveIntent asks dropAction.
+  // Filing without dragging, in whichever direction this card has. The drag stays
+  // as the accelerator, but it cannot be the ONLY way: the Archive lane is
+  // collapsed by default, so BOTH gestures otherwise start with "expand Archive
+  // first" — and for a card already in there, a collapsed lane draws no card to
+  // drag at all. Same predicate as the drops, by construction: filingIntent asks
+  // dropAction.
   //
-  // One direction only, on both views and in the drag: there is no way back out
-  // of Archive, because a Board that offers a return the List does not draw is
-  // the divergence this page's whole vocabulary is written against.
-  const file = archiveIntent(task);
+  // Both views draw the same button from the same intent, which is the thing this
+  // page's vocabulary is most careful about: a Board that offered a return the
+  // List did not draw is exactly the divergence the old SHOW_UNARCHIVE was.
+  const file = filingIntent(task);
   // Run now / Re-run, which the List row and the calendar popover both already
   // offer and this card did not. The SAME function decides it here as there
   // (tasks-lib.taskRunIntent, which asks runNowIntent — the very function
   // dropAction asks), so the card's button, the List's button and the drag onto
   // In Progress can never fire different messages. Nothing about which message
   // or which call is re-derived on this side.
-  const run = taskRunIntent(task);
+  //
+  // NOT ON AN ARCHIVED CARD (showsRowActions) — same rule, same reason, as the
+  // List row: the only decision left against a card in Archive is whether it is
+  // still in Archive, so Unarchive is the only button it grows.
+  const run = showsRowActions(task) ? taskRunIntent(task) : null;
   // The run still to come, when this card's lane does not already order by it.
   const soon = nextRunChip(task);
   // The lane this card is IN. Not passed down: `groupByColumn` files every card
@@ -2569,10 +2739,10 @@ function TaskCard({
   // "disagrees": in the failed lane the two agree and the header has said it.
   const failedOffLane = isFailedTask(task) && lane !== "failed";
   const [busy, setBusy] = useState(false);
-  const archive = async () => {
+  const refile = async (intent: FilingIntent) => {
     setBusy(true);
     try {
-      await onArchive();
+      await onFile(intent);
     } finally {
       setBusy(false);
     }
@@ -2771,13 +2941,13 @@ function TaskCard({
           {file && (
             <button
               type="button"
-              className="tasks-act tasks-card-act tasks-act--archive"
+              className={"tasks-act tasks-card-act tasks-act--" + file.kind}
               title={file.title}
               aria-label={`${file.label} ${task.task_id}`}
               disabled={busy}
-              onClick={() => void archive()}
+              onClick={() => void refile(file)}
             >
-              {ICON_ARCHIVE}
+              {file.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
             </button>
           )}
         </span>

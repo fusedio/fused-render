@@ -31,6 +31,7 @@ import logoMarkLight from "@assets/logo-white-bg-transparent.png";
 import { armBookmark, isBookmarkMissing, splitBookmarkUrl } from "@platform/lib/bookmarks";
 import type { Bookmark } from "@platform/lib/bookmarks";
 import { bookmarkFsPath } from "@apps/explorer/sidebar/BookmarksSection";
+import { useNearViewport, usePreviewStart } from "@platform/lib/preview-start";
 
 // The iframe renders at desktop width and is scaled into the preview box —
 // same pure-CSS trick as AppPreviewCard.
@@ -66,8 +67,16 @@ export function LivePreview({ src }: { src: string }) {
   // peeked page that focuses an input on boot yanked the card grid down to
   // itself mid-scroll (D348, platform/lib/frame-focus.ts).
   src = withNoFocus(withPreviewFlag(src));
+  const [previewRef, nearViewport] = useNearViewport<HTMLSpanElement>();
+  const { started, settled } = usePreviewStart(nearViewport);
+  if (!started) {
+    return <span ref={previewRef} className="fhb-preview" aria-hidden="true" />;
+  }
   return (
-    <span className="fhb-preview" aria-hidden="true">
+    <span ref={previewRef} className="fhb-preview" aria-hidden="true">
+      {/* The near-viewport observer is the lazy gate; the shared scheduler is
+          the concurrency gate. Keeping them separate means a browser-delayed
+          iframe never holds one of the scheduler's two permits. */}
       <iframe
         src={src}
         style={{
@@ -75,10 +84,11 @@ export function LivePreview({ src }: { src: string }) {
           height: `${100 / PREVIEW_SCALE}%`,
           transform: `scale(${PREVIEW_SCALE})`,
         }}
-        loading="lazy"
         tabIndex={-1}
         scrolling="no"
         title=""
+        onLoad={settled}
+        onError={settled}
       />
       <span className="fhb-shield" />
     </span>

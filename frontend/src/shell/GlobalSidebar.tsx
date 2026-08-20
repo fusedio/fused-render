@@ -1,9 +1,10 @@
 // THE sidebar — one for the whole app, on every route. Replaces the old pair
 // (ShellSidebar app-switcher on shell routes, ExplorerSidebar on fs routes):
-// primary nav on top (Home / Tasks), the explorer's Bookmarks below it,
-// and a single Settings trigger pinned to the
-// bottom that opens a menu holding everything else (Config / App Basics for
-// now, plus Templates / Mounts / AI Models / Preferences).
+// primary nav on top (Home / Tasks, plus Canvases once this machine is signed
+// in to Fused), the explorer's Bookmarks below it, and a single Settings
+// trigger pinned to the bottom that opens a menu holding everything else
+// (Config / App Basics for now, plus Templates / Mounts / AI Models /
+// Preferences).
 //
 // Lives in the shell layer on purpose: it composes both platform chrome
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
@@ -17,6 +18,7 @@ import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { useUrlVersion, useLearnMountReady } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
+import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
 import { useAiRuntime } from "@shell/aiRuntime";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
 import { pulseTitle, runningLabel } from "@shell/tasks-lib";
@@ -251,6 +253,17 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
   const tasksActive = pathname === "/tasks";
+  // Exact, for the reason Home is: /canvases/<name> is a workspace you opened,
+  // not the list page, and lighting the row while you are inside a canvas reads
+  // as two selections.
+  const canvasesActive = pathname === "/canvases";
+  // PRIMARY NAV ONLY ONCE THERE IS AN ACCOUNT BEHIND IT. Signed out, the row
+  // would lead to a sign-in wall — the menu entry is the right weight for
+  // "there is a thing here you could set up"; a top-of-sidebar row is for a
+  // place you already work. Signed in it is one of the two or three things this
+  // machine is FOR, so it sits with Home and Tasks (see @apps/canvases/logged-in
+  // for why this is a shared store and not a one-shot probe).
+  const canvasesLoggedIn = useCanvasesLoggedIn();
 
   // WHAT THE TASKS ENTRY KNOWS: what is running, and what finished with
   // something unread (shell/tasksPulse — one poll shared with the page, which
@@ -288,11 +301,20 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const unseen = tasksActive ? 0 : pulse.unseen;
   const tasksTip = pulseTitle(pulse);
 
-  // The collapsed rail has no label to hang a word on, so the whole signal is
-  // one dot in the icon's top-right corner: yellow while anything runs, green
-  // for completions not yet shown, nothing at all otherwise. The hues are the
-  // status ring's own (--status-progress / --status-done, schedule.css) — one
-  // status, one colour, on every surface that names it (design-principles §1).
+  // ONE DOT ON THE ICON, IN BOTH MODES (Akshil, 2026-08-18): yellow while
+  // anything runs, green for completions not yet shown, nothing at all
+  // otherwise. It began as the collapsed rail's whole signal — no label there to
+  // hang a word on — and the expanded row deliberately went without it. That was
+  // wrong in use: the icon is where the eye lands whatever the sidebar's width,
+  // so a mark that shows collapsed and vanishes on expand reads as the STATE
+  // going away rather than the sidebar changing shape. The dot is now the
+  // constant, and expanding ADDS words beside it ("N running" + the count chip)
+  // instead of trading the dot for them.
+  //
+  // Still ONE dot: yellow outranks green — a reader told work is in flight does
+  // not also need sending to the page mid-run. The hues are the status ring's
+  // own (--status-progress / --status-done, schedule.css) — one status, one
+  // colour, on every surface that names it (design-principles §1).
   const tasksDot =
     pulse.running > 0 ? (
       <span className="sidebar-rail-dot is-running" title={tasksTip} />
@@ -300,11 +322,12 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       <span className="sidebar-rail-dot is-unread" title={tasksTip} />
     ) : undefined;
 
-  // Expanded, the same two facts get words: a shimmering "N running" (the ink
-  // moves while the work does, and prefers-reduced-motion pins it), and the
-  // count chip the bookmark folders wear (`.sidebar-count-chip`, sidebar.css) —
-  // the same element for the same kind of fact, not a lookalike. NO DOT here:
-  // a dot on the icon plus a readout beside the label is one fact stated twice.
+  // Expanded, the same two facts ALSO get words, beside the dot rather than
+  // instead of it: a shimmering "N running" (the ink moves while the work does,
+  // and prefers-reduced-motion pins it), and the count chip the bookmark folders
+  // wear (`.sidebar-count-chip`, sidebar.css) — the same element for the same
+  // kind of fact, not a lookalike. The dot says THAT there is something; the
+  // words say how much, and the chip's number is the ungated one (see above).
   const tasksTrailing =
     pulse.running > 0 || pulse.doneUnread > 0 ? (
       <>
@@ -340,7 +363,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // menu href as "you are on one of my pages" — the same double-selection the
     // Home comment above rejects.
     // Ungated like Tasks: the page explains CLI-missing / signed-out states
-    // itself, and there is no machine state that hides the concept.
+    // itself, and there is no machine state that hides the concept. It stays
+    // here even while the primary row above is showing — the menu is where
+    // someone looks for a named destination — and `prefsActive` below drops it
+    // instead, so the two never light at once.
     { href: "/canvases", label: "Canvases", icon: CANVASES_ICON },
     { href: "/ai-models", label: "AI Models", icon: AI_MODELS_ICON, extra: residentDot },
     { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
@@ -348,7 +374,12 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   // The trigger (and its rail icon) is the only sidebar chrome that can show
   // "you are on one of the menu's pages" — highlight it on any of them.
-  const prefsActive = menuEntries.some((e) => e !== "separator" && e.href === pathname);
+  // ...except a page primary nav is ALSO showing: the Tasks note above rejects
+  // lighting a row and the Preferences trigger over one destination, and
+  // Canvases is listed in both places whenever the reader is signed in.
+  const prefsActive = menuEntries.some(
+    (e) => e !== "separator" && e.href === pathname && !(canvasesLoggedIn && e.href === "/canvases")
+  );
 
   // Owned here, not inside either trigger, because the popover must stay
   // mounted whichever trigger (expanded row vs. collapsed rail icon) opened
@@ -378,6 +409,19 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       active: tasksActive,
       badge: tasksDot,
     },
+    // Same gate and same order as the expanded row below — a row that exists
+    // only until you collapse the sidebar is a destination people lose.
+    ...(canvasesLoggedIn
+      ? [
+          {
+            key: "canvases",
+            label: "Canvases",
+            icon: CANVASES_ICON,
+            href: "/canvases",
+            active: canvasesActive,
+          },
+        ]
+      : []),
     {
       key: "preferences",
       label: "Preferences",
@@ -415,8 +459,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             label="Tasks"
             icon={SCHEDULED_ICON}
             active={tasksActive}
+            extra={tasksDot}
             trailing={tasksTrailing}
           />
+          {canvasesLoggedIn && (
+            <NavItem
+              href="/canvases"
+              id="canvases-link"
+              label="Canvases"
+              icon={CANVASES_ICON}
+              active={canvasesActive}
+            />
+          )}
         </div>
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">

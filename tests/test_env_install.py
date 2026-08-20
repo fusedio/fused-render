@@ -2209,6 +2209,514 @@ def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypa
 
 
 @requires_fused
+def test_a_read_only_project_syncs_in_a_mirror_beside_the_venv(tmp_path, monkeypatch):
+    """`uv sync` WRITES `uv.lock` into the directory it runs in.
+
+    A project folder that cannot be written to therefore failed the sync outright
+    — `failed to write to file .../uv.lock: Read-only file system (os error 30)`,
+    no environment built. Which is every AI model download on the packaged Linux
+    and Windows builds: the runner folders ship inside the app, the AppImage runs
+    from a read-only squashfs mount, and a `Program Files` install is not
+    user-writable. The venv, cache and interpreter are unchanged; only the
+    directory uv is allowed to litter moves.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_ro")
+    seen = {}
+
+    def _fake_run(cmd, **kw):
+        seen["cwd"] = kw.get("cwd")
+        seen["env"] = kw.get("env")
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+    finally:
+        os.chmod(proj, 0o755)
+
+    mirror = venv_dir + ".src"
+    assert seen["cwd"] == mirror, "the sync ran where uv cannot write its lock"
+    with open(os.path.join(mirror, "pyproject.toml"), encoding="utf-8") as fh:
+        mirrored = fh.read()
+    with open(os.path.join(proj, "pyproject.toml"), encoding="utf-8") as fh:
+        assert mirrored == fh.read(), "the mirror must declare what the project does"
+    # The environment is the same one either way.
+    assert seen["env"]["UV_PROJECT_ENVIRONMENT"] == venv_dir
+
+
+@requires_fused
+def test_a_writable_project_gets_no_mirror(tmp_path, monkeypatch):
+    """The mirror is a fallback, not a layer: a user's folder syncs in itself.
+
+    The lock uv writes there is source and belongs in the user's tree (MD-7 puts
+    only DERIVED state in the home dir), so a mirror for a writable folder would
+    quietly stop that folder ever gaining a lock to commit.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_rw")
+    seen = {}
+
+    def _fake_run(cmd, **kw):
+        seen["cwd"] = kw.get("cwd")
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+
+    assert seen["cwd"] == proj
+    assert not os.path.exists(venv_dir + ".src")
+
+
+def _seed_mirror(proj, mirror, *, lock, manifest="same"):
+    """A mirror left behind by an earlier build: its lock, and its record of the
+    manifest that lock was resolved against.
+
+    `manifest="same"` copies the project's current declaration, which is the state
+    after any successful build; `"stale"` writes something else, standing in for a
+    release that edited the manifest since. The mirror's manifest copy IS that
+    record — `_sync_root` compares it byte-for-byte and expires the lock on a
+    difference — so a test that seeds a lock without one is not describing any
+    state the worker can actually produce.
+    """
+    os.makedirs(mirror, exist_ok=True)
+    with open(os.path.join(mirror, "uv.lock"), "w", encoding="utf-8") as fh:
+        fh.write(lock)
+    with open(os.path.join(proj, "pyproject.toml"), encoding="utf-8") as fh:
+        current = fh.read()
+    with open(os.path.join(mirror, "pyproject.toml"), "w", encoding="utf-8") as fh:
+        fh.write(current if manifest == "same" else manifest)
+
+
+@requires_fused
+def test_the_mirror_keeps_the_lock_it_RESOLVED_last_time(tmp_path, monkeypatch):
+    """Which is the reason the mirror is a directory that persists at all.
+
+    A read-only folder ships no lock and can never gain one, so without this every
+    rebuild of a bundled runner re-resolves ctranslate2/torch from PyPI and can
+    pick up versions no release ever tested. Kept here, the first build's
+    resolution is what later builds reconcile against.
+
+    The manifest is UNCHANGED here, which is the condition: this is the
+    rebuild-after-repair case (D212 removed a venv whose base interpreter had
+    gone), where nothing about the declaration moved and re-resolving would only
+    risk picking different versions for the same request.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    mirror = venv_dir + ".src"
+    _seed_mirror(proj, mirror, lock="version = 1  # what the first build resolved\n")
+    worker = _worker_module("_env_install_worker_mirror_lock")
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+    finally:
+        os.chmod(proj, 0o755)
+
+    with open(os.path.join(mirror, "uv.lock"), encoding="utf-8") as fh:
+        assert "the first build resolved" in fh.read()
+
+
+@requires_fused
+def test_a_lock_the_project_SHIPS_wins_over_the_mirrors(tmp_path, monkeypatch):
+    """Source beats derived, the same way the manifest does.
+
+    A runner folder that commits a `uv.lock` is stating the versions it was tested
+    at, and a lock left over from an earlier release's own resolution must not
+    outrank it.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    with open(os.path.join(proj, "uv.lock"), "w", encoding="utf-8") as fh:
+        fh.write("version = 1  # shipped with the app\n")
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    mirror = venv_dir + ".src"
+    # Manifest unchanged, so the mirror's lock is one the expiry rule would KEEP:
+    # what overwrites it here is the shipped lock and nothing else.
+    _seed_mirror(proj, mirror, lock="version = 1  # left over from a previous release\n")
+    worker = _worker_module("_env_install_worker_shipped_lock")
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+    finally:
+        os.chmod(proj, 0o755)
+
+    with open(os.path.join(mirror, "uv.lock"), encoding="utf-8") as fh:
+        assert "shipped with the app" in fh.read()
+
+
+@requires_fused
+def test_the_error_for_a_read_only_project_names_the_PROJECT(tmp_path, monkeypatch):
+    """Not the mirror, which is an implementation detail of the home dir.
+
+    uv's text is passed through verbatim because it names the real problem, and
+    the folder the user can act on is the runner/project folder — a message about
+    `~/.fused-render/venvs/<hash>.src` sends them to a directory they have never
+    heard of.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_ro_error")
+
+    def _fake_run(cmd, **kw):
+        class _P:
+            returncode = 1
+            stdout = ""
+            stderr = "error: no wheels available"
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        with pytest.raises(RuntimeError) as excinfo:
+            worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+    finally:
+        os.chmod(proj, 0o755)
+
+    assert proj in str(excinfo.value)
+    assert ".src" not in str(excinfo.value)
+
+
+def test_writability_is_a_probe_and_not_os_access(tmp_path, monkeypatch):
+    """`os.access(dir, os.W_OK)` is the wrong question, on the platform that matters.
+
+    On Windows it reports the read-only ATTRIBUTE, which says nothing about a
+    directory: an ACL-protected `C:\\Program Files\\FusedRender\\...` answers
+    "writable", so the sync would run in place and uv would still die — `Access is
+    denied. (os error 5)` instead of `Read-only file system (os error 30)`, the
+    same install failing for the same reason on the platform the mirror was added
+    for. POSIX ACLs and SELinux have the smaller version of the same hole.
+
+    `os.access` is forced to lie here, which is the only way to describe that from
+    a POSIX test box: the directory really cannot be written to, and the mirror has
+    to happen anyway.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    worker = _worker_module("_env_install_worker_probe")
+    monkeypatch.setattr(worker.os, "access", lambda *a, **kw: True)
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        root = worker._sync_root(proj, str(tmp_path / "home" / "venvs" / "abc"))
+    finally:
+        os.chmod(proj, 0o755)
+
+    assert root == str(tmp_path / "home" / "venvs" / "abc") + ".src", (
+        "os.access said writable and the sync went to a directory uv cannot write"
+    )
+
+
+def test_the_write_probe_leaves_nothing_behind(tmp_path):
+    """It runs in the user's own project folder on every single build.
+
+    A probe file that survived would be a file this app creates in a tree it
+    promised to touch only through the user's own edits (MD-7) — and one the user
+    would then see in `git status`.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    worker = _worker_module("_env_install_worker_probe_clean")
+    before = sorted(os.listdir(proj))
+
+    assert worker._writable_dir(proj) is True
+    assert sorted(os.listdir(proj)) == before
+
+
+@requires_fused
+def test_a_CHANGED_manifest_expires_the_mirrors_lock(tmp_path, monkeypatch):
+    """Otherwise a widened ceiling in a runner manifest never actually widens.
+
+    Bare `uv sync` re-resolves only what the manifest invalidates, and a WIDENED
+    range invalidates nothing: the runner manifests pin a pre-1.0 ceiling
+    (`mlx-lm>=0.31,<0.32`) and a release that moves it to `<0.33` leaves the
+    locked 0.31.x still satisfying the range. The rebuild would reinstall the
+    identical versions — packaged builds behaving as though a lock had been
+    committed and never refreshed, while dev checkouts (writable folder, no lock)
+    picked the new version up. Exactly inverted from what those manifests say they
+    rely on.
+
+    The mirror's own copy of the manifest is the record of what its lock was
+    resolved against, so a difference in those bytes is what expires it.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    mirror = venv_dir + ".src"
+    _seed_mirror(proj, mirror, lock="version = 1  # resolved against the old ceiling\n",
+                 manifest="[project]\nname = 'proj'\ndependencies = ['pip<1']\n")
+    worker = _worker_module("_env_install_worker_expire_lock")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        worker._sync_root(proj, venv_dir)
+    finally:
+        os.chmod(proj, 0o755)
+
+    assert not os.path.exists(os.path.join(mirror, "uv.lock")), (
+        "the mirror kept a lock resolved against a manifest that has since moved"
+    )
+    with open(os.path.join(mirror, "pyproject.toml"), encoding="utf-8") as fh:
+        mirrored = fh.read()
+    with open(os.path.join(proj, "pyproject.toml"), encoding="utf-8") as fh:
+        assert mirrored == fh.read(), "the record must be updated to what it now holds"
+
+
+@requires_fused
+def test_a_MISSING_project_folder_still_reports_itself_and_builds_no_mirror(tmp_path):
+    """"Not there" must not be diagnosed as "read-only".
+
+    The probe answers the same False for both — nothing can be created in a folder
+    that does not exist either — so without a separate question a vanished runner
+    folder would be mirrored, uv would run in an empty directory, and the verbatim
+    error PY-18 shows the user would complain about a missing `pyproject.toml`
+    instead of naming the path that is gone. The direct sync root puts the real
+    path on `cwd` and lets the spawn say so.
+    """
+    missing = str(tmp_path / "gone")
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_missing_project")
+
+    assert worker._sync_root(missing, venv_dir) == missing
+    assert not os.path.exists(venv_dir + ".src"), (
+        "a folder that does not exist was mirrored"
+    )
+
+
+@requires_fused
+def test_an_UNREADABLE_source_manifest_does_not_leave_a_vouched_for_lock(tmp_path, monkeypatch):
+    """The gate must not read "I could not read either file" as "they agree".
+
+    `_read_bytes` answers `None` for a file that is absent and for one it could not
+    read, and conflating those on the KEEPING side is the dangerous direction: an
+    unreadable source manifest compared against a mirror holding no record at all
+    would come out equal, and the lock nothing had ever been compared against would
+    be carried forward.
+
+    The build fails either way — the copy loop cannot read the manifest either — so
+    what this pins is that the failure does not leave a blessed lock behind for
+    whatever runs next. An absent record fails the gate on its own, before any
+    comparison, so the lock is gone before the copy is attempted.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    mirror = venv_dir + ".src"
+    os.makedirs(mirror, exist_ok=True)
+    lock = os.path.join(mirror, "uv.lock")
+    with open(lock, "w", encoding="utf-8") as fh:
+        fh.write("version = 1  # resolved against nobody knows what\n")
+    worker = _worker_module("_env_install_worker_unreadable_manifest")
+
+    manifest = os.path.join(proj, "pyproject.toml")
+    os.chmod(manifest, 0o000)
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj) or worker._read_bytes(manifest) is not None:
+            pytest.skip("running as root: read-only and unreadable are still readable")
+        with pytest.raises(OSError):
+            worker._sync_root(proj, venv_dir)
+    finally:
+        os.chmod(proj, 0o755)
+        os.chmod(manifest, 0o644)
+
+    assert not os.path.exists(lock), (
+        "an unreadable manifest was taken as agreement and the lock survived"
+    )
+
+
+@requires_fused
+def test_the_mirror_drops_a_file_the_source_STOPPED_shipping(tmp_path, monkeypatch):
+    """A withdrawn `.python-version` must not govern every later build forever.
+
+    The mirror only ever copied names that exist, so a release that removes a
+    runner's `.python-version` (or withdraws a `uv.lock` it used to commit) left
+    the old copy in place and the environment kept being built against a
+    declaration no source tree contains. The folder is read-only, so there is no
+    edit that could undo it, and the file sits in the home dir where no user will
+    ever look for it.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    mirror = venv_dir + ".src"
+    _seed_mirror(proj, mirror, lock="version = 1  # uv's own output\n")
+    with open(os.path.join(mirror, ".python-version"), "w", encoding="utf-8") as fh:
+        fh.write("3.10\n")  # shipped by the previous release, gone from this one
+    worker = _worker_module("_env_install_worker_drop_stale")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        worker._sync_root(proj, venv_dir)
+    finally:
+        os.chmod(proj, 0o755)
+
+    assert not os.path.exists(os.path.join(mirror, ".python-version"))
+    # `uv.lock` is the exemption and it is the whole point of the mirror: there the
+    # mirror holds uv's own output, which the source never has. Rule: a changed
+    # manifest expires it, an absent source file does not.
+    assert os.path.exists(os.path.join(mirror, "uv.lock"))
+
+
+@requires_fused
+def test_the_mirror_carries_uv_s_own_config_beside_the_manifest(tmp_path, monkeypatch):
+    """`uv.toml` is a resolution input, so leaving it out changes the answer.
+
+    A private index, an `exclude-newer`, build settings — configured beside the
+    manifest and simply not applying in the mirror, with nothing anywhere saying
+    why the resolution differs from the same folder's on a writable machine.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    with open(os.path.join(proj, "uv.toml"), "w", encoding="utf-8") as fh:
+        fh.write('index-url = "https://internal.example/simple"\n')
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_uv_toml")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        mirror = worker._sync_root(proj, venv_dir)
+    finally:
+        os.chmod(proj, 0o755)
+
+    with open(os.path.join(mirror, "uv.toml"), encoding="utf-8") as fh:
+        assert "internal.example" in fh.read()
+
+
+@requires_fused
+def test_a_bundled_venvs_sidecar_records_its_place_in_the_PACKAGE(tmp_path, monkeypatch):
+    """Not this launch's mount path, which no later launch can resolve.
+
+    `gc()` keeps a venv whose source is merely unreachable (an unplugged drive
+    looks the same), so an absolute path recorded for a folder inside an AppImage
+    reads as unreachable forever — a runner folder a release removes or renames
+    would strand a multi-gigabyte environment nothing could ever collect.
+    """
+    worker = _worker_module("_env_install_worker_sidecar_identity")
+    pkg = tmp_path / ".mount_FusedRaaaaaa" / "fused_render"
+    runner = _project(pkg / "ai" / "runners", name="faster_whisper", deps=["pip"])
+    monkeypatch.setattr(worker, "_PACKAGE_DIR", str(pkg))
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(runner, venv_dir, str(tmp_path / "cache"), "3.12")
+
+    with open(os.path.join(venv_dir, ".fused-source.json"), encoding="utf-8") as fh:
+        recorded = json.load(fh)["path"]
+    assert recorded == "<fused_render>/ai/runners/faster_whisper"
+
+
+@requires_fused
+def test_a_users_folder_still_gets_its_absolute_path_in_the_sidecar(tmp_path, monkeypatch):
+    """The identity only relativises what is genuinely inside the package.
+
+    A user's folder recorded as anything but its own path could not be checked for
+    deletion at all, and moving a folder is meant to orphan its venv (that is what
+    `gc` reclaims).
+    """
+    worker = _worker_module("_env_install_worker_sidecar_abspath")
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+
+    with open(os.path.join(venv_dir, ".fused-source.json"), encoding="utf-8") as fh:
+        assert json.load(fh)["path"] == proj
+
+
+@requires_fused
 def test_an_empty_interpreter_slot_means_the_workers_OWN_python(tmp_path, monkeypatch):
     """None has always meant "the backend's own interpreter", never a version.
 

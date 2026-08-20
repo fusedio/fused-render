@@ -1,9 +1,12 @@
 """Claude Code session transcripts, read off disk for the Explorer.
 
-Two endpoints, same on-disk source (~/.claude/projects/<encoded-cwd>/*.jsonl):
+Three endpoints, same on-disk source (~/.claude/projects/<encoded-cwd>/*.jsonl):
 
 * ``GET /api/claude-sessions`` — one row per real project *folder*, for the
-  homepage's "Claude sessions" tab.
+  exhaustive folder listing.
+* ``GET /api/claude-sessions/home`` — the newest project folders for Home. It
+  orders candidates by transcript mtime first, then opens at most one transcript
+  per project directory and stops as soon as Home's single row is full.
 * ``GET /api/claude-sessions/summaries`` — one row per *session*, for the
   React shell's Schedule page. Mirrors the bundled sessions inbox app
   (core_apps/sessions/sessions/sessions.py + core_apps/sessions/inbox.py):
@@ -111,6 +114,101 @@ def api_claude_sessions():
         for path, mtime in latest.items()
     ]
     folders.sort(key=lambda e: e["lastActive"], reverse=True)
+    return {"folders": folders}
+
+
+HOME_SESSION_LIMIT = 12
+
+
+def _transcripts_newest_first() -> list[tuple[float, str]]:
+    """All transcript paths ordered by mtime without opening their contents.
+
+    Establishing the true newest folders requires seeing every transcript's
+    cheap filesystem timestamp, and there is no coarser stat that could stand in
+    for the pass: Claude Code APPENDS to an existing transcript, which does not
+    touch the parent directory's own mtime, so a directory-level sweep would
+    rank a project by when a session was last STARTED there. The Home saving is
+    after this pass — one transcript OPENED per project directory, stopping as
+    soon as the row is full.
+
+    `os.scandir`, not glob + getmtime: the type and the stat come off the
+    directory read the walk is already doing, instead of a fresh path resolution
+    per name (~2x on this machine's 292-transcript store).
+    """
+    candidates: list[tuple[float, str]] = []
+    try:
+        with os.scandir(PROJECTS_DIR) as projects:
+            for project in projects:
+                try:
+                    if not project.is_dir():
+                        continue
+                    with os.scandir(project.path) as entries:
+                        for entry in entries:
+                            if not entry.name.endswith(".jsonl"):
+                                continue
+                            try:
+                                candidates.append(
+                                    (entry.stat().st_mtime, entry.path))
+                            except OSError:
+                                continue
+                # One unreadable project directory must not lose the rest.
+                except OSError:
+                    continue
+    except OSError:
+        # No projects dir (or it is not a directory): no sessions, not an error.
+        return candidates
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates
+
+
+@router.get("/api/claude-sessions/home")
+def api_home_claude_sessions(limit: int = HOME_SESSION_LIMIT):
+    """The newest unique, existing Claude project folders needed by Home.
+
+    At most ONE transcript is opened per project DIRECTORY. A directory name is
+    the encoded cwd, so every transcript inside it records the same one and the
+    newest answers for all of them; the older ones are file opens that can only
+    reproduce a cwd already in hand. That is what bounds the cost by directories
+    touched rather than by sessions held: measured on a 292-transcript store in
+    73 directories, filling a five-folder row went from 24 opens to 8 and a
+    twelve-folder row from 71 to 21 — and every one of those opens reads the head
+    of a file that can be multiple megabytes.
+
+    A directory counts as resolved only once a cwd has actually been READ, so a
+    truncated or headless newest transcript still falls through to the older
+    ones behind it rather than dropping the folder.
+
+    The per-cwd `seen` set stays on top of that, because the two dedupes are not
+    the same rule: the encoding is lossy (both "/" and "-" become "-"), so one
+    directory CAN hold transcripts from two real folders. This row shows the
+    newest of them; the exhaustive endpoint above reads every transcript and is
+    where both appear.
+    """
+    limit = max(1, min(limit, HOME_SESSION_LIMIT))
+    folders = []
+    seen: set[str] = set()
+    resolved_dirs: set[str] = set()
+    for mtime, jsonl_path in _transcripts_newest_first():
+        project_dir = os.path.dirname(jsonl_path)
+        if project_dir in resolved_dirs:
+            continue
+        cwd = _session_cwd(jsonl_path)
+        if not cwd:
+            continue
+        resolved_dirs.add(project_dir)
+        if cwd in seen:
+            continue
+        # Mark before the probe: repeated sessions for a stale folder cannot
+        # become valid during this one request and should not repeat the syscall.
+        seen.add(cwd)
+        if not os.path.isdir(cwd):
+            continue
+        folders.append({
+            "path": canonical_fs_path(cwd),
+            "lastActive": datetime.fromtimestamp(mtime, timezone.utc).isoformat(),
+        })
+        if len(folders) >= limit:
+            break
     return {"folders": folders}
 
 
@@ -436,12 +534,18 @@ def clear_triage(session_id: str) -> bool:
     """Take the filing back — drop `status` (and its stamp) from one session's
     record, keeping everything else in it. True when there was one to drop.
 
-    The Tasks router calls this when a task that was archived DOES SOMETHING
-    NEW: the way out of Archive is activity, not a gesture (there is no
-    unarchive control anywhere), so a message typed into an archived
-    conversation has to actually un-file it rather than be shown out of its lane
-    for one poll. See `_revived` there for which activity counts and why a run
-    that was already in flight when the filing happened does not.
+    TWO CALLERS in the Tasks router, and they are the two ways out of Archive:
+
+    * a task that was archived DOES SOMETHING NEW — a message typed into an
+      archived conversation has to actually un-file it rather than be shown out
+      of its lane for one poll. See `_revived` there for which activity counts,
+      and why a run already in flight when the filing happened does not.
+    * somebody drags the card out of the Archive lane (`api_task_unarchive`).
+      Which lane they dropped it on says nothing — the task lands wherever it
+      derives to — so that gesture has nothing to pass here either.
+
+    Both are the same one-line change to the same record, which is why it lives
+    here rather than in either caller.
 
     The record itself is NOT deleted — a note, a tag or a read mark on that
     session is somebody else's data and outlives the status the Board put on it.

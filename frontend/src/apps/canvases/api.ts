@@ -24,8 +24,20 @@ export interface CanvasEntry {
   n_udfs: number | null;
   /** Newest file mtime (epoch seconds) in the local clone; null when not cloned. */
   mtime: number | null;
-  /** Canvas preview image (presigned or public URL) from the server; null when none. */
+  /** The workbench's own code-UDF count (nodes minus sticky notes, widgets and
+   *  apps), for every canvas in the account whether cloned or not — the lite
+   *  listing already carries the node list, so it costs no round trip. Null
+   *  only on the external-CLI fallback path, which lists bare names. */
+  n_code_udfs?: number | null;
+  /** Canvas preview image URL, when it costs nothing to know: a public https
+   *  URL already in the list payload. A preview held in the private image
+   *  bucket arrives null here with `preview_pending` set — signing it is a
+   *  control-plane round trip per canvas, kept off the listing's critical path
+   *  (D364) and fetched by getCanvasPreviews once the cards are on screen. */
   preview_url: string | null;
+  /** This canvas has an uploaded preview whose URL still needs signing. Older
+   *  servers omit the field, so treat a missing value as false. */
+  preview_pending?: boolean;
   /** Control-plane last_updated (epoch seconds); null on the external-CLI fallback. */
   updated_at: number | null;
 }
@@ -48,6 +60,17 @@ export interface SyncStatus {
    *  instant one spawns, cleared only by that run's own completion (never a
    *  transcript-activity guess), so it's safe to gate a second spawn on. */
   fix_active: boolean;
+  /** A Claude session is live in this clone right now (a live claude
+   *  process, never a transcript-activity guess). Informational only — the
+   *  left-pane lock does NOT key off this: a live session with no edits yet
+   *  (a plain "hi") must not lock the workbench for the whole chat. See
+   *  push_state and `pulling` for what actually locks. */
+  agent_active: boolean;
+  /** A force-pull or three-way merge is writing to the clone's files right
+   *  now (the watcher's pull leg, under its _op_lock) — the other condition,
+   *  besides push_state pending/pushing, that locks the left pane: the
+   *  clone's files are moving on disk. */
+  pulling: boolean;
 }
 
 export const getCanvasesStatus = () => getJson<CanvasesStatus>("/api/canvases/status");
@@ -62,6 +85,14 @@ export const cancelLogin = () =>
 
 export const listCanvases = () =>
   getJson<{ canvases: CanvasEntry[] }>("/api/canvases/list", GUARD);
+
+/** Presigned preview URLs for the given collection ids, signed in parallel
+ *  server-side. A missing or null entry just means "no preview" — the card
+ *  keeps its letter thumb. */
+export const getCanvasPreviews = (ids: string[]) =>
+  postJson<{ previews: Record<string, string | null> }>("/api/canvases/previews", {
+    ids,
+  });
 
 export const createCanvas = (name: string) =>
   postJson<{ ok: boolean; name: string }>("/api/canvases/create", { name });

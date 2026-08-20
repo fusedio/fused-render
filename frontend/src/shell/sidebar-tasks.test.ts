@@ -203,6 +203,8 @@ describe("one poll behind both readers", () => {
     expect(SCHEDULED).toContain("publishTasks(r.tasks ?? [])");
     expect(SIDEBAR).toContain("useTasksPulse()");
     expect(SIDEBAR).not.toContain("getTasks(");
+    expect(STORE).toContain("getTasksPulse()");
+    expect(STORE).not.toContain("getTasks()");
     // Polling belongs to the subscribers: it starts with the first reader and
     // stops with the last, like aiRuntime's.
     expect(STORE).toContain("listeners.add(setCurrent)");
@@ -297,9 +299,8 @@ describe("one poll behind both readers", () => {
 });
 
 describe("the Tasks entry's two marks", () => {
-  it("draws ONE dot on the collapsed rail, yellow winning over green", () => {
-    // The rail has no label, so the whole signal is a dot on the icon — and it is
-    // one dot: two in a corner is not a state this can draw, and "something is
+  it("draws ONE dot on the icon, yellow winning over green", () => {
+    // One dot: two in a corner is not a state this can draw, and "something is
     // running" is the fact that outranks "something is ready".
     expect(SIDEBAR).toContain("sidebar-rail-dot is-running");
     expect(SIDEBAR).toContain("sidebar-rail-dot is-unread");
@@ -320,13 +321,23 @@ describe("the Tasks entry's two marks", () => {
     expect(dot.slice(0, dot.indexOf("}"))).toContain("position: absolute");
   });
 
-  it("draws NO dot when expanded — words instead, in the same hues", () => {
-    // A dot on the icon plus a readout beside the label is one fact stated twice.
+  it("wears the SAME dot when expanded, and adds words to it", () => {
+    // The dot is the constant across both modes (Akshil, 2026-08-18): the icon is
+    // where the eye lands at either width, so a mark that shows collapsed and
+    // vanishes on expand reads as the state going away. Same node, both slots —
+    // the rail's `badge` and the row's `extra`.
+    expect(SIDEBAR).toContain("badge: tasksDot");
+    expect(SIDEBAR).toContain("extra={tasksDot}");
+    expect(FRAME).toContain("{extra}");
+    // And the glyph's own span anchors it there, or it resolves against the
+    // viewport and drags a scrollbar in with it (account.css).
+    expect(SIDEBAR_CSS).toMatch(/\.sidebar-item \.icon \{[^}]*position: relative/);
+    expect(SIDEBAR_CSS).toContain(".sidebar-item .icon > .sidebar-rail-dot {");
+    // Expanded ADDS words beside the dot rather than trading it for them.
     const trailing = SIDEBAR.slice(
       SIDEBAR.indexOf("const tasksTrailing ="),
       SIDEBAR.indexOf("// Everything that is not primary nav"),
     );
-    expect(trailing).not.toContain("sidebar-rail-dot");
     expect(trailing).toContain("runningLabel(pulse.running)");
     // The chip reads the RAW state — no dismissal, no visit suppression: it says
     // what is waiting to be read until it is read.
@@ -436,5 +447,97 @@ describe("the Tasks entry's two marks", () => {
     expect(rm).toContain("animation: none");
     expect(rm).toContain("background-image: none");
     expect(rm).toContain("-webkit-text-fill-color: var(--status-progress)");
+  });
+});
+
+// -- the poke: finished in one surface, finished in the other -------------------
+// The queue card and the schedule's event poll both learn a run ended seconds
+// after it does; this store's own cadence is 10–30s and the Tasks page's 20s.
+// pokeTasks is the bridge, and these tests pin the two rules that make it safe:
+// it never fetches over a feeder, and every producer of "a run just ended"
+// actually calls it.
+
+const QUEUE_DOCK = readFileSync(join(SHELL, "QueueDock.tsx"), "utf8");
+const EVENTS = readFileSync(
+  join(SHELL, "../platform/lib/scheduleEvents.ts"),
+  "utf8",
+);
+const APP = readFileSync(join(SHELL, "App.tsx"), "utf8");
+const CHAT_TEMPLATE = readFileSync(
+  join(SHELL, "../../../fused_render/templates/claude/template.html"),
+  "utf8",
+);
+
+describe("pokeTasks", () => {
+  it("forwards to the feeder page instead of fetching over it", () => {
+    // While the Tasks page holds the feeder, this store must not call the
+    // server — that is the double-poll the feeder exists to prevent. The poke
+    // becomes a window event, and the PAGE's own reload publishes back.
+    expect(STORE).toMatch(
+      /export function pokeTasks\(\) \{\s*\n\s*if \(feeders > 0\) \{\s*\n\s*window\.dispatchEvent\(new Event\(TASKS_POKE_EVENT\)\);\s*\n\s*return;/,
+    );
+  });
+
+  it("polls itself immediately when unfed — through the guarded poll()", () => {
+    // poll(), not a bare fetch: the in-flight and generation guards are what
+    // stop a poke's answer landing over a fresher publish.
+    expect(STORE).toMatch(/if \(listeners\.size === 0\) return;\s*\n\s*void poll\(\);/);
+  });
+
+  it("the Tasks page listens for the poke with its own reload", () => {
+    expect(SCHEDULED).toContain("TASKS_POKE_EVENT");
+    expect(SCHEDULED).toMatch(/window\.addEventListener\(TASKS_POKE_EVENT, reload\)/);
+    expect(SCHEDULED).toMatch(/window\.removeEventListener\(TASKS_POKE_EVENT, reload\)/);
+  });
+
+  it("the queue card pokes when a scheduled run's job starts or goes terminal", () => {
+    // Compared snapshot-to-snapshot (scheduleRunsEnded / scheduleRunsStarted)
+    // so mounting onto a registry full of old rows fires nothing — including
+    // the slot's initial [] echo, which must not become the baseline.
+    expect(QUEUE_DOCK).toMatch(/scheduleRunsEnded\(prevJobs\.current, next\)/);
+    expect(QUEUE_DOCK).toMatch(/scheduleRunsStarted\(prevJobs\.current, next\)/);
+    expect(QUEUE_DOCK).toMatch(/if \(news\) pokeTasks\(\);/);
+    expect(QUEUE_DOCK).toMatch(/sawEcho\.current = true;/);
+  });
+
+  it("a done/failed schedule event pokes too — handed down from the shell", () => {
+    // platform may not import shell (check-boundaries), so scheduleEvents takes
+    // the callback and App supplies the store's pokeTasks.
+    expect(EVENTS).toMatch(
+      /fresh\.some\(\(e\) => e\.kind === "done" \|\| e\.kind === "failed"\)/,
+    );
+    expect(EVENTS).not.toContain("@shell/");
+    expect(APP).toContain("useScheduleEvents(pokeTasks)");
+  });
+
+  it("an interactive chat turn pokes too — through the storage stamp", () => {
+    // Interactive turns create no sys:schedule job and no schedule event, so
+    // neither producer above fires for them (Akshil, 2026-08-19: "the task's
+    // unread status does not update"). The chat template stamps a localStorage
+    // key at turn start and turn end; the chat is its own iframe document, so
+    // every OTHER document — the shell around it, a Tasks page in another
+    // window — receives the `storage` event and pokes.
+    expect(STORE).toContain('CHAT_ACTIVITY_KEY = "fused-render:chat-activity"');
+    expect(STORE).toMatch(/if \(key === CHAT_ACTIVITY_KEY\) pokeTasks\(\);/);
+    expect(APP).toMatch(/pokeOnChatActivity\(e\.key\)/);
+    expect(APP).toMatch(/window\.addEventListener\("storage", onStorage\)/);
+    expect(APP).toMatch(/window\.removeEventListener\("storage", onStorage\)/);
+    // The template's half: one key, stamped at both ends of pollLoop — the one
+    // place a turn is ever in flight, which covers re-attached runs for free.
+    expect(CHAT_TEMPLATE).toContain('"fused-render:chat-activity"');
+    expect(CHAT_TEMPLATE).toMatch(
+      // Not adjacent any more: #653's generation comment sits between the
+      // chrome write and the stamp — the invariant is "stamps at loop START,
+      // before the first poll", not "on the very next line".
+      /setRunningUi\(true\);[\s\S]{0,700}noteChatActivity\(\);[\s\S]*?await fused\.runPython/,
+    );
+    expect(CHAT_TEMPLATE).toMatch(
+      // The end stamp sits after #653's seat-guarded chrome block — outside
+      // the guard, deliberately: the turn ended whichever loop owns the UI.
+      /setRunningUi\(false\);\s*\n\s*\}[\s\S]{0,300}noteChatActivity\(\);/,
+    );
+    // A changed value every time, or the second of two same-millisecond turn
+    // ends fires no event at all.
+    expect(CHAT_TEMPLATE).toMatch(/Date\.now\(\) \+ ":" \+ Math\.random\(\)/);
   });
 });

@@ -118,6 +118,51 @@ def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
+def _utf8_stdio() -> None:
+    """Read and write the MCP wire as UTF-8, whatever the machine's locale is.
+
+    The client on the other end of these pipes is Node: it writes
+    `JSON.stringify(message) + "\\n"`, which leaves non-ASCII UNESCAPED and goes
+    out as UTF-8. Python decodes a PIPE at the locale encoding, and that is
+    UTF-8 on macOS and on Linux (where a C/POSIX locale additionally turns
+    PEP 540 UTF-8 mode on) but the ANSI code page on Windows — cp1252 on a
+    typical Western install, which leaves 0x81/0x8D/0x8F/0x90/0x9D UNDEFINED.
+
+    Those five bytes are ordinary UTF-8 continuation bytes, so on Windows the
+    first typographic character in a tool payload killed this server outright:
+    `Write` an index.html containing a curly quote (U+201D is E2 80 9D) and the
+    read loop in `main` raised UnicodeDecodeError *before* the request was
+    parked. No card ever appeared in the chat, the CLI's pending `approve` call
+    died with the transport, and the turn went nowhere — "it just got stuck
+    writing index.html", with no prompt to answer and nothing in the run dir to
+    say why. Nothing about it was rare: model-written HTML is full of curly
+    quotes, en dashes and emoji.
+
+    Two halves ship, because either can be absent. agent.py stamps `PYTHONUTF8`
+    into this server's env (the CLI's MCP client passes an allowlist of env vars
+    plus that dict, so it has to be named there to survive at all); this is the
+    half that does not depend on the client forwarding an env, or on the config
+    having been written by a version of agent.py that names it.
+
+    `errors="replace"` on the way IN, deliberately: an undecodable byte costs
+    one character of a payload the user is about to read on a card, and dying
+    costs them the whole turn with no way to answer it. On the way OUT the JSON
+    is `ensure_ascii` today, so the encoding is belt and braces — but
+    `newline="\\n"` is not: a Windows text stream would otherwise turn the
+    framing newline into CRLF.
+
+    Never raises. A stream that has already been read cannot be reconfigured,
+    and `sys.stdout` can be None where there is no stdio at all; neither is a
+    reason to refuse to serve, and both are worth a line on stderr.
+    """
+    for stream, extra in ((sys.stdin, {"errors": "replace"}),
+                          (sys.stdout, {"newline": "\n"})):
+        try:
+            stream.reconfigure(encoding="utf-8", **extra)
+        except (AttributeError, ValueError, OSError) as exc:
+            _log("permission_server.py: could not force UTF-8 stdio (%s)" % exc)
+
+
 def _send(payload: dict) -> None:
     with _stdout_lock:
         sys.stdout.write(json.dumps(payload) + "\n")
@@ -522,6 +567,9 @@ def _serve_request(req_id, method: str, params: dict) -> None:
 
 
 def main() -> int:
+    # Before the first read of stdin, which is what fixes the encoding: a
+    # TextIOWrapper cannot be reconfigured once it has read anything.
+    _utf8_stdio()
     if not PERM_DIR:
         _log("permission_server.py: missing perm-dir argument")
         return 2

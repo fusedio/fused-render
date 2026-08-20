@@ -6,6 +6,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
+  downloadAppFile,
+  getAppEntry,
   rawUrl,
   resolveConditions,
   renameEntry,
@@ -68,7 +70,7 @@ import {
   type RevSelection,
 } from "@apps/explorer/lib/preview-rev";
 import { ModeMenu } from "@apps/explorer/BarMenu";
-import { SideToggleButton } from "@apps/explorer/SideChrome";
+import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
@@ -171,6 +173,61 @@ function CloneCommunityButton({ slug }: { slug: string }) {
     >
       {busy && <span className="mode-icon-spinner" />}
       {busy ? "Cloning…" : "Clone"}
+    </button>
+  );
+}
+
+// Export the containing app as a .fused file (SPEC §43 AF-4), shown only when
+// the previewed page IS its folder's app entry — asked of the server (the one
+// shared entry rule, /api/apps/entry) rather than guessed from the filename.
+// You export from the app you're looking at; a plain html file gets nothing.
+function ExportAppButton({ fsPath }: { fsPath: string }) {
+  const [isEntry, setIsEntry] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // The server answers os.path.abspath (backslashes on Windows) while fsPath
+  // is the shell's canonical forward-slash form — same drive-letter-only
+  // normalization rule as the URL codec (a backslash in a POSIX filename must
+  // not be rewritten).
+  const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
+  useEffect(() => {
+    let alive = true;
+    setIsEntry(false);
+    const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
+    getAppEntry(dir)
+      .then((r) => {
+        if (alive) setIsEntry(r.entry != null && canon(r.entry) === fsPath);
+      })
+      .catch(() => {
+        /* indeterminate reads as "not an entry" — no button for nothing */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath]);
+  if (!isEntry) return null;
+  const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
+  const name = basename(dir);
+  const doExport = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await downloadAppFile(dir, name);
+    } catch (e) {
+      pushToast({ msg: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className="bar-ctl bar-ctl-bordered"
+      title={"Export " + name + " as a single .fused app file"}
+      onClick={doExport}
+      disabled={busy}
+    >
+      {busy && <span className="mode-icon-spinner" />}
+      {busy ? "Exporting…" : "Export App"}
     </button>
   );
 }
@@ -1172,6 +1229,11 @@ function TemplatePreview({
       {/* Showcase app: Clone copies it into Fused/local so catalog refreshes
           never touch your copy. */}
       {communitySlug && !stat.is_dir && <CloneCommunityButton slug={communitySlug} />}
+      {/* The containing app as one .fused file (SPEC §43 AF-4) — rendered only
+          when this page is its folder's app entry (the component asks the
+          server). Embed mode hides the whole header/topbar, so an opened
+          .fused app never shows it. */}
+      {!stat.is_dir && <ExportAppButton fsPath={fsPath} />}
       {/* One mode control per view, and for an explorer FOLDER it is the
           preview pane's, not this one. The pane header carries a ModeMenu of
           its own beside the previewed row (ListingPreviewPane), so a folder
@@ -1448,6 +1510,14 @@ function TemplatePreview({
           />,
           sideSlot
         )}
+      {/* And when it is SHUT, the seam it left behind, into the same slot: drag
+          the split's right edge to pull the column back (SideChrome's
+          SideReopenEdge, which argues why a gesture is allowed here when a second
+          button would not be). Gated on exactly what the opener button is gated
+          on — a file with no companion at all gets no edge, because there would
+          be nothing on the other side of it. */}
+      {sideTargetEntry && !activeSide && sideSlot &&
+        createPortal(<SideReopenEdge onOpen={toggleSide} />, sideSlot)}
       {fileMenu.overlays}
     </>
   );

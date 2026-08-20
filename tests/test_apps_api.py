@@ -1,7 +1,8 @@
-"""The Home view's apps backend (server/routers/apps.py): GET /api/apps lists
-the workspace's app folders (entry = the single direct-child .html), and
-POST /api/apps/new scaffolds a folder from the app starter kit and optionally
-starts a detached Claude session on its index.html.
+"""The apps backend (server/routers/apps.py): GET /api/apps lists the
+workspace's app folders (entry = the single direct-child .html), GET
+/api/apps/home hydrates recents before falling back to that listing, and POST
+/api/apps/new scaffolds a folder from the app starter kit and optionally starts
+a detached Claude session on its index.html.
 
 Apps live one to three levels under the workspace (app_listing.workspace_apps),
 and a tag is the first path segment — there is no registry, so these tests cover
@@ -318,7 +319,7 @@ def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     assert r.json()["session_error"] is None
     assert r.json()["run_id"] == "run-42"   # the UI can attach to the live run
     # The scaffolding session starts on the app FOLDER (claude agent),
-    # so its sidecar lands where the split view lists sessions from.
+    # so its transcript lands where the split view lists sessions from.
     assert seen["target"] == str(workspace / "local" / "demo")
     assert seen["prompt"] == "build a todo app"
 
@@ -483,6 +484,112 @@ def test_reopening_updates_opened_at_not_duplicates(
     assert isinstance(apps[0]["opened_at"], float)
 
 
+# ----------------------------------------- Home's recent-first bounded listing
+
+def test_home_hydrates_recents_without_scanning_the_workspace(
+        client, workspace, recents_home, tmp_path, monkeypatch):
+    """A returning Home visit pays for explicit recent paths only. Workspace
+    and registered recents share one newest-first row, and filling that row is
+    the gate that keeps the exhaustive discovery walk unreachable."""
+    local = _app_dir(workspace, "local-recent")
+    external = tmp_path / "outside" / "linked-recent"
+    external.mkdir(parents=True)
+    (external / "index.html").write_text(
+        '<html><head><meta name="fused-app" /></head></html>'
+    )
+    assert client.post(
+        "/api/apps/recents/open", json={"path": str(local)},
+        headers={"X-Fused": "1"},
+    ).json() == {"recorded": True}
+    time.sleep(0.002)  # make the cross-store order observable on all filesystems
+    assert client.post(
+        "/api/apps/recents/open", json={"path": str(external)},
+        headers={"X-Fused": "1"},
+    ).json() == {"recorded": True}
+
+    def unexpected_scan():
+        raise AssertionError("warm Home must not scan the workspace")
+
+    def unexpected_mtime_sweep(_path):
+        raise AssertionError("opened recents do not need fallback mtimes")
+
+    monkeypatch.setattr(apps_mod, "_workspace_apps", unexpected_scan)
+    monkeypatch.setattr(app_listing, "dir_updated_at", unexpected_mtime_sweep)
+    r = client.get("/api/apps/home", params={"limit": 2})
+    assert r.status_code == 200
+    assert [a["path"] for a in r.json()["apps"]] == [str(external), str(local)]
+
+
+def test_home_registry_limit_counts_only_valid_open_timestamps(
+        client, workspace, recents_home, tmp_path, monkeypatch):
+    """A corrupt linked-app timestamp is not one of Home's recent slots.
+
+    The registry is user-writable. A valid app after the corrupt row must still
+    fill the requested row, keeping the workspace discovery fallback cold.
+    """
+    from fused_render import registered_apps
+
+    corrupt = tmp_path / "outside" / "corrupt-open"
+    valid = tmp_path / "outside" / "valid-open"
+    for folder in (corrupt, valid):
+        folder.mkdir(parents=True)
+        (folder / "index.html").write_text(
+            '<html><head><meta name="fused-app" /></head></html>'
+        )
+    registered_apps.write_entries([
+        {"path": str(corrupt), "openedAt": "not-a-date"},
+        {"path": str(valid), "openedAt": "2026-08-18T12:00:00+00:00"},
+    ])
+
+    def unexpected_scan():
+        raise AssertionError("the later valid linked recent fills Home's row")
+
+    monkeypatch.setattr(apps_mod, "_workspace_apps", unexpected_scan)
+    apps = client.get("/api/apps/home", params={"limit": 1}).json()["apps"]
+    assert [app["path"] for app in apps] == [str(valid)]
+
+
+def test_home_falls_back_to_discovery_and_keeps_showcase(
+        client, workspace, recents_home, monkeypatch):
+    """An incomplete recents row triggers the existing walk. Showcase is an
+    ordinary workspace tag, so an unopened showcase app remains a fallback
+    card rather than disappearing behind the optimization."""
+    recent = _app_dir(workspace, "recent")
+    showcase = _app_dir(workspace, "starter", tag="showcase")
+    assert client.post(
+        "/api/apps/recents/open", json={"path": str(recent)},
+        headers={"X-Fused": "1"},
+    ).json() == {"recorded": True}
+
+    real_scan = apps_mod._workspace_apps
+    calls = 0
+
+    def counted_scan():
+        nonlocal calls
+        calls += 1
+        return real_scan()
+
+    monkeypatch.setattr(apps_mod, "_workspace_apps", counted_scan)
+    apps = client.get("/api/apps/home", params={"limit": 2}).json()["apps"]
+    assert calls == 1
+    assert [a["path"] for a in apps] == [str(recent), str(showcase)]
+
+
+def test_home_falls_back_when_stale_recents_do_not_fill_the_row(
+        client, workspace, recents_home):
+    """Deleted recent folders are skipped, then discovery repairs the row."""
+    discovered = _app_dir(workspace, "discovered")
+    recents_home.mkdir(parents=True, exist_ok=True)
+    (recents_home / "app_recents.json").write_text(json.dumps({
+        "entries": [{
+            "path": "local/deleted",
+            "openedAt": "2026-08-18T12:00:00+00:00",
+        }]
+    }))
+    apps = client.get("/api/apps/home", params={"limit": 1}).json()["apps"]
+    assert [a["path"] for a in apps] == [str(discovered)]
+
+
 # ---------------------------------------------------- the fork-safe spawn seam
 
 def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
@@ -541,7 +648,7 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     # model output) raised UnicodeDecodeError instead of returning a run_id.
     assert seen["kwargs"]["encoding"] == "utf-8"
     assert seen["kwargs"]["errors"] == "replace"
-    assert started_threads  # the sidecar-recording poll thread was kicked off
+    assert started_threads  # the session-recording poll thread was kicked off
 
 
 def test_spawn_helper_failure_reports_why(tmp_path, workspace, monkeypatch):
@@ -724,8 +831,8 @@ def test_claude_is_the_selectable_chat_mode_for_html():
 
 def test_claude_template_boots_into_chat_from_a_bare_run_param():
     """The page must resume a run it did not start itself: its boot reads the
-    `run` param, enters chat, and polls — no session_id needed (the sidecar
-    entry lands seconds later, once claude reports its id).
+    `run` param, enters chat, and polls — no session_id needed (the id lands in
+    the run dir seconds later, once claude reports it).
 
     Retargeted from the deleted plain chat template to the split view (which now
     carries the `claude` name): the POST always spawned through the chat agent on
@@ -786,9 +893,10 @@ def test_poll_serves_a_run_started_by_the_server(tmp_path, workspace, monkeypatc
     assert data["message"] == "make it red"
     assert "on it" in (data.get("text") or "")
     assert data.get("session_id") == "sid-live"
-    # ...and the session lists in the entry file's sidecar, so a later visit
-    # without a `run` param still finds the conversation
-    assert agent._sessions(str(entry))["sessions"][0]["id"] == "sid-live"
+    # ...and the run records its session id, so a later visit without a `run`
+    # param can still match the conversation to its run (_live_run's session file)
+    with open(os.path.join(agent.RUNS, run_id, "session"), encoding="utf-8") as fh:
+        assert fh.read().strip() == "sid-live"
 
 
 # --------------------------------------------- opens recorded by GET /render

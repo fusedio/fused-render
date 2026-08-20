@@ -309,6 +309,16 @@ DOCUMENT_TYPES = [
         "LSItemContentTypes": ["io.fused.render.bookmark"],
     },
     {
+        # `.fused` is our own single-file app format (SPEC §43, D385): declare
+        # the UTI below and claim Owner rank so a Finder double-click always
+        # opens FusedRender on the /openfused confirm page.
+        "CFBundleTypeName": "FusedRender app",
+        "CFBundleTypeRole": "Viewer",
+        "LSHandlerRank": "Owner",
+        "CFBundleTypeExtensions": ["fused"],
+        "LSItemContentTypes": ["io.fused.render.app"],
+    },
+    {
         "CFBundleTypeName": "Apache Parquet data",
         "CFBundleTypeRole": "Viewer",
         "LSHandlerRank": "Default",  # no other app owns .parquet
@@ -513,7 +523,17 @@ OPTIONS = {
                 "UTTypeDescription": "FusedRender bookmark",
                 "UTTypeConformsTo": ["public.json"],
                 "UTTypeTagSpecification": {"public.filename-extension": ["bookmark"]},
-            }
+            },
+            # Same posture for `.fused` (SPEC §43, D385): our own format, the
+            # UTI exported so the Owner rank above binds reliably. Physically
+            # a zip, but conforming to public.data (not public.zip-archive)
+            # keeps Archive Utility and friends from claiming it.
+            {
+                "UTTypeIdentifier": "io.fused.render.app",
+                "UTTypeDescription": "FusedRender app",
+                "UTTypeConformsTo": ["public.data"],
+                "UTTypeTagSpecification": {"public.filename-extension": ["fused"]},
+            },
         ],
         # macOS shows these strings in the TCC permission prompt when the app
         # first reads a file under a protected folder (the app browses the

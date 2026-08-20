@@ -24,20 +24,75 @@ WORKER_PATH = str(
 )
 
 
-@pytest.fixture()
-def worker(monkeypatch):
+class FakeMlxCore(types.ModuleType):
+    """`mlx.core` as this runner uses it: two DEVICES and their STREAMS.
+
+    The same double `tests/test_ai_mflux_worker.py` and
+    `tests/test_ai_mlx_whisper_worker.py` keep, with the same two-device shape
+    `mflux_image`'s copy needed: the default stream is per (thread, DEVICE)
+    from mlx 0.32, so pinning only `default_device()` still aborts on the CPU
+    half of the graph.
+    """
+
+    def __init__(self, **extra):
+        super().__init__("mlx.core")
+        self.cpu = "CPU"
+        self.gpu = "GPU"
+        #: the device of every `new_thread_unsafe_stream` call, in order.
+        self.made = []
+        #: (thread name, stream) for every `set_default_stream` call.
+        self.pinned = []
+        self._lock = threading.Lock()
+        for name, value in extra.items():
+            setattr(self, name, value)
+
+    def default_device(self):
+        return self.gpu
+
+    def new_thread_unsafe_stream(self, device):
+        with self._lock:
+            self.made.append(device)
+            return f"SHARED-{device}-STREAM"
+
+    def set_default_stream(self, stream):
+        with self._lock:
+            self.pinned.append((threading.current_thread().name, stream))
+
+
+def load_worker(monkeypatch, mlx_core=None):
+    """A fresh import of the mlx-lm worker, `worker_base` primed in
+    `sys.modules` exactly as `tests/test_ai_mlx_whisper_worker.py`'s
+    `load_worker` does — the runner finds its base off `sys.path` in an
+    interpreter of its own, so importing it the packaged way
+    (`fused_render.ai.runners.…`) would be testing an import that never ships.
+    """
     base = types.ModuleType("worker_base")
     base.CANCEL = threading.Event()
     base.download_snapshot = lambda model_id, **kw: f"/snapshots/{model_id}"
     base.serve = lambda **kw: None
-
     monkeypatch.setitem(sys.modules, "worker_base", base)
+    # `mlx.core` is no longer only a version-skew concern of `memory()`: `load`
+    # and `generate` both pin this process's shared streams (`_pin_stream`), so
+    # a test that left it out would be testing an import that cannot happen in
+    # production. A caller may still hand in its own — an mlx too old to have
+    # thread-local streams, say — and gets exactly that.
+    if mlx_core is None:
+        mlx_core = FakeMlxCore()
+    mlx = types.ModuleType("mlx")
+    mlx.core = mlx_core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
     spec = importlib.util.spec_from_file_location("mlx_text_worker_under_test",
                                                   WORKER_PATH)
     assert spec is not None and spec.loader is not None, WORKER_PATH
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture()
+def worker(monkeypatch):
+    return load_worker(monkeypatch)
 
 
 def test_an_unimportable_runner_environment_is_named_as_the_cause(worker, monkeypatch):
@@ -176,3 +231,69 @@ def test_both_terminal_frames_carry_the_prompt_count(worker, monkeypatch):
         worker_base.CANCEL.clear()
     assert frames[-1]["cancelled"] is True
     assert frames[-1]["input_tokens"] == 3
+
+
+# -- the MLX stream pin, shared with mlx_whisper and mflux_image --------------
+
+
+def _fake_mlx_lm(monkeypatch, responses=()):
+    mlx_lm = types.ModuleType("mlx_lm")
+    mlx_lm.load = lambda path: ("MODEL", _Tokenizer())
+    mlx_lm.stream_generate = lambda *a, **kw: iter(responses)
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda **kw: object()
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+
+
+def test_the_load_and_the_generate_share_ONE_mlx_stream_PER_DEVICE(monkeypatch):
+    """From mlx 0.32 the default stream belongs to the THREAD that made it, and
+    an unevaluated array forced anywhere else throws
+    `std::runtime_error("There is no Stream(gpu, 1) in current thread")` out of
+    `metal::get_command_encoder` — an UNCAUGHT C++ exception, the same one
+    `mlx_whisper` and `mflux_image` already had to design around. `load` runs
+    on `worker_base.serve`'s bring-up thread, which then exits, and `generate`
+    arrives on a fresh `ThreadingTCPServer` request thread — precisely the
+    shape that trips it, and precisely why switching models (which respawns
+    this worker as a brand-new process) reproduces the crash on the very next
+    message: that message is the first time any thread besides the bring-up
+    thread touches the new model's weights.
+    """
+    mlx_core = FakeMlxCore()
+    _fake_mlx_lm(monkeypatch)
+    worker = load_worker(monkeypatch, mlx_core=mlx_core)
+
+    loader = threading.Thread(
+        target=worker.load, args=("mlx-community/Qwen3-8B-4bit", "/snapshots/qwen"),
+        name="bring-up")
+    loader.start()
+    loader.join()
+    request = threading.Thread(
+        target=worker.generate, args=({"prompt": "hi"}, lambda _f: None),
+        name="request-1")
+    request.start()
+    request.join()
+
+    threads = {name for name, _stream in mlx_core.pinned}
+    streams = {stream for _name, stream in mlx_core.pinned}
+    assert len(threads) > 1, f"only one thread pinned a stream: {mlx_core.pinned}"
+    assert streams == {"SHARED-CPU-STREAM", "SHARED-GPU-STREAM"}, mlx_core.pinned
+    # One stream per device for the whole process, not one per thread: a second
+    # would be a second owner, which is the thing being prevented.
+    assert sorted(mlx_core.made) == ["CPU", "GPU"], mlx_core.made
+
+
+def test_an_mlx_without_thread_local_streams_is_left_alone(monkeypatch):
+    """Streams were process-wide before 0.32 and there was nothing to pin. A
+    runner that insisted on the newer call would turn a version skew into a
+    worker that cannot generate at all."""
+    mlx_core = types.SimpleNamespace(cpu="CPU", gpu="GPU")
+    _fake_mlx_lm(monkeypatch)
+    worker = load_worker(monkeypatch, mlx_core=mlx_core)
+
+    worker.load("mlx-community/Qwen3-8B-4bit", "/snapshots/qwen")
+    frames = []
+    worker.generate({"prompt": "hi"}, frames.append)
+
+    assert frames[-1]["type"] == "done" and frames[-1]["ok"] is True, (
+        "the runner must still generate with no pin")

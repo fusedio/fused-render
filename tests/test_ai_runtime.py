@@ -107,7 +107,7 @@ FAKE_WORKER = textwrap.dedent('''
 
 
 # An image worker: loads instantly, answers /health, and writes a real (tiny)
-# PNG where the request tells it to. Stands in for diffusers_image/worker.py's
+# PNG where the request tells it to. Stands in for runners/torch_image.py's
 # CONTRACT — a single JSON reply and a file on disk — not for its pipeline.
 FAKE_IMAGE_WORKER = textwrap.dedent('''
     import argparse, http.server, json, os, socketserver, sys, threading, time
@@ -503,6 +503,7 @@ def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
     # Switching also moves the suggestion list, since a repo belongs to a
     # backend: the MLX conversion is unloadable by diffusers and vice versa.
     assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
+        "tonera/FLUX.2-klein-4B-int8-diffusers",
         "black-forest-labs/FLUX.2-klein-4B"]
 
     # Windows and Linux never see the MLX row at all, preference or none.
@@ -742,8 +743,8 @@ def test_the_unavailable_reason_names_EVERY_runner_not_just_the_first(monkeypatc
     # capability unservable on a machine MLX has already turned down.
     ghost = registry.Runner(
         code="transformers-text", capability=registry.TEXT_GENERATION,
-        folder="/nowhere", label="Transformers (PyTorch)",
-        short_label="Transformers")
+        folder="/nowhere", label="Transformers (CPU)",
+        short_label="Transformers (CPU)")
     monkeypatch.setattr(
         registry, "_RUNNERS", (registry.by_code("mlx-text"), ghost))
 
@@ -751,8 +752,12 @@ def test_the_unavailable_reason_names_EVERY_runner_not_just_the_first(monkeypatc
     assert "not built yet" in reason, reason
     # The SHORT name. This sentence is read wherever a capability has to
     # explain itself — a card, a job row, an API error — and none of those is
-    # the engine picker, which is the one surface that keeps the qualifier.
-    assert "Transformers" in reason, reason
+    # the engine picker, which is the one surface that keeps a PLATFORM
+    # qualifier. On a torch row the two names are now equal, because the
+    # accelerator is part of the short name too (a hardware variant is not
+    # identifiable without it), so what this pins is that the sentence names
+    # the engine at all and names it the way the rest of the app does.
+    assert "Transformers (CPU)" in reason, reason
     assert "(PyTorch)" not in reason, reason
     # The supervisor raises the same sentence rather than deriving its own.
     with pytest.raises(supervisor.SupervisorError) as caught:
@@ -814,25 +819,54 @@ def test_every_runner_has_both_names_and_they_differ_only_by_the_qualifier():
             f"plus a qualifier")
 
 
-def test_the_picker_keeps_the_qualifier_and_everything_else_drops_it():
-    """The one surface that shows a platform qualifier is the engine picker.
+#: The runners whose SHORT name keeps a bracketed qualifier, and why each does.
+#:
+#: A PLATFORM qualifier ("(Apple Silicon)", "(CTranslate2)") is dropped outside
+#: the picker: it tells someone sitting at the machine nothing they do not know.
+#: A HARDWARE qualifier is kept, because it is the only thing that tells three
+#: builds of one library apart, and the short name is what the Local card and
+#: `servingLine` print — three engines all reading "Diffusers" would render as
+#: one engine everywhere but the picker.
+#:
+#: An allow-list rather than a rule about brackets, so adding a row with a
+#: qualifier in its short name is a decision somebody writes down here.
+_QUALIFIED_SHORT_NAMES = {
+    "transformers-text": "(CPU)",
+    "transformers-text-cuda": "(CUDA)",
+    "transformers-text-rocm": "(ROCm)",
+    "diffusers-image": "(CPU)",
+    "diffusers-image-cuda": "(CUDA)",
+    "diffusers-image-rocm": "(ROCm)",
+}
 
-    That is the whole point of the split: on the picker the reader is CHOOSING
-    between backends and "(Apple Silicon)" is the difference between two
-    options; everywhere else they are being told what is happening on a machine
-    they are already sitting at.
+
+def test_the_picker_keeps_the_platform_qualifier_and_everything_else_drops_it():
+    """A PLATFORM qualifier lives on the picker; a HARDWARE one lives everywhere.
+
+    The original split: on the picker the reader is CHOOSING between backends and
+    "(Apple Silicon)" is the difference between two options, while everywhere else
+    they are being told what is happening on a machine they are already sitting
+    at. The per-hardware torch rows are the exception that proves what the rule
+    was about — "(CUDA)" is not a fact about the reader's machine, it is the
+    engine's IDENTITY, and dropping it makes three rows print the same name on
+    the card, the job row and the serving line.
     """
     engines = registry.describe_engines()
     choices = [c for row in engines for c in row["choices"]]
     assert any("(" in c["label"] for c in choices), choices
-    # …and the summary line beside it, and the runner rows every other surface
-    # reads, carry the short one.
+    for row in registry.describe():
+        expected = _QUALIFIED_SHORT_NAMES.get(row["code"])
+        if expected is None:
+            assert "(" not in row["shortLabel"], row
+        else:
+            assert row["shortLabel"].endswith(expected), row
+        assert row["label"].startswith(row["shortLabel"])
+    # …and the summary line under the picker reads whatever that runner's short
+    # name is, which is the same string the card shows.
     for row in engines:
         if row["effective"]:
-            assert "(" not in (row["effectiveShortLabel"] or "")
-    for row in registry.describe():
-        assert "(" not in row["shortLabel"], row
-        assert row["label"].startswith(row["shortLabel"])
+            runner = registry.by_code(row["effective"])
+            assert row["effectiveShortLabel"] == runner.short
 
 
 def test_every_suggested_model_names_a_runner_that_exists():
@@ -901,6 +935,653 @@ def test_apple_silicon_falls_back_to_transformers_when_mlx_is_unavailable(
 
     runner = registry.for_capability(registry.TEXT_GENERATION)
     assert runner is not None and runner.code == "transformers-text"
+
+
+# -- the accelerator probes -----------------------------------------------------
+#
+# Hardware is monkeypatched the way PLATFORM is monkeypatched everywhere above: a
+# fake sysfs and /dev on a tmp_path, with the module's path constants repointed
+# at it. That is why those constants exist — a probe that hard-coded
+# "/sys/class/kfd/…" could only be tested on a machine that happened to have the
+# hardware, which is the same reason `registry.platform` is asked at call time
+# rather than at import.
+
+
+def _fake_amd(monkeypatch, tmp_path, *, gpus=(120000,), kfd=True, render=True,
+              amd_card=False, topology=True, kfd_mode=0o666, render_mode=0o666,
+              foreign_render=None):
+    """A machine as the amdkfd driver would describe it, on tmp_path.
+
+    `gpus` is the raw `gfx_target_version` of each GPU node. **Node 0 is always
+    written as a CPU** (`cpu_cores_count 6, simd_count 0, gfx_target_version 0`),
+    because that is what a real machine with a working GPU reports and reading
+    only node 0 — decoding gfx0 and concluding nothing is supported — is the bug
+    this fixture exists to catch. A fixture whose first node were a GPU would let
+    that bug pass.
+
+    A render node is written in TWO places, because that is where a real one
+    lives: the device under `DRI_DIR` (what HIP opens, and what `os.access` is
+    asked about, so `render_mode` belongs to it) and the DRM class entry
+    `renderD*/device/vendor` that says which card it belongs to. `foreign_render`
+    adds a SECOND, world-openable node under another PCI vendor — `"0x8086"` for
+    an Intel iGPU — which is the hybrid machine the probe must not be satisfied
+    by.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+
+    nodes = tmp_path / "sys" / "kfd" / "topology" / "nodes"
+    if topology:
+        properties = ["cpu_cores_count 6\nsimd_count 0\ngfx_target_version 0\n"]
+        properties += [
+            f"cpu_cores_count 0\nsimd_count 64\ngfx_target_version {raw}\n"
+            for raw in gpus
+        ]
+        for index, text in enumerate(properties):
+            node = nodes / str(index)
+            node.mkdir(parents=True)
+            (node / "properties").write_text(text)
+    monkeypatch.setattr(registry, "KFD_NODES_DIR", str(nodes))
+
+    dev = tmp_path / "dev"
+    dev.mkdir(exist_ok=True)
+    kfd_path = dev / "kfd"
+    if kfd:
+        kfd_path.write_text("")
+        os.chmod(kfd_path, kfd_mode)
+    monkeypatch.setattr(registry, "KFD_DEVICE", str(kfd_path))
+
+    dri = dev / "dri"
+    dri.mkdir()
+    monkeypatch.setattr(registry, "DRI_DIR", str(dri))
+
+    drm = tmp_path / "sys" / "drm"
+    drm.mkdir(parents=True)
+    if amd_card:
+        device = drm / "card1" / "device"
+        device.mkdir(parents=True)
+        (device / "vendor").write_text("0x1002\n")
+    nodes_to_write = []
+    if render:
+        nodes_to_write.append(("renderD128", "0x1002", render_mode))
+    if foreign_render:
+        nodes_to_write.append(("renderD129", foreign_render, 0o666))
+    for name, vendor, mode in nodes_to_write:
+        (dri / name).write_text("")
+        os.chmod(dri / name, mode)
+        device = drm / name / "device"
+        device.mkdir(parents=True)
+        (device / "vendor").write_text(f"{vendor}\n")
+    monkeypatch.setattr(registry, "DRM_CLASS_DIR", str(drm))
+
+
+def _fake_nvidia(monkeypatch, tmp_path, *, control=True, gpus=("nvidia0",),
+                 uvm=True, unreadable=(), wsl=False):
+    """A Linux machine with (or without) NVIDIA's three device nodes.
+
+    `unreadable` names devices to create and then `chmod 0o000` — the container
+    started without `--gpus all`, which has the nodes and not the access. Named
+    per device rather than as one mode, because each of the three is a separate
+    `os.access` call and a mutation that deleted one of them would otherwise be
+    caught by another.
+
+    `wsl` writes WSL2's shape instead: `/dev/dxg` and a `libcuda.so.1` in the
+    guest's `/usr/lib/wsl/lib`, which is all a WSL2 machine has — none of the
+    nodes above exist there. The two WSL constants are repointed at tmp_path
+    unconditionally, so a test that does not ask for WSL cannot accidentally read
+    the host's `/dev`.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    dev = tmp_path / "dev"
+    dev.mkdir(exist_ok=True)
+    for name, present in [("nvidiactl", control), *[(g, True) for g in gpus],
+                          ("nvidia-uvm", uvm)]:
+        if present:
+            (dev / name).write_text("")
+            os.chmod(dev / name, 0o000 if name in unreadable else 0o666)
+    monkeypatch.setattr(registry, "NVIDIA_DEVICE_DIR", str(dev))
+    monkeypatch.setattr(registry, "NVIDIA_CONTROL_DEVICE", str(dev / "nvidiactl"))
+    monkeypatch.setattr(registry, "NVIDIA_UVM_DEVICE", str(dev / "nvidia-uvm"))
+
+    wsl_lib = tmp_path / "usr" / "lib" / "wsl" / "lib"
+    if wsl:
+        (dev / "dxg").write_text("")
+        wsl_lib.mkdir(parents=True)
+        (wsl_lib / "libcuda.so.1").write_text("")
+    monkeypatch.setattr(registry, "WSL_DXG_DEVICE", str(dev / "dxg"))
+    monkeypatch.setattr(registry, "WSL_CUDA_LIBRARY", str(wsl_lib / "libcuda.so.1"))
+
+
+def test_the_gfx_target_version_decoder_reads_minor_and_step_as_HEX_digits():
+    """`major * 10000 + minor * 100 + step`, with minor and step as HEX digits.
+
+    The one fact the whole ROCm probe rests on, and the one a reader gets wrong:
+    90010 is `gfx90a`, not `gfx9010`. A decimal render produces names that match
+    nothing in `ROCM_TARGETS`, so every AMD GPU would be refused as unsupported
+    — a failure that looks like a policy decision rather than a bug, which is
+    why the table is pinned rather than left to the code to imply.
+    """
+    assert {raw: registry.decode_gfx_target(raw) for raw in
+            (90000, 90010, 90402, 100300, 110501, 120000, 0)} == {
+        90000: "gfx900",
+        90010: "gfx90a",
+        90402: "gfx942",
+        100300: "gfx1030",
+        110501: "gfx1151",
+        120000: "gfx1200",
+        # A CPU node, which every machine has as node 0 — not a GPU called gfx0.
+        0: None,
+    }
+
+
+def test_every_supported_rocm_target_is_a_name_the_decoder_can_produce():
+    """The guard on the SET, which no other test can give.
+
+    `ROCM_TARGETS` is compared against the decoder's output, so a member the
+    decoder can never emit — `"gfx9010"` for the card that is really `gfx90a`,
+    the exact typo a decimal reading invites — is a GPU that is silently never
+    supported on any machine. Nothing else fails: the probe works, the reason
+    string is grammatical, and the card is simply always refused.
+
+    Producibility is asked over the plausible ISA majors rather than by
+    round-tripping each string, because a round-trip cannot see this: "gfx9010"
+    parses back to major 90 and returns itself. Major 90 is what makes it wrong.
+    """
+    producible = {
+        registry.decode_gfx_target(major * 10000 + minor * 100 + step)
+        for major in range(6, 13) for minor in range(16) for step in range(16)
+    }
+    assert registry.ROCM_TARGETS <= producible, (
+        sorted(registry.ROCM_TARGETS - producible))
+
+
+def test_a_supported_amd_gpu_is_offered_the_rocm_engines(monkeypatch, tmp_path):
+    _fake_amd(monkeypatch, tmp_path, gpus=(120000,))
+    for code in ("transformers-text-rocm", "diffusers-image-rocm"):
+        status = registry.by_code(code).available()
+        assert status.ok is True, (code, status.reason)
+
+
+def test_an_amd_gpu_the_rocm_wheel_cannot_target_is_refused(monkeypatch, tmp_path):
+    """The 6GB download that would die inside HIP, refused with a sentence.
+
+    gfx1010 (raw 100100) is a real card — an RX 5700 — and it is not in the
+    target list the pinned ROCm wheel was built for. Installing anyway costs the
+    user a multi-gigabyte fetch and then fails with "no kernel image is
+    available for execution", several frames below anything this app wrote.
+    """
+    _fake_amd(monkeypatch, tmp_path, gpus=(100100,))
+    status = registry.by_code("transformers-text-rocm").available()
+    assert status.ok is False
+    assert "gfx1010" in status.reason
+    assert "not supported by the ROCm build" in status.reason
+
+
+def test_one_supported_gpu_among_several_is_enough(monkeypatch, tmp_path):
+    """A machine can hold two AMD GPUs and ROCm only needs one it can target —
+    an integrated gfx1010-era part beside a discrete card being the ordinary
+    shape of that. This is also the case a node-0-only probe gets wrong twice
+    over, since node 0 is neither of them."""
+    _fake_amd(monkeypatch, tmp_path, gpus=(100100, 120000))
+    assert registry.by_code("diffusers-image-rocm").available().ok is True
+
+
+def test_a_kfd_reporting_no_gpu_nodes_names_the_container_case(monkeypatch, tmp_path):
+    """`/dev/kfd` present, topology readable, and every node a CPU.
+
+    That is a container started without `--device /dev/kfd --device /dev/dri`
+    passthrough (or with the device and no GPU behind it), and it is a different
+    sentence from "no AMD GPU" because the fix is on the outside of the
+    container.
+    """
+    _fake_amd(monkeypatch, tmp_path, gpus=())
+    status = registry.by_code("transformers-text-rocm").available()
+    assert status.ok is False
+    assert "CPU nodes only" in status.reason
+    assert "--device /dev/kfd" in status.reason
+
+
+def test_an_amd_gpu_with_no_kfd_device_says_the_driver_is_not_loaded(
+        monkeypatch, tmp_path):
+    """Two causes for one missing file, and the reasons must differ: an AMD GPU
+    with no `/dev/kfd` is an ACTION (`modprobe amdgpu`, or a reboot after a
+    driver update), which is why the probe falls back to the DRM class rather
+    than concluding there is no GPU."""
+    _fake_amd(monkeypatch, tmp_path, kfd=False, amd_card=True)
+    status = registry.by_code("transformers-text-rocm").available()
+    assert status.ok is False
+    assert "amdgpu kernel driver" in status.reason
+    assert "modprobe amdgpu" in status.reason
+
+
+def test_a_machine_with_no_amd_gpu_at_all_says_so(monkeypatch, tmp_path):
+    """…and the other cause is a FACT, with nothing to do about it. An NVIDIA
+    or Intel machine must not be told to load a driver for a card it does not
+    have."""
+    _fake_amd(monkeypatch, tmp_path, kfd=False, amd_card=False)
+    status = registry.by_code("diffusers-image-rocm").available()
+    assert status.ok is False
+    assert "needs an AMD GPU" in status.reason
+    assert "modprobe" not in status.reason
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="os.access ignores mode bits for root")
+def test_a_kfd_this_user_cannot_open_asks_for_permission(monkeypatch, tmp_path):
+    """PERMISSION IS ASKED OF THE KERNEL, never modelled — `os.access`.
+
+    A group-membership check gets real machines wrong in both directions: this
+    was written on a box whose `/dev/kfd` is world-writable while the user is in
+    neither `render` nor `video` (a group check refuses a working machine), and
+    whose `card1` carries a POSIX ACL that mode arithmetic cannot see (it
+    refuses a machine the ACL permits).
+
+    Skipped as root, where `os.access` returns True regardless of the mode and
+    the test would assert nothing while still passing.
+    """
+    _fake_amd(monkeypatch, tmp_path, kfd_mode=0o000)
+    status = registry.by_code("transformers-text-rocm").available()
+    assert status.ok is False
+    assert "needs permission" in status.reason
+    assert "render" in status.reason
+
+
+def test_a_render_node_that_is_ABSENT_is_not_a_permission_problem(
+        monkeypatch, tmp_path):
+    """Two states, two sentences — the fix for one cannot fix the other.
+
+    A render node that does not EXIST is a container started without
+    `--device /dev/dri`, or a `/dev/dri` the driver never populated. Telling that
+    reader to join the `render` group and log out and back in is advice that
+    cannot work, and it was the only sentence this branch had: the container case
+    lived further down in the `not targets` branch, which this return makes
+    unreachable whenever the devices are missing rather than the topology.
+    """
+    _fake_amd(monkeypatch, tmp_path, render=False)
+    status = registry.by_code("transformers-text-rocm").available()
+    assert status.ok is False
+    assert "renderD*" in status.reason
+    assert "--device /dev/dri" in status.reason
+    assert "render` group" not in status.reason
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="os.access ignores mode bits for root")
+def test_a_render_node_that_is_CLOSED_asks_for_permission(monkeypatch, tmp_path):
+    """…and the other state IS the group case, which keeps that advice.
+
+    HIP opens `/dev/kfd` AND the card's render node, so a readable kfd is not
+    enough — a user added to `video` but not `render` has exactly this
+    half-working state, and here `usermod` is the whole fix.
+    """
+    _fake_amd(monkeypatch, tmp_path, render_mode=0o000)
+    status = registry.by_code("transformers-text-rocm").available()
+    assert status.ok is False
+    assert "needs permission" in status.reason
+    assert "renderD128" in status.reason
+    assert "render` group" in status.reason
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="os.access ignores mode bits for root")
+def test_an_open_INTEL_render_node_does_not_admit_rocm(monkeypatch, tmp_path):
+    """The render node has to belong to the AMD CARD, not merely to open.
+
+    The hybrid machine, and it is the ordinary desktop rather than an exotic
+    one: an Intel iGPU's `renderD128` is world-openable on most distributions,
+    so a probe that accepted ANY readable `renderD*` passed on a device HIP will
+    never touch while the AMD card's own node stayed shut. The user then paid a
+    ~6GB download for a row that failed the moment HIP opened the node it
+    actually needed — the exact outcome the hard gate exists to prevent, reached
+    through the gate.
+    """
+    _fake_amd(monkeypatch, tmp_path, render_mode=0o000, foreign_render="0x8086")
+    status = registry.by_code("diffusers-image-rocm").available()
+    assert status.ok is False
+    assert "needs permission" in status.reason
+    # …named as the AMD card's node, not as the Intel one that happened to open.
+    assert "renderD128" in status.reason and "renderD129" not in status.reason
+
+
+def test_a_render_node_belonging_to_another_vendor_is_not_the_amd_one(
+        monkeypatch, tmp_path):
+    """The same rule with the AMD node absent altogether: an open Intel node is
+    not evidence of anything ROCm can use, and the reason must say the AMD card
+    has none rather than asking for a permission the user already has."""
+    _fake_amd(monkeypatch, tmp_path, render=False, foreign_render="0x8086")
+    status = registry.by_code("transformers-text-rocm").available()
+    assert status.ok is False
+    assert "belongs to an AMD card" in status.reason
+
+
+def test_an_unreadable_topology_is_its_own_reason(monkeypatch, tmp_path):
+    """`/dev/kfd` there and `/sys/class/kfd` not — a container with the devices
+    passed through and no sysfs. The GPU cannot be IDENTIFIED, which is neither
+    "no GPU" nor "unsupported GPU", and saying either would send the reader
+    after the wrong thing."""
+    _fake_amd(monkeypatch, tmp_path, topology=False)
+    status = registry.by_code("diffusers-image-rocm").available()
+    assert status.ok is False
+    assert "topology" in status.reason
+
+
+def test_rocm_is_not_offered_off_linux(monkeypatch, tmp_path):
+    """ROCm publishes no macOS or Windows wheels, so these rows must not be
+    selectable there however the devices look."""
+    _fake_amd(monkeypatch, tmp_path)
+    for system, machine in (("Windows", "AMD64"), ("Darwin", "arm64")):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        status = registry.by_code("transformers-text-rocm").available()
+        assert status.ok is False
+        assert "needs Linux" in status.reason
+        assert system.lower() in status.reason
+
+
+def test_an_nvidia_machine_is_offered_the_cuda_engines(monkeypatch, tmp_path):
+    _fake_nvidia(monkeypatch, tmp_path)
+    for code in ("transformers-text-cuda", "diffusers-image-cuda"):
+        status = registry.by_code(code).available()
+        assert status.ok is True, (code, status.reason)
+
+
+def test_cuda_is_a_HARD_GATE_on_a_machine_with_no_nvidia_gpu(monkeypatch, tmp_path):
+    """The policy, stated as a test: an accelerated row is offerable only where
+    it can actually run.
+
+    Informational availability was the alternative — offer the row, let torch
+    explain later — and it is wrong for the same reason the whole `Availability`
+    type exists: selecting it buys a multi-gigabyte wheel and a load that fails
+    with a message about a CUDA driver, on a machine that has no NVIDIA GPU to
+    put a driver on.
+    """
+    _fake_nvidia(monkeypatch, tmp_path, control=False, gpus=(), uvm=False)
+    status = registry.by_code("transformers-text-cuda").available()
+    assert status.ok is False
+    assert "needs an NVIDIA GPU" in status.reason
+    # …and the capability is untouched: the CPU row above it still serves.
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "transformers-text"
+
+
+def test_a_MISSING_uvm_node_is_not_a_refusal_because_it_is_created_LAZILY(
+        monkeypatch, tmp_path):
+    """The freshly booted NVIDIA desktop, which the hard gate used to refuse.
+
+    `nvidia-modprobe` loads `nvidia_uvm` and makes `/dev/nvidia-uvm` the first
+    time a process creates a CUDA context; the display path needs only `nvidia`
+    and `nvidia_drm`. So a Linux box with the proprietary driver that has not run
+    a CUDA program since boot has `/dev/nvidiactl`, `/dev/nvidia0`, no
+    `/dev/nvidia-uvm` — and a perfectly working `torch.cuda`. Both CUDA rows were
+    greyed out there, and the reason blamed "a driver update without a reboot",
+    which is the OPPOSITE of what had happened; with no override, the feature was
+    simply unreachable. Docker with `NVIDIA_DRIVER_CAPABILITIES` short of
+    `compute` is the same class of false refusal.
+
+    The absence therefore proves nothing and says nothing. The genuine
+    driver-mismatch case it used to catch is not visible from here either — a
+    `modprobe` of the new module against the old running `nvidia` fails at load,
+    not at `os.path.exists` — and torch's own error reports it, on the same
+    argument the probe already makes about a driver-version floor.
+    """
+    _fake_nvidia(monkeypatch, tmp_path, uvm=False)
+    for code in ("transformers-text-cuda", "diffusers-image-cuda"):
+        status = registry.by_code(code).available()
+        assert status.ok is True, (code, status.reason)
+
+
+def test_wsl2_can_pick_cuda_with_none_of_the_linux_device_nodes(
+        monkeypatch, tmp_path):
+    """WSL2 has no `/dev/nvidiactl` and no `/dev/nvidia0`, and torch.cuda works.
+
+    GPU-PV projects the Windows driver into the guest: `/dev/dxg` is the device,
+    and the CUDA driver library is bind-mounted at `/usr/lib/wsl/lib`. A WSL2
+    user was told "there is no /dev/nvidiactl or /dev/nvidia0 on this machine" —
+    true, irrelevant, and it left the CUDA engine unselectable on a machine where
+    it is the whole point of the setup.
+
+    **UNVERIFIED ON REAL HARDWARE.** There is no WSL2 and no NVIDIA GPU on the
+    machine this was written on, so what this pins is the shape of the evidence
+    and the fact that the Linux nodes are not required to accompany it. Both
+    checks are `os.path.exists`: a dlopen of `libcuda.so.1` would initialise a
+    driver on a page render, which AI-6 bars for `nvidia-smi`'s reasons.
+    """
+    _fake_nvidia(monkeypatch, tmp_path, control=False, gpus=(), uvm=False, wsl=True)
+    assert registry.by_code("transformers-text-cuda").available().ok is True
+    # …and it takes BOTH: a `/dev/dxg` with no CUDA library is a WSL2 guest whose
+    # host driver does not carry one, which is not a CUDA machine.
+    os.remove(str(registry.WSL_CUDA_LIBRARY))
+    status = registry.by_code("diffusers-image-cuda").available()
+    assert status.ok is False
+    assert "needs an NVIDIA GPU" in status.reason
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="os.access ignores mode bits for root")
+@pytest.mark.parametrize("device", ["nvidiactl", "nvidia0", "nvidia-uvm"])
+def test_nvidia_nodes_this_user_cannot_open_ask_for_permission(
+        monkeypatch, tmp_path, device):
+    """A container run without `--gpus all` has the nodes and not the access,
+    and `os.access` is what tells the two apart — the same kernel-answers-it
+    rule the ROCm probe follows.
+
+    All THREE nodes, one case each, because each is its own `os.access` and a
+    single case would be caught by whichever check happened to survive: this
+    started as one test with every device unreadable, and dropping the
+    control-and-GPU check entirely still passed it on the unified-memory one.
+    """
+    _fake_nvidia(monkeypatch, tmp_path, unreadable=(device,))
+    status = registry.by_code("transformers-text-cuda").available()
+    assert status.ok is False
+    assert "needs permission" in status.reason
+    assert device in status.reason
+
+
+def test_cuda_is_not_offered_on_macos(monkeypatch, tmp_path):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    status = registry.by_code("diffusers-image-cuda").available()
+    assert status.ok is False
+    assert "Windows and Linux only" in status.reason
+
+
+def test_windows_gates_cuda_on_the_drivers_own_cuda_library(monkeypatch, tmp_path):
+    """Windows has no device nodes to ask, so the gate is the weaker one the
+    constant documents: `nvcuda.dll` is a HINT (the display driver installs it),
+    and proving CUDA would mean loading the DLL and calling `cuInit` on a page
+    render. What it does buy is the ordinary case — a machine that has never had
+    an NVIDIA driver does not offer the row."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry, "NVCUDA_DLL", str(tmp_path / "nvcuda.dll"))
+    status = registry.by_code("transformers-text-cuda").available()
+    assert status.ok is False
+    assert "nvcuda.dll" in status.reason
+
+    (tmp_path / "nvcuda.dll").write_text("")
+    assert registry.by_code("transformers-text-cuda").available().ok is True
+
+
+def test_AUTO_STAYS_ON_THE_CPU_ROW_EVEN_WITH_AN_ACCELERATOR(monkeypatch, tmp_path):
+    """The whole user-facing decision of the per-hardware split, in one test.
+
+    A machine with a working NVIDIA GPU and a working AMD GPU has five text
+    engines available and resolves to the CPU one, because CPU is the default and
+    the accelerated rows are OPT-IN from the Engines tab. That is a choice, not
+    an accident of ordering: the accelerated wheels are much larger downloads
+    with a hardware requirement, and a default that silently required one would
+    fail hardest on the machines least able to explain why. Anyone who wants the
+    GPU says so once, and `prefs.json` remembers.
+
+    Pinned because the ordering is invisible in a diff of the table and nothing
+    else fails when a row moves — the same argument the mflux ordering test
+    makes, applied to the decision it was written for.
+    """
+    _fake_amd(monkeypatch, tmp_path)
+    _fake_nvidia(monkeypatch, tmp_path)
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+
+    for code in ("transformers-text-cuda", "transformers-text-rocm",
+                 "diffusers-image-cuda", "diffusers-image-rocm"):
+        assert registry.by_code(code).available().ok is True, code
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "transformers-text"
+    assert registry.for_capability(registry.IMAGE_GENERATION).code == "diffusers-image"
+
+    # …and opting in is honoured, which is what makes the default a default
+    # rather than a restriction.
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "transformers-text-cuda")
+    resolution = registry.resolve(registry.TEXT_GENERATION)
+    assert resolution.runner.code == "transformers-text-cuda" and resolution.honoured
+
+
+def test_an_engine_row_is_serialised_from_ONE_probe(monkeypatch):
+    """A row's `available` and its `reason` come from the SAME probe call.
+
+    They were two calls — `runner.available().ok` and `runner.available().reason`
+    — which was harmless while every probe was a `platform` fact and stopped
+    being harmless the moment a probe read live device state (AI-6): the two can
+    now straddle a `modprobe`, a container restart or an eGPU being unplugged and
+    disagree. Both disagreements are user-visible and neither is a crash: a row
+    can serialise as `available: false` with `reason: null`, which the `<select>`
+    renders as a disabled option with NOTHING saying why (`choiceReason` returns
+    null and the page has no copy of its own), or as `available: true` still
+    carrying the refusal that has just stopped being true.
+
+    Driven with a probe that flips on every call, which is the strongest form of
+    the race and cannot be satisfied by luck: whichever parity the two calls land
+    on, the pair is inconsistent.
+    """
+    flapping = {"ok": False}
+
+    def probe():
+        flapping["ok"] = not flapping["ok"]
+        return (registry.Availability(True) if flapping["ok"]
+                else registry.Availability(False, "the device just went away"))
+
+    runner = registry.Runner(
+        code="flapping-text",
+        capability=registry.TEXT_GENERATION,
+        # A real folder, so `available()` gets past its is-the-worker-built check
+        # and reaches the probe this test is about.
+        folder=os.path.join(registry.RUNNERS_DIR, "transformers_text"),
+        label="Flapping", short_label="Flapping",
+        _available=probe,
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+
+    for row in registry.describe_engines():
+        for choice in row["choices"]:
+            assert (choice["available"] is False) == (choice["reason"] is not None), choice
+
+
+def test_the_cpu_torch_rows_name_the_apple_silicon_GPU_they_run_on(monkeypatch):
+    """The Engines tab must not contradict the card beside it.
+
+    `torch_text._placement()` returns `("mps", float16)` on a Mac and
+    `torch_image._place()` moves the pipeline to `mps` — which is the whole point
+    of the `whl/cpu` pin resolving darwin to the ordinary MPS-capable wheel: this
+    row is what a Mac falls back to when MLX is unavailable (AI-2b). So a note
+    reading "Runs on the CPU on any machine, at a few words a second" printed a
+    CPU speed claim under the picker while the loaded card reported device `mps`,
+    on the exact machine the fallback exists for.
+
+    The `code`, the `label` and the `short_label` are deliberately NOT what
+    changed: a stored engine preference keys on `code` (D381), and "(CPU)" names
+    the BUILD — the install with no accelerator libraries in it — which is the
+    identity AI-2c requires a hardware variant to carry in both names.
+    """
+    for code in ("transformers-text", "diffusers-image"):
+        runner = registry.by_code(code)
+        assert runner.label == runner.short_label
+        assert "(CPU)" in runner.label
+        note = runner.note
+        assert "Apple Silicon" in note, (code, note)
+        # ONE LINE is the constraint the field documents, so the Mac clause has
+        # to be paid for rather than appended.
+        assert len(note) <= 110, (code, len(note), note)
+
+
+def test_the_rocm_image_row_warns_that_a_render_can_stall_the_desktop():
+    """The ROCm note names the desktop risk, and stays one line while doing it.
+
+    Observed rather than theorised (D383): a sustained submission on an RX 9060
+    XT (gfx1200) starved `gfx_0.0.0` until the driver reset the ring, and the
+    process the kernel named was the COMPOSITOR — the desktop died while the GPU
+    itself recovered without a reboot. Compute and display share that ring on a
+    single-GPU machine, so "seconds per image" was true and incomplete: the row
+    promised the speed and said nothing about what paying for it can cost.
+
+    Pinned because it is the kind of clause a later tidy-up deletes as hedging.
+    The length assertion is the same one-line budget the CPU rows are held to —
+    the warning had to be paid for out of the sentence, not appended to it.
+    """
+    runner = registry.by_code("diffusers-image-rocm")
+    assert "desktop" in runner.note, runner.note
+    assert len(runner.note) <= 110, (len(runner.note), runner.note)
+
+
+def test_every_test_this_module_cites_by_name_exists(monkeypatch):
+    """The registry's comments name tests as their evidence, and a rename is silent.
+
+    `_RUNNERS` explains its own ordering by pointing at the test that pins it —
+    which is the right way to write that comment and the reason it rots: the
+    citation was `test_auto_stays_on_the_cpu_row_even_with_an_accelerator` while
+    the test is `test_AUTO_STAYS_ON_THE_CPU_ROW_EVEN_WITH_AN_ACCELERATOR`, so a
+    case-sensitive grep for the evidence found nothing and a reader had to take
+    the comment's word for it. Cheap to check, and it makes the citation a link
+    rather than a claim.
+    """
+    import glob as _glob
+    import inspect
+
+    cited = set(re.findall(r"`(test_[A-Za-z0-9_]+)`", inspect.getsource(registry)))
+    assert cited, "the citation style went away — delete this test with it"
+    # Every test module, not this one: a registry comment may cite the test that
+    # actually holds the fact wherever it lives (the loaded-card names live
+    # in a test of their own), and a citation is only worth checking if the check
+    # looks where the reader would.
+    defined = set()
+    for path in _glob.glob(os.path.join(os.path.dirname(__file__), "test_*.py")):
+        with open(path, encoding="utf-8") as handle:
+            defined.update(re.findall(r"^def (test_[A-Za-z0-9_]+)", handle.read(),
+                                      re.MULTILINE))
+    assert not sorted(cited - defined), sorted(cited - defined)
+
+
+def test_the_accelerated_engines_share_their_siblings_suggestions(monkeypatch, tmp_path):
+    """A variant's shortlist is its CPU sibling's, BY CONSTRUCTION.
+
+    The lists in `catalog.py` are per runner because a repo belongs to a
+    BACKEND — an MLX conversion is unloadable by torch. A CUDA build of torch
+    reads exactly what the CPU build reads, so these rows must not have their own
+    list to drift: `_SHARED_SUGGESTIONS` aliases them, and this is the assertion
+    that the alias is wired rather than the lists merely being equal today.
+    """
+    assert catalog.for_runner("transformers-text-cuda") == catalog.SUGGESTIONS["transformers-text"]
+    assert catalog.for_runner("diffusers-image-rocm") == catalog.SUGGESTIONS["diffusers-image"]
+    # And through the resolution, which is how the page actually reaches it.
+    _fake_nvidia(monkeypatch, tmp_path)
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image-cuda")
+    assert catalog.for_capability(registry.IMAGE_GENERATION) == (
+        catalog.SUGGESTIONS["diffusers-image"])
+    assert catalog.default_for(registry.IMAGE_GENERATION) == (
+        catalog.SUGGESTIONS["diffusers-image"][0]["id"])
+
+
+def test_no_hardware_variant_holds_its_own_suggestion_list():
+    """The other half of the alias, and the one that catches a "fix".
+
+    Somebody adding a fifth variant will reach for a copied literal — it is the
+    obvious thing to do, and it passes every other test in this file. What it
+    breaks is silent: the two lists agree until one is edited, and then one
+    engine recommends a model the other does not, for no reason a reader of the
+    page could work out.
+    """
+    for variant, source in catalog._SHARED_SUGGESTIONS.items():
+        assert variant not in catalog.SUGGESTIONS, (
+            f"{variant} holds its own copy of {source}'s list — alias it in "
+            f"_SHARED_SUGGESTIONS instead, so the two cannot drift")
+        assert source in catalog.SUGGESTIONS, source
+        assert registry.by_code(variant) is not None, variant
+        assert registry.by_code(variant).capability == registry.by_code(source).capability
 
 
 def test_transformers_and_whisper_suggestions_show_snapshot_size_estimates():
@@ -976,9 +1657,11 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
                 if row["capability"] == registry.TEXT_GENERATION)
     assert text["available"] is True and text["reason"] is None
     assert text["runner"] == "transformers-text"
-    assert text["runnerLabel"] == "Transformers (PyTorch)"
-    # Both names travel, and the Discover heading uses the short one.
-    assert text["runnerShortLabel"] == "Transformers"
+    assert text["runnerLabel"] == "Transformers (CPU)"
+    # Both names travel, and the Discover heading uses the short one — which on
+    # a torch row is the same string, because the accelerator is part of the
+    # engine's identity rather than a platform note.
+    assert text["runnerShortLabel"] == "Transformers (CPU)"
     assert not any(m["id"].startswith("mlx-community/") for m in text["models"])
     # …and the default a bare `fused.ai.image()`-style call would reach for is
     # the loadable one, not the first entry of some other machine's list.
@@ -993,12 +1676,13 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
 
 
 def test_the_cpu_warning_reaches_the_page(monkeypatch):
-    """The PyTorch runner says what using it is LIKE, and the catalog carries it.
+    """The CPU runner says what using it is LIKE, and the catalog carries it.
 
-    torch from PyPI is CPU-only on Windows, so the ordinary outcome there is a
-    model that works and answers at walking pace. Nothing else on the page can
-    say it: the device a model really got is a measurement that does not exist
-    until one has loaded.
+    The CPU row is the default off Apple Silicon, so a model that works and
+    answers at walking pace is the ORDINARY outcome now rather than a Windows
+    quirk — which is exactly why the sentence has to be there. Nothing else on
+    the page can say it: the device a model really got is a measurement that
+    does not exist until one has loaded.
 
     The sentence is rendered under that engine's row on the Engines tab (D315),
     not over the Discover sections it used to head; this asserts the CATALOG
@@ -1112,6 +1796,15 @@ UNBOUNDED_RUNNER_DEPENDENCIES = {
     "protobuf": "sentencepiece's on-disk format, same argument",
     "av": "the ffmpeg libraries, for decoding to a waveform — not inference",
     "gguf": "a quantized-weight FILE reader; the tensors it returns are diffusers'",
+    "triton-rocm": (
+        "ROCm torch pins the version itself — `torch 2.13.0+rocm7.1` carries "
+        "`Requires-Dist: triton-rocm==3.7.1` — so a ceiling here could only "
+        "contradict the wheel that chose it. The ROCm manifests declare it at "
+        "all only because `[tool.uv.sources]` cannot route a TRANSITIVE "
+        "requirement to the ROCm index, and there is no `triton-rocm` on PyPI "
+        "for uv to fall back to; the bound on `torch` therefore already governs "
+        "it, exactly as `sherpa-onnx`'s does for the entry below"
+    ),
     "sherpa-onnx-core": (
         "carries libonnxruntime for sherpa-onnx and is version-locked to it by "
         "sherpa's own `Requires-Dist: sherpa-onnx-core==<same version>`, so the "
@@ -1122,7 +1815,7 @@ UNBOUNDED_RUNNER_DEPENDENCIES = {
 
 @pytest.mark.parametrize("runner", registry.all_runners(), ids=lambda r: r.code)
 def test_every_runner_BOUNDS_its_model_runtimes(runner):
-    """The generalisation of the mflux abort, applied to all seven manifests.
+    """The generalisation of the mflux abort, applied to every manifest.
 
     None of these folders has a committed `uv.lock` (`.gitignore` ignores them
     globally and negates only `templates/`), and `_env_install_worker` runs a
@@ -1680,7 +2373,9 @@ def test_the_worker_stderr_never_goes_to_an_undrained_pipe():
 def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
     body = client.get("/api/ai/runtime").json()
     assert {r["code"] for r in body["runners"]} == {
-        "mlx-text", "transformers-text", "diffusers-image", "mflux-image",
+        "mlx-text", "transformers-text", "transformers-text-cuda",
+        "transformers-text-rocm", "diffusers-image", "diffusers-image-cuda",
+        "diffusers-image-rocm", "mflux-image",
         "faster-whisper", "mlx-whisper", "parakeet-mlx"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,

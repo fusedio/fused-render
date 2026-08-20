@@ -463,8 +463,8 @@
    Google Calendar puts its all-day band — was removed on 2026-08-17: queued
    work is a MESSAGE, its siblings are listed in the task's popover thread, and
    a band across the whole week said otherwise. The queue's two states now mark
-   the thread rows they belong to (.schedule-cal-msg-note), with the cancel
-   there as well. */
+   the thread rows they belong to — since 2026-08-19 as the row tooltip's note
+   (schedule-lib.msgNote); the per-row cancel is hidden for now (Akshil). */
 
 .schedule-cal-scroll {
   overflow-y: auto;
@@ -828,14 +828,79 @@
   color: var(--fg-muted);
 }
 
-.schedule-cal-pop-rep {
-  font-size: 12px;
-  color: var(--fg-muted);
+/* No `.schedule-cal-pop-rep` any more (Akshil, 2026-08-19): the ↻ beside the
+   task id was decorative on its own admission, and the recurrence it hinted at
+   is spelled out in the meta line below the title. */
+
+/* The pill sits AGAINST THE ID it labels (Akshil, 2026-08-19) — swatch, id,
+   status as one left-aligned statement — so the head's one auto margin moved to
+   the tool rail below, which claims the right edge instead. */
+
+/* The head's quiet tools: the pencil, and the one lifecycle verb the component
+   decides (Archive today; the Delete arm waits on a server verb — see the
+   `canArchive` comment in ScheduleCalendar). Icon-only and borderless at rest:
+   these are the panel's furniture, not its actions — the footer's worded
+   buttons keep that register — so they surface on hover the way every icon
+   rail in the shell does. */
+.schedule-cal-pop-tools {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
-/* The pill sits at the head's right edge — its ONE auto margin. */
-.schedule-cal-pop-head .schedule-state {
-  margin-left: auto;
+/* Scoped under the rail, not bare: the Tasks page wraps this popover in
+   .prefs-section, whose generic `button` reset (0,1,1) outweighs a lone class
+   (0,1,0) — its 5px/12px padding + border left a 24px box ~0px of content and
+   crushed the icons to nothing (Akshil, 2026-08-19: "blank dark squares").
+   The extra ancestor class wins the cascade without !important. */
+.schedule-cal-pop-tools .schedule-cal-pop-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.schedule-cal-pop-tools .schedule-cal-pop-tool:hover:not(:disabled),
+.schedule-cal-pop-tools .schedule-cal-pop-tool:focus-visible {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  color: var(--fg);
+}
+
+.schedule-cal-pop-tools .schedule-cal-pop-tool:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The Delete half of the slot: quiet like its neighbours at rest, RED under
+   the pointer — the hover is where a destructive control declares itself
+   (the same contract .cc-iconbtn-danger keeps in the Claude config pane).
+   Placed after the base hover rule so equal specificity resolves to red. */
+.schedule-cal-pop-tools .schedule-cal-pop-tool--danger:hover:not(:disabled),
+.schedule-cal-pop-tools .schedule-cal-pop-tool--danger:focus-visible {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  color: var(--error);
+}
+
+/* ARMED — the first press landed and the next one deletes. Red WITHOUT the
+   pointer, because the state has to survive the cursor drifting off between
+   the two presses: the button is saying "I heard you" and must keep saying it
+   until pressed again or the popover closes (the component's state unmounts
+   with the panel, so armed never outlives it). */
+.schedule-cal-pop-tools .schedule-cal-pop-tool--danger.is-armed {
+  background: color-mix(in srgb, var(--error) 16%, transparent);
+  color: var(--error);
 }
 
 /* The task title as the popover's headline: body colour, a step up, room to
@@ -859,47 +924,38 @@
   overflow: hidden;
 }
 
-/* Icon-labelled fact rows, one per line — the Google event-card shape. The
-   icon column is fixed so the text edges align down the list. Pinned like the
-   head: these are the task's identity, not its history. */
-.schedule-pop-rows {
+/* The task's two facts — how often, and where — as ONE muted line: "Every 2
+   weeks on Monday · /path/to/folder" (Akshil, 2026-08-19). They were icon-led
+   rows, one per line, the Google event-card shape; in a 360px panel that shape
+   read as a form, and the icons only repeated what the words already said.
+   Pinned like the head: this is the task's identity, not its history.
+
+   The recurrence keeps its whole words (`flex: none` — it is READ, and "Every 2
+   wee…" says nothing); the folder path is the side that gives, ellipsizing from
+   a single line, because a path is RECOGNISED and its head outlives its tail.
+   The "·" is markup, not string-joined, so each side can be dropped cleanly
+   when absent. */
+.schedule-pop-meta {
   flex: none;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
   font-size: 12px;
   color: var(--fg-muted);
 }
 
-.schedule-pop-row {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-}
-
-.schedule-pop-row svg {
+.schedule-pop-meta-rep,
+.schedule-pop-meta-sep {
   flex: none;
-  transform: translateY(2px);
-  opacity: 0.75;
 }
 
-.schedule-pop-row code {
+.schedule-pop-meta code {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The prose rows wrap instead — they are read, not recognised — but an
-   unbroken token must not push the popover wide, and a description written as
-   an essay must not take the card: three lines, then an ellipsis. */
-.schedule-pop-row span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
 /* -- The thread inside the popover ---------------------------------------------
@@ -1034,13 +1090,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-.schedule-cal-msg-body {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
+/* No `.schedule-cal-msg-body` any more (Akshil, 2026-08-19). A popover row is
+   ring + time now, nothing else: the body's first line was most often the
+   panel's own title echoed — and when it genuinely wasn't, the transcript the
+   row opens is one click away. The row stopped being a sentence. */
 
 /* No `.schedule-cal-msg-unread` any more (2026-08-18). It was a 6px accent disc
    after the body, and it was this view speaking its OWN dialect: the List and the
@@ -1048,100 +1101,24 @@
    different element. Unread is the status ring's filled centre now, everywhere
    (see `.schedule-ring--unread` below and ScheduleTaskViews.StatusIcon). */
 
-/* The row's second fact, when it has one: "ran 2 days late" for a catch-up
-   (`at` vs `ran_at` — the chip never moves for it), "queued" for a message that
-   is past due and waiting to be claimed, which the word "Upcoming" alone does
-   not say, and "too late to cancel" for one already claimed. Never a status: the
-   status is the four words beside it. schedule-lib.msgNote picks which. */
-.schedule-cal-msg-note {
-  flex: none;
-  color: var(--warning-strong);
-  font-size: 11px;
-  white-space: nowrap;
-}
+/* No `.schedule-cal-msg-note` in the ink either (Akshil, 2026-08-19). Its
+   words — "queued", "ran 2 days late", "too late to cancel" — still exist and
+   schedule-lib.msgNote still writes them; they moved into the row's title
+   tooltip, next to the exact time and the status word that already lived there.
+   The fact survives, the row's third column does not.
 
-/* "too late to cancel" is a plain fact, not the amber that "queued" and "ran 2
-   days late" are: those flag something about the run, this one only explains why
-   the row's cancel is not there. Amber would read as a fault in a state that is
-   ordinary and lasts seconds. */
-.schedule-cal-msg-note.is-held {
-  color: var(--fg-muted);
-}
+   `.schedule-cal-msg-state` (the printed status word) went the same way on
+   2026-08-18 — the ring carries it — and its orphaned rule left with this
+   batch. */
 
-/* One of Upcoming / In Progress / Done / Archive, and nothing else. */
-.schedule-cal-msg-state {
-  flex: none;
-  color: var(--fg-muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-/* The per-row write (cancel a waiting message, skip a run). Quiet until the row
-   is pointed at — the same posture the tree's actions take. */
-.schedule-cal-popover .schedule-cal-msg-act {
-  /* Declared, not inherited: `.prefs-section button` pins every unarmoured
-     button to align-self:flex-start, and a per-property cascade means a more
-     specific block that stays silent about it still gets it. */
-  align-self: center;
-
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition: color 0.1s ease;
-}
-
-.schedule-cal-popover .schedule-cal-msg-act:hover:not(:disabled),
-.schedule-cal-popover .schedule-cal-msg-act:focus-visible {
-  background: var(--row-bg-hover);
-  border: none;
-  color: var(--error);
-}
-
-.schedule-cal-popover .schedule-cal-msg-act:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* Where the cancel would be on a CLAIMED row (`sending`), which gets none: the
-   server refuses that state on purpose, so the row offers nothing rather than a
-   button whose only possible outcome is a refusal (schedule-lib.msgCancelKind).
-
-   The SAME 24px box as .schedule-cal-msg-act above, and that is the point: a row
-   flips queued → sending while it is being looked at, and without the matching
-   slot the note and the status word beside it jump 24px sideways at the moment a
-   button disappears — which is exactly what makes a deliberate absence read as a
-   glitch. It turns, because standing here has to say "brief, in hand" rather
-   than "stuck, control missing".
-
-   Not a button: nothing to press, no hover, not in the tab order. The words are
-   .schedule-cal-msg-note (is-held above), reachable without a pointer. Full
-   turns, so the blanket prefers-reduced-motion rule (styles/reduced-motion.css)
-   parks it back at 0deg instead of mid-tilt. */
-.schedule-cal-msg-held {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  color: var(--fg-muted);
-  animation: schedule-cal-held-spin 0.8s linear infinite;
-}
-
-@keyframes schedule-cal-held-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
+/* The per-row ⊗ skip / ✕ cancel is HIDDEN for now (Akshil, 2026-08-19: "let
+   us hide skip for now") — `.schedule-cal-msg-act` and its hover/disabled rules
+   left with the button. `.schedule-cal-msg-held`, the turning glyph on a
+   claimed row, left with them: its whole argument was holding the SAME 24px box
+   so the row did not jump sideways when the button vanished queued → sending,
+   and there is no box to hold any more. Sending itself was never the spinner's
+   fact to carry — the ring and the tooltip's note still say it. The List still
+   offers both cancels; a popover row's only press is the row itself. */
 
 /* The action row: pinned to the foot of the card, never scrolled with the
    thread. `.schedule-card-actions` already carries `margin-top: auto`; what it
@@ -1218,11 +1195,13 @@
    the pill had already been painting all five for a round. One vocabulary means
    one palette as well as one word. */
 
-/* A projected run keeps its word too ("Upcoming"), and the dashes are what say
-   nothing has been written down yet — the pill of a ghost chip. */
-.schedule-state.is-projected {
-  border-style: dashed;
-}
+/* NO `.schedule-state.is-projected` any more (Akshil, 2026-08-19). The popover
+   header's pill used to go dashed when the clicked chip was projected, but the
+   dashes are the GRID's day-scoped cue — projected chips and the ghost rings on
+   occurrence rows wear them — and a pill is a word about status, not a drawing
+   of a day. It stopped reaching the pill at the source (the component no longer
+   passes the chip's `projected` into the pill's class), so the pill's border is
+   solid in every state; a projected occurrence simply reads "Upcoming". */
 
 /* The LIST cards' own tone vocabulary (schedule-lib.stateTone), which is a
    different question — "what did the scheduler do with this entry" — and keeps
@@ -2362,7 +2341,6 @@ input.schedule-when-field {
    page and the modal each ship a `button` skin these have to outrank. */
 .schedule-cal-chip:focus-visible,
 .schedule-cal-msg-open:focus-visible,
-.schedule-cal-msg-act:focus-visible,
 .schedule-picker-row:focus-visible,
 .schedule-time-slot:focus-visible,
 .schedule-menu-item:focus-visible,
@@ -2373,7 +2351,6 @@ input.schedule-when-field {
 .schedule-when-field:focus-visible,
 .deploy-body .schedule-cal-chip:focus-visible,
 .deploy-body .deploy-body .schedule-cal-msg-open:focus-visible,
-.deploy-body .schedule-cal-msg-act:focus-visible,
 .deploy-body .schedule-picker-row:focus-visible,
 .deploy-body .schedule-time-slot:focus-visible,
 .deploy-body .schedule-menu-item:focus-visible,
@@ -2384,7 +2361,6 @@ input.schedule-when-field {
 .deploy-body .schedule-when-field:focus-visible,
 .prefs-section .schedule-cal-chip:focus-visible,
 .prefs-section .prefs-section .schedule-cal-msg-open:focus-visible,
-.prefs-section .schedule-cal-msg-act:focus-visible,
 .prefs-section .schedule-picker-row:focus-visible,
 .prefs-section .schedule-time-slot:focus-visible,
 .prefs-section .schedule-menu-item:focus-visible,
@@ -3516,7 +3492,9 @@ input.schedule-when-field {
    value to be recognised, so it does not belong in the icon column — and
    without an icon it needs no indent either. Clamped like the title, because a
    long description must not push the thread and the actions out of a panel
-   whose height is capped at 70vh. */
+   whose height is capped at 70vh. TWO lines, not the title's three (Akshil,
+   2026-08-19): the description is context, and the slimmed thread rows below
+   earn their room only if the prose above them stays short too. */
 .schedule-pop-desc {
   margin: 0;
   font-size: 12px;
@@ -3524,7 +3502,7 @@ input.schedule-when-field {
   color: var(--fg-muted);
   overflow-wrap: anywhere;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -3580,49 +3558,93 @@ input.schedule-when-field {
    grid that is actually working looked exactly like the ones that finished
    hours ago.
 
-   A SHIMMER, not a colour. Every other cue on a chip is already spent: the fill
-   is the PROJECT (eight hues, --task-c0…7), the dashes are "projected", the
-   fade is "past". There is no static property left that would not collide with
-   one of those — and motion is the honest signal anyway, because "running" is
-   the only thing a chip says that is true only for as long as you are looking
-   at it. A sweep is what a thing in progress looks like.
+   THE SIDEBAR'S SHIMMER, not a treatment of the calendar's own (Akshil,
+   2026-08-19). The first cut swept a low-alpha highlight ACROSS the whole chip —
+   a loading-skeleton read — while the sidebar's "N running" was already saying
+   the same fact a different way: the ink itself in the In Progress yellow
+   (--status-progress), with a brighter band travelling through the letters
+   (sidebar.css `.sidebar-running`). One fact, one treatment; the chip's TITLE
+   now wears exactly that. The gradient, its 300% width, the in-range 100% → 0%
+   travel and the repeat are all load-bearing for the same reasons documented at
+   length on `.sidebar-running`: the band is only ever BRIGHTER than the resting
+   yellow (the words never fade), and no reachable frame leaves a letter
+   unpainted (the travel never takes the gradient off the box).
 
-   It rides in a PSEUDO-ELEMENT over the chip's own background rather than
-   animating that background, so the project hue underneath is untouched and the
-   text keeps its contrast: the sweep is a low-alpha highlight passing across,
-   the way a loading skeleton reads, at 2s — slow enough to be ambient and never
-   the fastest thing on a page that may hold several.
-
-   `pointer-events: none` because the chip is a button and the sweep must not
-   eat its clicks; `overflow: hidden` is already on the chip, so the highlight
-   is clipped to the rounded box. */
-.schedule-cal .schedule-cal-chip.is-running::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(
+   It also spends nothing the chip needs elsewhere: the fill stays the PROJECT
+   hue (--task-c0…7), the dashes stay "projected", the fade stays "past" — only
+   the title's ink changes, and yellow ink is what "running" already looks like
+   everywhere else in the app. */
+.schedule-cal .schedule-cal-chip.is-running .schedule-cal-chip-text {
+  color: var(--status-progress);
+  background-image: linear-gradient(
     100deg,
-    transparent 20%,
-    color-mix(in srgb, var(--fg) 22%, transparent) 50%,
-    transparent 80%
+    var(--status-progress) 30%,
+    color-mix(in srgb, var(--status-progress) 65%, var(--fg)) 50%,
+    var(--status-progress) 70%
   );
-  background-size: 220% 100%;
-  animation: schedule-cal-shimmer 2s linear infinite;
+  background-size: 300% 100%;
+  background-repeat: repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: schedule-running-shimmer 2.2s linear infinite;
 }
 
-@keyframes schedule-cal-shimmer {
-  from { background-position: 160% 0; }
-  to { background-position: -60% 0; }
+/* Shared by the chip title above and the popover pill below — same band, same
+   pace as sidebar.css's sidebar-running-shimmer, so every "running" in the app
+   moves as one. In-range travel: with a 300%-wide image, every position from
+   100% to 0% still covers the whole box. */
+@keyframes schedule-running-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+
+/* -- The popover pill, while the task is actually working ------------------------
+   The header's "In Progress" is the popover's seat for the same live fact, so
+   the label's ink shimmers with the identical treatment. The pill's WASH has to
+   survive the clip: `background-clip: text` on a lone layer would clip the
+   background-color too and blank the pill, so the tint rides as a second,
+   static gradient layer clipped to the padding box — the shimmer clips to the
+   glyphs, the tint keeps painting the pill, and the single background-position
+   sweep is invisible on a uniform layer. */
+.schedule-cal-pop-head .schedule-state.is-running {
+  background-image:
+    linear-gradient(
+      100deg,
+      var(--pill) 30%,
+      color-mix(in srgb, var(--pill) 65%, var(--fg)) 50%,
+      var(--pill) 70%
+    ),
+    linear-gradient(
+      color-mix(in srgb, var(--pill) 14%, var(--bg)),
+      color-mix(in srgb, var(--pill) 14%, var(--bg))
+    );
+  background-size: 300% 100%, 100% 100%;
+  background-repeat: repeat;
+  -webkit-background-clip: text, padding-box;
+  background-clip: text, padding-box;
+  -webkit-text-fill-color: transparent;
+  animation: schedule-running-shimmer 2.2s linear infinite;
 }
 
 /* A person who has asked for less motion still has to be able to see which run
-   is going, so the fallback is not "nothing" — it is the same highlight, held
-   still. A static wash over the project hue, plus the left bar at full strength,
-   which together read as "this one is lit" without moving. */
+   is going, so the fallback is not "nothing" — it is the same statement, held
+   still: the flat In Progress yellow the moving version rests on (the exact arm
+   `.sidebar-running` takes, and for the same reason: the blanket reduced-motion
+   rule would run the sweep once and park the gradient wherever 0.01ms leaves
+   it). The pill keeps its wash through its ordinary background rules. */
 @media (prefers-reduced-motion: reduce) {
-  .schedule-cal .schedule-cal-chip.is-running::after {
+  .schedule-cal .schedule-cal-chip.is-running .schedule-cal-chip-text {
     animation: none;
-    background: color-mix(in srgb, var(--fg) 10%, transparent);
+    background-image: none;
+    -webkit-text-fill-color: var(--status-progress);
+  }
+
+  .schedule-cal-pop-head .schedule-state.is-running {
+    animation: none;
+    background-image: none;
+    -webkit-background-clip: padding-box;
+    background-clip: padding-box;
+    -webkit-text-fill-color: var(--pill);
   }
 }

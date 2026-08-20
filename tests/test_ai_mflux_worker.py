@@ -4,7 +4,7 @@
 pinned is the same one: a second runner for a capability must be
 indistinguishable from the first through the public API. Here that means the
 `/generate` body, the reply dict, the denoising-step row and the ✕ all have to
-match `diffusers_image/worker.py`, against a library whose shape is different in
+match `runners/torch_image.py`, against a library whose shape is different in
 every one of those places.
 
 Testable because the module is **stdlib-only at import time** — `mflux` and
@@ -832,15 +832,24 @@ def test_the_thumbnail_is_removed_when_the_render_is_CANCELLED(
 
 
 def test_both_image_workers_import_the_ONE_previewer_rather_than_a_copy():
-    """The structural half: a second `preview.py` under either runner folder is
-    the drift AI-10c forbids, and no behavioural test would catch it — both
-    copies would pass their own. Asserted from the SECOND runner's tests, the
-    way `test_ai_partial_transcript.py` does for the two whisper engines."""
+    """The structural half: a second `preview.py` under any runner folder is the
+    drift AI-10c forbids, and no behavioural test would catch it — both copies
+    would pass their own. Asserted from the SECOND runner's tests, the way
+    `test_ai_partial_transcript.py` does for the two whisper engines.
+
+    The torch image runner MOVED to the runners root (`torch_image.py`) when the
+    per-hardware variants landed, and its three folders now hold five-line
+    shells — so the import is asserted against the module that renders rather
+    than against whichever folder spawned it. The no-copy half still sweeps the
+    FOLDERS, which is where a stray `preview.py` would appear.
+    """
     runners = os.path.dirname(os.path.dirname(WORKER_PATH))
-    for folder in ("diffusers_image", "mflux_image"):
+    for folder in ("diffusers_image", "diffusers_image_cuda",
+                   "diffusers_image_rocm", "mflux_image"):
         assert not os.path.exists(os.path.join(runners, folder, "preview.py")), folder
-        with open(os.path.join(runners, folder, "worker.py"), encoding="utf-8") as fh:
-            assert "import preview" in fh.read(), folder
+    for module in (os.path.join(runners, "torch_image.py"), WORKER_PATH):
+        with open(module, encoding="utf-8") as fh:
+            assert "import preview" in fh.read(), module
 
 
 def test_the_key_BOTH_runners_use_is_the_same_string():

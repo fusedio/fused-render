@@ -12,6 +12,8 @@ when it happens, so these two surfaces are the feature, not decoration:
 The turn watcher is driven through its `_turn_tick` seam with fabricated `_poll`
 results: no test here runs a real claude, and none waits on a thread.
 """
+import time
+
 import pytest
 
 from fused_render import claude_spawn, jobs, schedule, schedule_wake
@@ -204,7 +206,13 @@ def test_a_finished_turn_lands_ok_on_all_three_surfaces(target, sent):
     assert schedule._turn_tick(entry, "r-1", FakeAgent(),
                                {"done": True, "error": ""}) is False
 
-    assert schedule.list_entries()[0]["turn"] == "ok"
+    stored = schedule.list_entries()[0]
+    assert stored["turn"] == "ok"
+    # …and WHEN it landed rides along: the Tasks page measures the transcript's
+    # tail against this moment to tell the verdict's own echo from a session
+    # that kept working (TASK-001).
+    assert abs(schedule.parse_due(stored["turn_at"]).timestamp()
+               - time.time()) < 30
     assert jobs.list_jobs()[0]["state"] == "done"
     assert _kinds() == [schedule.EVENT_DONE]
 
@@ -438,7 +446,7 @@ def test_reporting_failures_never_break_a_send(target, monkeypatch):
 
 
 def test_the_watcher_wraps_the_recorder_rather_than_replacing_it(target, monkeypatch):
-    """The sidecar write and the commit live in record_session_when_ready and
+    """The session-id record and the commit live in record_session_when_ready and
     must happen whether or not anything is observing, so the watcher goes
     THROUGH it and only adds the observer."""
     seen = {}
@@ -456,7 +464,7 @@ def test_the_watcher_wraps_the_recorder_rather_than_replacing_it(target, monkeyp
 
 
 def test_an_observer_that_raises_does_not_abandon_the_run(monkeypatch):
-    """record_session_when_ready owns the sidecar write; an observer's exception
+    """record_session_when_ready owns the session-id record; an observer's exception
     must not stop the poll before it happens."""
     ticks = []
 

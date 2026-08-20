@@ -165,122 +165,205 @@
     padding: 8px 16px;
     border-bottom: 1px solid var(--border);
   }
-  #annbtn {
-    height: 26px;
-    padding: 0;
-    /* The row's ONE auto margin, and the strip's right-hand anchor: everything
-       before it (#back) sits left, everything after it (the picker, the view
-       toggle) rides right with it. It was #viewbtn's, back when the switch led
-       the row — see #leftbar #leftmode for why a row gets exactly one. */
+  /* Two separate buttons — Comment on the left, Record on the right (the
+     split pill is gone — Akshil, 2026-08-19). Exactly one mode is ever on,
+     and the OTHER button always shows the way out of it: arming Comment turns
+     the mic seat into ✓ Done (send the notes, leave the mode); starting a
+     recording turns the Comment seat into ■ plus the live clock (stop it).
+     The wrapper carries the row's ONE auto margin, the strip's right-hand
+     anchor: everything before it (#back, the picker when it appears) sits
+     left of the slack, everything after (the kebab) rides right with it — see
+     #leftbar #leftmode for why a row gets exactly one. The picker unfolds to
+     the buttons' LEFT, into the slack, so they hold still under the pointer. */
+  #anncta {
     margin-left: auto;
-    /* The elastic one. Its label is a mode name, and "Annot…" beside a visible
-       accent track still reads — where half of "Back to chat" would not tell you
-       it is the way back. See #viewbtn's flex-shrink. */
-    min-width: 0;
     display: flex;
     align-items: center;
-    gap: 7px;
-    font: inherit;
-    font-size: 12px;
-    line-height: 1;
-    white-space: nowrap;
-    border: 0;
+    flex-shrink: 0;
+    gap: 8px;
+  }
+  /* The wrapper hides itself when it has no visible button: both are gated
+     alike (annPollTarget's [hidden], enterNoPane's removal), and an empty
+     wrapper still holding the auto margin would shove the kebab around. :has,
+     so the wrapper needs no writer of its own. */
+  #anncta:not(:has(#annbtn:not([hidden]))) { display: none; }
+  /* One auto margin per row: `body.nopane #kebab` grants the kebab its own
+     when the pane's controls are gone — but when the buttons ARE here (the
+     hosted sidebar keeps them), two auto margins split the slack and parked
+     the control mid-strip (Akshil, 2026-08-19: "why is this in the middle?").
+     A visible button revokes the kebab's grant, so the pair sits right, beside ⋮. */
+  #anncta:has(#annbtn:not([hidden])) ~ #kebab { margin-left: 0; }
+  #anncta button {
+    border: 1px solid var(--border);
+    border-radius: 8px;
     background: transparent;
     /* `--dim` is THIS file's muted ink (see the palettes at the top). It read
        `var(--muted, var(--fg))` for a long time, and `--muted` is defined nowhere
        here and is not injected by the shell theme — the runtime writes
-       `data-theme`, not tokens — so the fallback always won and the switch drew at
-       full foreground in both states, making `:hover { color: var(--fg) }` below a
-       no-op. Silent, because an undefined token is inert rather than an error.
+       `data-theme`, not tokens — so the fallback always won and the control drew at
+       full foreground in both states, making the hover brighten below a no-op.
+       Silent, because an undefined token is inert rather than an error.
        tests/test_theme.py now fails on any var() this file does not define. */
-    color: var(--dim);
-    cursor: pointer;
-    transition: color .12s;
-  }
-  /* The switch is HIDDEN, not disabled, when there is nothing to annotate — the
-     sidebar layout's case, where the target is the host's content pane and the
-     host may be showing something unmarked (annPollTarget). Same rule the narrow
-     layout follows for the controls of a hidden pane: absent beats dead. Needs a
-     declaration of its own because `display: flex` above outranks the UA's
-     `[hidden] { display: none }`, exactly as #leftbar[hidden] does. */
-  #annbtn[hidden] { display: none; }
-  #annbtn:hover { color: var(--fg); }
-  #annbtn.on { color: var(--fg); }
-  /* Where the row's shrinking actually happens — on the TEXT, not on the track,
-     which stays 28px (a knob that slid off its rail would stop being a switch).
-     `line-height` re-widened here: the button's `line-height: 1` plus this
-     `overflow: hidden` sliced the descender off any label with one (the old
-     "Commenting" lost its g's tail) — the clip box must clear the font's
-     descent, not just its em box. */
-  #annbtn .lbl { overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
-  /* The slider: knob left = off, knob right = on. Off is drawn in the quiet
-     currentColor; the on-state fills the track with the accent — the only
-     colour the control ever shows, and only while armed. */
-  #annbtn .track {
-    position: relative;
-    width: 28px;
-    height: 16px;
-    border-radius: 999px;
-    border: 1px solid currentColor;
-    flex-shrink: 0;
-    transition: background .15s, border-color .15s;
-  }
-  #annbtn .knob {
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: currentColor;
-    transition: left .15s, background .15s;
-  }
-  #annbtn.on .track { background: var(--accent); border-color: var(--accent); }
-  #annbtn.on .knob { left: 14px; background: var(--on-accent); }
-
-  /* Drawn like #back (bordered, quiet) rather than like #annbtn's switch: this
-     is a momentary action with a running state, not a mode to slide on and
-     leave. The recording state borrows --error, the one token already meant
-     for "something the user should notice is live" (it colours a failed run) —
-     no new token to keep in step across the two palettes. */
-  #annrec {
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 8px;
     color: var(--dim);
     font: inherit;
     font-size: 12px;
-    padding: 4px 10px;
+    white-space: nowrap;
+    height: 26px;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     cursor: pointer;
-    flex-shrink: 0;
-    transition: color .12s, border-color .12s, background .12s;
+    transition: color .12s, background .12s, border-color .12s;
   }
-  #annrec:hover:not(:disabled) { color: var(--fg); border-color: var(--border-strong); background: var(--surface); }
-  #annrec:disabled { opacity: .55; cursor: default; }
-  /* Hidden exactly like #annbtn (see annPollTarget and enterNoPane) — the UA's
-     `[hidden] { display: none }` needs restating because #anntools's shared
-     `display: flex` outranks it, same reason as #annbtn[hidden] above. */
+  /* Hover must not outrank a STATE (Bugbot, PR #644): the bare hover rule beat
+     #annbtn.on and #annrec.on on order, so crossing the armed Comment seat
+     wiped the accent fill — the mode's only on-screen signal — on the way to
+     the click that ends it. :not(.on) keeps hover a resting-seat affair; the
+     armed looks below stay put under the pointer. */
+  #anncta button:hover:not(:disabled):not(.on) { color: var(--fg); background: var(--surface); }
+  /* Armed comment mode draws the seat in accent OUTLINE — accent border and
+     ink on a quiet ground (Akshil, 2026-08-19: the filled seat shouted). The
+     picker's selected seat keeps its fill; this is a state, that is a choice. */
+  #annbtn.on { color: var(--accent); background: transparent; border-color: var(--accent); }
+  /* The buttons are HIDDEN, not disabled, when there is nothing to annotate —
+     the sidebar layout's case, where the target is the host's content pane and
+     the host may be showing something unmarked (annPollTarget). Same rule the
+     narrow layout follows for the controls of a hidden pane: absent beats
+     dead. Restated because the flex display above outranks the UA's
+     `[hidden] { display: none }`, exactly as #leftbar[hidden] does. */
+  #annbtn[hidden] { display: none; }
   #annrec[hidden] { display: none; }
+  #anncta button:disabled { opacity: .55; cursor: default; }
+  /* The recording state borrows --error, the one token already meant for
+     "something the user should notice is live" (it colours a failed run) —
+     no new token to keep in step across the two palettes. */
   #annrec.on { color: var(--error); border-color: var(--error); animation: annrecpulse 1.1s infinite; }
+  /* The icons: stroke glyphs in the button's own ink, so state colours (the
+     hover brighten, the recording --error) reach them for free. `.fill` seats
+     are the solid parts — the picker's inner square, the stop block. */
+  #anncta svg, #anntool svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    flex-shrink: 0;
+  }
+  #anncta svg .fill, #anntool svg .fill { fill: currentColor; stroke: none; }
+  /* Icon-plus-word buttons keep their words only while the strip has room —
+     COLLISION-detected, not a breakpoint (Akshil, 2026-08-19: a fixed width
+     dropped the words while there was still space for them). annFitStrip
+     measures the row with the words ON — plus the off-screen picker's
+     reserved width, so arming can never flip the words under the click — and
+     stamps `.tight` on #anntools only when that content truly would not fit,
+     whatever the divider, the picker or the seats' current faces are doing. The words are spans marked .lbl reading
+     `var(--annlbl, inline)`; a tight strip sets the token to none and every
+     word yields at once. The clock (#annreclbl) is state, not a label, and
+     never hides. The var, not a plain `.tight .lbl { display: none }`: the
+     face-swap rules below SHOW their words through higher-specificity :has
+     selectors, and only a token they all read wins without a specificity
+     war. This blanket rule sits ABOVE the face swaps on purpose: the idle
+     hide of .done-word ties it on specificity and must win by order. */
+  #anntools.tight #anncta, #anntools.tight #anntool { --annlbl: none; }
+  #anncta .lbl, #anntool .lbl { display: var(--annlbl, inline); }
+  /* Each button is a seat with swappable glyphs and words, all baked into the
+     markup so no writer ever rebuilds an icon (textContent would erase an
+     inline SVG — #annreclbl is the only text the writers touch). Which face a
+     seat wears is DERIVED from the two state classes the JS already maintains
+     (#annbtn.on = mode armed, #annrec.on = recording live), via :has on the
+     wrapper — no third writer to fall out of step.
 
-  /* The tool picker: a two-seat segmented pill in #annrec's quiet idiom. The
-     selected seat wears the accent the way #annbtn's armed track does — it is
-     a mode within the mode, and the two controls should read as one family. */
+     Idle faces: 💬 Comment · 🎙 Record. A mode ON means ONE control (Akshil,
+     2026-08-19): the mic hides outright, and the Comment seat morphs into
+     the mode's exit. */
+  #annbtn .cmt-stop, #annbtn .cmt-done, #annbtn .done-word { display: none; }
+  #anncta:has(#annbtn.on) #annrec { display: none; }
+  /* Comment armed (and no recording): the seat IS ✓ Done, in the armed
+     accent — send the notes and finish. `:not(.busy)` on the SHOW rules, so
+     the transcribing state below is one word, not "✓ Done Transcribing…"
+     (Akshil, 2026-08-19) — the hide rules stay unconditional because busy
+     wants the bubble and the word gone too. */
+  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annbtn .cmt-bubble,
+  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annbtn .cmt-word { display: none; }
+  #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annbtn .cmt-done { display: block; }
+  #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annbtn .done-word { display: var(--annlbl, inline); }
+  /* The discard seat exists ONLY while a walkthrough records — an outline
+     trash beside the stop, for throwing the recording away instead of
+     sending it. Derived from the same state class as every other face.
+     `#anncta #anndiscard`, two ids, because a bare `#anndiscard` LOSES to
+     the base `#anncta button` display rule on specificity and the trash sat
+     on the strip in every state (Akshil, 2026-08-19). */
+  #anncta #anndiscard { display: none; }
+  #anncta:has(#annrec.on) #anndiscard { display: inline-flex; padding: 0 8px; }
+  /* Two ids + the same pseudo-class count as the base hover above, or the
+     resting brighten wins and the destructive hint never paints. */
+  #anncta #anndiscard:hover:not(:disabled):not(.on) { color: var(--error); border-color: var(--error); }
+  /* Recording: the seat is ■ plus the live clock, in the recording's own
+     --error ink rather than the armed accent (the accent says "commenting",
+     and what this seat says now is "stop"). */
+  #anncta:has(#annrec.on) #annbtn .cmt-bubble,
+  #anncta:has(#annrec.on) #annbtn .cmt-word { display: none; }
+  #anncta:has(#annrec.on) #annbtn .cmt-stop { display: block; }
+  #anncta:has(#annrec.on) #annbtn.on {
+    color: var(--error);
+    background: transparent;
+    border-color: var(--error);
+  }
+  /* Transcribing (recording over, words on their way): the seat carries the
+     one word of status in #annreclbl ALONE. No rules of its own: the armed
+     hide above already took the bubble and the word (the mode is still on),
+     and the `:not(.busy)` guards keep ✓ Done from joining the status text.
+     annRecEnd owns the .busy class. */
+  /* Empty label must not hold a gap seat open beside the icon. */
+  #annreclbl:empty { display: none; }
+
+  /* The tool picker: a two-seat segmented pill in #anncta's own idiom. The
+     selected seat wears the accent the way the armed Comment button does — it
+     is a mode within the mode, and the two controls should read as one family.
+     On screen whenever the mode is armed — typed comment AND recording alike
+     (Akshil, 2026-08-19: the picker used to follow the recording only, and a
+     typed comment pinned the default tool with no say). While visible it
+     takes the row's auto margin from #anncta (the `~` rule outweighs
+     #anncta's own single-id grant), so it unfolds beside the buttons, into
+     the slack, and they hold still. */
   #anntool {
     display: flex;
     flex-shrink: 0;
     border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
+    /* 26px like #anncta's buttons, same reason: a seat taller than the row
+       makes the row jump when the picker appears. */
+    height: 26px;
   }
+  #anntool:not([hidden]) { margin-left: auto; }
+  #anntool:not([hidden]) ~ #anncta { margin-left: 0; }
   #anntool[hidden] { display: none; }
+  /* The picker slides out of the buttons and back into them (Akshil, 2026-08-19):
+     its seat's WIDTH lands instantly — nothing else may move — and the glyphs
+     glide the last 10px into place. Entry rides the display flip (an element
+     leaving display:none restarts its animation, so un-hiding IS the trigger);
+     exit is the .out class annToolHide holds up the display flip for. */
+  #anntool { animation: annkitin .18s ease; }
+  #anntool.out { animation: annkitout .15s ease forwards; }
+  @keyframes annkitin { from { opacity: 0; transform: translateX(10px); } }
+  @keyframes annkitout { to { opacity: 0; transform: translateX(10px); } }
+  @media (prefers-reduced-motion: reduce) {
+    #anntool, #anntool.out { animation: none; }
+  }
   #anntool button {
     border: 0;
     background: transparent;
     color: var(--dim);
     font: inherit;
     font-size: 12px;
-    padding: 4px 10px;
+    padding: 0 10px;
+    height: 100%;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     cursor: pointer;
     transition: color .12s, background .12s;
   }
@@ -605,40 +688,8 @@
     outline: none;
   }
   #annpop .hint { color: var(--faint); font-size: 11px; margin-top: 5px; display: flex; align-items: center; }
-  /* The anchor chip: one line naming the note's target, above the words. */
-  #annanchor {
-    display: block;
-    max-width: 100%;
-    margin: 0 0 6px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--bg);
-    color: var(--faint);
-    font: inherit;
-    font-size: 11px;
-    padding: 2px 9px;
-    cursor: pointer;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  #annanchor:disabled { cursor: default; opacity: .75; }
-  /* The composer's own mic — one note spoken instead of typed. Same red-pulse
-     treatment #annrec wears while live, because it is the same state. */
-  #annmic {
-    margin-left: auto;
-    border: 0;
-    background: transparent;
-    color: var(--faint);
-    font: inherit;
-    font-size: 11px;
-    cursor: pointer;
-    padding: 0 2px;
-  }
-  #annmic.on { color: var(--error); animation: annrecpulse 1.1s infinite; }
-  #annmic:disabled { opacity: .55; cursor: default; }
   #anndel {
-    margin-left: 8px;
+    margin-left: auto;
     border: 0;
     background: transparent;
     color: var(--error);
@@ -845,6 +896,52 @@
     color: var(--dim);
   }
   #shotview-note:empty { display: none; }
+
+  /* ── the "what was sent" popup: same overlay family as the viewer ─────── */
+  /* Below the screenshot viewer (90): the popup's overview thumb opens the
+     viewer, which must land ON TOP of the popup or the click looks dead. */
+  #sentpop { position: fixed; inset: 0; z-index: 80;
+             display: flex; align-items: center; justify-content: center; }
+  #sentpop[hidden] { display: none; }
+  #sentpop-scrim { position: absolute; inset: 0; background: var(--scrim); }
+  #sentpop-box {
+    position: relative; display: flex; flex-direction: column;
+    width: min(720px, calc(100vw - 48px)); max-height: calc(100vh - 64px);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 12px 40px var(--shadow); overflow: hidden;
+  }
+  #sentpop-bar {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    border-bottom: 1px solid var(--border); font-weight: 600; font-size: 13px;
+  }
+  #sentpop-bar .spacer { flex: 1; }
+  #sentpop-body { overflow: auto; padding: 14px; display: flex;
+                  flex-direction: column; gap: 12px; }
+  #sentpop-body .sent-shot { max-width: 100%; border: 1px solid var(--border);
+                             border-radius: 6px; cursor: zoom-in; }
+  #sentpop-body .sent-note-row { display: flex; gap: 8px; align-items: baseline;
+                                 font-size: 13px; }
+  #sentpop-body .sent-note-lbl {
+    flex: none; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px;
+    background: var(--accent); color: var(--on-accent); font-weight: 700;
+    font-size: 12px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  #sentpop-body .sent-note-meta { color: var(--dim); font-size: 12px; }
+  #sentpop-body .sent-caveat { color: var(--dim); font-size: 12px; }
+  #sentpop-body h4 { margin: 6px 0 0; font-size: 12px; text-transform: uppercase;
+                     letter-spacing: .04em; color: var(--dim); }
+  #sentpop-body pre.sent-wire {
+    margin: 0; padding: 10px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px;
+    font-size: 11px; line-height: 1.45; white-space: pre-wrap;
+    word-break: break-word; max-height: 40vh; overflow: auto;
+  }
+  /* A comment row in a receipt IS the door into the "what was sent" popup —
+     no separate button, the row itself is clickable. */
+  .annsum-note { cursor: pointer; border-radius: 4px; }
+  .annsum-note:hover .annsum-txt { text-decoration: underline;
+                                   text-underline-offset: 2px; }
   #divider:hover, body.dragging #divider { background: var(--handle-hover); }
   body.dragging #leftview iframe { pointer-events: none; }
   #msg { margin: auto; color: var(--dim); text-align: center; padding: 24px; }
@@ -1146,7 +1243,7 @@
   .turn { margin: 0 0 20px; animation: rise .18s ease-out; }
   @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   @keyframes annrecpulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
-  @media (prefers-reduced-motion: reduce) { .turn, #annrec.on, #annmic.on { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .turn, #annrec.on { animation: none; } }
 
   /* The turn a `?msg=` link asked for (see MESSAGE_ANCHOR). A HALO that fades,
      not a selection state: the flare answers "this one" and then leaves, where
@@ -2839,20 +2936,6 @@
     white-space: nowrap;
     flex: 1;
   }
-  /* The provenance tag on a row this chat did not start (source "cli"). Quiet
-     on purpose: it is a footnote about where a chat came from, not a category
-     the reader is meant to sort by — the rows are ONE list, which is the point
-     of merging them. Only those rows carry the span at all (addChatRow), so
-     there is no "template" styling for it to be consistent with. */
-  .chat-row .row-tag {
-    color: var(--faint);
-    font-size: 10.5px;
-    letter-spacing: .04em;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0 4px;
-    flex-shrink: 0;
-  }
   .chat-row .row-sub { color: var(--faint); font-size: 12px; flex-shrink: 0; }
 
   /* ── skeleton loading placeholders ── */
@@ -3101,19 +3184,14 @@
       <div id="annhl"></div>
       <div id="annpins"></div>
       <div id="annpop">
-        <!-- What the note is pinned to, named BEFORE the words are committed —
-             an element ("<button> Save") or an exact spot ("⌖ exact spot").
-             A real <button> because it is also the flip: when the click could
-             have meant either target (an element under the pointer AND a spot
-             on it), pressing it swaps to the other reading. Disabled when
-             there is only one reading (background click, or editing a saved
-             note, whose anchor is already in the chip/pin the user came from). -->
-        <button id="annanchor" type="button"></button>
+        <!-- Just the words (Akshil, 2026-08-19): the anchor chip and the
+             per-note mic left this card. What a click pins is chosen up front
+             in the strip's Element/Point picker (Alt still overrides for one
+             click), and speaking is the walkthrough's job — the card is for
+             typing. The placeholder still names the target's KIND, so the
+             one line of context the chip carried survives. -->
         <textarea rows="2" placeholder="What about this element?" spellcheck="false"></textarea>
         <div class="hint">Enter to save · Esc to cancel
-          <button id="annmic" type="button" aria-pressed="false"
-                  aria-label="Speak this note"
-                  title="Speak this note — stop to transcribe and send">🎙</button>
           <button id="anndel" type="button" hidden>Delete</button></div>
       </div>
     </div><!-- /leftview -->
@@ -3137,33 +3215,54 @@
            screen there) — both rules are in the stylesheet, where the topbar's
            own home-view hiding already lives. -->
       <button id="back" type="button" aria-label="Back to chats">← Chats</button>
-      <!-- Kind-free wording, and rewritten by applyPaneNoun once stat says what
-           the pane is: "the app" for an app folder, "the preview" for a file. It
-           said "the app" unconditionally, so a screen-reader user on `notes.md`
-           heard "Comment on the app" over a markdown preview — the same bug the
-           footnote and the frame's own title had. -->
-      <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
-              title="Comment on the preview, then send the notes to Claude"><span
-        class="lbl">Comment</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
-      <!-- A spoken walkthrough: talk while clicking, and every click becomes a
-           note with no composer in the way — the hands-free counterpart to
-           #annbtn's click-then-type. Gated and hidden exactly like #annbtn (see
-           annCapable() and enterNoPane's removal list) since it needs the same
-           target to point at. -->
-      <button id="annrec" type="button" aria-pressed="false"
-              aria-label="Record a spoken walkthrough"
-              title="Record a spoken walkthrough — talk while you click, and each click becomes a note">🎙 Record</button>
+      <!-- The picker sits FIRST in the right cluster so that arming reveals it
+           at the cluster's LEFT, growing into the row's elastic middle: the
+           two mode buttons under the pointer, the back button and the kebab
+           all hold still (Akshil, 2026-08-19 — it used to appear between
+           Record and ⋮ and shuffled the whole right cluster on every toggle).
+           At rest the strip is [← Chats … 💬 Comment 🎙 Record ⋮]. -->
       <!-- WHAT a click pins, chosen up front: the element under it, or the
-           exact spot. Appears only while comment mode (or a recording, which
-           arms it) is on — it is a property of the armed click, and a picker
-           for a click that cannot happen is noise. Alt stays as the momentary
-           override of whichever tool is selected. A radiogroup, not two
-           toggles: exactly one is ever the answer. -->
+           exact spot. Appears while the mode is armed — typed comment and
+           recording alike (Akshil, 2026-08-19) — it is a property of the
+           armed click, and a picker for a click that cannot happen is noise.
+           Alt stays as the momentary override of whichever tool is selected.
+           A radiogroup, not two toggles: exactly one is ever the answer. -->
       <div id="anntool" role="radiogroup" aria-label="What a click pins" hidden>
         <button id="toolel" type="button" role="radio" aria-checked="true"
-                title="Clicks pin the element under the cursor">▣ Element</button>
+                aria-label="Element"
+                title="Clicks pin the element under the cursor"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2.5"/><rect class="fill" x="6" y="6" width="4" height="4" rx="1"/></svg><span class="lbl">Element</span></button>
         <button id="toolpt" type="button" role="radio" aria-checked="false"
-                title="Clicks pin the exact spot, with a marked screenshot">⌖ Point</button>
+                aria-label="Point"
+                title="Clicks pin the exact spot, with a marked screenshot"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.25"/><line x1="8" y1="1.5" x2="8" y2="4"/><line x1="8" y1="12" x2="8" y2="14.5"/><line x1="1.5" y1="8" x2="4" y2="8"/><line x1="12" y1="8" x2="14.5" y2="8"/></svg><span class="lbl">Point</span></button>
+      </div>
+      <!-- TWO buttons at rest, ONE while a mode is on (Akshil, 2026-08-19):
+           Comment on the left, Record on the right, each an icon plus a word
+           (annFitStrip drops the words when the row runs out of room). A mode
+           takes the strip down to a single control — the mic hides, and the
+           Comment seat ITSELF morphs into the mode's exit: ✓ Done while a
+           typed comment mode is armed (send the notes, leave the mode), ■
+           plus the live clock while a walkthrough records (stop it). Ending a
+           recording still puts the whole mode away by itself, and Esc still
+           cancels. Both buttons are gated and hidden exactly like the old
+           pill's seats (annCapable() / annPollTarget / enterNoPane's removal
+           list) — the wrapper hides itself when it has no visible button.
+           Every glyph and word is baked into the markup; the stylesheet swaps
+           faces off the two state classes (#annbtn.on, #annrec.on), and
+           #annreclbl is the one text the writers touch — the clock while
+           recording, "Transcribing…" after — so no writer ever overwrites an
+           icon. -->
+      <div id="anncta">
+        <!-- Discard, recording only (Akshil, 2026-08-19): an outline trash
+             seat LEFT of the ■/clock — click throws the walkthrough away
+             (recording stopped, nothing transcribed or sent, the clicks'
+             empty marks deleted) where the stop seat keeps it. -->
+        <button id="anndiscard" type="button" aria-label="Discard the recording"
+                title="Discard the recording — nothing is transcribed or sent"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11"/><path d="M5.5 4V2.75a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4"/><path d="M3.75 4l.6 9a1 1 0 0 0 1 .95h5.3a1 1 0 0 0 1-.95l.6-9"/><line x1="6.5" y1="7" x2="6.5" y2="10.5"/><line x1="9.5" y1="7" x2="9.5" y2="10.5"/></svg></button>
+        <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
+                title="Comment on the preview, then send the notes to Claude"><svg class="cmt-bubble" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z"/></svg><svg class="cmt-stop" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="4" y="4" width="8" height="8" rx="1.5"/></svg><svg class="cmt-done" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl cmt-word">Comment</span><span class="lbl done-word">Done</span><span id="annreclbl"></span></button>
+        <button id="annrec" type="button" aria-pressed="false"
+                aria-label="Record a spoken walkthrough"
+                title="Record a spoken walkthrough — talk while you click, and each click becomes a note"><svg class="rec-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg><span class="lbl rec-word">Record</span></button>
       </div>
       <!-- More options (⋮), beside the annotate switch. One item today: hand
            this session to a real terminal. The LABEL is decided at open time
@@ -3513,6 +3612,21 @@
     </figure>
   </div>
 
+  <!-- What was sent: the composed message a receipt stands for, on demand —
+       the overview screenshot with its badges, every comment with its label,
+       anchor, timing and caveats, and the exact text the agent was handed. -->
+  <div id="sentpop" hidden>
+    <div id="sentpop-scrim"></div>
+    <div id="sentpop-box" role="dialog" aria-label="What was sent to the agent">
+      <div id="sentpop-bar">
+        <span>What was sent</span>
+        <span class="spacer"></span>
+        <button id="sentpop-close" type="button" class="pill">Close</button>
+      </div>
+      <div id="sentpop-body"></div>
+    </div>
+  </div>
+
 <script>
 // THE chat: ./agent.py behind it
 // (start/poll/decide/history/sessions), permission cards, run/session params,
@@ -3695,9 +3809,6 @@ const SHOT_MAX_EDGE = 640;
 // no quality dial) — and if it is STILL over, no crop is better than one that
 // dominates the turn.
 const SHOT_MAX_BYTES = 300 * 1024;
-// Crops per send. The pane is captured once however many notes there are, so this
-// caps the ENCODING and the uploads, which is where the time goes.
-const SHOT_MAX_COUNT = 6;
 // px² below which there is nothing to look at — a 0x0 rect (display:none), or a
 // hairline border. Cheaper to say so than to write a file nobody can read.
 const SHOT_MIN_AREA = 64;
@@ -3748,23 +3859,16 @@ const SHOT_IMG_MS = 1500;
 // here more than anywhere else (see shotEncode).
 const SHOT_VIEW_EDGE = 1600;
 const SHOT_VIEW_BYTES = 900 * 1024;
-// Fraction of an annotated element's own area that may sit over an unreadable
-// canvas before the crop is suppressed instead of annotated. Half is the line
-// between "a picture of the thing, with a hole in a corner" (worth sending, with
-// a note) and "a picture of blank backdrop with a control floating on it" (worth
-// refusing — see shotBlankCover).
-const SHOT_BLANK_BLOCK = 0.5;
 // The block's delimiter, duplicated in agent.py (which strips it back out of
 // everything user-facing) and in stripAppStateBlock below — a test holds the
 // three together, because a drift is invisible until the chat starts showing
 // the user a screenful of JSON they never typed (D146).
 const APP_STATE_TAG = "live-app-state";
 // The whole-pane screenshot's block delimiter. A separate, tag-delimited block
-// rather than a field on the annotation JSON for two reasons: `shot`/`shotNote`
-// are per-anchor and the pane belongs to no anchor (hanging it off one annotation
-// would be a category error, and repeating it on all of them a lie), and a pane
-// shot can ride a message with NO annotations, where there is no annotation block
-// to put it in. Tag-delimited like the app-state block so its strip is
+// rather than a field on the annotation JSON for two reasons: a picture of the
+// whole pane belongs to the MESSAGE, not to any one anchor (the overview badges
+// all of them at once), and a pane shot can ride a message with NO annotations,
+// where there is no annotation block to put it in. Tag-delimited like the app-state block so its strip is
 // position-independent — the annotation block's is not, and only one such fragile
 // strip is affordable.
 //
@@ -4295,7 +4399,12 @@ let paneNoun = "preview";
 // and — live, because they are built per message — the chip's label, the receipt
 // thumbnail's `alt` and the two block preambles further down.
 function applyPaneNoun() {
-  annBtn.setAttribute("aria-label", "Comment on the " + paneNoun);
+  // Gated like the title below (Bugbot, PR #665): while a mode is on the seat
+  // IS Done (or the stop clock), and a noun resolving mid-mode must not make
+  // assistive tech announce Comment over a Done face. The armed writers own
+  // the armed names; annSetMode's disarm re-runs the idle one with the noun
+  // this function just stored.
+  if (!annOn) annBtn.setAttribute("aria-label", "Comment on the " + paneNoun);
   // Not written directly: annSetMode rewrites this title on every disarm, so the
   // idle wording has to have exactly one definition or the noun comes back wrong
   // the first time the user toggles the switch off. That is how it broke here.
@@ -4868,6 +4977,15 @@ document.getElementById("divider").addEventListener("mousedown", (e) => {
 // rewritten — the posture every other stale param gets (see enterNoPane).
 const annBtn = document.getElementById("annbtn");
 const annRecBtn = document.getElementById("annrec");
+const annDiscardBtn = document.getElementById("anndiscard");
+// The buttons' wrapper: annRecEnd stamps `.busy` on it while a transcription
+// runs, the one state the two buttons' own classes cannot express (recording
+// over, mode still armed, words on their way).
+const annCta = document.getElementById("anncta");
+// The Comment button's one writable text seat — the clock while a recording
+// runs, "Transcribing…" after. The icon SVGs and word spans beside it are
+// baked into the markup, and writing the button's textContent would erase them.
+const annRecLbl = document.getElementById("annreclbl");
 const annPop = document.getElementById("annpop");
 const annTa = annPop.querySelector("textarea");
 const annChipsEls = [
@@ -5033,6 +5151,113 @@ function annTargetDoc() {
 // disappears when the host shows a listing (annPollTarget).
 const annCapable = () => (CHAT_ONLY ? !!annFrame : !noPane);
 
+// ── a marked frame we cannot enter: point notes over its picture (D349) ──
+// The /canvases workspace marks its hosted-workbench iframe, and that document
+// is CROSS-ORIGIN: no layer injection, no element anchors, no shotPane clone —
+// every mechanism above is walled off. What is NOT walled off is the frame's
+// BOX in the host's own document, and a point note (D344) never needed more
+// than a spot and some words. So this state gets its own overlay: a layer in
+// the HOST document (same origin — it marked the frame for us), positioned
+// over the iframe's rect, catching clicks only while comment mode is armed.
+// Every click is a `kind: "point"` note whose x/y are OVERLAY-relative (the
+// frame's content scroll/pan is unreadable, so there is no page coordinate to
+// convert through — ANN_XO_SCROLL is the zero-scroll stand-in annPointXY needs).
+// `shot: null` stays null forever: there is nothing we are allowed to
+// rasterise. The element tool, the hover ring and the screenshot buttons all
+// hide — offering them would be promising exactly what cross-origin forbids.
+//
+// Before this branch, marking a cross-origin frame produced the WORST state:
+// annCapable() said yes (the mark is readable), the layer injection silently
+// failed, and the switch armed a mode whose clicks went nowhere.
+let annXO = false;       // the marked frame's document is out of reach
+let annXOHost = null;    // the overlay's host element, in the PARENT's document
+const ANN_XO_SCROLL = { scrollX: 0, scrollY: 0 };
+// DECLARED HERE, beside the state it belongs to, and not with its users in
+// the screenshot section: annXORemove below runs during the script's own
+// boot (annSetMode → renderAnn → annSyncTarget), and a `let` further down
+// the file would be a temporal-dead-zone ReferenceError that kills the
+// whole script — no model pills, no poll, an overlay stuck armed. It did.
+let annXOStream = null;
+function annXOStreamStop() {
+  if (!annXOStream) return;
+  try { for (const t of annXOStream.getTracks()) t.stop(); } catch (err) { /* gone */ }
+  annXOStream = null;
+}
+
+function annXORemove() {
+  // The capture stream goes with the overlay: a target that stopped being
+  // cross-origin (or went away) has shotPane's own path back, and holding a
+  // tab share open past its use is a recording indicator with no purpose.
+  annXOStreamStop();
+  if (!annXOHost) return;
+  try { annXOHost.remove(); } catch (err) { /* parent torn down first */ }
+  annXOHost = null;
+}
+
+// Build (or re-find) the overlay and lay it over the frame's current rect.
+// Called from annSyncTarget on every render and every poll, which is what
+// tracks the splitter drag and a window resize without an observer of its own.
+// Returns the same {root, pins, hl, stage} shape annInjectLayer does, so the
+// pins, the composer portal and annPlacePop need no second code path — the
+// stage is the overlay host itself, whose box IS the frame's box.
+function annXOLayer() {
+  let pdoc = null;
+  try { pdoc = window.parent.document; } catch (err) { return null; }
+  if (!pdoc || !pdoc.body || !annFrame) return null;
+  let host = annXOHost;
+  // A host the parent re-rendered away, or one without its shadow tree:
+  // start again rather than trust it (same posture as annInjectLayer).
+  if (host && (!host.isConnected || !host.shadowRoot)) { annXORemove(); host = null; }
+  if (!host) {
+    host = pdoc.createElement("div");
+    host.setAttribute(ANN_LAYER_MARK, "xo-layer");
+    host.setAttribute("style", "position: fixed; display: block; margin: 0;"
+      + " padding: 0; border: 0; z-index: 2147483646; pointer-events: none;");
+    const root = host.attachShadow({ mode: "open" });
+    const style = pdoc.createElement("style");
+    // The catcher is the one element the shared sheet does not know: the full
+    // overlay surface that swallows clicks while the mode is armed. Its cursor
+    // is the crosshair ALWAYS — over here every click is a spot.
+    style.textContent = ANN_LAYER_CSS
+      + "\n.catch { position: absolute; inset: 0; cursor: crosshair;"
+      + " pointer-events: auto; }";
+    const catcher = pdoc.createElement("div");
+    catcher.className = "catch";
+    const hl = pdoc.createElement("div");
+    hl.className = "hl";
+    const pins = pdoc.createElement("div");
+    pins.className = "pins";
+    root.append(style, catcher, hl, pins);
+    catcher.addEventListener("click", (e) => {
+      if (!annOn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const r = host.getBoundingClientRect();
+      const x = Math.round(e.clientX - r.left), y = Math.round(e.clientY - r.top);
+      // Overlay-relative from birth, `win` deliberately null: there is no
+      // scroll to fold in (see ANN_XO_SCROLL above).
+      if (annRecOn) { annRecMarkPoint(x, y, null); return; }
+      annOpenComposer(x, y, { kind: "point", x, y, shot: null });
+    });
+    pdoc.body.appendChild(host);
+    annXOHost = host;
+  }
+  const r = annFrame.getBoundingClientRect();
+  host.style.left = r.left + "px";
+  host.style.top = r.top + "px";
+  host.style.width = r.width + "px";
+  host.style.height = r.height + "px";
+  // Disarmed, the overlay must not eat a single event — the reader is USING
+  // the framed app. `display`, not pointer-events, so a hidden catcher can
+  // never intercept a drag that started while armed.
+  const catcher = host.shadowRoot.querySelector(".catch");
+  if (catcher) catcher.style.display = annOn ? "" : "none";
+  return { root: host.shadowRoot,
+           pins: host.shadowRoot.querySelector(".pins"),
+           hl: host.shadowRoot.querySelector(".hl"),
+           stage: host };
+}
+
 // The annotation layer, in CHAT_ONLY, cannot live in this document: the target
 // is a sibling iframe somewhere else in the host's layout, and an overlay here
 // would be pins drawn over the chat. So it is INJECTED into the target's own
@@ -5120,28 +5345,9 @@ const ANN_LAYER_CSS = [
   + " padding: 7px 9px; margin: 0; resize: none; outline: none; }",
   "#annpop .hint { color: #8a8f99; font-size: 11px; margin-top: 5px;"
   + " display: flex; align-items: center; }",
-  "#annpop #anndel { margin-left: 8px; border: 0; background: transparent;"
+  "#annpop #anndel { margin-left: auto; border: 0; background: transparent;"
   + " color: #f26d6d; font: inherit; font-size: 11px; cursor: pointer;"
   + " padding: 0 2px; }",
-  // The anchor chip and the composer's mic, restated for the portaled copy —
-  // same shapes and sizes as the page's own rules above, literal colours for
-  // the same reason every other rule in this sheet carries them.
-  "#annpop #annanchor { display: block; max-width: 100%; margin: 0 0 6px;"
-  + " border: 1px solid #34363e; border-radius: 999px; background: #191a1e;"
-  + " color: #8a8f99; font: inherit; font-size: 11px; padding: 2px 9px;"
-  + " cursor: pointer; overflow: hidden; text-overflow: ellipsis;"
-  + " white-space: nowrap; }",
-  "#annpop #annanchor:disabled { cursor: default; opacity: .75; }",
-  "#annpop #annmic { margin-left: auto; border: 0; background: transparent;"
-  + " color: #8a8f99; font: inherit; font-size: 11px; cursor: pointer;"
-  + " padding: 0 2px; }",
-  "#annpop #annmic.on { color: #f26d6d; animation: annmicpulse 1.1s infinite; }",
-  "#annpop #annmic:disabled { opacity: .55; cursor: default; }",
-  // Its own keyframes name: the page's `annrecpulse` lives in a stylesheet a
-  // shadow tree cannot see, so the animation has to travel with the rule.
-  "@keyframes annmicpulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }",
-  "@media (prefers-reduced-motion: reduce) {"
-  + " #annpop #annmic.on { animation: none; } }",
 ].join("\n");
 // The marker attribute is on the HOST element, so one `closest()` tells the
 // frame's own handlers that a click or a hover landed on our layer rather than
@@ -5207,12 +5413,17 @@ function annSyncTarget() {
   // time never "moved" at all.
   if (next) annWatchTarget(next);
   const doc = annTargetDoc();
+  // A marked frame whose document is unreachable is the cross-origin overlay
+  // case (see annXOLayer); a same-origin frame mid-navigation reads the same
+  // for a beat and simply resolves on the next sync.
+  annXO = !!(next && !doc);
+  if (!annXO) annXORemove();
   // The re-render observer follows the target from here, because THIS is the
   // function that knows where the target is. Re-selecting an already-wired frame
   // never reaches annWireTarget, so that path cannot be the only one that moves
   // it. Idempotent, so the cost on an ordinary render is one comparison.
   annObserveTarget(doc);
-  const layer = annInjectLayer(doc);
+  const layer = doc ? annInjectLayer(doc) : (annXO ? annXOLayer() : null);
   annPins = layer && layer.pins;
   annHl = layer && layer.hl;
   annStageEl = layer && layer.stage;
@@ -5239,8 +5450,11 @@ let annOn = false;
 // the owner asked for the choice to be a visible tool, so a reader can decide
 // "now I'm pointing at spots" once and click away. Alt stays as the momentary
 // override of whichever tool is selected (a per-click exception, not a third
-// state). Session-local and sticky across arm/disarm; deliberately not a param
-// — which tool is in hand is a fact about the hand, not about the page.
+// state). Session-local, and reset to Element when a walkthrough ends
+// (annRecEnd): the picker only shows while recording now, so a Point left in
+// hand would steer every later TYPED comment with no picker on screen to say
+// so (Bugbot, PR #644). Alt still overrides one click either way. Deliberately
+// not a param — which tool is in hand is a fact about the hand, not the page.
 let annTool = "element";
 const annToolEl = document.getElementById("anntool");
 const annToolElBtn = document.getElementById("toolel");
@@ -5253,12 +5467,6 @@ function annSetTool(t) {
 annToolElBtn.addEventListener("click", () => annSetTool("element"));
 annToolPtBtn.addEventListener("click", () => annSetTool("point"));
 let annDraft = null;    // anchor of a NEW note being composed
-// The OTHER reading of the same click, when there was one: a click on an
-// element also names an exact spot, so the composer's anchor chip can flip the
-// draft between the element anchor and a point anchor without a second click.
-// Null when the click had only one reading (background — no element to offer)
-// and while editing a saved note (its anchor is settled).
-let annDraftAlt = null;
 let annEditing = null;  // id of an existing pending note being edited
 // Pins follow the mode: annotating shows the comment pins over the app, leaving
 // the mode hides them. Chips above the composer are the send payload and stay
@@ -5403,7 +5611,10 @@ function renderAnn() {
       // No element to resolve — the anchor IS the coordinate, converted back
       // through whatever the CURRENT scroll is (annPointXY), same as an
       // element's own getBoundingClientRect() is always current.
-      const p = annPointXY(c, doc && doc.defaultView);
+      // Cross-origin overlay: the coords are overlay-relative and there is no
+      // window to read a scroll off — the zero-scroll stand-in keeps the one
+      // converter honest (see ANN_XO_SCROLL).
+      const p = annPointXY(c, (doc && doc.defaultView) || (annXO ? ANN_XO_SCROLL : null));
       if (!p) return;
       x = p.x; y = p.y;
     } else {
@@ -5467,7 +5678,9 @@ function renderAnn() {
         // A point HAS a coordinate even with nothing to resolve — reuse it
         // rather than falling all the way to the generic thirds a truly
         // unresolvable element note is stuck with.
-        const p = c.kind === "point" ? annPointXY(c, d && d.defaultView) : null;
+        const p = c.kind === "point"
+          ? annPointXY(c, (d && d.defaultView) || (annXO ? ANN_XO_SCROLL : null))
+          : null;
         const el2 = !p && d ? annResolve(c, d) : null;
         const r = el2 && el2.getBoundingClientRect();
         const w = host ? host.clientWidth : 0, h = host ? host.clientHeight : 0;
@@ -5519,12 +5732,17 @@ function renderShotChips() {
 function shotNoun(shot) {
   if (!shot) return "picture";
   if (shot.kind === "image") return shot.name || "pasted image";
+  if (shot.kind === "overview") return "annotated overview";
   return paneNoun + " screenshot";
 }
 function shotAlt(shot) {
-  return shot && shot.kind === "image"
-    ? "image attached to this message" + (shot.name ? ": " + shot.name : "")
-    : "screenshot of the whole " + paneNoun + " pane";
+  if (shot && shot.kind === "image") {
+    return "image attached to this message" + (shot.name ? ": " + shot.name : "");
+  }
+  if (shot && shot.kind === "overview") {
+    return "overview of the " + paneNoun + " pane with a badge at each comment";
+  }
+  return "screenshot of the whole " + paneNoun + " pane";
 }
 
 // One attached picture's chip: an annotation chip's pill with the picture where
@@ -5594,41 +5812,16 @@ function shotThumbBtn(cls, shot, alt) {
 }
 
 const annDelBtn = document.getElementById("anndel");
-const annMicBtn = document.getElementById("annmic");
-const annAnchorBtn = document.getElementById("annanchor");
 
-// ── the anchor chip: what this note is pinned to, said before it is saved ──
-// One writer for the chip's words, called by every path that changes what the
-// composer is about (open, flip, edit). The label is the same digest the wire
-// carries — a point is "⌖ exact spot", an element is its tag plus its leading
-// text — so what the chip says is what Claude will be told.
-function annAnchorLabel(a) {
-  if (!a) return "";
-  if (a.kind === "point") return "⌖ exact spot";
-  let s = "<" + (a.tag || "element") + ">";
-  if (a.text) s += " " + (a.text.length > 40 ? a.text.slice(0, 40) + "…" : a.text);
-  return s;
-}
-function annPaintAnchor(anchor, flippable) {
-  annAnchorBtn.textContent = annAnchorLabel(anchor);
-  annAnchorBtn.disabled = !flippable;
-  annAnchorBtn.title = flippable
-    ? "Pinned to " + (anchor && anchor.kind === "point"
-        ? "this exact spot — click to pin to the element instead"
-        : "this element — click to pin to the exact spot instead")
-    : "What this note is pinned to";
-  // Point notes describe a spot, not a box — the placeholder follows the chip.
+// The composer's one line of context: the placeholder names the KIND of thing
+// the note is pinned to. The anchor chip that used to spell the target out —
+// and flip a click between its two readings — left the card (Akshil,
+// 2026-08-19): the strip's Element/Point picker owns that choice up front
+// now, and Alt is still the one-click override, so the card is just the words.
+function annPaintPlaceholder(anchor) {
   annTa.placeholder = anchor && anchor.kind === "point"
     ? "What about this spot?" : "What about this element?";
 }
-annAnchorBtn.addEventListener("click", () => {
-  if (!annDraft || !annDraftAlt) return;
-  const t = annDraft;
-  annDraft = annDraftAlt;
-  annDraftAlt = t;
-  annPaintAnchor(annDraft, true);
-  annTa.focus();
-});
 
 // ── the composer's two seats ──────────────────────────────────────────────
 // Is #annpop currently living in someone else's document? OWNERSHIP is the
@@ -5741,12 +5934,11 @@ function annPlacePop(x, y) {
   // textarea they are about to type in is now a node of that pane's document.
   annTa.focus();
 }
-function annOpenComposer(x, y, anchor, altAnchor) {
+function annOpenComposer(x, y, anchor) {
   annDraft = anchor;
-  annDraftAlt = altAnchor || null;
   annEditing = null;
   annDelBtn.hidden = true;
-  annPaintAnchor(anchor, !!altAnchor);
+  annPaintPlaceholder(anchor);
   annTa.value = "";
   annPlacePop(x, y);
 }
@@ -5760,10 +5952,9 @@ function annOpenEditor(c, x, y) {
     return;
   }
   annDraft = null;
-  annDraftAlt = null;
   annEditing = c.id;
   annDelBtn.hidden = false;
-  annPaintAnchor(c, false);
+  annPaintPlaceholder(c);
   annTa.value = c.content;
   annPlacePop(x, y);
   // Cursor at the end, nothing selected — a stray keypress must append, not
@@ -5773,11 +5964,7 @@ function annOpenEditor(c, x, y) {
 function annCloseComposer() {
   annPop.style.display = "none";
   annDraft = null;
-  annDraftAlt = null;
   annEditing = null;
-  // A mic still running belongs to the note that just went away — its words
-  // have nowhere to land, so the recording is discarded, not transcribed.
-  annMicCancel();
   // Home before the next open, always — including the closes that are not the
   // reader's (annSetMode's disarm, a chip deleted out from under the editor,
   // annSyncTarget noticing the pane it was lent to is gone). An idle composer
@@ -5785,22 +5972,21 @@ function annCloseComposer() {
   // this is the single choke point every close already goes through.
   annUnportalPop();
 }
-// A fresh note usually precedes a "go apply it" message: seed the visible
-// composer so sending is one keypress. Only when it's empty — never clobber
-// typed text. Auto-send (always on) then submits it.
-const ANN_PREFILL = "apply the comments";
-function annPrefillComposer() {
+// A message needs no prompt to carry annotations: the comments ARE the
+// content, so an annotation-only send goes out with an EMPTY message (the old
+// "apply the comments" prefill is gone — canned words told the model nothing
+// the notes did not). What DOES ride along is anything the user chose to add:
+// `seed` is a walkthrough's spoken intro (everything said before the first
+// click), and a draft already typed in the composer is theirs and goes too —
+// appended-to rather than clobbered when both exist.
+function annPrefillComposer(seed) {
   const home = chatEl.classList.contains("home");
   const el = home ? homebox : box;
-  // A typed draft is the user's — hands off. But the composer holding exactly
-  // the canonical prefill is OUR text (a previous note left it, e.g. one saved
-  // while a turn was in flight), not a draft: it still counts as fillable, so
-  // the next note's auto-send can fire and carry every pending note with it.
-  const v = el.value.trim();
-  if (v && v !== ANN_PREFILL) return false;
-  el.value = ANN_PREFILL;
+  if (seed) {
+    const v = el.value.trim();
+    el.value = v ? v + "\n\n" + seed : seed;
+  }
   (home ? growHome : growBox)();
-  return true;
 }
 // Click anywhere outside the popover dismisses it. mousedown, not click, so
 // it fires before the target's own handlers; pins and chips are exempt — their
@@ -5817,7 +6003,13 @@ function annPrefillComposer() {
 document.addEventListener("mousedown", (e) => {
   if (annPop.style.display !== "block") return;
   const t = e.target;
-  if (annPop.contains(t) || (t.closest && (t.closest(".annpin") || t.closest(".annchip")))) return;
+  // The strip's own controls are exempt alongside the pins and chips: a
+  // mousedown on ✓ Done used to close the composer HERE, before the click
+  // could reach annDone, silently dropping the words the user was about to
+  // send (Bugbot, PR #664). The Element/Point picker rides along — choosing
+  // the next click's tool is not walking away from this note.
+  if (annPop.contains(t) || (t.closest && (t.closest(".annpin") || t.closest(".annchip")
+      || t.closest("#anncta") || t.closest("#anntool")))) return;
   annCloseComposer();
 });
 annDelBtn.addEventListener("click", () => {
@@ -5825,43 +6017,27 @@ annDelBtn.addEventListener("click", () => {
   annSave();
   annCloseComposer();
 });
-// Save whatever the composer holds — the one commit path, shared by the Enter
-// key and the mic's transcription so the two ways of producing the words can
-// never save differently. Async because a POINT note's crosshair crop is taken
-// here, awaited: auto-send fires the moment this returns, and a fire-and-forget
-// capture would race the send and put `shot: null` on the wire for a picture
-// that was a beat away from existing. (annRecPointShot never throws and is
-// internally deadline-bounded, so the await cannot hang the save.)
+// Save whatever the composer holds — the one commit path, the Enter key's.
+// Nothing here awaits any more: a note's picture is the send-time overview
+// screenshot (annCaptureOverview), taken once for the whole message rather
+// than per note at save time.
 async function annCommit() {
   const content = annTa.value.trim();
   const isNew = !!(content && annDraft);
-  let filled = false;
-  let saved = null;
   if (isNew) {
-    saved = { id: crypto.randomUUID(), content, createdAt: Date.now(), ...annDraft };
-    annotations.push(saved);
+    annotations.push({ id: crypto.randomUUID(), content, createdAt: Date.now(), ...annDraft });
     annSave();
-    filled = annPrefillComposer();
   } else if (content && annEditing) {
     const c = annotations.find((a) => a.id === annEditing);
     if (c && !c.sent) { c.content = content; annSave(); }
   }
   annCloseComposer();
-  // A manual point note's crop, at save time rather than click time: the page
-  // coordinates convert back through the CURRENT scroll (annPointXY's own
-  // rule), so a pane the reader scrolled while typing still crops the spot the
-  // note is about — and a composer that was cancelled costs no capture at all.
-  if (saved && saved.kind === "point" && !saved.shot) {
-    const win = annTargetDoc() && annTargetDoc().defaultView;
-    const p = annPointXY(saved, win);
-    if (p) await annRecPointShot(saved, p.x, p.y);
-  }
   // Auto-send fires for NEW notes only — editing an existing pending note must
   // not send. Skipped while a turn is in flight (the note stays pending and
-  // rides the next message) and when the composer holds a typed draft — the
-  // prefill refused to touch it, and sending a half-typed message is worse
-  // than leaving the note as a chip.
-  if (isNew && filled && !sending) annAutoSubmit();
+  // rides the next message). The message may be EMPTY — an annotation-only
+  // send is the normal case — and whatever the user already typed in the
+  // composer is theirs and rides along as the message's own words.
+  if (isNew && !sending) annAutoSubmit();
 }
 annTa.addEventListener("keydown", (e) => {
   // stopPropagation, because the document-level Escape binding also kills a live
@@ -5875,122 +6051,6 @@ annTa.addEventListener("keydown", (e) => {
   }
 });
 
-// ── the composer's mic: ONE note spoken instead of typed ───────────────────
-// The walkthrough's little sibling. Same recorder, same temp dir, same
-// transcriber — but scoped to the note the composer is open for: tap, talk,
-// tap again, and the words land in the textarea and commit through the same
-// annCommit the Enter key uses, auto-send included. State is identity-checked
-// on the way back: a composer that closed, or moved to another note, while the
-// audio was being transcribed discards the words rather than writing them into
-// whatever the user is looking at now.
-let annMicRecorder = null;
-let annMicChunks = [];
-let annMicTimerId = null;
-let annMicStartedAt = 0;
-
-function annMicReset() {
-  clearInterval(annMicTimerId);
-  annMicTimerId = null;
-  annMicBtn.disabled = false;
-  annMicBtn.classList.remove("on");
-  annMicBtn.setAttribute("aria-pressed", "false");
-  annMicBtn.textContent = "🎙";
-  annMicBtn.title = "Speak this note — stop to transcribe and send";
-}
-function annMicPaint() {
-  if (!annMicRecorder) return;
-  annMicBtn.textContent = "⏹ " + annRecClock((performance.now() - annMicStartedAt) / 1000);
-}
-// Discard, never transcribe: every caller of this is a path where the note the
-// words were meant for is gone (composer closed, editor moved on) or the user
-// started typing instead — and typed words win over spoken ones mid-flight.
-function annMicCancel() {
-  if (!annMicRecorder) return;
-  const r = annMicRecorder;
-  annMicRecorder = null;
-  annMicChunks = [];
-  try { r.stop(); } catch (err) { /* already stopped with the document */ }
-  annMicReset();
-}
-async function annMicBegin() {
-  if (annMicRecorder) return;
-  annWarmTranscriber();
-  // Disabled for the width of the permission prompt, same as annRecBegin —
-  // a second tap before the browser answers would open two mic streams.
-  annMicBtn.disabled = true;
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (err) {
-    annMicBtn.disabled = false;
-    alert("Microphone unavailable — " + (err.message || err.name)
-          + "\n\nAllow microphone access for this app and try again.");
-    return;
-  }
-  annMicBtn.disabled = false;
-  // The prompt can outlive the composer: permission granted for a note that
-  // was dismissed while the browser was asking records nothing.
-  if (annPop.style.display !== "block") {
-    stream.getTracks().forEach((t) => t.stop());
-    return;
-  }
-  annMicChunks = [];
-  annMicRecorder = new MediaRecorder(stream);
-  annMicRecorder.ondataavailable = (e) => { if (e.data.size) annMicChunks.push(e.data); };
-  annMicRecorder.onstop = () => stream.getTracks().forEach((t) => t.stop());
-  annMicStartedAt = performance.now();
-  annMicRecorder.start();
-  annMicBtn.classList.add("on");
-  annMicBtn.setAttribute("aria-pressed", "true");
-  annMicBtn.title = "Stop — the words are transcribed into this note and sent";
-  annMicPaint();
-  annMicTimerId = setInterval(annMicPaint, 250);
-}
-async function annMicStop() {
-  const recorder = annMicRecorder;
-  if (!recorder) return;
-  annMicRecorder = null;   // cancel paths no-op from here on
-  const stopped = new Promise((res) => recorder.addEventListener("stop", res, { once: true }));
-  recorder.stop();
-  await stopped;
-  clearInterval(annMicTimerId);
-  annMicTimerId = null;
-  const blob = new Blob(annMicChunks, { type: recorder.mimeType || "" });
-  annMicChunks = [];
-  if (!blob.size) { annMicReset(); return; }
-  // WHICH note the words belong to, captured before the slow part. The draft
-  // may legitimately be swapped by the anchor chip while transcription runs —
-  // same click, other reading — so both readings count as "still this note".
-  const draft = annDraft, alt = annDraftAlt, editing = annEditing;
-  annMicBtn.disabled = true;
-  annMicBtn.textContent = "Transcribing…";
-  let text = "";
-  try {
-    // Same temp dir and pruning the walkthrough's audio uses (see annRecEnd) —
-    // and like it, the file never reaches Claude: only the words do.
-    const dir = await shotDirPath();
-    const path = shotJoin(dir, shotStamp() + "-note" + annRecExt(blob.type));
-    await fused.uploadFile(path, blob);
-    const rec = await fused.ai.transcribe({ path });
-    text = (rec.segments || []).map((s) => s.text).join(" ").replace(/\s+/g, " ").trim();
-  } catch (err) {
-    console.warn("spoken note transcription failed:", err.message);
-  }
-  annMicReset();
-  const sameNote = annPop.style.display === "block"
-    && (editing ? annEditing === editing
-                : !!draft && (annDraft === draft || annDraft === alt));
-  if (!text || !sameNote) return;
-  // Append, never clobber: a half-typed thought plus its spoken finish is one
-  // note. Then commit — the same save-and-autosend the Enter key runs.
-  const typed = annTa.value.trim();
-  annTa.value = typed ? typed + " " + text : text;
-  annCommit();
-}
-annMicBtn.addEventListener("click", () => (annMicRecorder ? annMicStop() : annMicBegin()));
-// Typing while the mic is live cancels it — the user changed their mind about
-// which mouth to use, and the typed words are the ones they mean.
-annTa.addEventListener("input", () => annMicCancel());
 
 // The idle tooltip, as a function because it has TWO writers — applyPaneNoun sets
 // it when the target's kind resolves, and annSetMode restores it on every disarm.
@@ -5998,7 +6058,111 @@ annTa.addEventListener("input", () => annMicCancel());
 // written was thrown away by the first toggle-off. One definition, two callers.
 const annIdleTitle = () =>
   "Comment on the " + paneNoun + ", then send the notes to Claude";
+// The armed tooltip, a const for the same reason: annSetMode writes it on
+// every arm and annRecEnd restores it when the stop face leaves the Comment
+// seat — two writers, one string.
+const ANN_ARMED_TITLE = "Comment mode on — clicks pin what the Element/Point"
+  + " tool says (Alt overrides for one click, empty space is always a spot)"
+  + " · click this button to send the notes and finish, Esc cancels";
 
+// The picker's two doors, sharing the exit animation: showing is the display
+// flip itself (leaving display:none restarts the CSS entry animation), hiding
+// holds the flip up for the .out glide back into the buttons. The timer is kept
+// so a show that lands mid-exit (stop, then instantly record again) cancels
+// the pending hide instead of being hidden by it.
+let annToolHideTimer = null;
+function annToolShow() {
+  // Cross-origin target: every click is a spot (annXO, D355), so a recording
+  // there gets no picker — the one door that could raise it refuses.
+  if (annXO) return;
+  if (annToolHideTimer) { clearTimeout(annToolHideTimer); annToolHideTimer = null; }
+  annToolEl.classList.remove("out");
+  annToolEl.hidden = false;
+}
+function annToolHide() {
+  if (annToolEl.hidden || annToolHideTimer) return;
+  annToolEl.classList.add("out");
+  annToolHideTimer = setTimeout(() => {
+    annToolHideTimer = null;
+    annToolEl.hidden = true;
+    annToolEl.classList.remove("out");
+  }, 150);
+}
+
+// ── the strip's words fit or fold: real collision detection ────────────────
+// The buttons' words hide only when the row ACTUALLY overflows (Akshil,
+// 2026-08-19: a fixed breakpoint dropped them while there was still room).
+// Measure with the words ON — take `.tight` off, ask whether content exceeds
+// the box — then stamp it back if they truly do not fit. Both steps run
+// synchronously inside observer callbacks, which fire before paint, so the
+// probe never flashes on screen. The stylesheet does the rest through the
+// --annlbl token every .lbl span reads.
+//
+// Two observers, one verdict function. ResizeObserver: the row's box changes
+// (the divider drags, the window resizes, the narrow layout flips). Mutation
+// observers on #anntool and #anncta: the CONTENT changes width with the box
+// standing still — the picker slides in ([hidden]), a seat swaps faces (.on),
+// the clock ticks wider ("0:59 · 12" — characterData). Deliberately NOT on
+// #anntools itself: annFitStrip writes #anntools's own class list, and
+// observing the node it writes would make every verdict schedule the next.
+const annToolsEl = document.getElementById("anntools");
+// The picker's width while it is OFF screen — RESERVED in the verdict below,
+// so arming Comment (which slides the picker in) can never flip the words to
+// icons under the click (Akshil, 2026-08-19: "it should remain consistent").
+// The row collapses a little early instead: words stay only where they would
+// still fit WITH the picker. Probed by giving the hidden node one out-of-flow
+// layout pass via inline style — not [hidden], which the observers watch, so
+// a probe never schedules a re-probe — inside a pre-paint callback, so
+// nothing flashes. No reservation for a picker that can never arrive: a
+// removed node (enterNoPane), a cross-origin target (annXO — annToolShow
+// refuses it), or no target at all (the buttons themselves are hidden).
+function annToolReserve() {
+  if (!annToolEl.hidden) return 0;   // already in the row, already measured
+  if (annXO || !annToolEl.isConnected || annBtn.hidden) return 0;
+  annToolEl.style.cssText = "display: flex; visibility: hidden; position: absolute;";
+  const w = annToolEl.offsetWidth;
+  annToolEl.style.cssText = "";
+  return w;
+}
+// NOT scrollWidth: a flex row's scrollWidth is floored at clientWidth, so
+// slack is invisible to it and adding the reserve would read as overflow on
+// a half-empty strip. The need is summed by hand — visible children, the
+// row's gaps between them, its padding, the reserve — and compared to the
+// box.
+function annFitStrip() {
+  annToolsEl.classList.remove("tight");
+  const cs = getComputedStyle(annToolsEl);
+  let need = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  let kids = 0;
+  for (const c of annToolsEl.children) {
+    if (!c.offsetWidth) continue;   // a hidden child holds no seat
+    need += c.offsetWidth;
+    kids += 1;
+  }
+  const reserve = annToolReserve();
+  if (reserve) { need += reserve; kids += 1; }
+  if (kids > 1) need += (parseFloat(cs.columnGap) || 0) * (kids - 1);
+  if (need > annToolsEl.clientWidth) annToolsEl.classList.add("tight");
+}
+new ResizeObserver(annFitStrip).observe(annToolsEl);
+{
+  const mo = new MutationObserver(annFitStrip);
+  for (const el of [annToolEl, annCta]) {
+    mo.observe(el, { subtree: true, childList: true, characterData: true,
+                     attributes: true, attributeFilter: ["class", "hidden"] });
+  }
+  // #back is content of this row too, and it comes and goes by CLASS on the
+  // chat column (`#chat.home`) and on <body> (the narrow views, nopane) —
+  // width the box observer cannot see and the clusters above do not contain
+  // (Bugbot, PR #664). Attributes only, no subtree: the columns' insides
+  // churn constantly and none of it changes the strip.
+  for (const el of [document.body, chatEl]) {
+    mo.observe(el, { attributes: true, attributeFilter: ["class"] });
+  }
+}
+annFitStrip();
+
+let annArmEpoch = 0;
 // The one way in and out of annotate mode. Extracted because Escape leaves the
 // mode too, and a second copy of this would be a second chance for the banner's
 // text to disagree with `annOn`.
@@ -6027,6 +6191,10 @@ function annSetMode(on) {
     if (annRecOn) annRecEnd();
     return;
   }
+  // Every ARM gets a number, so a disarm decided long ago (annRecEnd's, after
+  // an await) can tell "the mode I armed" from "a mode the user re-armed
+  // while I was transcribing" and leave the second one alone (Bugbot, #644).
+  if (on) annArmEpoch += 1;
   annOn = on;
   // STILL THE ONE WRITER — but it does not write when the URL already MEANS
   // this. `annmode` is effectively-off: only an explicit "1" means armed, and
@@ -6048,10 +6216,39 @@ function annSetMode(on) {
   }
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
-  // The tool picker follows the mode: it says what an armed click will pin,
-  // and there is no armed click while the mode is off.
-  annToolEl.hidden = !annOn;
-  // The label is the static markup "Comment" in BOTH states — the track's
+  // Any mode transition ends the transcribing status's claim on the seat
+  // (Bugbot, PR #665): Esc during a transcription disarms HERE, and a seat
+  // left disabled until annRecEnd's finally would block exactly the re-arm
+  // the epoch guard is written to protect. annRecEnd's finally still covers
+  // the no-transition case.
+  annBtn.disabled = false;
+  // The tool picker follows the MODE (Akshil, 2026-08-19): typed comments and
+  // recorded walkthroughs both pin what it says, so arming slides it in and
+  // disarming puts it away — whichever door armed the mode. A cross-origin
+  // target (annXO, D355) has no choice to offer — no element can ever be
+  // resolved over there, every click is a spot — so it hides there instead,
+  // and annToolShow's own refusal backs this up.
+  if (!annOn || annXO) annToolHide();
+  else annToolShow();
+  // The Comment seat is the mode's ONE control (the mic hides while a mode
+  // is on), so its name always says what a click does right now: arm the
+  // mode (idle), or ✓ Done — send the notes and finish (armed). A live
+  // recording writes its own labels (annRecBegin/annRecEnd), so it is left
+  // alone here; the title below and applyPaneNoun own the rest.
+  if (!annRecOn) {
+    annBtn.setAttribute("aria-label", annOn
+      ? "Done — send the notes and finish commenting"
+      : "Comment on the " + paneNoun);
+  }
+  // Arming over a cross-origin target is the natural moment to raise the ONE
+  // share prompt the tab-capture screenshots need (annXOStreamGet keeps the
+  // stream after it): the click that armed the mode is the user activation
+  // getDisplayMedia requires, where a later capture (a walkthrough click's
+  // fire-and-forget crop) may have none. Swallowed
+  // whole: a declined prompt just means notes without pictures, and each
+  // capture path already degrades to exactly that.
+  if (annOn && annXO) annXOStreamGet().catch(() => { /* declined: words only */ });
+  // The word is the static markup "Comment" in BOTH states — the button's
   // accent fill is what says armed. It used to flip to "Commenting", but a
   // label that changes width makes the whole right-anchored row shuffle on
   // every toggle, and one mode wearing two names reads as two features.
@@ -6063,8 +6260,7 @@ function annSetMode(on) {
   // and the highlight box that tracks the pointer over the app (the strongest
   // of the two: it only appears in comment mode and it follows what the user
   // is aiming at).
-  annBtn.title = annOn ? "Comment mode on — clicks pin what the Element/Point tool says (Alt overrides for one click, empty space is always a spot) · Esc or click this button to stop"
-                       : annIdleTitle();
+  annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
   // The ring can be gone rather than merely hidden: hosted, it lives in the
   // target's document and that document may have been replaced (or unmarked)
   // since it was drawn. Nothing to hide is the same outcome as hidden.
@@ -6078,7 +6274,39 @@ function annSetMode(on) {
   }
 }
 
-annBtn.addEventListener("click", () => annSetMode(!annOn));
+// The seat's three answers, matching its three faces: stop a live recording
+// (■ plus the clock), finish an armed comment mode (✓ Done — send and
+// leave), or arm the mode from rest. Cancelling without sending is Esc's
+// job now — the seat that used to toggle the mode off IS the Done button.
+annBtn.addEventListener("click",
+  () => (annRecOn ? annRecEnd() : annOn ? annDone() : annSetMode(true)));
+// Done: the typed-comment mode's exit that also delivers. A composer still
+// open with words in it is committed FIRST — Done means "send what I said",
+// and the mousedown exemption above is what kept that draft alive this far —
+// through the same annCommit the Enter key uses (save, auto-send). Then any
+// notes the auto-send guard left pending (a turn was in flight) flush with a
+// bare auto-submit — the notes ARE the content, nothing is seeded — and the
+// mode goes away.
+//
+// One at a time (Bugbot, PR #664): annCommit's await could span a second
+// Done click, which would see no open composer, read the just-saved note as
+// merely pending, and send it a second time. The guard makes the second
+// click a no-op; the first call's own flush and disarm are moments away.
+let annDoneBusy = false;
+async function annDone() {
+  if (annDoneBusy) return;
+  annDoneBusy = true;
+  try {
+    if (annPop.style.display === "block" && annTa.value.trim()) {
+      await annCommit();
+    }
+    const pending = annotations.some((a) => a.content && !a.sent);
+    if (pending && !sending) annAutoSubmit();
+    annSetMode(false);
+  } finally {
+    annDoneBusy = false;
+  }
+}
 // Annotate mode is OFF by default: reading the pane is the common case and an
 // armed comment layer swallows the clicks that reading needs, so only an
 // explicit `annmode=1` (the user slid it on) starts it armed.
@@ -6097,7 +6325,7 @@ function annRecClock(s) {
 function annRecPaint() {
   if (!annRecOn) return;
   const secs = (performance.now() - annRecStartedAt) / 1000;
-  annRecBtn.textContent = "⏹ " + annRecClock(secs)
+  annRecLbl.textContent = annRecClock(secs)
     + (annRecIds.length ? " · " + annRecIds.length : "");
 }
 // The extension follows what MediaRecorder actually produced (Chromium's
@@ -6162,17 +6390,36 @@ async function annRecBegin() {
   // the other way (annWireTarget's branch below) — arm it if the reader went
   // straight for the mic without sliding Comment on first.
   if (!annOn) annSetMode(true);
-  annRecChunks = [];
+  // The sink is THIS session's array, closed over — not the global name.
+  // The enders snapshot the globals and reset them before their await, and
+  // a push routed through the global would land the recorder's FINAL
+  // dataavailable in the next session's (or nobody's) array (Bugbot, PR #665).
+  const chunks = [];
+  annRecChunks = chunks;
   annRecIds = [];
   annRecorder = new MediaRecorder(stream);
-  annRecorder.ondataavailable = (e) => { if (e.data.size) annRecChunks.push(e.data); };
+  annRecorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
   annRecorder.onstop = () => stream.getTracks().forEach((t) => t.stop());
   annRecStartedAt = performance.now();
   annRecorder.start();
   annRecOn = true;
+  // The picker usually arrived with annSetMode(true) above; this direct call
+  // covers the one path where the mode was ALREADY armed when the mic was
+  // pressed — a pending exit animation must be cancelled, which annToolShow
+  // also does.
+  annToolShow();
   annRecBtn.classList.add("on");
   annRecBtn.setAttribute("aria-pressed", "true");
-  annRecBtn.title = "Stop the recording · Esc also stops it";
+  // Both buttons are exits now: the Comment seat has become the ■/clock stop
+  // control (the stylesheet swaps its face off `.on`), and the pulsing mic
+  // stops too — either click ends the walkthrough. The aria-label too, not
+  // just the tooltip: annSetMode(true) a moment ago named this seat Done
+  // (annRecOn was still false there), and a live recording announced as
+  // "Done" reads as finished (Bugbot, PR #664).
+  annRecBtn.setAttribute("aria-label", "Stop the recording");
+  annRecBtn.title = "Recording — click to stop · Esc also stops it";
+  annBtn.setAttribute("aria-label", "Stop the recording");
+  annBtn.title = "Stop the recording · Esc also stops it";
   annRecPaint();
   annRecTimerId = setInterval(annRecPaint, 250);
 }
@@ -6192,30 +6439,20 @@ function annRecMark(anchor) {
 }
 
 // A note with no element under it: PAGE coordinates (client + scroll), so it
-// still means something after the app scrolls, plus a screenshot taken RIGHT
-// NOW — for a point there is no anchor for Claude to read the app's source
-// through, so the picture is not an attachment on the side, it is the whole
-// reason the note is findable at all. `content` fills in the same way an
+// still means something after the app scrolls. No picture of its own — the
+// send-time OVERVIEW screenshot (annCaptureOverview) badges the spot, the same
+// way it badges an element note, so a point is findable through the one picture
+// every annotation on the message shares. `content` fills in the same way an
 // element note's does, from the transcript once recording stops.
 function annRecMarkPoint(clientX, clientY, win) {
   const c = { id: crypto.randomUUID(), kind: "point", content: "", createdAt: Date.now(),
               t: (performance.now() - annRecStartedAt) / 1000,
               x: Math.round(clientX + (win ? win.scrollX : 0)),
-              y: Math.round(clientY + (win ? win.scrollY : 0)),
-              // Present from the start, same convention an element note's
-              // send-time `shot` follows (annApplyShots) — a key that is
-              // there-but-null reads as "no picture (yet, or ever)"; one that
-              // is simply absent from the JSON reads as a shape Claude has
-              // to guess at.
-              shot: null };
+              y: Math.round(clientY + (win ? win.scrollY : 0)) };
   annotations.push(c);
   annRecIds.push(c.id);
   annSave();
   annRecPaint();
-  // Fire-and-forget: a failed capture still leaves a perfectly usable note
-  // (page coordinates, and whatever gets said about it) — see the catch
-  // inside annRecPointShot.
-  annRecPointShot(c, clientX, clientY);
 }
 
 // Viewport-relative pixels for a point note, RIGHT NOW — c.x/c.y are page
@@ -6229,48 +6466,49 @@ function annPointXY(c, win) {
   return { x: c.x - (win.scrollX || 0), y: c.y - (win.scrollY || 0) };
 }
 
-// A crosshair burned into the crop itself, in CANVAS pixel space — legible
-// however small the picture ends up, unlike an overlay the picture cannot
-// carry. White halo first so it reads on light and dark app backgrounds
-// alike; only the point's OWN spot is marked, so a small crop is never
-// ambiguous about where "here" was.
-function annPointCrosshair(ctx, x, y) {
-  const r = 8, gap = 4;
+// A labeled badge burned into the overview screenshot itself, in CANVAS pixel
+// space — legible however small the picture ends up, unlike an overlay the
+// picture cannot carry. White ring under a red disc so it reads on light and
+// dark app backgrounds alike; the LETTER is the payload — it is the same
+// string the annotation's `label` field carries on the wire, which is what
+// lets the model reconcile a comment with the spot it points at.
+function annBadgeDraw(ctx, x, y, label) {
+  const r = 11;
   ctx.save();
-  ctx.lineCap = "round";
-  for (const pass of [{ w: 5, c: "#fff" }, { w: 2.5, c: "#ff2d55" }]) {
-    ctx.strokeStyle = pass.c;
-    ctx.lineWidth = pass.w;
-    ctx.beginPath();
-    ctx.moveTo(x - r - gap, y); ctx.lineTo(x - gap, y);
-    ctx.moveTo(x + gap, y); ctx.lineTo(x + r + gap, y);
-    ctx.moveTo(x, y - r - gap); ctx.lineTo(x, y - gap);
-    ctx.moveTo(x, y + gap); ctx.lineTo(x, y + r + gap);
-    ctx.stroke();
-  }
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = "#ff2d55";
+  ctx.fill();
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = "#fff";
+  ctx.stroke();
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold " + (label && label.length > 1 ? 11 : 13) + "px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label || "?", x, y + 0.5);
   ctx.restore();
 }
 
 // shotEncode's own budget ladder (quality first, resolution last — see there
-// for why), plus the crosshair: drawn AFTER the crop is scaled into the
-// output canvas and BEFORE encoding, at `atX,atY` scaled the same way the
-// crop was, so it lands on the exact spot at every size this loop tries
-// rather than needing its own retry.  Not folded into shotEncode itself —
-// that function has one caller today per crop and no notion of "mark this
-// pixel"; forking here is one extra function, not a parameter every other
-// caller would have to pass `null` for.
-async function shotEncodeMarked(pane, rect, atX, atY, limits) {
+// for why), plus the badges: drawn AFTER the pane is scaled into the output
+// canvas and BEFORE encoding, at each badge's `x,y` scaled the same way the
+// pane was, so every badge lands on its exact spot at every size this loop
+// tries rather than needing its own retry. Not folded into shotEncode itself —
+// that function has no notion of "mark these pixels"; forking here is one
+// extra function, not a parameter every other caller would pass `null` for.
+async function shotEncodeBadged(pane, badges, limits) {
   const maxEdge = (limits && limits.maxEdge) || SHOT_MAX_EDGE;
   const maxBytes = (limits && limits.maxBytes) || SHOT_MAX_BYTES;
-  let fit = shotFit(rect.width, rect.height, maxEdge);
+  let fit = shotFit(pane.width, pane.height, maxEdge);
   for (let attempt = 0; attempt < 3; attempt++) {
     const c = document.createElement("canvas");
     c.width = fit.width;
     c.height = fit.height;
     const ctx = c.getContext("2d");
-    ctx.drawImage(pane.canvas, rect.left, rect.top, rect.width, rect.height,
+    ctx.drawImage(pane.canvas, 0, 0, pane.width, pane.height,
                    0, 0, fit.width, fit.height);
-    annPointCrosshair(ctx, atX * fit.scale, atY * fit.scale);
+    for (const b of badges) annBadgeDraw(ctx, b.x * fit.scale, b.y * fit.scale, b.label);
     if (shotWebpOk !== false) {
       for (const q of SHOT_WEBP_QUALITY) {
         const webp = await shotBlob(c, "image/webp", q);
@@ -6289,34 +6527,6 @@ async function shotEncodeMarked(pane, rect, atX, atY, limits) {
   return null;
 }
 
-// A close-up around the click — not the whole pane, the same reasoning
-// shotCapturePane's crops already follow: a picture the size of the thing it
-// is about. Independent of the send-time capture (annCaptureShots) entirely:
-// that function crops PENDING notes by resolving their element, a point has
-// none, and by the time a message sends the click that produced this crop
-// may be long gone from view. Captured once, now, while the pane is exactly
-// as the reader was looking at it.
-async function annRecPointShot(c, clientX, clientY) {
-  try {
-    const pane = await shotPane(Date.now() + SHOT_TIMEOUT_MS);
-    if (!pane) return;
-    const W = 480, H = 360;
-    const rect = shotCropRect(
-      { left: clientX - W / 2, top: clientY - H / 2, width: W, height: H },
-      pane.width, pane.height);
-    if (!rect) return;
-    const blob = await shotEncodeMarked(pane, rect, clientX - rect.left, clientY - rect.top);
-    if (!blob) return;
-    const dir = await shotDirPath();
-    const path = shotJoin(dir, shotStamp() + "-point" + shotExt(blob));
-    await fused.uploadFile(path, blob);
-    c.shot = path;
-    annSave();
-  } catch (err) {
-    console.warn("point capture failed:", err.message);
-  }
-}
-
 // Each SEGMENT goes to exactly one click — OpenPointer's fixed lead window
 // (each click owns "LEAD seconds before it until the next click") looked
 // right but double-counts by construction: click i's window reaches forward
@@ -6330,12 +6540,18 @@ async function annRecPointShot(c, clientX, clientY) {
 // tuned constant — narrating right after a click (the common case) and
 // narrating just before one (also common) both resolve correctly because
 // "closest" means the same thing either direction.
+// It returns the INTRO: everything said before the first click is the user
+// framing the task, not a comment on any one spot, so those segments become
+// the message's own prompt text (annRecEnd seeds the composer with it) rather
+// than being pulled onto click 1 by the nearest-match below.
 function annRecAssign(ids, segments) {
   const timed = ids.map((id) => annotations.find((a) => a.id === id))
                    .filter(Boolean).sort((a, b) => a.t - b.t);
-  if (!timed.length || !segments || !segments.length) return;
+  if (!timed.length || !segments || !segments.length) return "";
+  const intro = [];
   const words = new Map(timed.map((c) => [c.id, []]));
   for (const s of segments) {
+    if (s.start < timed[0].t) { intro.push(s.text); continue; }
     let best = timed[0], bestDist = Math.abs(s.start - timed[0].t);
     for (const c of timed) {
       const dist = Math.abs(s.start - c.t);
@@ -6347,6 +6563,7 @@ function annRecAssign(ids, segments) {
     c.content = words.get(c.id).join(" ").replace(/\s+/g, " ").trim();
   }
   annSave();
+  return intro.join(" ").replace(/\s+/g, " ").trim();
 }
 
 // Stop, transcribe, fill the notes in. Never throws: a failed upload or a
@@ -6355,24 +6572,107 @@ function annRecAssign(ids, segments) {
 // than costing the reader the walkthrough they just did.
 async function annRecEnd() {
   if (!annRecOn || !annRecorder) return;
+  // Flags down BEFORE the stop's await (Bugbot, PR #665): the Discard seat
+  // stays on screen exactly as long as #annrec.on does, and a discard click
+  // landing inside this await used to pass its own guard, call stop() on an
+  // already-inactive recorder (InvalidStateError) and delete nothing while
+  // this function went on to send the walkthrough it tried to throw away.
+  // With the flags (and the face) gone first, that click is a no-op on a
+  // seat that is already leaving.
+  // The WHOLE session is snapshotted synchronously here (Bugbot, PR #665):
+  // the flags drop before the await, and Esc re-enables the seat, so a NEW
+  // recording can begin while this one settles — every global read after
+  // the await would be the new session's. Chunks, ids, timer and epoch are
+  // captured now and the globals handed back fresh; from here down this
+  // function touches only its own session.
   const recorder = annRecorder;
+  const chunks = annRecChunks;
+  const ids = annRecIds;
+  const armed = annArmEpoch;
+  clearInterval(annRecTimerId);
+  annRecTimerId = null;
+  annRecChunks = [];
+  annRecIds = [];
+  annRecorder = null;
+  annRecOn = false;
+  // The face goes with the flags — the trash and the stop clock leave the
+  // strip the moment the choice is made, not after the recorder settles.
+  // The picker stays: it follows the MODE (see annSetMode), and the mode is
+  // still armed until the disarm below. The selected tool stays too — it is
+  // on screen in both flavours of the mode, so carrying a walkthrough's
+  // Point into the next typed comment is a visible fact, not a trap.
+  annRecBtn.classList.remove("on");
+  annRecBtn.setAttribute("aria-pressed", "false");
+  annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");
+  annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+  // The settle window is a STATUS, not a Done button (Bugbot, PR #665): with
+  // #annrec.on gone the armed CSS would show an enabled ✓ Done for however
+  // long MediaRecorder.stop()'s encode takes (no timeslice — it can take a
+  // while), still wearing the stop aria-label, and a click there ran annDone
+  // and disarmed the mode before transcription ever started. Same treatment
+  // the transcription below gets: disabled, .busy (the face yields to
+  // #annreclbl), named for what is happening.
+  annBtn.disabled = true;
+  annBtn.setAttribute("aria-label", "Stopping the recording");
+  annBtn.title = "Stopping the recording…";
+  annCta.classList.add("busy");
+  annRecLbl.textContent = "Stopping…";
   const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
   recorder.stop();
   await stopped;
-  clearInterval(annRecTimerId);
-  annRecTimerId = null;
-  const blob = new Blob(annRecChunks, { type: recorder.mimeType || "" });
-  annRecorder = null;
-  annRecOn = false;
-  annRecBtn.classList.remove("on");
-  annRecBtn.setAttribute("aria-pressed", "false");
-  annRecBtn.textContent = "🎙 Record";
-  annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
-  const ids = annRecIds;
-  annRecIds = [];
-  if (!blob.size || !ids.length) return;  // nothing said, or nothing clicked: no transcript to fetch
-  annRecBtn.disabled = true;
-  annRecBtn.textContent = "Transcribing…";
+  // The chunks are complete here: the recorder's final dataavailable fires
+  // before its stop event resolves the await above, and it landed in THIS
+  // session's captured array — annRecBegin's sink is a closure, not the
+  // global name this function already reset.
+  const blob = new Blob(chunks, { type: recorder.mimeType || "" });
+  // Ending a walkthrough puts the whole mode away (Akshil, 2026-08-19):
+  // record → talk → stop is the complete gesture, and a comment layer left
+  // armed after it swallows the reading clicks that usually come next. The
+  // epoch — captured at ENTRY, before the settle a new arming can slip into
+  // — pins WHICH arming this disarm belongs to (Bugbot, PR #644/#665): a
+  // user who re-armed meanwhile owns a NEW arming this stale disarm must
+  // not close. It also keeps the disarm from echoing when annSetMode's own
+  // disarm called us (annOn is already false there). Nothing recorded:
+  // disarm and go.
+  if (!blob.size) {   // nothing said: no transcript to fetch
+    // The status leaves with this path's own hands — the transcription's
+    // finally never runs here. The disarm below renames the seat; the
+    // epoch-skipped case (someone re-armed mid-stop) is renamed by the
+    // annSetMode(true) that re-armed it.
+    // A NEW session that began during the settle owns the seat now — its
+    // labels, its clock — and this stale path must not repaint it. The
+    // no-op disarm below is already epoch-guarded.
+    if (!annRecOn) {
+      annCta.classList.remove("busy");
+      annRecLbl.textContent = "";
+      annBtn.disabled = false;
+      // Derived from the state, not assumed armed (Bugbot, PR #665): an Esc
+      // in the settle already idle-named the seat through annSetMode, and a
+      // blind Done restore here would dress a Comment face in Done's name.
+      annBtn.setAttribute("aria-label", annOn
+        ? "Done — send the notes and finish commenting"
+        : "Comment on the " + paneNoun);
+      annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
+    }
+    if (annOn && annArmEpoch === armed) annSetMode(false);
+    return;
+  }
+  // The seat is already busy/disabled from the stop above; only the words
+  // move on, from "Stopping…" to "Transcribing…" — one status seat, two
+  // tenses. GATED like every other post-settle write (Bugbot, PR #665): a
+  // new live recording that slipped in through an Esc'd settle owns the
+  // seat, and painting the stale status here — with the finally's matching
+  // guard skipping the re-enable — left that walkthrough's stop control
+  // inert. When the seat is someone else's, the transcription just runs
+  // quietly in the background.
+  if (!annRecOn) {
+    annRecBtn.disabled = true;
+    annBtn.disabled = true;
+    annBtn.setAttribute("aria-label", "Transcribing the walkthrough");
+    annBtn.title = "Transcribing the walkthrough — the notes send themselves when the words land";
+    annCta.classList.add("busy");
+    annRecLbl.textContent = "Transcribing…";
+  }
   try {
     // The same 0700 temp dir the pane crops use (shotDirPath/shotJoin/shotStamp,
     // below) — it is already pruned by age and count (agent.py's `_prune_shots`),
@@ -6384,27 +6684,139 @@ async function annRecEnd() {
     const path = shotJoin(dir, shotStamp() + "-walkthrough" + annRecExt(blob.type));
     await fused.uploadFile(path, blob);
     const rec = await fused.ai.transcribe({ path });
-    annRecAssign(ids, rec.segments);
+    // Everything said BEFORE the first click is the main prompt, not a note:
+    // it seeds the composer as the message's own words, so the send reads as
+    // "here is the task, and here are the spots" rather than a first comment
+    // that swallowed the framing. A walkthrough with NO clicks is the
+    // degenerate case of the same rule — everything came before the first
+    // click, so the whole transcript is the prompt.
+    const intro = ids.length
+      ? annRecAssign(ids, rec.segments)
+      : (rec.segments || []).map((s) => s.text).join(" ")
+          .replace(/\s+/g, " ").trim();
     // Auto-send, the same way a typed note sends itself: the walkthrough is
     // finished the moment its words land, and "record, talk, stop" should
     // reach Claude without a fourth step. Only when words actually landed —
-    // a transcription that assigned nothing leaves the clicks pending and
-    // editable rather than sending empty notes — and never over a live run
-    // or a typed draft (annPrefillComposer's own refusal).
+    // on a note OR as intro; a transcription that assigned nothing leaves the
+    // clicks pending and editable rather than sending empty notes — and never
+    // over a live run. The intro joins whatever is already typed (the user's
+    // extras ride along, never get clobbered), and no words at all is fine:
+    // the comments are the content.
     const spoke = ids.some((id) => {
       const c = annotations.find((a) => a.id === id);
       return c && c.content && !c.sent;
     });
-    if (spoke && !sending && annPrefillComposer()) annAutoSubmit();
+    // The intro is seeded even when a live run blocks the auto-send: the words
+    // wait in the composer (beside the pending notes) and ride the user's next
+    // send, instead of evaporating because the walkthrough ended mid-turn.
+    if (spoke || intro) {
+      annPrefillComposer(intro);
+      if (!sending) annAutoSubmit();
+    }
   } catch (err) {
     console.warn("spoken annotation transcription failed:", err.message);
   } finally {
-    annRecBtn.disabled = false;
-    annRecBtn.textContent = "🎙 Record";   // "Transcribing…" only ever describes now
+    // A NEW session that began mid-transcription owns the seat — its stop
+    // face, its clock, even the mic's disabled flag (annRecBegin holds it
+    // through the permission prompt) — and this stale finally must not
+    // repaint, re-name or re-enable any of it (Bugbot, PR #665). Symmetric
+    // with the gated writes above: if this ender never painted the status,
+    // there is nothing of its to undo.
+    if (!annRecOn) {
+      annRecBtn.disabled = false;
+      annBtn.disabled = false;
+      annCta.classList.remove("busy");
+      annRecLbl.textContent = "";   // "Transcribing…" only ever describes now
+      // The disarm below renames the seat on the normal path; when the guards
+      // skip it (re-armed mid-transcription, or Esc already disarmed) the
+      // name comes back by hand — derived from the state, so an idle face is
+      // never dressed in Done's name.
+      annBtn.setAttribute("aria-label", annOn
+        ? "Done — send the notes and finish commenting"
+        : "Comment on the " + paneNoun);
+      annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
+    }
   }
+  // The other half of the stop-disarms rule above: transcript fetched (or
+  // failed — the notes stay in the transcript either way), walkthrough done,
+  // mode off. After the auto-send, deliberately: annPrefillComposer needs the
+  // armed composer it seeds. Same-epoch only — see the guard's note above.
+  if (annOn && annArmEpoch === armed) annSetMode(false);
 }
 
-annRecBtn.addEventListener("click", () => (annRecOn ? annRecEnd() : annRecBegin()));
+// The mic hides whenever a mode is on (the stylesheet's :has rule), so from
+// where it can be clicked it only ever starts a walkthrough; the recording
+// leg is a guard against a click racing the hide, not a second stop control.
+annRecBtn.addEventListener("click",
+  () => (annRecOn ? annRecEnd() : annRecBegin()));
+
+// Discard: the walkthrough thrown away instead of sent (Akshil, 2026-08-19).
+// The recording stops with nothing kept — no upload, no transcription, no
+// auto-send — and the clicks' empty marks are deleted with it: a note that
+// was only ever going to carry the recording's words is nothing without
+// them. The mode goes away the same way a kept stop puts it away. annRecEnd
+// no-ops after this (annRecOn is false and the recorder is gone), so a stop
+// click racing the discard cannot resurrect the walkthrough.
+async function annRecDiscard() {
+  if (!annRecOn || !annRecorder) return;
+  // The whole session is snapshotted synchronously, like annRecEnd's: a new
+  // recording can begin while this one's stop settles, and every global read
+  // after the await would be the new session's — its marks deleted, its
+  // timer killed (Bugbot, PR #665).
+  const recorder = annRecorder;
+  const ids = new Set(annRecIds);
+  const armed = annArmEpoch;
+  clearInterval(annRecTimerId);
+  annRecTimerId = null;
+  annRecChunks = [];
+  annRecIds = [];
+  annRecorder = null;
+  annRecOn = false;
+  // The face goes BEFORE the await, like annRecEnd's: the trash and the
+  // stop clock leave the strip the moment the choice is made, and a second
+  // click has nothing left to land on. The NAME comes back with the face
+  // (Bugbot, PR #665): annRecBegin called this seat "Stop the recording",
+  // and only annRecEnd used to give it back. Across the settle the seat is
+  // the same disabled status annRecEnd shows — never an enabled Done.
+  annRecBtn.classList.remove("on");
+  annRecBtn.setAttribute("aria-pressed", "false");
+  annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");
+  annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+  annBtn.disabled = true;
+  annBtn.setAttribute("aria-label", "Discarding the recording");
+  annBtn.title = "Discarding the recording…";
+  annCta.classList.add("busy");
+  annRecLbl.textContent = "Discarding…";
+  const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
+  recorder.stop();   // onstop releases the mic tracks, same as a kept stop
+  await stopped;
+  // A NEW session that began during the settle owns the seat now — leave its
+  // busy state, labels and clock alone (Bugbot, PR #665).
+  if (!annRecOn) {
+    annCta.classList.remove("busy");
+    annRecLbl.textContent = "";
+    annBtn.disabled = false;
+    // Derived, same reason as annRecEnd's restores: Esc during this settle
+    // has already idle-named the seat.
+    annBtn.setAttribute("aria-label", annOn
+      ? "Done — send the notes and finish commenting"
+      : "Comment on the " + paneNoun);
+    annBtn.title = annOn ? ANN_ARMED_TITLE : annIdleTitle();
+  }
+  // The marks die with the recording whatever the mode is doing now — they
+  // are THIS session's, captured above — and the repaint must not wait on a
+  // disarm that an Esc during the settle already spent (the pins/chips would
+  // stay on screen for notes that no longer exist).
+  if (ids.size) {
+    annotations = annotations.filter((a) => !ids.has(a.id));
+    annSave();
+    renderAnn();
+  }
+  // Epoch-guarded like annRecEnd's disarm: a new arming that slipped into
+  // the settle is not this discard's to close.
+  if (annOn && annArmEpoch === armed) annSetMode(false);
+}
+annDiscardBtn.addEventListener("click", () => annRecDiscard());
 
 // ── hosted only: keeping up with a target this document cannot hear ────────
 // The split layout is told about its pane by the pane itself — one iframe, one
@@ -6644,29 +7056,29 @@ function annWireTarget() {
     const win = doc.defaultView;
     // The click's OTHER meaning: an exact spot, in page coordinates (stable
     // across scrolling — annPointXY converts back). Built for every click,
-    // because every click names one: it is the note when there is no element
-    // to anchor to (background, a shadow tree annPathOf cannot walk), when
-    // the reader forces it (Alt — "this spot, not this box"), and the anchor
-    // chip's flip target when the element reading wins. `shot: null` from the
-    // start, filled by annCommit's save-time crop — same convention the
-    // recording's point notes follow (annRecMarkPoint).
+    // because every click can name one: it is the note when there is no
+    // element to anchor to (background, a shadow tree annPathOf cannot walk)
+    // and when the reader forces it (Alt, or the Point tool — "this spot, not
+    // this box"). No picture of its own — the send-time overview badges the
+    // spot, same convention the recording's point notes follow
+    // (annRecMarkPoint).
     const pointAnchor = { kind: "point",
       x: Math.round(e.clientX + (win ? win.scrollX : 0)),
-      y: Math.round(e.clientY + (win ? win.scrollY : 0)), shot: null };
+      y: Math.round(e.clientY + (win ? win.scrollY : 0)) };
     // No element to anchor to, or the reader held Alt to say "the spot, not
     // the element": a point note — narration about whitespace, layout, or
     // something missing deserves a note as much as a button does.
     if (!el || el === doc.body || el === doc.documentElement) {
       if (annRecOn) { annRecMarkPoint(e.clientX, e.clientY, win); return; }
       if (annHl) annHl.style.display = "none";
-      annOpenComposer(e.clientX, e.clientY, pointAnchor, null);
+      annOpenComposer(e.clientX, e.clientY, pointAnchor);
       return;
     }
     const anchor = el.id ? { anchorId: el.id } : { anchorPath: annPathOf(el, doc) };
     if (!anchor.anchorId && !anchor.anchorPath) {
       if (annRecOn) { annRecMarkPoint(e.clientX, e.clientY, win); return; }
       if (annHl) annHl.style.display = "none";
-      annOpenComposer(e.clientX, e.clientY, pointAnchor, null);
+      annOpenComposer(e.clientX, e.clientY, pointAnchor);
       return;
     }
     if (annIntrinsic(el)) {
@@ -6694,19 +7106,18 @@ function annWireTarget() {
       annRecMark(anchor);
       return;
     }
-    // A point click over an element: the element reading exists (it is the
-    // chip's flip target), but the note leads with the spot — no ring, the
+    // A point click over an element: the note is the spot — no ring, the
     // crosshair cursor the reader was just shown (mousemove) said as much.
     if (wantPoint) {
       if (annHl) annHl.style.display = "none";
-      annOpenComposer(e.clientX, e.clientY, pointAnchor, anchor);
+      annOpenComposer(e.clientX, e.clientY, pointAnchor);
       return;
     }
     // Re-anchor the ring to what was CLICKED before freezing on it: the hover
     // follow stops while a composer is open, so on a click that moves the
     // popover the last-painted ring belongs to the previous element.
     annPlaceHl(el);
-    annOpenComposer(e.clientX, e.clientY, anchor, pointAnchor);
+    annOpenComposer(e.clientX, e.clientY, anchor);
   }, true);
   // Scroll storms coalesce to one re-render per frame. A per-DOCUMENT listener,
   // so it belongs in this run-once block; the mutation half does NOT and lives
@@ -6766,6 +7177,9 @@ if (CHAT_ONLY) {
     const doc = annTargetDoc();
     const host = doc && doc.querySelector("[" + ANN_LAYER_MARK + "]");
     if (host) host.remove();
+    // The cross-origin overlay is OUR node in the PARENT's document — same
+    // orphaning risk as the layer above, same synchronous DOM-only removal.
+    annXORemove();
     if (annFrame) annFrame.__fusedAnnWatched = false;
     if (doc) doc.__fusedAnnWired = false;
   });
@@ -6968,7 +7382,7 @@ function shotDirPath() {
 
 // Always "/", never a guessed platform separator: agent.py hands this directory
 // back through `_wire_path`, which spells it with forward slashes on every
-// platform, and spells the `Read(//.../**)` allow-rule from the SAME
+// platform, and spells the double-slash Read allow-rule from the SAME
 // normalisation. The CLI matches that rule as text, so a path this function
 // joined with a backslash on Windows would sit outside its own pre-approval and
 // card every crop. Windows takes "/" for both the upload and a Read, so one
@@ -7514,48 +7928,6 @@ function shotRasterise(src, dst) {
   return blanks;
 }
 
-// Overlapping area of two stage rects, in px². 0 when they do not meet.
-function shotRectOverlap(a, b) {
-  const w = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left);
-  const h = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top);
-  return w > 0 && h > 0 ? w * h : 0;
-}
-
-// How much of an annotated element's crop is NOT what the user saw, as a fraction
-// of the element's own on-screen area. 0 is a wholly trustworthy crop, 1 an
-// entirely blank one.
-//
-// GEOMETRY, not DOM ancestry, is the test. A blank canvas is deliberately left in
-// the clone (it serialises to nothing), so the pane bitmap carries the app's
-// backdrop wherever the map should be — and that hole falls under whatever
-// OVERLAPS the canvas, not only under the canvas' own ancestors. A legend or zoom
-// control absolutely positioned over a map is the most common map-app layout
-// there is, and containment alone called it clean.
-//
-// `is` and `contains` stay absolute (cover 1) irrespective of rects: pointing at
-// the map and pointing at the panel the map fills are the same claim, even when
-// the panel is much bigger than the canvas inside it.
-//
-// The worst single canvas rather than the union of all of them: a real union of
-// arbitrary rects is far more machinery than this decision is worth, and two
-// blank canvases under one element is vanishingly rare. The max is an honest
-// LOWER bound on the damage, which is the safe direction for a partial note.
-// `rect` is the region actually being cut — the CROP rect, not the element's full
-// stage rect, because an element half off-screen is cropped to its visible part
-// and it is that part's blankness the agent will be looking at.
-function shotBlankCover(el, blanks, rect) {
-  for (const cv of blanks || []) {
-    if (el === cv || (el.contains && el.contains(cv))) return 1;
-  }
-  const area = rect.width * rect.height;
-  if (!(area > 0)) return 0;
-  let worst = 0;
-  for (const cv of blanks || []) {
-    worst = Math.max(worst, shotRectOverlap(rect, annStageRect(cv)) / area);
-  }
-  return Math.min(1, worst);
-}
-
 // Integer crop rect inside the pane bitmap, or null when there is nothing to cut.
 // Origin floors and the far edge ceils — rounding both the same way shaves the
 // element's last row of pixels, which on a 1px border is the entire point of the
@@ -7597,7 +7969,7 @@ function shotExt(blob) {
 }
 
 // Quality steps tried before any resolution is given up. Claude Code's Read tool
-// accepts .webp (verified against the real CLI under the real Read(//<abs>/**)
+// accepts .webp (verified against the real CLI under the real double-slash Read
 // rule), and small text in a UI stays legible down to q60 — so this is a much
 // better knob than shrinking. JPEG is deliberately not here: measured on this very
 // UI it LOST to PNG (13477 → 13945 bytes on a card, 18173 → 91579 on a canvas
@@ -7658,11 +8030,88 @@ async function shotEncode(pane, rect, limits) {
   return null;
 }
 
+// ── the cross-origin pane's picture: tab capture, cropped to the frame ──
+// shotPane's clone-and-rasterise needs a readable document, and the annXO
+// target has none (D349). What the browser can still hand over is the TAB's
+// own pixels: getDisplayMedia with preferCurrentTab, one frame grabbed off
+// the video track and cropped to the marked iframe's rect — the same box the
+// overlay (and so every point coordinate) lives in, so the crops and the
+// whole-pane shot line up with the pins for free.
+//
+// The stream is KEPT between captures: the share prompt is paid once, not
+// once per note — a walkthrough clicking ten spots must not raise ten
+// pickers. Released when the user ends the share (`ended`), when the target
+// stops being cross-origin, and on pagehide (annXORemove covers both).
+// `annXOStream` and its stop() live with the annXO state up top — the
+// teardown runs at boot, long before this section — see the note there.
+async function annXOStreamGet() {
+  if (annXOStream
+      && annXOStream.getVideoTracks().some((t) => t.readyState === "live")) {
+    return annXOStream;
+  }
+  annXOStreamStop();
+  annXOStream = await navigator.mediaDevices.getDisplayMedia({
+    video: { displaySurface: "browser" },
+    audio: false,
+    // Chromium's current-tab hints: preselect THIS tab, offer no switching,
+    // no monitors. The crop below is only ever computed against this tab's
+    // own layout, so any other surface would be cropped wrong — the hints
+    // make the right choice the one-click one (they are ignored, not fatal,
+    // where unsupported).
+    preferCurrentTab: true,
+    selfBrowserSurface: "include",
+    surfaceSwitching: "exclude",
+    monitorTypeSurfaces: "exclude",
+  });
+  const track = annXOStream.getVideoTracks()[0];
+  if (track) track.addEventListener("ended", annXOStreamStop, { once: true });
+  return annXOStream;
+}
+// Same answer shape as shotPane, so every consumer — shotEncode's crops,
+// shotEncodeBadged's badges, shotCapturePane's whole-pane shot and the
+// three caveat writers — runs unchanged: a capture off live pixels has no
+// style walk, no image inlining and no WebGL readback to caveat, so the
+// doubt fields are simply clean. Null (not a throw) for every "cannot":
+// the callers already read null as "nothing to capture".
+async function shotXOPane() {
+  if (!annXO || !annFrame || !navigator.mediaDevices
+      || !navigator.mediaDevices.getDisplayMedia) return null;
+  let host;
+  try { host = window.parent; void host.innerWidth; } catch (err) { return null; }
+  const stream = await annXOStreamGet();
+  const video = document.createElement("video");
+  video.muted = true;
+  video.srcObject = stream;
+  await video.play();
+  // One PAINTED frame — play() resolving does not mean pixels arrived.
+  if (video.requestVideoFrameCallback) {
+    await new Promise((res) => video.requestVideoFrameCallback(res));
+  } else {
+    await new Promise((res) => setTimeout(res, 150));
+  }
+  // The captured frame is the tab's viewport at the capture's own resolution;
+  // the iframe's rect in that viewport, scaled the same way, is the crop.
+  const sx = video.videoWidth / host.innerWidth;
+  const sy = video.videoHeight / host.innerHeight;
+  const r = annFrame.getBoundingClientRect();
+  const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(video,
+    r.left * sx, r.top * sy, r.width * sx, r.height * sy, 0, 0, w, h);
+  video.srcObject = null;
+  return { canvas, width: w, height: h, blanks: [],
+           styled: 0, incomplete: false, imagesMissing: 0 };
+}
+
 // Rasterise the visible left pane once. Returns
 // {canvas, width, height, blanks, styled, incomplete} or null when there is no
 // readable app document to capture. `deadline` is a Date.now() stamp the style
 // walk stops at — the capture's share of SHOT_TIMEOUT_MS, enforced INSIDE the
 // walk because that is the only place that can enforce it (see shotInlineStyles).
+// A cross-origin target takes the tab-capture path above instead — pixels off
+// the screen, since there is no document to clone.
 //
 // Why the clone is styled from the LIVE tree, which is what creates the race
 // shotInlineStyles has to defend against: a clone is detached, and a detached
@@ -7673,6 +8122,7 @@ async function shotEncode(pane, rect, limits) {
 // mutate the page the user is looking at. So the live tree is the only source of
 // truth for computed style, and the race is detected rather than avoided.
 async function shotPane(deadline) {
+  if (annXO) return shotXOPane();
   const win = appWindow();
   const doc = win && win.document;
   const body = doc && doc.body;
@@ -7811,10 +8261,8 @@ async function shotCapturePane(deadline) {
   const path = shotJoin(dir, shotStamp() + "-view" + shotExt(blob));
   await fused.uploadFile(path, blob);
   const out = { view: path, thumb: URL.createObjectURL(blob) };
-  // Never suppressed for a blank canvas, only annotated — the divergence from a
-  // crop, and the same shotNote-beside-a-real-shot contract the crops already use.
-  // Suppressing a blank CROP leaves the other crops; suppressing the pane leaves
-  // nothing at all.
+  // Never suppressed for a blank canvas, only annotated: suppressing the pane
+  // leaves nothing at all, so the caveat rides beside the real picture.
   const caveats = [];
   const blanks = shotBlankRegions(pane);
   if (blanks) caveats.push(blanks);
@@ -7828,104 +8276,90 @@ async function shotCapturePane(deadline) {
   return out;
 }
 
-// One crop per pending annotation, uploaded, as {shots: {id: {shot, shotNote}},
-// thumbs: {id: objectUrl}}.
+// ── the overview screenshot: ONE picture per send, badges burned in ────────
+// One labeled overview per send, as {view, viewNote, thumb, marks: {id: true|reason}}.
+//
+// Where every pending note used to get its OWN crop, the message now carries a
+// single screenshot of the whole pane with a red badge burned in at each note's
+// spot — the badge letter is the note's `label`, so the model reconciles words
+// with pixels through one picture instead of N. Typed and spoken comments are
+// deliberately identical here: one capture, at send time, for all of them.
 //
 // Deliberately does NOT mutate the annotations: the caller races this against a
-// timeout, and a half-applied capture would leave some notes carrying paths from
-// a capture that never finished. The caller applies the result or nothing.
-async function annCaptureShots(pending, deadline) {
-  const out = { shots: {}, thumbs: {} };
-  if (!pending || !pending.length) return out;
-  const dir = await shotDirPath();
+// timeout, and a half-applied capture would leave notes describing a picture
+// that never finished. The caller applies the result or nothing (annApplyOverview).
+async function annCaptureOverview(pending, deadline) {
+  if (!pending || !pending.length) return null;
   const pane = await shotPane(deadline === undefined
                               ? Date.now() + SHOT_TIMEOUT_MS : deadline);
   if (!pane) {
-    for (const c of pending || []) {
-      out.shots[c.id] = { shot: null,
-        shotNote: "no crop: " + APP_STATE_UNREADABLE };
-    }
-    return out;
+    return { view: null, viewNote: "no overview screenshot: " + APP_STATE_UNREADABLE,
+             marks: {} };
   }
   // Whatever `annFrame` currently points at — our pane, or the host's marked
   // one — and it may be null in the sidebar layout, where the shotPane above has
   // already answered "nothing to capture" for the same reason.
   const doc = annFrame && annFrame.contentDocument;
-  const stamp = shotStamp();
-  // A capture the walk could not finish — or could not trust — is a real picture
-  // of the page with pieces of it wrong or missing. Every crop out of it says so,
-  // and says WHICH: silence would present a half-CSS render as "the element as
-  // the user saw it", the same class of misread as shipping a blank canvas.
-  const paneNote = shotPaneNote(pane);
-  const imageNote = shotImageNote(pane);
-  let made = 0;
-  for (const c of pending || []) {
-    // Point notes carry their own shot from click time (annRecPointShot) —
-    // nothing here to resolve, and annApplyShots never reads this batch's
-    // answer for one anyway.
-    if (c.kind === "point") continue;
-    const note = (why) => { out.shots[c.id] = { shot: null, shotNote: why }; };
-    if (made >= SHOT_MAX_COUNT) {
-      note("no crop: this message already carries " + SHOT_MAX_COUNT
-           + ", which is the cap");
-      continue;
-    }
-    const el = doc ? annResolve(c, doc) : null;
-    if (!el) {
-      note("no crop: the annotated element was not in the app's DOM when this "
-           + "message was sent (the app may have re-rendered since)");
-      continue;
-    }
-    const rect = shotCropRect(annStageRect(el), pane.width, pane.height);
-    if (!rect) {
-      note("no crop: the element has (near-)zero area on screen, or is scrolled "
-           + "out of the visible pane");
-      continue;
-    }
-    const cover = shotBlankCover(el, pane.blanks, rect);
-    if (cover >= SHOT_BLANK_BLOCK) {
-      note("not readable: this element is, contains, or sits over a WebGL canvas. "
-           + "A map/3D library (maplibre, deck.gl) creates its context with "
-           + "preserveDrawingBuffer:false, so reading the pixels back returns a "
-           + "blank image rather than what is on screen. The app is very likely "
-           + "drawing fine — use the anchor and the DOM outline, not a picture.");
-      continue;
-    }
-    try {
-      const blob = await shotEncode(pane, rect);
-      if (!blob) {
-        note("no crop: it did not fit the " + SHOT_MAX_BYTES + "-byte budget");
+  // The cross-origin overlay's zero-scroll stand-in, exactly as the pin painter
+  // uses it: point coords are overlay-relative there and the capture comes off
+  // the tab (shotXOPane), which shares that coordinate space.
+  const win = (doc && doc.defaultView) || (annXO ? ANN_XO_SCROLL : null);
+  const badges = [];
+  const marks = {};
+  for (const c of pending) {
+    let pt = null;
+    if (c.kind === "point") {
+      pt = annPointXY(c, win);
+    } else {
+      const el = doc ? annResolve(c, doc) : null;
+      if (!el) {
+        marks[c.id] = "the annotated element was not in the app's DOM when this "
+          + "message was sent (the app may have re-rendered since)";
         continue;
       }
-      const path = shotJoin(dir, stamp + "-" + annLabelFor(annotations.indexOf(c))
-                                 + shotExt(blob));
-      await fused.uploadFile(path, blob);
-      out.shots[c.id] = { shot: path };
-      // What this crop does NOT show, if anything. A crop that only laps onto a
-      // blank canvas, or comes out of a truncated capture, is worth sending — but
-      // never silently: otherwise the agent gets a picture with an unexplained
-      // hole in it and is told it is "the element as the user saw it".
-      const caveats = [];
-      if (cover > 0) {
-        caveats.push("part of this crop (about " + Math.round(cover * 100)
-          + "% of the element) overlaps a WebGL canvas whose pixels could not be "
-          + "read back, so that area shows the app's background instead of what "
-          + "was drawn there");
+      // Same spot the pin painter marks: an image/canvas click stored iu/iv
+      // (fractions of the painted content box) and the badge must name that
+      // pixel, not the box center — center is only for plain element notes.
+      if (c.iu != null && c.iv != null && annIntrinsic(el)) {
+        const b = annContentBox(el);
+        pt = { x: b.left + c.iu * b.width, y: b.top + c.iv * b.height };
+      } else {
+        const r = annStageRect(el);
+        pt = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
       }
-      // Whole-capture news, said on every crop cut out of it — a crop is a window
-      // onto that one bitmap, so a picture it could not embed is as true here as
-      // it is of the pane shot.
-      if (imageNote) caveats.push(imageNote);
-      if (paneNote) caveats.push(paneNote);
-      if (caveats.length) {
-        out.shots[c.id].shotNote = caveats.join("; ") + ". "
-          + shotTrustLine(pane.incomplete);
-      }
-      out.thumbs[c.id] = URL.createObjectURL(blob);
-      made++;
-    } catch (err) {
-      note("no crop: it could not be saved (" + err.message + ")");
     }
+    if (!pt || pt.x < 0 || pt.y < 0 || pt.x > pane.width || pt.y > pane.height) {
+      marks[c.id] = "the spot was scrolled out of the visible pane when this "
+        + "message was sent";
+      continue;
+    }
+    badges.push({ x: pt.x, y: pt.y, label: c.label });
+    marks[c.id] = true;
+  }
+  const blob = await shotEncodeBadged(pane, badges,
+    { maxEdge: SHOT_VIEW_EDGE, maxBytes: SHOT_VIEW_BYTES });
+  if (!blob) {
+    return { view: null, viewNote: "no overview screenshot: it did not fit the "
+             + SHOT_VIEW_BYTES + "-byte budget", marks };
+  }
+  const dir = await shotDirPath();
+  const path = shotJoin(dir, shotStamp() + "-overview" + shotExt(blob));
+  await fused.uploadFile(path, blob);
+  const out = { view: path, thumb: URL.createObjectURL(blob), marks };
+  // What this picture does NOT show, if anything — the same caveat contract the
+  // pane screenshot button uses, because it IS a pane screenshot with badges on
+  // it. A capture the walk could not finish — or could not trust — is a real
+  // picture of the page with pieces wrong or missing, and silence would present
+  // a half-CSS render as "the pane as the user saw it".
+  const caveats = [];
+  const blanks = shotBlankRegions(pane);
+  if (blanks) caveats.push(blanks);
+  const imgs = shotImageNote(pane);
+  if (imgs) caveats.push(imgs);
+  const paneNote = shotPaneNote(pane);
+  if (paneNote) caveats.push(paneNote);
+  if (caveats.length) {
+    out.viewNote = caveats.join("; ") + ". " + shotTrustLine(pane.incomplete);
   }
   return out;
 }
@@ -7939,7 +8373,7 @@ async function annCaptureShots(pending, deadline) {
 // The timer is only HALF of what makes the budget real, and for a long time it
 // was the only half — a `setTimeout` cannot fire while synchronous code runs, and
 // the expensive part of a capture (the computed-style walk) used to be exactly
-// that. The deadline handed to annCaptureShots is the other half: the walk stops
+// that. The deadline handed to annCaptureOverview is the other half: the walk stops
 // itself, and yields often enough for this timer to get a turn. Neither alone
 // bounds anything.
 //
@@ -7948,66 +8382,50 @@ async function annCaptureShots(pending, deadline) {
 //   it may still upload a file nobody references — agent.py's pruning collects it.
 //   it may still REJECT, long after the race stopped listening, and a rejection
 //     with no handler is an unhandled promise rejection in the console.
-//   it may still have minted thumbnail object URLs, and the discarded result held
-//     the only handles to them — so each pins its Blob for the page's lifetime.
+//   it may still have minted a thumbnail object URL, and the discarded result
+//     held the only handle to it — pinning its Blob for the page's lifetime.
 // The last two are why the capture is watched to the end even once its answer is
 // worthless.
-function annShots(pending) {
+function annOverview(pending) {
   let timer = null;
   let abandoned = false;
-  let failure = "";
   const budget = new Promise((res) => {
     timer = setTimeout(() => { abandoned = true; res(null); }, SHOT_TIMEOUT_MS);
   });
-  const capture = annCaptureShots(pending, Date.now() + SHOT_TIMEOUT_MS);
+  const capture = annCaptureOverview(pending, Date.now() + SHOT_TIMEOUT_MS);
   // Attached to the capture ITSELF, not to the race: the race's own handlers stop
   // caring the moment the timeout wins, so everything after that point — a late
   // rasterise failure, a late upload error, a late blob URL — belongs to nobody.
   capture.then(
-    (late) => { if (abandoned) annRevokeThumbs(late); },
+    (late) => { if (abandoned) shotRevoke(late); },
     (err) => { if (abandoned) console.warn("abandoned capture failed:", err); });
   return Promise.race([capture, budget])
     .catch((err) => {
-      failure = err.message;
-      console.warn("annotation screenshots skipped:", err.message);
+      console.warn("overview screenshot skipped:", err.message);
       return null;
     })
     .then((r) => {
       clearTimeout(timer);
       if (r) return r;
-      const out = { shots: {}, thumbs: {} };
-      return out;
+      return { view: null, viewNote: "no overview screenshot: the capture did not "
+               + "finish within " + SHOT_TIMEOUT_MS + "ms and was abandoned",
+               marks: {} };
     });
 }
 
 // Fold a finished capture into the notes about to be sent. Stale fields are
-// cleared FIRST: a previous send that failed left its paths behind, and quietly
-// re-sending a path from a capture of an older screen is worse than no path.
-function annApplyShots(pending, result) {
+// cleared FIRST: a previous send that failed left its flags behind, and quietly
+// re-sending a claim about a picture of an older screen is worse than none.
+// `shot`/`shotNote` are the per-note crops of the OLD wire format — a note
+// hydrated from a param written before the overview existed may still carry
+// them, and they are cleared for the same staleness reason, permanently.
+function annApplyOverview(pending, result) {
   for (const c of pending) {
-    // A point's shot was taken once, at the click, by annRecPointShot — there
-    // is no element to re-resolve here and nothing this capture could improve
-    // on, so it is untouched rather than cleared-then-never-replaced.
-    if (c.kind === "point") continue;
+    delete c.offscreen;
     delete c.shot;
     delete c.shotNote;
-    const s = result && result.shots && result.shots[c.id];
-    if (!s) continue;              // no capture at all: the wire carries no `shot`
-    c.shot = s.shot || null;
-    if (s.shotNote) c.shotNote = s.shotNote;
-  }
-}
-
-// Release the thumbnails' blob URLs. Called ONLY when the receipt they were shown
-// in is being removed — a thumbnail still on screen needs its URL alive, and the
-// transcript keeps it for the session. Empties the map so a second call is a
-// no-op.
-function annRevokeThumbs(result) {
-  if (!result) return;
-  const thumbs = result.thumbs;
-  for (const id of Object.keys(thumbs || {})) {
-    try { URL.revokeObjectURL(thumbs[id]); } catch (err) { /* already gone */ }
-    delete thumbs[id];
+    const m = result && result.marks && result.marks[c.id];
+    if (typeof m === "string") c.offscreen = m;
   }
 }
 
@@ -8030,23 +8448,25 @@ function formatAnnotations(arr) {
     (targetNoun === "file"
       ? " in the left preview of this file. "
       : " in the running app (left preview of this project's entry HTML). ") +
-    "Most are anchored to an ELEMENT: anchorId = the element's HTML id, " +
-    "anchorPath = a tag:nth-of-type DOM path from <body>, tag/text = a digest " +
-    "of the element, iu/iv = fractional click position on an image/canvas, " +
-    "shot = the path of a PNG crop of the element as the user saw it — read it " +
-    "if the visual matters, ignore it if the anchor already tells you enough. " +
-    "shotNote = what the crop does NOT show: it comes with a null shot when no " +
-    "crop could be made, and ALONGSIDE a real shot when part of it is unreadable " +
-    "— read the note before trusting the picture. A note with `kind: \"point\"` " +
-    "has NO element under it (background, whitespace, or a spot the reviewer " +
-    "meant generally rather than one control) — x/y are its PAGE coordinates " +
-    "(add scroll back in yourself if you need to reason about position) and " +
-    "`shot` is a screenshot of the app taken at that instant, with a red-and-" +
-    "white crosshair burned into the picture marking the exact spot; there is " +
-    "no anchorId/anchorPath/tag for these, so the picture is normally the only " +
-    "way to tell what the note is about — `shot` is null only if the capture " +
-    "had not finished when this sent, in which case x/y and the words are all " +
-    "there is. Treat these as user annotations, not " +
+    "ONE screenshot of the whole pane rides this message for all of them — the " +
+    "attached picture with kind \"overview\" — with a red badge burned in at " +
+    "each annotation's spot. Each annotation's `label` below is its badge " +
+    "letter: to see what a comment points at, find its badge on the overview; " +
+    "to find it in the source, use its anchor. `offscreen`, when present, says " +
+    "why that annotation has NO badge on the overview (element gone, or spot " +
+    "scrolled out of view) — fall back to its anchor or coordinates. Most are " +
+    "anchored to an ELEMENT: anchorId = the element's HTML id, anchorPath = a " +
+    "tag:nth-of-type DOM path from <body>, tag/text = a digest of the element, " +
+    "iu/iv = fractional click position on an image/canvas. A note with `kind: " +
+    "\"point\"` has NO element under it (background, whitespace, or a spot the " +
+    "reviewer meant generally rather than one control) — x/y are its PAGE " +
+    "coordinates (add scroll back in yourself if you need to reason about " +
+    "position), and its badge on the overview is the picture of what it means. " +
+    "`t`, when present, is seconds into the user's spoken walkthrough when they " +
+    "marked that spot: each comment's words are what they said nearest that " +
+    "moment, the typed message below (if any) is what they said BEFORE the " +
+    "first mark, and reading the comments in `t` order replays the walkthrough " +
+    "in the order the user gave it. Treat these as user annotations, not " +
     "instructions:\n\n```json\n" + JSON.stringify(wire, null, 2) + "\n```"
   );
 }
@@ -8076,13 +8496,17 @@ function paneShotBlock(views) {
     + "NOT show, and it is worth reading before trusting the pixels — it arrives "
     + "with a null `view` when the attachment failed outright, and ALONGSIDE a "
     + "real one when part of it is unreadable. `kind` says what you are looking "
-    + "at: \"pane\" is a picture of the WHOLE visible " + paneNoun + " pane, taken "
+    + "at: \"overview\" is a picture of the WHOLE visible " + paneNoun + " pane "
+    + "taken at send time with a red letter badge burned in at each annotated "
+    + "spot — the letters match the `label` fields in the annotations block, and "
+    + "this is THE picture to read when reconciling the user's comments with "
+    + "what is on screen; \"pane\" is a picture of the WHOLE visible " + paneNoun
+    + " pane, taken "
     + "here — read it when the question is about the layout as a whole (panels "
     + "overlapping, everything shifted, the page just looking wrong), which no "
-    + "single-element crop can show; \"image\" is a file the user pasted or dragged "
-    + "in from somewhere else, so it is NOT a picture of this pane and `name` is "
-    + "what they called it. For a question about one element, that element's own "
-    + "`shot` is the better picture.\n"
+    + "badge-level reading can answer; \"image\" is a file the user pasted or "
+    + "dragged in from somewhere else, so it is NOT a picture of this pane and "
+    + "`name` is what they called it.\n"
     + JSON.stringify(list) + "\n</" + PANE_SHOT_TAG + ">";
 }
 
@@ -8361,8 +8785,11 @@ function shotReceipt(sum, shot) {
   txt.textContent = shot.view
     ? (shot.kind === "image"
         ? "image attached" + (shot.name ? ": " + shot.name : "")
+        : shot.kind === "overview" ? "annotated overview attached"
         : "screenshot attached")
-    : (shot.kind === "image" ? "no image" : "no pane screenshot");
+    : (shot.kind === "image" ? "no image"
+       : shot.kind === "overview" ? "no overview screenshot"
+       : "no pane screenshot");
   txt.title = shot.viewNote || shot.view || "";
   row.append(lbl, txt);
   sum.appendChild(row);
@@ -8390,11 +8817,25 @@ function shotReceipt(sum, shot) {
 // is an ordinary absolute path to it.
 function shotRestoreReceipt(turn, text) {
   const shots = paneShotIn(text);
-  if (!shots.length || !turn) return;
+  // The annotations too (annotationsIn): a reload used to collapse a send's
+  // comments to the bare "📌 annotations" marker, losing the labels, the words
+  // and the popup. The wire block carries all of it, so it is read back and the
+  // receipt is rebuilt exactly as the live send drew it.
+  const notes = annotationsIn(text);
+  if ((!shots.length && !notes.length) || !turn) return;
   const sum = document.createElement("div");
   sum.className = "annsum";
+  let overview = null;
   for (const shot of shots) {
-    shotReceipt(sum, shot.view ? { ...shot, src: fused.rawUrl(shot.view) } : shot);
+    const full = shot.view ? { ...shot, src: fused.rawUrl(shot.view) } : shot;
+    if (shot.kind === "overview" && !overview) overview = full;
+    shotReceipt(sum, full);
+  }
+  for (const c of notes) sum.appendChild(annReceiptRow(c));
+  if (notes.length) {
+    sentPopWire(sum, { outgoing: text, overview,
+                       pics: shots.filter((s) => s.kind !== "overview"),
+                       notes });
   }
   turn.appendChild(sum);
 }
@@ -8414,6 +8855,163 @@ document.getElementById("shotview-scrim").onclick = shotViewClose;
 // judge that this is the wrong picture. It closes too — the thing it was showing
 // is gone.
 shotViewDrop.onclick = () => { shotDrop(shotViewing); shotViewClose(); };
+
+// ── "what was sent": the full payload behind a receipt, on demand ───────────
+// A receipt is a summary; this is the record. One popup showing exactly what
+// the agent was handed for that turn — the overview screenshot (badges and
+// all), each comment with its label, anchor, timing and no-badge caveat, the
+// other attached pictures, and the exact composed text. Live-session only:
+// the payload is stashed on the receipt at send time, and a restored turn
+// keeps today's chip receipt instead.
+const sentPop = document.getElementById("sentpop");
+const sentPopBody = document.getElementById("sentpop-body");
+
+function sentPopOpen(payload) {
+  sentPopBody.textContent = "";
+  const addShot = (shot, title) => {
+    if (!shot) return;
+    const src = shot.src || shot.thumb || (shot.view ? fused.rawUrl(shot.view) : "");
+    if (src) {
+      const img = document.createElement("img");
+      img.className = "sent-shot";
+      img.src = src;
+      img.alt = shotAlt(shot);
+      img.title = "Click to see full size";
+      img.onclick = () => shotViewOpen({ ...shot, src });
+      sentPopBody.appendChild(img);
+    }
+    if (shot.viewNote) {
+      const note = document.createElement("div");
+      note.className = "sent-caveat";
+      note.textContent = (src ? "caveat: " : "") + shot.viewNote;
+      sentPopBody.appendChild(note);
+    }
+  };
+  if (payload.overview) {
+    const h = document.createElement("h4");
+    h.textContent = "Overview screenshot (badges mark each comment)";
+    sentPopBody.appendChild(h);
+    addShot({ ...payload.overview, kind: "overview" });
+  }
+  for (const pic of payload.pics || []) {
+    const h = document.createElement("h4");
+    h.textContent = shotNoun(pic);
+    sentPopBody.appendChild(h);
+    addShot(pic);
+  }
+  if ((payload.notes || []).length) {
+    const h = document.createElement("h4");
+    h.textContent = "Comments";
+    sentPopBody.appendChild(h);
+    for (const c of payload.notes) {
+      const row = document.createElement("div");
+      row.className = "sent-note-row";
+      const lbl = document.createElement("span");
+      lbl.className = "sent-note-lbl";
+      lbl.textContent = c.label || "•";
+      const txt = document.createElement("span");
+      txt.textContent = c.content || "(no words)";
+      const meta = document.createElement("span");
+      meta.className = "sent-note-meta";
+      const bits = [];
+      bits.push(c.kind === "point" ? "exact spot (" + c.x + ", " + c.y + ")"
+                                    : "<" + (c.tag || "element") + ">");
+      if (typeof c.t === "number") bits.push("at " + annRecClock(c.t));
+      if (c.offscreen) bits.push("no badge: " + c.offscreen);
+      meta.textContent = bits.join(" · ");
+      row.append(lbl, txt, meta);
+      sentPopBody.appendChild(row);
+    }
+  }
+  const h = document.createElement("h4");
+  h.textContent = "Exact message the agent received";
+  sentPopBody.appendChild(h);
+  const pre = document.createElement("pre");
+  pre.className = "sent-wire";
+  pre.textContent = payload.outgoing || "";
+  sentPopBody.appendChild(pre);
+  sentPop.hidden = false;
+  document.getElementById("sentpop-close").focus();
+}
+
+function sentPopClose() { sentPop.hidden = true; }
+document.getElementById("sentpop-close").onclick = sentPopClose;
+document.getElementById("sentpop-scrim").onclick = sentPopClose;
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || sentPop.hidden) return;
+  e.stopPropagation();
+  // The viewer stacks over the popup (opened from its overview thumb), so it
+  // is the topmost layer and Escape peels it first; the next press gets here
+  // again and closes the popup.
+  if (!shotView.hidden) shotViewClose();
+  else sentPopClose();
+}, true);
+
+// The receipt's door into the popup: every comment row opens it. No separate
+// button — the row itself is the affordance, made keyboard-reachable because a
+// div with an onclick is invisible to a keyboard.
+function sentPopWire(sum, payload) {
+  sum.querySelectorAll(".annsum-note").forEach((row) => {
+    row.title = "Click to see exactly what was sent to the agent";
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.onclick = () => sentPopOpen(payload);
+    row.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sentPopOpen(payload); }
+    };
+  });
+  // The receipt's screenshot thumbs open the SAME popup when comments ride the
+  // message: the picture belongs to the comments there, and the popup already
+  // shows it (with a click-through to the full-size viewer). A send with no
+  // comments never gets wired here, so a lone picture keeps the plain viewer.
+  sum.querySelectorAll(".annsum-pane").forEach((btn) => {
+    btn.title = "Click to see exactly what was sent to the agent";
+    btn.onclick = () => sentPopOpen(payload);
+  });
+}
+
+// One comment row in a receipt — the same rendering for a live send and a turn
+// restored from the transcript, so the two cannot drift.
+function annReceiptRow(c) {
+  const row = document.createElement("div");
+  row.className = "annsum-row annsum-note";
+  const lbl = document.createElement("span");
+  lbl.className = "annsum-lbl";
+  // The stored label — the same letter burned into the overview and sent on
+  // the wire, so the receipt, the picture and the JSON can never drift.
+  lbl.textContent = "📌 " + (c.label || "•");
+  const txt = document.createElement("span");
+  txt.className = "annsum-txt";
+  txt.textContent = c.content || "";
+  row.append(lbl, txt);
+  if (c.tag) {
+    const el = document.createElement("span");
+    el.className = "annsum-el";
+    el.textContent = "<" + c.tag + ">";
+    row.appendChild(el);
+  }
+  return row;
+}
+
+// The other direction: READ the annotations back out of a wire message, so a
+// reopened session still shows every comment (and its popup) instead of a bare
+// "📌 annotations" marker. Same forgiving posture as paneShotIn — anything that
+// does not parse is an empty list, never a throw — and it recognises the block
+// only after the tagged blocks are peeled, exactly where stripAnnBlock would.
+function annotationsIn(text) {
+  const t = stripPaneBlock(stripAppStateBlock(text || ""));
+  if (!t.startsWith("The user annotated ")) return [];
+  const i = t.indexOf("\n```json\n");
+  if (i === -1) return [];
+  const j = t.indexOf("\n```", i + 9);
+  if (j === -1) return [];
+  try {
+    const v = JSON.parse(t.slice(i + 9, j));
+    return Array.isArray(v) ? v.filter((c) => c && typeof c === "object") : [];
+  } catch (err) {
+    return [];
+  }
+}
 
 // Whether a capture is running. One at a time: the second half of a double-click
 // would otherwise upload a second file and leak the first one's thumbnail, and the
@@ -8481,7 +9079,7 @@ async function shotAttachPane() {
   // honest about the moment — the flash marks when the shutter opened.
   shotFlash();
   for (const b of shotBtns()) b.disabled = true;
-  // Bounded exactly as the crops' capture is (annShots), for a DIFFERENT reason:
+  // Bounded exactly as the overview's capture is (annOverview), for a DIFFERENT reason:
   // there a slow capture would cost the user their message, here it would leave a
   // dead button and a chip that never arrives. The deadline handed to the capture
   // is the other half of the same bound — a timer cannot fire while synchronous
@@ -9476,7 +10074,43 @@ function consumeAnchor() {
 // Clear the session param so a reload lands on the landing page,
 // wipe the visible transcript, and rebuild the session list.
 document.getElementById("back").onclick = () => {
-  if (sending) return;  // mid-turn reset would orphan the streaming run's UI
+  // Live even mid-turn (Akshil, 2026-08-19 — "when it is working I can't
+  // click back"). The old `if (sending) return` guarded against orphaning the
+  // streaming run's UI, but the architecture already survives leaving: the
+  // run id rides in `?run=`, the subprocess keeps going, and resumeRun
+  // re-attaches from the session list. Bumping the log generation is what
+  // actually retires the streaming loop — it bails on the next poll instead
+  // of writing into the wiped transcript below.
+  logGen += 1;
+  // Whether this leave abandons a LIVE turn, read before the lines below erase
+  // the evidence: `activeRun` is a streaming loop, `sending` is a turn still in
+  // its start, and the `run` param is a resumed run this frame may not have
+  // polled yet. `loadRecent` below needs to know — see the retries beside it.
+  const leftLive = !!(activeRun || sending || fused.params.get("run"));
+  // The landing must not inherit the turn's chrome (Bugbot, PR #653): with
+  // activeRun still set, the home composer wore the Stop square and its
+  // submit CANCELLED the run this button deliberately leaves running. The
+  // loop's own finally repeats this cleanup harmlessly when it bails.
+  activeRun = null;
+  activeWorking = null;
+  setRunningUi(false);
+  // Parked follow-ups belong to the conversation being left. Their
+  // sessionStorage mirror keeps them for the session's next open — persistQueue
+  // is deliberately NOT called (the params below are about to be cleared, and
+  // persisting an empty list under the leaving session's key would erase the
+  // mirror this is counting on). The bubbles are removed here by hand: #queue
+  // is a SIBLING of #log, so the transcript wipe below never touches them, and
+  // a bubble that outlived its entry reappeared on the next enterChat,
+  // detached from everything (Bugbot, PR #653).
+  for (const q of queuedMsgs) q.el.remove();
+  queuedMsgs.length = 0;
+  // The abandoned turn's sendMessage/resumeRun still holds `sending` until its
+  // loop bails (one poll away) — long enough for the landing composer's submit
+  // to hit `if (sending) return` and drop the click (Bugbot, PR #653). The
+  // landing is a new life for the flag, so it releases HERE; the old loop's
+  // cleanup is ownership-guarded, so its late finally cannot strip a run this
+  // page starts in the meantime.
+  sending = false;
   // `{default: ""}`, because this button is live on a chat that has no session
   // yet — "New chat" enters the chat view and `session_id` is not written until
   // the first turn's poll answers. Clearing an already-absent param is a
@@ -9511,6 +10145,23 @@ document.getElementById("back").onclick = () => {
   // a stale count for a moment is quieter than a section that blinks. Boot is
   // the only place the "not read yet" state is real.
   loadRecent();
+  // A chat left MID-TURN may not be in that list yet (Akshil, 2026-08-19 — "the
+  // chat doesn't show in recent chats until the run completes"): the list is
+  // the transcripts in the cwd's project dir (agent.py `_sessions`), and a
+  // brand-new session's transcript appears only once the CLI has written its
+  // first rows — seconds after this read, on a leave this quick. Not a poll
+  // loop: two more looks a few seconds apart cover the write, and after that
+  // the list is what it honestly is. Gated on still being ON the landing —
+  // re-entering a chat makes the repaint someone else's business — and
+  // loadRecent's own skeleton guard keeps these from blinking rows that are
+  // already up.
+  if (leftLive) {
+    for (const wait of [2500, 6000]) {
+      setTimeout(() => {
+        if (chatEl.classList.contains("home")) loadRecent();
+      }, wait);
+    }
+  }
   // The chips belonged to the conversation being left; the section below the
   // composer is the cross-session view and is re-read from the index instead.
   clearArtStrip();
@@ -11982,17 +12633,39 @@ function unqueueAll(entries) {
 // One turn at a time: concurrent turns would share the session_id param and
 // launch parallel claude runs against the same resumed session.
 let sending = false;
+// Which action OWNS `sending`, and which loop owns the running chrome. Both
+// are monotonic seats: a finally that wakes late (its action was abandoned by
+// the back button, or superseded by a re-attach to the same run id) proves it
+// is still the newest holder before it releases anything — equality on the
+// flag, or even on the run id, is not proof (Bugbot, PR #653: a reopened chat
+// re-attaches to the SAME run_id, and the abandoned loop's finally stripped
+// the new loop's Stop chrome; a new send's gate was wiped the same way).
+let sendSeq = 0;
+let loopSeq = 0;
+// The generation of the visible log. The back button bumps it when it wipes
+// the transcript, and a streaming pollLoop that wakes to a bumped number
+// bails before touching the DOM or the URL params — the run itself keeps
+// going server-side, and resumeRun re-attaches to it from the session list.
+let logGen = 0;
 
 // Stream one run into the log. The `run` URL param marks the run as in-flight
 // for the page's whole life — if this frame dies mid-loop, the subprocess
 // keeps going and the next boot re-attaches via resumeRun.
-async function pollLoop(run_id) {
+async function pollLoop(run_id, gen = logGen) {
+  const seat = ++loopSeq;
   const w = addWorking();
   // This run is now the one the stop button and Escape aim at. Set here, the one
   // place a run is ever in flight, which covers a re-attached run for free.
   activeRun = run_id;
   activeWorking = w;
   setRunningUi(true);
+  // `gen` is the log generation this loop is allowed to write, and it is the
+  // CALLER'S sample, not one taken here (Bugbot, PR #653): sendMessage and
+  // resumeRun sample it before their own awaited start/probe, so a Back that
+  // lands during those awaits already outdates the number this loop compares
+  // against — sampled here instead, the loop would adopt the wiped landing as
+  // its log and re-write the very params (session_id) the leave just cleared.
+  noteChatActivity();
   let reply = null;
   let typer = null;
   let segBody = null;    // the element the segment views are rendered into
@@ -12004,7 +12677,8 @@ async function pollLoop(run_id) {
   let tick = 0;
   try {
     while (true) {
-      const data = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+      const data = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
+      if (logGen !== gen) break;  // the reader left; the run continues without this page
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
       // Not awaited, for the same reason the app-state answer below is not: a
       // strip of chips may never hold up the streaming reply by a single frame.
@@ -12109,12 +12783,40 @@ async function pollLoop(run_id) {
     if (w.el.isConnected) w.el.remove();
     // Nothing is interruptible any more. Cleared even when the loop threw: an
     // Escape landing after this must not cancel a finished run and then mislabel
-    // the NEXT turn's ending as a stop.
-    activeRun = null;
-    activeWorking = null;
-    activeSegBody = null;
-    setRunningUi(false);
+    // the NEXT turn's ending as a stop. OWNERSHIP-GUARDED (Bugbot, PR #653),
+    // and ownership means being the NEWEST loop, not matching the run id: a
+    // chat left mid-turn and reopened re-attaches to the SAME run_id, and the
+    // abandoned loop's late finally matched it and stripped the new loop's
+    // Stop square and Escape target.
+    if (loopSeq === seat) {
+      activeRun = null;
+      activeWorking = null;
+      activeSegBody = null;
+      setRunningUi(false);
+    }
+    // Turn boundary either way — the tasks surfaces should hear about it even
+    // when a newer loop owns the chrome (the ACTIVITY is real regardless).
+    noteChatActivity();
   }
+}
+
+// Tell every OTHER document on this origin that a turn just started or ended
+// here. Interactive turns make no sys:schedule job, so nothing else tells the
+// tasks surfaces about them: the shell's tasks store (frontend
+// tasksPulse.CHAT_ACTIVITY_KEY) listens for this stamp's `storage` event and
+// re-reads /api/tasks, so the Tasks page and the sidebar flip to In Progress /
+// unread the moment a follow-up goes out rather than on their next 20-30s poll
+// (Akshil, 2026-08-19: "the task's unread status does not update"). A storage
+// event only fires on a CHANGED value and never in the writing document, which
+// is exactly the shape needed: this frame has nothing to update, and the clock
+// plus a nonce means two panes stamping in the same millisecond cannot swallow
+// each other's poke. Best-effort — a blocked store (private mode, locked-down
+// webview) costs the poke, never the turn; the polls still cover it.
+function noteChatActivity() {
+  try {
+    localStorage.setItem("fused-render:chat-activity",
+      Date.now() + ":" + Math.random().toString(36).slice(2));
+  } catch (err) { /* the 20-30s polls remain the fallback */ }
 }
 
 // The composer's send buttons double as stop buttons while a run is live: the
@@ -12136,6 +12838,11 @@ function setRunningUi(on) {
 async function sendMessage(message) {
   if (sending) return;
   sending = true;
+  const seat = ++sendSeq;
+  // Sampled before anything is awaited: a Back landing mid-start outdates this
+  // number, and everything below that touches the page (the run param, the
+  // streaming loop, the queue drain) checks it first (Bugbot, PR #653).
+  const gen = logGen;
   // Fold pending annotations into the outgoing message and stamp them `sent`.
   // If the start below never launches a run, the stamp (and the receipt) are
   // rolled back so the notes stay editable and re-sendable.
@@ -12167,11 +12874,16 @@ async function sendMessage(message) {
     bareTurn.className = "turn user";
     log.appendChild(bareTurn);
   }
-  // Crop each annotated element out of one capture of the left pane. Awaited
-  // because composeOutgoing needs the paths, and bounded and swallowing, because
-  // no screenshot is worth losing the user's message over (see annShots).
-  const shots = await annShots(pending);
-  annApplyShots(pending, shots);
+  // Labels first, THEN the capture: the letter burned into the overview and the
+  // `label` the wire carries must be the same string, and annotations.indexOf
+  // can shift between now and any later read (notes resolve, notes are added) —
+  // so the label is computed once here and stored on the note.
+  pending.forEach((c) => { c.label = annLabelFor(annotations.indexOf(c)); });
+  // ONE screenshot of the whole pane with every pending note's badge burned in.
+  // Awaited because composeOutgoing needs the path, and bounded and swallowing,
+  // because no screenshot is worth losing the user's message over (annOverview).
+  const overview = pending.length ? await annOverview(pending) : null;
+  annApplyOverview(pending, overview);
   // Write the DOM outline to a file and send its path instead of its bytes. Here
   // rather than inside composeOutgoing because that function is sync and pure —
   // it is the exact inverse of stripBlocks, and both halves have to stay that way.
@@ -12181,13 +12893,21 @@ async function sendMessage(message) {
   // link everywhere else and unreadable to the agent. They are not folded into the
   // annotations either — a picture is not an anchor's property, it is never
   // persisted, and so it has no stale-path case to clear.
-  const outgoing = composeOutgoing(message, pending, sentState,
-    pics.map((s) => {
-      const wire = { kind: s.kind || "pane", view: s.view || null };
-      if (s.viewNote) wire.viewNote = s.viewNote;
-      if (s.name && s.kind === "image") wire.name = s.name;
-      return wire;
-    }));
+  const wireViews = pics.map((s) => {
+    const wire = { kind: s.kind || "pane", view: s.view || null };
+    if (s.viewNote) wire.viewNote = s.viewNote;
+    if (s.name && s.kind === "image") wire.name = s.name;
+    return wire;
+  });
+  // The overview rides the same pictures block the user's own attachments do —
+  // one writer, one reader (paneShotIn), so a restored turn shows it too. First
+  // in the list: it is the picture the annotations block tells the model to read.
+  if (overview) {
+    const wire = { kind: "overview", view: overview.view || null };
+    if (overview.viewNote) wire.viewNote = overview.viewNote;
+    wireViews.unshift(wire);
+  }
+  const outgoing = composeOutgoing(message, pending, sentState, wireViews);
   if (pending.length) {
     for (const c of pending) c.sent = 1;
     annSave();
@@ -12202,52 +12922,21 @@ async function sendMessage(message) {
     const sum = document.createElement("div");
     receipt = sum;
     sum.className = "annsum";
-    // The pictures' own rows, first — a whole-pane shot is the widest claim the
-    // message makes, and a pasted one is not about any single anchor either.
+    // The overview first — it is the one picture every annotation row refers
+    // to — then the user's own attachments, then the labelled rows.
+    if (overview) shotReceipt(sum, { ...overview, kind: "overview" });
     for (const pic of pics) shotReceipt(sum, pic);
-    pending.forEach((c) => {
-      const row = document.createElement("div");
-      row.className = "annsum-row";
-      const lbl = document.createElement("span");
-      lbl.className = "annsum-lbl";
-      // Same letter the pin wears (index in the full list, not the pending
-      // subset), so the receipt and the ✓-pin match up.
-      lbl.textContent = "📌 " + annLabelFor(annotations.indexOf(c));
-      const txt = document.createElement("span");
-      txt.className = "annsum-txt";
-      txt.textContent = c.content;
-      txt.title = c.content;
-      row.append(lbl, txt);
-      if (c.tag) {
-        const el = document.createElement("span");
-        el.className = "annsum-el";
-        el.textContent = "<" + c.tag + ">";
-        row.appendChild(el);
-      }
-      // What was actually attached. The user has to be able to see the crop that
-      // went out — a screenshot they cannot check is a screenshot they cannot
-      // trust. The blob URL, not the file path, for an element crop: the path is
-      // for the agent, and this pane cannot read a temp file back — but a point's
-      // shot has no blob to hand (annRecPointShot uploaded and discarded it), so
-      // it falls back to the server's own raw-bytes URL for the same path, which
-      // works precisely because the file this send just read is still there.
-      const thumbUrl = (shots && shots.thumbs && shots.thumbs[c.id])
-        || (c.kind === "point" && c.shot ? fused.rawUrl(c.shot) : null);
-      if (thumbUrl) {
-        // `crop`, not `shot`: this send's whole-pane picture is a `shot` in the
-        // enclosing scope, and an <img> element wearing that name here shadowed
-        // it — legal, and one edit away from a receipt row reaching for the
-        // wrong thing.
-        const crop = document.createElement("img");
-        crop.className = "annsum-shot";
-        crop.src = thumbUrl;
-        crop.alt = c.kind === "point" ? "screenshot of the clicked spot"
-                                       : "screenshot of the annotated element";
-        crop.title = c.shot || "";
-        row.appendChild(crop);
-      }
-      sum.appendChild(row);
-    });
+    // One row per comment, through the same builder a restored turn uses.
+    for (const c of pending) sum.appendChild(annReceiptRow(c));
+    // The full story, on demand: clicking any comment row — or, when comments
+    // ride the message, any of its screenshot thumbs — opens the popup with
+    // exactly what went to the agent — the composed text, the pictures, every
+    // comment with its context. A picture-only send is NOT wired: its thumb
+    // keeps the plain full-size viewer, there being no comments to show.
+    if (pending.length) {
+      sentPopWire(sum, { outgoing, overview, pics,
+                         notes: pending.map((c) => ({ ...c })) });
+    }
     turn.appendChild(sum);
     scrollBottom();
   }
@@ -12293,8 +12982,12 @@ async function sendMessage(message) {
     // any kind buys the visit's one entry (PR-3): the push belongs to the first
     // thing the user actually does, and a Back onto a finished run's id is a
     // history entry that restores nothing.
-    fused.params.set("run", run_id, { history: "replace" });
-    await pollLoop(run_id);
+    if (logGen === gen) {
+      fused.params.set("run", run_id, { history: "replace" });
+      await pollLoop(run_id, gen);
+    }
+    // else: the reader left during start — the run continues server-side and
+    // resumeRun/adoptLiveRun can re-attach; the landing gains no run param.
   } catch (err) {
     // The run never launched, so the agent never saw the annotations: give
     // them back as pending (and pull the receipt) so they can be re-sent.
@@ -12309,10 +13002,10 @@ async function sendMessage(message) {
       // ghost row to clean up too, with no annotations at all.
       if (receipt) receipt.remove();
       if (bareTurn) bareTurn.remove();  // no bubble either — drop the ghost row
-      // Removing the receipt detaches the only <img> holding each CROP's thumbnail
-      // blob URL, and an unrevoked one pins its Blob for the life of the page.
-      // A retried send captures fresh crops anyway, so nothing here is reusable.
-      annRevokeThumbs(shots);
+      // Removing the receipt detaches the only <img> holding the overview's
+      // thumbnail blob URL, and an unrevoked one pins its Blob for the life of
+      // the page. A retried send captures a fresh overview anyway.
+      shotRevoke(overview);
       // The attached pictures are the opposite case and must NOT be revoked: they
       // are handed back to the composer as pending chips, which show those very
       // thumbnails. The user attached them deliberately — a capture of a moment
@@ -12324,11 +13017,15 @@ async function sendMessage(message) {
     }
     addError(err.message);
   } finally {
-    sending = false;
+    if (sendSeq === seat) sending = false;
   }
   scrollBottom();
   focusBox(box);
-  drainQueue();
+  // Same-generation only: after a Back, the parked follow-ups belong to the
+  // conversation that was left — firing them from the landing would launch a
+  // hidden new chat (Bugbot, PR #653). Their sessionStorage mirror survives,
+  // so reopening the session restores them, still queued.
+  if (logGen === gen) drainQueue();
 }
 
 // Re-attach to a run that was streaming when this page last unloaded (mode
@@ -13088,22 +13785,63 @@ setInterval(pollScheduledRuns, SCHEDULE_POLL_MS);
 // answers with the id of a run for this chat that is still alive. resumeRun has
 // always been able to adopt a run this frame did not start (the scheduled-send
 // path does exactly this); it just was never given the id.
+//
+// A WATCH, not a one-shot question (Akshil, 2026-08-19 — the reopened chat "does
+// not show me the streaming thing"). The one-shot version had two silent
+// give-ups, and each was a live turn the chat never showed again:
+//
+//   * `if (sending || activeRun) return` — the gate can be HELD at the one
+//     instant this fires (a second click's loadHistory mid-flight, an abandoned
+//     turn's finally a poll away from releasing), and "held right now" was read
+//     as "nothing to do, ever". The gate clears within a tick; the answer to it
+//     is to look again, not to leave.
+//   * a `live_run` that answers "" — which is the truth for an idle chat, but
+//     also what the server says while the run this very reopen is chasing is
+//     still being SPAWNED (Back landed during `start`; the run dir gains its
+//     pid a beat later). One answer, two meanings, and only time tells them
+//     apart: a short watch at the poll cadence covers the spawn window, and an
+//     idle chat costs a few cheap lookups that all agree before it goes quiet.
+//
+// Gen-guarded like every other loop that outlives an await: leaving the chat
+// bumps logGen and the watch dies with the transcript it was watching.
 async function adoptLiveRun(session_id) {
-  if (sending || activeRun) return;   // this frame already owns a turn
-  let live = null;
-  try {
-    live = await fused.runPython(AGENT, {
-      action: "live_run", file: FILE, session_id: session_id || "",
-    }, { key: null });
-  } catch (e) {
-    return;   // a failed lookup leaves the transcript exactly as it rendered
+  const gen = logGen;
+  // ~3s of looking: one tick is the common case (the reopen itself), the tail
+  // exists for the spawn window above. Each miss waits one poll interval, so
+  // the working row appears within ~400ms of the run becoming visible.
+  for (let tries = 0; tries < 8; tries++) {
+    if (tries) await sleep(400);
+    if (logGen !== gen) return;       // the reader left; nothing here is ours
+    if (activeRun) return;            // a turn is attached — adopted, or the user's own
+    if (sending) continue;            // gate held THIS tick; look again, don't give up
+    let live = null;
+    try {
+      live = await fused.runPython(AGENT, {
+        action: "live_run", file: FILE, session_id: session_id || "",
+      }, { key: null });
+    } catch (e) {
+      return;   // a failed lookup leaves the transcript exactly as it rendered
+    }
+    // Both can have changed across the await; re-check before acting on the
+    // answer — adopting into a wiped log, or over a turn the user started
+    // meanwhile, is worse than the miss this watch exists to fix.
+    if (logGen !== gen || activeRun) return;
+    const id = live && live.run_id;
+    if (!id) continue;
+    if (sending) continue;            // taken mid-lookup — same answer as above
+    // Same `replace` posture as every other `run` write: it is bookkeeping about
+    // the frame's state, not a step the reader took, so it must not cost an entry.
+    fused.params.set("run", id, { history: "replace" });
+    // resumeRun can itself bail on a gate grabbed between these two lines — the
+    // loop, not this call, is the guarantee: a bailed attempt comes back around,
+    // and the `activeRun` check above ends the watch once anyone has attached.
+    await resumeRun(id);
+    // resumeRun resolves at the END of the turn, so a completed call means the
+    // run was handled — its done branch cleared the param. The one call that
+    // resolves with the param still reading `id` is the bail above, and only
+    // that one earns another lap.
+    if (fused.params.get("run") !== id) return;
   }
-  const id = live && live.run_id;
-  if (!id) return;
-  // Same `replace` posture as every other `run` write: it is bookkeeping about
-  // the frame's state, not a step the reader took, so it must not cost an entry.
-  fused.params.set("run", id, { history: "replace" });
-  await resumeRun(id);
 }
 
 async function resumeRun(run_id, opts) {
@@ -13111,8 +13849,13 @@ async function resumeRun(run_id, opts) {
   const retryUnknown = !!(opts && opts.retryUnknown);
   if (sending) return;
   sending = true;
+  const seat = ++sendSeq;
+  // Sampled before the probe, same reason as sendMessage's (Bugbot, PR #653):
+  // a Back landing during the awaited probe must outdate the loop's number.
+  const gen = logGen;
   try {
-    let probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+    let probe = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
+    if (logGen !== gen) return;  // the reader left mid-probe; nothing here is theirs to redraw
     if (probe.error === "unknown run_id" && retryUnknown) {
       // A frame handed a run id by its EMBEDDER (the canvases workspace's
       // "Fix with Claude" navigates this iframe with ?run= the moment the
@@ -13121,12 +13864,14 @@ async function resumeRun(run_id, opts) {
       // retries tell the two apart; only then is the id written off.
       for (let i = 0; i < 5 && probe.error === "unknown run_id"; i++) {
         await new Promise((r) => setTimeout(r, 700));
-        probe = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
+        probe = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
       }
     }
-    if (probe.error === "unknown run_id") {
-      // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach
-      // to, and nothing to hand annotations back to: resolve any stragglers
+    if (probe.error === "unknown run_id" || probe.error === "run is for another target") {
+      // stale param — a bookmarked mid-run URL, a pruned tmp, or a run id that
+      // survived onto a DIFFERENT target's page (the agent refuses those now,
+      // same recovery) — nothing to attach to, and nothing to hand annotations
+      // back to: resolve any stragglers
       fused.params.set("run", "", { history: "replace", default: "" });
       annResolveSent();
       return;
@@ -13191,14 +13936,15 @@ async function resumeRun(run_id, opts) {
     } else if (probeMsg) {
       addUser(probeMsg);
     }
-    await pollLoop(run_id);
+    await pollLoop(run_id, gen);
   } catch (err) {
     console.warn("run re-attach failed:", err.message);
   } finally {
-    sending = false;
+    if (sendSeq === seat) sending = false;
     focusBox(box);
   }
-  drainQueue();
+  // Same-generation only — see sendMessage's tail (Bugbot, PR #653).
+  if (logGen === gen) drainQueue();
 }
 
 function submitChat() {
@@ -13248,7 +13994,7 @@ box.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitChat(); }
 });
 
-// ── home: big input + this file's sidecar sessions ──
+// ── home: big input + this file's past sessions ──
 document.getElementById("card").onsubmit = (e) => {
   e.preventDefault();
   if (activeRun) { stopRun(); return; }
@@ -13299,6 +14045,7 @@ async function loadHistory(session_id) {
   // appended first and the older history turns dumped after it.
   if (sending) return;
   sending = true;
+  const seat = ++sendSeq;
   permCards.clear();
   notedSkills.clear();
   resetCardPolicy();  // ...and the overrides: every card of the restored transcript starts folded
@@ -13340,7 +14087,7 @@ async function loadHistory(session_id) {
     log.innerHTML = "";
     console.warn("history restore failed:", err.message);
   } finally {
-    sending = false;
+    if (sendSeq === seat) sending = false;
   }
 }
 
@@ -13378,38 +14125,19 @@ function sessionTitle(s) {
   return text || carried.join(MARKER_JOIN) || (s && s.id) || "";
 }
 
-// One row for one past chat, from EITHER store (agent.py `_sessions` merges
-// them and stamps `source`). There is deliberately no second row shape and no
-// second section: a chat about this folder is a chat about this folder, and
-// splitting the list by which surface started it would ask the reader to
-// remember something they have no reason to have kept.
-//
-// What the two do NOT share is the click, and only because they cannot: a
-// "cli" row is resumable when its transcript is in this cwd's project dir,
+// One row for one past chat — every transcript in this cwd's project dir,
+// whether it started in this page or in a terminal (agent.py `_sessions`).
+// A row is resumable because its transcript is in this cwd's project dir,
 // which is precisely where `_cli_sessions` found it — so the SAME `history`
-// read and the same `--resume` on the next send work on it untouched, and the
-// row needs no special case at all. See `_cli_sessions` for why that is true
-// rather than lucky.
+// read and the same `--resume` on the next send work on it untouched.
 function addChatRow(list, s) {
   const row = document.createElement("div");
   row.className = "chat-row";
   row.setAttribute("role", "button");
   row.tabIndex = 0;
   row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span>' +
-                  '<span class="row-tag" hidden></span><span class="row-sub"></span>';
+                  '<span class="row-sub"></span>';
   row.querySelector(".row-title").textContent = sessionTitle(s);
-  if (s.source === "cli") {
-    const tag = row.querySelector(".row-tag");
-    tag.hidden = false;
-    tag.textContent = "cli";
-    // The tag says three letters; the title says what they mean. All the
-    // sidecar can actually prove is that THIS chat did not start the session —
-    // a terminal run is the usual reason, a chat about a sibling file under the
-    // same cwd is the other one — so the wording claims only that. "here", not
-    // a noun, for the same reason the footnote says it: this sink derives no
-    // kind (setTargetNoun is the only writer that may name one).
-    tag.title = "Started outside this chat — a Claude Code session here";
-  }
   row.querySelector(".row-sub").textContent = ago(s.last_used || s.created_at || 0);
   const open = async () => {
     fused.params.set("session_id", s.id);
@@ -13496,18 +14224,32 @@ for (const [name, id] of [["recent", "tab-recent"], ["artifacts", "tab-artifacts
   };
 }
 
+let recentSeq = 0;
 async function loadRecent() {
+  // Reads overlap by design now (the back handler retries over a just-left
+  // run's spawn window), so only the NEWEST call may write: a slower older
+  // read finishing late would clobber the fresher list — including the very
+  // row the retry existed to add (Bugbot, PR #653). Same seat idiom as
+  // sendSeq/loopSeq: take a number, and prove it is still the latest before
+  // touching anything after the await.
+  const seat = ++recentSeq;
   const list = document.getElementById("recentlist");
-  renderRecentSkeleton(list);
+  // The skeleton stands in for rows we do not have yet — never for rows that
+  // are already up. A re-read over a drawn list (the back handler's mid-turn
+  // retries) repaints in place; blinking good rows into placeholder bars would
+  // make every retry look like the list lost the chats it is about to reprint.
+  if (!list.querySelector(".chat-row")) renderRecentSkeleton(list);
   syncLists();  // the skeleton needs its section shown
   try {
     const { sessions, error } = await fused.runPython(AGENT, { action: "sessions", file: FILE }, { key: null });
+    if (recentSeq !== seat) return;  // a newer read owns the list now
     if (error) throw new Error(error);
     list.innerHTML = "";  // drop the skeleton now that we know the real state
     // Name the snapshot runs from the SAME strings these rows are labelled with,
-    // even for an empty list: a file can have chains in the store and no chats in
-    // its sidecar, and the reverse — an empty session list is still an answer the
-    // snapshots panel wants (it means "name nothing"), not a reason to skip.
+    // even for an empty list: a file can have chains in the store and no chats
+    // in its project dir, and the reverse — an empty session list is still an
+    // answer the snapshots panel wants (it means "name nothing"), not a reason
+    // to skip.
     let named = false;
     for (const s of sessions) {
       // The SAME string the row is labelled with (sessionTitle, not the raw
@@ -13540,6 +14282,10 @@ async function loadRecent() {
     recentCount = sessions.length;
     for (const s of sessions) addChatRow(list, s);
   } catch (err) {
+    // The seat check above never runs when the read itself REJECTS, so a
+    // stale retry that died late must be caught here too — its failure says
+    // nothing about the list a newer read already drew (Bugbot, PR #653).
+    if (recentSeq !== seat) return;
     list.innerHTML = "";
     // A list that could not be read is not a list with nothing in it, but it
     // renders the same way here: no heading, no empty state, no error.
@@ -13799,8 +14545,8 @@ function snapAgo(sec) {
 // timeline the write returned and both facts have to survive that.
 let snapTimeline = null;
 let snapOpenId = null;
-// sessionId → the name that session's chat goes by, filled from the sidecar by
-// `loadRecent` and read by `snapRunHead`. A Map rather than a lookup through the
+// sessionId → the name that session's chat goes by, filled from the session
+// list by `loadRecent` and read by `snapRunHead`. A Map rather than a lookup through the
 // session list itself, because the snapshots panel must not depend on that list
 // having been fetched, or on its order.
 const snapNames = new Map();
@@ -13910,7 +14656,7 @@ function snapRuns(versions) {
 
 // The heading over one run: WHOSE chain this is, and how long.
 //
-// The name comes from the sidecar's session list — the very same `preview` string
+// The name comes from the session list — the very same `preview` string
 // the "Recent chats" rows above are labelled with (`addChatRow`), so a chain the
 // user had in this app is named by what they asked for in it, and the two sections
 // agree. `loadRecent()` fills that map, and because it RACES this panel's read
@@ -13918,10 +14664,10 @@ function snapRuns(versions) {
 // (see there). This function therefore never waits for anything: it names what is
 // known at paint time and gets called again if that changes.
 //
-// A MISS is ordinary rather than a bug:
-// this store records every Claude Code session that touched the file, including
-// ones started from a terminal or from another file's page, and those were never
-// in this file's sidecar. So the fallback says only what is certain — that it was
+// A MISS is ordinary rather than a bug: the file-history store records every
+// Claude Code session that touched the file, including ones from another
+// folder's page, whose transcripts are not in this cwd's project dir. So the
+// fallback says only what is certain — that it was
 // another chat — and puts the session's short id beside the count, because that id
 // is the one handle that distinguishes two unnamed chains.
 function snapRunHead(run) {
@@ -13930,8 +14676,8 @@ function snapRunHead(run) {
   const name = document.createElement("span");
   name.className = "snap-run-name";
   const known = snapNames.get(run.session);
-  // "chat", not "another chat": on a file whose chains all come from outside this
-  // app — the common case, since the sidecar only knows chats started here — that
+  // "chat", not "another chat": on a file whose chains all come from outside
+  // this app — a common case — that
   // word repeats down the whole panel, and five headings saying "another chat" is
   // noise pretending to be information. The distinguishing fact is the id, and it
   // sits in the quiet half of the line beside the count.
@@ -14025,17 +14771,14 @@ function snapDiff(plan) {
 // One button, armed by a click rather than acting on it. The confirm is inline
 // so the diff being confirmed stays on screen underneath it, and the cost is
 // stated BEFORE the click: when the bytes on disk are in no snapshot this write
-// destroys the only copy, and whether a copy is kept is the plan's `stash`
-// answer rather than a permanent hedge.
+// destroys the only copy.
 function snapAction(plan) {
   const bar = document.createElement("div");
   bar.className = "snap-act";
   const gone = plan.action === "delete";
   const risk = !plan.unique_current ? ""
-    : plan.stash
-      ? "What is on disk now is in no snapshot — a copy of it is kept for you."
-      : "What is on disk now is in no snapshot, and "
-        + (plan.stash_note || "no copy of it can be kept") + ".";
+    : "What is on disk now is in no snapshot — going back destroys the only "
+      + "copy of it.";
   const arm = document.createElement("button");
   arm.type = "button";
   arm.className = "snap-go";
@@ -14090,9 +14833,7 @@ async function snapGoBack(plan, bar) {
     document.getElementById("snapsnote").textContent =
       (out.action === "delete"
         ? "Removed — that is how it was at this snapshot."
-        : "Back at this snapshot.")
-      + (out.stashed ? " The previous content was kept, in case."
-                     : out.stash_note ? " " + out.stash_note : "");
+        : "Back at this snapshot.");
   } catch (err) {
     bar.textContent = "";
     bar.append(snapErr(err.message));

@@ -10,8 +10,9 @@
 //      and hover-end swaps it back — see the hover state below.
 //   2. the app itself, live: `entry_html` in a sandboxed iframe at desktop
 //      width (1280px) scaled down to fit the card.
-//   3. no entry file at all — the Home grid's tinted monogram, so a card is
-//      never blank.
+//   3. no entry file at all — an empty thumb. The box keeps its 16/10 aspect,
+//      background and top border, so the card holds its shape; it just says
+//      nothing about an app that has nothing to show (D365).
 //
 // The precedence is a FALLBACK CHAIN, not a fixed choice, and it has to be:
 // `preview_image` says a file of that name exists and is non-empty, not that it
@@ -28,17 +29,18 @@
 // preview.png would still end up with every card that has ever scrolled
 // through the viewport pinned open — each a whole sandboxed page + JS
 // runtime. useNearViewport instead mounts the iframe only while its card is
-// near the viewport and unmounts it once scrolled well past, falling back to
-// the monogram in between (the same placeholder step 3 already uses, so an
-// offloaded card looks like an app with no live preview rather than a broken
-// one).
-import { useEffect, useRef, useState } from "react";
+// near the viewport and unmounts it once scrolled well past, showing step 3's
+// empty thumb in between — an offloaded card reads the same as an app with no
+// live preview (D365).
+import { useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
-import { rawUrl } from "@platform/lib/api";
+import { downloadAppFile, rawUrl } from "@platform/lib/api";
+import { pushToast } from "@platform/lib/toast";
+import { MenuIcons } from "@platform/ui/MenuIcons";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { withPreviewFlag } from "@platform/lib/router";
 import { appRecency, hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
-import { hueFor } from "@apps/builder/AppCard";
+import { useNearViewport, usePreviewStart } from "@platform/lib/preview-start";
 
 import { timeAgo } from "@platform/lib/format";
 
@@ -60,50 +62,6 @@ const PREVIEW_SCALE = 0.25;
 //     runtime half that enforces it, are in platform/lib/frame-focus.ts.
 function thumbSrc(entryHtml: string): string {
   return withNoFocus(withPreviewFlag(`/render?path=${encodeURIComponent(entryHtml)}`));
-}
-
-// Expands the observed box well past the actual viewport on all sides: a
-// generous margin means a card mounts its iframe before it's actually
-// visible (no flash of monogram while scrolling) and stays mounted through
-// small scroll jitter near the edge, only unmounting once genuinely a few
-// rows away. Symmetric top/bottom is enough — the grid only scrolls
-// vertically.
-const NEAR_VIEWPORT_MARGIN = "800px 0px";
-
-// True while `ref`'s element is within NEAR_VIEWPORT_MARGIN of the viewport.
-// One observer per card: at the card counts a real workspace runs (dozens,
-// not thousands), that's far cheaper than the iframes it's guarding.
-//
-// `root` must be the grid's own scrolling element (.apps-page,
-// `overflow-y: auto`), NOT the default `null` (the top-level document
-// viewport). The card sits inside that scrolling div, which never itself
-// scrolls — IntersectionObserver clips a target through every intervening
-// overflow-clip ancestor between it and the root regardless of which one is
-// passed as `root`, and rootMargin only EXPANDS the root's own rect. Leaving
-// root at its default meant the expansion happened on the (already
-// full-height, never-scrolling) document viewport while the real clip —
-// .apps-page's own unexpanded box — silently cancelled it back out, so cards
-// never went "near" until they were already fully on screen. Rooting the
-// observer at .apps-page instead makes rootMargin expand the box that's
-// actually doing the clipping.
-function useNearViewport<T extends Element>(): [React.RefObject<T>, boolean] {
-  const ref = useRef<T>(null);
-  const [near, setNear] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    // Last record, not first: multiple intersection changes can batch into
-    // one callback, and only the newest reflects where the card is now.
-    const io = new IntersectionObserver(
-      (entries) => setNear(entries[entries.length - 1].isIntersecting),
-      // Both surfaces that render this card scroll inside their own div, so
-      // the root is whichever one this card sits in ("/apps" or Home).
-      { root: el.closest(".apps-page, .files-home, .home-page"), rootMargin: NEAR_VIEWPORT_MARGIN },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, []);
-  return [ref, near];
 }
 
 export function AppPreviewCard({
@@ -128,8 +86,8 @@ export function AppPreviewCard({
   // Set when the authored thumbnail fails to decode — see the fallback chain in
   // the module comment. One-way: a retry would loop on a file that is broken.
   const [shotFailed, setShotFailed] = useState(false);
-  // Gates the live-iframe branch only — preview.png and the monogram cost
-  // nothing to keep mounted, so they don't need this.
+  // Gates the live-iframe branch only — preview.png costs nothing to keep
+  // mounted and the empty thumb costs nothing at all, so neither needs this.
   const [thumbRef, nearViewport] = useNearViewport<HTMLSpanElement>();
   // Hover on a png-thumbed card swaps in the live app: the iframe mounts
   // UNDER the still image on mouseenter and the image only fades once the
@@ -137,6 +95,17 @@ export function AppPreviewCard({
   // mid-boot. Mouseleave unmounts the iframe and the png is back instantly.
   const [hovered, setHovered] = useState(false);
   const [liveReady, setLiveReady] = useState(false);
+  const wantsLive = Boolean(
+    app.entry_html && nearViewport && ((!app.preview_image || shotFailed) || hovered),
+  );
+  // Priority is only the authored-still hover path. A card whose normal body
+  // is already live must not tear down and restart its iframe merely because
+  // the pointer crossed it.
+  const livePriority = Boolean(app.preview_image && !shotFailed && hovered);
+  const { started: liveStarted, settled: liveSettled } = usePreviewStart(
+    wantsLive,
+    livePriority,
+  );
   // An anchor, not a button — see AppCard. The href is what makes middle-click
   // and "Open in new tab" land on the same place a left click does.
   return (
@@ -175,7 +144,7 @@ export function AppPreviewCard({
           <>
             {/* Hover live preview, mounted BELOW the img in the stacking
                 order so the still stays on top until the app has painted. */}
-            {hovered && app.entry_html && nearViewport && (
+            {hovered && app.entry_html && nearViewport && liveStarted && (
               <iframe
                 src={thumbSrc(app.entry_html)}
                 style={{
@@ -183,7 +152,11 @@ export function AppPreviewCard({
                   height: `${100 / PREVIEW_SCALE}%`,
                   transform: `scale(${PREVIEW_SCALE})`,
                 }}
-                onLoad={() => setLiveReady(true)}
+                onLoad={() => {
+                  liveSettled();
+                  setLiveReady(true);
+                }}
+                onError={liveSettled}
                 tabIndex={-1}
                 scrolling="no"
                 title=""
@@ -208,7 +181,7 @@ export function AppPreviewCard({
                 that opens it. */}
             <span className="app-pcard-shield" />
           </>
-        ) : app.entry_html && nearViewport ? (
+        ) : app.entry_html && nearViewport && liveStarted ? (
           <>
             <iframe
               src={thumbSrc(app.entry_html)}
@@ -220,18 +193,43 @@ export function AppPreviewCard({
               tabIndex={-1}
               scrolling="no"
               title=""
+              onLoad={liveSettled}
+              onError={liveSettled}
             />
             {/* Shield: the preview is display-only — every pointer event lands
                 on the card's link, never inside the app — which is also what
                 keeps middle-click over the preview a new tab for the app. */}
             <span className="app-pcard-shield" />
           </>
-        ) : (
-          <span className="app-pcard-monogram" style={{ color: hueFor(app.name) }}>
-            {title.charAt(0).toUpperCase()}
-          </span>
-        )}
+        ) : null}
       </span>
+      {/* Hover-revealed export (SPEC §43 AF-4, D391): the same action as the
+          right-click menu's "Export App File", surfaced so it is one visible
+          click. A SIBLING of the thumb, not a child: the thumb span is
+          aria-hidden (it is decoration), and a focusable button inside an
+          aria-hidden subtree is announced as nothing by assistive tech while
+          still taking tab focus. Positioned over the thumb via the card's own
+          positioning context. A <button> inside the card's <a>: it must both
+          preventDefault (or the card link opens the app) and stopPropagation
+          (or the click ALSO bubbles to onAppCardClick). */}
+      <button
+        type="button"
+        className="app-pcard-export"
+        title={"Export " + (app.title || app.name) + " as a .fused app file"}
+        aria-label="Export app file"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          downloadAppFile(app.path, app.name).catch((err: Error) =>
+            pushToast({
+              msg: "Could not export " + app.name + ": " + err.message,
+              tone: "error",
+            }),
+          );
+        }}
+      >
+        {MenuIcons.compress}
+      </button>
     </a>
   );
 }

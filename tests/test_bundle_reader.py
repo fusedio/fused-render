@@ -413,22 +413,37 @@ def test_a_mount_backed_dest_is_refused(reader, bundle, tmp_path, monkeypatch):
 
 @pytest.fixture
 def fresh_appenv():
-    saved_module = sys.modules.pop("appenv", None)
+    """Make the sys.path hop actually HAPPEN, whatever ran before in this worker.
+
+    `appenv` is imported by NAME through a sys.path hop, so it lands in the
+    process-global `sys.modules` under a name no package owns — and two other
+    suites reach it through the STAGED core-templates copy under the test home
+    (`test_app_git`'s agent commit turn, `test_canvas_template`'s mode order).
+    Whichever ran first in this xdist worker wins the cache, and the assertion
+    below then describes THEIR import rather than the reader's: the hop it is
+    here to prove is short-circuited before it can be observed. Which suites
+    share a worker is xdist's business and moves whenever tests are added, so
+    this failed intermittently and on a different leg each time.
+
+    Dropping the cached module and any staged `shared/` still on the path leaves
+    the reader with no choice but to make the hop itself. Both go back
+    afterwards: this isolates the test FROM the run, not the run from the test.
+    """
+    saved_mod = sys.modules.pop("appenv", None)
     saved_path = list(sys.path)
-    sys.path[:] = [path for path in sys.path if ".core-templates" not in path]
+    sys.path[:] = [p for p in sys.path if ".core-templates" not in p]
     try:
         yield
     finally:
         sys.path[:] = saved_path
-        if saved_module is None:
+        if saved_mod is None:
             sys.modules.pop("appenv", None)
         else:
-            sys.modules["appenv"] = saved_module
+            sys.modules["appenv"] = saved_mod
 
 
-def test_the_mount_check_reaches_shared_appenv_at_all(
-    reader, bundle, tmp_path, fresh_appenv
-):
+def test_the_mount_check_reaches_shared_appenv_at_all(reader, bundle, tmp_path,
+                                                      fresh_appenv):
     # `from appenv import is_mount_backed` (reader.py's _is_mount_backed) resolves
     # through a sys.path hop to `../shared`, not through a normal import, so a
     # type checker cannot see it and neither can a reader of the file. It is not
@@ -445,7 +460,7 @@ def test_an_unreachable_appenv_refuses_the_clone_instead_of_crashing(
         reader, bundle, tmp_path, monkeypatch):
     # The fail-CLOSED branch, the one no happy path covers. A copy of the
     # template folder taken WITHOUT its `shared/` sibling (the degradation
-    # test_annotate_comments.py documents for the same helper) must produce the
+    # test_template_appenv.py documents for the same helper) must produce the
     # readable "can't tell whether that folder is on a mount" refusal — not an
     # ImportError the page shows as a stuck spinner.
     real_import = builtins.__import__

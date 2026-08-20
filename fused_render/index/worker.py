@@ -15,6 +15,23 @@ import sys
 
 from fused_render.index.scan import run_scan
 
+# How far below the server this process (and every pool child and stat thread
+# it goes on to spawn, since niceness is inherited) runs. The invariant it
+# buys: an interactive `/api/index/rank` keystroke wins the scheduler against
+# a scan, which otherwise puts up to ten processes x 16 stat threads plus an
+# all-cores DuckDB compaction against the one thread the user is waiting on.
+SCAN_NICE_INCREMENT = 10
+
+
+def _renice_self() -> None:
+    """Nice this process down, in the child. Never a `preexec_fn` at the
+    spawn: that forces CPython off posix_spawn onto fork(), which is the
+    SIGSEGV this file's other comment is about."""
+    try:
+        os.nice(SCAN_NICE_INCREMENT)
+    except (AttributeError, OSError):
+        pass  # no nice (Windows) or not permitted — scan at full priority
+
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
@@ -34,6 +51,7 @@ def main(argv=None) -> int:
             os.setsid()
         except OSError:
             pass  # already a session leader (spawned from a shell)
+    _renice_self()
     run_scan(argv[0])
     return 0
 

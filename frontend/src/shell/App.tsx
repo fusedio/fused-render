@@ -15,7 +15,7 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { IS_EMBED, fsPathFromLocation, isPanelPath, navHintIsDir } from "@platform/lib/router";
+import { IS_EMBED, IS_PREVIEW, fsPathFromLocation, isPanelPath, navHintIsDir } from "@platform/lib/router";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
 import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady } from "@platform/lib/hooks";
@@ -27,6 +27,7 @@ import { useThemeSync } from "@platform/lib/theme";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import NotificationHost from "@platform/ui/NotificationHost";
 import QueueDock from "@shell/QueueDock";
+import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
@@ -417,8 +418,25 @@ export default function App({ config }: { config: Config }) {
 
   // The same shape, for scheduled messages: nobody is looking at /tasks when
   // one fires, so "it ran" / "it failed" / "it was missed" has to arrive on its
-  // own rather than wait to be discovered.
-  useScheduleEvents();
+  // own rather than wait to be discovered. pokeTasks rides along: a done/failed
+  // event means a task's row just changed, so the shared tasks store (and the
+  // open Tasks page, through its feeder) re-reads now instead of on its next
+  // tick — handed in from here because that store is shell's and platform may
+  // not import up.
+  useScheduleEvents(pokeTasks);
+
+  // The INTERACTIVE half of the same promise. A follow-up typed into a chat
+  // creates no sys:schedule job and no schedule event, so neither wiring above
+  // fires — the Tasks page and the sidebar sat on stale unread until their next
+  // slow poll (Akshil, 2026-08-19). The chat template stamps CHAT_ACTIVITY_KEY
+  // in localStorage when a turn starts or ends; the chat is its own iframe
+  // document, so THIS document receives the `storage` event and pokes the
+  // shared store (which forwards to the mounted Tasks page's own reload).
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => pokeOnChatActivity(e.key);
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   // Keep <html data-theme> in step with the appearance preference for the
   // page's lifetime (SPEC §30): another window's override, and — while the
@@ -437,10 +455,10 @@ export default function App({ config }: { config: Config }) {
   // first read is the effect below — otherwise a copy made in Finder *before*
   // the window opened would never be seen.
   useRefreshOnReturn(() => {
-    void reconcileOsClipboard();
+    if (!IS_PREVIEW) void reconcileOsClipboard();
   });
   useEffect(() => {
-    void reconcileOsClipboard();
+    if (!IS_PREVIEW) void reconcileOsClipboard();
   }, []);
 
   // Mod+K cheat sheet. Owned by App, not Listing: it documents the whole shell
@@ -585,7 +603,7 @@ export default function App({ config }: { config: Config }) {
                     : isClaudeConfig
                       ? "Claude Config"
                       : isCanvases
-                      ? "Canvases"
+                      ? "Workbench Canvases"
                       : canvasWorkspaceName
                       ? `Canvas: ${canvasWorkspaceName}`
                       : isBookmark || bookmarkFile

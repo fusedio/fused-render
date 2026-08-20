@@ -44,9 +44,12 @@ QUIET_S = 30.0
 # in favour of routers/index.FRESHNESS_CHECK_S: that one throttles the CHECKS
 # per root, in memory, and sees nothing started by the scheduler or the buttons,
 # so without this floor a folder-open could rescan seconds after either. The two
-# express ONE cadence at two layers, and the check interval is set a few seconds
-# under this number rather than equal to it — see the note there on why equal
-# ones interleave into half the intended rate. Still far below the startup
+# express ONE cadence at two layers, but they do not currently ADD UP to it:
+# FRESHNESS_CHECK_S is 55, under this 60, and a check stamps its own clock
+# whether or not it then scans — so the check at t=55 is refused here and the
+# next one is t=110, making the real folder-open cadence ~110s rather than 60.
+# Known, pre-existing, and written up in full over FRESHNESS_CHECK_S, including
+# why the fix is to raise THAT above this number. Still far below the startup
 # debounce (SCAN_DEBOUNCE_S, 15 min): that
 # one exists to stop a reload loop, this one to stop a browsing session from
 # queueing.

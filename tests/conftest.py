@@ -257,7 +257,12 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_MOUNTS_DIR",
                 # Leaks the same way — a test that calls export_app_env would
                 # otherwise leave a previous test's plugin path on every later
                 # spawn's argv in the same worker.
-                "FUSED_RENDER_SKILL_PLUGIN_DIR")
+                "FUSED_RENDER_SKILL_PLUGIN_DIR",
+                # D360: the workbench skills root, published the same way and
+                # leaking the same way — and it is published from a BACKGROUND
+                # thread (canvases._kick_workbench_skills), so a leak here would
+                # also arrive at an unpredictable moment in a later test.
+                "FUSED_RENDER_WORKBENCH_PLUGIN_DIR")
 
 
 @pytest.fixture(autouse=True)
@@ -304,6 +309,98 @@ def _pin_the_script_interpreter_resolution():
         yield
     finally:
         envinstall.reset_script_python_cache()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_workbench_skills_clone(monkeypatch):
+    """No test may clone the workbench skills repo for real (D360).
+
+    The canvas paths kick `skill_plugin.fetch_workbench_skills()` off-thread, and
+    it is genuinely reachable from the tests: several of them POST
+    /api/canvases/clone or /api/canvases/sync/start, nothing is published under
+    the per-run FUSED_RENDER_HOME, so the retry interval says "due" and a real
+    `git clone https://github.com/fusedio/skills.git` goes out. That was
+    happening — a `workbench-skills/` tree turned up under a test home — which
+    makes the suite quietly network-dependent and slower, and would go red on an
+    offline runner for a reason unrelated to what any test asserts.
+
+    Stubbed as a plain FAILED git rather than an exception: the fetch swallows
+    everything by design, so an exception would be invisible anyway, while a
+    non-zero return code exercises the real "nothing to hand" path. Tests that
+    are ABOUT the fetch stub `_git` themselves in the test body, which wins over
+    this fixture.
+    """
+    import subprocess
+
+    from fused_render import skill_plugin
+
+    def no_network(args, timeout):
+        return subprocess.CompletedProcess(
+            list(args), 1, "", "refused by the test suite: no real clone")
+
+    monkeypatch.setattr(skill_plugin, "_git", no_network)
+
+
+@pytest.fixture(autouse=True)
+def _no_schedule_loop_thread(monkeypatch):
+    """No test may start the scheduled-messages daemon thread.
+
+    `schedule.start()` runs from the app's STARTUP event, so any test that
+    enters `with TestClient(create_app(...))` (the fs_raw proxies, parts of
+    test_schedule_api) spawns the `fused-schedule` loop — a daemon that is
+    never joined and ticks every POLL_INTERVAL_S for the REST OF THE WORKER
+    PROCESS, reading FUSED_RENDER_HOME afresh each pass. A later test in that
+    worker that seeds an overdue `pending` entry is then in a race: the leaked
+    loop's catch-up tick can claim it (`pending` -> `sending`) between the seed
+    and the request under test, at which point cancel rightly refuses it —
+    test_archiving_cancels_the_work_and_files_the_session lost exactly that
+    race on CI (`cancelled == 0`, fused-engine, 2026-08-19), with no spawn in
+    its own window to explain it. Same shape of hole as the mount threads
+    below, with a sharper edge: a claimed entry SENDS — a real
+    `claude --resume` against whatever the tmp store says.
+
+    The tests that are ABOUT the loop call `schedule.tick()` directly with
+    their own clock, and the one wiring test that asserts startup DOES call
+    `start` monkeypatches it in its own body, which wins over this fixture."""
+    from fused_render import schedule
+
+    monkeypatch.setattr(schedule, "start", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_claude_config_writes(tmp_path_factory, monkeypatch):
+    """No test may read or write the DEVELOPER's own ~/.claude.
+
+    Sibling of `_no_real_workbench_skills_clone` above and reachable the same
+    way: the canvas kick now also calls `skill_plugin.retire_legacy_fused_plugin`,
+    which rewrites `enabledPlugins` in settings.json, and several tests POST
+    /api/canvases/clone or /api/canvases/sync/start. Unredirected, a test run
+    would silently disable a plugin in the config of whoever ran it — the suite
+    reaching out and changing the machine, which is worse than the network clone
+    this fixture is modelled on.
+
+    `claude_config.lib` resolves these from the env ONCE at import (deliberately:
+    they are process constants), so setting CLAUDE_DIR here would be too late.
+    Every path derived at import is repointed instead — miss one and that one
+    file is still the real one.
+
+    Session-scoped tmp dir, function-scoped patch: the point is "not the real
+    home", not isolation between tests, and the tests that actually care about
+    the contents bring their own dir (this file's `claude_home`,
+    test_claude_config_api's `claude_dir`), whose patch is applied after this one
+    and therefore wins.
+    """
+    from fused_render.claude_config import lib
+
+    root = tmp_path_factory.mktemp("claude-home-guard")
+    monkeypatch.setattr(lib, "CLAUDE_DIR", str(root))
+    monkeypatch.setattr(lib, "SETTINGS_PATH", str(root / "settings.json"))
+    monkeypatch.setattr(lib, "INSTALLED_PLUGINS_PATH",
+                        str(root / "plugins" / "installed_plugins.json"))
+    monkeypatch.setattr(lib, "KNOWN_MARKETPLACES_PATH",
+                        str(root / "plugins" / "known_marketplaces.json"))
+    monkeypatch.setattr(lib, "MARKETPLACES_DIR", str(root / "plugins" / "marketplaces"))
+    monkeypatch.setattr(lib, "_LOCK_PATH", str(root / ".config-ui.lock"))
 
 
 @pytest.fixture(autouse=True)

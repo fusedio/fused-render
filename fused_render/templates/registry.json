@@ -589,5 +589,8 @@
   ],
   ".hdf": [
     "map"
+  ],
+  ".fused": [
+    "fusedapp"
   ]
 }

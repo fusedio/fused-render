@@ -119,7 +119,7 @@ Left sidebar in the shell, always visible:
 - **SB-4** Bookmarks are renamable inline (edit affordance on hover → input → Enter/blur commits) and deletable. No confirm on delete (re-bookmarking is one click). While a row's rename input is open its whole hover-action cluster is hidden (**Save to disk**, **Rename**, **Delete** — folder rows likewise) — the input wants the row's full width, and every one of them fights the edit in progress: save would snapshot the pre-edit name, rename is what's already happening, and delete would destroy the row being named. Commit (Enter/blur) or cancel (Escape) first.
 - **SB-5** **DECIDED: persistence = server-side file** `~/.fused-render/bookmarks.json` (D75; superseded the original localStorage store). JSON array `{id, name, url, created_at}` (+ folders, D44); `id = crypto.randomUUID()`. Served by `GET /api/bookmarks` → `{exists, bookmarks, missing}` and `PUT /api/bookmarks` (whole-tree, atomic, last-write-wins); server code lives in `fused_render/shell/`. Frontend reads a synchronous in-memory cache hydrated at boot; mutations await the PUT (no optimistic update); a 30 s poll re-reads the server so another tab's edits converge (D77, eventual ≤30 s, still last-write-wins). **(D104):** the one-time legacy localStorage import has been removed — every pre-D75 install has long since migrated. **(D127):** `missing` is a bookmark-id side-channel — ids whose target is confirmed gone from disk, recomputed fresh on every GET (bounded, concurrent, mount-safe, fail-open) and never persisted/round-tripped through PUT. The sidebar keeps a flagged row's name at its normal color and shows a warning glyph + hover-card note (owner call: the icon alone carries the flag); nothing is auto-removed. The bookmark poll also fires immediately on window focus (in-flight guarded), not just every 30s. Contrast with Recents (§29, D115), which stays hidden-when-missing by deliberate owner choice.
 - **SB-6** Duplicate URLs allowed; **names are globally unique, case-insensitive** (D97 — names become `<name>.bookmark` filenames): a colliding create/rename auto-suffixes `-1`, `-2`, ... instead of rejecting, existing duplicates migrate once on GET (oldest by `created_at` keeps its name). Folder names are a separate namespace. List ordered by creation time. *(drag reorder, active-bookmark highlight: polish, later)*
-- **SB-7** **DECIDED: bookmark create/update is mirrored into the target file's `.html.json` sidecar** (D83) as `bookmarkHistory` — the same per-file sidecar the `claude` chat template owns via `claudeSessions` (§7). `POST /api/bookmarks/history` upserts an entry by bookmark `id`; the frontend calls it fire-and-forget right after `addBookmark`/`updateBookmarkUrl` commit. A bookmark targeting a layout/tab sentinel or a path no longer on disk records nothing. **Delete never touches the sidecar** — history is permanent, independent of the bookmark's current lifetime.
+- **SB-7** **REMOVED (D359, retiring D83): bookmark history is gone with the per-file sidecar.** Nothing mirrors bookmark create/update anywhere; `POST /api/bookmarks/history` and its frontend caller are deleted. Kept as a tombstone so older references resolve.
 - **SB-8** **Save to disk**: a per-bookmark button writes a portable `<name>.bookmark` JSON file (format v1: `{version, name, icon?, kind: single|panel|tab, path?, search}`, D98) next to the file(s) the bookmark points at — a single bookmark into its target's own directory (`path` relative to it), a panel/tab bookmark into the deepest common ancestor directory of all `_layout` leaves, each leaf path rewritten relative to that dir (grammar, nesting, per-leaf queries and global params untouched). The button's hover title shows the exact destination path before the click; it is disabled (greyed, explanatory title) when no save target exists — a leaf without an absolute fs path, or no common root. Frontend computes `{dir, filename, content}` (`lib/bookmark-file.ts`); `POST /api/bookmarks/export` validates and writes, overwrite allowed (a re-save refreshes the snapshot).
 - **SB-9** **Double-click open** (macOS): the packaged app registers `.bookmark` as an Owner document type (D99); Finder-opening one routes to the `/view/_bookmark?file=<abs path>` sentinel, which reads the file (`GET /api/bookmark-file`), resolves its relative paths against the file's own directory (`lib/bookmark-file.ts` `bookmarkOpenUrl`, the inverse of SB-8's relativize) and `location.replace()`s to the described view — single, panel or tab. Browsing to a `.bookmark` file in the explorer opens it the same way (never a preview). Malformed / unsupported-version files render a readable error, no redirect.
 
@@ -357,8 +357,8 @@ def main(city: str = "oslo", limit: int = 100):
   whose mount POLICY stay in `shell/mounts.py`, so this does not weaken the
   mount-agnostic rule (§26/MD-11): a template may ASK a fact, never branch on how
   mounts work. A site that cannot reach `appenv` keeps whatever fail-closed or
-  degrade rule it documents (`_refuse_mounts` refuses; `_sidecar_writable` falls
-  back to `os.access`) — and because that is now the primary path when no server
+  degrade rule it documents (`_refuse_mounts` refuses) — and because that is
+  now the primary path when no server
   exported the vars, each one is tested directly. Pinned by
   `tests/test_templates_decoupled.py`, which asserts **zero** `fused_render`
   imports under `fused_render/templates/` (AST, not grep — the word appears
@@ -387,9 +387,9 @@ Deferred to later milestones (needed for data templates):
 - **PY-12** `/api/run` executes the built-in executor **by default**, regardless of whether the `fused` package is importable. `FUSED_RENDER_ENGINE=auto` opts in to running code through its local compute backend (`engine.py`) instead — fresh subprocess per call in a temp exec dir (PY-6 semantics preserved), a script whose folder declares no `pyproject.toml` running on the app's own interpreter (PY-17) and one whose folder does getting that folder's cached venv, built from exactly what it declares (PY-16), params delivered via `_params.json` — falling back to the built-in executor if `fused` isn't importable; `FUSED_RENDER_ENGINE=fused` requires it (startup error if missing); `=builtin` (or unset) always uses the built-in executor (D70). The active engine is reported in `GET /api/config` (`engine`) and logged at startup — the choice changes the code contract, so it is never silent.
 - **PY-13** **Code contract under the fused engine:** a function decorated with **`@fused.udf`** — any name, the last decorated one is the entrypoint — receiving params as **raw JSON values** (no annotation coercion; the calling JS owns types); or a plain script assigning **`result = ...`**. A bare **`main()`** remains supported as a compat bridge with PY-4 coercion and PY-8 cwd semantics, so pages and the built-in templates behave identically under either engine. A file with none of the three → the PY-1 structured error, extended to name the alternatives.
 - **PY-14** Both engines return **one wire shape** — `{ok, result, error: {type, message, traceback}, stdout}` (the fused engine adds `stderr`/`duration_ms`) — so `runtime.js` and templates never see which ran. Tracebacks under the fused engine point at the user's real file (the source is compiled as its own unit under its own filename); backend/wrapper plumbing frames are stripped.
-- **PY-16** A `.py`'s environment is decided by the **folder** it belongs to, never by anything written in the file. The project root is resolved first — the app folder (`<fused_dir()>/<tag>/<name>`), an immediate child of a template root, else the **topmost** ancestor holding a `pyproject.toml` — and that root's `pyproject.toml` `[project].dependencies` is the whole declaration. A manifest that declares **no** dependencies that apply on this platform is not an environment at all and falls through to PY-17 — a bare `uv init` scaffold must not put a script into an empty venv without the bundled stack. Every `.py` under the root shares one venv, however deep it sits; a `pyproject.toml` in a subfolder is **inert** and is surfaced as such (an inert file that looks correct is the failure this rule exists to prevent), and a `# /// script` header is **not read at all** — a leftover block is an ordinary comment, neither honored, merged, nor reported, and a file carrying one runs exactly as it would without it. There is deliberately **no migration tooling and no detection**: this is a clean break in a pre-release product (D233). The venv contains **exactly** what the manifest declares and nothing else — no baseline is unioned in, so it does not contain the rest of the `[bundled]` extra (DM-2), which only the app's own interpreter ships (PY-17). It is built by `uv sync` and stored **centrally** at `<home_dir()>/venvs/<sha256 of the root's absolute path>[:16]`, never inside the user's folder: the folder gains only `pyproject.toml` and `uv.lock`, both source, both git-tracked (MD-7). The path is hashed **as given**, not canonicalised, so moving or renaming a folder yields a fresh environment by design and the orphan is reclaimed by garbage collection at server startup. Staleness is a **digest of `pyproject.toml`** recorded in a `.fused-source.json` sidecar inside the venv — the manifest only, since `uv.lock` is an output of `uv sync` and not an input to it — never an mtime chain — core templates are re-staged with `copy2` on every release, which would make an mtime rule resync byte-identical dependencies at every upgrade. A template that manages its own venv for a daemon declares its dependencies there, not in the folder manifest — that is the only form the built-in engine can honor too (D174). A core template may declare an environment **only if** it is **necessary** (it names something the platform's app interpreter genuinely lacks — judged against the macOS bundle's real contents, not `[bundled]`'s promises, D176), it is **complete** (it covers every such distribution imported by any `.py` under the folder), it has something a `runPython` call site can actually reach, and it ships a committed `uv.lock` so a released build never resolves against PyPI on first render. All of these are enforced by `tests/test_engine_requirements.py`, `tests/test_bundle_contents.py` and `tests/test_template_locks.py`, which derive entry points from the source (`_runpython_targets`/`_module_refs`) rather than from a maintained list (D172, D177; supersedes the per-file header rule).
+- **PY-16** A `.py`'s environment is decided by the **folder** it belongs to, never by anything written in the file. The project root is resolved first — the app folder (`<fused_dir()>/<tag>/<name>`), an immediate child of a template root, else the **topmost** ancestor holding a `pyproject.toml` — and that root's `pyproject.toml` `[project].dependencies` is the whole declaration. A manifest that declares **no** dependencies that apply on this platform is not an environment at all and falls through to PY-17 — a bare `uv init` scaffold must not put a script into an empty venv without the bundled stack. Every `.py` under the root shares one venv, however deep it sits; a `pyproject.toml` in a subfolder is **inert** and is surfaced as such (an inert file that looks correct is the failure this rule exists to prevent), and a `# /// script` header is **not read at all** — a leftover block is an ordinary comment, neither honored, merged, nor reported, and a file carrying one runs exactly as it would without it. There is deliberately **no migration tooling and no detection**: this is a clean break in a pre-release product (D233). The venv contains **exactly** what the manifest declares and nothing else — no baseline is unioned in, so it does not contain the rest of the `[bundled]` extra (DM-2), which only the app's own interpreter ships (PY-17). It is built by `uv sync` and stored **centrally** at `<home_dir()>/venvs/<sha256 of the root's absolute path>[:16]`, never inside the user's folder: the folder gains only `pyproject.toml` and `uv.lock`, both source, both git-tracked (MD-7). The path is hashed **as given**, not canonicalised, so moving or renaming a folder yields a fresh environment by design and the orphan is reclaimed by garbage collection at server startup. **One class of folder is keyed differently: one that ships inside the app** (the AI runner folders of §40) is keyed on its path *relative to the `fused_render` package*, because the app's own path is not stable — the AppImage's mount directory is fresh on every launch, so an absolute-path key handed those folders a new venv on each start and re-downloaded a multi-gigabyte environment that was already on disk and unreachable (D376). The staleness rule is unchanged by this, so a release that edits a runner's manifest rebuilds that venv and one that does not keeps it. Staleness is a **digest of `pyproject.toml`** recorded in a `.fused-source.json` sidecar inside the venv — the manifest only, since `uv.lock` is an output of `uv sync` and not an input to it — never an mtime chain — core templates are re-staged with `copy2` on every release, which would make an mtime rule resync byte-identical dependencies at every upgrade. A template that manages its own venv for a daemon declares its dependencies there, not in the folder manifest — that is the only form the built-in engine can honor too (D174). A core template may declare an environment **only if** it is **necessary** (it names something the platform's app interpreter genuinely lacks — judged against the macOS bundle's real contents, not `[bundled]`'s promises, D176), it is **complete** (it covers every such distribution imported by any `.py` under the folder), it has something a `runPython` call site can actually reach, and it ships a committed `uv.lock` so a released build never resolves against PyPI on first render. All of these are enforced by `tests/test_engine_requirements.py`, `tests/test_bundle_contents.py` and `tests/test_template_locks.py`, which derive entry points from the source (`_runpython_targets`/`_module_refs`) rather than from a maintained list (D172, D177; supersedes the per-file header rule).
 - **PY-17** A script whose project root declares **no** `pyproject.toml` (or one with no `[project]` table) runs on **the app's own interpreter** and gets no venv at all: the app ships `[bundled]` + its core `dependencies`, so numpy/pandas/pyarrow/duckdb/pillow/… are available with no download and no first-run wait — a deliberately small set since D276, which moved polars, matplotlib, scipy, the PDF stack and the geo stack out of `[bundled]` and into the manifests of the templates that use them. The interpreter is **verified, not assumed** — it is run once per server process and must report this app's own `sys.prefix`, probed under the child's stripped environment (the backend removes PYTHONHOME/PYTHONPATH, which a packaged interpreter may need to locate its stdlib). An autodetected candidate whose basename is not python-shaped is rejected without being spawned. If the direct candidate fails, the app generates a **wrapper script** that restores the `PYTHONHOME` this process depends on and `exec`s the real interpreter, then verifies THAT the same way. This is the packaged-macOS path, not an edge case: measured on a real DMG, the bundled interpreter stripped of `PYTHONHOME` reports the *build machine's* Homebrew framework as its prefix, and the bundle ships no `venv` module, so a venv-based rescue is impossible there. The wrapper sets the child's `sys.executable` to itself (`exec -a`), so a daemon re-spawned as `[sys.executable, …]` — geotiff, zarr_aoi, usd — keeps working even though those templates scrub `PYTHONHOME` from the environments they spawn into. Wrappers are POSIX-only and generated **only** when this process actually needs `PYTHONHOME`; Windows and the Linux AppImage self-locate and stay on the direct candidate. If no interpreter can be verified, such a script **fails with a configuration error** naming `FUSED_RENDER_APP_PYTHON` — it is never silently degraded to a venv, because with no baseline requirements that venv has no data stack and would fail on the first import, and because a core template that declares nothing must never reach the network. Nothing in this resolution installs anything. `FUSED_RENDER_APP_PYTHON` overrides the candidate (still probed) (D172, D175). **Both probes spawn with `close_fds=False`, and a probe that reached no verdict is not cached** (D277). They run in the server process, where PROJ is resident, so the default `close_fds=True` takes the `fork()` path and the child dies in PROJ's atfork handler at ~1ms — the crash GT-3 documents, one layer up. The probe is therefore **three-valued**, like the sibling-venv probe D212 already made three-valued and which names this one as its model: a candidate that RAN and answered (a foreign `sys.prefix`, a non-zero exit, unparseable output) is a definite rejection and is remembered, while a spawn that never got a verdict — killed by a **signal**, timed out, or failing with a transient `OSError` — leaves the resolution **unresolved and retryable**, at the cost of one subprocess on the next request. The split is by exception **type**, not by errno: a missing, unreadable or not-a-directory path is a fact about the candidate and stays definite. Rung 2 cannot launder rung 1 — the wrapper is built FROM the candidate, so an inconclusive direct probe makes the whole answer provisional even when the wrapper reached a real verdict. For the same reason `app_packages()` no longer caches its `None` when there is no interpreter: it used to, justified by the interpreter's answer being terminal, which this rule voids. Getting this wrong is not a slow path but a dead one — the resolution is per process and no HTTP route resets it, so a single unlucky spawn disabled **every** header-less script until the server restarted.
-- **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. **That spawn takes the `posix_spawn` path and the worker detaches ITSELF** (D292): it runs from the server process, where PROJ is resident, so `start_new_session=True` — which forces `fork()+exec` — killed the worker in PROJ's atfork handler before it could write anything, leaving an empty `worker.log`, a record stuck at `spawn`, and an install that failed identically on every retry for the life of the process. `close_fds=False` selects `posix_spawn`; `os.setsid()` as the worker's first statement restores the session `killpg` needs. **The venv readiness probe (D212) obeys the same rule and treats a signal as no verdict at all**: forked, it died `-11`, which read as "this venv cannot run its own python" and unlinked a healthy venv's ready marker — charging the user a full re-download for a crash in the probe. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. Progress is deliberately coarse (`uv sync` captures its output, so per-package progress is unavailable) and reports only stages it can observe. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so the environment can live under the app's home dir rather than in the backend's store.
+- **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` — **in the project directory, or in a manifest-only mirror at `<venvs_root>/<key>.src` when that directory cannot be written to** (D376) — and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`: `uv sync` writes `uv.lock` where it runs, which is the point for a user's folder and impossible for the bundled runner folders, whose tree is read-only on the AppImage's squashfs mount and under a Windows `Program Files` install. The mirror persists and keeps the lock uv resolved there, so a rebuild reconciles instead of re-resolving; a lock the folder itself ships overwrites it, and `projectenv.gc()` reclaims a mirror with its venv, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. **That spawn takes the `posix_spawn` path and the worker detaches ITSELF** (D292): it runs from the server process, where PROJ is resident, so `start_new_session=True` — which forces `fork()+exec` — killed the worker in PROJ's atfork handler before it could write anything, leaving an empty `worker.log`, a record stuck at `spawn`, and an install that failed identically on every retry for the life of the process. `close_fds=False` selects `posix_spawn`; `os.setsid()` as the worker's first statement restores the session `killpg` needs. **The venv readiness probe (D212) obeys the same rule and treats a signal as no verdict at all**: forked, it died `-11`, which read as "this venv cannot run its own python" and unlinked a healthy venv's ready marker — charging the user a full re-download for a crash in the probe. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. Progress is deliberately coarse (`uv sync` captures its output, so per-package progress is unavailable) and reports only stages it can observe. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so the environment can live under the app's home dir rather than in the backend's store.
 
 ---
 
@@ -457,7 +457,7 @@ const page = await fused.runPython("./reader.py",
 | `.html .htm` | `_render`, `code`, `claude`, `reader` | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4). A page is authored, so it carries the authored-file pair (PT-14): the chat's left pane renders the page itself and the chat edits it. This is also the key where a `?_mode=claude` link written before D235 works again for free, because D237's rename put the chat back on the file keys (`examples_seed/tutorial/`) |
 | unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
 
-- **PT-14** **ONE chat template serves both kinds of target, and the companion that used to split by kind is GONE (D235, chat half overturned by D237; the timeline half removed with the `history` template).** *Original (D235) form: four companion modes split by target kind — a directory offered `claude` + `git`, a file offered `claude_split` + `history`, with two separate chat templates. **The two-chat premise is void, and so is the second companion.*** There is now a single chat template, **`claude`** (`claude_split` renamed after the plain full-width `claude` was deleted, D237), and it is bound to **both** the universal `/` directory key and all 47 authored-file keys — 48 keys in all. The other companion those keys used to carry, `history` (a per-path commit timeline that also materialised a commit as a browsable tree), **is deleted**: the `git` view answers the same question without a second surface, because its commit list is SCOPED to whatever target it was opened on and selecting a commit renders the open file as of it (§33, GT-17 — resolved on read through `/api/git/show`, with nothing written to disk). So the companion set is now the chat plus `git`, and **`git` (the Source Control view, §33, GT-2) is FOLDER-ONLY: the universal `/` directory key and no file extension at all.** Everything `git` offers — staging, discarding, stashing, committing, branches, push/pull — is a REPOSITORY-level act, and the working tree a file sits in is its FOLDER's working tree, not the file's: you do not stash a file, you stash a tree. A file therefore has no binding of its own for it; what a file's reader wants — "what happened to this file" — is served by the SAME view borrowed from the file's parent folder into the preview sidebar (`apps/explorer/lib/dir-mode.ts`), scoped to the open path. `git` did briefly ride along on all 48 keys, and the reason was a gap in a different surface rather than anything about the mode: the explorer gave a FOLDER no mode switcher of its own, the only mode surface a browsing user had was the preview pane's, and the pane acted on the SELECTED ROW, always a file — so a mode bound to `/` alone was unreachable without hand-writing `?_mode=git`. The pane selects and previews FOLDER rows now (the folder peek, FS-10/FS-11), so the folder has a mode surface and the workaround is retired. Two rules, not 47 table rows: the per-extension lists above simply say *which* extensions count as authored files. The **authored-file set** — source, config, prose, notebooks, record streams, tabular data, geo data and image assets, 47 keys — is deliberately withheld from spreadsheets, PDFs, media, archives, 3D and generated tool files: a chat is for bytes a human authors or analyses, and those lists are left alone rather than churned. The `/` key's gating asymmetry is the visible consequence of D237 (its third party, `app`, is gone entirely — D262 deleted the app-builder route and D264 the template): the chat's gate accepts **any** directory, while `git`'s takes any folder in a work tree and refuses a file outright (GT-3), which is the binding stated a second time — so a hand-written `?_mode=git` on a file is not offered a repository-level view of something that is not a repository. The chat's own contract (its gate, its left pane's three shapes, and the system prompt that must agree with the pane) is **PT-16**. **What the deleted timeline mode leaves behind, deliberately.** It materialised a commit by `git archive`-ing it into `~/.fused-render/app-versions/<key>/<sha>/` and framing that directory, and two mechanisms outlive it because trees an older version already extracted are still on disk and still immutable: (1) `server/mount.py::_is_under_snapshot_root` makes every `/api/fs` mutation handler refuse a path under that root with the existing `readonly` contract (403 + `{"error": "readonly"}`) and makes `_writable` report `false` there, so a framed editor draws read-only mode up front instead of only failing at Cmd+S; a **copy out** is still allowed — read-only, not sealed. (2) `?snapshot=1` on an embed URL (`router.ts` `IS_SNAPSHOT` → `body.snapshot`) still says FROZEN TREE, NOT A LIVE FOLDER: it opens no preview pane of its own and suppresses the breadcrumb and the corner chips, all of which would act on a frozen copy as though it were live. **Neither has a producer inside the app any more** — nothing writes `app-versions/` and no view frames a snapshot — and that is recorded here rather than left for a reader to rediscover from dead code. What is **still rejected**: (a) keeping `git` on file keys. The original argument was "two commit-log modes for one story", which stopped applying the moment `git` dropped its commit log (GT-2) — and on that basis the mode WAS bound to every file key for a while. The reason it is rejected again is not about duplication: a file key is the wrong place for a repository-level view. Staging, stashing and pushing are done to a tree, the tree in question is the folder's, and putting that behind a single file offers the user a control whose scope is not the thing they selected. What the file-key binding was really buying was REACHABILITY, back when a folder had no mode surface — and that is now bought properly, by the preview pane peeking folder rows and the file sidebar borrowing the parent's entry, rather than by binding the mode to the wrong target. (b) keeping `annotate` as a standalone mode — its tools live in the chat's pane, so the mode was deregistered from every core key rather than left as a second, staler way in (§17), and its comment handoff is now doubly unreachable (no binding, no receiver). What is **no longer** rejected, and is the reversal itself: D235 rejected "binding ONE chat template to both kinds" on the grounds that the split pane renders a target and an ordinary folder has no app entry to render, so one template would have to branch on kind and carry a dead pane for half its bindings. It does branch on kind, in two places — the pane and the prompt — and D239 has since conceded half of D235's premise while leaving its conclusion overturned: an ordinary folder really does have nothing to render, so it gets **no pane**, not a substitute for one (PT-16). What that does not follow is that the template must therefore fork. A no-pane target is a *layout* the one template resolves — the pane is removed and the conversation takes the width — and everything the two kinds actually SHARE is the part that costs something to duplicate: the transcript, the composer, the approval cards, the permission modes, the run/resume/stop machinery, the session sidecar and the transcript restore. D235's own evidence is the argument here: the second chat template WAS that fork, and it drifted into the feature-poor twin (8 mentions of the annotation machinery against 277) precisely because a fork's two halves are maintained by whoever happens to be editing one of them. So the branch is one predicate read in two places, and the cost of the case that has no pane is a flag and a removal — not a second copy of a chat.
+- **PT-14** **ONE chat template serves both kinds of target, and the companion that used to split by kind is GONE (D235, chat half overturned by D237; the timeline half removed with the `history` template).** *Original (D235) form: four companion modes split by target kind — a directory offered `claude` + `git`, a file offered `claude_split` + `history`, with two separate chat templates. **The two-chat premise is void, and so is the second companion.*** There is now a single chat template, **`claude`** (`claude_split` renamed after the plain full-width `claude` was deleted, D237), and it is bound to **both** the universal `/` directory key and all 47 authored-file keys — 48 keys in all. The other companion those keys used to carry, `history` (a per-path commit timeline that also materialised a commit as a browsable tree), **is deleted**: the `git` view answers the same question without a second surface, because its commit list is SCOPED to whatever target it was opened on and selecting a commit renders the open file as of it (§33, GT-17 — resolved on read through `/api/git/show`, with nothing written to disk). So the companion set is now the chat plus `git`, and **`git` (the Source Control view, §33, GT-2) is FOLDER-ONLY: the universal `/` directory key and no file extension at all.** Everything `git` offers — staging, discarding, stashing, committing, branches, push/pull — is a REPOSITORY-level act, and the working tree a file sits in is its FOLDER's working tree, not the file's: you do not stash a file, you stash a tree. A file therefore has no binding of its own for it; what a file's reader wants — "what happened to this file" — is served by the SAME view borrowed from the file's parent folder into the preview sidebar (`apps/explorer/lib/dir-mode.ts`), scoped to the open path. `git` did briefly ride along on all 48 keys, and the reason was a gap in a different surface rather than anything about the mode: the explorer gave a FOLDER no mode switcher of its own, the only mode surface a browsing user had was the preview pane's, and the pane acted on the SELECTED ROW, always a file — so a mode bound to `/` alone was unreachable without hand-writing `?_mode=git`. The pane selects and previews FOLDER rows now (the folder peek, FS-10/FS-11), so the folder has a mode surface and the workaround is retired. Two rules, not 47 table rows: the per-extension lists above simply say *which* extensions count as authored files. The **authored-file set** — source, config, prose, notebooks, record streams, tabular data, geo data and image assets, 47 keys — is deliberately withheld from spreadsheets, PDFs, media, archives, 3D and generated tool files: a chat is for bytes a human authors or analyses, and those lists are left alone rather than churned. The `/` key's gating asymmetry is the visible consequence of D237 (its third party, `app`, is gone entirely — D262 deleted the app-builder route and D264 the template): the chat's gate accepts **any** directory, while `git`'s takes any folder in a work tree and refuses a file outright (GT-3), which is the binding stated a second time — so a hand-written `?_mode=git` on a file is not offered a repository-level view of something that is not a repository. The chat's own contract (its gate, its left pane's three shapes, and the system prompt that must agree with the pane) is **PT-16**. **What the deleted timeline mode leaves behind, deliberately.** It materialised a commit by `git archive`-ing it into `~/.fused-render/app-versions/<key>/<sha>/` and framing that directory, and two mechanisms outlive it because trees an older version already extracted are still on disk and still immutable: (1) `server/mount.py::_is_under_snapshot_root` makes every `/api/fs` mutation handler refuse a path under that root with the existing `readonly` contract (403 + `{"error": "readonly"}`) and makes `_writable` report `false` there, so a framed editor draws read-only mode up front instead of only failing at Cmd+S; a **copy out** is still allowed — read-only, not sealed. (2) `?snapshot=1` on an embed URL (`router.ts` `IS_SNAPSHOT` → `body.snapshot`) still says FROZEN TREE, NOT A LIVE FOLDER: it opens no preview pane of its own and suppresses the breadcrumb and the corner chips, all of which would act on a frozen copy as though it were live. **Neither has a producer inside the app any more** — nothing writes `app-versions/` and no view frames a snapshot — and that is recorded here rather than left for a reader to rediscover from dead code. What is **still rejected**: (a) keeping `git` on file keys. The original argument was "two commit-log modes for one story", which stopped applying the moment `git` dropped its commit log (GT-2) — and on that basis the mode WAS bound to every file key for a while. The reason it is rejected again is not about duplication: a file key is the wrong place for a repository-level view. Staging, stashing and pushing are done to a tree, the tree in question is the folder's, and putting that behind a single file offers the user a control whose scope is not the thing they selected. What the file-key binding was really buying was REACHABILITY, back when a folder had no mode surface — and that is now bought properly, by the preview pane peeking folder rows and the file sidebar borrowing the parent's entry, rather than by binding the mode to the wrong target. (b) keeping `annotate` as a standalone mode — its tools live in the chat's pane, so the mode was deregistered from every core key rather than left as a second, staler way in (§17), and its comment handoff is now doubly unreachable (no binding, no receiver). What is **no longer** rejected, and is the reversal itself: D235 rejected "binding ONE chat template to both kinds" on the grounds that the split pane renders a target and an ordinary folder has no app entry to render, so one template would have to branch on kind and carry a dead pane for half its bindings. It does branch on kind, in two places — the pane and the prompt — and D239 has since conceded half of D235's premise while leaving its conclusion overturned: an ordinary folder really does have nothing to render, so it gets **no pane**, not a substitute for one (PT-16). What that does not follow is that the template must therefore fork. A no-pane target is a *layout* the one template resolves — the pane is removed and the conversation takes the width — and everything the two kinds actually SHARE is the part that costs something to duplicate: the transcript, the composer, the approval cards, the permission modes, the run/resume/stop machinery, the session list and the transcript restore. D235's own evidence is the argument here: the second chat template WAS that fork, and it drifted into the feature-poor twin (8 mentions of the annotation machinery against 277) precisely because a fork's two halves are maintained by whoever happens to be editing one of them. So the branch is one predicate read in two places, and the cost of the case that has no pane is a flag and a removal — not a second copy of a chat.
 - **PT-15** **A template whose layout needs width is responsible for collapsing itself; the shell offers modes by *binding and gate* only — never by how much room a host happens to have (D236).** The set of modes a target gets is decided by the registry (PT-7/CT-3) and, for a gated folder, by its `condition.py` verdict (CT-12): those two inputs and nothing else. A **split-layout** template — two panes and a divider, like `claude` (the chat, PT-16) or `history` — therefore has to survive every host the shell renders it in, and three of them are narrow by design: the listing's **preview pane** (floor 220 px, default width *half* its split container — FS-12), a **Panel pane** dragged freely (§14), and **`/embed`** in a small window. The rule: the template ships a **media query** at the width its own layout stops being **useful** — the sum of its panes' minimum *useful* widths, rounded up, which is **not** the width at which they merely stop overflowing — and below it shows **one view at a time with a toggle**, the idiom `log_studio` (780 px), `map` (650), `duckdb`/`sqlite` (560) and `bundle` (640) already use. `claude` collapses at **800 px** (its useful floor: `#left` 420 + divider 4 + `#chat` 440 = 864; the breakpoint sits a deliberate notch below it, trading a slightly-squeezed band for keeping the split alive on more hosts) and `history` at **640 px** (`#side` 200 + divider 4 + a 420 px preview frame that is still a page = 624, rounded up) — the two deliberately do NOT share a figure, because `history`'s non-preview column is a 200 px commit spine where `claude`'s is a 440 px chat. The arithmetic **scopes to the targets that have two panes**, which since D239 is `claude`'s file and app-folder shapes only: an ordinary folder has no `#left`, so there is no sum to satisfy, no collapse to perform and no toggle to offer — a single-column layout is already the thing the breakpoint exists to produce, at every width. This is not an exemption from the rule; it is the rule having nothing to do, and it is why the collapse logic is short-circuited outright for that target rather than left to run against a column that is not in the document. The figures sit **at the useful floors and not the ~560 the overflow floors give** because the listing preview pane defaults to *half* its split container — ~700 px on a 1700 px window — so a breakpoint set at the overflow floor engaged the split in every host that could hold it without breaking and none that could hold it usefully; the arithmetic is written down beside the query, so the figure is checkable rather than a taste call. Three sub-rules the two built-ins establish, because getting them wrong is silent: **(a) park the hidden half, do not `display: none` it** — an iframe with no layout box gives its document a 0×0 viewport, so a screenshot of it rasterises 1×1 and every element rect an annotation pin is anchored to collapses (§17); out of flow + `visibility: hidden` + `pointer-events: none` keeps a real viewport and shows nothing. **(b) An inline width written by the divider's own JS outranks the media query**, so the collapse must neutralise it — either from CSS (`!important`) or by having the apply function skip the inline write while narrow; the split *ratio* param is never touched either way, so crossing back restores the user's width with no reload. **(c) A control that acts on the hidden half is absent, not disabled**, and any **armed** state it owns is reset on the flip — a disabled control still asserts the feature exists, and an armed control over an invisible document swallows input or attaches something the user cannot see. Only the view toggle itself (navigation, not a feature) and content the user has already authored stay reachable from both views. The toggle **names what its destination is FOR**, not merely where it goes: `claude`'s reads **"Comment on preview"** outbound and **"Back to chat"** on the return (D239; the verb was "Annotate" until D298 relabelled the whole feature "Comment" in the UI, ids and params unchanged), because the preview column is where the annotation tools live and that is the only reason a person leaves the conversation for it — "Preview"/"Chat" named the two halves and said nothing about why one would move. It stays navigation and is **not merged** with the annotate switch (§17), which arms the mode once you are there: one control moves the view, the other changes what a click in the frame does, and one button doing both would arm a mode in the same gesture that reveals the surface. The label and the `aria-label` are **one string**, since a second wording is a second thing to keep in step; the longer labels are what `#viewbtn`'s `flex-shrink: 0` and the annotate switch's own ellipsis exist for, so a 220px host truncates the mode name rather than overflowing the row or half-hiding the only way back. Which view **leads** is the mode's subject, not the wider pane: the chat opens on the chat, `history` on the commit list (a snapshot must be picked before there is a preview). **Pane-local params** are the persistence channel and stay pane-local under D72's boundary: `claude` carries `split` (the ratio), `annotations` + `annmode` (§17's notes and armed mode — and **`annmode` is written only when the URL does not already MEAN the new state**: it is effectively-on, so absent and `1` are the same answer, and the boot default normalising an absent param to `1` was a semantic no-op that still cost a history entry under the runtime's first-change-push rule (PR-3), which is why expanding the preview pane to full screen took TWO presses of Back to undo. Writing `0` over an absent param is a real disarm — a narrow pane boots that way — and still pushes; the single-writer funnel is unchanged, it just has a no-op guard), **`leftmode`** (which of the offerable stat entries the left pane frames, PT-16 — a listbox picker at the RIGHT-HAND end of the pane's own bar, showing each template's `icon.svg` beside its name, hidden below two choices, an unknown value falling back to the default silently as in PT-9) and **`paneview`** (`chat`|`preview`, which of the two the narrow layout shows, chat by default) — all four of which an ordinary folder's chat **ignores silently** rather than strips (PT-16), since they describe a layout that target does not have; `history` keeps its narrow view in a **body class only**, deliberately not a param, since which half a temporarily-narrow host shows is not state a bookmark should reproduce. What was **rejected**: having the **shell filter split-layout modes out of narrow hosts**. A pane's width is *dynamic* — the listing pane defaults to half its container, so on a wide window the split fits and the mode should be offered — which makes a host-based ban wrong in the one place it was aimed at; a width-based filter makes modes appear and disappear from the switcher (PT-10) mid-divider-drag and can yank the **active** mode out from under the user; it needs per-template width knowledge in the shell, i.e. a new `registry.json` field plus a new field on stat's template entries (which carry only `mode`/`path`/`icon`/`conditional`, PT-8), applied separately in three hosts (`ListingPreviewPane.tsx`, `PaneModeMenu.tsx`, `/embed`); and **user templates (§16) would never inherit it**, whereas a media query in the template is something a user template gets for free. **The `annmode` clause above has since GENERALISED past boot and SPLIT along D271's policy.** Generalised: every always-live control asks the same question and gets it wrong the same way — see **PT-17**, which is the rule `annmode` was the first instance of. Split: "do not write it" was the right answer for `annmode` because effectively-on is what an absent param already MEANS, but a param whose default the reader could have CHOSEN is stamped into the URL instead, with `{history: "replace"}` so the stamp costs no entry (PR-3), while a value the view DERIVES from something the URL does not record is not written at all and its MODE is the bookmark.
 - **PT-16** **The chat template's contract: one gate, TWO pane shapes plus a no-pane case, and a system prompt that cannot disagree with the pane (D237, revised by D239).** `templates/claude/` is the single chat mode (PT-14). Because it is bound to two kinds of target it branches on kind in exactly two places — the left pane and the prompt — and both read the **same** predicate, `shared/app_entry.entry_html`, so what the prompt claims is beside the chat is what is beside the chat. *This clause said "three pane shapes" until D239: the third shape — fused-render's own file browser framed for a folder with no app entry — is **removed**, and an ordinary folder now gets a full-width chat with no pane at all. The predicate and the two-places rule are unchanged; what changed is that one of the two answers is "there is nothing beside the chat", and the prompt says nothing about a pane there because there is none.*
   - **The gate** (`claude/condition.py`, CT-12) accepts **any existing regular file and any existing directory**, and nothing else: `os.path.isfile` / `os.path.isdir`, never `not isdir` (the loose form also swallows every path that does not exist, and "cannot tell" must read as "refuse"), and it never lists, walks, globs or resolves symlinks, because it runs for every path the explorer stats. That reduces to "the path exists", which the shell already knows — so the gate exists for **one** refusal: a **mount-backed** path (`shared/appenv.is_mount_backed`). The bytes under the mounts dir arrive over FUSE and an agent turned loose there rewrites the remote tree, the same reason every peer gate refuses those paths (MD-11). This is a **capability deliberately removed** relative to the deleted plain chat template, which shipped no `condition.py` at all and therefore did offer a chat over an rclone/NFS mount. **Rejected:** deleting the gate outright now that everything else about it is always-true — an always-true gate would be worth removing, a gate that still says no to remote mounts is not.
@@ -465,6 +465,7 @@ const page = await fused.runPython("./reader.py",
   - **The system prompt** (`_split_system_prompt`) has a shape per pane shape, and is decided **per run, never cached**, so a folder being scaffolded into starts being described as a project the moment it becomes one. An **app folder** keeps the project wording (its HTML is an app fused-render serves through the `runPython` bridge; naming fused-render here rather than leaving it to the user's own `CLAUDE.md`, which we do not own — the D216 reliability argument). A **file** says whose page the pane is and that the viewer is never to be edited. An **ordinary folder** gets the folder-scoping instruction and **nothing about a pane** (D239): the paragraph that used to be here described fused-render's own file browser beside the chat and warned that `app_state` "reports the **browser**, not the folder", and it went with the pane it described — a prompt that tells the model what the user can see beside the conversation, when there is nothing beside the conversation, is a false claim about the screen. The **composer's placeholder** names the same three kinds and is set from the same resolution the pane already performs (stat's `is_dir`, then whether an entry html resolves) — *"Ask Claude about this **project** / **folder** / **file**…"*, with the markup shipping the kind-free *"Ask Claude…"* until stat answers; it was hardcoded to "this project", which was the wrong noun for an ordinary folder and for all 47 file keys, and the rule is the prompt's rule: the UI does not claim a kind the target does not have. That rule is **general, not just the placeholder's** — the footnote under the composer and the annotation block's own preamble both said "project" unconditionally too, so every piece of chrome that names the target reads one writer, and a test asserts no kind noun is hardcoded in the markup. The **app_state disclosure** rides the two shapes that HAVE a pane, for D235's reason (an un-announced tool is a tool that never gets called) — and only those two, since the ordinary folder is not offered the tool at all. Saying "this is a fused-render project" over `~/Downloads` is rejected as a lie that costs something — it invites the agent to hunt for a bridge that is not there and to read a folder of PDFs as a codebase.
   - **The tool roster varies by target kind (D239).** `mcp__fused_approvals__app_state` reads the page beside the chat; a target with no pane has no such page, so the tool is **not offered** there — absent from `tools/list`, absent from the dispatch, and absent from the spawn line's pre-allowance. One switch decides all of it, and it is the **channel's own existence**: `agent.py` spawns `permission_server.py` with the app-state directory only when `_has_pane` (the same `entry_html` predicate), and the server keys both its roster and its dispatch on having that directory. A roster that could vary independently of the channel would advertise a tool the server cannot serve. **Rejected:** offering it and answering with an explanatory error — the model would call it after every edit and spend the 20-second app-state timeout discovering the same thing once per turn; and offering it and answering instantly with "there is no pane" — a tool whose only possible answer is that it does not apply is a tool that should not be in the list. The `Read` rule for the screenshot directory stays unconditional, because it is a rule about a directory and not a claim that this target can annotate.
 - **PT-17** **A template never spends a history entry on a value the URL already MEANS, and the guard that decides sits at ONE funnel per template rather than at each call site (D271, D272; generalises PT-15's `annmode`).** **PR-3's gesture gate cannot catch these**, because the gate is read when the write LANDS and not when boot started: a boot path continuing behind an `await` is already post-gesture, so a click anywhere during engine warm-up — the Browse button, the explorer row that chose this file — opens the gate before the seed arrives. **Absent is a value:** a missing param means its default, so writing the default over it is a no-op the runtime's byte comparison cannot see (`set(k, '')` on an absent key appends `k=`), which is what `{default: d}` (PR-3) exists to declare. An audit of **65 `fused.params.set()` call sites across 20 templates** found 39 genuine navigations — left alone, since a working Back is the whole point — and 19 writes that cost an entry for nothing, in six shapes worth recognising: a **re-entrant boot path reached through a gesture** (`latex`'s `startWorkspace` re-running the boot block on Home ▸ open project; `slides`' `openLibrary` ▸ File ▸ New blank deck); an **async callback a click started** (`latex`'s clean compile collapsing an already-collapsed drawer); a **multi-param write whose UNCHANGED half fires first**, takes the push, and leaves the real write to merely coalesce (`las`/`vector`/`pmtiles` writing `dir` before `file` when the file is picked from the folder already being browsed; `xlsx` `offset` before `sheet`; `slides` `slide` before `mode`); a **sweep rewriting every field on every submit** (`api`'s Execute); a **control clamped at its limit** (`pyramid` re-analysing an unchanged path; `pano` comparing the raw param instead of the read-back value, so a drag ending at the default wrote over an absent param); and a **write loop** (`zip`'s `params.onChange` → `openPreview` → `writeLocation`, writing the same pair straight back). The always-live controls D272 closed — a Reset that is not disabled when there is nothing to reset, a Load button over a box seeded from the resolved path, a "back to the list" that is live on a list you never left — are the same rule at the other end of the visit. **The guard goes at the funnel** because a check per call site is a check the next call site forgets — and a key the view leaves OUT of its own repaint comparison (a draft written per keystroke, like `git`'s `msg`) must never push at all, because Back across that entry clears the param while the repaint short-circuits and the stale text stays on screen. **A write's history cost is judged from the state it CAN be reached in, not the state it is normally reached in:** `git` clears `ask` at the end of every mutation and the confirmation has almost always cleared it already, so the no-op guard hides the cost — but `ask` is in the URL precisely so a pending question survives a refresh, and a page reloaded with `?ask=…` arrives with the question live and the entry pristine, so any action clicked from there clears it for real, post-gesture and post-`await`, and takes the push. `history` is outside the audit on the owner's instruction; `git` was too while its rewrite was in flight, and the reworked file has since been reviewed (D271).
+- **PT-18** **A view re-runs for the params it READS, and a listener wired straight to a reload is a bug (D356).** `params.onChange` fires on the visible snapshot of the HOST url (PR-4/LM-8), and that URL is not the pane's private property: in the single-file view the content pane and the `claude` sidebar are both children of the shell window with no param boundary between them (only the layout panes mark one, LM-3), so a param either of them writes notifies BOTH. The sidebar writes one — `annotations`, on every note made, edited or deleted — so `fused.params.onChange(load)` in the `duckdb` and `sqlite` grids re-ran their reader once per pin, and on a non-parquet file rebuilt the grid from "Loading…" while the reader was annotating it. The fix belongs in the view, not in the runtime or the writer: **compare a key of the params the view's own work is built from and return early when it has not moved** (`las`, then `duckdb`/`sqlite`; the `claude` template guards its own listener the same way). Keying on the VALUES rather than subscribing per key also makes a no-op rewrite free, and it is what lets a view carrying its state in the URL sit beside another that does the same. Order matters where a view stamps its own defaults at boot (PT-17): register the listener AFTER the stamps and snapshot the params as they then stand, or the stamp spends a reload restating what the first one already read.
 - **PT-8** `GET /api/fs/stat` carries the resolved mode list as **`templates`**: an array of `{"mode": <name>, "path": <abs template.html>, "icon": <abs icon.svg|null>}`, in order, first = default. An entry whose folder ships a `condition.py` gate (CT-12) additionally carries **`"conditional": true`** — stat only *marks* it (the gate is **not** evaluated at stat time; it may do real I/O), and the verdict arrives via `GET /api/fs/conditions` (CT-12). A conditional entry is **never the default while an unconditional entry exists**: the default is the first entry *without* `conditional`, falling back to the first (verdict-allowed) entry only when the whole list is conditional. `templates: []` when nothing applies — an unmapped file extension or a `null` binding. A **directory** always resolves at least the universal `/` key's `["_listing"]` (PT-13, D81), so it is empty only when a `null` binding disables it, whereupon the shell falls back to the built-in listing anyway (a folder must always render something). The old singular `template` field is **removed**.
 - **PT-9** **`_mode` param (shell URL):** non-default modes are selected via reserved param `_mode=<template name>` on the **shell URL** (bookmarkable, same URL-is-state pattern D40 established for the old HTML `_mode=render|source` toggle — that toggle itself is now the ordinary `["_render", "code"]` mode list, PT-12; old `_mode=source` bookmarks fall to the default, accepted break). Absent `_mode` = default = the first non-`conditional` entry (PT-8; `templates[0]` when none is conditional); selecting the default **deletes** the param (clean URLs); an unknown/stale value falls back to the default with no error. Switching swaps the iframe src to the selected template's `/render?path=<template>&_file=<file>` with a fresh document per switch. A sentinel mode may render a **shell view instead of an iframe**: `_listing` (PT-12) mounts the shell's built-in listing component (no iframe, no `_file`) in place of the preview body, selected by `_mode=_listing` like any other mode (D81). Known accepted quirk: template params (e.g. `offset`) persist on the shell URL across mode switches; a param name used differently by two modes collides — documented, not prevented.
 - **PT-10** **Mode switcher (shell, preview header):** rendered only when `templates.length > 1`, right side of the preview header bar. *One qualification, from the listing pane's self target (FS-11): "one mode is not a choice" holds because that one mode is the ACTIVE one — so when the caller's surface has **no** active mode, a single entry still renders, because the trigger is then the only way to pick anything. Nothing is marked active in that state: no checkmark, no accent row, and the trigger names the action ("Choose view") rather than reporting a mode it is not in.* Its contents are exactly the resolved list — the **available width is never an input** to it, so a mode cannot appear or vanish as a divider is dragged (PT-15). **Icon-only buttons**, mode name via native `title` tooltip, active mode in accent color. When an entry's `icon` is `null`, the shell renders a placeholder: the first letter of the mode name in a small rounded box. The `.html` Rendered|Source pair is **not a special case**: it is the ordinary mode list `["_render", "code"]` (PT-12) riding this same switcher — `_render` gets a shell-baked eye icon (sentinels have no folder to ship `icon.svg`); `code` gets its real folder icon. The `_listing` sentinel likewise gets a shell-baked list icon (D81). **No two modes a key BINDS together may be indistinguishable in one list.** This is a constraint on the bindings (PT-7/CT-3), not on the wording — display names live in `platform/lib/mode-name.ts` and are that module's business — and it is easy to break from a distance, because a name that is not in the table falls through to a humanizer: adding a mode to a key, or naming a new template folder into a string the humanizer already produces, is enough. Dispatch keys on `mode`, so a collision breaks nothing and is invisible to every other test, which is why it needs its own: `listing/mode-labels.test.ts` derives every co-offered set from the shipped registry — per key, and per preview-pane list (FS-11/`listing/pane-modes.ts`) across its `isDir` permutations — and fails on any duplicate. *One pair used to be named alike on purpose — the `app` template and the pane-only `_app` sentinel, the same view from two surfaces, of which the pane offered exactly one carrier and never both. D264 deleted both, so the guard has no sanctioned duplicate left and the pane's list is the registry's own.*
@@ -533,6 +534,7 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running ⇒ open browser only; else start (1777, fall forward to 1787), write pidfile, open browser.
 - **DM-6** **DECIDED (v2, D35):** DMG built by **dmgbuild** (app + Applications symlink, UDZO) orchestrated by `scripts/build_dmg.sh`; ~270 MB compressed.
 - **DM-7** `fused_render/app.py`: menu-bar entry point (uvicorn on a daemon thread); py2app entry = `scripts/app_entry.py`; build spec = `scripts/setup_py2app.py`. CLI (`fused-render`) remains for dev.
+- **DM-9** **Quit is an ordered teardown that ends in `os._exit`, never in AppKit's termination (D357).** Every surface — the popover/tray Quit, the `fused-render://relaunch` deep link, and AppKit's own Dock-menu Quit / ⌘Q / logout-restart (via an `applicationShouldTerminate:` added to rumps' delegate class) — funnels through `app.begin_quit`, which claims exactly ONE teardown under `_quit_lock`, removes the pidfile on the calling thread, and runs `quit_teardown` off the AppKit main thread in a fixed order: drain the server → close duckdb (the reader's stashed HTTP connection AND duckdb's default connection) → detach every mount through the rc-unmount → force-unmount ladder → reap rcd. Each rung is a precondition of the next and each is independently guarded, and the whole thing is bounded by `QUIT_HARD_DEADLINE_S`, DERIVED from the imported budgets of the steps it waits on — an app that cannot be quit is worse than one that quits with a mount attached. When the teardown finishes (or that deadline fires) the shared `quit_ready` event is set and the process dies via `app.hard_exit` → a bounded log flush (`logging.shutdown()` on a daemon thread, joined for `QUIT_LOG_FLUSH_S`) + `os._exit`. Work that must complete before the process can die cannot be sequenced after `begin_quit` returns — a teardown with nothing to unmount can finish first — so it hangs off `begin_quit`'s `on_claim` hook, which runs inside the claim; the `fused-render://relaunch` spawn is the one caller. It must NOT die via `-[NSApplication terminate:]`/`exit()`: that runs `__cxa_finalize` over every dylib's static destructors with the GIL released (pyobjc drops it for the ObjC call), and a native extension's C++ global touching the Python C-API on the way out aborts the process after a teardown that fully succeeded (INCIDENT 2026-07-29 and 2026-08-19; D357 has the measurements). Skipping atexit and Python finalization is sound precisely because the teardown above is the shutdown. The AppKit hook still answers `NSTerminateLater` so the teardown stays off the main thread; `replyToApplicationShouldTerminate:` survives only as the last resort for a hard exit that somehow returned.
 - **DM-8** **Finder integration:** `CFBundleDocumentTypes` — `.parquet` rank Default, html + all template extensions rank Alternate (never steals user defaults, appears in Open With). Double-clicked files reach the app via the delegate's `application:openFiles:` (implemented by adding the method to rumps's delegate class); each file opens a browser tab at `/view/<path>`. Startup ordering: AppKit run loop starts first, server boots in the background after — the home-vs-file decision happens at server-ready, long after any launch document event has arrived, so a file double-click cold launch opens exactly the file view (no stray home tab).
 
 ## 12b. Milestones
@@ -595,14 +597,14 @@ The reload logic lives **entirely in the injected runtime** — the shell needs 
 
 ### 13.5 Read-only files — the editability contract
 
-Write surfaces are decentralized (the code editor via `/api/fs/write`; the sqlite/duckdb grids and the annotate sidecar via their own Python writers), so read-onlyness is decided close to whoever writes, using host primitives — never probed from JS.
+Write surfaces are decentralized (the code editor via `/api/fs/write`; the sqlite/duckdb grids via their own Python writers), so read-onlyness is decided close to whoever writes, using host primitives — never probed from JS.
 
 - **RO-1** `/api/fs/stat` (and `/api/fs/write`'s stat-shaped response) carries `writable`: an existing path needs `W_OK` on itself, a not-yet-existing file needs `W_OK` on its parent. The flag means exactly "`/api/fs/write` would accept this path" — the two must never disagree.
 - **RO-2** `/api/fs/write` refuses a non-writable target with `403 {"error": "readonly"}`. This closes the atomic-write loophole: temp-file + `os.replace` goes through the parent directory and would otherwise silently overwrite a `chmod -w` file. `runtime.js` `writeFile` surfaces the refusal as a typed error (`err.type === "readonly"`), mirroring the 409 `"conflict"` case — the backstop for a template that never checked the flag.
-- **RO-3** Any template-side Python **writer** applies the same gate itself (`os.access(file, W_OK)` → `PermissionError`) before writing, for the same reason: writers that rewrite via `os.replace` (duckdb, annotate's sidecar, `shared/file_history.py`'s revert — §34/FH-7) bypass the read-only bit, and ones that don't (sqlite) fail late with an unhelpful mid-transaction error. The two `os.replace` writers that also consult the mount flag through `shared/appenv` (annotate's `_sidecar_writable`, `file_history.file_writable`) are the exception RO-8's known gap notes; `file_writable` additionally requires `W_OK` on the **directory**, since that is where mkstemp and the replace both land.
+- **RO-3** Any template-side Python **writer** applies the same gate itself (`os.access(file, W_OK)` → `PermissionError`) before writing, for the same reason: writers that rewrite via `os.replace` (duckdb, `shared/file_history.py`'s revert — §34/FH-7) bypass the read-only bit, and ones that don't (sqlite) fail late with an unhelpful mid-transaction error. The one `os.replace` writer that also consults the mount flag through `shared/appenv` (`file_history.file_writable`) is the exception RO-8's known gap notes; `file_writable` additionally requires `W_OK` on the **directory**, since that is where mkstemp and the replace both land.
 - **RO-4** Template **readers** fold fs writability into the editability verdict they already return — `editable` + `readonly_message` (short badge text) + `readonly_tooltip` (hover explanation). Filesystem read-onlyness is just one more reason alongside content-level ones ("View", "No rowid", "JSON"); the fs gate wins over a content-level "editable".
 - **RO-5** UI treatment is shared: `/template-shared/ro-badge.js` (`fusedRoBadge.update(el, message, tooltip)`) renders the identical badge in every template with an edit surface. The code editor derives its verdict from `stat.writable` (no Python reader) and locks the CodeMirror buffer; the grids disable editing per their reader's verdict.
-- **RO-6** Read-only never blocks *viewing*, and a template whose write target differs from the viewed file gates on ITS target: annotate checks the `<file>.json` sidecar (a `status` action), keeps commenting fully functional (the URL is the live store), and only warns that history won't be recorded.
+- **RO-6** Read-only never blocks *viewing*, and a template whose write target differs from the viewed file gates on ITS target. *(The clause's original example — annotate probing its sidecar's writability — went with the sidecar, D359.)*
 - **RO-7** (D110) An archive member's **preview** copy (zip and tar readers) lands **0444**: it is a throwaway — an edit "saved" to it never reaches the archive — and the permission bit routes it through RO-1..RO-6 unchanged (stat.writable false, templates open read-only, `/api/fs/write` refuses, writer gates hold). The copy is written to a unique temp file and `os.replace`'d into place, so a re-preview swaps out a stale read-only copy and a concurrent preview of the same member never sees a half-written or permission-flapping file. Deliberate `extract`/`extract_all` output keeps the original semantics: writable, and failing loudly (EACCES) on a write-protected existing target rather than silently replacing it.
 - **RO-8** (D110) A mount record persists `read_only`, re-detected **non-mutatingly on every attach** (rc `operations/fsinfo`: a present Features map with no Put/PutStream/Copy → read-only; `config/get`: anonymous S3 — no keys, no env_auth, no profile — → read-only) unless the flag was set explicitly via `read_only` in the create body (strict boolean, 400 otherwise; persisted with a `read_only_user` marker that detection never overrides). An **inconclusive** probe (rc failure, missing Features map) persists nothing — a transient hiccup must not freeze a wrong verdict; the next attach re-probes. `_writable` folds the flag in ahead of the `W_OK` check — under a mount `W_OK` lies (CacheMode=full takes any write into the local VFS cache and fails only at async upload) — so stat.writable and the write guard flip together per RO-1, via an mtime-cached mountpoint lookup (no mounts.json parse per stat). Unflagged mounts stay rw (pre-flag behavior; a credentialed-but-IAM-read-only remote is knowingly not caught — only a junk-writing probe could tell). Known gap, accepted for now: template-side writer gates (RO-3, `os.access`) don't see the flag — only `/api/fs/write` surfaces do; the deep fix is mounting read-only remotes with the VFS `ReadOnly` option so `W_OK` itself turns truthful, deferred because the serve and the mount must carry identical vfs option sets (see SERVE_VFS_OPT) and a per-mount option split needs its own validation. `mount_view` exposes the flag; the Mounts card labels the mount "read-only".
 
@@ -784,32 +786,14 @@ off-screen text simply has no pin until it scrolls back in — off-screen, not
 detached, as with code anchors.
 
 **Comment focus deep link:** an ordinary `comment` template param carries an
-id-only deep link (the sidecar-inspector→annotate contract, §24 HV-8 —
-that caller is removed, this param is not; mirrors the claude
-`session_id` resume precedent — the id is the whole contract and is never
-cleared after use). At boot, once the framed view is wired, the template reads
-`comment`: if the id is in the live URL store it focuses it (jumping to the
-comment's own view first when it differs, then lighting the pin/card); if it
-isn't, the template does a **one-shot full-state hydration** — a single read of
-`<file>.json`'s `comments` log that imports every LIVE entry (those without a
-`deleted_at` tombstone; a tombstoned wanted id gets no import and no focus —
-deleted stays deleted, owner call 2026-07-10), strips the server stamps
-(`recorded_at`/`updated_at`/`deleted_at`), and merges them into the live set
-(live entries win by id) — then saves once (re-recording, a harmless upsert
-no-op) and focuses. Deletion is an **explicit** signal: the annotate delete
-button drops the comment from the URL and sends its id as `deleted_ids` on the
-SAME `record` call, so upsert and tombstone land in one atomic sidecar write
-(two separate calls could interleave and lose the tombstone); `annotate.py`
-stamps `deleted_at` (server `time.time()` SECONDS) on each named log entry.
-The tombstone is **permanent** — recording an id never clears it, so a stale
-bookmarked URL that still carries the deleted comment (or the hydration merge's
-live-wins rule) cannot silently resurrect it in the log. Absence
-from a `record` array NEVER deletes — each URL carries only its own review
-subset, so a missing id means "not in this review", not "deleted". The live URL
-`comments` param stays the sole live store; the sidecar read is one boot-time
-hydration for a deep link whose id is absent from the live set, not a live-store
-sync back from the sidecar. An unreadable/unparseable sidecar or a missing id
-fails silently (no error UI, no focus).
+id-only deep link (mirrors the claude `session_id` resume precedent — the id is
+the whole contract and is never cleared after use). At boot, once the framed
+view is wired, the template reads `comment`: if the id is in the live URL store
+it focuses it (jumping to the comment's own view first when it differs, then
+lighting the pin/card); an id not in the URL cannot focus — the URL is the only
+store (the sidecar comments log, its `deleted_ids` tombstones and the one-shot
+hydration that used to back this went with the sidecar, D359, retiring
+D100/D101's log half). Deletion is simply absence from the URL array.
 
 **The whole Send-to-Claude round trip below is DEAD CODE as of D237, and it is
 recorded rather than deleted.** Both legs are described exactly as built, because
@@ -829,10 +813,8 @@ pane, so the honest question is whether a handoff should exist at all.
 time). The handoff sends only the comments that are neither `resolved` nor
 `sent` — `sent: 1` is an ordinary per-comment field, stamped on exactly the
 comments in the payload and `save()`d *before* the mode switch so it lands in the
-`comments` URL param and, through annotate.py's verbatim field merge, in the
-`<file>.json` log. The flag is a bare truthy `1` because the URL store's ~6 KB
-budget is the binding constraint and the sidecar's own `updated_at` already dates
-the write. The flag is stripped from what the agent sees (the payload is
+`comments` URL param. The flag is a bare truthy `1` because the URL store's
+~6 KB budget is the binding constraint. The flag is stripped from what the agent sees (the payload is
 serialized before stamping) — it is bookkeeping for the URL store, not something
 `formatComments` should hand the model to reason about. A comment **being sent
 right now is off-limits to eviction**: the save that stamps `sent` is the save that
@@ -841,10 +823,8 @@ payload is then the whole sent tier — so the payload's ids are passed to `save
 as protected, and an over-budget write is preferred over dropping a comment from
 the live review to make room for a flag (the "removed" bar note explaining it
 would be destroyed by the navigation milliseconds later, making that loss silent).
-Eviction is not annihilation — the same `save()` mirrors every comment into the
-`<file>.json` log, where absence never deletes, so an evicted comment stays
-recoverable through the sidecar itself; what it leaves is the **live** store,
-the rail and pins and the shared URL, which for a comment mid-send is loss enough.
+With the sidecar log gone (D359) eviction from the URL IS annihilation, which is
+one more reason the open-unsent tier is never evicted.
 A sent card shows a "sent ↗" chip so its exclusion is visible — but **not** on a
 resolved card, which is the terminal state, already explains the exclusion, and
 takes the stronger dim (`.card.resolved.sent` encodes that precedence in
@@ -854,10 +834,7 @@ whichever rule was written second). The
 again; and when nothing is sendable the button writes the inline bar note instead
 of navigating. The URL budget's eviction order gains a second tier — oldest
 `resolved` first, then oldest `sent` (already in a chat transcript), never an
-open unsent comment. `sent` is deliberately **not** surfaced in the history
-timeline (§24): the sidecar is a write-only log where absence never deletes, so
-the un-send that Reopen performs (the key simply leaves the URL) cannot be
-represented there, and a label that can go stale is worse than no label.
+open unsent comment.
 
 The return leg was the chat's — the half D237 deleted, per the note above; what
 follows is how it worked, not what runs. Annotate sets `claudeReturn=<mode>` alongside
@@ -1336,10 +1313,10 @@ quirk).
 `getSession`/`putSession`/`LastSession` in `platform/lib/api.ts`, the `writable`
 gate and the `ready` preview hold in `StatView`, and `restoredSearch` in
 `platform/lib/session-params.ts`. **No migration:** a `lastSession` key already on
-disk is simply never read or written again, and sits inert beside the sidecar's
-live keys (`claudeSessions`, `bookmarkHistory`, `comments`, `revertStash`,
-`slides`, `docs`, `excel`, `latex`, `usd`), which are untouched by this — the
-sidecar file itself is not going anywhere.
+disk is simply never read or written again. *(The sidecar file this key lived in
+has since been deleted outright — every remaining key and its machinery, D359 —
+so the "sits inert beside the live keys" framing above is now moot: the whole
+tree under `~/.fused-render/sidecar/` is inert residue.)*
 
 **ONE RULE SURVIVES AND IS STILL BINDING — LSN-12's never-persisted params, now
 owned by RECENTS.**
@@ -1812,9 +1789,8 @@ defect — `frontend/src/apps/explorer/listing/mode-labels.test.ts` exists
 because of it — and the sidecar inspector was the half nobody reached for. **That
 successor has since been deleted too**, folded into the folder-only `git` view
 (§33, PT-14), so neither timeline mode ships and no template folder answers to
-`history` at all. The
-sidecar itself is unchanged and still written and read by the surfaces that own
-it; what is gone is the merged read-only view of it. `".*.json"` now falls
+`history` at all. *(The sidecar this section inspected has since been deleted
+outright as well — D359.)* `".*.json"` now falls
 through to `["tree", "code"]`, which renders the same bytes without pretending
 to be a history.
 
@@ -2275,7 +2251,7 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   the raw line for level words — the field NAME `"error": null` made every
   healthy call render as ERROR in `log_studio`, which the registry offers for
   this file. Absent-means-null is safe for every consumer here (all read through
-  `.get()`), and matches the sidecar's additive-records posture (HV-6). The
+  `.get()`), and matches the additive-records posture the sidecar had (HV-6). The
   last-resort shrink for a record still over ~32 KiB after the per-field caps
   **marks** the fields it drops by setting them to `None`, so its result goes
   back through the same prune before serialization — writing it directly emitted
@@ -2375,9 +2351,9 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   "last file by name" as "newest records" — not the store walk (CL-12), and not
   any bounded newest-first probe a future gate does (CL-11), which must order by
   **mtime**: on reverse name order its whole window can be stale same-day files. Not the `<file>.json`
-  sidecar (SB-7, §7, D82–D84): every writer there does a whole-file
+  sidecar (since deleted outright, D359): every writer there did a whole-file
   read-merge-write, which at call volume is O(n²) plus a lost-update race —
-  the sidecar is right for low-frequency history, wrong for a firehose. Not
+  it was right for low-frequency history, wrong for a firehose. Not
   the app log (`logs.py`): that file is disposable by design (D68) and
   unparseable. `.calls.jsonl` is a compound registry key, so the store opens
   in the `calls` view by default and `.jsonl`'s `duckdb` binding still queries
@@ -2707,7 +2683,7 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   notes, and `code` stays **unchanged** as the raw-source escape hatch. The chat
   mode sits where it sits on `.html` (after the editors, before the trailing
   meta-modes) and for the same reason: the chat template is file-type agnostic — it
-  works off `_file` and its own sidecar — so binding it here is what
+  works off `_file` alone — so binding it here is what
   gives a note a chat about itself. **D235** rebound this key from the plain chat
   to the split one (`claude_split`) because a note is a FILE; **D237** deleted the
   plain chat and renamed the survivor back to `claude`, so the spelling here is
@@ -4304,12 +4280,11 @@ wanting "what has this file been through" wants §33.
   not checkpointed by anyone, so they are **not revertible** — this reverts the
   agent's edits, and only those.
 - **FH-7** **The one write is to the target, gated and atomic.** `file_writable`
-  is the same three-part gate as `annotate.py::_sidecar_writable` (RO-3, RO-6):
+  is a three-part gate (RO-3, RO-6):
   the read-only-mount check FIRST, through `shared/appenv`'s env contract, because
   `os.access(W_OK)` **lies** under a read-only mount with CacheMode=full — the
   write lands in the local VFS cache and only 403s at the async upload; then W_OK
-  on the **directory** (mkstemp and the replace both land there — this half the
-  sidecar's gate does not need and a replace does); then W_OK on the file itself
+  on the **directory** (mkstemp and the replace both land there); then W_OK on the file itself
   when it exists, since `os.replace` goes through the directory and would
   otherwise blow past a `chmod -w`. The write is mkstemp + `os.replace` in the
   target's own directory — atomic, never cross-device — and carries an existing
@@ -4391,28 +4366,22 @@ wanting "what has this file been through" wants §33.
   change. `reason` is also how a genuinely EMPTY diff arrives (an explicitly
   clicked version holding exactly what is on disk): an empty box reads as a broken
   diff, so no-diff is never silent. `ok: false` plans carry no `diff` key at all.
-- **FH-10** **Second line of defence: the pre-restore content is stashed in the
-  target's own `<file>.json` sidecar**, under `revertStash`, through the same
-  read-merge-write `annotate.py` already uses — so `claudeSessions`,
-  `bookmarkHistory`, `comments` and every other unowned key round-trip. Never
-  into the Claude dir (FH-6). Bounded to a few entries and skipped above a byte
-  cap or for non-text content, because the sidecar is a small JSON file three
-  other writers rewrite constantly, not a version store — `file_history` already
-  is one. A skip is **reported** (FH-9) so the confirm step can escalate rather
-  than silently losing the net, and a revert the user confirmed — having been told
-  whether a copy would be kept — is never then blocked by a sidecar that could
-  not be written.
-
-  The stash is **byte-faithful**: the target is read in BINARY and decoded
-  explicitly, and the recorded `size` is the byte count. Text mode applied
-  universal-newline translation, so a CRLF file stashed as LF — the recovered
-  content was not the bytes that were destroyed, and it disagreed with the `size`
+- **FH-10** **REMOVED (D359): there is no pre-restore stash.** The second line
+  of defence used to copy the current content into the per-file sidecar's
+  `revertStash` before a revert; the sidecar is deleted, so `unique_current`
+  (FH-13) now always means what it says — the write destroys the only copy —
+  and the confirm copy states that plainly instead of branching on a stash
+  predicate. *(Historical note, kept because the bug class is instructive: the
+  stash was byte-faithful — BINARY read, explicit decode, recorded `size` = byte
+  count. Text mode applied universal-newline translation, so a CRLF file stashed
+  as LF — the recovered content was not the bytes that were destroyed, and it
+  disagreed with the `size`
   stored beside it. This package ships a `windows/` dir, so CRLF is a live case,
   not a hypothetical. Each of the three refusals (too large, unreadable, not
   UTF-8) is reported separately and truthfully; folding an EACCES into "not UTF-8
   text", or a `getsize` failure into "nothing on disk to stash" (which reads as
-  "the file is absent"), describes a fixable machine problem as a fact about the
-  content.
+  "the file is absent"), described a fixable machine problem as a fact about the
+  content.)*
 - **FH-11** **Every failure crosses the bridge as data.** Anything raised out of
   a template's `main` becomes the red traceback overlay, and "no store on this
   machine", "no versions for this file", "already matches the latest checkpoint",
@@ -4534,18 +4503,16 @@ wanting "what has this file been through" wants §33.
   cause: a guard living below the layer that decides whether to offer the action.
   The read-only verdict was enforced in `apply_revert` but invisible to the plan,
   so the sheet opened on a doomed target (FH-16). A symlink was refused the same
-  way and one layer lower still, so the sidecar stash ran first — and read
-  *through* the link, leaving the wrong file's content in `revertStash` for a
-  revert that then failed. And the blocking-skips refusal was computed inside
+  way and one layer lower still, so the (since-removed, FH-10/D359) sidecar
+  stash ran first — and read *through* the link, capturing the wrong file's
+  content for a revert that then failed. And the blocking-skips refusal was computed inside
   `revert_plan` while the timeline went on publishing a striped target and an
   enabled button whose only possible outcome was that refusal. Each was a
   different symptom of the same missing seam, so the fix is the seam: `timeline`
   publishes `offer` (may the button be pressed) and `offer_reason` (the sentence
   the plan would refuse with, already on screen so no press is needed to discover
   it), `revert` names a row only when that row is genuinely actionable, and the
-  bridge re-reads the verdict *before* `_stash` — which must be gated rather than
-  merely followed by a raise, because it runs first by design and there is nothing
-  left to copy afterwards. `writable_reason` absorbs the directory and symlink
+  bridge re-reads the verdict before applying. `writable_reason` absorbs the directory and symlink
   refusals for the same reason: they are answers to "can this be reverted", and
   keeping them somewhere else is precisely what made them invisible to the caller
   that needed them.
@@ -4612,7 +4579,8 @@ wanting "what has this file been through" wants §33.
   beside "Recent chats"), fed by `agent.py`'s `action="snapshots"` — a
   pass-through to `file_history.timeline`, adding nothing but the offer. The
   store stays
-  strictly read-only; what a restore writes is the TARGET FILE and the sidecar.
+  strictly read-only; what a restore writes is the TARGET FILE, and nothing else
+  (the pre-revert sidecar stash went with the sidecar — FH-10, D359).
   - **The action is not called `history`.** That name is already taken on this
     module by the chat SESSION TRANSCRIPT replay. Two meanings on one action
     name is a collision only ever found in production.
@@ -4682,7 +4650,7 @@ wanting "what has this file been through" wants §33.
       where a revert lands — so `snapRuns` may only insert boundaries, never
       reorder or merge. A session that edited the file, left, and came back gets
       TWO headings, which is what happened.
-    - **The heading is named from the SIDECAR**, using the same `preview` string
+    - **The heading is named from the SESSION LIST**, using the same `preview` string
       the "Recent chats" rows above it are labelled with, so the two sections of
       the landing page agree about what a chat is called. `loadRecent()` fills that
       map and **repaints the headings when it finishes**, because the two reads
@@ -4693,7 +4661,8 @@ wanting "what has this file been through" wants §33.
       Ordering the call sites would have worked today and broken on the next path
       added onto the landing page. A MISS is ordinary, not a
       degraded state: this store records every Claude Code session that touched the
-      file, terminal ones included, and those were never in this file's sidecar —
+      file, including ones from another folder's page whose transcripts are not in
+      this cwd's project dir —
       so the fallback claims only "chat" and puts the session's short id beside the
       count, that id being the one handle that separates two unnamed chains. The
       full id stays on the heading's `title`, and on each row's, so a row read out
@@ -4741,10 +4710,9 @@ wanting "what has this file been through" wants §33.
     outright without one. `unique_current` (the bytes on disk are in no
     checkpoint, so the write destroys the only copy) additionally demands
     `confirm_unique`, which the page sends ONLY for that case: a token passed on
-    every call is a token nobody reads. Before the write, the current content is
-    stashed into the sidecar's `revertStash` (`STASH_KEEP` 3, `STASH_BYTE_CAP`
-    256 KB) — and an unwritable target is refused BEFORE that stash, or a failed
-    revert would still have mutated the sidecar. The write answers with the
+    every call is a token nobody reads. There is no pre-revert stash (FH-10,
+    D359) — `unique_current` means the only copy is destroyed, and the confirm
+    copy says so. The write answers with the
     POST-revert enriched `timeline`, so the list never spends a round trip
     showing the pre-revert position back to the user who just clicked.
   - **A refusal is shown in the row, not by hiding it.** An unwritable file, a
@@ -5498,7 +5466,27 @@ an AI Models page that could say what was on disk but not what was *running*.
   must stay a file explorer's, and must not carry a Metal-only dependency into a
   Windows wheel — and it is built by the existing detached `uv sync` loader
   (PY-18), with the same progress record and the same verbatim uv errors any
-  declaring folder gets. No second install mechanism exists for AI.
+  declaring folder gets. No second install mechanism exists for AI. **One library
+  may occupy SEVERAL folders, one per hardware build of it, and then the shared
+  code lives at the runners ROOT and each folder's `worker.py` is a shell over
+  it** (D381). The torch backends are three folders each — `transformers_text`,
+  `transformers_text_cuda`, `transformers_text_rocm`, and the same trio for
+  `diffusers_image` — whose manifests are identical except for the index `torch`
+  is resolved from, and whose `worker.py` is a `sys.path` insert and a call into
+  `runners/torch_text.py` or `runners/torch_image.py`. Both halves of that are
+  forced rather than chosen. **The folder split is forced by PY-16**: a venv is
+  keyed on the folder, so two rows sharing one folder share one environment and
+  could not hold two different torch builds; and `_env_install_worker` runs a
+  BARE `uv sync` with cwd set to the runner folder, so there is no place a user
+  could pass an index or an extra from and everything about an environment must
+  be expressible in the `pyproject.toml` beside it. **The hoist is forced by the
+  rule `runners/preview.py` states**: shared logic lives at the root, because a
+  second copy under one of the variants would fail no test and drift. A shell
+  therefore carries a docstring and an import and nothing else — a `_placement()`
+  or a dtype rule inside one of them is a difference between variants that no
+  test can see. The declaration is still the only place mlx/torch are named; it
+  is now several declarations naming the same distributions at the same versions
+  and disagreeing only about where one of them comes from.
 - **AI-2a** **A runner declares WHEELS, and uv's children do not inherit this
   process's Python environment** (D266). Two halves of one failure. A dependency
   uv cannot download as a wheel is compiled by a build backend in an interpreter
@@ -5514,6 +5502,45 @@ an AI Models page that could say what was on disk but not what was *running*.
   built on a user's laptop the first time they press Download, and compiling
   from source there is minutes of their battery for something a release already
   answers. Held by a test over every runner's declaration.
+- **AI-2b** **CPU is what `auto` resolves to off Apple Silicon; an accelerated
+  build is an explicit choice, and a HARD GATE stands in front of it** (D381).
+  The registry's order is the default (AI-2, AI-10e), and it puts the Apple
+  Silicon rows first and unchanged, then the **CPU** variant of each torch
+  library, then that library's CUDA and ROCm variants. So `auto` on a non-Apple
+  machine reaches the CPU row even when a working accelerator is fitted — named
+  in a test, because it is a decision and not a fallthrough. An accelerated row
+  is reachable only by picking it on the Engines tab, and its `available()` is
+  gated on the DEVICE being present and usable, not on the platform: offering
+  one where it cannot run buys a multi-gigabyte wheel that then fails several
+  frames inside a runtime library, which is exactly what AI-6's reason exists to
+  prevent. The conservative default is the point of the split: before it, the
+  unlabelled torch row silently installed the CUDA build on Linux, so every
+  Linux user paid gigabytes of `nvidia-*` wheels whether or not they owned a
+  card, while every Windows user got a CPU-only build with no way to opt out —
+  both wrong, and neither visible. macOS is unaffected by the CPU pin: the CPU
+  index resolves darwin to the ordinary wheel PyPI ships, MPS compiled in, which
+  matters because this runner is what a Mac falls back to when its MLX runner is
+  unavailable.
+- **AI-2c** **A HARDWARE variant carries its accelerator in BOTH names;
+  everything else keeps its qualifier on the long name only** (D381). A runner
+  has a `label` for the picker and a `short_label` for everywhere else — the
+  loaded card, the job row, the "Using …" line under the picker — and the split
+  exists because on the picker a reader is choosing between backends while
+  everywhere else they are being told what is happening on the machine they are
+  sitting at. A platform qualifier ("(Apple Silicon)") and a library one
+  ("(CTranslate2)") are both that second kind of fact and drop. "(CUDA)" is not:
+  it is the engine's IDENTITY, and dropping it makes three rows print one name on
+  every surface but the picker. So `label` and `short_label` are EQUAL on all
+  six torch rows ("Diffusers (CUDA)"), and a bracketed qualifier in the SHORT
+  name is therefore the marker of a hardware variant, which leaves the
+  Apple-only rows visually distinct from them. `(PyTorch)` is gone from the
+  family: the library stopped being what distinguishes these rows from each
+  other, and the accelerator is what does. **A qualifier names the BUILD, not a
+  prediction about the reader's device** (D382): "(CPU)" is the `whl/cpu` pin —
+  the install with no accelerator libraries in it — and that same pin runs on the
+  GPU on Apple Silicon, so the row keeps its name there and its `note` carries the
+  Mac case (AI-11b). Renaming it would break a stored preference, which keys on
+  `code`, and would leave the picker with two rows called the same thing.
 - **AI-3** **Four routes, and that is the whole worker contract.** `GET /health`
   (state, resident bytes), `POST /generate` (NDJSON for text), `POST /cancel`,
   `POST /quit`. Adding a capability is writing a worker, not extending the
@@ -5576,7 +5603,7 @@ an AI Models page that could say what was on disk but not what was *running*.
 - **AI-5d** **A bring-up thread reports its own death, and the environment
   wait polls the key the INSTALLER named.** Two failures of the same kind — work
   that stops without saying so — seen as one card reading "Preparing Diffusers
-  (PyTorch)…" beside a manager row reading "no longer reporting". (a) `_bring_up`
+  (CPU)…" beside a manager row reading "no longer reporting". (a) `_bring_up`
   and `_fetch_only` run on threads, so an exception that is not a
   `SupervisorError` is raised to NOBODY: it kills the only thing reporting and
   the row sits at its last detail until the manager gives up and blames the
@@ -5730,6 +5757,95 @@ an AI Models page that could say what was on disk but not what was *running*.
   rather than destructive), no per-segment UI, and no cache lock — the etag names
   the content, so two instances write identical bytes at identical offsets and
   the loser of a rename race falls back rather than corrupting anything.
+- **AI-5k** **A model already complete on disk is resolved WITHOUT the network**
+  (D367). "Fetching weights…" for a cached model was about a second of pure
+  latency in front of every bring-up: measured on an Apple Silicon machine for
+  `mlx-community/whisper-tiny.en-8bit`, fully cached, `worker_base.
+  download_snapshot` took **483ms** and `download_file` **456ms**, against **~14ms**
+  for the weight load itself inside mlx-whisper — all of it Hub round-trips
+  (`HfApi().model_info(files_metadata=True)` is 228ms on its own, hf's
+  `snapshot_download` spends another ~220ms revalidating etags), and also the
+  source of the "You are sending unauthenticated requests to the HF Hub" line in
+  every worker log. Both helpers now try `local_files_only=True` FIRST — 0.13ms
+  and 0.14ms for the same two answers — and fall through to the whole networked
+  path (metadata call, total, segmented fetch, progress) when the cache cannot
+  answer. **A repo the cache has never held reaches no hub download function at
+  all**, not even one carrying `local_files_only=True`: the gate is a filesystem
+  look first (a `snapshots/` directory for the repo; `try_to_load_from_cache`,
+  which cannot download, for the single-file path), and hf is asked only to
+  CONFIRM what the disk already suggested. That is AI-5e's rule holding at a new
+  site — the ✕ must never be answered by starting a download, and
+  `test_ai_hub_fetch.py` enforces it by counting calls rather than bytes, which is
+  the right test: "we only passed `local_files_only`" is exactly the claim a later
+  refactor breaks. For the same reason the local attempt catches only what means
+  "not cached" (hf's `LocalEntryNotFoundError`/`IncompleteSnapshotError` are both
+  `OSError`s, so the tuple names them without importing them) and never
+  `Cancelled`, which is an ordinary `Exception` — a bare `except Exception` there
+  turned a Stop into a fresh multi-gigabyte download. **First download behaviour
+  is unchanged, and a partial or NARROWER cache must never be mistaken for a
+  complete one.** hf's own completeness check is not the guarantee — it verifies
+  against `trees/<commit>.json`, hf's code says that without one "we cannot tell,
+  so we do nothing", and this app's segmented fetch (the normal path) writes
+  `refs/` and blobs but never a tree. **So the app records its own fetches and the
+  fast path answers only from that record**: `<repo folder>/.fused-fetch-<commit>.
+  json` holds the SCOPE a completed download was asked for and the FILE NAMES that
+  landed, written after the fetch returns (which is the one moment completeness is
+  knowable, since `_write_ref` runs after the last file), and a request is served
+  only when the record is for the commit hf resolved, at the scope being asked for,
+  with every recorded name present and settled. **Every record is keyed by the
+  commit the returned snapshot IS**, never by the sha that was asked for, and the
+  fallback to `snapshot_download` is **pinned to that sha** — a branch name resolved
+  twice is two answers, and a repo that moves between the listing and the fallback
+  would otherwise file a record under a snapshot directory that does not exist,
+  leaving that repo permanently cold. **A fetch that landed LESS than its scope asked
+  for writes no record at all**, and the record's file list is therefore the
+  LISTING's rather than the disk's: a record is verified by looking its own names
+  up, so building it from what landed would make it self-certifying — a fallback
+  delivering 1 of 50 files would record one name, every check would pass, and an
+  incomplete snapshot would be served forever. Checked against the set the listing
+  asked for (the one thing there the fetch did not choose), a shortfall leaves the
+  repo cold and says so on stderr, which is where it was before this path existed.
+  The `.writing` temp a record is staged in is **unique per writer and never
+  deleted by anyone else**: two loads sharing one cache are separate processes, and
+  sweeping that name to save a round trip made the other's `os.replace` fail and
+  its record never appear — the very failure this prevents, caused by tidying. The
+  name carries a random token as well as the pid, because two containers over one
+  mounted cache have their own pid namespaces and a reused pid would let two writers
+  interleave into one file and `os.replace` publish mixed JSON as truth — which also
+  makes a hard-kill leftover PERMANENT, accepted as a few hundred bytes written
+  inside a ~1ms window, invisible to every consumer, and removed by the same
+  `hf cache delete` that removes the record and the weights, against a by-age sweep
+  that could strike a live writer and cost the cold repo this exists to prevent. **The
+  skipped-record line is a diagnostic, not an error**: it fires on a download that
+  succeeded, so it says so, and says the next load re-resolves over the network. **Scoping is a property of the
+  on-disk STATE, not of the call**, which is why refusing scoped CALLS was not
+  enough: the same id reaches both kinds, because `diffusers_image` fetches
+  `black-forest-labs/FLUX.2-klein-4B` scoped to `recipe["keep"]` while
+  `mflux_image.download` fetches whatever it is given unscoped, and
+  `/api/ai/runtime/download` picks between them from the image-engine preference
+  with `weights_only=True` stopping before the `load()` that would refuse the
+  format — so a download on one engine after the other would have been served from
+  a cache holding a tenth of the repo, reporting success having fetched nothing.
+  Removing a GGUF recipe flips the same id from scoped to unscoped with no user
+  involved at all. **A file that went away has to be detectable**: a blob pruned
+  together with its snapshot entry leaves nothing for a directory walk to trip
+  over, and before this path existed pressing Download again re-listed and
+  re-fetched exactly that, so short-circuiting without the recorded list quietly
+  removed the app's only repair route. Checking recorded names also removes any
+  dependence on `os.walk`, which does not follow directory symlinks by default. **A
+  cache with no record is never served** — every machine that already holds models
+  takes the networked path once, as before, and gains a record on the way out. An interrupted download's markers (hf's
+  `.incomplete`, our `.fusedpart` and its sidecar) are checked per BLOB rather than
+  per repo, because a part file is the resume state (AI-5i) and a repo-wide scan
+  let one cancelled quantization void the fast path for every other file in a
+  multi-GGUF repo. Measured on a real cache: 0.5ms end to end for a 5-file whisper
+  snapshot and 1.2ms for the 17-file scoped FLUX one, against 483ms before; the
+  record-less first call is 0.6-1.1s, i.e. the old cost paid one more time. **The trade is stated rather than
+  discovered: a complete cached model does not pick up a newer Hub revision under
+  the same branch** until something forces a re-check. That is chosen — bring-up
+  latency and offline operation over revision freshness — because these are
+  snapshots a user downloaded on purpose, and weights silently changing under a
+  name they picked would be the worse surprise.
 - **AI-5j** **A load that omits `capability` INFERS it, and refuses rather than
   guessing when it cannot.** The omitted argument used to mean text generation
   unconditionally, which is a wrong-runner dispatch wearing a library error:
@@ -5771,7 +5887,60 @@ an AI Models page that could say what was on disk but not what was *running*.
   it and failing at load time — which would report "the model failed to load" for
   a machine that was never going to load it. A capability this machine cannot
   serve is still listed, with its reason: hiding it leaves a user hunting for a
-  feature that was never there.
+  feature that was never there. **A probe may ask the KERNEL, and it asks at
+  CALL time** (D381). Every probe was a `platform` fact until the per-hardware
+  torch rows (AI-2b) needed to know whether a device was actually there, so the
+  contract is written out: a probe MAY read device nodes and sysfs — `/dev/kfd`,
+  the AMD card's own `/dev/dri/renderD*`,
+  `/sys/class/kfd/kfd/topology/nodes/*/properties`, `/dev/nvidiactl`,
+  `/dev/nvidia[0-9]*`, `/dev/nvidia-uvm`, WSL2's `/dev/dxg` and its
+  `/usr/lib/wsl/lib/libcuda.so.1`, and `/sys/class/drm/{card,renderD}*` to tell
+  "no such GPU" apart from "driver not loaded" and to tell WHOSE render node a
+  `renderD*` is — and permission is asked with
+  `os.access(R_OK|W_OK)` rather than modelled from a mode or a group, because
+  both get real machines wrong in both directions (a `crw-rw-rw-` kfd on a user
+  in neither `render` nor `video`, an ACL-carrying card node invisible to mode
+  arithmetic). It MUST NOT shell out: `nvidia-smi` and `rocminfo` are system
+  binaries this app does not ship, which is the rule AI-2 states about mlx and
+  torch and AI-10 states about ffmpeg, and a cold `nvidia-smi` is 50-500 ms on a
+  path that runs per page render against ~22-41 µs for the whole sysfs walk. **Nor
+  may it LOAD anything** (D382): dlopening `libcuda.so.1` would settle the WSL2
+  question outright and initialises a driver to do it, which is the same cost
+  `nvidia-smi` was refused for, on the same per-page-render path — so the WSL2
+  evidence is two `os.path.exists` and nothing more. And
+  it MUST NOT cache: every failure a device probe reports is one the user fixes
+  WHILE THE APP RUNS — `modprobe amdgpu`, an eGPU plugged
+  in, a container restarted with `--device /dev/kfd`, a group joined — and a
+  cached refusal that outlives the fix is the reason string telling somebody what
+  to do and then the app declining to notice they did it. Stdlib only, and no
+  `torch` import: this module is on the render path for `describe`,
+  `describe_engines` and every `resolve`.
+  **Every path a probe touches is a module-level constant** so a test can repoint
+  it at a `tmp_path`, and a row's `available` and its `reason` come from ONE call
+  (D382): they were two, which was harmless while a probe was a `platform` fact
+  and became a race the moment it was a device read — two calls straddling a
+  `modprobe` serialise either `available: false` with `reason: null`, a disabled
+  option with nothing saying why, or an available row still carrying a refusal.
+- **AI-6a** **An ABSENCE only refuses when absence is evidence, and a refusal
+  names a fix that can work** (D382). A hard gate reads what the kernel has put
+  in front of it, and the failure mode is a node that is missing for an innocent
+  reason: `/dev/nvidia-uvm` is created LAZILY — `nvidia-modprobe` loads
+  `nvidia_uvm` the first time any process makes a CUDA context, and the display
+  path never needs it — so a freshly booted NVIDIA desktop whose `torch.cuda`
+  works has no such node, and gating on its existence greyed out both CUDA rows
+  there and blamed a driver update. It is therefore asked for PERMISSION only,
+  when it happens to exist. WSL2 is the same mistake in the other direction: it
+  has none of the Linux nodes and works anyway, so its shape is checked FIRST and
+  the Linux nodes' absence is not evidence against it. And a device must be the
+  RIGHT one: an Intel iGPU's `renderD128` is world-openable on most
+  distributions, so ROCm pins its render node to a `0x1002` card through the DRM
+  class rather than accepting whichever node opens — otherwise a hybrid box buys
+  the ~6 GB install and fails inside HIP, which is the outcome AI-2b's gate
+  exists to prevent, reached through the gate. Where a device is missing and
+  where it is present but closed are DIFFERENT SENTENCES (AI-10e): "add your user
+  to the `render` group" cannot fix a `/dev/dri` a container was never given, and
+  one sentence for both sent half its readers after a `usermod` that could not
+  have helped.
 - **AI-7** **Liveness is `poll()`, and stopping is platform-specific.** Never
   `os.kill(pid, 0)`: on POSIX an unreaped child is a zombie and signal 0 to a
   zombie succeeds, so the check answers "alive" for a model that crashed; on
@@ -6258,13 +6427,43 @@ an AI Models page that could say what was on disk but not what was *running*.
   defeating the folder split) and **not** the PyTorch one (gigabytes for a 2MB
   model). The repo is ungated, which the download rule requires of everything
   this app fetches and not only of models a user picks. **Silence is dropped and
-  each speech region is transcribed on its own**, with every timestamp mapped
-  back to original-recording time. That is chunking, which AI-10c rejects for
+  only speech is decoded**, with every timestamp mapped back to
+  original-recording time. That is chunking, which AI-10c rejects for
   progress — and the difference is where the cut falls: a VAD boundary is by
   construction half a second of silence, where a sentence has already ended,
-  whereas a fixed offset cuts through one. What is still lost is conditioning
-  ACROSS a gap (`condition_on_previous_text` works inside one call), and
-  carrying the previous region's text in as a prompt was rejected rather than
+  whereas a fixed offset cuts through one. **The speech is PACKED, not decoded a
+  region at a time** (D366, `vad.pack_regions`): the surviving regions are
+  concatenated into clips of at most 29 seconds and each clip is one
+  `transcribe()` call, with `vad.original_start`/`original_end` inverting the concatenation for
+  every timestamp — each endpoint mapped on its own, since a segment can span a
+  join. **A segment that spans a join keeps its real interval but is SCORED for
+  its speaker only where speech was**: `assign_speakers`/`speaker_for` take an
+  optional `spans` mask, and the packed path passes the region list. Diarization
+  runs on the full waveform (§40, deliberately) and routinely has turns inside a
+  dropped pause, so summing overlap across the whole span handed the label to
+  whoever the segmenter heard during the silence rather than to whoever said the
+  words. The published `start`/`end` are unchanged — the words really do sit
+  either side of the pause — and every engine that drops no silence passes no
+  mask and scores exactly as before. **This is the one place AI-10f claims a
+  speed benefit, and it is measured**, on a 216-second recording that is 92% speech (31 regions, min
+  0.8s, median 5.8s, max 14.0s), against the same file decoded whole:
+  `large-v3-turbo` 8.32s whole, 23.30s as 31 raw regions, 9.31s packed;
+  `tiny.en-8bit` 1.48s / 2.42s / 2.05s. Before packing, `vad: true` therefore
+  COST 15 seconds on a 3.6-minute recording rather than saving anything, because
+  mlx-whisper pads every call's mel to `N_FRAMES = 3000` — 30 seconds — so a
+  0.8-second region buys a full encoder window. faster-whisper never had the
+  defect (its own `vad_filter` calls `collect_chunks`, which concatenates and
+  remaps), and two engines sitting 2.8x apart on one flag is precisely what this
+  clause exists to prevent. **`parakeet_mlx` deliberately does not pack**: it is
+  a transducer with no fixed window (it chunks only above `chunk_duration =
+  60.0`), so its cost is proportional to the audio it is given and packing would
+  add a second timestamp mapping for no measured gain — same meaning of the
+  flag, different batching, which is the distinction the clause draws. A single
+  region longer than the budget passes through whole and is never split: cutting
+  mid-speech loses words, and Whisper's own seeking chunks a long input better.
+  What is still lost is conditioning ACROSS a CALL
+  (`condition_on_previous_text` works inside one), and
+  carrying the previous clip's text in as a prompt was rejected rather than
   forgotten: it invites the model to continue a sentence that finished before
   the pause, which is the known route to a repetition loop. **Progress stays in
   seconds of the ORIGINAL recording**: the borrowed frame counter denominates
@@ -6302,12 +6501,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   between them, and different the moment one can.
 - **AI-10f** **What a backend is LIKE reads under the picker that chooses it**
   (D315). A runner's `note` — MLX FLUX's memory ceiling, MLX Whisper's GPU
-  speed, PyTorch's NVIDIA-or-CPU — renders as a muted line beneath its
+  speed, the CPU torch rows' speed-per-download trade — renders as a muted line beneath its
   capability's row on the Engines tab, for the **effective** runner only, the
   same discipline the "Using MLX LM." line above it follows. It used to head
   the matching capability section on Discover, which was wrong twice: three of
   six runners have a note, so those sections were blotchy and the sentences
-  read as noise; and the FLUX one is not a fact but the **instruction AI-9c's
+  read as noise (three of six runners then; nine of eleven since the
+  per-hardware split, D381, which makes the sentence a caption on almost every
+  section rather than a signal on a few); and the FLUX one is not a fact but the **instruction AI-9c's
   accepted risk depends on** — the sentence that tells a 16GB Mac to switch
   back to Diffusers — which has to be beside the control that switches. The
   rows are uneven, and here that is information: this engine has a caveat, that
@@ -6471,12 +6672,17 @@ an AI Models page that could say what was on disk but not what was *running*.
   broken model rather than an environment one version too old.
 - **AI-11b** **The device is reported, because a model on a CPU works and looks
   broken.** torch runs on whatever it can see, and what it can see is not
-  knowable from outside the process: **the PyPI torch wheel is CPU-only on
-  Windows** (its `nvidia-*` dependencies are all marked `platform_system ==
-  "Linux"`), so the ordinary outcome on a Windows machine with a graphics card
-  is a perfectly healthy model answering at a few words a second, with a green
-  LOADED card and a healthy memory figure and nothing on screen to explain the
-  speed. `worker_base.STATE` therefore carries a `device` that each runner sets
+  knowable from outside the process: **the default torch rows pin the `whl/cpu`
+  build on every platform** (AI-2b, D381), so the ordinary outcome on ANY machine
+  with a graphics card in it — not the Windows machine it used to be, back when
+  the PyPI wheel's `nvidia-*` dependencies were the only thing marked
+  `platform_system == "Linux"` — is a perfectly healthy model answering at a few
+  words a second, with a green LOADED card and a healthy memory figure and
+  nothing on screen to explain the speed. The one exception is what makes the
+  device worth reporting rather than assuming: that same CPU pin resolves darwin
+  to the ordinary macOS wheel, so the CPU row lands on `mps` on Apple Silicon and
+  the row's `note` says so (D382) — a picker printing a CPU speed claim beside a
+  card reporting `mps` is one page contradicting itself. `worker_base.STATE` therefore carries a `device` that each runner sets
   in its own `load()` — the same argument AI-8 makes about resident bytes: only
   the process holding the weights knows. It surfaces twice, and the two are
   different KINDS of statement: the loaded card shows a measurement (**on CPU**,
@@ -6484,15 +6690,27 @@ an AI Models page that could say what was on disk but not what was *running*.
   fact about the backend above the cards, before any download, since that is
   when it can still change a decision. All three runners report it — the image
   runner has had the same Windows CPU-only problem since D257 and never said so.
-  **Windows CUDA was deferred, deliberately**: reaching it means pulling torch
-  from `download.pytorch.org` through a `[[tool.uv.index]]`, which costs EVERY
-  Windows user a ~3GB CUDA runtime to serve the ones with an NVIDIA card. The
-  trade is stated rather than hidden, which is what the device reporting is for.
+  **Windows CUDA IS offered as of D381, and the objection that used to block it
+  is void.** That objection — pulling torch from `download.pytorch.org` through a
+  `[[tool.uv.index]]` would cost EVERY Windows user a ~3GB CUDA runtime to serve
+  the ones with an NVIDIA card — died the moment an accelerated build became a
+  row of its own that nobody installs by accident (AI-2b). PyPI still publishes
+  no CUDA-enabled Windows torch, so reaching one does mean a per-toolkit URL
+  (`whl/cu130`); what makes that acceptable rather than a third source to keep in
+  step everywhere is that the override is asked PER PLATFORM —
+  `torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32'" }]` —
+  so Linux keeps resolving from PyPI, whose wheel already IS the CUDA build, and
+  the mirror is consulted only where PyPI has nothing to offer. The lock carries
+  two torch entries as a result, and the CUDA row means the same thing on both
+  platforms. **A CUDA row that installed a CPU wheel would be the one outcome
+  AI-2b's hard gate exists to prevent**: `_cuda()` admits Windows, so the row is
+  genuinely offered there, and offering it while silently resolving to CPU would
+  charge a user a multi-gigabyte install for a name that was not true.
 - **AI-11c** **No text has ever been generated by this runner, and AI-10b's
   disclaimer applies verbatim.** torch cannot run on CI, so the registry, the
   catalog, the resolution across four platforms and the API are exercised
   against fakes, and the runner's OWN logic is tested a level down —
-  `transformers_text/worker.py` is stdlib-only at import time, so its format
+  `runners/torch_text.py` is stdlib-only at import time, so its format
   refusals, its dtype-keyword choice, its device placement and its two
   prompt-encoding paths are all driven on CI with stubs. What no test touches is
   torch itself: the actual generation, the streaming, the real speed on a CPU,
@@ -6711,7 +6929,7 @@ world from one the user typed.
 - **SCH-9** **One copy of the spawn discipline** (`fused_render/claude_spawn.py`).
   The apps API and the scheduler need the identical posix_spawn posture — calling
   `agent._start` in the server process fork()s with libproj resident and SIGSEGVs
-  the child before exec — plus the same poll that gets a run into its sidecar.
+  the child before exec — plus the same poll that records a run's session id.
   Extracted rather than duplicated, because that reasoning is the kind that gets
   paraphrased into something false on the second telling.
 - **SCH-10** **Two surfaces, because nobody is looking when it happens.** This is
@@ -6759,7 +6977,7 @@ world from one the user typed.
   - **SCH-10d** **The watcher wraps the recorder, it does not replace it.**
     `record_session_when_ready` gained an optional `on_tick` observer (called
     before its `done` check, since that final tick is where the outcome is), whose
-    exceptions are swallowed: the sidecar write and the commit must happen whether
+    exceptions are swallowed: the session-id record and the commit must happen whether
     or not anything is watching, so an observer is never allowed to abandon a run.
     Every report is best-effort — a registry that refuses a field must not cost a
     message its send.
@@ -7167,3 +7385,71 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   template never knows, being a page rendered inside the app. An agent that catches the app deducing wrong about
   its own state has reason to discount the rest of the brief, so the line says
   only what holds everywhere.
+
+## 43. Single-File App Export — the `.fused` App File (D385, D386, D387)
+
+One app, one double-clickable file. Exporting a fused app produces
+`<app name>.fused` — a zip holding `manifest.json` (`fused_app_file: 1`, the
+app's name, and its entry page resolved by the shared entry rule,
+`app_listing.app_entry`) plus a `files/` payload dir mirroring the whole app
+folder (bundle v2's payload shape). Opening one lands the recipient in the app
+experience and nothing else: no editor, no Claude, no explorer chrome.
+
+- **AF-1** Export walks the app FOLDER (`appfile.export_app_file`), not a
+  per-page dependency scan: every page, `.py`, asset and `pyproject.toml`/
+  `uv.lock` ships. Skipped: dotted names (`.git`, `.claude`, `.venv`, `.env`),
+  `node_modules`, `__pycache__`, symlinks, and `CLAUDE.md` (the authoring
+  contract stays home). Budgets 4000 files / 512 MB; loud `AppFileError`s.
+- **AF-2** A folder with no marker-carrying page is not exportable — a
+  `.fused` must have an entry to open (the marker is the only signal, D301).
+- **AF-3** `fused.ai()` SHIPS, unlike the hosted exporter (RH-11 does not
+  apply — D388 reversed D385's original stance): an opened `.fused` runs
+  inside the recipient's full local runtime, where `/api/ai` exists. A
+  recipient without the claude CLI or a resident local model gets the API's
+  own graceful `ai_unavailable` rejection, which pages already handle. The
+  "no claude" contract is about the EDITING surface (embed mode strips it),
+  not the AI runtime.
+- **AF-4** **Export App File** is offered on four surfaces, all calling the
+  same `downloadAppFile` (fetch + blob so a 400's JSON error surfaces as a
+  toast, never saves as a corrupt file): the /apps card's right-click menu,
+  a hover-revealed chip on the card thumbnail (`.app-pcard-export`, also
+  keyboard-reachable via focus), the explorer folder-row context menu (every
+  folder, beside Compress — the server's "not a fused app" reason is the
+  toast for a non-app folder), and an **Export App** header button shown when
+  the previewed page is its folder's app entry (asked of `/api/apps/entry`;
+  embed mode hides the whole header, so an opened `.fused` never shows it).
+  The route (GET `/api/appfile/export?path=`) builds into a per-request temp
+  dir, deleted after the response; non-destructive everywhere.
+- **AF-5** A `.fused` renders at its own explorer URL — there is no dedicated
+  open route and no gate (D389/D390). `.fused` is a preview template binding
+  (`registry.json` → `templates/fusedapp`): the template reads `_file`, calls
+  the internal X-Fused-guarded `POST /api/appfile/open` (extract-or-reuse),
+  and fills the viewport with an iframe of the entry page's embed URL the
+  POST answers. An in-explorer open is `/explorer/view/<path>.fused` (shell
+  chrome kept); an OS double-click maps via the shared view-URL codec
+  (`_view_url_codec.view_url_path`) to `/explorer/embed/<path>.fused` —
+  chrome-free, the app experience. Errors render as the template's own fail
+  state. The accepted trade: a `.fused` from an untrusted source runs its
+  Python on first render, like any folder of pages someone sent you.
+- **AF-6** Open extracts through `zip_import`'s hardened extractor (zip-slip,
+  symlink entries, count/size caps on bytes actually written) into a
+  content-addressed dir under `~/.fused-render/appfiles/`
+  (`<name-slug>-<sha256[:16]>` — same bytes re-use the extract, a re-export
+  lands fresh). The manifest's entry must exist in the payload and still carry
+  the fused-app marker, or the open is refused.
+- **AF-7** Every extracted file is chmod 0444 (RO-7's bit): `stat` answers
+  `writable: false`, `/api/fs/write` refuses, `fused.writeFile` rejects with
+  the existing `readonly` type. The no-edit contract is enforced by the
+  read-only machinery of §13.5, not a new mode.
+- **AF-8** The open answers the entry's **embed** URL
+  (`/explorer/embed/<entry>`): chrome-free by page-load mode — the app as it
+  is. Rendering the entry records the open (D301), which for a folder outside
+  the workspace is hub registration (`registered_apps.record_open`), so the
+  opened app appears on /apps and in recents through the existing pipeline.
+- **AF-9** `.fused` is an owned file type on all three platforms: macOS
+  Owner-rank document type + exported UTI `io.fused.render.app` (conforms to
+  `public.data`, not the zip UTI, so archive tools don't claim it); Windows
+  and Linux associations flow from `templates/registry.json` like every other
+  previewable extension — `.fused` IS a registry key now (D390 made it the
+  `fusedapp` template's binding), so the D387-era `winopen.extensions()`
+  hardcoded seed is gone.

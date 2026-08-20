@@ -1,5 +1,9 @@
-"""The Home view's apps backend: list the app folders in the Fused workspace
-and scaffold new ones.
+"""The apps backends: list app folders and scaffold new ones.
+
+``GET /api/apps`` is the exhaustive catalog used by the Apps hub. The Home
+page's ``GET /api/apps/home`` is recent-first: it hydrates explicit paths from
+the two recents stores and invokes that exhaustive workspace walk only when the
+valid recents do not fill Home's single row.
 
 Apps live ONE TO THREE levels under the workspace (``fused_dir()``,
 ~/Fused), found by a bounded recursive walk whose per-level rules are
@@ -26,9 +30,9 @@ POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
 plus a ``CLAUDE.md``) and — when the request carries a prompt — starts a
 detached Claude Code session in the new folder via the claude template's own
-backend (templates/claude/agent.py), so the session lands in the sidecar next
-to ``index.html`` and the existing claude template UI lists and resumes it
-with no new machinery. "local" is just this feature's own tag — nothing about
+backend (templates/claude/agent.py), so the session's transcript lands in the
+folder's ~/.claude/projects dir and the existing claude template UI lists and
+resumes it with no new machinery. "local" is just this feature's own tag — nothing about
 the listing side treats it specially.
 
 An app folder carries no ``.claude/`` of its own (D185); the starter
@@ -67,21 +71,138 @@ _APP_STARTER_DIR = os.path.join(
 # not the right place for the rules about what an app IS. See that module.
 
 
+def _workspace_apps() -> list[dict]:
+    """The exhaustive workspace listing with its stored open timestamps."""
+    root = fused_dir()
+    apps = list(app_listing.workspace_apps(root))
+    opened = _opened_at_by_app()
+    for a in apps:
+        a["opened_at"] = opened.get(_workspace_rel(root, a["path"]))
+    return apps
+
+
 @router.get("/api/apps")
 def api_apps():
     from fused_render import registered_apps
 
-    apps = list(app_listing.workspace_apps(fused_dir()))
-    opened = _opened_at_by_app()
-    root = fused_dir()
-    for a in apps:
-        a["opened_at"] = opened.get(_workspace_rel(root, a["path"]))
+    apps = _workspace_apps()
     # External folders the user opened through "Open app" — the registry's own
     # `openedAt` already rides in as `opened_at` (registered_apps.py), so these
     # sort by recency exactly as workspace apps do.
     apps.extend(registered_apps.registered_apps())
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
+
+
+# Home renders one row, not the complete app catalog. Its common path follows
+# the two stores that are already newest-first and hydrates only their explicit
+# paths. The recursive workspace walk is a fallback for a cold/incomplete store:
+# that is what discovers never-opened local apps and the ordinary `showcase/`
+# workspace tag without charging every returning Home visit for discovery.
+HOME_APPS_LIMIT = 12
+
+
+def _workspace_path_for_recent(root: str, rel: str) -> str | None:
+    """Resolve a recents key under ``root`` without allowing it to escape.
+
+    The store is user-writable. Keep this pure string work: the caller performs
+    the targeted filesystem probes only after the path has passed this gate.
+    """
+    parts = rel.replace(os.sep, "/").split("/")
+    if (os.path.isabs(rel) or rel.startswith(".") or ".." in parts
+            or not 1 <= len(parts) <= app_listing.MAX_APP_DEPTH):
+        return None
+    if any(not p or os.path.isabs(p) or os.path.splitdrive(p)[0] for p in parts):
+        return None
+    path = os.path.abspath(os.path.join(root, *parts))
+    try:
+        if os.path.commonpath((os.path.abspath(root), path)) != os.path.abspath(root):
+            return None
+    except ValueError:
+        return None
+    return path
+
+
+def _recent_workspace_apps(limit: int) -> list[dict]:
+    """Hydrate at most ``limit`` valid workspace recents in stored order."""
+    from fused_render.index.ignore import MountGuard
+
+    root = fused_dir()
+    guard = MountGuard()
+    if guard.blocks(root):
+        return []
+    apps: list[dict] = []
+    for recent in _read_app_recents()["entries"]:
+        opened_at = _opened_epoch(recent.get("openedAt"))
+        if opened_at is None:
+            continue
+        path = _workspace_path_for_recent(root, recent["path"])
+        if path is None or guard.blocks(path):
+            continue
+        try:
+            if not os.path.isdir(path):
+                continue
+            entry_html = app_listing.app_entry(path)
+        except OSError:
+            continue
+        if entry_html is None:
+            continue
+        parts = recent["path"].replace(os.sep, "/").split("/")
+        app = app_listing.app_dict(
+            path, os.path.basename(path), parts[0], entry_html,
+            include_updated_at=False,
+        )
+        app["opened_at"] = opened_at
+        apps.append(app)
+        if len(apps) >= limit:
+            break
+    return apps
+
+
+def _app_recency(app: dict) -> float:
+    opened = app.get("opened_at")
+    return opened if isinstance(opened, (int, float)) else (app.get("updated_at") or 0)
+
+
+@router.get("/api/apps/home")
+def api_home_apps(limit: int = HOME_APPS_LIMIT):
+    """Recent-first app cards for Home, with exhaustive discovery as fallback.
+
+    A warm Home visit touches only explicit paths from the two recents stores.
+    When those do not fill its single row, the ordinary workspace listing runs
+    once and fills the holes; because showcase is an ordinary workspace tag,
+    that fallback preserves unopened showcase cards as well as new local apps.
+    """
+    from fused_render import registered_apps
+
+    limit = max(1, min(limit, HOME_APPS_LIMIT))
+    recent = _recent_workspace_apps(limit)
+    recent.extend(
+        registered_apps.registered_apps(
+            limit=limit, include_updated_at=False, opened_only=True
+        )
+    )
+    recent.sort(
+        key=lambda a: (-_app_recency(a), a["tag"].lower(), a["name"].lower())
+    )
+    recent = recent[:limit]
+    if len(recent) >= limit:
+        return {"apps": recent}
+
+    seen = {os.path.normcase(os.path.abspath(a["path"])) for a in recent}
+    discovered = sorted(
+        _workspace_apps(),
+        key=lambda a: (-_app_recency(a), a["tag"].lower(), a["name"].lower()),
+    )
+    for app in discovered:
+        identity = os.path.normcase(os.path.abspath(app["path"]))
+        if identity in seen:
+            continue
+        recent.append(app)
+        seen.add(identity)
+        if len(recent) >= limit:
+            break
+    return {"apps": recent}
 
 
 def _workspace_rel(root: str, path: str) -> str | None:
@@ -117,6 +238,16 @@ def _opened_at_by_app() -> dict[str, float]:
         except ValueError:
             continue
     return out
+
+
+def _opened_epoch(value) -> float | None:
+    """An ISO open timestamp as epoch seconds, or None when user-corrupt."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
 
 
 # ------------------------------------------------------------------- recents
@@ -288,7 +419,7 @@ def _app_name_error(name) -> str | None:
 
 
 # The spawn machinery (where agent.py lives, why _start cannot be called in
-# this process, and the poll that gets a run into its sidecar) is shared with
+# this process, and the poll that gets a run's turn committed) is shared with
 # scheduled messages and lives in fused_render/claude_spawn.py.
 #
 # These two are re-bound as module-level names rather than called through
@@ -333,9 +464,9 @@ def _start_app_session(app_dir: str, prompt: str) -> tuple[str | None, str | Non
     """Start a detached Claude Code session on the new app's FOLDER.
 
     The seam the tests stub. Reuses the claude agent's _start (via the
-    fork-safe helper above) — cwd = the app folder, stream-json log, sidecar
-    at <app_dir>/.claude-split.json, the same place the split view the app
-    opens in lists and resumes from — with the prompt over stdin
+    fork-safe helper above) — cwd = the app folder, stream-json log, the
+    transcript in the same project dir the split view the app opens in lists
+    and resumes from — with the prompt over stdin
     (message_via_stdin) so user text never enters argv. Returns
     (run_id, error), exactly one of them set: a missing claude CLI or spawn
     failure must not fail the creation that already succeeded, but the reason

@@ -14,6 +14,7 @@ machine and the disk-measured download behaves the way the supervisor assumes.
 import importlib.util
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -531,6 +532,35 @@ def test_every_registered_runner_ships_both_of_its_files():
         assert os.path.isfile(runner.pyproject), f"{runner.code}: no pyproject.toml"
 
 
+def _runner_source(runner):
+    """The module that actually IMPLEMENTS a runner, following a shell.
+
+    Six of the eleven runner folders — the CPU/CUDA/ROCm variants of the two
+    torch engines — hold a five-line `worker.py` that inserts `runners/` on the
+    path and calls `torch_text.main()` or `torch_image.main()`. The behaviour
+    lives one level up, so a source assertion made against the folder's file
+    would read a shell and pass on anything: the two tests below would have
+    stopped checking the torch runners entirely, silently, on the commit that
+    hoisted them.
+
+    The shell is recognised by what makes it one — it imports a module from the
+    runners root and CALLS ITS `main()`, which is the whole of its body — rather
+    than by a list of runner codes, so a future hoisted runner is covered without
+    an edit here. Recognising it by the import alone would follow every worker's
+    `import worker_base` into the base module instead.
+    """
+    with open(runner.worker, encoding="utf-8") as handle:
+        source = handle.read()
+    root = os.path.dirname(runner.folder)
+    for match in re.finditer(r"^import (\w+)", source, re.MULTILINE):
+        name = match.group(1)
+        hoisted = os.path.join(root, name + ".py")
+        if f"{name}.main()" in source and os.path.isfile(hoisted):
+            with open(hoisted, encoding="utf-8") as handle:
+                return handle.read()
+    return source
+
+
 def test_no_runner_reimplements_the_contract():
     """The whole point of the extraction (AI-9a).
 
@@ -542,7 +572,7 @@ def test_no_runner_reimplements_the_contract():
     from fused_render.ai import registry
 
     for runner in registry.all_runners():
-        source = open(runner.worker, encoding="utf-8").read()
+        source = _runner_source(runner)
         assert "import worker_base" in source, f"{runner.code} does not use the base"
         assert "worker_base.serve(" in source, f"{runner.code} does not serve through the base"
         for reimplemented in ("BaseHTTPRequestHandler", "X-Fused-Worker",
@@ -574,7 +604,7 @@ def test_every_runner_that_needs_a_memory_probe_supplies_one():
     ):
         runner = registry.by_code(code)
         assert runner is not None, code
-        source = open(runner.worker, encoding="utf-8").read()
+        source = _runner_source(runner)
         assert "def memory(" in source, f"{code} has no memory probe — {why}"
         assert "memory=memory" in source, (
             f"{code} does not pass its probe to serve(), so /health reports RSS: {why}"
@@ -661,6 +691,810 @@ def test_progress_never_exceeds_a_scoped_total(base, monkeypatch):
 # whose deny-list saved nothing still passed: the string it looked for was
 # present and the 7.75GB root bundle beside it was not something a substring
 # check could see.
+
+# -- the cached path does not touch the network ---------------------------------
+#
+# Measured on this machine for `mlx-community/whisper-tiny.en-8bit`, fully
+# cached: `worker_base.download_snapshot` cost 483ms and `download_file` 456ms,
+# every millisecond of it Hub round-trips — `HfApi().model_info(files_metadata=
+# True)` is 228ms on its own and the segmented fetch's own requests are another
+# ~230ms. The same answers off the cache alone are 0.13ms and 0.14ms. That is why
+# a bring-up of a model already on disk waited about a second before the ~14ms of
+# actual weight loading, and it is what produced the "You are sending
+# unauthenticated requests to the HF Hub" line in every worker log.
+#
+# `tests/test_ai_hub_fetch.py` owns the other side of this: that pressing Stop
+# never starts a download, enforced by counting calls to hf's two download
+# functions. That test is why the fast path looks at the FILESYSTEM first and
+# only then asks hf to confirm — and it caught this file getting it wrong.
+
+
+class _LocalHub:
+    """`huggingface_hub`, recording which calls were LOCAL and which networked.
+
+    The distinction is the whole subject: a cached model must be resolved off the
+    disk with `local_files_only=True` and nothing else, an absent one must still
+    take exactly the path it took before, and a repo the cache has never held
+    must not reach a download function at all.
+    """
+
+    class LocalEntryNotFoundError(OSError):
+        """hf's own name for "the cache cannot answer this", and hf's own base:
+        `LocalEntryNotFoundError` really is a `FileNotFoundError`, which is what
+        lets `_NOT_CACHED` name it without importing it."""
+
+    def __init__(self, cached=(), snapshot="/cache/snap", file_path=None):
+        self.cached = set(cached)
+        self.snapshot = snapshot
+        self.file_path = file_path
+        #: (function, local_files_only) in order. `try_to_load_from_cache` cannot
+        #: download at all, so it records as a lookup rather than as a call.
+        self.calls = []
+        self.lookups = []
+
+    def snapshot_download(self, model_id, allow_patterns=None,
+                          ignore_patterns=None, local_files_only=False, **kw):
+        self.calls.append(("snapshot", local_files_only))
+        if local_files_only and model_id not in self.cached:
+            raise self.LocalEntryNotFoundError(model_id)
+        return self.snapshot
+
+    def hf_hub_download(self, repo_id=None, filename=None,
+                        local_files_only=False, **kw):
+        self.calls.append(("file", local_files_only))
+        if local_files_only and repo_id not in self.cached:
+            raise self.LocalEntryNotFoundError(repo_id)
+        return self.file_path or os.path.join(self.snapshot, filename or "f")
+
+    def try_to_load_from_cache(self, repo_id, filename, **kw):
+        self.lookups.append((repo_id, filename))
+        if repo_id not in self.cached:
+            return None
+        return self.file_path or os.path.join(self.snapshot, filename)
+
+    class HfApi:
+        def model_info(self, model_id, revision=None, files_metadata=False):
+            raise AssertionError(
+                "a cached model must not cost a Hub metadata call")
+
+
+#: A commit sha shaped like hf's own: a snapshot directory IS one, and the record
+#: is keyed off it, so a fixture named "snap" would test a key production never
+#: produces.
+COMMIT = "a1b2c3d4" * 5
+OTHER_COMMIT = "f9e8d7c6" * 5
+
+
+def _raiser(error):
+    """A stand-in for a call that fails — the segmented fetch, usually, whose every
+    failure degrades to hf's downloader."""
+    def fail(*_args, **_kwargs):
+        raise error
+    return fail
+
+
+def _cache_folder(tmp_path, name="models--u--x", snapshot=True, partial=False):
+    """A folder shaped like hf's cache entry for one repo.
+
+    Real directories rather than a stubbed `os.path`, because whether the cache
+    holds a snapshot at all is now the gate in front of every hub call — a stub
+    would prove nothing about it and would lie to pytest at the same time.
+    """
+    folder = tmp_path / name
+    (folder / "blobs").mkdir(parents=True)
+    if snapshot:
+        (folder / "snapshots" / COMMIT).mkdir(parents=True)
+    if partial:
+        (folder / "blobs" / "abc123.incomplete").write_bytes(b"half a shard")
+    return folder
+
+
+def _local_hub(monkeypatch, base, hub, folder=None):
+    """Install the fake library, and say what the cache folder looks like."""
+    import types
+    module = types.SimpleNamespace(
+        snapshot_download=hub.snapshot_download,
+        hf_hub_download=hub.hf_hub_download,
+        try_to_load_from_cache=hub.try_to_load_from_cache,
+        HfApi=hub.HfApi)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", module)
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model":
+                        None if folder is None else str(folder))
+
+
+def _snapshot_dir(tmp_path, *files):
+    """A resolved snapshot directory that really is there, with `files` in it.
+
+    Named as a commit sha, because that is what hf's cache calls a snapshot and what
+    `_commit_of` will accept as a key."""
+    folder = tmp_path / COMMIT
+    folder.mkdir(exist_ok=True)
+    for name in files:
+        path = folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"weights")
+    return str(folder)
+
+
+def test_a_CACHED_snapshot_is_resolved_with_NO_network_call(base, monkeypatch,
+                                                            tmp_path):
+    """The whole point: 483ms of Hub round-trips before ~14ms of weight loading,
+    on every bring-up of a model already on disk. `_LocalHub.HfApi` asserts
+    rather than returns, so a metadata call here fails the test by name."""
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    folder = _cache_folder(tmp_path)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    # A completed fetch, recorded the way `download_snapshot` records one: the fast
+    # path answers from that record and from nothing else.
+    _fetched(base, folder, snapshot, commit=os.path.basename(snapshot),
+             names=["config.json"])
+
+    assert base.download_snapshot("u/x") == snapshot
+    assert hub.calls == [("snapshot", True)]
+
+
+def test_a_cached_FILE_is_resolved_by_a_LOOKUP_that_cannot_download(
+        base, monkeypatch, tmp_path):
+    """The component fetches — the 2MB speech detector, the two diarization
+    models — happen INSIDE a transcription, so their 456ms each was latency on
+    the way to a transcript whose bytes were already on the disk.
+
+    Answered by `try_to_load_from_cache`, hf's read-only cache lookup, rather
+    than by `hf_hub_download(local_files_only=True)`: a function that cannot
+    download keeps `tests/test_ai_hub_fetch.py`'s "Stop never starts a download"
+    invariant by construction instead of by an argument a later edit might drop.
+    """
+    snapshot = _snapshot_dir(tmp_path, "onnx/model.onnx")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=_cache_folder(tmp_path))
+
+    assert base.download_file("u/x", "onnx/model.onnx") == os.path.join(
+        snapshot, "onnx/model.onnx")
+    assert hub.lookups == [("u/x", "onnx/model.onnx")]
+    assert hub.calls == [], "a cached file must not reach a download function"
+
+
+def test_a_repo_the_cache_has_NEVER_held_reaches_no_hub_call_at_all(
+        base, monkeypatch, tmp_path):
+    """The invariant `tests/test_ai_hub_fetch.py` enforces from the other side,
+    pinned here at the source: with no snapshot in the cache the fast path is
+    decided by a filesystem look, so nothing — not even a call carrying
+    `local_files_only=True` — reaches hf before the networked path starts.
+
+    It matters because that test counts CALLS, not downloads: "we only passed
+    local_files_only" is exactly the kind of claim that stops being true when a
+    refactor drops an argument, and a cancel arriving during the fetch then
+    turns into a fresh multi-gigabyte download.
+
+    A `try_to_load_from_cache` lookup IS allowed for the single-file path, and
+    that is the distinction rather than an exception to it: that function has no
+    download in it at all, so no argument of ours stands between it and the
+    network. What must not happen is a DOWNLOAD function being called at all.
+    """
+    hub = _LocalHub(cached=[], snapshot=_snapshot_dir(tmp_path))
+    _local_hub(monkeypatch, base, hub, folder=None)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert hub.calls == [("snapshot", False)], hub.calls
+
+    base.download_file("u/x", "w.bin")
+
+    # The file path never reached a download function EXCEPT as the networked
+    # fallback (`local_files_only` False), and the snapshot path reached none
+    # with it True at all.
+    assert [call for call in hub.calls if call[1] is True] == []
+
+
+def test_a_CANCEL_out_of_the_local_attempt_is_never_read_as_not_cached(
+        base, monkeypatch, tmp_path):
+    """The failure `_NOT_CACHED` exists to prevent, and the one this file forbids
+    everywhere else: a ✕ answered by starting a download.
+
+    `Cancelled` is an ordinary `Exception`, so the first cut of the fast path —
+    `except Exception: return None` — read it as "the cache cannot serve this"
+    and went to the network. `tests/test_ai_hub_fetch.py` caught the same class of
+    thing through `_segmented_fetch`; this pins the local attempt itself.
+    """
+    hub = _LocalHub(cached=["u/x"], snapshot=_snapshot_dir(tmp_path))
+
+    def cancelled(*args, **kwargs):
+        raise base.Cancelled()
+
+    hub.snapshot_download = cancelled
+    hub.try_to_load_from_cache = cancelled
+    _local_hub(monkeypatch, base, hub, folder=_cache_folder(tmp_path))
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    with pytest.raises(base.Cancelled):
+        base.download_snapshot("u/x")
+    with pytest.raises(base.Cancelled):
+        base.download_file("u/x", "w.bin")
+    assert hub.calls == [], "pressing Stop started a download instead"
+
+
+def test_a_model_that_is_NOT_cached_downloads_exactly_as_before(base, monkeypatch,
+                                                                tmp_path):
+    """The hard constraint: first-download behaviour is untouched. The cache
+    folder is there (another quantization of the same repo, say) so hf IS asked,
+    it says the snapshot is not cached, and then the networked path runs — the
+    metadata call, the total, the progress reporting, all of it."""
+    hub = _LocalHub(cached=[], snapshot=_snapshot_dir(tmp_path))
+    _local_hub(monkeypatch, base, hub, folder=_cache_folder(tmp_path))
+    listed = []
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: listed.append(a) or (None, None))
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    assert base.download_snapshot("u/x") == hub.snapshot
+
+    # No record for this repo, so hf is not even asked to resolve one — see
+    # `_has_fetch_record`. What must still happen is the whole networked path.
+    assert hub.calls == [("snapshot", False)]
+    assert listed, "the networked path must still list the repo"
+    assert ticks, "the networked path must still report progress"
+
+
+def _blob_backed(tmp_path, folder, name, etag="e7ag", part=False, hf_part=False):
+    """A snapshot entry that is a SYMLINK into `blobs/`, the way hf files one.
+
+    The link is what makes the difference between "this file is here" and "this
+    file's blob is here", and the part files beside the blob are what says a
+    download is still writing it — both of which the fast path has to read
+    correctly, so neither can be faked with a plain file.
+    """
+    blob = folder / "blobs" / etag
+    blob.write_bytes(b"weights")
+    if part:
+        (folder / "blobs" / (etag + ".fusedpart")).write_bytes(b"half")
+        (folder / "blobs" / (etag + ".fusedpart.json")).write_bytes(b"{}")
+    if hf_part:
+        (folder / "blobs" / (etag + ".incomplete")).write_bytes(b"half")
+    snapshot = folder / "snapshots" / COMMIT
+    entry = snapshot / name
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.symlink_to(blob)
+    return str(snapshot), str(entry)
+
+
+def test_a_part_file_for_THIS_blob_is_not_mistaken_for_a_cached_one(
+        base, monkeypatch, tmp_path):
+    """An interrupted download leaves our `.fusedpart` (and its offsets sidecar)
+    or hf's `.incomplete` beside the blob it is writing.
+
+    Trusting the cache then means handing `load()` a file that is still being
+    written, and it must not be papered over by hf's own completeness check
+    either: that check is a no-op without a cached tree listing, and the segmented
+    fetch — the normal path — never writes one.
+    """
+    folder = _cache_folder(tmp_path, snapshot=False)
+    snapshot, entry = _blob_backed(tmp_path, folder, "weights.safetensors",
+                                   part=True)
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot, file_path=entry)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
+@pytest.mark.parametrize("marker", ["part", "hf_part"])
+def test_a_FILE_whose_blob_is_still_being_written_is_not_served(
+        base, monkeypatch, tmp_path, marker):
+    """The single-file half of the same rule, in its own test because the fallback
+    the other one takes CLEARS our part files on its way out (`_clear_parts`, by
+    design — hf is about to fetch those files itself), so asserting both in one
+    test would assert the second one against a cache the first one tidied.
+
+    Both markers are driven: ours, and hf's `.incomplete`.
+    """
+    folder = _cache_folder(tmp_path, snapshot=False)
+    snapshot, entry = _blob_backed(tmp_path, folder, "weights.safetensors",
+                                   part=marker == "part",
+                                   hf_part=marker == "hf_part")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot, file_path=entry)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_file("u/x", "weights.safetensors")
+
+    assert ("file", False) in hub.calls, "a blob still being written was served"
+
+
+def test_a_part_file_for_an_UNRELATED_blob_does_not_disable_the_fast_path(
+        base, monkeypatch, tmp_path):
+    """The degradation the repo-wide scan caused, and why the check is per BLOB.
+
+    A multi-GGUF repo (`unsloth/FLUX.2-klein-4B-GGUF` publishes a dozen
+    quantizations of one model) keeps an abandoned `.fusedpart` on purpose: it is
+    the resume state for the download the user cancelled (AI-5i). Scanning the
+    whole repo folder let that one file disable the fast path for every unrelated,
+    fully-cached file in the repo — forever, since nothing ever clears it — so the
+    ~450ms this exists to remove came back precisely for the repos where
+    cancelling is most likely.
+    """
+    folder = _cache_folder(tmp_path, snapshot=False)
+    (folder / "blobs" / "0ther.fusedpart").write_bytes(b"a cancelled sibling")
+    (folder / "blobs" / "0ther.incomplete").write_bytes(b"and one of hf's")
+    snapshot, entry = _blob_backed(tmp_path, folder, "q4.gguf", etag="m1ne")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot, file_path=entry)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    _fetched(base, folder, snapshot, commit=os.path.basename(snapshot),
+             names=["q4.gguf"])
+
+    assert base.download_file("u/x", "q4.gguf") == entry
+    assert hub.calls == [], hub.calls
+    assert base.download_snapshot("u/x") == snapshot
+    assert hub.calls == [("snapshot", True)]
+
+
+def test_a_local_answer_that_is_not_actually_THERE_is_not_trusted(
+        base, monkeypatch, tmp_path):
+    """The path comes from a call we did not make ourselves, so it is checked
+    before it is returned: a cache directory removed under a resolved ref would
+    otherwise be handed to `load()` as a snapshot."""
+    hub = _LocalHub(cached=["u/x"], snapshot=str(tmp_path / "went-away"))
+    _local_hub(monkeypatch, base, hub, folder=_cache_folder(tmp_path))
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
+def _fetched(base, folder, snapshot, commit=COMMIT, names=("config.json",),
+             allow=None, ignore=None):
+    """Record a completed fetch the way `download_snapshot` does after one.
+
+    `snapshot` is not decoration: `_record_fetch` refuses to write a record whose
+    names are not actually in the snapshot, so a fixture that skipped it would be
+    recording a fetch that did not happen."""
+    base._record_fetch(str(folder), commit, list(names), snapshot,
+                       allow=allow, ignore=ignore)
+
+
+def test_the_FALLBACK_records_the_commit_hf_actually_landed(base, monkeypatch,
+                                                            tmp_path):
+    """The listing's sha and hf's own answer are two resolutions of one branch
+    name, and a repo that moves between them lands a different commit.
+
+    Filed under the listing's sha, the record would name a snapshot directory that
+    does not exist — cold forever for that repo, since every later fast path looks
+    up a commit nothing wrote. So hf is PINNED to the commit the listing resolved,
+    which is the rule `_segmented_fetch` already follows (AI-5i: the fetch is
+    pinned to the commit the name resolved to, never to the name), and the record
+    is then true by construction rather than by assumption.
+    """
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=[], snapshot=snapshot)
+    asked = {}
+    real = hub.snapshot_download
+
+    def spy(model_id, allow_patterns=None, ignore_patterns=None,
+            local_files_only=False, revision=None, **kw):
+        if not local_files_only:
+            asked["revision"] = revision
+        return real(model_id, allow_patterns=allow_patterns,
+                    ignore_patterns=ignore_patterns,
+                    local_files_only=local_files_only, **kw)
+
+    hub.snapshot_download = spy
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: (COMMIT, [("config.json", 7)]))
+    monkeypatch.setattr(base, "_segmented_fetch", _raiser(RuntimeError("no ranges")))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert asked == {"revision": COMMIT}, asked
+
+
+def test_a_TORN_record_left_by_a_crashed_write_is_not_read_as_a_record(
+        base, monkeypatch, tmp_path):
+    """`_record_fetch` writes a per-writer temp and `os.replace`s it, so a crash
+    mid-write leaves the temp behind. Matching that as a record made a record-LESS
+    repo pay a hub resolve on every single download — the cold path plus a round
+    trip — so the suffix is excluded from the match.
+
+    Excluded rather than deleted: the same name is what a fetch in flight in another
+    process is writing, and the sweep this used to do is covered by
+    `test_a_temp_from_ANOTHER_writer_is_left_ALONE`.
+    """
+    folder = _cache_folder(tmp_path)
+    torn = folder / base._temp_record(base._FETCH_RECORD % COMMIT)
+    torn.write_text('{"commit": "%s", "sco' % COMMIT)
+    hub = _LocalHub(cached=["u/x"], snapshot=_snapshot_dir(tmp_path, "config.json"))
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    assert base._has_fetch_record(str(folder)) is False
+
+    base.download_snapshot("u/x")
+    assert [call for call in hub.calls if call[1] is True] == [], hub.calls
+
+
+def test_a_fetch_that_landed_LESS_than_its_scope_writes_NO_record(
+        base, monkeypatch, tmp_path):
+    """The inverse of the failure the record exists to prevent, and the reason the
+    record's file list comes from the LISTING rather than from the disk.
+
+    A fallback that lands 1 of 50 files — hf's `filter_repo_objects` disagreeing
+    with `selects`, or a fetch that finished partially — would record ONE name if
+    the record were built from what landed. A record is verified by looking its own
+    names up, so that record would be self-certifying: every later check passes and
+    the fast path serves an incomplete snapshot forever. Checked instead against the
+    set the listing asked for — the one thing here the fetch did not choose — a
+    shortfall writes nothing, and a repo with no record is merely cold, which is
+    where it was before this path existed. This also supersedes recording "what
+    landed": the disagreement it was meant to survive now leaves no record instead
+    of a wrong one.
+    """
+    folder = _cache_folder(tmp_path)
+    # The listing asked for two; only one is on disk.
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=[], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (
+        COMMIT, [("config.json", 7), ("weights.safetensors", 9)]))
+    monkeypatch.setattr(base, "_segmented_fetch", _raiser(RuntimeError("no ranges")))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert base._recorded_files(str(folder), COMMIT, None, None) is None
+    assert not base._has_fetch_record(str(folder)), \
+        "an incomplete fetch must leave no record at all"
+
+    # …so the next download is the networked one, not a served snapshot.
+    hub.calls.clear()
+    base.download_snapshot("u/x")
+    assert [call for call in hub.calls if call[1] is True] == [], hub.calls
+
+
+def test_a_temp_from_ANOTHER_writer_is_left_ALONE(base, monkeypatch, tmp_path):
+    """A `.writing` temp is the name a fetch in flight is writing RIGHT NOW, and two
+    model loads sharing one HF cache are separate processes with no lock between
+    them.
+
+    Unlinking one to save a round trip made the other process's `os.replace` fail,
+    so its record was never written and its repo stayed permanently cold — the exact
+    failure the record exists to prevent, caused by tidying up. The temp is
+    therefore unique per writer and merely IGNORED here; each writer cleans up only
+    its own.
+    """
+    folder = _cache_folder(tmp_path)
+    theirs = folder / (base._FETCH_RECORD % COMMIT + ".99999" + base._RECORD_TEMP)
+    theirs.write_text('{"commit": "half a record')
+
+    assert base._has_fetch_record(str(folder)) is False
+    assert theirs.exists(), "another writer's in-flight record was deleted"
+
+    # And our own temp name is not theirs, so neither can clobber the other.
+    assert base._temp_record(base._FETCH_RECORD % COMMIT) != theirs.name
+
+
+def test_two_writers_in_one_pid_still_get_DIFFERENT_temp_names(base):
+    """The pid is not enough on its own, and the failure it leaves is worse than the
+    one it replaced.
+
+    Two containers sharing a mounted HF cache have their own pid namespaces, and a
+    pid is reused after a crash anyway — so `.fused-fetch-<sha>.json.<pid>.writing`
+    can name one file that two writers interleave into, and `os.replace` then
+    publishes mixed JSON as TRUTH. The sweep this design replaced only ever cost a
+    cold repo; that would cost a record the fast path believes. A random token per
+    call makes "a temp is distinguishable from another writer's" actually true.
+    """
+    record = base._FETCH_RECORD % ("a" * 40)
+    names = {base._temp_record(record) for _ in range(50)}
+
+    assert len(names) == 50, "temp names must not collide"
+    assert all(name.startswith(record) for name in names)
+    assert all(name.endswith(base._RECORD_TEMP) for name in names)
+
+
+def test_a_SKIPPED_record_reads_as_a_diagnostic_not_as_a_failed_download(
+        base, tmp_path, capsys):
+    """The shortfall line fires on a download that WORKED.
+
+    `selects` and hf's `filter_repo_objects` disagreeing by one name is the very
+    thing this file calls a real possibility, and when it happens the weights are on
+    disk and the load is about to succeed — so a message shaped like an error had a
+    user reading a perfect download as a broken one. The silence it replaced was the
+    original problem, so the line stays and says what is true instead: the download
+    is fine, only the fast-path record was skipped, and the next load re-resolves
+    over the network.
+    """
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+
+    base._record_fetch(str(folder), COMMIT, ["config.json", "absent.bin"], snapshot)
+
+    said = capsys.readouterr().err
+    assert "absent.bin" in said, "the diagnostic must name what it could not find"
+    assert "download" in said.lower()
+    for reassurance in ("succeeded", "not a failure"):
+        assert reassurance in said.lower(), said
+    assert not base._has_fetch_record(str(folder))
+
+
+def test_a_record_is_never_written_for_a_snapshot_with_NO_path(
+        base, tmp_path, monkeypatch, capsys):
+    """`os.path.join(snapshot or "", name)` made every check CWD-relative when the
+    path was falsy, so a process whose working directory happened to hold a matching
+    name — `config.json` is not far-fetched — passed the shortfall check and wrote a
+    record for a snapshot whose location was never known.
+
+    A missing path is missing, and belongs in the early return rather than papered
+    over with a default.
+
+    **And it is NAMED on stderr**, unlike the ordinary nothings beside it (no cache
+    folder, a revision that is not a commit, a listing that selected nothing). Both
+    callers reach the writer only after a fetch returned, so a fetch that returned no
+    path is a bug in that file rather than a shape the world produces — and a repo
+    left permanently cold with no diagnostic is the invisibility the stderr line
+    exists to prevent. The first version of this test asserted silence here, which
+    contradicted the docstring one paragraph above the code; all three now agree.
+    """
+    elsewhere = tmp_path / "cwd"
+    elsewhere.mkdir()
+    (elsewhere / "config.json").write_bytes(b"{}")
+    monkeypatch.chdir(elsewhere)
+    folder = _cache_folder(tmp_path)
+
+    base._record_fetch(str(folder), COMMIT, ["config.json"], None)
+    base._record_fetch(str(folder), COMMIT, ["config.json"], "")
+
+    assert not base._has_fetch_record(str(folder)), \
+        "a record was written for a snapshot nobody located"
+    said = capsys.readouterr().err
+    assert said.count("no snapshot path") == 2, said
+    # …and it reads as the diagnostic it is, not as a broken download.
+    assert "succeeded" in said and "not a failure" in said, said
+
+
+def test_the_ORDINARY_nothings_are_declined_in_SILENCE(base, tmp_path, capsys):
+    """The other half of that decision, so the line above cannot creep into noise.
+
+    No cache folder is a venv without huggingface_hub, a commit of None is
+    `_commit_of` refusing a path that is not a sha — every `local_dir` download — and
+    an empty name list is a listing that selected nothing. Those are shapes the world
+    produces, not signs a fetch went wrong, and a stderr line on each would train a
+    user to ignore the two that mean something."""
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+
+    base._record_fetch(None, COMMIT, ["config.json"], snapshot)
+    base._record_fetch(str(tmp_path), None, ["config.json"], snapshot)
+    base._record_fetch(str(tmp_path), COMMIT, [], snapshot)
+
+    assert capsys.readouterr().err == ""
+
+
+def test_a_caller_supplied_REVISION_wins_over_the_pin(base, monkeypatch, tmp_path):
+    """The pin is this file's default, not an override of the caller.
+
+    Splatting the pin and `kwargs` into one call raised `TypeError: got multiple
+    values for keyword argument 'revision'` — masked only because a call carrying
+    `kwargs` returns before the pin is applied, which made it a crash waiting on a
+    reorder rather than a non-issue. The caller's revision wins, and nothing raises.
+    """
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=[], snapshot=snapshot)
+    seen = {}
+    real = hub.snapshot_download
+
+    def spy(model_id, revision=None, local_files_only=False, **kw):
+        if not local_files_only:
+            seen["revision"] = revision
+        return real(model_id, local_files_only=local_files_only, **kw)
+
+    hub.snapshot_download = spy
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (COMMIT, []))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    assert base.download_snapshot("u/x", revision="theirs") == snapshot
+    assert seen == {"revision": "theirs"}, seen
+
+
+def test_a_path_that_is_not_a_COMMIT_records_nothing(base, monkeypatch, tmp_path):
+    """`_commit_of` produces a KEY, and the empty string is a key that reads back.
+
+    A path with no basename made the writer file `.fused-fetch-.json` and the reader
+    look up the very same name, so a record written under nothing at all came back
+    as a hit — the opposite of the miss the docstring promises. Anything that is not
+    a plausible commit is None, and both writers skip.
+    """
+    assert base._commit_of(None) is None
+    assert base._commit_of("") is None
+    assert base._commit_of("/cache/snapshots/") is None
+    assert base._commit_of("not-a-sha") is None
+    assert base._commit_of("/cache/snapshots/" + COMMIT) == COMMIT
+
+    folder = _cache_folder(tmp_path)
+    plain = tmp_path / "not-a-commit"
+    plain.mkdir()
+    (plain / "config.json").write_bytes(b"{}")
+    hub = _LocalHub(cached=[], snapshot=str(plain))
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: (COMMIT, [("config.json", 7)]))
+    monkeypatch.setattr(base, "_segmented_fetch", lambda *a, **kw: str(plain))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert not base._has_fetch_record(str(folder)), \
+        "a record under a non-commit key is one that reads back as a hit"
+
+
+def test_a_snapshot_fetched_at_a_NARROWER_scope_does_not_answer_a_WIDER_request(
+        base, monkeypatch, tmp_path):
+    """The hole the "skip scoped calls" rule did not close, and it is reachable
+    today rather than hypothetical.
+
+    Scoping is a property of the on-disk STATE, not of the call: `diffusers_image`
+    fetches `black-forest-labs/FLUX.2-klein-4B` with
+    `allow_patterns=list(recipe["keep"])`, and the SAME id reaches an UNSCOPED
+    `download_snapshot` through `mflux_image.download` — `POST /api/ai/runtime/
+    download` resolves the runner from the user's image-engine preference and
+    `weights_only=True` stops before the `load()` that would refuse the format. So
+    a user who downloads on the Diffusers engine and then downloads again on the
+    MLX FLUX engine asks for the whole repo against a cache holding a tenth of it.
+    Answered from the cache, that download reports success having fetched nothing.
+
+    The same flip happens with no user action at all if a recipe is ever REMOVED
+    from `_GGUF_RECIPES`: `download()` takes its unscoped branch against a cache
+    that is still scoped, and `from_pretrained` fails on a component that was
+    never fetched.
+
+    So the scope that was FETCHED is recorded, and the fast path answers only a
+    request for the same one.
+    """
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    _fetched(base, folder, snapshot, commit=os.path.basename(snapshot),
+             names=["config.json"], allow=["*.json"])
+
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
+def test_a_snapshot_fetched_at_the_SAME_scope_answers_from_the_cache(
+        base, monkeypatch, tmp_path):
+    """The other side: a scoped call is not refused on principle — it is answered
+    when this app recorded a completed fetch of that exact scope for that exact
+    commit, which is a claim about the disk rather than an argument about it."""
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json", "vae/diffusion.safetensors")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    _fetched(base, folder, snapshot, commit=os.path.basename(snapshot),
+             names=["config.json", "vae/diffusion.safetensors"],
+             allow=["*.json", "vae/*"])
+
+    got = base.download_snapshot("u/x", allow_patterns=["*.json", "vae/*"])
+
+    assert got == snapshot
+    assert hub.calls == [("snapshot", True)]
+
+
+def test_a_recorded_file_that_WENT_AWAY_sends_the_download_back_to_the_hub(
+        base, monkeypatch, tmp_path):
+    """Recording the names is what makes a MISSING file detectable at all. A blob
+    deleted with its snapshot entry — `hf cache` pruning, a tidy cleanup script —
+    leaves nothing for a walk of the snapshot to trip over, and the fast path
+    would report a model that cannot load. Before it existed, pressing Download
+    again re-listed and re-fetched exactly this."""
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    # Recorded through the writer's own rule, so the missing file has to be planted
+    # AFTER the record exists: this is a file that went away, not one that never
+    # arrived (which `_record_fetch` would have refused to record at all).
+    (tmp_path / os.path.basename(snapshot) / "weights.safetensors").write_bytes(b"w")
+    _fetched(base, folder, snapshot, commit=os.path.basename(snapshot),
+             names=["config.json", "weights.safetensors"])
+    os.remove(os.path.join(snapshot, "weights.safetensors"))
+
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
+def test_a_repo_with_NO_record_takes_the_networked_path_and_gains_one(
+        base, monkeypatch, tmp_path):
+    """What every cache looks like the first time this code runs on a machine that
+    already holds models — and the migration, which needs no special case: the
+    networked path completes as it always did and records what it fetched, so the
+    NEXT bring-up is the fast one. A cache with no record is never served."""
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=["u/x"], snapshot=snapshot)
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: (COMMIT, [("config.json", 7)]))
+    monkeypatch.setattr(base, "_segmented_fetch",
+                        lambda model_id, names, sha, **kw: snapshot)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    assert base.download_snapshot("u/x") == snapshot
+    assert [call for call in hub.calls if call[1] is True] == [], hub.calls
+
+    # …and the record it just wrote answers the next call off the disk.
+    hub.calls.clear()
+    assert base.download_snapshot("u/x") == snapshot
+    assert hub.calls == [("snapshot", True)]
+
+
+def test_a_snapshot_with_a_DANGLING_entry_sends_the_download_back_to_the_hub(
+        base, monkeypatch, tmp_path):
+    """The self-repair this path must not take away.
+
+    A blob removed under a complete-looking snapshot — `hf cache` pruning, a
+    partial copy of somebody's cache, a cleanup script — leaves the snapshot's
+    symlink pointing at nothing. Before the fast path, pressing Download again
+    re-listed the repo and re-fetched what was missing; a fast path that returns
+    the snapshot folder unread makes that unrepairable, and every load from then
+    on fails on a file the cache claims to have.
+
+    hf's own completeness check does NOT cover this: `_raise_if_incomplete_
+    snapshot` is a no-op unless `trees/<commit>.json` is cached, and this app's
+    segmented fetch (the normal path — hf's downloader runs only on fallback)
+    writes `refs/` and the blobs, never a tree listing.
+    """
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_bytes(b"{}")
+    (snapshot / "weights.safetensors").symlink_to(tmp_path / "gone-blob")
+    hub = _LocalHub(cached=["u/x"], snapshot=str(snapshot))
+    _local_hub(monkeypatch, base, hub, folder=_cache_folder(tmp_path))
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
+
+
+def test_an_EMPTY_snapshot_directory_is_not_a_cached_model(base, monkeypatch,
+                                                           tmp_path):
+    """A directory with nothing in it satisfies every existence check and holds no
+    weights. It is what an interrupted first download can leave once its part
+    files are cleared, and returning it would hand `load()` a path with no model
+    at it."""
+    empty = tmp_path / "snap"
+    empty.mkdir()
+    hub = _LocalHub(cached=["u/x"], snapshot=str(empty))
+    _local_hub(monkeypatch, base, hub, folder=_cache_folder(tmp_path))
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert ("snapshot", False) in hub.calls, hub.calls
 
 
 # -- the heartbeat --------------------------------------------------------------

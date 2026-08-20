@@ -32,6 +32,12 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  /* A wheel that reaches the list's end must STOP there. Without this the
+     leftover delta chains up to the document, and macOS answers with the
+     elastic bounce — the whole page lurches and snaps back on every
+     overshoot, which reads as the page saying "nothing to scroll" while the
+     list is scrolling fine (Akshil, 2026-08-20). */
+  overscroll-behavior: contain;
 }
 
 .tasks-list {
@@ -513,7 +519,8 @@ button.tasks-caret,
 /* -- Quiet row action (Open chat) ---------------------------------------------
    Hidden until the row is pointed at: it applies to every task that has run,
    and a permanent icon on every row would out-shout the work itself. Kept
-   reachable by keyboard — focus-within reveals it.
+   reachable by keyboard — a tab onto it reveals it (see the reveal rule below for
+   why that arm asks for the button's own `:focus-visible`).
 
    NOTE, 2026-08-17, amended 2026-08-18: most of the TASK ROW's and the BOARD
    CARD's strip is still not rendered at all — `SHOW_ROW_ACTIONS` in
@@ -559,10 +566,26 @@ button.tasks-caret,
   pointer-events: none;
 }
 
+/* THE KEYBOARD ARM IS `:has(… :focus-visible)`, NOT `:focus-within` (Akshil,
+   2026-08-18 — the stuck-Archive bug). `:focus-within` matches when ANY
+   descendant holds focus, and a row's descendants include the disclosure chevron
+   and the stretched `.tasks-rowlink`. So clicking the chevron to expand a row
+   left focus on it, the row kept matching after the pointer left, and Archive
+   stayed sitting in the status ring's slot — on a row nobody was pointing at any
+   more, with the ring it had displaced still faded out. Mouse-out has to put the
+   row back exactly as it found it.
+
+   `:focus-visible` is the whole difference: it is the UA's own "this focus came
+   from the keyboard" answer, so a tab onto Archive still reveals it (and its
+   siblings, which is how one tab-stop's worth of the group stays findable) while
+   a click anywhere in the row reveals nothing that outlives the pointer. Scoped
+   to `.tasks-act` rather than left as bare `:has(:focus-visible)` so a
+   keyboard-focused chevron — which needs nothing revealed — does not do it
+   either. */
 .tasks-row:hover .tasks-act,
-.tasks-row:focus-within .tasks-act,
+.tasks-row:has(.tasks-act:focus-visible) .tasks-act,
 .tasks-msg:hover .tasks-act,
-.tasks-msg:focus-within .tasks-act,
+.tasks-msg:has(.tasks-act:focus-visible) .tasks-act,
 .tasks-act:focus-visible {
   opacity: 1;
   pointer-events: auto;
@@ -611,26 +634,44 @@ button.tasks-caret,
   border-color: var(--border);
 }
 
-/* Archive. Same group, same size, same silence at rest as Edit, Cancel and Run
-   now — and deliberately NEUTRAL under the pointer, not red.
+/* Archive, and Unarchive. Same group, same size, same silence at rest as Edit,
+   Cancel and Run now — and deliberately NEUTRAL under the pointer, not red.
    Filing a task away destroys nothing (a task IS a Claude session and the
    transcript is kept, D306), so borrowing Cancel's red would tell the reader
    this is the destructive one, which is the exact misunderstanding archiving
    exists to correct. The plain `.tasks-act` hover skin already says "this is a
-   control"; that is all this one needs to say. */
+   control"; that is all either of these needs to say.
+
+   ONE SKIN FOR BOTH DIRECTIONS, and not for brevity: the two never appear
+   together (a task is either put away or it is not, so `filingIntent` answers
+   with one direction and the row draws one button), so a hue that told them apart
+   would be a hue with nothing to contrast against. The GLYPH is what says which
+   way this one goes — lucide `archive` against `archive-restore`, the same box
+   closed and open — and it says it in the one place the pointer is already
+   looking. A colour would also have to mean something, and neither direction is
+   destructive or generative enough to earn one. */
 .tasks-act--archive:hover:not(:disabled),
-.prefs-section .tasks-act--archive:hover:not(:disabled) {
+.tasks-act--unarchive:hover:not(:disabled),
+.prefs-section .tasks-act--archive:hover:not(:disabled),
+.prefs-section .tasks-act--unarchive:hover:not(:disabled) {
   color: var(--fg);
   background: var(--bg-alt);
   border-color: var(--border);
 }
 
-/* -- The mark slot: ring at rest, Archive on hover ------------------------------
+/* -- The mark slot: ring at rest, the filing button on hover --------------------
    ONE BOX, TWO OCCUPANTS (2026-08-18). The row's leading mark is the status ring;
-   put a pointer on the row and the Archive button takes its place, in the same
+   put a pointer on the row and the filing button takes its place, in the same
    place. Archive used to live out by the folder chip, at the row's busiest end,
    which made filing a task a control the reader had to travel to — and left the
    quietest, most-scanned position in the row doing nothing while hovered.
+
+   THE BUTTON IS ARCHIVE OR UNARCHIVE, never both and never neither-when-there-is-
+   one (tasks-lib.filingIntent). Which is why every rule below keys on `.tasks-act`
+   inside the slot rather than on one direction's class: the geometry, the hit zone
+   and the handover are facts about the SLOT and its single occupant, and naming a
+   direction in them is how an archived row ended up with a button the ring never
+   moved out of the way for.
 
    NOTHING MOVES. The slot is sized to the ring (`--tasks-rail-w`, the width every
    rail on this page is measured from) and the button is taken OUT OF FLOW inside
@@ -656,12 +697,72 @@ button.tasks-caret,
   flex: 0 0 var(--tasks-rail-w);
 }
 
-.tasks-rowmark .tasks-act--archive,
-.prefs-section .tasks-rowmark .tasks-act--archive {
+.tasks-rowmark .tasks-act,
+.prefs-section .tasks-rowmark .tasks-act {
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
+}
+
+/* BIGGER TO AIM AT THAN IT LOOKS (Akshil, 2026-08-18). 22px was still a small
+   target for a control the pointer arrives at sideways, travelling in from the
+   row it just hovered — the press missed and opened the conversation instead,
+   which is the one outcome archiving is not.
+
+   Grown by a transparent pseudo-element rather than by padding-and-negative-
+   margin (the caret's trick, `button.tasks-caret`): that pair works because the
+   caret is a FLEX CHILD, where padding grows the box and the margin takes the
+   growth back out of the layout. This button is out of flow and centred by
+   `translate(-50%, -50%)` on its own box, so padding would grow the box the
+   transform is measured from — and, worse, the box the hover skin paints. The
+   fill and border must stay 22px on a 16px ring; only the zone grows.
+
+   EVERY INSET IS THE FREE SPACE ON THAT SIDE, DERIVED — no typed numbers, and
+   none of the four crosses into anything (grown on 2026-08-18, then corrected the
+   same day: a `-10px` right reach was 3px INTO the id chip, Bugbot, MEDIUM).
+
+   THE OVERHANG IS WHY A TYPED NUMBER GETS THIS WRONG. The button is 22px over a
+   16px slot, so it already hangs `--tasks-archive-overhang` = 3px past the slot on
+   every side, eating that much of the gap before it grows at all. The free space
+   on a side is therefore that side's own spacing token LESS the overhang:
+
+   - TOP / BOTTOM: `--tasks-row-pad-y` - 3px = 7px, which makes the zone exactly as
+     tall as the 36px row and no taller. Growth past the row's edge would put this
+     button over the NEIGHBOURING row's link — one row's Archive pressed from
+     another row.
+   - RIGHT: `--tasks-row-gap` - 3px = 7px, which lands the edge exactly on the id
+     chip's left edge. At 10px it lapped 3px OVER the chip, so a press aimed at the
+     id fired Archive instead: this button sits at `z-index: 2` and the chip does
+     not, so the overlap always resolved this way.
+   - LEFT: the right reach plus half a gap back, = 2px. The caret's own enlarged
+     zone (same `z-index: 2`, earlier in the DOM, so this would win the overlap and
+     quietly shrink the disclosure gutter) ends half a `--tasks-row-gap` right of
+     its glyph, and 2px is the whole clearance between the two.
+
+   So: a 36 x 31 target for a 22px button, tiling exactly against the caret's zone
+   on one side and the id chip on the other, with no overlap in either direction.
+
+   `pointer-events` is inherited, so this zone is `none` at rest and `auto` with
+   the reveal exactly like the button it belongs to — an invisible control does
+   not get an invisible hit area either. */
+.tasks-rowmark .tasks-act::after {
+  content: "";
+  position: absolute;
+  /* How far the 22px button already hangs past its 16px slot on every side. */
+  --tasks-archive-overhang: calc((22px - var(--tasks-rail-w)) / 2);
+  --tasks-archive-reach-y: calc(
+    var(--tasks-archive-overhang) - var(--tasks-row-pad-y)
+  );
+  /* Half a gap sideways, not the whole one (Akshil, 2026-08-19: the full-gap
+     reach felt too wide in x). Height keeps the row's full span. */
+  --tasks-archive-reach-r: calc(
+    var(--tasks-archive-overhang) - var(--tasks-row-gap) / 2
+  );
+  --tasks-archive-reach-l: 0px;
+  inset: var(--tasks-archive-reach-y) var(--tasks-archive-reach-r)
+    var(--tasks-archive-reach-y) var(--tasks-archive-reach-l);
+  border-radius: 8px;
 }
 
 /* The handover. The ring fades as the button arrives — the same `opacity` swap,
@@ -673,25 +774,58 @@ button.tasks-caret,
    `pointer-events` travels with the fade, or the invisible ring would keep
    collecting the presses meant for the button under it.
 
-   `:focus-within` is in the list because the button must be reachable by
-   keyboard: a tab onto it reveals it (`.tasks-act:focus-visible`) and the ring it
-   is standing in front of has to get out of the way for it. */
+   The keyboard arm is here because the button must be reachable that way: a tab
+   onto it reveals it (`.tasks-act:focus-visible`) and the ring it stands in front
+   of has to get out of the way for it. It asks for that button's OWN
+   `:focus-visible` and not the row's `:focus-within` — see the long note on the
+   reveal above: a chevron click is focus inside the row too, and this rule used
+   to leave the ring faded out on a row the pointer had long left. */
 .tasks-row:hover .tasks-rowmark .schedule-ring,
-.tasks-row:focus-within .tasks-rowmark .schedule-ring {
+.tasks-row .tasks-rowmark:has(.tasks-act:focus-visible) .schedule-ring {
   opacity: 0;
   pointer-events: none;
 }
 
-/* Only where there IS a button to hand over to. A row with nothing to file
-   (`archiveIntent` → null, so no button is rendered) must keep its ring under the
-   pointer — the alternative is a blank slot where the row's status was. */
-.tasks-row:hover .tasks-rowmark:not(:has(.tasks-act--archive)) .schedule-ring,
-.tasks-row:focus-within .tasks-rowmark:not(:has(.tasks-act--archive)) .schedule-ring {
+/* Only where there IS a button to hand over to. A row whose filing cannot be
+   changed at all (`filingIntent` → null — a run in flight, and nothing else now,
+   so no button is rendered) must keep its ring under the pointer: the alternative
+   is a blank slot where the row's status was.
+
+   `.tasks-act` and not one direction's class, or the ARCHIVED row would keep its
+   ring painted over the Unarchive button standing in the same 22px. */
+.tasks-row:hover .tasks-rowmark:not(:has(.tasks-act)) .schedule-ring {
   opacity: 1;
 }
 
 .tasks-rowmark .schedule-ring {
   transition: opacity 0.08s ease;
+}
+
+/* THE PRESS'S RECEIPT (Akshil, 2026-08-19). Clicking Archive keeps the pointer on
+   the row, so the swap above kept right on swapping: the slot instantly redrew the
+   OPPOSITE verb (Unarchive), and the press's only visible outcome was an icon flip
+   — nothing said the action landed. So a spent press hands the slot BACK: the ring
+   returns (drawing the task's new state, which IS the confirmation) and the button
+   stays down for as long as the pointer stays on the row. Leave and return, and
+   the reveal re-arms with the now-opposite action, like any other row.
+
+   `.is-refiled` is the row's own flag — set on the filing press, cleared on the
+   row's mouseleave (ScheduleTaskViews.tsx) — because no selector can say
+   "hovered, but the hover already spent its press". Scoped to the MARK SLOT's
+   occupant only, and still `:hover`-guarded: the flag must change nothing about
+   the keyboard, so both halves step aside for the button's own `:focus-visible` —
+   the same arm the reveal and the fade above honour — rather than leaving a
+   tabbed-to button invisible over a faded ring. The button's suppression takes
+   `pointer-events` down with the ink (invisible means intangible, same rule as
+   `.tasks-act` at rest), so its enlarged ::after zone, which inherits, goes
+   intangible with it and a press lands on the row's link as it does at rest. */
+.tasks-row.is-refiled:hover .tasks-rowmark .tasks-act:not(:focus-visible) {
+  opacity: 0;
+  pointer-events: none;
+}
+.tasks-row.is-refiled:hover .tasks-rowmark:not(:has(.tasks-act:focus-visible)) .schedule-ring {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* -- The same actions on a board card ------------------------------------------
@@ -798,8 +932,12 @@ button.tasks-caret,
   background: transparent;
 }
 
+/* Keyboard arm as `:has(… :focus-visible)`, for the reason the row's reveal
+   spells out: the wrapper's descendant is the CARD, itself a button, so
+   `:focus-within` meant a click on the card left this strip stuck visible after
+   the pointer moved on. */
 .tasks-card-wrap:hover .tasks-card-act,
-.tasks-card-wrap:focus-within .tasks-card-act,
+.tasks-card-wrap:has(.tasks-card-act:focus-visible) .tasks-card-act,
 .tasks-card-act:focus-visible {
   opacity: 1;
   pointer-events: auto;
@@ -808,7 +946,7 @@ button.tasks-caret,
 /* Mid-write, same as the row's: the card is being pointed at, so full opacity is
    already on and dropping it is what says "asked, not answered yet". */
 .tasks-card-wrap:hover .tasks-card-act:disabled,
-.tasks-card-wrap:focus-within .tasks-card-act:disabled,
+.tasks-card-wrap:has(.tasks-card-act:focus-visible) .tasks-card-act:disabled,
 .tasks-card-act:disabled:focus-visible {
   opacity: 0.4;
   cursor: default;
@@ -837,9 +975,9 @@ button.tasks-caret,
    already at full opacity — dropping it is what says "asked, not answered yet"
    without swapping the glyph for a spinner the width of the row. */
 .tasks-row:hover .tasks-act:disabled,
-.tasks-row:focus-within .tasks-act:disabled,
+.tasks-row:has(.tasks-act:focus-visible) .tasks-act:disabled,
 .tasks-msg:hover .tasks-act:disabled,
-.tasks-msg:focus-within .tasks-act:disabled,
+.tasks-msg:has(.tasks-act:focus-visible) .tasks-act:disabled,
 .tasks-act:disabled:focus-visible {
   opacity: 0.4;
   cursor: default;

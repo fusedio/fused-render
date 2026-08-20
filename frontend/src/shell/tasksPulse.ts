@@ -12,15 +12,16 @@
 // The cadence follows the state, not the clock: while something is running the
 // dot's colour can change on any tick, and while nothing is running the only
 // thing that can move is a completion nobody is waiting on this second. An idle
-// machine costs one `GET /api/tasks` every 30 seconds.
+// machine costs one compact `GET /api/tasks/pulse` every 30 seconds. Only the
+// Tasks page itself asks for titles, paths, descriptions, and message previews.
 //
 // WHAT IS NOT HERE: the route. "The reader has landed on /tasks" is the
 // sidebar's fact, not this module's — it calls markTasksSeen() — because a store
 // that reads location.pathname is a store that has to be told when the pathname
 // changes.
 import { useEffect, useState } from "react";
-import { getTasks } from "@platform/lib/api";
-import type { Task } from "@platform/lib/api";
+import { getTasksPulse } from "@platform/lib/api";
+import type { TaskPulseTask } from "@platform/lib/api";
 import {
   EMPTY_TASKS_PULSE,
   TASKS_SEEN_KEY,
@@ -37,7 +38,7 @@ import type { TasksPulse, TasksSeen } from "./tasks-lib";
 const ACTIVE_MS = 10_000;
 const IDLE_MS = 30_000;
 
-let tasks: Task[] = [];
+let tasks: TaskPulseTask[] = [];
 let seen: TasksSeen = readSeen();
 let pulse: TasksPulse = EMPTY_TASKS_PULSE;
 let timer: number | null = null;
@@ -94,7 +95,7 @@ async function poll() {
   inFlight = true;
   const departed = generation;
   try {
-    const answer = (await getTasks()).tasks ?? [];
+    const answer = (await getTasksPulse()).tasks ?? [];
     // A feeder took over, or a fresher publish landed, while this request was
     // in the air: this answer is already history. Drop it.
     if (feeders === 0 && generation === departed) publishTasks(answer);
@@ -125,8 +126,61 @@ function schedule() {
   timer = window.setTimeout(poll, pulse.running > 0 ? ACTIVE_MS : IDLE_MS);
 }
 
+/** The window event a poke sends when a feeder page owns the poll: the store
+ *  may not fetch over a feeder (that is the double-poll again), so it asks THE
+ *  PAGE to run its own reload now. Scheduled.tsx listens for exactly this and
+ *  publishes back through publishTasks, the same round trip as its timer. */
+export const TASKS_POKE_EVENT = "fused-render:tasks-poke";
+
+/**
+ * "Something just changed — re-read NOW rather than on the next tick."
+ *
+ * Called by the surfaces that learn a scheduled run ended long before any timer
+ * here would: the queue card's job snapshot (about a second behind the turn —
+ * QueueDock) and the schedule's own done/failed events (App wiring
+ * useScheduleEvents). Without this the sidebar and the Tasks page sat out
+ * their 10–30s cadences while the bottom-right corner already said finished —
+ * the same run, two answers, for most of a minute (Akshil, 2026-08-19: "if
+ * finished in one, finished in the other").
+ *
+ * The feeder contract is honoured, not bypassed: while the Tasks page is
+ * feeding this store the store must not fetch (that is the double-poll the
+ * feeder exists to prevent), so the poke is forwarded to the page as a window
+ * event and the page's OWN reload answers. Unfed, the store polls itself
+ * immediately — poll() already carries the in-flight and generation guards, so
+ * a poke can never land a stale answer over a fresher one.
+ */
+export function pokeTasks() {
+  if (feeders > 0) {
+    window.dispatchEvent(new Event(TASKS_POKE_EVENT));
+    return;
+  }
+  // Nobody reading and nobody feeding: nothing on screen to update, and a
+  // fetch for an unmounted sidebar is the waste schedule() already refuses.
+  if (listeners.size === 0) return;
+  void poll();
+}
+
+/** The localStorage key the chat template (templates/claude/template.html)
+ *  stamps when an interactive turn starts or ends. Interactive turns create no
+ *  sys:schedule job and no schedule event — neither producer above fires for
+ *  them — so a follow-up typed into a chat left every tasks surface stale until
+ *  its next slow poll (Akshil, 2026-08-19: "the task's unread status does not
+ *  update"). Every same-origin document EXCEPT the writer receives a `storage`
+ *  event for the stamp, and the chat runs in its own iframe document, so the
+ *  shell around it — and a Tasks page open in another window entirely — hears
+ *  the turn for free, with no postMessage and no new endpoint. */
+export const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
+
+/** The storage half of that poke: App forwards every storage event's key here,
+ *  and only the chat's stamp is news about /api/tasks — the other rows this
+ *  origin writes (seen stamps, list memory) are the readers' own state. */
+export function pokeOnChatActivity(key: string | null) {
+  if (key === CHAT_ACTIVITY_KEY) pokeTasks();
+}
+
 /** Hand over a known-fresh answer — what the Tasks page's own poll returned. */
-export function publishTasks(next: Task[]) {
+export function publishTasks(next: TaskPulseTask[]) {
   generation += 1;
   tasks = next;
   loaded = true;

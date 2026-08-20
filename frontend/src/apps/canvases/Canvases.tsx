@@ -8,12 +8,14 @@
 // (/canvases/<name>: Claude-editable local files, watch-and-push sync,
 // embedded live workbench). Styling lives in styles/canvases.css.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import previewTile from "@assets/canvas-preview-tile.png";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   cloneCanvas,
   createCanvas,
   getCanvasesStatus,
+  getCanvasPreviews,
   listCanvases,
   logout,
   startLogin,
@@ -21,6 +23,7 @@ import {
   type CanvasEntry,
   type CanvasesStatus,
 } from "./api";
+import { publishLoggedIn } from "./logged-in";
 
 // `fused login`'s own browser callback times out server-side; polling any
 // slower than this makes a completed sign-in feel stuck.
@@ -29,11 +32,47 @@ const LOGIN_POLL_MS = 1500;
 // Same rule the server (and the CLI's push) enforces.
 const NAME_RE = /^[A-Za-z0-9_]{1,128}$/;
 
+// A canvas with no uploaded preview gets the hosted gallery's stand-in: one
+// dark map tile per UDF, laid out in a grid, so the card still reads as a
+// canvas of N things instead of an empty box. The tile is the workbench's own
+// `preview_thumbnail_1.png` (fused-magic S3, main_marketing_website/), vendored
+// into the bundle rather than hot-linked — this app runs locally and a card
+// that needs the network to look right is a card that breaks offline.
+const TILE_CAP = 16;
+
+// The gallery's grid shapes, keyed by the layout each count rounds up into: 5
+// tiles use the 6 layout with an empty cell, 7 uses the 8, and so on. Copied
+// from the client's `getGridTemplateByCount` so the two gardens match.
+type TileLayout = { gridTemplateColumns: string; gridTemplateRows: string };
+
+const TILE_LAYOUTS: Record<number, TileLayout> = {
+  1: { gridTemplateColumns: "1fr", gridTemplateRows: "1fr" },
+  2: { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr" },
+  3: { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" },
+  4: { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" },
+  6: { gridTemplateColumns: "1fr 1fr 1fr", gridTemplateRows: "1fr 1fr" },
+  8: { gridTemplateColumns: "1fr 1fr 1fr 1fr", gridTemplateRows: "1fr 1fr" },
+  9: { gridTemplateColumns: "1fr 1fr 1fr", gridTemplateRows: "1fr 1fr 1fr" },
+  12: { gridTemplateColumns: "1fr 1fr 1fr 1fr", gridTemplateRows: "1fr 1fr 1fr" },
+  15: {
+    gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
+    gridTemplateRows: "1fr 1fr 1fr",
+  },
+  16: {
+    gridTemplateColumns: "1fr 1fr 1fr 1fr",
+    gridTemplateRows: "1fr 1fr 1fr 1fr",
+  },
+};
+
+function tileLayout(count: number): TileLayout {
+  const size = [1, 2, 3, 4, 6, 8, 9, 12, 15, 16].find((n) => n >= count) ?? 16;
+  return TILE_LAYOUTS[size];
+}
+
+// Full locale date+time, seconds and four-digit year included — the same string
+// the hosted workbench's gallery prints under a canvas name.
 function formatModified(mtime: number): string {
-  return new Date(mtime * 1000).toLocaleString(undefined, {
-    dateStyle: "short",
-    timeStyle: "short",
-  });
+  return new Date(mtime * 1000).toLocaleString();
 }
 
 export default function Canvases() {
@@ -54,6 +93,43 @@ export default function Canvases() {
   // present store never flips logged_in, so completion = the stamp changing.
   const loginStampRef = useRef<number | null | undefined>(undefined);
 
+  // Presigned preview URLs, keyed by collection id — the second, slower half
+  // of the listing (D364). Kept beside `canvases` rather than merged into it so
+  // a refresh that re-lists doesn't drop thumbs we already resolved.
+  const [previews, setPreviews] = useState<Record<string, string>>({});
+  // Ids already asked about (resolved OR came back empty), so a re-list doesn't
+  // re-sign what we have. A ref, not the `previews` state: reading the state
+  // here would make `fillPreviews` — and through it `refresh` — a new function
+  // on every thumb that lands, and refresh's own effect would re-run forever.
+  const previewsAskedRef = useRef<Set<string>>(new Set());
+
+  // Sign the pending previews for a listing that has already been painted.
+  // Failures are silent by design: a card without a thumb shows its monogram,
+  // which is exactly what a canvas with no preview shows anyway — not worth
+  // an error banner over the listing that did load.
+  const fillPreviews = useCallback(async (entries: CanvasEntry[]) => {
+    const ids = entries
+      .filter((c) => c.preview_pending && c.id)
+      .map((c) => c.id as string)
+      .filter((id) => !previewsAskedRef.current.has(id));
+    if (ids.length === 0) return;
+    for (const id of ids) previewsAskedRef.current.add(id);
+    try {
+      const { previews: signed } = await getCanvasPreviews(ids);
+      const resolved: Record<string, string> = {};
+      for (const [id, url] of Object.entries(signed)) {
+        if (typeof url === "string" && url) resolved[id] = url;
+      }
+      if (Object.keys(resolved).length > 0) {
+        setPreviews((prev) => ({ ...prev, ...resolved }));
+      }
+    } catch {
+      // No thumbs this time; monograms stand in. Un-mark them so the next
+      // refresh retries — a transient 502 shouldn't cost thumbs until reload.
+      for (const id of ids) previewsAskedRef.current.delete(id);
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
     try {
       const s = await getCanvasesStatus();
@@ -62,6 +138,9 @@ export default function Canvases() {
         setLoggingIn(false);
         const { canvases } = await listCanvases();
         setCanvases(canvases);
+        // Deliberately NOT awaited: the cards render on the line above, and
+        // the thumbs pop in when the signing batch lands.
+        void fillPreviews(canvases);
       }
       setError(null);
     } catch (e) {
@@ -75,11 +154,21 @@ export default function Canvases() {
       }
       setError(err.message);
     }
-  }, []);
+  }, [fillPreviews]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // The sidebar's Canvases row reads the same fact this page does, so
+  // hand it every status this page learns — the first read, the login poll's
+  // flip, the 401 downgrade, the sign-out — rather than leaving it to notice on
+  // its own minute-long poll. The whole status goes over, not just the boolean:
+  // the 401 downgrade below is a verdict on a SPECIFIC credentials store, and
+  // `creds_stamp` is what names it (see ./logged-in).
+  useEffect(() => {
+    if (status) publishLoggedIn(status);
+  }, [status]);
 
   // While a login is in flight, poll status until logged_in flips — or the
   // browser child exits without ever flipping it (closed tab, denied, or the
@@ -133,6 +222,9 @@ export default function Canvases() {
     try {
       await logout();
       setCanvases(null);
+      // Signed URLs belong to the account that just signed out.
+      setPreviews({});
+      previewsAskedRef.current = new Set();
       setQuery("");
       setCreating(false);
       await refresh();
@@ -200,7 +292,7 @@ export default function Canvases() {
     <div className="canvases-page">
       <div className="canvases-inner">
         <div className="canvases-head">
-          <h1 className="canvases-title">Canvases</h1>
+          <h1 className="canvases-title">Workbench Canvases</h1>
           {status?.logged_in && (
             <div className="canvases-head-actions">
               <input
@@ -294,7 +386,23 @@ export default function Canvases() {
         )}
         {status?.logged_in && filtered !== null && filtered.length > 0 && (
           <div className="canvases-grid">
-            {filtered.map((canvas) => (
+            {filtered.map((canvas) => {
+              // Either the free public URL from the listing, or the signed one
+              // the previews batch filled in afterwards (D364).
+              const thumb =
+                canvas.preview_url ?? (canvas.id ? previews[canvas.id] : undefined) ?? null;
+              // Local clone mtime when we have one, else the control plane's
+              // last_updated — the same expression the sort above orders by.
+              const modified = canvas.mtime ?? canvas.updated_at;
+              // The clone's own *.py count wins when we have one (it sees local
+              // edits the workbench hasn't been pushed yet); otherwise the
+              // listing's count, which exists for every canvas in the account.
+              const nUdfs = canvas.n_udfs ?? canvas.n_code_udfs ?? null;
+              // An account whose listing predates the count field (or came from
+              // the bare-name CLI fallback) still gets a map rather than an
+              // empty box — one tile, standing for "a canvas", not for a count.
+              const tiles = nUdfs === null ? 1 : Math.min(nUdfs, TILE_CAP);
+              return (
               <button
                 key={canvas.name}
                 className="canvas-card"
@@ -302,43 +410,62 @@ export default function Canvases() {
                 disabled={busy !== null || createBusy}
               >
                 <span className="canvas-card-thumb">
-                  {canvas.preview_url && !brokenPreviews.has(canvas.preview_url) ? (
+                  {thumb && !brokenPreviews.has(thumb) ? (
                     <img
                       className="canvas-card-img"
-                      src={canvas.preview_url}
+                      src={thumb}
                       alt=""
                       loading="lazy"
                       onError={() =>
                         setBrokenPreviews((prev) => {
                           const next = new Set(prev);
-                          next.add(canvas.preview_url!);
+                          next.add(thumb);
                           return next;
                         })
                       }
                     />
+                  ) : tiles > 0 ? (
+                    <span className="canvas-card-tiles" style={tileLayout(tiles)}>
+                      {Array.from({ length: tiles }, (_, i) => (
+                        <img
+                          key={i}
+                          className="canvas-card-tile"
+                          src={previewTile}
+                          alt=""
+                        />
+                      ))}
+                    </span>
                   ) : (
-                    canvas.name.charAt(0).toUpperCase()
+                    <span className="canvas-card-noshot">
+                      No UDFs present in the canvas
+                    </span>
                   )}
-                  {canvas.cloned && <span className="canvas-card-pill">cloned</span>}
                 </span>
                 <span className="canvas-card-body">
                   <span className="canvas-card-name" title={canvas.name}>
                     {canvas.name}
                   </span>
-                  <span className="canvas-card-meta">
+                  <span className="canvas-card-stat">
                     {busy === canvas.name
                       ? "Cloning…"
-                      : canvas.cloned
-                        ? `${canvas.n_udfs ?? 0} UDF${canvas.n_udfs === 1 ? "" : "s"}${
-                            canvas.mtime
-                              ? ` · Modified ${formatModified(canvas.mtime)}`
-                              : ""
-                          }`
-                        : "Not cloned yet — click to clone & open"}
+                      : nUdfs === null
+                        ? "Not cloned yet — click to clone & open"
+                        : `${nUdfs} UDF${nUdfs === 1 ? "" : "s"}${
+                            // The count now exists before the clone does, but
+                            // an uncloned card still needs to say what a click
+                            // will do — it is the only affordance it has.
+                            canvas.cloned ? "" : " · click to clone & open"
+                          }`}
                   </span>
+                  {modified !== null && (
+                    <span className="canvas-card-meta">
+                      Last modified: {formatModified(modified)}
+                    </span>
+                  )}
                 </span>
               </button>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

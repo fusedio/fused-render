@@ -327,6 +327,106 @@ def test_an_engine_that_cannot_answer_is_reported_not_500ed(tmp_path, monkeypatc
     assert str(boom) in resp.json()["error"]
 
 
+# --- /api/env/custom-env: "is MY OWN interpreter the one that read this?" ----
+#
+# A Claude Code session embedded beside a file's preview already knows its own
+# `sys.executable` — the claude template's folder never declares a project, so
+# its process always runs on the app's own interpreter (SPEC PY-17). What it
+# cannot know on its own is whether that MATCHES the file's actual reader: a
+# `.py` may sit in a project declaring dependencies (SPEC PY-16), and some
+# core templates ship their own pyproject.toml too (D276). This endpoint is
+# the one confirmable fact, so the session states its own interpreter only
+# when this says `false` — never a caveated guess.
+
+
+def test_custom_env_endpoint_requires_the_x_fused_header(tmp_path):
+    client = _client(tmp_path)
+    assert client.get("/api/env/custom-env", params={"file": str(tmp_path)}).status_code == 403
+
+
+def test_nonexistent_file_is_an_error_not_a_guess(tmp_path):
+    client = _client(tmp_path)
+    resp = client.get("/api/env/custom-env", params={"file": str(tmp_path / "nope.parquet")},
+                      headers=HEADERS)
+    assert resp.status_code == 400, resp.text
+    assert "no such file or directory" in resp.json()["error"]
+
+
+def test_a_py_file_with_no_project_is_not_custom(tmp_path):
+    """A `.py` IS the script /api/run would execute, so its own
+    `project_env_for` is the direct, exact answer — no project here means the
+    app's own interpreter (agent.py's own `sys.executable`) really did run it.
+    """
+    target = _py(tmp_path, "a.py", "def main():\n    return 1\n")
+    client = _client(tmp_path)
+    resp = client.get("/api/env/custom-env", params={"file": str(target)}, headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "custom_env": False}
+
+
+def test_a_py_file_in_a_declared_project_is_custom(tmp_path):
+    """A `.py` inside a project declaring dependencies (SPEC PY-16) runs on
+    THAT project's venv, not the app's own interpreter — the one case the
+    claude session's own `sys.executable` would be a wrong answer for."""
+    _declare(tmp_path, '"pyproj"')
+    target = _py(tmp_path, "declared.py", "def main():\n    return 1\n")
+    client = _client(tmp_path)
+    resp = client.get("/api/env/custom-env", params={"file": str(target)}, headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "custom_env": True}
+
+
+def test_an_uppercase_py_extension_in_a_declared_project_is_custom(tmp_path):
+    """`_match_registry` lowercases basenames before matching, so a `script.PY`
+    must take the SAME direct `project_env_for` path a `script.py` does — not
+    fall through to the registry's `code` template (no pyproject.toml of its
+    own) and report `false` for a file that actually runs on the project's
+    venv (Bugbot on #634)."""
+    _declare(tmp_path, '"pyproj"')
+    target = _py(tmp_path, "DECLARED.PY", "def main():\n    return 1\n")
+    client = _client(tmp_path)
+    resp = client.get("/api/env/custom-env", params={"file": str(target)}, headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "custom_env": True}
+
+
+def test_a_data_file_served_by_a_bare_template_is_not_custom(tmp_path):
+    """A `.parquet`'s default template (duckdb, SPEC PT-7 first-wins) declares
+    no project of its own, so the app's own interpreter genuinely read it —
+    the exact scenario that motivated this endpoint."""
+    target = tmp_path / "data.parquet"
+    target.write_bytes(b"")
+    client = _client(tmp_path)
+    resp = client.get("/api/env/custom-env", params={"file": str(target)}, headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "custom_env": False}
+
+
+def test_a_data_file_served_by_a_templated_env_is_custom(tmp_path):
+    """A `.shp`'s default template (vector) ships its own pyproject.toml
+    (D276) — a dedicated venv reads it once built, never the app's own
+    interpreter, so this must say `true` rather than assume "data file ->
+    app's own interpreter" the way the original bug did."""
+    target = tmp_path / "data.shp"
+    target.write_bytes(b"")
+    client = _client(tmp_path)
+    resp = client.get("/api/env/custom-env", params={"file": str(target)}, headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "custom_env": True}
+
+
+def test_an_unmapped_file_type_is_custom_by_default(tmp_path):
+    """No template resolves for this extension at all — nothing to check, so
+    the safe answer when genuinely unsure is `true` (don't trust it), never a
+    confident `false` resolution never actually established."""
+    target = tmp_path / "data.zzz-not-a-real-extension"
+    target.write_bytes(b"\x00binary\x01")
+    client = _client(tmp_path)
+    resp = client.get("/api/env/custom-env", params={"file": str(target)}, headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "custom_env": True}
+
+
 # --- the loader's own JS, executed ---------------------------------------------
 #
 # The structural assertions below cannot see behaviour, and both bugs these two
