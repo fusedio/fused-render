@@ -503,8 +503,7 @@ def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
     # Switching also moves the suggestion list, since a repo belongs to a
     # backend: the MLX conversion is unloadable by diffusers and vice versa.
     assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
-        "tonera/FLUX.2-klein-4B-int8-diffusers",
-        "black-forest-labs/FLUX.2-klein-4B"]
+        "tonera/FLUX.2-klein-4B-int8-diffusers"]
 
     # Windows and Linux never see the MLX row at all, preference or none.
     for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64")):
@@ -1591,7 +1590,7 @@ def test_transformers_and_whisper_suggestions_show_snapshot_size_estimates():
         "Qwen/Qwen3-1.7B": 4.1,
         "Qwen/Qwen3-8B": 16.4,
         "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
-        "Systran/faster-whisper-medium": 1.5,
+        "Systran/faster-whisper-tiny.en": 0.08,
         "Systran/faster-whisper-small": 0.5,
     }
     actual = {
@@ -1606,7 +1605,7 @@ def test_every_suggestion_list_is_ordered_smallest_first():
     """One ordering rule, and the default is whatever it puts at position 0.
 
     The user was shown the trade — a bare `fused.ai.transcribe()` now loads
-    `Systran/faster-whisper-small` rather than the turbo model — and chose one
+    `Systran/faster-whisper-tiny.en` rather than the turbo model — and chose one
     rule over a separate default field. So this is the rule, asserted rather
     than left to the eye: sorted by ascending `size_gb`, with an entry that has
     no size sorting LAST (an unknown download must never lead a list, since
@@ -1639,7 +1638,7 @@ def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch)
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
     assert catalog.default_for(registry.TEXT_GENERATION) == "Qwen/Qwen3-1.7B"
     assert catalog.default_for(registry.SPEECH_TO_TEXT) == \
-        "Systran/faster-whisper-small"
+        "Systran/faster-whisper-tiny.en"
 
 
 def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):

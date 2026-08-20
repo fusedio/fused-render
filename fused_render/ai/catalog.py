@@ -66,7 +66,7 @@ not be promoted into the "safe, small, starts quickly" slot.
 
 **The cost of that rule is deliberate and was chosen by the user with the
 trade-off in front of them (2026-08-16).** A no-model call now gets the LEAST
-ACCURATE model rather than the recommended one — `Systran/faster-whisper-small`
+ACCURATE model rather than the recommended one — `Systran/faster-whisper-tiny.en`
 instead of `deepdml/faster-whisper-large-v3-turbo-ct2`, `Qwen/Qwen3-1.7B` instead
 of `Qwen/Qwen3-4B-Instruct-2507`. The alternative — a separate `default: True`
 field, so the list could be ordered one way and the default picked another — was
@@ -313,9 +313,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "tonera/FLUX.2-klein-4B-int8-diffusers",
             "label": "FLUX.2 klein 4B (int8)",
-            # The whole repo, per the rule the entry below states: 8.22e9 bytes
-            # of `usedStorage` (2026-08-20 Hub metadata), and here that number
-            # IS the download — one repo, no component repo, and no skipped
+            # The whole repo, per the module docstring's rule: 8.22e9 bytes of
+            # `usedStorage` (2026-08-20 Hub metadata), and here that number IS
+            # the download — one repo, no component repo, and no skipped
             # subfolder, because the quantization is already in the checkpoint.
             "size_gb": 8.2,
             # **No `_GGUF_RECIPES` row, and that is the point of this entry.**
@@ -331,33 +331,19 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # encoder and VAE still come from their safetensors. Forcing
             # `use_safetensors=False` would break those two instead.
             #
-            # It leads the list, so it is what a bare `fused.ai.image()` starts:
-            # that is the one ordering rule
-            # (`test_every_suggestion_list_is_ordered_smallest_first`), and the
-            # smaller thing to fetch is the reason this entry exists at all.
-            "note": "Smallest Diffusers download here: one self-contained repo "
-                    "with an int8-quantized transformer, rather than the base "
-                    "pipeline plus a separate GGUF file.",
-        },
-        {
-            "id": "black-forest-labs/FLUX.2-klein-4B",
-            "label": "FLUX.2 klein 4B",
-            # EVERYTHING the Download fetches, both repos: 8.23 of base
-            # components (text encoder 8.05, VAE 0.17, tokenizer + configs) plus
-            # the 2.60 GGUF transformer. It said 2.6 — the GGUF alone — while
-            # the actual pull was 18.6, and the field two lists down means the
-            # whole download; see the module docstring's rule (D308).
-            "size_gb": 10.8,
+            # It is the only entry, so it is what a bare `fused.ai.image()`
+            # starts: the ordering rule
+            # (`test_every_suggestion_list_is_ordered_smallest_first`) holds
+            # trivially, and being the smaller thing to fetch is why this is the
+            # entry the list keeps.
+            #
             # Hardware-neutral, per the rule the transformers list above states:
-            # this one list serves the CPU, CUDA and ROCm Diffusers rows, and
-            # the sentence used to say the full-precision pipeline "OOMs on
-            # 16GB machines" — a claim about system RAM on one row and about
-            # VRAM on the others, and on ROCm about neither (a 16GB card can
-            # report half that usable). What survives the move is the fact that
-            # decides the choice anyway: this is the smaller thing to fetch and
-            # to hold.
-            "note": "Quantized transformer (Q4_K_M) rather than the bf16 "
-                    "original — several GB less to fetch and to hold in memory.",
+            # this one list serves the CPU, CUDA and ROCm Diffusers rows, so a
+            # note about what fits in "16GB" would mean system RAM on one row
+            # and VRAM on the others.
+            "note": "One self-contained repo with an int8-quantized "
+                    "transformer: several GB less to fetch and to hold than the "
+                    "bf16 FLUX.2 pipeline it is built from.",
         },
     ],
     # The same model, converted for MLX — and unloadable by the runner above,
@@ -393,6 +379,11 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # Sizes use the same full-snapshot Hub metadata estimate as the lists above
     # (2026-08-15). **One line each**, per the rule the transformers list
     # states: a shortlist is read by sweeping it.
+    #
+    # **No medium.** It weighs about what large-v3 turbo weighs and turbo is
+    # better at every language, so a medium row would be an entry that is never
+    # the right pick — a shortlist earns its length by every line being
+    # somebody's answer.
     "mlx-whisper": [
         {
             "id": "mlx-community/whisper-tiny.en-8bit",
@@ -409,14 +400,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "The smallest here, and what a bare transcribe call loads — "
                     "quick, but it drops names and punctuation turbo gets "
                     "right.",
-        },
-        {
-            "id": "mlx-community/whisper-medium-mlx",
-            "label": "Whisper medium (MLX)",
-            "size_gb": 1.5,
-            "note": "Bigger than small for no gain in English over turbo, which "
-                    "costs about the same — worth it only for a language turbo "
-                    "struggles with.",
         },
         {
             "id": "mlx-community/whisper-large-v3-turbo",
@@ -447,6 +430,10 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # row). Sizes are the same full-snapshot Hub metadata estimate as the lists
     # above (2026-08-17). **One line each**, per the rule the transformers list
     # states: a shortlist is read by sweeping it.
+    #
+    # **Both entries are English only, and that is a property of this list
+    # rather than an oversight** — a recording in another language belongs on a
+    # Whisper runner, which the Engines tab is how a user gets back to.
     "parakeet-mlx": [
         {
             "id": "mlx-community/parakeet-tdt_ctc-110m",
@@ -454,21 +441,15 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "size_gb": 0.5,
             "note": "The smallest here, and what a bare transcribe call loads — "
                     "English only, and it drops the punctuation the 0.6B "
-                    "models get right.",
+                    "model gets right.",
         },
         {
             "id": "mlx-community/parakeet-tdt-0.6b-v2",
             "label": "Parakeet TDT 0.6B v2",
             "size_gb": 2.5,
-            "note": "English only, and the most accurate of the three on it — "
-                    "pick v3 instead unless every recording is in English.",
-        },
-        {
-            "id": "mlx-community/parakeet-tdt-0.6b-v3",
-            "label": "Parakeet TDT 0.6B v3",
-            "size_gb": 2.5,
-            "note": "The one to reach for: v2's accuracy plus 24 more European "
-                    "languages, detected rather than declared.",
+            "note": "The most accurate here, English only — five times the "
+                    "download of the 110M, for the punctuation and names it "
+                    "gets right.",
         },
     ],
     # CTranslate2 conversions ONLY. `openai/whisper-large-v3` is the repo
@@ -478,23 +459,27 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # error message about.
     #
     # Sizes use the same full-snapshot Hub metadata estimate as the Transformers
-    # list above (2026-08-14), including model.bin plus tokenizer and configs.
+    # list above (2026-08-14; tiny.en re-checked 2026-08-21), including
+    # model.bin plus tokenizer and configs.
+    #
+    # **No medium.** large-v3 turbo weighs about the same 1.6GB and is better at
+    # every language, so a medium row would be an entry that is never the right
+    # pick — a shortlist earns its length by every line being somebody's answer.
     "faster-whisper": [
+        {
+            "id": "Systran/faster-whisper-tiny.en",
+            "label": "Whisper tiny English (CT2)",
+            "size_gb": 0.08,
+            "note": "The quickest download and decode here, English only — "
+                    "fine for a rough draft of clear speech, below small on "
+                    "everything else.",
+        },
         {
             "id": "Systran/faster-whisper-small",
             "label": "Whisper small (CT2)",
             "size_gb": 0.5,
-            "note": "The smallest here, and what a bare transcribe call loads — "
-                    "light enough for an old machine, but it drops names and "
+            "note": "Light enough for an old machine, but it drops names and "
                     "punctuation turbo gets right.",
-        },
-        {
-            "id": "Systran/faster-whisper-medium",
-            "label": "Whisper medium (CT2)",
-            "size_gb": 1.5,
-            "note": "Bigger than small for no gain in English over turbo, which "
-                    "costs about the same — worth it only for a language turbo "
-                    "handles badly.",
         },
         {
             "id": "deepdml/faster-whisper-large-v3-turbo-ct2",

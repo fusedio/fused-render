@@ -1449,10 +1449,11 @@ def test_a_gguf_only_repo_is_not_called_a_text_model(client, hub):
 
 @requires_symlinks
 def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypatch):
-    """`black-forest-labs/FLUX.2-klein-4B` is `catalog.py`'s suggestion for the
-    diffusers runner, and its card's `pipeline_tag` says image-to-image — a
-    label in NO_RUNNER_YET, so the page offered no Load for a model the app
-    recommends on the next tab. The card names the model FAMILY; the
+    """`black-forest-labs/FLUX.2-klein-4B` is the FLUX.2 base pipeline the
+    diffusers runner loads by id (it has a `_GGUF_RECIPES` row, and was
+    `catalog.py`'s second diffusers suggestion until the int8 repo made it
+    redundant), and its card's `pipeline_tag` says image-to-image — a label in
+    NO_RUNNER_YET, so the page offered no Load for a model a user can reach. The card names the model FAMILY; the
     `model_index.json` in the snapshot names the pipeline that is actually
     here, written by the library that will load it."""
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
