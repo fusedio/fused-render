@@ -34,7 +34,49 @@
   overflow-y: auto;
 }
 
-.tasks-list {
+/* -- The List's scroller is the full page, its card is not ---------------------
+   `.schedule-main` is capped at 1050px and centred for all three views, so on a
+   wide window there is a band of empty page down either side of it. While the
+   scroller WAS that capped box, the wheel over those bands hit `.schedule-page`
+   — which is `overflow: hidden` — and the list did not move: you had to aim at
+   the card to scroll it (Akshil, 2026-08-20).
+
+   So on the List, and only there, the section goes full width and the measure
+   moves inward: every child is re-capped at the same 1050px and centred, except
+   the scroller, which keeps the whole width and hands the 1050px on to
+   `.tasks-list-inner` — the bordered card the reader actually sees. Nothing
+   about the page's proportions changes; what changes is which element is under
+   the pointer out in the margins. `.prefs-page` made exactly this split for
+   exactly this reason (preferences.css: full-width scroll container, capped
+   child) and the scrollbar lands where that one's does, at the page edge rather
+   than against the card.
+
+   Board and Calendar are untouched by every rule here: they never get the
+   modifier class, so their section stays capped and their own scrollers — the
+   lane body and the week grid — keep the boxes they had. */
+.schedule-page > .prefs-section.schedule-main--list {
+  max-width: none;
+}
+
+.schedule-page .schedule-main--list > * {
+  max-width: 1050px;
+  width: 100%;
+  margin-inline: auto;
+}
+
+/* `both-edges` and not the plain `stable` schedule.css gives all three
+   scrollers: the gutter is reserved on one side only, and a 10px notch taken
+   out of the right of a full-width box moves its centred child 5px left of the
+   toolbar above it. Reserving both sides keeps the card and the toolbar on the
+   same axis, and costs 10px of margin nobody was using. */
+.schedule-page .schedule-main--list > .tasks-list {
+  max-width: none;
+  scrollbar-gutter: stable both-edges;
+}
+
+.tasks-list-inner {
+  max-width: 1050px;
+  margin-inline: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
 }

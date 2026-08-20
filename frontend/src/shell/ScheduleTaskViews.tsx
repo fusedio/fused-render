@@ -1170,7 +1170,15 @@ export function TaskList({
           The Board keeps this same sentence above its lanes for the same
           reason. */}
       {pageNote && <p className="schedule-tv-note tasks-list-note">{pageNote}</p>}
+      {/* TWO boxes, not one. The outer one is the SCROLLER and runs the whole
+          width of the page; the inner one is the bordered card and is what the
+          1050px measure and the centring apply to. They were the same element
+          until 2026-08-20, which meant the wheel did nothing at all while the
+          pointer sat in the empty page either side of the card — the scroller
+          simply was not under it (Akshil). Same move, same reason, as
+          `.prefs-page`'s full-width scroll container. */}
       <div className="tasks-list" ref={listRef} onScroll={onScroll}>
+      <div className="tasks-list-inner">
       {/* ORDERED BY STATUS, NOT GROUPED BY IT (tasks-lib.sortByLane): Upcoming,
           In Progress, Failed, Done, Archive — rank order, server order inside
           each rank, and no headers, dividers or counts between them.
@@ -1205,6 +1213,7 @@ export function TaskList({
           onSettleAll={settleAll}
         />
       ))}
+      </div>
       </div>
     </>
   );
