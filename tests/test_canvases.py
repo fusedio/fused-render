@@ -1204,14 +1204,30 @@ def _manager(name="alpha"):
 # `subprocess.run([sys.executable, ...])` — see SyncShims/Harness above).
 # Windows process creation is several times slower than Linux/macOS
 # fork+exec, and GitHub's windows-latest runners add Defender's real-time
-# scan of every new process on top of that, so an 8s budget tuned against
-# Linux's process-spawn cost is not automatically enough there. This is slack
-# for "did the async op finish at all" in the common wait helpers below, not
-# a precision measurement of how FAST it had to be — widening it on Windows
-# costs nothing but wall-clock time in CI. (A couple of tests below pin their
-# own tighter timeout on purpose, to prove something resolved quickly rather
-# than merely at all; those are left alone.)
-_WAIT_TIMEOUT_S = 20 if sys.platform == "win32" else 8
+# scan of every new (never-before-seen) script file on top of that. A single
+# merge-then-push cycle chains several of these spawns in one straight line —
+# probe, zip download, validate, the push itself, the post-push re-probe — so
+# the wait covering it pays that per-spawn tax several times over, not once.
+# 20s turned out not to be enough margin for that chain on real Windows CI
+# (7 tests in this file that each need 3-6 such hops, timing out even there);
+# most of them also no longer pay a SEPARATE, unrelated cost that used to
+# stack on top of it — the real (unmocked) `_agent_module()` the watcher
+# calls every tick to warm its live-run cache (see _run()) execs agent.py via
+# `claude_spawn.load_agent()`, which stages fused_render/templates/ into
+# ~/.fused-render/.core-templates on first use: a sha256 over every packaged
+# template file plus a full copytree if unstaged, a lot of small-file I/O for
+# Defender to scan on a cold CI runner, paid once per test process/worker by
+# whichever test happens to call it first. None of the merge/push tests below
+# need the real answer (no test in this file exercises "is a session live"
+# through them), so they now pass `fake_agent` to skip it — but the remaining
+# subprocess chain is real work these tests must still wait out, hence the
+# generous ceiling here rather than a tighter one now that the agent cost is
+# gone. This is slack for "did the async op finish at all" in the common wait
+# helpers below, not a precision measurement of how FAST it had to be —
+# widening it on Windows costs nothing but wall-clock time in CI. (A couple of
+# tests below pin their own tighter timeout on purpose, to prove something
+# resolved quickly rather than merely at all; those are left alone.)
+_WAIT_TIMEOUT_S = 45 if sys.platform == "win32" else 8
 
 
 def _wait_for(predicate, timeout=_WAIT_TIMEOUT_S):
@@ -1238,10 +1254,20 @@ def _wait_status(harness, predicate, timeout=_WAIT_TIMEOUT_S):
     return status
 
 
-def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch):
+def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch, fake_agent):
     # Remote changed b.py while the local clone had an unpushed edit to a.py:
     # the merge applies b.py (local untouched) and keeps a.py (local wins),
     # then the debounced push publishes the merged state.
+    #
+    # fake_agent (live="" by default — no session) stands in for the real
+    # `_agent_module()`, which every watcher tick calls unconditionally to
+    # warm the live-run cache. On a real, unmocked module the FIRST such call
+    # in a process pays `ensure_core_templates()`'s one-time cost: a sha256
+    # over every file under fused_render/templates/ (agent.py's own staged
+    # source tree) plus a full copytree if unstaged — a lot of small-file I/O
+    # that Windows Defender's real-time scan (one first-seen-file scan per
+    # open, on a fresh CI runner) can stretch well past this file's wait
+    # budget, on a call this test has no reason to exercise for real.
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.3)
@@ -1262,9 +1288,14 @@ def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch):
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
-def test_sync_merge_keeps_local_delete(harness, tmp_path, monkeypatch):
+def test_sync_merge_keeps_local_delete(harness, tmp_path, monkeypatch, fake_agent):
     # Local deleted b.py; the bundle still carries it. The merge must NOT
     # recreate it — the push propagates the delete.
+    #
+    # fake_agent: skip the real (expensive, first-call, Windows-slow)
+    # `_agent_module()` cold start — see test_sync_merges_remote_changes_
+    # while_dirty's comment for why the watcher's per-tick liveness check
+    # makes that a real hazard here, not just decoration.
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.3)
@@ -1285,9 +1316,13 @@ def test_sync_merge_keeps_local_delete(harness, tmp_path, monkeypatch):
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
-def test_sync_merge_applies_remote_delete_when_untouched(harness, tmp_path, monkeypatch):
+def test_sync_merge_applies_remote_delete_when_untouched(harness, tmp_path, monkeypatch, fake_agent):
     # Remote deleted b.py; local never touched it since the sync point → the
     # merge removes it locally. The locally-edited canvas.toml stays.
+    #
+    # fake_agent: see test_sync_merges_remote_changes_while_dirty — skips the
+    # real `_agent_module()` cold start the watcher's per-tick liveness check
+    # would otherwise pay for real.
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.3)
@@ -1314,9 +1349,13 @@ def test_sync_merge_applies_remote_delete_when_untouched(harness, tmp_path, monk
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
-def test_sync_push_probes_and_merges_first(harness, tmp_path, monkeypatch):
+def test_sync_push_probes_and_merges_first(harness, tmp_path, monkeypatch, fake_agent):
     # Poll effectively disabled: the ONLY probe that can see the remote move
     # is the one _push runs before replacing the remote set.
+    #
+    # fake_agent: see test_sync_merges_remote_changes_while_dirty — skips the
+    # real `_agent_module()` cold start the watcher's per-tick liveness check
+    # would otherwise pay for real.
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 1000.0)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
@@ -1460,11 +1499,15 @@ def test_sync_stale_echo_is_repushed_not_pulled(harness, tmp_path, monkeypatch):
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
-def test_sync_merge_rolls_back_when_it_breaks_validation(harness, tmp_path, monkeypatch):
+def test_sync_merge_rolls_back_when_it_breaks_validation(harness, tmp_path, monkeypatch, fake_agent):
     # Per-file merge can mix canvas.toml from one side with source files
     # from the other and produce an unpushable clone. When post-merge
     # validation fails, the merge is rolled back: local files restored,
     # clone stays dirty, the push re-asserts local wholesale.
+    #
+    # fake_agent: see test_sync_merges_remote_changes_while_dirty — skips the
+    # real `_agent_module()` cold start the watcher's per-tick liveness check
+    # would otherwise pay for real.
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.3)
@@ -1487,10 +1530,14 @@ def test_sync_merge_rolls_back_when_it_breaks_validation(harness, tmp_path, monk
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
-def test_push_aborts_when_remote_moved_and_zip_unavailable(harness, tmp_path, monkeypatch):
+def test_push_aborts_when_remote_moved_and_zip_unavailable(harness, tmp_path, monkeypatch, fake_agent):
     # The pre-push probe sees the remote moved, but the zip download fails —
     # pushing anyway would wholesale-replace edits we haven't seen. The push
     # must abort and retry; once the zip works, merge + push proceed.
+    #
+    # fake_agent: see test_sync_merges_remote_changes_while_dirty — skips the
+    # real `_agent_module()` cold start the watcher's per-tick liveness check
+    # would otherwise pay for real.
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 1000.0)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
@@ -2598,12 +2645,17 @@ def test_status_reports_pulling_during_a_clean_force_pull(harness, tmp_path, mon
 
 
 def test_pulling_covers_the_merges_writes_but_not_its_zip_download(
-        harness, tmp_path, monkeypatch):
+        harness, tmp_path, monkeypatch, fake_agent):
     """`pulling` marks writes, and the merge's probe-and-decide reaches deeper
     than the leg boundary: the bundle download is a network op that can fail, and
     it precedes every write. Marking it held the embedded workbench read-only for
     the whole download and for merges that then wrote nothing — the same flicker
-    the window was introduced to remove, one layer in."""
+    the window was introduced to remove, one layer in.
+
+    fake_agent: see test_sync_merges_remote_changes_while_dirty — skips the
+    real `_agent_module()` cold start the watcher's per-tick liveness check
+    would otherwise pay for real, which was blocking exactly this test's
+    timed wait below even at the widened win32 timeout."""
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)  # keep the clone dirty
