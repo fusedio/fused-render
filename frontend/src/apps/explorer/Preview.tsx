@@ -6,6 +6,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
+  downloadAppFile,
+  getAppEntry,
   rawUrl,
   resolveConditions,
   renameEntry,
@@ -171,6 +173,56 @@ function CloneCommunityButton({ slug }: { slug: string }) {
     >
       {busy && <span className="mode-icon-spinner" />}
       {busy ? "Cloning…" : "Clone"}
+    </button>
+  );
+}
+
+// Export the containing app as a .fused file (SPEC §43 AF-4), shown only when
+// the previewed page IS its folder's app entry — asked of the server (the one
+// shared entry rule, /api/apps/entry) rather than guessed from the filename.
+// You export from the app you're looking at; a plain html file gets nothing.
+function ExportAppButton({ fsPath }: { fsPath: string }) {
+  const [isEntry, setIsEntry] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setIsEntry(false);
+    const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
+    getAppEntry(dir)
+      .then((r) => {
+        if (alive) setIsEntry(r.entry === fsPath);
+      })
+      .catch(() => {
+        /* indeterminate reads as "not an entry" — no button for nothing */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath]);
+  if (!isEntry) return null;
+  const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
+  const name = basename(dir);
+  const doExport = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await downloadAppFile(dir, name);
+    } catch (e) {
+      pushToast({ msg: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className="bar-ctl bar-ctl-bordered"
+      title={"Export " + name + " as a single .fused app file"}
+      onClick={doExport}
+      disabled={busy}
+    >
+      {busy && <span className="mode-icon-spinner" />}
+      {busy ? "Exporting…" : "Export App"}
     </button>
   );
 }
@@ -1172,6 +1224,11 @@ function TemplatePreview({
       {/* Showcase app: Clone copies it into Fused/local so catalog refreshes
           never touch your copy. */}
       {communitySlug && !stat.is_dir && <CloneCommunityButton slug={communitySlug} />}
+      {/* The containing app as one .fused file (SPEC §43 AF-4) — rendered only
+          when this page is its folder's app entry (the component asks the
+          server). Embed mode hides the whole header/topbar, so an opened
+          .fused app never shows it. */}
+      {!stat.is_dir && <ExportAppButton fsPath={fsPath} />}
       {/* One mode control per view, and for an explorer FOLDER it is the
           preview pane's, not this one. The pane header carries a ModeMenu of
           its own beside the previewed row (ListingPreviewPane), so a folder

@@ -202,6 +202,39 @@
   inset: 0;
 }
 
+/* Hover-revealed export button (SPEC §43 AF-4): hidden until the CARD is
+   hovered so the grid stays quiet, revealed as a small bordered chip in the
+   thumb's top-right corner. Above the shield (z-index) or the shield's
+   inset-0 span would swallow the click. Keyboard users get it without hover
+   via :focus-visible. */
+.app-pcard-export {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.app-pcard:hover .app-pcard-export,
+.app-pcard-export:focus-visible {
+  opacity: 1;
+}
+.app-pcard-export:hover {
+  color: var(--fg);
+  box-shadow: 0 2px 8px var(--shadow-sm);
+}
+
 .app-pcard-body {
   display: flex;
   flex-direction: column;

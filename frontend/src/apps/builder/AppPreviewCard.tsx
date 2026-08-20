@@ -34,7 +34,9 @@
 // live preview (D365).
 import { useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
-import { rawUrl } from "@platform/lib/api";
+import { downloadAppFile, rawUrl } from "@platform/lib/api";
+import { pushToast } from "@platform/lib/toast";
+import { MenuIcons } from "@platform/ui/MenuIcons";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { withPreviewFlag } from "@platform/lib/router";
 import { appRecency, hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
@@ -200,6 +202,30 @@ export function AppPreviewCard({
             <span className="app-pcard-shield" />
           </>
         ) : null}
+        {/* Hover-revealed export (SPEC §43 AF-4): the same action as the
+            right-click menu's "Export App File", surfaced so it is one
+            visible click. A <button> inside the card's <a>: it must both
+            preventDefault (or the card link opens the app) and
+            stopPropagation (or the click ALSO bubbles to onAppCardClick).
+            Sits after the shield in DOM order so the shield can't eat it. */}
+        <button
+          type="button"
+          className="app-pcard-export"
+          title={"Export " + (app.title || app.name) + " as a .fused app file"}
+          aria-label="Export app file"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            downloadAppFile(app.path, app.name).catch((err: Error) =>
+              pushToast({
+                msg: "Could not export " + app.name + ": " + err.message,
+                tone: "error",
+              }),
+            );
+          }}
+        >
+          {MenuIcons.compress}
+        </button>
       </span>
     </a>
   );

@@ -7409,11 +7409,17 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   own graceful `ai_unavailable` rejection, which pages already handle. The
   "no claude" contract is about the EDITING surface (embed mode strips it),
   not the AI runtime.
-- **AF-4** The trigger is the app card menu's **Export App File**, which
-  downloads via GET `/api/appfile/export?path=` (fetch + blob so a 400's JSON
-  error surfaces as a toast, never saves as a corrupt file). The route builds
-  into a per-request temp dir, deleted after the response; non-destructive
-  everywhere.
+- **AF-4** **Export App File** is offered on four surfaces, all calling the
+  same `downloadAppFile` (fetch + blob so a 400's JSON error surfaces as a
+  toast, never saves as a corrupt file): the /apps card's right-click menu,
+  a hover-revealed chip on the card thumbnail (`.app-pcard-export`, also
+  keyboard-reachable via focus), the explorer folder-row context menu (every
+  folder, beside Compress — the server's "not a fused app" reason is the
+  toast for a non-app folder), and an **Export App** header button shown when
+  the previewed page is its folder's app entry (asked of `/api/apps/entry`;
+  embed mode hides the whole header, so an opened `.fused` never shows it).
+  The route (GET `/api/appfile/export?path=`) builds into a per-request temp
+  dir, deleted after the response; non-destructive everywhere.
 - **AF-5** A `.fused` renders at its own explorer URL — there is no dedicated
   open route and no gate (D389/D390). `.fused` is a preview template binding
   (`registry.json` → `templates/fusedapp`): the template reads `_file`, calls
