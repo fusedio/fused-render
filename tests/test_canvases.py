@@ -165,7 +165,13 @@ class Harness:
     def __init__(self, tmp_path, monkeypatch):
         stub = tmp_path / "fused_stub.py"
         stub.write_text(STUB, encoding="utf-8")
-        monkeypatch.setenv("FUSED_RENDER_FUSED_BIN", f"{sys.executable} {stub}")
+        # Quoted, because both halves are real paths that can contain spaces:
+        # sys.executable under "C:\Program Files\..." on Windows or a macOS
+        # "Application Support" tree, and tmp_path under a home directory with
+        # a space in the user name. Unquoted, fusedcli's split would cut either
+        # one in half and the stub CLI would simply not be found — a failure
+        # that would look like the app, not like the harness.
+        monkeypatch.setenv("FUSED_RENDER_FUSED_BIN", f'"{sys.executable}" "{stub}"')
 
         self.creds = tmp_path / "fused-credentials.json"
         monkeypatch.setenv("FUSED_RENDER_FUSED_CREDENTIALS", str(self.creds))
