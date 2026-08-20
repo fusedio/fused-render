@@ -30,6 +30,13 @@ def no_launchctl(monkeypatch):
 def fake_darwin(monkeypatch, tmp_path):
     """Pretend to be macOS with a real app bundle, writing into tmp_path."""
     monkeypatch.setattr(schedule_wake, "_is_darwin", lambda: True)
+    # sync()/remove() build the launchd domain target with os.getuid(), which
+    # is POSIX-only and does not exist as an os attribute at all on Windows —
+    # in real use that line is unreachable there because _is_darwin() above
+    # already returned False, but "pretend to be macOS" on this CI platform
+    # means faking every part of the illusion, not just the platform check.
+    # raising=False: the attribute may genuinely not exist here to restore.
+    monkeypatch.setattr(schedule_wake.os, "getuid", lambda: 501, raising=False)
     bundle = tmp_path / "FusedRender.app"
     bundle.mkdir()
     monkeypatch.setattr(schedule_wake, "app_bundle_path", lambda: str(bundle))
