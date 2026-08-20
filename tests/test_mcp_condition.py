@@ -1,4 +1,4 @@
-"""The `mcp` template's condition.py gate (SPEC CT-12, §46 / MC-1).
+"""The `mcp` template's condition.py gate (SPEC CT-12, §44 / MC-1).
 
 `mcp` curates a fused-render app's Python entrypoints into MCP tools, so the
 gate's question is "is this folder an app?" — a page plus at least one callable

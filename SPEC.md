@@ -7535,3 +7535,105 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   previewable extension — `.fused` IS a registry key now (D390 made it the
   `fusedapp` template's binding), so the D387-era `winopen.extensions()`
   hardcoded seed is gone.
+
+## 44. MCP App Template — An App's Entrypoints as Claude Tools (D396)
+
+An app in this explorer is a page plus the Python it drives: `index.html` calling
+`fused.runPython("./mail.py", {op: "send"})`. The page is a UI over those
+entrypoints, and the entrypoints are the capability — they send the mail, file the
+ticket, query the local database, on this machine with this user's credentials. A
+Claude session on the same machine cannot reach any of it, and the gap is not the
+code, it is the absence of a **declaration** of which entrypoints are worth
+calling and how.
+
+The `mcp` mode is that declaration's editor. It reads the app folder, proposes
+tools (with `fused.ai`), lets the user edit them, writes them to `mcp.toml` in the
+folder, and registers the folder with the MCP host — after which
+`fused app serve <folder>` answers `tools/list` with the curated tools **with this
+app not running at all**. The serving half lives in the `fused` package
+(openfused `spec/serve/app-mcp.md`); this app owns the authoring half, and the
+manifest is the entire contract between them.
+
+- **MC-1** **The gate is the APP SHAPE, and it is folder-only** (CT-12,
+  `templates/mcp/condition.py`). A directory qualifies when it holds an
+  `index.html` **and** at least one top-level `.py` with a top-level `def main`:
+  the page is what makes the Python an app's entrypoints rather than someone's
+  library, and an entrypoint is what there is to curate. Either half alone is a
+  no — a page with no `main()` would open a panel with nothing in it. Folder-only
+  like `git` (GT-2) and for the same shape of reason: the manifest sits at the
+  folder's root and covers the folder, so a file has no separate question to ask,
+  and the file sidebar BORROWS the parent folder's entry
+  (`apps/explorer/lib/dir-mode.ts`) exactly as it borrows Git's. Mount-backed
+  paths are refused before any read (GT-4's rule): the panel reads every `.py` in
+  the folder and writes a file into it, which is the pattern that wedges a mount.
+- **MC-1a** **This gate LISTS one directory level, which no peer gate does, and
+  it is ordered so that only an app pays for it.** There is no marker file to
+  probe for — an app's entrypoint may be called anything, which is the whole
+  reason a curation panel exists — so finding a `main()` needs the folder's names.
+  The `index.html` `isfile` therefore comes FIRST and eliminates almost every
+  directory the user opens at the cost of one stat; the listing is one level, is
+  never a walk, reads at most 24 candidate files, and stops at the first match.
+  `tests/test_mcp_condition.py` pins the ordering, because a refactor that
+  reversed it would make every folder in a home directory pay for a listing.
+- **MC-2** **The panel reads the folder by AST, never by importing it**
+  (`templates/mcp/inspect_app.py`). These are the folders whose modules open token
+  files, hit a keychain, or talk to a localhost service at import time, so
+  importing one to list its parameter names would run all of it. One `main(path)`
+  returns the whole surface: per top-level `.py` its entrypoints (names,
+  signatures, annotations, defaults, docstring summaries), the page's
+  `runPython` call sites with their literal arguments, the resolved `fused`
+  executable, the current manifest, and the MC-4 drift verdict. It is a read: the
+  write half is a separate module (the `git` view's `log.py`/`ops.py` split, GT-12).
+- **MC-2a** **The page's call arguments are a HINT, and they are what makes the
+  proposal good.** `runPython("./mail.py", {op: "send"})` is the author already
+  telling us that `mail.py` is a dispatcher and `send` is one of its operations —
+  which is exactly one curated tool with `op` pinned. Extraction is a regex plus a
+  brace scan over the page, deliberately not a JS parser: a missed call site costs
+  a suggestion the user can add by hand, and nothing here reaches the manifest
+  without passing through the editor.
+- **MC-3** **`mcp.toml` in the app folder is the contract, and the panel writes
+  exactly what the server will accept** (`templates/mcp/manifest.py`). Per
+  `[[tool]]`: `name`, `description`, `file`, `entrypoint` (default `main`),
+  `[tool.pinned]`, and a `signature` snapshot. Validation is the SERVER's own rule
+  set — identifier names, a `.py` inside the folder, an entrypoint that exists,
+  unique names, identifier pin keys — enforced here so a typo is a refusal on the
+  keystroke rather than a registration that fails inside Claude. The write
+  replaces the `[[tool]]` array and nothing else (comments and unrelated tables
+  survive), is verified by re-parsing the rendered text before it replaces the
+  original, and is atomic. Strings are encoded with `json.dumps`, whose escape
+  grammar a TOML basic string shares — never a `.replace()` chain.
+- **MC-3a** **The filename is `mcp.toml`, NOT `openfused.toml`.** `fused`'s
+  project resolution walks up from the cwd looking for that second name, so an app
+  folder carrying it would start resolving as a *project* for every command run
+  inside it. An app must stay inert to that walk-up, and a dedicated MCP-specific
+  file is also readable on its own terms.
+- **MC-4** **Drift is a SNAPSHOT COMPARISON, and it is this app's business
+  alone.** The manifest records the entrypoint's signature as it was at curation
+  time; `inspect_app.py` re-derives it and reports `ok` / `changed` / `missing`
+  (the file or the entrypoint is gone) / `unknown` (a hand-written manifest with no
+  snapshot). The server IGNORES the field — it derives each tool's schema from the
+  current source at startup, so a drifted tool keeps working as declared, which is
+  why this is a banner with a re-curate affordance and not a blocker. Saving
+  re-records the snapshots, so Save is also the fix.
+- **MC-5** **Registration goes through the existing Claude-config MCP module,
+  and pins the RESOLVED `fused` path.** The panel POSTs
+  `/api/claude-config/mcp` (`action=add`, name `fused-app-<folder>`, server json
+  `{command: <resolved fused>, args: ["app", "serve", <abs folder>]}`) — the same
+  module the Claude Config page uses, which owns the `claude mcp` CLI, the
+  `--scope user` choice and the name guard. There is deliberately no second way to
+  write an MCP host entry. When no `fused` resolves on PATH, Register is DISABLED
+  with the reason stated: an entry whose `command` does not exist fails inside
+  Claude, where the user cannot see why.
+- **MC-6** **There is no gating layer beyond the MCP host's own per-call
+  approval.** Every curated tool is callable, because the person who curated it is
+  the person the host will ask. A second confirmation here would only be a false
+  sense of one.
+- **MC-7** **AI curation is a PROPOSAL and an optional one.** The model is handed
+  the reduced surface (names, signatures, docstrings, page call arguments — never
+  file contents) and answers with a tool array; every field lands in the editor
+  and nothing reaches the folder until Save. A pin the model invents for a
+  parameter that does not exist is dropped rather than written, since the runner
+  would silently ignore it and the operator would believe it enforced. Every
+  `fused.ai` rejection (`ai_unavailable`, `model_loading`, the rest) is a status
+  line, not a broken panel: manual entry is the full-capability path, and this app
+  runs on machines with no Claude CLI at all.

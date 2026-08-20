@@ -1,4 +1,4 @@
-"""Manifest IO behind `mcp/template.html` — the WRITE half (SPEC §46 / MC-3).
+"""Manifest IO behind `mcp/template.html` — the WRITE half (SPEC §44 / MC-3).
 
 `main(action=read|write, path, tools=...)` reads and writes the `[[tool]]` tables
 in an app folder's `mcp.toml`. That file is the contract with the server side:

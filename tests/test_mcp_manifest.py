@@ -1,4 +1,4 @@
-"""The `mcp` template's manifest writer (SPEC §46 / MC-3).
+"""The `mcp` template's manifest writer (SPEC §44 / MC-3).
 
 `manifest.py` is the write half of the panel: it reads and writes the `[[tool]]`
 tables in the app folder's `mcp.toml` — the contract `fused app serve` consumes

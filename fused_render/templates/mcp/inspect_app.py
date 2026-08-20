@@ -1,4 +1,4 @@
-"""The app surface behind `mcp/template.html` — the READ half (SPEC §46 / MC-2, MC-4).
+"""The app surface behind `mcp/template.html` — the READ half (SPEC §44 / MC-2, MC-4).
 
 `main(path)` answers everything the curation panel needs to know about one app
 folder, in ONE call:

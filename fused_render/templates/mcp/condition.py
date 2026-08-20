@@ -1,4 +1,4 @@
-"""Gate for the `mcp` template (SPEC CT-12, §46 / MC-1).
+"""Gate for the `mcp` template (SPEC CT-12, §44 / MC-1).
 
 `main(path)` decides whether a path is a fused-render **app folder**: a page
 plus at least one Python entrypoint the page can call. That is the only shape

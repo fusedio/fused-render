@@ -1,4 +1,4 @@
-"""The `mcp` template's app-surface reader (SPEC §46 / MC-2, MC-4).
+"""The `mcp` template's app-surface reader (SPEC §44 / MC-2, MC-4).
 
 `inspect_app.py` is the panel's one read of the app folder: what could become a
 tool (every top-level `.py`'s entrypoints, by AST — never by importing the app,
