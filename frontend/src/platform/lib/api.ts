@@ -1486,7 +1486,7 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
   }
 }
 
-// Download an app folder as a single `.fused` app file (SPEC §43, D384).
+// Download an app folder as a single `.fused` app file (SPEC §43, D385).
 // fetch + blob rather than a bare <a download>, same reason as the templates
 // export above: a non-2xx JSON error (not an app, over
 // budget) surfaces to the caller instead of saving as a corrupt file.

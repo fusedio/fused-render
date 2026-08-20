@@ -308,7 +308,7 @@ DOCUMENT_TYPES = [
         "LSItemContentTypes": ["io.fused.render.bookmark"],
     },
     {
-        # `.fused` is our own single-file app format (SPEC §43, D384): declare
+        # `.fused` is our own single-file app format (SPEC §43, D385): declare
         # the UTI below and claim Owner rank so a Finder double-click always
         # opens FusedRender on the /openfused confirm page.
         "CFBundleTypeName": "FusedRender app",
@@ -523,7 +523,7 @@ OPTIONS = {
                 "UTTypeConformsTo": ["public.json"],
                 "UTTypeTagSpecification": {"public.filename-extension": ["bookmark"]},
             },
-            # Same posture for `.fused` (SPEC §43, D384): our own format, the
+            # Same posture for `.fused` (SPEC §43, D385): our own format, the
             # UTI exported so the Owner rank above binds reliably. Physically
             # a zip, but conforming to public.data (not public.zip-archive)
             # keeps Archive Utility and friends from claiming it.

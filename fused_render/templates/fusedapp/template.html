@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<!-- The .fused app-file template (SPEC §43, D389). Opening a .fused IS the
+<!-- The .fused app-file template (SPEC §43, D390). Opening a .fused IS the
      ordinary template path: /explorer/view/<path>.fused renders this inside
      the explorer shell, /explorer/embed/<path>.fused (what a Finder
      double-click maps to via the view-URL codec) renders it chrome-free.
-     There is no gate (D388): on load it POSTs the internal
+     There is no gate (D389): on load it POSTs the internal
      /api/appfile/open (extract-or-reuse, hardened + read-only, appfile.py)
      and fills the viewport with an iframe of the entry page's embed URL.
      Extraction stays server-side, single implementation — this page must not
@@ -43,7 +43,7 @@
   // `_preview=1` (a reserved shell param, read off the URL — it is not a
   // page param). A preview must not OPEN the app: opening extracts into the
   // permanent cache and runs the app's pages, and `_preview` exists exactly
-  // to keep a peek from counting as an open (D301 / D389).
+  // to keep a peek from counting as an open (D301 / D390).
   const isPreview =
     new URLSearchParams(location.search).get("_preview") === "1";
 

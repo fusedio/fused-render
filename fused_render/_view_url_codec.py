@@ -50,7 +50,7 @@ def view_url_path(fs_path: str) -> str:
         # An OS-delivered .fused open (Finder double-click, Explorer "Open
         # with") lands on the file's own EMBED URL: the fusedapp preview
         # template extracts and renders the app chrome-free — the app
-        # experience, not the explorer (SPEC §43, D389). An in-explorer click
+        # experience, not the explorer (SPEC §43, D390). An in-explorer click
         # uses the ordinary /explorer/view prefix (shell chrome kept), which
         # needs no special case anywhere.
         return embed_url_path(fs_path)

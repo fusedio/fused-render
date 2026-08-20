@@ -1,17 +1,17 @@
-"""Routes behind the ``.fused`` single-file app export/open (SPEC §43, D384-D388).
+"""Routes behind the ``.fused`` single-file app export/open (SPEC §43, D385-D389).
 
 Export is a GET download (the card menu navigates to it, so the browser's own
 download UI handles the file) of a zip built into a per-request temp dir and
 deleted after the response — read-only against the app folder, nothing
 persisted server-side, same unguarded-GET posture as the template-pack export.
 
-Open has no user-facing route at all (D389, which removed D388's /openfused
+Open has no user-facing route at all (D390, which removed D389's /openfused
 redirect hop): a ``.fused`` renders at its own ``/explorer/view|embed/<path>``
 URL through the ``fusedapp`` preview template (``templates/fusedapp``), and
 that template calls the internal X-Fused-guarded ``POST /api/appfile/open``
 here — extract-or-reuse (hardened, content-addressed, read-only; see
 ``appfile.open_app_file``) — then iframes the entry page's embed URL it
-answers with. No gate anywhere (D388's owner call stands).
+answers with. No gate anywhere (D389's owner call stands).
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ def api_appfile_export(path: str = ""):
 def api_appfile_open(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Extract the ``.fused`` at ``file`` (or re-use its cached extract) and
     answer the entry page's embed URL. The one caller is the ``fusedapp``
-    preview template — there is no user-facing open route (D389)."""
+    preview template — there is no user-facing open route (D390)."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard

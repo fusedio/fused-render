@@ -446,7 +446,7 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.deeplink import router as deeplink_router
 
     app.include_router(deeplink_router)
-    # .fused single-file app export/open (SPEC §43, D384-D389): GET
+    # .fused single-file app export/open (SPEC §43, D385-D390): GET
     # /api/appfile/export download + the internal POST /api/appfile/open the
     # fusedapp preview template calls (no user-facing open route).
     from fused_render.server.routers.appfile import router as appfile_router

@@ -1,4 +1,4 @@
-"""Single-file app export/open: the ``.fused`` app file (SPEC §43, D384-D386).
+"""Single-file app export/open: the ``.fused`` app file (SPEC §43, D385-D387).
 
 A ``.fused`` file is one double-clickable artifact holding a whole fused app —
 the folder the /apps hub lists (its marker-carrying entry page, every other
@@ -30,7 +30,7 @@ is, nothing else). Extraction rides the one hardened unzip implementation
 (``zip_import``): a ``.fused`` that arrived by mail is exactly as untrusted as
 an uploaded template pack.
 
-There is deliberately NO confirm gate and no dedicated open URL (D388/D389,
+There is deliberately NO confirm gate and no dedicated open URL (D389/D390,
 owner calls): a ``.fused`` renders at its own ``/explorer/view|embed/<path>``
 URL through the ``fusedapp`` preview template (``templates/fusedapp``), which
 calls the internal POST /api/appfile/open and iframes the entry's embed URL —
@@ -92,7 +92,7 @@ _SKIP_FILES = frozenset({"CLAUDE.md"})
 # own graceful `ai_unavailable` rejection, which pages are already written to
 # handle (the authoring skill's error table). "No claude" in this artifact's
 # contract means no EDITING surface — embed mode strips that — not no AI.
-# (Owner call, D387, reversing the D384 stance.)
+# (Owner call, D388, reversing the D385 stance.)
 
 # Stale-extract sweep: an interrupted open cannot clean its staging dir.
 _STAGING_TTL_SECONDS = 24 * 3600

@@ -7386,7 +7386,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   its own state has reason to discount the rest of the brief, so the line says
   only what holds everywhere.
 
-## 43. Single-File App Export — the `.fused` App File (D384, D385, D386)
+## 43. Single-File App Export — the `.fused` App File (D385, D386, D387)
 
 One app, one double-clickable file. Exporting a fused app produces
 `<app name>.fused` — a zip holding `manifest.json` (`fused_app_file: 1`, the
@@ -7403,7 +7403,7 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
 - **AF-2** A folder with no marker-carrying page is not exportable — a
   `.fused` must have an entry to open (the marker is the only signal, D301).
 - **AF-3** `fused.ai()` SHIPS, unlike the hosted exporter (RH-11 does not
-  apply — D387 reversed D384's original stance): an opened `.fused` runs
+  apply — D388 reversed D385's original stance): an opened `.fused` runs
   inside the recipient's full local runtime, where `/api/ai` exists. A
   recipient without the claude CLI or a resident local model gets the API's
   own graceful `ai_unavailable` rejection, which pages already handle. The
@@ -7415,7 +7415,7 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   into a per-request temp dir, deleted after the response; non-destructive
   everywhere.
 - **AF-5** A `.fused` renders at its own explorer URL — there is no dedicated
-  open route and no gate (D388/D389). `.fused` is a preview template binding
+  open route and no gate (D389/D390). `.fused` is a preview template binding
   (`registry.json` → `templates/fusedapp`): the template reads `_file`, calls
   the internal X-Fused-guarded `POST /api/appfile/open` (extract-or-reuse),
   and fills the viewport with an iframe of the entry page's embed URL the
@@ -7444,6 +7444,6 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   Owner-rank document type + exported UTI `io.fused.render.app` (conforms to
   `public.data`, not the zip UTI, so archive tools don't claim it); Windows
   and Linux associations flow from `templates/registry.json` like every other
-  previewable extension — `.fused` IS a registry key now (D389 made it the
-  `fusedapp` template's binding), so the D386-era `winopen.extensions()`
+  previewable extension — `.fused` IS a registry key now (D390 made it the
+  `fusedapp` template's binding), so the D387-era `winopen.extensions()`
   hardcoded seed is gone.

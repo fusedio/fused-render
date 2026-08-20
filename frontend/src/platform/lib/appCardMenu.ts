@@ -45,7 +45,7 @@ export function appCardMenu(app: AppInfo): MenuEntry[] {
       },
     },
     {
-      // The whole app as one double-clickable `.fused` file (SPEC §43, D384).
+      // The whole app as one double-clickable `.fused` file (SPEC §43, D385).
       // Errors (not an app, over budget) come back
       // as a toast rather than a corrupt download — downloadAppFile throws.
       label: "Export App File",

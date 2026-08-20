@@ -1,4 +1,4 @@
-"""The .fused single-file app export/open (SPEC §43, D384-D386): export walks
+"""The .fused single-file app export/open (SPEC §43, D385-D387): export walks
 the whole app folder into a manifest+payload zip, open extracts it hardened,
 read-only, content-addressed, and the shared view-URL codec routes a
 double-clicked .fused through the /openfused confirm page."""
@@ -90,7 +90,7 @@ def test_export_refuses_non_app_folder(tmp_path):
 
 def test_export_allows_fused_ai_pages(tmp_path):
     # Unlike the hosted exporter (RH-11), fused.ai() ships: an opened .fused
-    # runs in the recipient's full local runtime, where /api/ai exists (D387).
+    # runs in the recipient's full local runtime, where /api/ai exists (D388).
     # A recipient without a claude CLI gets the graceful ai_unavailable state.
     app = make_app(tmp_path)
     (app / "chat.html").write_text("<html><script>fused.ai('hi')</script></html>")
@@ -231,7 +231,7 @@ def test_sweep_never_evicts_live_extracts(tmp_path, monkeypatch):
 
 def test_codec_routes_os_opened_fused_to_embed():
     # A Finder/Explorer double-click lands on the file's own EMBED url — the
-    # fusedapp template renders the app chrome-free (D389). In-explorer clicks
+    # fusedapp template renders the app chrome-free (D390). In-explorer clicks
     # use the ordinary view prefix and need no special case.
     assert view_url_path("/tmp/My App.fused") == "/explorer/embed/tmp/My%20App.fused"
     # Case-insensitive like .bookmark's check.
@@ -255,7 +255,7 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
     fused_path = tmp_path / "demo.fused"
     fused_path.write_bytes(r.content)
 
-    # D389: no user-facing open route — the fusedapp template calls the
+    # D390: no user-facing open route — the fusedapp template calls the
     # X-Fused-guarded POST and iframes the answered embed URL.
     r = client.post("/api/appfile/open", json={"file": str(fused_path)})
     assert r.status_code == 403
