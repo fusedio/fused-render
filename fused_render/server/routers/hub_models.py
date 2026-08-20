@@ -75,6 +75,22 @@ count map, so the bytes are recovered by summing `count * bits / 8` — the same
 arithmetic the model card does locally (HF-17), and the same `≈`. A repo
 without safetensors metadata reports no size rather than a guessed one.
 
+**And when there is no safetensors metadata, `hub/size` is the second ask —
+one repo at a time, on purpose.** A GGUF, mflux or LoRA-only repo carries no
+dtype map, so the arithmetic above has nothing to work from and the card shows
+a dash, even though huggingface.co shows a real total on the model's own page.
+That total is `usedStorage`, and it exists ONLY on the per-repo detail endpoint:
+the list endpoint refuses `expand[]=usedStorage` with a 400 naming the fields it
+does accept, so there is no way to fold it into the search. Getting it for a
+page of results would therefore be one HTTP round trip PER ROW, on every
+debounced keystroke — exactly the traffic the cache above exists to avoid. So it
+is a separate route, and the page calls it lazily: only for a row that has no
+estimate, and only once that card has actually scrolled into view. It is also a
+DIFFERENT NUMBER and the page says so — the total of everything in the repo,
+not the weights — because a tooltip claiming "computed from parameter counts"
+over a figure that includes the tokenizer and three quantised copies would be a
+sentence about work that never happened.
+
 The TTL cache exists to be a good citizen: search-as-you-type would otherwise
 put one request per keystroke on a public API. Identical queries inside the
 window are answered from memory.
@@ -85,7 +101,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 from fastapi import APIRouter, Body, Header
@@ -133,6 +149,10 @@ _SORTS = {
 }
 
 _MAX_LIMIT = 60
+
+# Longer than any real `org/name` and short enough that nothing hand-written
+# turns into a long URL this server goes and fetches.
+_MAX_ID_LEN = 200
 
 # An unfiltered query is filtered HERE, so the Hub has to be asked for more rows
 # than the page will show or a search for a common word would come back nearly
@@ -413,10 +433,14 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     }
 
 
-def _fetch(params: dict) -> tuple[list, str | None]:
-    """The Hub's model list for one query: (rows, error). Never raises — an
-    unreachable Hub is a sentence on the page, not a 500 from this server."""
-    url = f"{hub_endpoint()}/api/models?{urlencode(params, doseq=True)}"
+def _get(url: str):
+    """One authenticated GET at the Hub: (response, error). Never raises — an
+    unreachable Hub is a sentence on the page, not a 500 from this server.
+
+    Shared by the two outbound calls this module makes, so a rate limit or a
+    refused token reads the same whether the page was searching or asking one
+    repo how big it is.
+    """
     headers = {"Accept": "application/json"}
     token = _token()
     if token:
@@ -427,14 +451,22 @@ def _fetch(params: dict) -> tuple[list, str | None]:
     except httpx.HTTPError as e:
         # Offline, DNS, TLS, timeout — all the same to the person looking at the
         # page, and all worth naming rather than spinning forever.
-        return [], f"Could not reach {urlsplit(hub_endpoint()).netloc}: {e.__class__.__name__}"
+        return None, f"Could not reach {urlsplit(hub_endpoint()).netloc}: {e.__class__.__name__}"
     if response.status_code == 401 or response.status_code == 403:
-        return [], ("The Hub refused this request. A private or gated search needs a token — "
-                    "set HF_TOKEN, or log in with the Hugging Face CLI.")
+        return None, ("The Hub refused this request. A private or gated repo needs a token — "
+                      "set HF_TOKEN, or log in with the Hugging Face CLI.")
     if response.status_code == 429:
-        return [], "The Hub is rate-limiting this machine. Try again in a minute."
+        return None, "The Hub is rate-limiting this machine. Try again in a minute."
     if response.status_code >= 400:
-        return [], f"The Hub answered {response.status_code}."
+        return None, f"The Hub answered {response.status_code}."
+    return response, None
+
+
+def _fetch(params: dict) -> tuple[list, str | None]:
+    """The Hub's model list for one query: (rows, error)."""
+    response, error = _get(f"{hub_endpoint()}/api/models?{urlencode(params, doseq=True)}")
+    if error or response is None:
+        return [], error
     try:
         payload = response.json()
     except ValueError:
@@ -442,6 +474,37 @@ def _fetch(params: dict) -> tuple[list, str | None]:
     if not isinstance(payload, list):
         return [], "The Hub sent an unexpected reply."
     return payload, None
+
+
+def _fetch_used_storage(model_id: str) -> tuple[int | None, str | None]:
+    """One repo's total bytes on the Hub: (usedStorage, error).
+
+    The DETAIL endpoint, which answers with an object rather than the list
+    `_fetch` reads — and it is the only endpoint that will expand this field at
+    all (see the module docstring). The id is quoted into the PATH with its
+    slash intact and nothing else surviving, so a repo name carrying a `?`
+    cannot become a second query parameter.
+
+    Anything that is not a plain non-negative int is no answer: a string of
+    digits, a float, a `True`. This route's only job is the total, so a repo the
+    Hub does not measure reports None rather than falling back to the dtype map
+    the search already tried.
+    """
+    url = (f"{hub_endpoint()}/api/models/{quote(model_id, safe='/')}"
+           f"?{urlencode({'expand[]': 'usedStorage'})}")
+    response, error = _get(url)
+    if error or response is None:
+        return None, error
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, "The Hub sent something that is not JSON."
+    if not isinstance(payload, dict):
+        return None, "The Hub sent an unexpected reply."
+    used = payload.get("usedStorage")
+    if isinstance(used, bool) or not isinstance(used, int) or used < 0:
+        return None, None
+    return used, None
 
 
 def _cached(key: tuple):
@@ -560,6 +623,53 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
         "endpoint": hub_endpoint(),
         "authenticated": bool(_token()),
     }
+
+
+@router.post("/api/ai-models/hub/size")
+def api_hub_size(body: dict = Body(default={}), x_fused: str | None = Header(default=None)):
+    """One repo's TOTAL size on the Hub, for a card the dtype map could not
+    measure.
+
+    **Guarded POST for exactly the reason search is** — see `api_hub_search`:
+    the cost of this request is in the REQUEST, not the reply, because it leaves
+    the machine carrying the user's Hub token. Nothing about it being a "read"
+    changes that, so it takes the same shape rather than the rule acquiring a
+    second exception.
+
+    **One repo per call, and the page asks lazily.** The Hub only expands
+    `usedStorage` on the per-repo detail endpoint, so a page of two dozen
+    results is two dozen round trips — which is why this is not folded into
+    search and why the frontend calls it only for a row with no estimate whose
+    card has actually scrolled into view (see the module docstring).
+
+    The number is NOT the search's `estimatedSize` and must not be presented as
+    one: it is everything in the repo — tokenizer, configs, every quantised copy
+    the author published — rather than the weights a load would read.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    model_id = body.get("id")
+    if not isinstance(model_id, str):
+        return _error("id must be a string", status=400)
+    model_id = model_id.strip()
+    # `org/name`, and nothing else becomes a request. The Hub's own shape, so a
+    # malformed id is a client bug rather than a URL this server goes and fetches.
+    parts = model_id.split("/")
+    if len(parts) != 2 or not all(parts) or len(model_id) > _MAX_ID_LEN:
+        return _error(f"{body.get('id')!r} is not a repo id of the form org/name", status=400)
+
+    key = ("size", hub_endpoint(), model_id, bool(_token()))
+    payload = _cached(key)
+    if payload is None:
+        used, error = _fetch_used_storage(model_id)
+        if error:
+            # Not a 5xx, and not cached: the request was fine, the far side was
+            # not, and the next card into view should find out for itself.
+            return {"id": model_id, "usedStorage": None, "error": error}
+        payload = {"usedStorage": used}
+        _store(key, payload)
+    return {"id": model_id, "usedStorage": payload["usedStorage"], "error": None}
 
 
 @router.get("/api/ai-models/hub/tasks")
