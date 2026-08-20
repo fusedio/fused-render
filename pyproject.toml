@@ -114,7 +114,7 @@ dev = [
     # `[bundled]`'s own requirements, so nothing here can reach the bundle.
     "matplotlib",
     # A TEST dependency for the same reason matplotlib is one above, and a
-    # narrower case of it: `runners/llamacpp_text.py` renders a GGUF's own
+    # narrower case of it: `runners/llama_text.py` renders a GGUF's own
     # chat template with real Jinja2 (SPEC AI-11), and unlike torch or mlx —
     # which every runner test FAKES, because fused-render's own venv must
     # never grow one (`registry.py`'s first architectural claim) — Jinja2 is a
