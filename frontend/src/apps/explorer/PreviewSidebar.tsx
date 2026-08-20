@@ -237,7 +237,7 @@ export default function PreviewSidebar({
         // WITHOUT recording a width: the close is reached by dragging THROUGH the
         // resistance band, so every move before this one stuck the column at the
         // floor, and committing that would file MIN_W as the user's choice — shut
-        // a 520px column and it would come back at 280. `outcome = null` makes
+        // a 620px column and it would come back at 380. `outcome = null` makes
         // pointer-up hand `preGesture` back instead (`committedWidth`). Shutting a
         // panel is not the same act as making it narrow, and one drag should not
         // do both.
