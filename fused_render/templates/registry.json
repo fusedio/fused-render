@@ -22,19 +22,23 @@
   ".xlsx": [
     "xlsx",
     "excel",
+    "claude",
     "reader"
   ],
   ".xlsm": [
     "xlsx",
     "excel",
+    "claude",
     "reader"
   ],
   ".pptx": [
-    "slides"
+    "slides",
+    "claude"
   ],
   ".*.json": [
     "tree",
-    "code"
+    "code",
+    "claude"
   ],
   ".json": [
     "tree",
@@ -55,14 +59,17 @@
   ],
   ".calls.jsonl": [
     "log_studio",
-    "code"
+    "code",
+    "claude"
   ],
   ".docx": [
     "docs",
+    "claude",
     "reader"
   ],
   ".odt": [
     "docs",
+    "claude",
     "reader"
   ],
   ".ndjson": [
@@ -73,43 +80,53 @@
   ],
   ".csv.gz": [
     "duckdb",
-    "tar"
+    "tar",
+    "claude"
   ],
   ".csv.zst": [
     "duckdb",
-    "tar"
+    "tar",
+    "claude"
   ],
   ".tsv.gz": [
     "duckdb",
-    "tar"
+    "tar",
+    "claude"
   ],
   ".tsv.zst": [
     "duckdb",
-    "tar"
+    "tar",
+    "claude"
   ],
   ".json.gz": [
     "duckdb",
-    "tar"
+    "tar",
+    "claude"
   ],
   ".json.zst": [
     "duckdb",
-    "tar"
+    "tar",
+    "claude"
   ],
   ".jsonl.gz": [
     "duckdb",
-    "tar"
+    "tar",
+    "claude"
   ],
   ".jsonl.zst": [
     "duckdb",
-    "tar"
+    "tar",
+    "claude"
   ],
   ".ndjson.gz": [
     "duckdb",
-    "tar"
+    "tar",
+    "claude"
   ],
   ".ndjson.zst": [
     "duckdb",
-    "tar"
+    "tar",
+    "claude"
   ],
   ".geojson": [
     "vector",
@@ -174,59 +191,76 @@
   ],
   ".gif": [
     "image",
-    "photos"
+    "photos",
+    "claude"
   ],
   ".webp": [
     "image",
     "photos",
-    "pano"
+    "pano",
+    "claude"
   ],
   ".bmp": [
-    "photos"
+    "photos",
+    "claude"
   ],
   ".avif": [
-    "photos"
+    "photos",
+    "claude"
   ],
   ".heic": [
-    "photos"
+    "photos",
+    "claude"
   ],
   ".heif": [
-    "photos"
+    "photos",
+    "claude"
   ],
   ".dng": [
-    "photos"
+    "photos",
+    "claude"
   ],
   ".pdf": [
     "pdf",
     "pdf_studio",
+    "claude",
     "reader"
   ],
   ".mp4": [
-    "media"
+    "media",
+    "claude"
   ],
   ".mov": [
-    "media"
+    "media",
+    "claude"
   ],
   ".m4v": [
-    "media"
+    "media",
+    "claude"
   ],
   ".webm": [
-    "media"
+    "media",
+    "claude"
   ],
   ".mp3": [
-    "media"
+    "media",
+    "claude"
   ],
   ".wav": [
-    "media"
+    "media",
+    "claude"
   ],
   ".m4a": [
-    "media"
+    "media",
+    "claude"
   ],
   ".ogg": [
-    "media"
+    "media",
+    "claude"
   ],
   ".flac": [
-    "media"
+    "media",
+    "claude"
   ],
   ".py": [
     "code",
@@ -381,21 +415,26 @@
   ".tif": [
     "geotiff",
     "pyramid",
-    "map"
+    "map",
+    "claude"
   ],
   ".tiff": [
     "geotiff",
     "pyramid",
-    "map"
+    "map",
+    "claude"
   ],
   ".nc": [
-    "netcdf"
+    "netcdf",
+    "claude"
   ],
   ".nc4": [
-    "netcdf"
+    "netcdf",
+    "claude"
   ],
   ".cdf": [
-    "netcdf"
+    "netcdf",
+    "claude"
   ],
   "/": [
     "claude",
@@ -408,158 +447,203 @@
   ],
   ".zarr/": [
     "zarr_aoi",
-    "_listing"
+    "_listing",
+    "claude"
   ],
   ".shp": [
     "vector",
     "map",
-    "geometry_editor"
+    "geometry_editor",
+    "claude"
   ],
   ".kml": [
     "vector",
     "map",
-    "geometry_editor"
+    "geometry_editor",
+    "claude"
   ],
   ".kmz": [
     "vector",
-    "geometry_editor"
+    "geometry_editor",
+    "claude"
   ],
   ".gpx": [
     "vector",
-    "geometry_editor"
+    "geometry_editor",
+    "claude"
   ],
   ".gpkg": [
     "vector",
     "map",
-    "geometry_editor"
+    "geometry_editor",
+    "claude"
   ],
   ".fgb": [
     "vector",
     "map",
-    "geometry_editor"
+    "geometry_editor",
+    "claude"
   ],
   ".pmtiles": [
     "pmtiles",
-    "map"
+    "map",
+    "claude"
   ],
   ".las": [
-    "las"
+    "las",
+    "claude"
   ],
   ".laz": [
-    "las"
+    "las",
+    "claude"
   ],
   ".usd": [
-    "usd"
+    "usd",
+    "claude"
   ],
   ".usda": [
-    "usd"
+    "usd",
+    "claude"
   ],
   ".usdc": [
-    "usd"
+    "usd",
+    "claude"
   ],
   ".usdz": [
-    "usd"
+    "usd",
+    "claude"
   ],
   ".ply": [
-    "usd"
+    "usd",
+    "claude"
   ],
   ".splat": [
-    "usd"
+    "usd",
+    "claude"
   ],
   ".ksplat": [
-    "usd"
+    "usd",
+    "claude"
   ],
   ".obj": [
-    "usd"
+    "usd",
+    "claude"
   ],
   ".stl": [
-    "usd"
+    "usd",
+    "claude"
   ],
   ".glb": [
     "glb",
-    "usd"
+    "usd",
+    "claude"
   ],
   ".gltf": [
     "glb",
     "usd",
-    "code"
+    "code",
+    "claude"
   ],
   ".dxf": [
     "autocad_viewer",
-    "code"
+    "code",
+    "claude"
   ],
   ".dwg": [
-    "autocad_viewer"
+    "autocad_viewer",
+    "claude"
   ],
   ".zip": [
-    "zip"
+    "zip",
+    "claude"
   ],
   ".jar": [
-    "zip"
+    "zip",
+    "claude"
   ],
   ".whl": [
-    "zip"
+    "zip",
+    "claude"
   ],
   ".egg": [
-    "zip"
+    "zip",
+    "claude"
   ],
   ".bundle": [
-    "bundle"
+    "bundle",
+    "claude"
   ],
   ".tar": [
-    "tar"
+    "tar",
+    "claude"
   ],
   ".tgz": [
-    "tar"
+    "tar",
+    "claude"
   ],
   ".tbz2": [
-    "tar"
+    "tar",
+    "claude"
   ],
   ".txz": [
-    "tar"
+    "tar",
+    "claude"
   ],
   ".gz": [
-    "tar"
+    "tar",
+    "claude"
   ],
   ".bz2": [
-    "tar"
+    "tar",
+    "claude"
   ],
   ".xz": [
-    "tar"
+    "tar",
+    "claude"
   ],
   ".sqlite": [
-    "sqlite"
+    "sqlite",
+    "claude"
   ],
   ".sqlite3": [
-    "sqlite"
+    "sqlite",
+    "claude"
   ],
   ".db": [
-    "sqlite"
+    "sqlite",
+    "claude"
   ],
   ".duckdb": [
-    "duckdb"
+    "duckdb",
+    "claude"
   ],
   ".ddb": [
-    "duckdb"
+    "duckdb",
+    "claude"
   ],
   ".twb": [
     "tableau",
-    "code"
+    "code",
+    "claude"
   ],
   ".twbx": [
     "tableau",
-    "zip"
+    "zip",
+    "claude"
   ],
   ".tds": [
     "tableau",
-    "code"
+    "code",
+    "claude"
   ],
   ".tdsx": [
     "tableau",
-    "zip"
+    "zip",
+    "claude"
   ],
   ".hyper": [
-    "tableau"
+    "tableau",
+    "claude"
   ],
   ".plist": [
     "plist",
@@ -568,15 +652,19 @@
     "reader"
   ],
   ".joblib": [
-    "joblib_model"
+    "joblib_model",
+    "claude"
   ],
   ".pkl": [
-    "joblib_model"
+    "joblib_model",
+    "claude"
   ],
   ".pickle": [
-    "joblib_model"
+    "joblib_model",
+    "claude"
   ],
   ".fused": [
-    "fusedapp"
+    "fusedapp",
+    "claude"
   ]
 }

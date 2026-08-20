@@ -22,6 +22,14 @@ test("the owner is opened at the cursor", () => {
   expect(seen).toEqual([[12, 34]]);
 });
 
+test("an ancestor crumb's path reaches the owner, and is absent otherwise", () => {
+  const seen: Array<string | undefined> = [];
+  publishTopbarMenu((_x, _y, crumb) => seen.push(crumb));
+  openTopbarMenu(1, 2, "/Users/me/Fused");
+  openTopbarMenu(1, 2);
+  expect(seen).toEqual(["/Users/me/Fused", undefined]);
+});
+
 test("newest publisher wins for as long as it is mounted", () => {
   const seen: string[] = [];
   const releaseA = publishTopbarMenu(() => seen.push("a"));

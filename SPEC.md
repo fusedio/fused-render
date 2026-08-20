@@ -7468,7 +7468,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   its own state has reason to discount the rest of the brief, so the line says
   only what holds everywhere.
 
-## 43. Single-File App Export — the `.fused` App File (D385, D386, D387)
+## 43. Single-File App Export — the `.fused` App File (D385, D386, D387, D396, D397)
 
 One app, one double-clickable file. Exporting a fused app produces
 `<app name>.fused` — a zip holding `manifest.json` (`fused_app_file: 1`, the
@@ -7525,9 +7525,64 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   read-only machinery of §13.5, not a new mode.
 - **AF-8** The open answers the entry's **embed** URL
   (`/explorer/embed/<entry>`): chrome-free by page-load mode — the app as it
-  is. Rendering the entry records the open (D301), which for a folder outside
-  the workspace is hub registration (`registered_apps.record_open`), so the
-  opened app appears on /apps and in recents through the existing pipeline.
+  is. *(Revised by D396)* The hub identity of an opened `.fused` is the FILE,
+  not its extract dir: `POST /api/appfile/open` records the source path into
+  `~/.fused-render/appfile_recents.json` (the fusedapp template skips the POST
+  under `_preview=1`, so thumbnails never record), and `registered_apps`
+  refuses paths under the extract cache — rendering the extracted entry no
+  longer registers a `linked` card.
+- **AF-10** (D396) Exported `.fused` files are DISCOVERABLE: `/api/apps`
+  merges in every indexed `.fused` on the machine (one duckdb query over the
+  file index's files table, `ext='fused'`, TTL-cached; `git_repos.py`'s
+  screening — `junk_path`, MountGuard, per-row isfile — and its freshness
+  nudge, but NO not-ready states: an unanswerable index is zero exported rows,
+  never a failed listing), unioned with the appfile recents so a just-opened
+  export appears before any rescan. Rows carry the reserved virtual tag
+  `Fused-App` and `kind: "appfile"`; `entry` is the `.fused` path itself
+  (a card click lands on the fusedapp view), `entry_html` null (never
+  live-iframed). The tag prints on the card's own tag line but is NOT a Repo
+  facet chip — that facet groups by source and an app file has none
+  (`repoChips` excludes `kind: "appfile"`; an explicit `?tag=` URL and the
+  search box still reach the rows). Opened exports join Home's recents row
+  (`exported_apps.recent_exported_apps`, recents-only — no duckdb on the
+  Home path).
+- **AF-11** (D396) The exported card's thumbnail is the payload's
+  `preview.png`, streamed by `GET /api/appfile/preview?path=` — a bounded
+  single-member zip read (never an extraction). Without one, a file the user
+  has OPENED before live-renders instead: the card iframes its own fusedapp
+  view under `_preview=1`, whose preview contract is `preview: true` on
+  `POST /api/appfile/open` — reuse an existing extract only (`reuse_only`:
+  never extract fresh, never rebuild, never record recency; the entry iframe
+  carries `_preview=1&_nofocus=1`). A never-opened file stays the empty
+  thumb — a peek must not be the first run of a stranger's pages.
+  Export can BAKE one in: `exportAppFile` captures a tab screenshot
+  (getDisplayMedia with current-tab hints — the annotation shots' mechanism,
+  chosen over DOM serialization because canvas/WebGL apps rasterize blank)
+  when and only when the folder has no authored `preview.png`. The crop
+  source is the card's own thumbnail when it is on screen AND HAS PAINTED
+  the app — a card without a preview.png renders the live app there, so
+  nothing navigates or flashes, but only two card previews start at a time
+  (`createPreviewStartQueue(2)`), so an unpainted thumb is the ordinary
+  state of a card and cropping one would bake an empty box in as the
+  artifact's permanent thumbnail. The card states paintedness on the thumb
+  (`data-capture-ready`, set on the body iframe's load) because the surface
+  that opens the context menu is not the one holding that state; the
+  full-viewport stage is the fallback for a missing, off-screen or unpainted
+  thumb. **The share prompt goes up FIRST**, before the stage is mounted and
+  before anything is awaited: `getDisplayMedia` spends the click's transient
+  user activation, which expires seconds later, so asking after a stage
+  iframe's load-and-settle wait would lose the prompt for every app slower
+  than a beat — and lose it indistinguishably from a dismissal. A tab-capture
+  stream is continuous, so the stage mounts and settles against a stream
+  already running. The prompt itself cannot be silenced — that is
+  getDisplayMedia's contract. The
+  X-Fused `POST /api/appfile/export` variant writes it as
+  `files/preview.png` (PNG magic + 8 MiB cap; the authored still always
+  wins; every capture failure — unsupported, prompt dismissed, blank,
+  over-cap — exports plain: the route drops a too-big screenshot rather than
+  failing the download, where `export_app_file` itself still raises for a
+  caller that meant to supply a still). An injected preview extracts as a
+  real file in the app's read-only extract dir like any other member.
 - **AF-9** `.fused` is an owned file type on all three platforms: macOS
   Owner-rank document type + exported UTI `io.fused.render.app` (conforms to
   `public.data`, not the zip UTI, so archive tools don't claim it); Windows
@@ -7535,8 +7590,32 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   previewable extension — `.fused` IS a registry key now (D390 made it the
   `fusedapp` template's binding), so the D387-era `winopen.extensions()`
   hardcoded seed is gone.
+- **AF-12** (D397) A `.fused` CLONES into the workspace: an "Export App"-style
+  preview-header button copies the payload to `<workspace>/local/<slug>` as an
+  ordinary editable app folder and navigates to it. `GET /api/appfile/clone`
+  is the read-only probe the button reads on mount (one bounded manifest read
+  + one isdir → `{name, slug, path, cloned}`); the X-Fused
+  `POST /api/appfile/clone` does the copy. The source is `open_app_file`'s
+  extract, so the one hardened extractor runs (a never-opened file extracts on
+  the way through) and the 0444 payload bits are lifted to 0644 IN STAGING —
+  a clone that shipped them read-only would be an uneditable development copy.
+  Staged inside the destination tag dir so the claim is a same-filesystem
+  rename. **The destination folder EXISTING is what "already cloned" means** —
+  no records file — so the button reads "Go to local version" and only
+  navigates, a second Clone is a reporting no-op that never overwrites the
+  user's edits and never makes a suffixed second folder, and the answer
+  survives a restart, a moved `.fused` and a re-export. Named cost: an
+  unrelated `local/<slug>` folder reads as this app's clone. The manifest
+  `name` is attacker-controlled zip data and reaches the filesystem only
+  through `appfile._slug` (no separator, dot or drive letter survives it,
+  shared with the extract cache key); an empty name falls back to the FILE
+  STEM, not a shared `app` literal, so two unnamed app files do not collide on
+  one folder. Plain files — no `git init`, unlike the showcase Clone, which
+  has an upstream to diff against. Header-only, so an embed-opened `.fused`
+  (a Finder double-click) shows no Clone: reaching it means opening the file
+  in the explorer.
 
-## 44. MCP App Template — An App's Entrypoints as Claude Tools (D396)
+## 44. MCP App Template — An App's Entrypoints as Claude Tools (D401)
 
 An app in this explorer is a page plus the Python it drives: `index.html` calling
 `fused.runPython("./mail.py", {op: "send"})`. The page is a UI over those

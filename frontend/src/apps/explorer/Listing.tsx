@@ -269,7 +269,14 @@ export default function Listing({
   // double-click/Enter —
   // opening a file in a pane replaces that pane's document, which is the point.
   const paneEnabled = !embedded && !IS_SNAPSHOT && !IS_PANEL_PANE;
-  const { pane, splitRef, onDividerPointerDown } = usePreviewPane(paneEnabled);
+  // Drag-to-close hands off to the same `_side=off` the pane header's close
+  // button writes (`closeSide`, below) — one vocabulary for "the pane is shut",
+  // whichever gesture said it. A closure, called only from pointer events, so
+  // its later declaration is already initialised by the first possible call.
+  const { pane, splitRef, onDividerPointerDown } = usePreviewPane(
+    paneEnabled,
+    () => closeSide()
+  );
 
   // --- the pane's THREE modes, and whether it is open at all ------------------
   // `pane.on` above is the LAYOUT's answer ("is there room for two columns?",
