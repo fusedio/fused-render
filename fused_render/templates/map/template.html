@@ -665,12 +665,10 @@ const sourceArgs = target => ({
     ? target
     : `${location.origin}/api/fs/raw?path=${encodeURIComponent(target)}&pooled=1`,
 });
-// The one map_render argument block every describe path shares. A sel step
-// only takes the user's own contrast window along (touchedOnlyRescale) so an
-// untouched style picks up each slice's own 2–98% stretch from the new
-// descriptor. The test is `_rescaleTouched`, not `_touched`: the broad flag
-// is set by any style edit at all, so picking a new colormap once would have
-// pinned every later timestep to the window of the slice showing at the time.
+// The map_render argument block every describe path shares. A sel step keeps
+// only the user's own contrast window, so an untouched style takes each
+// slice's 2–98% stretch. The test is `_rescaleTouched` and not `_touched`,
+// which any style edit sets: one colormap pick would pin every later timestep.
 function renderArgs(L, { touchedOnlyRescale } = {}) {
   const s = L.style || {};
   const sendRescale = s.rescale && (!touchedOnlyRescale || s._rescaleTouched);
@@ -1807,9 +1805,8 @@ const DOTS = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor
 
 const RASTER_KINDS = new Set(["raster_image", "raster_tiles", "raster_cog_client"]);
 
-// "0.25° (~27.8 km)" — the cell size, which is what "how much detail is in
-// here" actually asks of a gridded dataset. Longitude cells narrow away from
-// the equator, so the metres are the latitude step and are marked approximate.
+// "0.25° (~27.8 km)". Longitude cells narrow away from the equator, so the
+// metres are the latitude step and are marked approximate.
 function cellSizeLabel(res) {
   if (!res) return "";
   const fmt = v => Number(v.toPrecision(4)).toString();
@@ -2075,8 +2072,7 @@ function rasterControls(body, L) {
       // both drops back to fully automatic.
       s.rescale = (min == null && max == null) ? null : [min, max];
       s._touched = true;
-      // The contrast window specifically, which a dim change must preserve.
-      s._rescaleTouched = s.rescale != null;
+      s._rescaleTouched = s.rescale != null;   // the window, not any edit
       restyleCog(L); renderStyleDock();
     }));
     const note = document.createElement("div"); note.className = "stat";
@@ -2266,11 +2262,9 @@ function binaryPointControls(body, L) {
 async function reloadRaster(L) {
   L.loading = true; renderFileList();
   try {
-    // Same per-layer channel applyMultidim uses. A colormap change and a dim
-    // scrub are two describes of ONE layer, each carrying the whole style and
-    // selection, so the newer must abort the older: on separate channels both
-    // completed and whichever landed last won, snapping the slider back to
-    // the selection its request was built from.
+    // Same per-layer channel applyMultidim uses: a colormap change and a dim
+    // scrub both describe this layer carrying the whole state, so the newer
+    // must abort the older rather than race it.
     const desc = await fused.runPython("./map_render.py", renderArgs(L),
       { key: mdChannel(L) });
     L.loading = false;
@@ -2285,10 +2279,9 @@ async function reloadRaster(L) {
 }
 
 /* ---- multidim (NetCDF/Zarr/HDF5) dataset section ----------------------- */
-// Each (variable, dim-selection) is an immutable tile source on the backend,
-// so changing either is a re-describe that swaps tile_url: the old tiles stay
-// on the map until the new source takes over, and the camera never moves.
-// Scrubbing back to a slice already seen hits the browser tile cache.
+// Each (variable, dim-selection) is an immutable tile source, so changing
+// either swaps tile_url without moving the camera, and scrubbing back to a
+// slice already seen hits the browser tile cache.
 // Describes of one layer share a channel so they supersede each other; a
 // layer with no multidim state keeps the shared default, which is where every
 // other raster describe has always run.
@@ -2297,9 +2290,8 @@ const mdChannel = L => (L.mdVar || L.mdSel ? "md:" + L.target : undefined);
 const TIME_LABEL = /^\d{4}-\d{2}-\d{2}T/;
 const timeLike = dim => dim.name.toLowerCase() === "time" || TIME_LABEL.test(dim.labels[0] || "");
 
-// A global grid overhangs the antimeridian and poles by half a cell
-// (west -180.125): MapLibre's LngLat throws beyond ±90 and mercator y is NaN
-// beyond ±85.051129, which silently drops every tile of the source.
+// A global grid overhangs the poles by half a cell (-90.125), where
+// MapLibre's LngLat throws and mercator y goes NaN, dropping every tile.
 function clampMdBounds(d) {
   const b = d.bounds;
   if (!Array.isArray(b)) return;
@@ -2356,10 +2348,8 @@ function setDimIndex(L, dim, value) {
 async function applyMultidim(L) {
   setMdBusy(L, true);
   try {
-    // A per-layer channel: the default channel is shared by every map_render
-    // call, so a play tick would abort another layer's load (and vice versa)
-    // instead of only superseding its own. A superseded call's promise never
-    // settles, so exactly one call in flight ever runs the code below.
+    // Per-layer, so a play tick supersedes only its own layer's describes.
+    // A superseded promise never settles: one call reaches the code below.
     const desc = await fused.runPython("./map_render.py",
       renderArgs(L, { touchedOnlyRescale: true }), { key: mdChannel(L) });
     setMdBusy(L, false);
@@ -2382,11 +2372,9 @@ async function applyMultidim(L) {
     if (!md) mdStopPlay(L);
     syncMultidim(L);
     rebuildRasterTiles();
-    // Nothing a layer card shows changes on a sel step, and repainting the
-    // legend on every play tick makes the dock churn: repaint only for a
-    // real shape change (variable switched, Dataset section gained/lost) or
-    // when idle; mdStopPlay repaints once when playback ends. Rebuilding
-    // mid-drag kills the drag; the pointerup or the next apply repaints.
+    // A sel step changes nothing a card shows, and repainting every play tick
+    // churns the dock: repaint on a shape change or when idle, and mid-drag
+    // never — the pointerup or the next apply does it.
     const changed = !md !== !prevMd
       || (md && prevMd && md.variable !== prevMd.variable);
     if (state.selected === L.target && (changed || !L._mdPlay)
@@ -2423,8 +2411,7 @@ function multidimControls(body, L) {
     if (v.name === (L.mdVar || md.variable)) op.selected = true;
     sel.appendChild(op);
   }
-  // The new variable lands on L before mdStopPlay repaints the dock, so the
-  // repaint shows the choice the user just made.
+  // Land the choice on L before mdStopPlay repaints, so the dock shows it.
   sel.onchange = e => { L.mdVar = e.target.value; mdStopPlay(L); scheduleMultidim(L); };
   varCtl.appendChild(sel);
   box.appendChild(varCtl);
@@ -2451,8 +2438,7 @@ function dimCtl(L, dim) {
     c.appendChild(sel);
     return c;
   }
-  // Too many labels for a select (or none at all, or a sparse dim whose labels
-  // are just its ends): a plain index input, with the label when one exists.
+  // Too many labels for a select, or none: a plain index input.
   const c = ctlShell(dim.name, (!dim.sparse && labels[index]) || `0–${dim.size - 1}`);
   const input = document.createElement("input");
   input.type = "number"; input.className = "num";
@@ -2502,9 +2488,7 @@ function timeDimCtl(L, dim, index) {
       setLabel(i);
       applyMultidim(L);
     }, 700);
-    // Flip the button in place rather than repainting the dock: the interval
-    // above closes over THIS dock's slider, and a repaint would leave it
-    // moving a detached element.
+    // In place, not a repaint: the interval closes over THIS dock's slider.
     play.textContent = "❚❚";
     play.classList.add("on");
   });

@@ -205,17 +205,12 @@ def build(
             and raster_engine is not None
             and multidim_suffix(str(described)) != ".zarr"
         ):
-            # xarray needs CF-shaped coordinates; GDAL reads some files it
-            # cannot (a projected single-grid NetCDF, an HDF5 with only
-            # subdataset georeferencing), so a failure here is worth a second
-            # opinion. A rendered answer always wins. GDAL's amber
-            # `not_georeferenced` card only wins when the engine agrees the
-            # problem was georeferencing: GDAL says that about any HDF5 it
-            # can open, so adopting it unconditionally replaced "this grid is
-            # curvilinear" and "no mappable variables" — messages that name
-            # the real problem — with advice about assigning a CRS. Zarr
-            # stays out: GDAL wants a ZARR:-prefixed locator, so its attempt
-            # only doubles the latency of an already-failed remote open.
+            # GDAL reads georeferencing xarray cannot, so a failure here is
+            # worth a second opinion. Its amber `not_georeferenced` card only
+            # wins when the engine agrees the problem WAS georeferencing —
+            # GDAL says that of any HDF5 it opens, which would bury "this grid
+            # is curvilinear". Zarr stays out: GDAL wants a ZARR: locator, so
+            # its attempt only doubles an already-failed remote open.
             fallback = raster_engine.try_describe(request, obj=obj)
             accepted = {"ok"}
             if descriptor.get("gdal_may_georeference"):

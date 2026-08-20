@@ -46,24 +46,19 @@ MULTIDIM_RUNTIME = {
     "scipy": "scipy",
     "cftime": "cftime",
 }
-# One loaded slice serves every tile of a selection from memory. Beyond this
-# budget the slice stays lazy — each tile reads its own window from the store —
-# which is slower per tile but keeps a huge selection from evicting everything.
+# Past this budget a slice stays lazy: slower per tile, but one huge
+# selection cannot evict every other.
 MAX_SLICE_CELLS = int(os.environ.get("MAP_VIEWER_MULTIDIM_SLICE_CELLS", str(32 << 20)))
 MAX_OPEN_DATASETS = int(os.environ.get("MAP_VIEWER_MULTIDIM_DATASETS", "8"))
 MAX_CACHED_SLICES = int(os.environ.get("MAP_VIEWER_MULTIDIM_SLICES", "8"))
 MAX_SLICE_BYTES = int(os.environ.get("MAP_VIEWER_MULTIDIM_SLICE_BYTES", str(512 << 20)))
-# A time scrub mints one immutable source per step, so the registry is bounded
-# or an animation through a long series would grow the daemon without limit.
-# Only the most recent selections matter: an evicted id just re-describes.
+# A scrub mints one source per step, so the registry is bounded; an evicted
+# id just re-describes.
 MAX_SOURCES = int(os.environ.get("MAP_VIEWER_MULTIDIM_SOURCES", "256"))
-# A coarse grid's native maxzoom is the level where one cell is about one
-# screen pixel — z2 for ERA5, z0 for a 1-degree grid. Stopping the source
-# there leaves MapLibre stretching one blurry image over every closer view,
-# so the page may ask for levels past it and the engine renders them from the
-# same array: nearest-neighbour, so cells stay crisp and square the way QGIS
-# draws them. Eight levels puts one cell at roughly a full tile, which is as
-# far in as there is anything left to see.
+# Native maxzoom is one cell per screen pixel — z2 for ERA5 — and stopping
+# the source there leaves MapLibre stretching one blurry image over every
+# closer view. Eight levels of headroom puts one cell at about a tile, which
+# is as far in as there is anything to see.
 OVERZOOM_LEVELS = 8
 MAX_DIM_LABELS = 20000
 MAX_DIMS_META = 32
@@ -151,10 +146,8 @@ def _looks_geographic(da: Any, ydim: str, xdim: str) -> bool:
         return (
             dim.lower() in names
             or str(attrs.get("standard_name", "")).lower() == standard
-            # CF blesses degrees_north, but real files write degree_north,
-            # degrees_N, or just degrees. Accept a degree unit that either
-            # names this axis's direction or names none at all; a unit that
-            # names the OTHER direction is a mislabelled axis, not this one.
+            # Real files write degree_north, degrees_N, or just degrees; a
+            # unit naming the OTHER direction is a mislabelled axis.
             or (units.startswith("degree") and _degree_direction(units) in {direction, ""})
         )
 
@@ -342,8 +335,7 @@ def _resolution_stats(record: MultidimSource) -> dict[str, Any] | None:
     x, y = record.cell
     stats: dict[str, Any] = {"x": x, "y": y, "degrees": "4326" in record.crs}
     if stats["degrees"]:
-        # One degree of latitude, which is what a reader means by "how big is
-        # a cell"; longitude narrows with latitude and would need a location.
+        # Latitude step: longitude narrows with latitude and needs a location.
         stats["metres"] = y * 111320.0
     return stats
 
@@ -355,24 +347,17 @@ class MultidimEngine:
         self.sources: OrderedDict[str, MultidimSource] = OrderedDict()
         self.lock = threading.RLock()
         self.tile_cache: OrderedDict[tuple[Any, ...], bytes] = OrderedDict()
-        # A dataset handle and a prepared slice are both expensive to rebuild
-        # and neither is safe to build twice concurrently — but a build can be
-        # a multi-second remote read, so the lock is never held across one.
-        # A pending Event marks a build in flight: the second asker waits on
-        # it instead of duplicating the work, and every other key stays
-        # servable throughout. Cache keys carry the file's identity, so a
-        # rewritten file is a miss rather than yesterday's pixels.
+        # A build can be a multi-second remote read, so the lock is never
+        # held across one: a pending Event marks it and the second asker
+        # waits. Keys carry the file's identity, so a rewritten file misses.
         self.datasets: OrderedDict[tuple[Any, ...], tuple[str, Any]] = OrderedDict()
         self.slices: OrderedDict[tuple[Any, ...], tuple[str, Any]] = OrderedDict()
         self.data_lock = threading.RLock()
-        # Bumped whenever a store's handle is evicted, so a slice build that
-        # was already in flight through the closed handle cannot re-insert
-        # itself and serve dead reads.
+        # Bumped on eviction, so a slice built through the closed handle
+        # cannot re-insert itself.
         self._store_gen: dict[str, int] = {}
-        # Variables list + dim labels per (store, identity, variable):
-        # restringifying up to 20k labels costs 2-15ms, and a time scrub asks
-        # for the identical metadata on every tick. The identity in the key
-        # invalidates it when the file is rewritten.
+        # A scrub asks for identical metadata every tick, and restringifying
+        # 20k labels costs 2-15ms of it.
         self._dims_meta: OrderedDict[tuple[Any, ...], tuple[Any, Any]] = OrderedDict()
 
     def try_describe(self, req: dict[str, Any], obj: Any | None = None):
@@ -394,9 +379,8 @@ class MultidimEngine:
                 detected_type="multidimensional dataset",
             )
 
-        # A local .zarr store is a directory, which resolve_source's isfile
-        # check would pass over — it would hand back the shell's range URL,
-        # and a directory store cannot be read through one.
+        # resolve_source's isfile check would hand a local .zarr directory
+        # the shell's range URL, which cannot serve a directory store.
         if (
             not is_remote_path(target)
             and not is_managed_mount(target)
@@ -416,10 +400,8 @@ class MultidimEngine:
             )
         except Exception as error:
             message = f"{type(error).__name__}: {error}"
-            # The same exception object may sit in a failure cache entry for
-            # its 5s TTL (_build_cached), and re-raising it re-attached the
-            # frames below this one — locals and datasets included. Consumed
-            # here, so drop them.
+            # This object may sit in a failure cache entry for its TTL, and
+            # re-raising re-attached the frames below — datasets included.
             error.__traceback__ = None
             descriptor = error_descriptor(
                 artifact_id, message,
@@ -444,10 +426,8 @@ class MultidimEngine:
                 )
 
         def open_bytes(**kwargs: Any) -> Any:
-            # Every attempt gets its own byte source, and closes it on any
-            # failure: an fsspec handle left open after a failed remote open
-            # leaks a connection per retry, and on Windows an open local
-            # handle locks the file against its own author.
+            # Own byte source per attempt, closed on failure: a leaked fsspec
+            # handle costs a connection, a local one locks the file.
             handle = self._byte_source(store)
             try:
                 return xr.open_dataset(handle, decode_coords="all", **kwargs)
@@ -516,10 +496,8 @@ class MultidimEngine:
                     cache.move_to_end(key)
                     return value
                 if state == "failed":
-                    # A build that just failed would fail the same way for
-                    # every request queued behind it; make the whole burst
-                    # fail at once instead of each waiter re-paying a slow
-                    # open in turn. A later request retries.
+                    # The whole burst fails at once rather than each waiter
+                    # re-paying a slow open. A later request retries.
                     exception, failed_at = value
                     if time.monotonic() - failed_at < 5:
                         raise exception
@@ -529,9 +507,7 @@ class MultidimEngine:
         try:
             built = build()
         except BaseException as error:
-            # A cached exception's traceback would pin every frame it passed
-            # through — locals included, possibly a whole dataset — for the
-            # 5s the failure lives.
+            # A cached traceback pins every frame it passed through.
             error.__traceback__ = None
             with self.data_lock:
                 cache[key] = ("failed", (error, time.monotonic()))
@@ -540,12 +516,10 @@ class MultidimEngine:
         try:
             with self.data_lock:
                 if keep is not None and not keep():
-                    # The build raced a change that made it stale (the file
-                    # was rewritten under a pending open). The caller still
-                    # gets its handle; the cache must not resurrect it — but
-                    # an eviction may already have dropped this marker and a
-                    # second builder installed its own, and that one is still
-                    # live work no one else should have to repeat.
+                    # Stale: the caller still gets its handle, but the cache
+                    # must not resurrect it. Pop only our own marker — an
+                    # eviction may have dropped it and a second builder
+                    # installed its own, which is still live work.
                     if cache.get(key) == ("pending", pending):
                         cache.pop(key, None)
                     return built
@@ -630,8 +604,8 @@ class MultidimEngine:
                 "a renderable slice must be 2D."
             )
         if not geographic and da.rio.crs is None:
-            # Checked before the read, not after: a projected remote slice
-            # would otherwise download in full and be thrown away.
+            # Before the read: a projected remote slice would otherwise
+            # download in full and be thrown away.
             raise Ungeoreferenced(
                 "The grid has no CRS and its coordinates do not look like "
                 "degrees; the file needs CF grid_mapping metadata or a "
@@ -648,33 +622,29 @@ class MultidimEngine:
         da = da.transpose("y", "x")
         if da.rio.crs is None:
             da = da.rio.write_crs("EPSG:4326")
-        # A 0-360 grid starts at or above zero. Testing only `max > 180`
-        # also caught a -180..180 grid whose last cell overhangs the meridian
-        # by half a step: rolling that one scrambles its columns, and the
-        # spacing check below then reports a seam crossing on a file that has
-        # none.
+        # A 0-360 grid starts at or above zero. On `max > 180` alone this
+        # also caught a -180..180 grid overhanging the meridian, and rolling
+        # that one scrambles its columns.
         if (
             da.rio.crs.is_geographic
             and float(da.x.max()) > 180
             and float(da.x.min()) >= 0
         ):
-            # In float64 whatever the axis dtype: rolling a float32 longitude
-            # in its own precision leaves ~6e-5 of jitter, which the spacing
-            # check below reads as a seam gap on any grid finer than 0.1deg.
+            # In float64 whatever the axis dtype: rolling float32 longitudes
+            # in their own precision leaves ~6e-5 of jitter, which the spacing
+            # check below reads as a seam gap below 0.1deg.
             rolled = (da.x.values.astype("float64") + 180.0) % 360.0 - 180.0
             da = da.assign_coords(x=rolled).sortby("x")
-            # A 0..360-INCLUSIVE grid ships the seam column twice — 0 and 360
-            # roll to the same longitude — and the duplicate x would read as
-            # a spacing jump below. Keep the first of any duplicated column.
+            # A 0..360-inclusive grid ships the seam column twice, and the
+            # duplicate x would read as a spacing jump below.
             x = da.x.values
             if x.size > 1:
                 keep = np.concatenate(([True], np.diff(x) != 0))
                 if not keep.all():
                     da = da.isel(x=np.flatnonzero(keep))
-            # A global 0-360 grid rolls into a seamless -180..180 grid. A
-            # REGIONAL grid crossing the seam (lon 150..210) rolls into two
-            # blocks with a gap between them, which XarrayReader would
-            # happily stretch across the whole span — wrong pixels, silently.
+            # A regional grid crossing the seam (lon 150..210) rolls into two
+            # blocks with a gap, which XarrayReader silently stretches across
+            # the whole span.
             diffs = np.diff(da.x.values)
             if diffs.size and (
                 diffs.max() - diffs.min() > max(abs(diffs.mean()) * 1e-3, 1e-9)
@@ -685,17 +655,15 @@ class MultidimEngine:
                 )
         if da.rio.nodata is None and da.dtype.kind == "f":
             da = da.rio.write_nodata(float("nan"))
-        # The seam dedup can drop a column, so size alone no longer answers
-        # "was this materialized"; every later budget and stretch decision
-        # reads this flag instead of re-deriving one that disagrees.
+        # The seam dedup can drop a column, so size no longer answers "was
+        # this materialized" and every later decision reads this instead.
         da.attrs["_fused_loaded"] = loaded
         return da
 
     def _slice(self, store: str, suffix: str, variable: str, sel: dict[str, int]) -> Any:
         key = (store, _store_identity(store), variable, tuple(sorted(sel.items())))
-        # If the store's handle is evicted while this slice is being built,
-        # the build read through a handle that is now closed: the caller may
-        # still use the result, but caching it would serve dead reads.
+        # An eviction mid-build leaves the result readable but uncacheable:
+        # the handle behind it is closed.
         generation = self._store_gen.get(store, 0)
 
         def build():
@@ -703,8 +671,7 @@ class MultidimEngine:
             return self._prepare(ds, variable, sel)
 
         def loaded_bytes(da: Any) -> int:
-            # _prepare materializes exactly the slices at or under the cell
-            # budget; larger ones stay lazy and cost only their window reads.
+            # Only materialized slices hold memory; lazy ones cost window reads.
             return int(da.nbytes) if da.attrs.get("_fused_loaded") else 0
 
         return self._build_cached(
@@ -788,12 +755,9 @@ class MultidimEngine:
             rescale = [[float(requested[0]), float(requested[1])]]
             auto_rescale = False
         elif lazy:
-            # A strided subsample of a lazy slice touches every chunk — the
-            # full download the cell budget exists to avoid — so the stretch
-            # is estimated from a few contiguous windows instead. More than
-            # one, because a single central window over a land-masked or
-            # region-masked variable can be entirely nodata, and an all-nodata
-            # sample stretches the layer to a flat saturated wash.
+            # A strided subsample would touch every chunk — the full download
+            # the budget exists to avoid — so a few contiguous windows stand
+            # in. Several, because one over a masked region is all nodata.
             rescale = band_ranges(_sample_windows(da)[None])
             auto_rescale = True
         else:
@@ -837,11 +801,8 @@ class MultidimEngine:
             else:
                 self.sources[fingerprint] = record
                 while len(self.sources) > max(MAX_SOURCES, 1):
-                    # A scrub through a long series is the usual overflow, so
-                    # it replaces its own history — the oldest step of the
-                    # same layer — before touching a quieter layer's source.
-                    # Never itself: evicting the record this descriptor names
-                    # leaves the page holding a tile URL that only 404s.
+                    # A scrub replaces its own history before a quieter
+                    # layer's, and never the record this descriptor names.
                     others = [key for key in self.sources if key != fingerprint]
                     victim = next(
                         (
