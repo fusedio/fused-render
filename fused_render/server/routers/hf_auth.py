@@ -113,6 +113,13 @@ _flow: _Flow | None = None
 #: it is the only way to name the account without a whoami per poll, and the
 #: page asks for state every second or two while a flow is running.
 _account: str | None = None
+#: The NAME hf filed that login under, kept beside it as the thing that makes it
+#: checkable. hf's store is shared machine state: a `hf auth login` in a terminal
+#: switches the active token to another account, and a remembered username with
+#: nothing to validate it against then names the wrong person while every request
+#: goes out as the new one. Comparing names rather than token values keeps the
+#: credential out of this process's memory (see `_account_label`).
+_account_name: str | None = None
 
 
 class _Cancelled(Exception):
@@ -199,12 +206,21 @@ def _account_label(value: str | None) -> str | None:
     came from: a `hf auth logout` in a terminal leaves this process still
     remembering the name, and a payload reporting `signedIn: false` beside an
     account name is describing a state that does not exist.
+
+    **And gated on that login still being the ACTIVE one**, which is the other
+    half of the same problem: hf's store is shared machine state, so a
+    `hf auth login` in a terminal (or `hf auth switch`) can move the active token
+    to a different account while this process still remembers its own. The
+    remembered username is used only while the active token is still filed under
+    the name that login produced; otherwise the label is derived from whatever IS
+    active now. Matched on the NAME rather than the token value so that no
+    credential has to be held in memory to make the comparison.
     """
     if not value:
         return None
-    if _account:
-        return _account
     name = _active_token_name(value)
+    if _account and _account_name and name == _account_name:
+        return _account
     if name and name.startswith("oauth-"):
         return name[len("oauth-"):]
     return name
@@ -223,7 +239,12 @@ def _state() -> dict:
     with _lock:
         flow = _flow
     pending = None
-    if flow is not None and not flow.done:
+    # `cancelled` counts as not-pending immediately, without waiting for the
+    # thread to notice: the flag is set by a request and the thread only sees it
+    # on its next poll (hf sleeps the server's own interval between them), so
+    # gating on `done` alone left the authorize link on screen for seconds after
+    # the user pressed Cancel — offering a login that will be thrown away.
+    if flow is not None and not flow.done and not flow.cancelled:
         pending = {
             "userCode": flow.user_code,
             "url": flow.url,
@@ -254,7 +275,7 @@ def _poll(flow: _Flow, device_info: dict) -> None:
     Runs on its own daemon thread: `poll_device_token` blocks for up to the
     device code's whole lifetime, and the thing it is waiting for is a person.
     """
-    global _account
+    global _account, _account_name
 
     from huggingface_hub._login import _save_oauth_token
     from huggingface_hub.utils._oauth_device import poll_device_token
@@ -268,9 +289,19 @@ def _poll(flow: _Flow, device_info: dict) -> None:
 
     try:
         response = poll_device_token(device_info, on_pending=on_pending)
+        # Checked AGAIN, here, and this is the point of it: `on_pending` only
+        # runs when hf reports "authorization pending", so a poll that comes back
+        # carrying an access token never consults the flag. Without this, pressing
+        # Cancel and then authorizing in the still-open browser tab persists the
+        # login anyway — a credential written to the machine's shared store after
+        # the user asked to stop, which is the one outcome a cancel must prevent.
+        # The token is simply dropped: it is hf's to reissue, and nothing here
+        # has written it anywhere yet.
+        if flow.cancelled:
+            raise _Cancelled()
         # hf's own persistence: both of its files, its modes, and the refresh
         # token plus expiry that let `get_token()` renew this without us.
-        _token_name, username = _save_oauth_token(response)
+        token_name, username = _save_oauth_token(response)
     except _Cancelled:
         flow.error = None
         flow.done = True
@@ -283,6 +314,7 @@ def _poll(flow: _Flow, device_info: dict) -> None:
         flow.done = True
         return
     _account = username
+    _account_name = token_name
     flow.account = username
     flow.done = True
 
@@ -394,7 +426,7 @@ def api_hf_logout(x_fused: str | None = Header(default=None)):
     would be doing more than it says. `_logout_from_token` takes one name, so a
     second login the user keeps for something else survives this.
     """
-    global _account, _flow
+    global _account, _account_name, _flow
 
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -424,6 +456,7 @@ def api_hf_logout(x_fused: str | None = Header(default=None)):
     except Exception as e:  # noqa: BLE001
         return _error(f"Could not sign out: {e}", status=500)
     _account = None
+    _account_name = None
     with _lock:
         # Drops the finished flow too: its `account` describes a login that no
         # longer exists, and leaving it would let `error` from an older attempt

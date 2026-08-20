@@ -94,6 +94,13 @@ def _wait(predicate, timeout=5.0):
 # -- the flow ---------------------------------------------------------------------
 
 
+def _store(name, value):
+    from huggingface_hub._login import _save_token, _set_active_token
+
+    _save_token(token=value, token_name=name)
+    _set_active_token(token_name=name, add_to_git_credential=False)
+
+
 def test_a_machine_with_no_token_says_so(client):
     body = client.get("/api/hf/auth").json()
     assert body == {"signedIn": False, "account": None, "source": None,
@@ -246,6 +253,92 @@ def test_cancel_unwinds_a_thread_parked_inside_hfs_poll(client, monkeypatch):
     assert body["error"] is None
 
 
+def test_a_cancelled_login_is_not_persisted_even_if_the_hub_authorizes_it(
+        client, monkeypatch):
+    """Bugbot on #676. `flow.cancelled` was only consulted inside `on_pending`,
+    which hf calls ONLY when it gets an "authorization pending" answer — so a
+    poll that came back carrying an access token never saw the flag, and pressing
+    Cancel and then authorizing in the still-open browser tab persisted the login
+    anyway. That writes a credential into the machine's shared hf store after the
+    user asked to stop, which is the one thing a cancel has to prevent.
+
+    Driven with events rather than sleeps: the stub parks inside the poll until
+    the test has issued the cancel, then returns a token — the exact interleaving
+    the bug needs.
+    """
+    entered, release = threading.Event(), threading.Event()
+
+    def poll(info, on_pending=None):
+        entered.set()
+        assert release.wait(5), "the test never released the poll"
+        return {"access_token": "hf_must_never_be_saved", "expires_in": 3600}
+
+    _stub_flow(monkeypatch, poll=poll)
+    # whoami SUCCEEDS on purpose. Failing it here would block persistence by
+    # accident and the test would pass with the guard removed — which is exactly
+    # what a first draft of this test did. The whole path has to be able to
+    # persist, so that `get_token()` staying empty is evidence of the guard and
+    # not of a stubbed-out failure.
+    import huggingface_hub.hf_api as hf_api
+
+    monkeypatch.setattr(hf_api, "whoami", lambda token=None, **k: {
+        "name": "isaac", "auth": {"accessToken": {"displayName": "fused-render"}}})
+
+    client.post("/api/hf/login", headers=FUSED)
+    assert entered.wait(5)
+    client.post("/api/hf/login/cancel", headers=FUSED)
+    release.set()
+
+    assert _wait(lambda: client.get("/api/hf/auth").json()["pending"] is None)
+    body = client.get("/api/hf/auth").json()
+    assert body["signedIn"] is False
+    assert body["account"] is None
+    from huggingface_hub import get_token
+
+    assert get_token() is None, "a cancelled login left a token on the machine"
+
+
+def test_cancel_stops_offering_the_link_immediately(client, monkeypatch):
+    """The page must stop showing the authorize link the moment Cancel is pressed.
+
+    The flag is set by the request; the poll thread only notices on its next
+    round (hf sleeps the server's interval between them), so gating `pending` on
+    `done` alone left the link up for seconds, offering a login already thrown
+    away. Asserted on the cancel's OWN response, which is built before any thread
+    could have reacted.
+    """
+    _stub_flow(monkeypatch, poll=lambda info, on_pending=None: _park(on_pending))
+    assert client.post("/api/hf/login", headers=FUSED).json()["pending"] is not None
+    assert client.post("/api/hf/login/cancel", headers=FUSED).json()["pending"] is None
+
+
+def test_the_account_name_follows_a_login_made_outside_this_app(client, monkeypatch):
+    """Bugbot on #676. hf's store is shared machine state: a `hf auth login` in a
+    terminal moves the active token to another account. The remembered username
+    was returned whenever ANY token existed, so Preferences kept naming the old
+    user while every request went out as the new one.
+
+    The remembered name is now used only while the login it came from is still the
+    active one — compared by hf's own token NAME, so no credential is held in this
+    process to make the comparison.
+    """
+    _stub_flow(monkeypatch, poll=lambda info, on_pending=None: {
+        "access_token": "hf_mine", "expires_in": 3600})
+    import huggingface_hub.hf_api as hf_api
+
+    monkeypatch.setattr(hf_api, "whoami", lambda token=None, **k: {
+        "name": "isaac", "auth": {"accessToken": {"displayName": "fused-render"}}})
+    client.post("/api/hf/login", headers=FUSED)
+    assert _wait(lambda: client.get("/api/hf/auth").json()["signedIn"])
+    assert client.get("/api/hf/auth").json()["account"] == "isaac"
+
+    # ...now somebody logs in as a different account from a terminal.
+    _store("oauth-acme", "hf_theirs")
+    body = client.get("/api/hf/auth").json()
+    assert body["signedIn"] is True
+    assert body["account"] == "acme", "the label still named the previous login"
+
+
 def test_a_denied_or_expired_login_says_why(client, monkeypatch):
     from huggingface_hub.errors import DeviceCodeError
 
@@ -280,13 +373,6 @@ def test_the_writes_are_guarded(client):
 
 
 # -- logging out removes OUR entry, not every token on the machine ----------------
-
-
-def _store(name, value):
-    from huggingface_hub._login import _save_token, _set_active_token
-
-    _save_token(token=value, token_name=name)
-    _set_active_token(token_name=name, add_to_git_credential=False)
 
 
 def test_logout_leaves_a_second_login_alone(client):
