@@ -4994,21 +4994,42 @@ def test_env_session_token_remote_gets_short_link_ttl(home, rcd, fresh_upstream,
     assert 240 < expiry - before < mounts_mod._SESSION_TOKEN_LINK_TTL_S + 60
 
 
-def test_no_session_token_remote_keeps_default_link_ttl(home, rcd, fresh_upstream):
+def test_no_session_token_remote_keeps_default_link_ttl(
+        home, rcd, fresh_upstream, monkeypatch):
     import os
 
+    # config/get MUST be stubbed for this test to test its own name. Without
+    # it `_rc` raises, `_remote_config` returns None, and `_link_ttl` takes its
+    # documented "cannot rule out a session token" clamp — the SAME 300s this
+    # test exists to prove is NOT used. It passed anyway for as long as it has
+    # existed, on nothing but float noise: the old `> _SESSION_TOKEN_LINK_TTL_S`
+    # saw (now + 300.0) - now land at 300.00009 on Linux and 299.99999999999977
+    # on Windows, so the identical wrong behaviour passed on one platform and
+    # failed on the other.
+    #
+    # Static keys and no AWS_SESSION_TOKEN: a remote whose credentials
+    # genuinely carry no STS token, which is the case the default ttl is for.
+    monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+    rcd.responses["config/get"] = {"type": "s3", "access_key_id": "AK",
+                                   "secret_access_key": "SK"}
     rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x?sig=1"}
     c = mounts_mod.add_mount("data", "remote:bucket")
     f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
     before = time.monotonic()
     mounts_mod.upstream_url_for(f)
     _url, expiry = mounts_mod._upstream_links[("remote:bucket", "a.parquet")]
-    # >=, not >: probe.py computes expiry as its OWN time.monotonic() call
-    # plus the TTL, and that call can land on the same coarse tick as
-    # `before` above (Windows' time.monotonic() is GetTickCount64-backed,
-    # ~15.6ms resolution) — the real guarantee is "at least the TTL", not
-    # "strictly more than it".
-    assert expiry - before >= mounts_mod._SESSION_TOKEN_LINK_TTL_S
+    # Pinned against the DEFAULT ttl itself, not merely "> the clamp". The
+    # weaker form is what this line used to be, and it is a trap: the failure
+    # mode in practice is the clamp being applied when it should not be, and
+    # `> clamp` / `>= clamp` both let a run that took the clamp slip through on
+    # nothing but floating-point noise ((now + 300.0) - now lands a few ULPs
+    # either side of 300.0 at monotonic values in the thousands, so the same
+    # wrong behaviour passes or fails at random).
+    #
+    # abs=1.0 absorbs the tick between probe.py's own time.monotonic() and
+    # `before` here; the two ttls are 1800 vs 300, so no tolerance this small
+    # can confuse them.
+    assert expiry - before == pytest.approx(mounts_mod._LINK_TTL_S, abs=1.0)
 
 
 def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstream):

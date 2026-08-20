@@ -2481,15 +2481,32 @@ def test_the_held_poll_resumes_on_the_very_next_tick(
     shims.set_remote_files({**_BASE_FILES, "b.py": "b-from-workbench\n"})
     shims.set_manifest("t2", {"b": {"hash": "h2", "last_updated": "t2"}})
     # Sit in the held state until well past a full PULL_POLL_S window, so the
-    # leg has been due-and-skipped for a while.
+    # leg has been due-and-skipped for a while. Sampled AFTER the baseline
+    # adoption above, which is the one poll exempt from the hold (and so the
+    # one that legitimately stamps `_last_pull_poll`).
+    held_at = _manager()._last_pull_poll
     time.sleep(3.5)
     assert harness.client.get(
         "/api/canvases/sync/status?name=alpha").json()["merge_seq"] == 0
 
-    # Release, and give it far less than PULL_POLL_S to act: a skip that stamped
-    # `_last_pull_poll` would push the next poll a fresh 3s out and time out here.
+    # The invariant this test exists for, asserted DIRECTLY: a poll skipped by
+    # the hold must not stamp `_last_pull_poll`. It used to be inferred instead,
+    # from a 1.2s deadline after the release below — but that deadline can only
+    # ever be a proxy, and a loaded CI runner trips the proxy while the
+    # invariant itself holds perfectly: acting "on the very next tick" still
+    # means spawning the manifest probe AND the zip download as subprocesses
+    # before merge_seq can move, which is not reliably under 1.2s on a busy
+    # 4-worker box (this was the last red on Linux CI, across three different
+    # Python versions).
+    assert _manager()._last_pull_poll == held_at, (
+        "a held poll stamped _last_pull_poll, so the next one is a fresh "
+        "PULL_POLL_S away instead of the next tick")
+
+    # ...and it does then act promptly. Still bounded well under PULL_POLL_S
+    # (3.0s), so a regression that DID stamp the skip fails here too — but the
+    # bound no longer has to be tight enough to double as the proof above.
     fake_agent.live = ""
-    status = _wait_status(harness, lambda s: s["merge_seq"] >= 1, timeout=1.2)
+    status = _wait_status(harness, lambda s: s["merge_seq"] >= 1, timeout=2.5)
     assert status and status["merge_seq"] >= 1, (
         "the held leg waited for a fresh PULL_POLL_S instead of the next tick",
         status)
