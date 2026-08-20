@@ -1406,6 +1406,70 @@
   border-top-color: var(--border);
 }
 
+/* "+ New folder" sits directly under Browse and belongs to the same verb group,
+   so it takes Browse's weight but NOT a second hairline — one rule separates
+   the nouns from the verbs, and the bottom rounding moves to whichever verb is
+   last. */
+.schedule-form .schedule-picker-row.schedule-recents-browse {
+  border-radius: 0;
+}
+
+.schedule-form .schedule-picker-row.schedule-recents-mk {
+  font-weight: 500;
+}
+
+.schedule-form .schedule-picker-row.schedule-recents-browse:last-child,
+.schedule-form .schedule-picker-row.schedule-recents-mk:last-child {
+  border-radius: 0 0 8px 8px;
+}
+
+/* The verdict row: what the typed path IS, in the row shape of the folders
+   below it — but never a hover surface or a pointer, because it is the list
+   answering rather than one more thing to click. The hairline under it is the
+   mirror of Browse's: found-things above, existing things below. */
+.schedule-form .schedule-recents-new {
+  align-items: flex-start;
+  cursor: default;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+/* No hover wash: it borrows the row shape, not the row's promise that clicking
+   does something. */
+.schedule-form .schedule-recents-new:hover,
+.deploy-body .schedule-form .schedule-recents-new:hover,
+.prefs-section .schedule-form .schedule-recents-new:hover {
+  background: transparent;
+}
+
+.schedule-form .schedule-recents-new svg {
+  /* Pulled onto the first line's baseline now the row is two lines tall. */
+  margin-top: 2px;
+}
+
+.schedule-recents-new-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.schedule-recents-new-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The line that says WHEN the folder starts existing. Muted and small: the
+   badge above already carried the fact, this only dates it. */
+.schedule-recents-new-why {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
 /* The empty column where an icon would be, so a row without one still starts
    its label on the icon grid. */
 .schedule-picker-gutter {
@@ -2308,9 +2372,10 @@ input.schedule-when-field {
 }
 
 /* -- Naming a folder that does not exist yet ------------------------------
-   Two surfaces say the same thing: this row inside the picker, and the note
-   under the path field (.schedule-form-new below). Neither writes to disk —
-   the folder is created by the save. */
+   Two surfaces say the same thing: this row inside the picker, and the
+   new-folder row in the path field's dropdown (.schedule-recents-new, up with
+   the rest of that list). Neither writes to disk — the folder is created by
+   the save. The badge at the bottom of this block is shared by both. */
 
 /* Pushed to the far edge, away from Cancel / Use this folder: it acts on the
    folder you are standing IN, not on the errand the pair finishes. */
@@ -2343,17 +2408,6 @@ input.schedule-when-field {
 .schedule-picker-new-ok {
   flex: none;
   padding: 4px 10px;
-}
-
-/* The path field's new-folder note. NOT the error voice (.schedule-form-bad):
-   nothing is wrong, so it stays in the muted hint colour and lets the badge
-   beside it carry the one word that matters. */
-.schedule-form-new {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  color: var(--fg-muted);
 }
 
 .schedule-new-badge {

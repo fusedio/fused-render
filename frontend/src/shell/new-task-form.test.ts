@@ -1590,7 +1590,7 @@ describe("the path field's verdict on a folder that isn't there yet", () => {
 
   test("a new folder does not block Save — only a bad path does", () => {
     // The verdict feeds two separate pieces of state, and only `bad` becomes
-    // `pathError`. The note under the field is not a refusal.
+    // `pathError`. The new-folder row is not a refusal.
     const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
     expect(src).toContain('setPathError(v.kind === "bad" ? v.text : null);');
     expect(src).toContain('setNewFolder(v.kind === "new-folder" ? v.name : null);');
@@ -1604,5 +1604,86 @@ describe("the path field's verdict on a folder that isn't there yet", () => {
     expect(src).toContain("+ New folder");
     // Escape backs out of the naming row before it backs out of the panel.
     expect(src).toContain("if (namingOpen.current) {");
+  });
+});
+
+// ---- The verdict is shown in the dropdown, not under the field ---------------
+// "this UI should be in dropdown" (Akshil, 2026-08-20). The new-folder answer
+// used to be a row that appeared BELOW the path input and pushed the rest of the
+// card down as you typed; it now renders as the first row of the path field's
+// own dropdown, in the row shape of the folders listed under it.
+describe("where the new-folder answer is shown", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+  const css = () =>
+    readFileSync(join(import.meta.dir, "../styles/schedule.css"), "utf8");
+
+  test("the row lives inside the recents dropdown", () => {
+    const s = src();
+    const open = s.indexOf('className="schedule-recents"');
+    const rowAt = s.indexOf("schedule-recents-new\"");
+    expect(open).toBeGreaterThan(-1);
+    expect(rowAt).toBeGreaterThan(open);
+    // …and BEFORE the recents rows it sorts above.
+    expect(rowAt).toBeLessThan(s.indexOf("recents.slice(0, RECENTS_SHOWN)"));
+  });
+
+  test("no inline note is left under the path field", () => {
+    // The old row's two markers: its own class, and the sentence it carried.
+    expect(src()).not.toContain("schedule-form-new");
+    expect(src()).not.toContain("is created when the task is saved");
+    expect(css()).not.toContain(".schedule-form-new {");
+  });
+
+  test("the badge is kept, and now reads inside a dropdown row", () => {
+    expect(src()).toContain('<span className="schedule-new-badge">New folder</span>');
+    expect(src()).toContain("Created when the task is saved");
+    expect(css()).toContain(".schedule-new-badge {");
+  });
+
+  test("the field only points at the row while the row is on screen", () => {
+    // aria-describedby aimed at a node that is not in the document says nothing,
+    // and the row only exists while the list is open.
+    expect(src()).toContain("newFolder && recentsOpen");
+  });
+
+  test("a verdict that lands on a shut dropdown reopens it", () => {
+    const s = src();
+    // Armed by a keystroke or by naming a folder in the picker — never by the
+    // prefill an Edit opens with, which would pop a list nobody asked for.
+    expect(s).toContain("revealNew.current = true;");
+    expect(s).toContain("if (!newFolder || pathError || recentsOpen || !revealNew.current) return;");
+  });
+});
+
+// ---- The second verb: "+ New folder" under Browse ----------------------------
+describe("the + New folder button below Browse", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("it sits after Browse in the same dropdown", () => {
+    const s = src();
+    const browse = s.indexOf("Browse…");
+    const mk = s.indexOf("schedule-recents-mk");
+    expect(browse).toBeGreaterThan(-1);
+    expect(mk).toBeGreaterThan(browse);
+    // Same row vocabulary as Browse, so the prefs-section button skin cannot
+    // shrink-wrap it (that is what .schedule-form .schedule-picker-row fixes).
+    expect(s).toContain('className="schedule-picker-row schedule-recents-mk"');
+  });
+
+  test("it opens the picker already naming — one flow, not a second one", () => {
+    const s = src();
+    expect(s).toContain("openPicker(true)");
+    expect(s).toContain("const [naming, setNaming] = useState(!!startNaming);");
+    // Keyed so it arrives naming even over a Browse panel still animating out.
+    expect(s).toContain('key={pickerNaming ? "naming" : "browse"}');
+  });
+
+  test("a folder named in the picker ends in the same dropdown row", () => {
+    const s = src();
+    // onName is the picker saying "this one was NAMED, not clicked" — only then
+    // does the field take focus back and the list come up with the verdict.
+    expect(s).toContain("onName?.();");
+    expect(s).toContain("onName={() => {");
+    expect(s).toContain("pathRef.current?.focus()");
   });
 });
