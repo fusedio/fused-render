@@ -1,0 +1,1097 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>MCP</title>
+<style>
+  /* Appearance (SPEC §30/AP-9, D134). The dark block below IS this view's
+     palette; every colour a rule uses is a token from it, because a literal is
+     a colour light mode cannot repaint (tests/test_theme.py enforces both the
+     opt-in on <html> and the two blocks defining the SAME token set). */
+  :root {
+    color-scheme: dark;
+    --bg: #131417;
+    --surface: #1b1d21;
+    --surface-2: #22252b;
+    --line: #2a2d33;
+    --line-strong: #3a3e46;
+    --line-hover: #454a53;
+    --ink: #e8eaed;
+    --ink-2: #9aa0a6;
+    --ink-3: #868d94;
+    --accent: #E5FF44;
+    --accent-dim: #b8cc36;
+    --on-accent: #131417;
+    --grid-dot: #1e2126;
+    --note-line: #4a4326;
+    --note-bg: #221f14;
+    --note-fg: #d9c98a;
+    --good-fg: #a8dfa8;
+    --good-bg: #16241a;
+    --good-line: #2c452f;
+    --bad-fg: #efb0b0;
+    --bad-bg: #251618;
+    --bad-line: #4a2b2e;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --surface: #f4f5f7;
+    --surface-2: #eceef0;
+    --line: #d8dade;
+    --line-strong: #c4c8ce;
+    --line-hover: #b4b9c0;
+    --ink: #1f2023;
+    --ink-2: #61656c;
+    --ink-3: #6f747c;
+    --accent: #5f7300;
+    --accent-dim: #4e5f00;
+    --on-accent: #ffffff;
+    --grid-dot: #e8eaed;
+    --note-line: #e0cd94;
+    --note-bg: #fdf7e6;
+    --note-fg: #6b5316;
+    --good-fg: #1f5f22;
+    --good-bg: #e8f6e8;
+    --good-line: #bcdcbc;
+    --bad-fg: #8f2020;
+    --bad-bg: #fdecec;
+    --bad-line: #e6b6b6;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ink);
+    background: var(--bg);
+    background-image: radial-gradient(circle, var(--grid-dot) 1px, transparent 1px);
+    background-size: 28px 28px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    flex: 0 0 auto;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+  }
+  .app-name { font-weight: 600; }
+  .app-path { color: var(--ink-3); font-size: 11px; word-break: break-all; }
+
+  .bar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+  .btn {
+    font: inherit;
+    color: var(--ink-2);
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    border-radius: 5px;
+    padding: 3px 9px;
+    cursor: pointer;
+  }
+  .btn:hover:not([disabled]) {
+    color: var(--ink);
+    border-color: var(--line-hover);
+  }
+  .btn.primary {
+    color: var(--on-accent);
+    background: var(--accent);
+    border-color: var(--accent-dim);
+  }
+  .btn.primary:hover:not([disabled]) { background: var(--accent-dim); }
+  /* A disabled control says so three ways — dimmed ink, the plain line, and the
+     cursor — because one of the three is the one a given user notices. */
+  .btn[disabled] {
+    color: var(--ink-3);
+    background: var(--surface);
+    border-color: var(--line);
+    cursor: not-allowed;
+  }
+
+  main { flex: 1 1 auto; overflow: auto; padding: 10px 12px 40px; }
+
+  .note {
+    border: 1px solid var(--note-line);
+    background: var(--note-bg);
+    color: var(--note-fg);
+    border-radius: 5px;
+    padding: 7px 9px;
+    margin-bottom: 10px;
+  }
+  .note.bad {
+    border-color: var(--bad-line);
+    background: var(--bad-bg);
+    color: var(--bad-fg);
+  }
+  .note.good {
+    border-color: var(--good-line);
+    background: var(--good-bg);
+    color: var(--good-fg);
+  }
+  .note b { font-weight: 600; }
+  .note ul { margin: 4px 0 0; padding-left: 18px; }
+
+  .tool {
+    border: 1px solid var(--line);
+    background: var(--surface);
+    border-radius: 6px;
+    padding: 9px 10px;
+    margin-bottom: 10px;
+  }
+  .tool.drift { border-color: var(--note-line); }
+  .tool-head { display: flex; gap: 6px; align-items: center; }
+  .tool-head input.name { flex: 1 1 auto; font-weight: 600; }
+  .row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+  .row label { color: var(--ink-3); flex: 0 0 72px; }
+  input, textarea, select {
+    font: inherit;
+    color: var(--ink);
+    background: var(--bg);
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    padding: 2px 6px;
+    min-width: 0;
+  }
+  input:focus, textarea:focus, select:focus {
+    outline: 1px solid var(--accent);
+    border-color: var(--accent);
+  }
+  textarea { width: 100%; resize: vertical; min-height: 2.6em; }
+  select, input.value { flex: 1 1 auto; }
+
+  .params { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
+  .params .hint { color: var(--ink-3); font-size: 11px; }
+  .param { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  .param .pname { flex: 0 0 30%; overflow: hidden; text-overflow: ellipsis; }
+  .param .psig { color: var(--ink-3); font-size: 11px; }
+  .param.pinned .pname { color: var(--accent); }
+
+  /* The add-tool row: part of the LIST, not the toolbar — it acts on the list
+     and reads where the thing it makes will appear. */
+  .add-row {
+    display: block;
+    width: 100%;
+    font: inherit;
+    text-align: left;
+    color: var(--ink-3);
+    background: none;
+    border: 1px dashed var(--line-strong);
+    border-radius: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .add-row:hover:not([disabled]) { color: var(--ink); border-color: var(--line-hover); }
+  .add-row[disabled] { cursor: not-allowed; color: var(--ink-3); }
+
+  /* The registration state, as one clickable line above the footer: it reports
+     first and acts second, which is the opposite weighting of a toolbar button
+     and the right one for something that is true or false about the machine. */
+  .reg {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    width: 100%;
+    font: inherit;
+    text-align: left;
+    color: var(--ink-2);
+    background: var(--surface);
+    border: none;
+    border-top: 1px solid var(--line);
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .reg:hover:not([disabled]) { color: var(--ink); background: var(--surface-2); }
+  .reg[disabled] { cursor: default; color: var(--ink-3); }
+  .reg .dot { color: var(--ink-3); }
+  .reg.on .dot { color: var(--accent); }
+  .reg .hint { color: var(--ink-3); font-size: 11px; }
+
+  /* A retry the failure itself offers, since there is no Reload button to point
+     at any more. */
+  .retry {
+    font: inherit;
+    color: var(--ink-2);
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--line-strong);
+    padding: 0;
+    margin-left: 6px;
+    cursor: pointer;
+  }
+  .retry:hover { color: var(--ink); }
+
+  .empty { color: var(--ink-3); padding: 18px 0; }
+  .sig { color: var(--ink-3); font-size: 11px; word-break: break-all; }
+  footer {
+    flex: 0 0 auto;
+    padding: 5px 12px;
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-3);
+    min-height: 26px;
+  }
+  footer.bad { color: var(--bad-fg); }
+</style>
+</head>
+<body>
+<header>
+  <div class="app-name" id="app-name">…</div>
+  <div class="app-path" id="app-path"></div>
+  <div class="bar">
+    <!-- TWO buttons, and they are the two VERBS the panel offers: propose a set
+         of tools, and write it. Everything else that used to sit here answered
+         to something other than the toolbar and has moved to where it belongs —
+         `add tool` to the end of the list it appends to, the registration state
+         to its own line above the footer (it reports as much as it acts), and
+         Reload nowhere: Save re-reads the folder itself, and the failures that
+         wanted a retry now offer one inline.
+
+         Disabled in the MARKUP, not just by render(): both act on the report,
+         and until `inspect_app.py` has answered there is no report. A click in
+         that window used to throw a TypeError with nothing in the footer. -->
+    <button class="btn" id="curate" disabled>Curate with AI</button>
+    <button class="btn primary" id="save" disabled>Save</button>
+  </div>
+</header>
+<main id="main"><div class="empty">Loading…</div></main>
+<button class="reg" id="register" disabled></button>
+<footer id="status"></footer>
+
+<script>
+// The MCP curation panel (SPEC §44). Three moving parts, and they are
+// deliberately separate:
+//
+//   1. `inspect_app.py` — one READ of the app folder: what could become a tool,
+//      what the page already pins at each `runPython` call site, whether a
+//      `fused` executable exists, and whether the recorded signatures still
+//      match the code (the drift verdict).
+//   2. `manifest.py` — the WRITE: the `[[tool]]` tables in the folder's
+//      `mcp.toml`, which is the contract `fused app serve` consumes. All
+//      validation lives there, so this page never decides what is legal; it
+//      renders the refusal payload.
+//   3. `/api/claude-config/mcp` — registration, through the SAME module the
+//      Claude Config page uses (`action=add|remove|list`). No second way to
+//      write an MCP host entry: that module owns the `claude mcp` CLI, the
+//      `--scope user` choice, and the name guard.
+//
+// The editable tool set lives in a JS array, NOT in URL params. Params are for
+// view state a refresh must reproduce; this is a document being edited, and a
+// half-typed tool description in the address bar would be both unreadable and
+// (at a few hundred bytes a tool) unsurvivable. The consequence is stated in the
+// UI: unsaved edits are lost on reload, and Save is the only durable step.
+
+const TARGET = fused.params.get("_file") || "";
+
+// Every tool row's parameter list comes from the file+entrypoint the row names,
+// so the surface report is kept whole rather than flattened at load.
+let report = null;
+// The editable curation. Each entry: {name, description, file, entrypoint,
+// pins: {param: value}}. Loaded from the manifest, edited here, written back.
+let tools = [];
+let registered = false;
+// HAS the registration probe answered? Separate from `registered` because
+// "not registered" and "we have not looked yet" are different things to draw,
+// and conflating them is what let a Register button be offered before the
+// answer was in. Reset on every load; only a probe result sets it.
+let registrationChecked = false;
+// The probe ANSWERED, and the answer was "I could not tell" (no CLI, a timeout,
+// a refusal). Distinct from `!registrationChecked`, which is "still running":
+// this one is what makes the registration line offer a re-probe instead of a
+// toggle, since toggling on an unknown state would be a guess.
+let probeFailed = false;
+// Which load the in-flight probe belongs to. `claude mcp list` can take ten
+// seconds, so a second Reload can start before the first probe returns — and the
+// stale answer must not overwrite the fresh one.
+let probeSeq = 0;
+let busy = false;
+
+const el = (id) => document.getElementById(id);
+const mainEl = el("main");
+const statusEl = el("status");
+
+function say(text, bad) {
+  statusEl.textContent = text;
+  statusEl.className = bad ? "bad" : "";
+}
+
+// A failure that a re-read could clear says so and offers the re-read, because
+// there is no Reload button to point at any more. The affordance rides the
+// message it belongs to rather than living permanently in the chrome.
+function sayWithRetry(text, action) {
+  say(text, true);
+  const again = document.createElement("button");
+  again.className = "retry";
+  again.textContent = "retry";
+  again.addEventListener("click", action || (() => guard(load)));
+  statusEl.appendChild(again);
+}
+
+// The MCP server name this app registers under: `<folder>-mcp`.
+//
+// Derived from the folder name so the same app re-registers over its own entry
+// instead of accumulating duplicates, and SUFFIXED rather than prefixed because
+// the name is read in a list of the user's own servers, where the folder is the
+// identifying half — `local-transcription-mcp` sorts and scans as that app,
+// while `fused-app-local-transcription` (what this was) filed every app of every
+// project under one prefix and pushed the identifying half past the point anyone
+// reads. Sanitized because the name reaches a CLI argument: the config module's
+// own guard would reject an option-shaped one, and this makes that unreachable.
+//
+// ONE name, used for the add, the remove, and the "am I registered" lookup — the
+// three have to agree or the registration line reports the opposite of the truth
+// forever.
+function serverName() {
+  const base = (report && report.name ? report.name : "app")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+/, "");
+  return (base || "app") + "-mcp";
+}
+
+function fileNames() {
+  return (report && report.files ? report.files : []).map((f) => f.file);
+}
+
+function entrypointsOf(file) {
+  const f = (report && report.files ? report.files : []).find((x) => x.file === file);
+  return f ? f.entrypoints : [];
+}
+
+function paramsOf(file, entrypoint) {
+  const e = entrypointsOf(file).find((x) => x.name === entrypoint);
+  return e ? e.params : [];
+}
+
+function signatureOf(file, entrypoint) {
+  const e = entrypointsOf(file).find((x) => x.name === entrypoint);
+  return e ? e.signature : "";
+}
+
+// ---------------------------------------------------------------- loading
+
+async function load() {
+  if (!TARGET) {
+    mainEl.innerHTML = "";
+    mainEl.appendChild(text("div", "empty", "No folder selected."));
+    return;
+  }
+  say("Reading the app…");
+  try {
+    report = await fused.runPython("./inspect_app.py", { path: TARGET });
+  } catch (err) {
+    // A failed read is the one state that used to need the Reload button.
+    sayWithRetry((err.type || "error") + ": " + err.message);
+    setEnabled(false);
+    render();
+    return;
+  }
+  if (!report.ok) {
+    mainEl.innerHTML = "";
+    mainEl.appendChild(text("div", "empty", report.message || "Not an app folder."));
+    say("");
+    setEnabled(false);
+    render();
+    return;
+  }
+  // The manifest as the editor's starting point: the panel edits the WHOLE set,
+  // so a tool the user deletes here disappears from the folder on Save.
+  tools = (report.manifest.tools || []).map((t) => ({
+    name: t.name,
+    description: t.description,
+    file: t.file,
+    entrypoint: t.entrypoint || "main",
+    pins: Object.assign({}, t.pinned),
+  }));
+  // The manifest's own complaint, said BEFORE the probe is started — which is
+  // the same ordering as before and for the same reason: the probe may have its
+  // own warning to leave in the footer and must be allowed to overwrite this
+  // one, never the other way round. (This function used to end with an
+  // unconditional `say()`, which wiped exactly that warning.)
+  if (report.manifest.error) {
+    say("mcp.toml does not parse — fix it by hand.", true);
+  } else {
+    say("");
+  }
+
+  // PAINT NOW, PROBE AFTER. The registration probe is `claude mcp list`, which
+  // health-checks every MCP server the user has configured by connecting to each
+  // one: measured at 10.9s wall on a machine with a dozen claude.ai connectors.
+  // Awaiting it here meant the panel sat on "Loading…" for eleven seconds before
+  // showing an editor whose contents had been in hand the whole time — and again
+  // on every Reload. Nothing in the editor depends on the answer; only the
+  // Register button does, and `registrationChecked` is what keeps that one
+  // honest while the sweep runs.
+  render();
+  probe();
+}
+
+// Start the registration probe and repaint when it answers. Deliberately NOT
+// awaited by its callers, and deliberately not inside `guard()`: `busy` is about
+// work that blocks the editor, and this does not. Its own failure path is
+// `refreshRegistration`'s (a footer warning plus `probeFailed`), so there is
+// nothing here for a rejection handler to add beyond not being unhandled.
+function probe() {
+  registrationChecked = false;
+  probeSeq += 1;
+  const seq = probeSeq;
+  render();
+  refreshRegistration().then(() => {
+    // A load (or a re-probe) that started after this one owns the panel now.
+    if (seq !== probeSeq) return;
+    registrationChecked = true;
+    render();
+  });
+}
+
+// ------------------------------------------------------- registration state
+
+async function callConfig(kwargs) {
+  const res = await fetch("/api/claude-config/mcp", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify(kwargs),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
+  return body;
+}
+
+// WHY a helper: the module answers HTTP 200 with `{ok: false}` for its own
+// refusals, and the failure shape is not uniform — `list` and the guards carry
+// `error`, while `add`/`remove` carry the CLI's `{stdout, stderr}` and NO error
+// key at all (fused_render/claude_config/mcp.py). Reading only `error` therefore
+// reported "could not add" with the reason — the claude CLI's own words — sitting
+// unread in the response.
+function configError(out, fallback) {
+  const said = (out && (out.error || out.stderr || out.stdout)) || "";
+  return String(said).trim() || fallback;
+}
+
+// Ask which MCP servers are registered. SLOW — see the call site in `load()` —
+// and therefore never awaited on a path that holds the editor back.
+async function refreshRegistration() {
+  registered = false;
+  probeFailed = false;
+  try {
+    const out = await callConfig({ action: "list" });
+    // A 200 is not a success: `{ok: false}` is how this module refuses (a claude
+    // CLI that is missing, signed out, or timed out). Treating it as success left
+    // `registered` false with no explanation, so Register looked available and
+    // then failed for a reason nothing had mentioned.
+    if (out.ok === false) {
+      probeFailed = true;
+      say("Could not read the registered MCP servers: "
+          + configError(out, "the claude CLI did not answer"), true);
+      return;
+    }
+    const name = serverName();
+    registered = !!(out.servers || []).some((s) => s.name === name);
+  } catch (err) {
+    // Not fatal: the panel's other half (curate + save) works with no Claude
+    // CLI at all, so an unreadable server list must not blank the page. It costs
+    // the accurate registration line, which then offers its own re-probe.
+    probeFailed = true;
+    say("Could not read the registered MCP servers: " + err.message, true);
+  }
+}
+
+async function toggleRegistration() {
+  // A failed probe RE-PROBES rather than toggling: we do not know which of
+  // add/remove the click would mean, and this row is now the only affordance
+  // that can recover an unreadable server list (there is no Reload button).
+  if (probeFailed) {
+    probe();
+    return;
+  }
+  // Null-guarded INSIDE the function as well as by the button's disabled state:
+  // the two protect against different things (a click before the first load, and
+  // a click after a failed one), and this one is what keeps a stray call from
+  // dereferencing a null report.
+  // `registrationChecked` too: acting on a probe that has not answered would be
+  // guessing which of add/remove the click means.
+  if (!report || !report.ok || !report.fused || !registrationChecked) return;
+  const name = serverName();
+  await guard(async () => {
+    if (registered) {
+      const out = await callConfig({ action: "remove", name: name });
+      if (out.ok === false) {
+        throw new Error(configError(out, "could not unregister " + name));
+      }
+      registered = false;
+      say("Unregistered " + name + ".");
+    } else {
+      // The entry a Claude session will run: the resolved absolute `fused`, and
+      // the absolute app folder. Absolute both times on purpose — an MCP host
+      // spawns this with no useful cwd and no shell PATH assumptions.
+      const definition = {
+        command: report.fused,
+        args: ["app", "serve", report.path],
+      };
+      const out = await callConfig({
+        action: "add",
+        name: name,
+        json: JSON.stringify(definition),
+      });
+      if (out.ok === false) {
+        throw new Error(configError(out, "could not register " + name));
+      }
+      registered = true;
+      say("Registered " + name + " — restart Claude to pick it up.");
+    }
+    render();
+  });
+}
+
+// -------------------------------------------------------------------- saving
+
+async function save() {
+  await guard(async () => {
+    const payload = tools.map((t) => ({
+      name: t.name.trim(),
+      description: t.description.trim(),
+      file: t.file,
+      entrypoint: t.entrypoint,
+      pinned: t.pins,
+    }));
+    // `tools` crosses as a JSON string: runPython params are strings, and the
+    // backend documents both forms.
+    const out = await fused.runPython("./manifest.py", {
+      action: "write",
+      path: report.path,
+      tools: JSON.stringify(payload),
+    });
+    if (!out.ok) {
+      say(out.message || "The manifest was not written.", true);
+      return;
+    }
+    say("Saved " + payload.length + " tool" + (payload.length === 1 ? "" : "s")
+        + " to mcp.toml.");
+    // Re-read: the write recorded fresh signature snapshots, so the drift
+    // banner must be recomputed from disk rather than assumed clear.
+    await load();
+  });
+}
+
+// ------------------------------------------------------------ AI curation
+
+// What the model is given: the surface, reduced. Names, signatures, docstrings
+// and the page's literal call arguments — never file contents. A folder's source
+// is both large and beside the point: the question is which entrypoints deserve
+// to be tools and which of their parameters the page already fixes.
+function surfaceForModel() {
+  return JSON.stringify({
+    app: report.name,
+    files: (report.files || []).map((f) => ({
+      file: f.file,
+      doc: f.doc,
+      entrypoints: f.entrypoints.map((e) => ({
+        name: e.name,
+        signature: e.signature,
+        doc: e.doc,
+      })),
+    })),
+    page_calls: (report.page.calls || []),
+  });
+}
+
+const CURATION_SYSTEM = [
+  "You curate a local app's Python entrypoints into MCP tools.",
+  "Reply with ONLY a JSON array, no prose and no code fence.",
+  "Each element: {\"name\": snake_case identifier, \"description\": one sentence,",
+  "\"file\": one of the given files, \"entrypoint\": a function from that file,",
+  "\"pinned\": {parameter: fixed value}}.",
+  "A dispatcher entrypoint whose page call sites pass a fixed operation should",
+  "become ONE TOOL PER OPERATION, with that operation pinned — that is the whole",
+  "point of pinning. Never pin a parameter the caller should choose.",
+  "Prefer few, obviously useful tools over one tool per parameter combination.",
+].join(" ");
+
+async function curate() {
+  await guard(async () => {
+    say("Asking the model to propose tools…");
+    let res;
+    try {
+      res = await fused.ai(
+        "App surface (JSON):\n" + surfaceForModel()
+          + "\n\nPropose the MCP tools for this app.",
+        // `sonnet` NAMED, not left to resolve. Omitting `model` lands on the
+        // user's default-model preference, or Haiku where they have none — and
+        // this is the panel's one hard reasoning task: read a folder's
+        // signatures and its page's call sites and decide which entrypoints
+        // deserve to be tools and which of their parameters are already fixed.
+        // A weaker model answers with one tool per function and nothing pinned,
+        // which is the curation the user would then have to do by hand anyway.
+        // `effort` stays low and now actually applies — it is honoured on the
+        // Claude path, and this is a bounded read rather than a long think.
+        { systemPrompt: CURATION_SYSTEM, model: "sonnet", effort: "low" });
+    } catch (err) {
+      // Every one of these is a state, not a crash: the panel's manual path
+      // (Add tool) is fully capable on its own, so an unavailable model costs a
+      // suggestion and nothing else.
+      if (err.type === "ai_unavailable") {
+        say("AI unavailable (" + err.message + ") — add tools manually.", true);
+      } else if (err.type === "model_loading") {
+        say("The model is still loading — try again once it is resident.", true);
+      } else {
+        say((err.type || "error") + ": " + err.message, true);
+      }
+      return;
+    }
+    const proposed = parseProposal(res.text);
+    if (proposed === null) {
+      say("The model did not answer with a tool list — add tools manually.", true);
+      return;
+    }
+    // PROPOSED, not applied: every field stays editable and nothing reaches the
+    // folder until Save. A model that invents a file or an entrypoint is
+    // corrected to the first real one rather than silently written.
+    tools = proposed;
+    render();
+    say("Proposed " + proposed.length + " tool" + (proposed.length === 1 ? "" : "s")
+        + " (" + res.model + ") — edit, then Save.");
+  });
+}
+
+// The model's reply, defensively. A fence or a sentence around the array is
+// tolerated (the common failure); anything else is a null, which the caller
+// reports rather than half-applying.
+function parseProposal(raw) {
+  const text = String(raw || "");
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start < 0 || end <= start) return null;
+  let data;
+  try {
+    data = JSON.parse(text.slice(start, end + 1));
+  } catch (err) {
+    return null;
+  }
+  if (!Array.isArray(data)) return null;
+  const files = fileNames();
+  const out = [];
+  for (const item of data) {
+    if (!item || typeof item !== "object") continue;
+    const file = files.indexOf(item.file) >= 0 ? item.file : files[0];
+    if (!file) continue;
+    const entries = entrypointsOf(file).map((e) => e.name);
+    const entrypoint = entries.indexOf(item.entrypoint) >= 0
+      ? item.entrypoint
+      : (entries.indexOf("main") >= 0 ? "main" : entries[0]);
+    if (!entrypoint) continue;
+    const known = paramsOf(file, entrypoint);
+    const pins = {};
+    if (item.pinned && typeof item.pinned === "object") {
+      for (const key of Object.keys(item.pinned)) {
+        // A pin naming a parameter that does not exist would be written to the
+        // manifest and then silently dropped by the runner — worse than absent,
+        // because the operator believes it is enforced.
+        const param = known.find((p) => p.name === key);
+        if (!param) continue;
+        // TYPED, not `String(...)`: the model answers JSON, so `false` arrives as
+        // a boolean and must stay one (see pinKind) instead of being flattened to
+        // the truthy string "false".
+        pins[key] = coercePin(pinKind(param), item.pinned[key]);
+      }
+    }
+    out.push({
+      name: String(item.name || "").trim() || entrypoint,
+      description: String(item.description || "").trim(),
+      file: file,
+      entrypoint: entrypoint,
+      pins: pins,
+    });
+  }
+  return out;
+}
+
+// ------------------------------------------------------------------- editing
+
+function addTool() {
+  const file = fileNames()[0];
+  if (!file) {
+    say("This folder has no Python entrypoints to curate.", true);
+    return;
+  }
+  const entries = entrypointsOf(file).map((e) => e.name);
+  tools.push({
+    name: "",
+    description: "",
+    file: file,
+    entrypoint: entries.indexOf("main") >= 0 ? "main" : (entries[0] || "main"),
+    pins: {},
+  });
+  render();
+}
+
+async function guard(fn) {
+  if (busy) return;
+  busy = true;
+  render();
+  try {
+    await fn();
+  } catch (err) {
+    say((err.type || "error") + ": " + err.message, true);
+  } finally {
+    busy = false;
+    render();
+  }
+}
+
+// ----------------------------------------------------------------- rendering
+
+function text(tag, cls, content) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (content !== undefined) node.textContent = content;
+  return node;
+}
+
+function driftFor(name) {
+  return (report.drift || []).find((d) => d.name === name) || null;
+}
+
+function renderDriftBanner(parent) {
+  const drifted = (report.drift || []).filter((d) => d.status !== "ok");
+  if (drifted.length === 0) return;
+  const note = text("div", "note");
+  note.appendChild(text("b", null, "The code moved since these tools were curated."));
+  const list = document.createElement("ul");
+  for (const d of drifted) {
+    const li = document.createElement("li");
+    if (d.status === "missing") {
+      li.textContent = d.name + " — " + d.file + " no longer defines "
+        + d.entrypoint + "(); the served tool is broken.";
+    } else if (d.status === "unknown") {
+      li.textContent = d.name + " — no recorded signature to compare (curated by hand).";
+    } else {
+      li.textContent = d.name + " — was " + d.recorded + ", now " + d.current + ".";
+    }
+    list.appendChild(li);
+  }
+  note.appendChild(list);
+  // Saving re-records every snapshot, so it IS the fix — the served tools keep
+  // working from the current source in the meantime (the server derives their
+  // schema at startup), which is why this is a banner and not a blocker.
+  note.appendChild(text("div", null,
+    "Re-curate or just Save to re-record the signatures."));
+  parent.appendChild(note);
+}
+
+function renderState(parent) {
+  if (!report.fused) {
+    const note = text("div", "note bad");
+    note.appendChild(text("b", null, "No `fused` CLI available."));
+    note.appendChild(text("div", null,
+      "Tools can be curated and saved, but registration needs the `fused` "
+      + "command this app itself provides — an MCP entry pointing at a binary "
+      + "that is missing (or at some other `fused` that happens to be on PATH) "
+      + "would fail inside Claude, so Register is disabled."));
+    parent.appendChild(note);
+    return;
+  }
+  if (registered && registrationChecked) {
+    const note = text("div", "note good");
+    note.appendChild(text("b", null, "Registered as " + serverName() + "."));
+    note.appendChild(text("div", null,
+      "A Claude session runs `" + report.fused + " app serve " + report.path
+      + "`. Saved changes to the manifest are picked up the next time it starts."));
+    parent.appendChild(note);
+  }
+}
+
+function renderTool(index) {
+  const tool = tools[index];
+  const drift = driftFor(tool.name);
+  const card = text("div", "tool" + (drift && drift.status !== "ok" ? " drift" : ""));
+
+  const head = text("div", "tool-head");
+  const name = document.createElement("input");
+  name.className = "name";
+  name.value = tool.name;
+  name.placeholder = "tool_name";
+  name.addEventListener("input", () => { tool.name = name.value; });
+  head.appendChild(name);
+  const del = text("button", "btn", "Delete");
+  del.addEventListener("click", () => { tools.splice(index, 1); render(); });
+  head.appendChild(del);
+  card.appendChild(head);
+
+  const desc = document.createElement("textarea");
+  desc.value = tool.description;
+  desc.placeholder = "What this tool does — the model reads this to decide whether to call it.";
+  desc.addEventListener("input", () => { tool.description = desc.value; });
+  card.appendChild(desc);
+
+  const fileRow = text("div", "row");
+  fileRow.appendChild(text("label", null, "file"));
+  const fileSel = document.createElement("select");
+  for (const f of fileNames()) {
+    const opt = document.createElement("option");
+    opt.value = f;
+    opt.textContent = f;
+    if (f === tool.file) opt.selected = true;
+    fileSel.appendChild(opt);
+  }
+  fileSel.addEventListener("change", () => {
+    tool.file = fileSel.value;
+    const entries = entrypointsOf(tool.file).map((e) => e.name);
+    tool.entrypoint = entries.indexOf("main") >= 0 ? "main" : (entries[0] || "main");
+    // Pins name parameters of the OLD entrypoint; keeping them would write pins
+    // the runner drops.
+    tool.pins = {};
+    render();
+  });
+  fileRow.appendChild(fileSel);
+  card.appendChild(fileRow);
+
+  const entryRow = text("div", "row");
+  entryRow.appendChild(text("label", null, "entrypoint"));
+  const entrySel = document.createElement("select");
+  const entries = entrypointsOf(tool.file);
+  if (entries.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = tool.entrypoint;
+    opt.textContent = tool.entrypoint + " (not found)";
+    entrySel.appendChild(opt);
+  }
+  for (const e of entries) {
+    const opt = document.createElement("option");
+    opt.value = e.name;
+    opt.textContent = e.name;
+    if (e.name === tool.entrypoint) opt.selected = true;
+    entrySel.appendChild(opt);
+  }
+  entrySel.addEventListener("change", () => {
+    tool.entrypoint = entrySel.value;
+    tool.pins = {};
+    render();
+  });
+  entryRow.appendChild(entrySel);
+  card.appendChild(entryRow);
+
+  card.appendChild(text("div", "sig", signatureOf(tool.file, tool.entrypoint)
+    || "no signature — this entrypoint is not in the folder"));
+
+  const params = text("div", "params");
+  const known = paramsOf(tool.file, tool.entrypoint);
+  params.appendChild(text("div", "hint",
+    known.length
+      ? "Pinned parameters are hidden from the model and fixed on every call."
+      : "This entrypoint takes no parameters."));
+  for (const p of known) {
+    const pinned = Object.prototype.hasOwnProperty.call(tool.pins, p.name);
+    const row = text("div", "param" + (pinned ? " pinned" : ""));
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = pinned;
+    box.addEventListener("change", () => {
+      if (box.checked) {
+        // Seed the pin with the parameter's own default, which is the value the
+        // page was already relying on — TYPED, so a boolean default seeds `false`
+        // and not the string "False".
+        tool.pins[p.name] = seedPin(p);
+      } else {
+        delete tool.pins[p.name];
+      }
+      render();
+    });
+    row.appendChild(box);
+    row.appendChild(text("span", "pname", p.name));
+    row.appendChild(text("span", "psig",
+      (p.annotation ? ": " + p.annotation : "")
+      + (p.required ? " (required)" : " = " + (p.default || "None"))));
+    if (pinned) {
+      const kind = pinKind(p);
+      if (kind === "bool") {
+        // A SELECT, not a text box: a boolean pin has two values and typing one
+        // of them is how `"False"` got written as a string in the first place.
+        const value = document.createElement("select");
+        for (const option of ["true", "false"]) {
+          const opt = document.createElement("option");
+          opt.value = option;
+          opt.textContent = option;
+          if (String(tool.pins[p.name]) === option) opt.selected = true;
+          value.appendChild(opt);
+        }
+        value.addEventListener("change", () => {
+          tool.pins[p.name] = value.value === "true";
+        });
+        row.appendChild(value);
+      } else {
+        const value = document.createElement("input");
+        value.className = "value";
+        value.value = String(tool.pins[p.name]);
+        value.addEventListener("input", () => {
+          tool.pins[p.name] = coercePin(kind, value.value);
+        });
+        row.appendChild(value);
+      }
+    }
+    params.appendChild(row);
+  }
+  // A pin whose parameter is gone (the signature changed under a saved tool) is
+  // still shown, because it is exactly what the drift banner is talking about.
+  for (const key of Object.keys(tool.pins)) {
+    if (known.some((p) => p.name === key)) continue;
+    const row = text("div", "param pinned");
+    row.appendChild(text("span", "pname", key));
+    row.appendChild(text("span", "psig", "— no such parameter any more"));
+    const drop = text("button", "btn", "Remove");
+    drop.addEventListener("click", () => { delete tool.pins[key]; render(); });
+    row.appendChild(drop);
+    params.appendChild(row);
+  }
+  card.appendChild(params);
+  return card;
+}
+
+// WHAT KIND OF VALUE this parameter's pin is, from the annotation first and the
+// default's literal shape second. This is the whole of finding-1's fix: a pin is
+// written into `mcp.toml` as TOML and read back by the server as JSON, so a
+// `dry_run: bool = False` pinned "off" has to land as `dry_run = false` and not
+// as the string `"False"` — which the server would hand the entrypoint as a
+// non-empty (i.e. TRUTHY) string, turning a pinned-off safety flag on.
+function pinKind(p) {
+  const ann = String((p && p.annotation) || "").toLowerCase();
+  if (ann === "bool") return "bool";
+  if (ann === "int" || ann === "float") return "number";
+  if (ann === "str") return "str";
+  const src = String((p && p.default) || "").trim();
+  if (src === "True" || src === "False") return "bool";
+  if (src !== "" && /^-?\d+(\.\d+)?$/.test(src)) return "number";
+  return "str";
+}
+
+// A default from the AST arrives as SOURCE TEXT (`'list'`, `None`, `10`,
+// `False`); a pin is a VALUE. Turn the one into the other by kind — and only for
+// the literal shapes, because anything else would be evaluating app source,
+// which is the user's job in the value box.
+function seedPin(p) {
+  const src = String((p && p.default) || "").trim();
+  const kind = pinKind(p);
+  if (kind === "bool") return src === "True";
+  if (kind === "number") return src === "" ? 0 : Number(src);
+  if (src.length >= 2 && (src[0] === "'" || src[0] === '"')
+      && src[src.length - 1] === src[0]) {
+    return src.slice(1, -1);
+  }
+  return src === "None" || src === "" ? "" : src;
+}
+
+// The value an edited box or a model's proposal becomes, by kind. A `number` box
+// whose text is not a number stays a STRING rather than becoming NaN (which JSON
+// cannot carry): the manifest writer then refuses it by type, which is a message,
+// where NaN would have been a silent null.
+function coercePin(kind, value) {
+  if (typeof value === "boolean" || typeof value === "number") {
+    return kind === "str" ? String(value) : value;
+  }
+  const text = String(value === null || value === undefined ? "" : value);
+  if (kind === "bool") return text.trim().toLowerCase() === "true";
+  if (kind === "number") {
+    const n = Number(text.trim());
+    return text.trim() !== "" && Number.isFinite(n) ? n : text;
+  }
+  return text;
+}
+
+// The buttons that need a report, in one place — so "not loaded yet", "loading"
+// and "the load failed" are all the same answer rather than three.
+//
+// `register` is NOT among them: it needs the report *and* the registration
+// probe's answer, which arrives seconds later (see `load()`), so `render()` owns
+// its state alone. Everything else is editing, which the inspect alone unlocks —
+// a user must not wait on a `claude mcp list` sweep to rename a tool.
+function setEnabled(ready) {
+  for (const id of ["curate", "save"]) {
+    el(id).disabled = !ready;
+  }
+}
+
+// The registration LINE — one row above the footer that says what is true and
+// toggles it on click. Four states, and the two that are not a plain yes/no are
+// the point: while the probe runs it says so and does nothing, and when the
+// probe could not tell, clicking re-probes rather than guessing a direction.
+function renderRegistration() {
+  const row = el("register");
+  row.innerHTML = "";
+  const dot = text("span", "dot", "○");
+  const label = text("span", null, "");
+  let on = false;
+  let disabled = false;
+  let hint = "";
+
+  if (!report || !report.ok) {
+    label.textContent = "Not an app folder";
+    disabled = true;
+  } else if (!report.fused) {
+    label.textContent = "Registration unavailable";
+    hint = "no `fused` CLI";
+    disabled = true;
+  } else if (probeFailed) {
+    label.textContent = "Registration state unknown";
+    hint = "click to check again";
+  } else if (!registrationChecked) {
+    label.textContent = "Checking registration…";
+    disabled = true;
+  } else if (registered) {
+    dot.textContent = "◉";
+    on = true;
+    label.textContent = "Registered in Claude";
+    hint = "as " + serverName();
+  } else {
+    label.textContent = "Not registered";
+    hint = "click to register " + serverName();
+  }
+
+  row.className = "reg" + (on ? " on" : "");
+  row.disabled = disabled || busy;
+  row.appendChild(dot);
+  row.appendChild(label);
+  if (hint) row.appendChild(text("span", "hint", hint));
+}
+
+function render() {
+  if (!report || !report.ok) {
+    setEnabled(false);
+    renderRegistration();
+    return;
+  }
+  el("app-name").textContent = report.name;
+  el("app-path").textContent = report.path;
+
+  setEnabled(!busy);
+  renderRegistration();
+
+  mainEl.innerHTML = "";
+  renderState(mainEl);
+  renderDriftBanner(mainEl);
+  if (tools.length === 0) {
+    mainEl.appendChild(text("div", "empty",
+      "No tools curated yet. “Curate with AI” proposes some from the app's "
+      + "entrypoints, or add one below."));
+  }
+  for (let i = 0; i < tools.length; i++) mainEl.appendChild(renderTool(i));
+  // The add-tool row lives at the END OF THE LIST, where the tool it makes will
+  // appear — a toolbar button for it read as a peer of Curate and Save, which it
+  // is not: those two act on the whole set, this one appends one row.
+  const add = text("button", "add-row", "+ add tool");
+  add.disabled = busy;
+  add.addEventListener("click", addTool);
+  mainEl.appendChild(add);
+}
+
+el("curate").addEventListener("click", curate);
+el("save").addEventListener("click", save);
+el("register").addEventListener("click", toggleRegistration);
+
+load();
+</script>
+</body>
+</html>

@@ -256,7 +256,7 @@ empty grid.
 fixed (`HF_ENDPOINT` honoured but validated as http(s)), the query string is
 `urlencode`d, the sort is a fixed map so no raw field reaches the Hub, and the
 token is sent and never returned. That token is `huggingface_hub.get_token()`,
-reached through `hf_auth.token()` and derived nowhere else in this app (D401):
+reached through `hf_auth.token()` and derived nowhere else in this app (D402):
 hf's own resolution — the environment variables first, then its own store —
 which is also the resolution a worker gets by calling hf inside its own
 interpreter. So this search and the download it leads to cannot disagree about
@@ -345,7 +345,7 @@ declarations are **wheels only** (SPEC AI-2a, D266): a source build runs a build
 backend in an interpreter uv creates, and `_env_install_worker._uv_env` scrubs
 `PYTHON*`/`VIRTUAL_ENV` off every uv call so that interpreter cannot inherit the
 macOS bundle's `PYTHONHOME`. A test enforces both halves. **No Hub token is
-placed in that environment** (D401): a worker imports `huggingface_hub` and so
+placed in that environment** (D402): a worker imports `huggingface_hub` and so
 finds the machine's token where every other hf caller finds it — hf's own store,
 written by the Preferences login button (`server/routers/hf_auth.py`) — while an
 `HF_TOKEN` this process inherited is passed through untouched. An earlier version

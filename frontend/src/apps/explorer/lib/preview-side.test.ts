@@ -24,6 +24,7 @@ const openedAt = (search: string, split: Parameters<typeof resolveSide>[1]) =>
 // with any rewording, silently, including a bad one.
 const NO_REPO = "Not inside a git repository";
 const NO_CLAUDE = "Claude is not available for this file";
+const NO_APP = "Not a fused app folder (needs index.html and a main())";
 
 // A registered template, icon and all — the icon matters here because a disabled
 // switcher row has to be able to find it.
@@ -38,6 +39,8 @@ const iconOf = (mode: string) => `/tpl/${mode}/icon.svg`;
 // flight: the mode name and nothing else.
 const GIT_PLACEHOLDER: TemplateEntry = { mode: "git", path: null, icon: null };
 const GIT: TemplateEntry = t("git");
+// The second folder-bound companion, borrowed exactly the same way.
+const MCP: TemplateEntry = t("mcp");
 
 const image = t("image");
 const claude = t("claude");
@@ -63,8 +66,12 @@ const file = (own: TemplateEntry[], git: "pending" | "yes" | "no"): SideSplitInp
   splitCapable: true,
   content: [image],
   own,
-  borrowed: git === "no" ? null : git === "yes" ? GIT : GIT_PLACEHOLDER,
-  borrowedPending: git === "pending",
+  // A LIST since `mcp` joined `git` as a folder-bound companion (both are
+  // borrowed from the parent, each on its own probe). These cases are about the
+  // borrow MECHANISM, so one borrowed mode exercises it; `mcp`'s own row is
+  // covered where the menu is.
+  borrowed: git === "no" ? [] : [git === "yes" ? GIT : GIT_PLACEHOLDER],
+  borrowedPending: git === "pending" ? ["git"] : [],
 });
 
 describe("sideSplit", () => {
@@ -152,6 +159,7 @@ describe("sideSplit's menu", () => {
     expect(rows(sideSplit(file([], "no")).menu)).toEqual([
       ["claude", NO_CLAUDE],
       ["git", NO_REPO],
+      ["mcp", NO_APP],
     ]);
   });
 
@@ -159,7 +167,37 @@ describe("sideSplit's menu", () => {
     expect(rows(sideSplit(file([], "yes")).menu)).toEqual([
       ["claude", NO_CLAUDE],
       ["git", null],
+      ["mcp", NO_APP],
     ]);
+  });
+
+  // BOTH folder-bound companions are borrowed, independently: a file inside an app
+  // that is not a repository gets a real MCP row beside a disabled Git one, which
+  // is the case a single borrowed slot could not represent at all.
+  it("borrows each folder-bound companion on its own verdict", () => {
+    const s = sideSplit({ ...file([claude], "no"), borrowed: [MCP] });
+    expect(rows(s.menu)).toEqual([
+      ["claude", null],
+      ["git", NO_REPO],
+      ["mcp", null],
+    ]);
+    expect(names(s.settled)).toEqual(["claude", "mcp"]);
+    expect(s.on).toBe(true);
+  });
+
+  it("holds a pending MCP borrow the same way it holds a pending git one", () => {
+    const placeholder: TemplateEntry = { mode: "mcp", path: null, icon: null };
+    const s = sideSplit({
+      ...file([], "no"),
+      borrowed: [placeholder],
+      borrowedPending: ["mcp"],
+    });
+    // Listed (so `?_side=mcp` survives the wait) but settling nothing, exactly as
+    // the git case above: one probe out is one mode undecided.
+    expect(names(s.all)).toEqual(["mcp"]);
+    expect(names(s.settled)).toEqual([]);
+    expect(s.on).toBe(false);
+    expect(s.defaultSide).toBe(null);
   });
 
   // A denied borrowed git is a listed, disabled Git row — the finding this
@@ -170,6 +208,7 @@ describe("sideSplit's menu", () => {
     expect(rows(menu)).toEqual([
       ["claude", null],
       ["git", NO_REPO],
+      ["mcp", NO_APP],
     ]);
     // A placeholder is a row, not a template: nothing to frame.
     expect(menu.find((e) => e.mode === "git")!.path).toBe(null);
@@ -182,6 +221,7 @@ describe("sideSplit's menu", () => {
     expect(rows(menu)).toEqual([
       ["claude", null],
       ["git", null],
+      ["mcp", NO_APP],
     ]);
     expect(menu.find((e) => e.mode === "git")).toBe(GIT_PLACEHOLDER);
   });
@@ -190,7 +230,7 @@ describe("sideSplit's menu", () => {
   // is the whole reason `menu` is a third list rather than a flag on `all`.
   it("decides nothing", () => {
     const s = sideSplit(file([], "no"));
-    expect(s.menu.length).toBe(2);
+    expect(s.menu.length).toBe(3);
     expect(s.on).toBe(false);
     expect(s.offered).toBe(false);
     expect(names(s.settled)).toEqual([]);
@@ -212,16 +252,18 @@ describe("sideSplit's menu", () => {
     // The file BINDS claude — the gate is what denied it, and the
     // filter that dropped it took the icon with it (Preview re-supplies them
     // from the raw stat).
-    const s = sideSplit({ ...file([], "no"), bound: [claude, GIT] });
+    const s = sideSplit({ ...file([], "no"), bound: [claude, GIT, MCP] });
     expect(s.menu.map((e) => [e.mode, e.icon])).toEqual([
       ["claude", iconOf("claude")],
       ["git", iconOf("git")],
+      ["mcp", iconOf("mcp")],
     ]);
     // ...and they are still disabled rows, not entries: no path, and the reason
     // is what makes them unselectable.
     expect(rows(s.menu)).toEqual([
       ["claude", NO_CLAUDE],
       ["git", NO_REPO],
+      ["mcp", NO_APP],
     ]);
     expect(s.menu.every((e) => e.path === null)).toBe(true);
   });
@@ -251,6 +293,7 @@ describe("sideSplit's menu", () => {
     expect(rows(s.menu)).toEqual([
       ["claude", null],
       ["git", null],
+      ["mcp", NO_APP],
       ["notes", null],
     ]);
   });

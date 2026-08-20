@@ -13,7 +13,7 @@
 //     nothing else has said) and Hugging Face (signing in to the Hub for model
 //     downloads — and NOT a preference: the token belongs to huggingface_hub,
 //     which stores it, so that section talks to /api/hf/* and holds no state of
-//     this page's). Both moved off the Render tab (D402): neither is about
+//     this page's). Both moved off the Render tab (D403): neither is about
 //     rendering, which is the same reason inference engines left this page
 //     entirely, and a reader looking for either was reading past four sections
 //     that answer a different question. Grouped rather than each given a tab
@@ -212,7 +212,7 @@ function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
   );
 }
 
-// Signing in to Hugging Face (server/routers/hf_auth.py, D401).
+// Signing in to Hugging Face (server/routers/hf_auth.py, D402).
 //
 // **No token passes through this component in either direction.** The button
 // starts huggingface_hub's own device-code login; the user authorizes on
@@ -553,7 +553,7 @@ export default function Preferences() {
             >
               Render preferences
             </button>
-            {/* AI — which model, and with whose credentials (D402). Named for
+            {/* AI — which model, and with whose credentials (D403). Named for
                 the subject rather than for the two controls in it, so adding a
                 third does not rename the tab. */}
             <button

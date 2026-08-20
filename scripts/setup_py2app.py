@@ -464,7 +464,7 @@ OPTIONS = {
         "pluggy", "tomlkit", "jwt", "yaml", "loguru",
         "aiohttp", "yarl", "multidict", "frozenlist",
         "fsspec", "tabulate", "tqdm", "rtoml",
-        # The Hub client, for the Preferences sign-in (routers/hf_auth.py, D401).
+        # The Hub client, for the Preferences sign-in (routers/hf_auth.py, D402).
         # Forced for the reason this whole list exists: every import of it in the
         # app is INSIDE a function (the router imports it per request, and
         # `worker_base` must stay stdlib-only at module scope), so a

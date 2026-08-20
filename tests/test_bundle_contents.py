@@ -372,6 +372,50 @@ def test_the_bundled_and_fused_extras_pin_the_same_wheel():
         "`[fused]` is the documented light install path that gets the engine "
         "without the scientific stack."
     )
+    # The `mcp` constraint travels WITH the engine pin, in both extras and
+    # byte-identical for the same reason: it exists only because `fused` pulls
+    # `mcp` in, and the engine's own floor (`mcp[cli]>=1.0.0`) admits mcp 2.x
+    # where `mcp.server.fastmcp` is gone — which breaks `fused app serve`, the
+    # command the MCP panel registers globally (SPEC MC-5). One extra carrying
+    # the constraint and the other not would mean the DMG and the pip path serve
+    # MCP from different libraries.
+    mcp_bundled = [r for r in extras["bundled"] if _norm(r) == "mcp"]
+    mcp_extra = [r for r in extras["fused"] if _norm(r) == "mcp"]
+    assert len(mcp_bundled) == 1 and len(mcp_extra) == 1, (
+        "both `[bundled]` and `[fused]` must constrain `mcp` exactly once; got "
+        f"{mcp_bundled} and {mcp_extra}"
+    )
+    assert mcp_bundled[0] == mcp_extra[0], (
+        "the `mcp` constraint in `[bundled]` and in `[fused]` have drifted:\n"
+        f"  [bundled] {mcp_bundled[0]!r}\n  [fused]   {mcp_extra[0]!r}"
+    )
+
+
+def test_the_fused_pin_reads_the_app_serve_python_seam():
+    """The pinned engine must be one whose `app serve` READS
+    OPENFUSED_APP_SERVE_PYTHON (openfused #364, released in `2.9.3b7`).
+
+    `fusedcli._wrapper_text` exports that variable in the `fused` wrapper every
+    Claude session gets, so the `fused app serve` the MCP panel registers
+    (SPEC MC-5) computes on the SAME interpreter page runs use: one venv cache
+    key instead of two, and a tool with no declared dependencies running on the
+    engine's interpreter instead of a bare stdlib venv. An older engine ignores
+    the export in SILENCE — the tools still answer, just out of venvs nothing
+    else shares — so the export and the pin are one change, and this is the
+    guard that keeps them one. A floor rather than an equality: the next bump
+    must not have to come back here.
+    """
+    from packaging.version import Version
+
+    pinned = [r for r in _pyproject()["project"]["optional-dependencies"]["fused"]
+              if _norm(r) == "fused"]
+    assert len(pinned) == 1, pinned
+    version = pinned[0].split("==", 1)[1].split(";")[0].split(",")[0].strip()
+    assert Version(version) >= Version("2.9.3b7"), (
+        f"the `fused` pin is {version}, which does not read "
+        "OPENFUSED_APP_SERVE_PYTHON; `fusedcli._wrapper_text` exports it, so the "
+        "pin must be >= 2.9.3b7 or the export is a silent no-op"
+    )
 
 
 def test_the_bundle_ships_everything_it_does_not_explicitly_exclude():

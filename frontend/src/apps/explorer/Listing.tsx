@@ -306,6 +306,10 @@ export default function Listing({
   // rather than shrinking to a Preview-only pill and hiding itself.
   const folderClaude = useDirMode(paneEnabled ? fsPath : null, "claude");
   const folderGit = useDirMode(paneEnabled ? fsPath : null, "git");
+  // `mcp` for the same reason as `git`: the manifest it curates covers the FOLDER
+  // (templates/mcp/condition.py), so a folder that is not an app shows the pill
+  // disabled rather than not at all.
+  const folderMcp = useDirMode(paneEnabled ? fsPath : null, "mcp");
   // While the probe is in flight the entries are PLACEHOLDERS with no template
   // path (lib/dir-mode), which would build a `path=null` iframe URL — so a
   // pending companion is not SELECTABLE yet. Unlike the file sidebar there is
@@ -323,10 +327,13 @@ export default function Listing({
   const sideEntries = {
     claude: folderClaude.pending ? null : folderClaude.entry,
     git: folderGit.pending ? null : folderGit.entry,
+    mcp: folderMcp.pending ? null : folderMcp.entry,
     claudePending: folderClaude.pending,
     gitPending: folderGit.pending,
+    mcpPending: folderMcp.pending,
     claudeBound: folderClaude.bound,
     gitBound: folderGit.bound,
+    mcpBound: folderMcp.bound,
   };
   const paneOpen = pane.on && sideState.open;
   // One writer for both halves of the state, and it writes the URL only where the

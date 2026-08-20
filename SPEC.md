@@ -1167,7 +1167,7 @@ never imports server).
   a plain `GET /api/prefs`, like its other `/api/…` reads. Read per request, so
   a change applies without a restart.
 - **PF-1c** **The Hugging Face section is on this page — the AI tab
-  (§20.5/PF-9a) — and is NOT a preference** (D401). It is a **Log in to
+  (§20.5/PF-9a) — and is NOT a preference** (D402). It is a **Log in to
   Hugging Face** button, it talks to `/api/hf/*` rather than `/api/prefs`, and
   **this app stores no Hub token at all**: the button drives
   `huggingface_hub`'s own device-code browser login and hf persists what comes
@@ -1222,7 +1222,7 @@ never imports server).
   **Execution engine** — last because it is the setting a user is least likely
   to have come here to change (builtin suits almost everyone, and an env var
   pins it where it matters). **Default model** and **Hugging Face** are NOT here:
-  they are the **AI** tab (§20.5/PF-9a, D402). There is **no Tour button**: the tour still runs
+  they are the **AI** tab (§20.5/PF-9a, D403). There is **no Tour button**: the tour still runs
   itself on a first visit (`maybeAutoStartTour`), because it is onboarding
   rather than a preference. (The spec subsection numbering below is
   organizational, not the visual order.) *(A **Deploy to Fused account**
@@ -1308,7 +1308,7 @@ in-app affordance to gate.
 - **PF-9** The page is split into tabs, active tab in the URL
   (default clean-URL tab is **Render preferences** —
   Logs/Execution engine/Tour, unchanged).
-- **PF-9a** (D402) The **AI** tab, `?tab=ai`, holds **Default model** (PF-1b)
+- **PF-9a** (D403) The **AI** tab, `?tab=ai`, holds **Default model** (PF-1b)
   and **Hugging Face** (PF-1c–PF-1f). Neither is about rendering — the same
   reason the engine picker left this page for /ai-models — and on the Render
   tab a reader after either one read past four sections answering a different
@@ -5356,7 +5356,7 @@ three weeks ago, and would cost nothing to open.
   words because somebody told to "accept the terms" on an approval-gated repo
   goes looking for a button that is not there; an unrecognised truthy gate is
   read as `manual`, the stricter of the two. **There is no credentials UI and
-  this does not add one** — *narrowed by D401*: Preferences has a **Log in to
+  this does not add one** — *narrowed by D402*: Preferences has a **Log in to
   Hugging Face** button (§20/PF-1c), and the search token is
   `huggingface_hub.get_token()` — hf's own store, hf's own resolution. Read
   literally the clause still holds: there is **no box to paste a secret into**,
@@ -5807,7 +5807,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   by a token-holding user fail over to the slow path (the token is whatever
   `huggingface_hub.get_token()` finds in the worker — hf's own store, written by
   the Preferences login button or by a `hf auth login`; nothing is injected into
-  the worker's environment, §20/PF-1f, D401) — up to
+  the worker's environment, §20/PF-1f, D402) — up to
   **4 `Range` segments per file** with **segments across all files** as
   the units of work in one pool capped at **8 connections** — the single number
   that bounds how many sockets a download opens, which a pool per file would
@@ -7686,3 +7686,213 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   has an upstream to diff against. Header-only, so an embed-opened `.fused`
   (a Finder double-click) shows no Clone: reaching it means opening the file
   in the explorer.
+
+## 44. MCP App Template — An App's Entrypoints as Claude Tools (D401)
+
+An app in this explorer is a page plus the Python it drives: `index.html` calling
+`fused.runPython("./mail.py", {op: "send"})`. The page is a UI over those
+entrypoints, and the entrypoints are the capability — they send the mail, file the
+ticket, query the local database, on this machine with this user's credentials. A
+Claude session on the same machine cannot reach any of it, and the gap is not the
+code, it is the absence of a **declaration** of which entrypoints are worth
+calling and how.
+
+The `mcp` mode is that declaration's editor. It reads the app folder, proposes
+tools (with `fused.ai`), lets the user edit them, writes them to `mcp.toml` in the
+folder, and registers the folder with the MCP host — after which
+`fused app serve <folder>` answers `tools/list` with the curated tools **with this
+app not running at all**. The serving half lives in the `fused` package
+(openfused `spec/serve/app-mcp.md`); this app owns the authoring half, and the
+manifest is the entire contract between them.
+
+- **MC-1** **The gate is the APP SHAPE, and it is folder-only** (CT-12,
+  `templates/mcp/condition.py`). A directory qualifies when it holds a **tagged
+  entry page** — the first non-hidden top-level `.html` (name order) carrying
+  `<meta name="fused-app">`, the marker being the only signal (**D301**) —
+  **and** at least one top-level `.py` with a top-level `def main`: the page is
+  what makes the Python an app's entrypoints rather than someone's library, and
+  an entrypoint is what there is to curate. Either half alone is a no — a page
+  with no `main()` would open a panel with nothing in it. The marker check is
+  `shared/app_entry.has_fused_meta`, the same rule the `claude` and `app`
+  templates resolve an entry with, so no two surfaces can disagree about which
+  page an app folder has. Folder-only like `git` (GT-2) and for the same shape of
+  reason: the manifest sits at the folder's root and covers the folder, so a file
+  has no separate question to ask, and the file sidebar BORROWS the parent
+  folder's entry (`apps/explorer/lib/dir-mode.ts`) exactly as it borrows Git's.
+  Mount-backed paths are refused before any read (GT-4's rule): the panel reads
+  every `.py` in the folder and writes a file into it, which is the pattern that
+  wedges a mount.
+- **MC-1a** **This gate LISTS one directory level, which no peer gate does, and
+  the listing serves both halves.** There is no constant name to probe for on
+  either side: the page is whatever the author tagged (D301 — `index.html` has no
+  special status, not even as a tiebreaker) and the entrypoint may be called
+  anything, which is the whole reason a curation panel exists. So one
+  `os.scandir` collects the top-level `.html` and `.py` names and the halves run
+  cheapest-first — a folder with neither kind in its NAMES is refused before a
+  single file is opened, and a folder with no `.py` never has a page read. The
+  reads are bounded (at most 24 files per half, first hit wins, 4 KiB for the
+  marker) and it is never a walk. A pathological folder whose only tagged page or
+  only `main` sits past the cap answers False: the gate is the UX and
+  `inspect_app.py` — which resolves the entry through `app_entry.entry_html`
+  itself, uncapped, once, on demand — is the guarantee (MD-11).
+  `tests/test_mcp_condition.py` pins the ordering and the caps.
+- **MC-1b** **An `index.html` `isfile` probe was tried first, and it was cheaper
+  and wrong.** One stat per directory is exactly what a peer gate costs, and it
+  bought two defects: a folder whose tagged entry is `mail.html` got no MCP pill
+  at all, and a folder with an untagged `index.html` beside a tagged `mail.html`
+  passed the gate while the panel drew its pin hints out of the wrong file. D301
+  deleted the name rule (`index.html`, else the first html) precisely because it
+  was a guess about intent read off a filename; a name rule kept for its I/O cost
+  is that guess sneaking back in, and this section recording it is the reason it
+  does not come back a third time.
+- **MC-2** **The panel reads the folder by AST, never by importing it**
+  (`templates/mcp/inspect_app.py`). These are the folders whose modules open token
+  files, hit a keychain, or talk to a localhost service at import time, so
+  importing one to list its parameter names would run all of it. One `main(path)`
+  returns the whole surface: per top-level `.py` its entrypoints (names,
+  signatures, annotations, defaults, docstring summaries), the page's
+  `runPython` call sites with their literal arguments, the resolved `fused`
+  executable, the current manifest, and the MC-4 drift verdict. It is a read: the
+  write half is a separate module (the `git` view's `log.py`/`ops.py` split, GT-12).
+- **MC-2a** **The page the hints come from is the TAGGED entry**, resolved by
+  `shared/app_entry.entry_html` (D301) — not `index.html`. Uncapped, unlike the
+  gate: this is one on-demand read of a folder the user has already opened.
+- **MC-2b** **The page's call arguments are a HINT, and they are what makes the
+  proposal good.** `runPython("./mail.py", {op: "send"})` is the author already
+  telling us that `mail.py` is a dispatcher and `send` is one of its operations —
+  which is exactly one curated tool with `op` pinned. Extraction is a regex plus a
+  brace scan over the page, deliberately not a JS parser: a missed call site costs
+  a suggestion the user can add by hand, and nothing here reaches the manifest
+  without passing through the editor.
+- **MC-3** **`mcp.toml` in the app folder is the contract, and the panel writes
+  exactly what the server will accept** (`templates/mcp/manifest.py`). Per
+  `[[tool]]`: `name`, `description`, `file`, `entrypoint` (default `main`),
+  `[tool.pinned]`, and a `signature` snapshot. Validation is the SERVER's own rule
+  set — identifier names, a `.py` inside the folder, an entrypoint that exists,
+  unique names, identifier pin keys — enforced here so a typo is a refusal on the
+  keystroke rather than a registration that fails inside Claude. The write
+  replaces the `[[tool]]` array and nothing else (comments and unrelated tables
+  survive), is verified by re-parsing the rendered text before it replaces the
+  original, and is atomic. Strings are encoded with `json.dumps`, whose escape
+  grammar a TOML basic string shares — never a `.replace()` chain.
+- **MC-3a** **The filename is `mcp.toml`, NOT `openfused.toml`.** `fused`'s
+  project resolution walks up from the cwd looking for that second name, so an app
+  folder carrying it would start resolving as a *project* for every command run
+  inside it. An app must stay inert to that walk-up, and a dedicated MCP-specific
+  file is also readable on its own terms.
+- **MC-4** **Drift is a SNAPSHOT COMPARISON, and it is this app's business
+  alone.** The manifest records the entrypoint's signature as it was at curation
+  time; `inspect_app.py` re-derives it and reports `ok` / `changed` / `missing`
+  (the file or the entrypoint is gone) / `unknown` (a hand-written manifest with no
+  snapshot). The server IGNORES the field — it derives each tool's schema from the
+  current source at startup, so a drifted tool keeps working as declared, which is
+  why this is a banner with a re-curate affordance and not a blocker. Saving
+  re-records the snapshots, so Save is also the fix.
+- **MC-5** **Registration goes through the existing Claude-config MCP module,
+  and pins the CLI THIS APP EXPORTED.** The panel POSTs
+  `/api/claude-config/mcp` (`action=add`, name `<folder>-mcp` — suffixed, because
+  the name is read in a list of the user's own servers where the folder is the
+  identifying half; a `fused-app-` prefix filed every app under one word and put
+  the identity past where anyone reads. Server json
+  `{command: <exported fused>, args: ["app", "serve", <abs folder>]}`) — the same
+  module the Claude Config page uses, which owns the `claude mcp` CLI, the
+  `--scope user` choice and the name guard. There is deliberately no second way to
+  write an MCP host entry. When no CLI is available, Register is DISABLED with the
+  reason stated: an entry whose `command` does not exist fails inside Claude,
+  where the user cannot see why.
+- **MC-5a** **The `fused` path comes from `appenv.fused_cli_dir()`, NEVER from a
+  PATH lookup** (**D334**). That env var is the directory the server exported
+  after vetting its own interpreter's CLI and baking `FUSED_ENV` — the same signal
+  the `claude` template uses to decide whether to promise the command at all.
+  `shutil.which("fused")` was what this did first, and it is the exact mechanism
+  D334 replaced: on a machine whose app venv lacks the `[fused]` extra but whose
+  PATH carries some other `fused` (a pipx shim, another project's venv), the panel
+  baked that unvetted binary into a **global** `~/.claude.json` entry, to be run
+  later with no `FUSED_ENV` and to fail where nobody is looking. The registration
+  target is a global, durable, unattended command; deriving it from ambient PATH
+  is the one place that matters most and the one place it was done.
+- **MC-5b** **A registered server computes its tools on the interpreter PAGE
+  runs use** — the wrapper D334 writes exports `OPENFUSED_APP_SERVE_PYTHON`
+  (`fusedcli._app_serve_python`), and `fused app serve` (>= 2.9.3b7) makes it its
+  compute backend's `python_executable`. The value is
+  `envinstall.script_python()` — the SAME call `engine.get_backend()` passes for
+  page runs, resolved to `sys.executable` when it answers None (D214: "ours",
+  which is what the backend falls back to), never a hardcoded path and never a
+  `realpath` of a venv python, since that names the base interpreter and so keys
+  a different environment. Interpreter identity is half the venv cache key, so
+  equal inputs mean a tool RESOLVES the environment the page already built
+  instead of filling a parallel one nothing else reads — and a tool whose folder
+  declares no dependencies runs on the app's interpreter rather than in a bare
+  stdlib venv. It rides the wrapper rather than the registration entry's `env`
+  because the wrapper is rewritten on every server start (so a 3.12 that only
+  appears later takes effect on the next one) while a `~/.claude.json` entry is
+  written once and lives forever; it is a default (`[ -n … ] || …`), so an
+  explicitly set value still wins. An older engine ignores it silently, which is
+  why the pin carries a floor (test_the_fused_pin_reads_the_app_serve_python_seam).
+- **MC-6** **There is no gating layer beyond the MCP host's own per-call
+  approval.** Every curated tool is callable, because the person who curated it is
+  the person the host will ask. A second confirmation here would only be a false
+  sense of one.
+- **MC-7** **AI curation is a PROPOSAL and an optional one, and it names
+  `sonnet`.** The model choice is deliberate rather than inherited: omitting
+  `model` resolves to the user's default-model preference (Haiku where they have
+  none), and this is the panel's one hard reasoning task — read a folder's
+  signatures and its page's call sites, then decide which entrypoints deserve to
+  be tools and which of their parameters the page has already fixed. A weaker
+  model answers with one tool per function and nothing pinned, i.e. the curation
+  the user would have to redo by hand. `effort` stays `low` (a bounded read, not
+  a long think) and on a model that honours it now actually applies.
+
+  The model is handed the reduced surface (names, signatures, docstrings, page
+  call arguments — never
+  file contents) and answers with a tool array; every field lands in the editor
+  and nothing reaches the folder until Save. A pin the model invents for a
+  parameter that does not exist is dropped rather than written, since the runner
+  would silently ignore it and the operator would believe it enforced. Every
+  `fused.ai` rejection (`ai_unavailable`, `model_loading`, the rest) is a status
+  line, not a broken panel: manual entry is the full-capability path, and this app
+  runs on machines with no Claude CLI at all.
+- **MC-8** **A PIN KEEPS ITS TYPE, from the panel to the entrypoint.** The
+  manifest is TOML and the server hands the pins to the entrypoint as JSON
+  (`_params.json`), so a `dry_run: bool = False` pinned "off" has to land as
+  `dry_run = false`. The panel derives the kind from the annotation first and the
+  default's literal shape second (`pinKind`), seeds the box with the parameter's
+  own default already typed (`seedPin`), and offers a boolean as two values
+  rather than as free text. The bug this fixes was not cosmetic: a pinned `False`
+  was written as the STRING `"False"`, which the server passes through verbatim
+  and Python reads as **truthy** — a pinned-off safety flag behaving as on.
+  `manifest.py` refuses a value with no JSON equivalent, `None` included: TOML has
+  no null, and a null pin used to be written as the string `"None"`.
+- **MC-9** **A registration failure reaches the user, and nothing is clickable
+  before there is a report.** `/api/claude-config/mcp` answers HTTP 200 with
+  `{ok: false}` for its own refusals, and `add`/`remove` carry the claude CLI's
+  `{stdout, stderr}` with no `error` key at all — so the panel reads
+  `error || stderr || stdout` and treats a false `ok` from `action=list` as the
+  warning it is, rather than as an empty server list. The action buttons are
+  disabled in the markup and enabled only by a successful load, so a click before
+  or after a failed one cannot dereference a report that is not there.
+- **MC-10** **THE PANEL PAINTS BEFORE THE REGISTRATION PROBE ANSWERS.** That
+  probe is `claude mcp list`, and that command health-checks every MCP server the
+  user has configured by connecting to each one: **10.9 s** wall on a machine
+  with a dozen claude.ai connectors. `load()` awaited it before the first
+  `render()`, so the panel sat on "Loading…" for eleven seconds holding an editor
+  whose contents were already in hand — and paid it again on every reload.
+  Nothing in the editor depends on the answer, so the editor renders as soon as
+  `inspect_app.py` returns and the probe fills its own line in afterwards. Only
+  the registration control waits, and it says what it is waiting for. A second
+  load can start inside that window, so the probe carries a sequence number and a
+  stale answer is dropped rather than painted over the fresh one.
+- **MC-11** **The toolbar is TWO VERBS, and everything else sits where it acts.**
+  Curate and Save operate on the whole curated set, so they are the toolbar;
+  `+ add tool` appends ONE row and therefore lives at the end of the list, where
+  that row will appear; the registration state is a line above the footer, because
+  it reports as much as it acts, and reads `◉ Registered in Claude` /
+  `○ Not registered` with the server name beside it. **There is no Reload
+  button**: Save re-reads the folder itself, and the two states that wanted a
+  manual reload now offer the retry themselves — a failed `inspect_app.py` puts a
+  `retry` affordance in the status line, and a failed registration probe makes its
+  own line re-probe on click rather than toggling a state nobody knows. Four
+  registration states, not two: registered, not registered, still checking
+  (unclickable), and could-not-tell (re-probes). A control that offered a
+  direction before the answer was in would be asserting the opposite of what
+  might be true.
