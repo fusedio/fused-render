@@ -257,6 +257,18 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
 
     from fused_render.server.app import create_app
 
+    # ISOLATED HOME, because the AF-8 assertion at the end of this test writes to
+    # it: rendering the extracted entry records the open, and for a folder outside
+    # the workspace that IS hub registration — an entry in
+    # `<home>/registered_apps.json`. The conftest default home is ONE directory
+    # for the whole worker process, so the registration outlived this test and
+    # every later test in the same worker that listed apps saw a stray `linked`
+    # app named `demo-<hash>` (test_apps_api's whole-listing assertions, down to
+    # `test_missing_workspace_lists_empty`). Which worker collected which file is
+    # xdist's business, so the leak surfaced as an unreproducible failure in
+    # whatever file happened to land after this one. Same fixture, same reason, as
+    # tests/test_registered_apps.py's `_isolated_home`.
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
     client = TestClient(create_app(start_dir=str(tmp_path)))
     app_dir = make_app(tmp_path)
