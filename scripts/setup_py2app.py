@@ -464,6 +464,16 @@ OPTIONS = {
         "pluggy", "tomlkit", "jwt", "yaml", "loguru",
         "aiohttp", "yarl", "multidict", "frozenlist",
         "fsspec", "tabulate", "tqdm", "rtoml",
+        # The Hub client, for the Preferences sign-in (routers/hf_auth.py, D402).
+        # Forced for the reason this whole list exists: every import of it in the
+        # app is INSIDE a function (the router imports it per request, and
+        # `worker_base` must stay stdlib-only at module scope), so a
+        # traced-module copy is exactly the shape that ships a DMG where the
+        # button reports an ImportError — the .pptx failure this file's comments
+        # describe, in a new place. `hf_xet` is its compiled Xet backend and
+        # `filelock` guards its token store; both are reached only from inside
+        # hf, so neither is any more traceable than hf itself.
+        "huggingface_hub", "hf_xet", "filelock",
     ] + BUNDLED_PACKAGES + STDLIB_PACKAGES,
     # Single modules (incl. bare C extensions) that modulegraph can't be
     # trusted to find on its own — same runtime-import blindness as

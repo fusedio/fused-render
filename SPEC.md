@@ -1166,12 +1166,63 @@ never imports server).
   project's sessions/settings > the pref > `sonnet`; the template reads it with
   a plain `GET /api/prefs`, like its other `/api/…` reads. Read per request, so
   a change applies without a restart.
-- **PF-1a** The page renders its sections in this order: **Appearance**,
-  **Default model**, **Call log**,
+- **PF-1c** **The Hugging Face section is on this page — the AI tab
+  (§20.5/PF-9a) — and is NOT a preference** (D402). It is a **Log in to
+  Hugging Face** button, it talks to `/api/hf/*` rather than `/api/prefs`, and
+  **this app stores no Hub token at all**: the button drives
+  `huggingface_hub`'s own device-code browser login and hf persists what comes
+  back, in hf's files, with hf's modes, alongside the refresh token hf renews
+  by itself. So there is nothing here to store, mask, validate, or hand a
+  subprocess — and `/api/prefs` carries no `hf` block, because a payload that
+  advertised one would invite a page to write a credential this app would then
+  own.
+- **PF-1d** **The flow** (`server/routers/hf_auth.py`): `POST /api/hf/login`
+  (X-Fused) asks hf for a device code and returns the URL to open and the short
+  code to confirm there, **without waiting** — the middle of a device-code login
+  is a human being. A daemon thread polls hf's token endpoint (`poll_device_token`
+  blocks for the code's lifetime, ~15 min, so it cannot live on a request) and
+  hands the result to hf to persist. `GET /api/hf/auth` is what the page watches
+  — unguarded like every read, and carrying no credential: `{signedIn, account,
+  source: environment|login|null, forcedByVar, pending: {userCode, url,
+  secondsLeft}, error}`. `POST /api/hf/login/cancel` sets a flag the poll thread
+  raises on from hf's `on_pending` hook, which is the only way out of a call
+  parked inside that loop. **A second POST /api/hf/login JOINS the flow in
+  flight** rather than starting another, since two device codes are two codes on
+  the Hub's page with only one of them being polled — the supervisor's
+  join-don't-restart rule. `POST /api/hf/logout` removes the **active token's
+  entry by name** (`_logout_from_token`), never hf's public `logout()`, which
+  deletes every token on the machine and the git credential too: a settings
+  button must not sign the user out of logins it did not create.
+- **PF-1e** **`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN` still win, and the page says
+  so instead of showing a dead button.** hf reads those before its own store, so
+  a login made while one is set would save a token nothing would use — both
+  `login` and `logout` refuse with a 409 naming the **variable**, never its
+  value. Emptiness is not force (D148): an exported-but-empty value is ignored
+  by hf and must not lock the button. `account` is the username from a login this
+  process performed, else hf's stored token name with its `oauth-` filing prefix
+  stripped, else null — meaning "signed in but unnameable offline", because a
+  `whoami` per status poll would put a network round-trip behind a settings page.
+- **PF-1f** **Everything downstream reads hf, and there is exactly one reader.**
+  `hf_auth.token()` is `get_token()`; the Hub search calls it (§39/HS-0) and a
+  model download reaches the same answer by calling hf inside the worker, so the
+  two can never disagree about which credential the machine holds. Nothing is
+  cached — hf refreshes an OAuth token in place as it nears expiry, and a copy
+  held here would go stale exactly when it mattered. `supervisor._child_env`
+  writes **no** `HF_TOKEN`; an inherited one is passed through untouched.
+  Consequence worth stating: `huggingface_hub` is now a **core dependency** of
+  the app (hf + `hf_xet` + `filelock`, ~16MB). This is not SPEC AI-2 being
+  widened — that rule keeps ML *frameworks* out of a file explorer's dependency
+  set, and each runner still declares hf for its own venv — but it does end the
+  incidental guarantee that `worker_base` was stdlib-only *because hf was absent
+  from CI*, so that rule is now enforced by reading the module's own imports
+  (`test_ai_worker_base.py`).
+- **PF-1a** The **Render preferences** tab renders its sections in this order:
+  **Appearance**, **Call log**,
   **Accessibility**, and last
   **Execution engine** — last because it is the setting a user is least likely
   to have come here to change (builtin suits almost everyone, and an env var
-  pins it where it matters). There is **no Tour button**: the tour still runs
+  pins it where it matters). **Default model** and **Hugging Face** are NOT here:
+  they are the **AI** tab (§20.5/PF-9a, D403). There is **no Tour button**: the tour still runs
   itself on a first visit (`maybeAutoStartTour`), because it is onboarding
   rather than a preference. (The spec subsection numbering below is
   organizational, not the visual order.) *(A **Deploy to Fused account**
@@ -1256,7 +1307,17 @@ in-app affordance to gate.
 
 - **PF-9** The page is split into tabs, active tab in the URL
   (default clean-URL tab is **Render preferences** —
-  Logs/Execution engine/Tour, unchanged). *(A second **Fused account** tab —
+  Logs/Execution engine/Tour, unchanged).
+- **PF-9a** (D403) The **AI** tab, `?tab=ai`, holds **Default model** (PF-1b)
+  and **Hugging Face** (PF-1c–PF-1f). Neither is about rendering — the same
+  reason the engine picker left this page for /ai-models — and on the Render
+  tab a reader after either one read past four sections answering a different
+  question. They share a tab rather than getting one each because they are one
+  question asked twice: which model, and with whose credentials. The tab is
+  named for that subject and not for its two controls, so a third does not
+  rename it. Render preferences stays the clean-URL default: an unknown `?tab=`
+  still falls back to it, and no redirect is owed to a `/preferences` bookmark
+  — the page it named still exists, with two fewer sections on it. *(A second **Fused account** tab —
   §27's account panel, `?tab=account`, offered only while the PF-8 Deploy
   toggle was on — used to sit alongside Render preferences here, and the
   sidebar footer's signed-in dot pointed at it (formerly AC-1). Both the tab
@@ -5295,10 +5356,18 @@ three weeks ago, and would cost nothing to open.
   words because somebody told to "accept the terms" on an approval-gated repo
   goes looking for a button that is not there; an unrecognised truthy gate is
   read as `manual`, the stricter of the two. **There is no credentials UI and
-  this does not add one**: the token is read where `huggingface_hub` reads it
-  (`HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `$HF_HOME/token`), the search reply
-  carries only the boolean `authenticated`, and the hover names
-  `huggingface-cli login` rather than offering a box to paste a secret into.
+  this does not add one** — *narrowed by D402*: Preferences has a **Log in to
+  Hugging Face** button (§20/PF-1c), and the search token is
+  `huggingface_hub.get_token()` — hf's own store, hf's own resolution. Read
+  literally the clause still holds: there is **no box to paste a secret into**,
+  because the credential never passes through this app at all. What it was
+  protecting holds unchanged — **the search reply carries only the boolean
+  `authenticated`**, never the token, and the token is never logged — and the
+  gate hover still names where a token comes from rather than being the place you
+  produce one; it points at the login button instead of at
+  `huggingface-cli login` alone. What changed is only that somebody with no token
+  can get one without leaving the app, which is the one step the old wording left
+  them unable to take.
 - **HS-0a** **The menu constrains what can be ASKED; the row filter constrains
   what comes BACK.** They are not the same guarantee: an unfiltered query lets
   the Hub answer with anything it likes, so the supported-tag pass runs over
@@ -5735,7 +5804,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   then — **carrying the Hub token only when the blob is served by the Hub
   itself**, since a presigned URL already holds its credentials in the query
   string and S3 refuses a request bearing two of them, which made every download
-  by a token-holding user fail over to the slow path — up to
+  by a token-holding user fail over to the slow path (the token is whatever
+  `huggingface_hub.get_token()` finds in the worker — hf's own store, written by
+  the Preferences login button or by a `hf auth login`; nothing is injected into
+  the worker's environment, §20/PF-1f, D402) — up to
   **4 `Range` segments per file** with **segments across all files** as
   the units of work in one pool capped at **8 connections** — the single number
   that bounds how many sockets a download opens, which a pool per file would

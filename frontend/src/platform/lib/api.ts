@@ -841,6 +841,52 @@ export interface CallsPrefs {
   retention_forced_by: string | null;
 }
 
+// -- Hugging Face sign-in (server/routers/hf_auth.py; D402) -------------------
+
+// No token ever crosses this boundary in either direction. The button starts
+// huggingface_hub's own device-code login, hf stores what comes back, and this
+// payload reports who the machine is signed in as — never the credential, and
+// not even the value of an environment variable that may be overriding it.
+export interface HfAuth {
+  signedIn: boolean;
+  /** The account, when it can be named without a network call: the username
+   *  from a login this process performed, else hf's stored token name. Null
+   *  while `signedIn` is true means "signed in, and nothing here can name it". */
+  account: string | null;
+  /** What is actually answering — an environment variable (which beats hf's
+   *  store, in hf's own resolution) or hf's stored login. */
+  source: "environment" | "login" | null;
+  /** Which variable is overriding, by NAME. Never its value: that is a
+   *  credential, and the name is all the page needs to say what to unset. */
+  forcedByVar: string | null;
+  /** The login in flight: where to authorize, the short code to confirm there,
+   *  and how long the code has left. */
+  pending: { userCode: string; url: string; secondsLeft: number } | null;
+  /** Why the last attempt failed — denied, expired, or the network. */
+  error: string | null;
+}
+
+export function getHfAuth(): Promise<HfAuth> {
+  return getJson<HfAuth>("/api/hf/auth");
+}
+
+// Starts the flow, or JOINS one already running (`joined: true`) — a second
+// device code would be a second code on the Hub's page with only one of them
+// being polled.
+export function startHfLogin(): Promise<HfAuth & { joined: boolean }> {
+  return postJson<HfAuth & { joined: boolean }>("/api/hf/login", {});
+}
+
+export function cancelHfLogin(): Promise<HfAuth> {
+  return postJson<HfAuth>("/api/hf/login/cancel", {});
+}
+
+// Signs the machine out by removing the ACTIVE token's entry from hf's store —
+// not every token on the machine, which is what hf's own `logout()` would do.
+export function hfLogout(): Promise<HfAuth> {
+  return postJson<HfAuth>("/api/hf/logout", {});
+}
+
 export function getPrefs(): Promise<Prefs> {
   return getJson<Prefs>("/api/prefs");
 }
