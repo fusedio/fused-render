@@ -265,6 +265,42 @@ def test_a_refused_write_leaves_an_existing_manifest_untouched(manifest, app):
     assert open(os.path.join(app, "mcp.toml"), encoding="utf-8").read() == before
 
 
+@pytest.mark.parametrize("pinned", [
+    {"op": None},
+    {"tags": ["a", None]},
+    {"nested": {"k": None}},
+])
+def test_a_null_pin_is_refused_not_written_as_the_string_None(manifest, app, pinned):
+    # TOML has no null, so a null pin has nothing to be written as. It used to
+    # pass validation and fall through the renderer's "unreachable" branch, which
+    # wrote the STRING "None" — a pin the server would hand the entrypoint as
+    # text, i.e. a truthy value where the author meant nothing.
+    out = manifest.main(action="write", path=app,
+                        tools=[dict(_ONE[0], pinned=pinned)])
+
+    assert out["ok"] is False
+    assert out["reason"] == "invalid_tool"
+    assert not os.path.exists(os.path.join(app, "mcp.toml"))
+
+
+def test_a_manifest_that_is_not_utf8_refuses_both_ways(manifest, app):
+    # tomllib raises UnicodeDecodeError — a ValueError, not a TOMLDecodeError — on
+    # a hand-edited Latin-1 file. Neither read nor write may let it escape as an
+    # exception when this module's contract is a refusal payload; and a write in
+    # particular must not proceed, because it would discard the user's file.
+    latin1 = b'[[tool]]\nname = "caf\xe9"\n'
+    with open(os.path.join(app, "mcp.toml"), "wb") as fh:
+        fh.write(latin1)
+
+    read = manifest.main(action="read", path=app)
+    assert read["ok"] is False and read["reason"] == "bad_manifest"
+
+    write = manifest.main(action="write", path=app, tools=_ONE)
+    assert write["ok"] is False and write["reason"] == "bad_manifest"
+    with open(os.path.join(app, "mcp.toml"), "rb") as fh:
+        assert fh.read() == latin1
+
+
 def test_a_non_folder_path_is_refused(manifest, tmp_path):
     out = manifest.main(action="write", path=str(tmp_path / "nope"), tools=_ONE)
 
@@ -299,6 +335,34 @@ def test_writing_over_an_unparseable_manifest_refuses(manifest, app):
 
     assert out["ok"] is False
     assert out["reason"] == "bad_manifest"
+
+
+# The two modules each carry a `_signature`, because a template backend is exec'd
+# standalone and cannot import its sibling (SPEC PY-15). The snapshot one WRITES is
+# the snapshot the other COMPARES, so a divergence would report drift on every
+# tool of every folder — the exact failure manifest.py's own docstring warns about.
+def test_the_two_signature_formatters_agree(manifest, tmp_path):
+    import ast
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "mcp_inspect_for_parity",
+        os.path.join(os.path.dirname(__file__), "..", "fused_render", "templates",
+                     "mcp", "inspect_app.py"))
+    inspect_app = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(inspect_app)
+
+    sources = [
+        "def main(): pass",
+        "def main(op): pass",
+        "def main(op='list', to=None, count: int = 10): pass",
+        "def main(a, /, b, *args, c=1, **kw): pass",
+        "def main(x: str = 'a b', y: dict = {}): pass",
+        "async def main(op: bool = False): pass",
+    ]
+    for source in sources:
+        fn = ast.parse(source).body[0]
+        assert manifest._signature("main", fn) == inspect_app._signature("main", fn), source
 
 
 def test_the_return_value_is_json_serialisable(manifest, app):

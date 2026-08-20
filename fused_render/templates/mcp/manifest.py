@@ -98,7 +98,11 @@ def _load(path: str):
     try:
         with open(path, "rb") as fh:
             return tomllib.load(fh), ""
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError covers BOTH tomllib.TOMLDecodeError (a subclass) and the
+        # UnicodeDecodeError tomllib raises on a manifest that is not UTF-8 — a
+        # hand-edited Latin-1 file. Either one escaping would be a traceback
+        # overlay where this module promises a refusal payload.
         return {}, str(exc)
 
 
@@ -161,8 +165,15 @@ def _entrypoint_signature(folder: str, rel: str, entrypoint: str):
 
 
 def _pin_ok(value) -> bool:
-    """Whether a pinned value survives the server's JSON encoding of params."""
-    if isinstance(value, bool) or isinstance(value, _PIN_SCALARS) or value is None:
+    """Whether a pinned value survives the server's JSON encoding of params.
+
+    `None` is deliberately NOT ok: TOML has no null, so a null pin has nothing
+    to be written as. It used to pass here and fall through `_toml_value`'s
+    "unreachable" branch, which wrote the STRING `"None"` — a pin the server
+    would hand the entrypoint as text. A refusal naming the parameter is the
+    honest answer; the panel simply does not offer a pin with no value.
+    """
+    if isinstance(value, bool) or isinstance(value, _PIN_SCALARS):
         return True
     if isinstance(value, list):
         return all(_pin_ok(v) for v in value)
