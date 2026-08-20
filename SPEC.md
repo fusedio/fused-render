@@ -6574,9 +6574,12 @@ an AI Models page that could say what was on disk but not what was *running*.
   declining leaves the key off, so `segment.words || []` is the whole contract
   and one page runs unchanged on every machine. Refusing would do the opposite of
   what AI-10c is for, making a page work on a Mac and 400 on a CTranslate2 box.
-  The other two engines could carry it — faster-whisper takes `word_timestamps`
-  and Parakeet emits per-token times its sentence grouping already drops — and
-  adding either is one entry in `engine_options.WORDS_RUNNERS`. **`task:
+  The other two engines could carry it, and are not equally close: faster-whisper
+  takes `word_timestamps` and returns the same DTW-aligned words, so it is one
+  entry in `engine_options.WORDS_RUNNERS` plus a mapping. Parakeet's native times
+  are per SUBWORD rather than per word and quantized to an 80ms grid by its TDT
+  duration head, so it needs word rebuilding (group on a leading space) and would
+  step visibly under a highlight. **`task:
   "translate"` carries no words on any engine**: word timings are positions in
   the audio and a translation's words were never spoken in it, so there is
   nothing to align them to, and the library's warn-and-return-anyway reaches a

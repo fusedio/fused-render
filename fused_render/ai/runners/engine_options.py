@@ -134,13 +134,23 @@ def unsupported_or_raise(runner_code, *, task=None, language=None,
 #: Runner codes that produce per-word timings. Only MLX Whisper today (D391).
 #:
 #: The other two CAN, and this set is a record of what is BUILT rather than of
-#: what is possible: faster-whisper's `transcribe()` takes `word_timestamps` and
-#: returns `segment.words` from the same DTW alignment, and Parakeet is a
-#: transducer that emits per-token times natively — `_sentences` already
-#: receives them and drops them. Wiring either one means adding its code here
-#: and emitting the same `{start, end, word}` shape; nothing else changes, and no
-#: page needs editing, because a page that reads `words` when it is there
-#: already handles both answers.
+#: what is possible — but they are not equally close, and the difference matters
+#: to whoever picks this up:
+#:
+#:   faster-whisper  nearly free. `model.transcribe()` takes `word_timestamps`
+#:                   and returns `segment.words` from the same DTW alignment, so
+#:                   it is this entry plus a mapping into `{start, end, word}`.
+#:   parakeet-mlx    more work than "it already has the times". An
+#:                   `AlignedToken` is a SentencePiece SUBWORD, not a word, and
+#:                   the library ships no aggregation — words have to be rebuilt
+#:                   by grouping tokens on a leading space. Its timings also come
+#:                   from the TDT duration head rather than an alignment, on an
+#:                   80ms grid (`subsampling_factor / sample_rate * hop_length`)
+#:                   against whisper's 10ms, so a highlight would step visibly.
+#:
+#: Adding either means adding its code here and emitting the same
+#: `{start, end, word}` shape; no page needs editing, because a page that reads
+#: `words` when it is there already handles both answers.
 #:
 #: **Codes, so a hardware variant is a separate entry**, for `UNSUPPORTED`'s
 #: reason: a CUDA sibling that gains word timings is its own code and must be

@@ -902,7 +902,10 @@ def generate(body):
     # best-effort rather than refused (see `engine_options.words_available`).
     # This engine emits no `words` key, a caller reads that from the segment, and
     # nothing here has to know the flag exists. Parakeet's own per-token times
-    # could supply it — see `_sentences`, which already drops them.
+    # could supply it — see `_sentences`, which already drops them — but a token
+    # here is a SUBWORD, so words would have to be rebuilt by grouping on a
+    # leading space, and the times sit on an 80ms grid rather than whisper's
+    # 10ms. `engine_options.WORDS_RUNNERS` carries the full comparison.
     engine_options.unsupported_or_raise(
         RUNNER_CODE, task=task, language=str(body.get("language") or ""),
         initial_prompt=str(body.get("initialPrompt") or ""))
