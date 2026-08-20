@@ -953,10 +953,26 @@ class _FileFetch:
         have us skip bytes that were never fetched, and the result is a blob of
         exactly the right length that is silently wrong. The layout itself is
         checked in `_restore`, against the segments derived from this answer.
+
+        **`isinstance(state, dict)` is checked explicitly, not left to fall out
+        of a `KeyError`.** A sidecar whose JSON parses but is not an object — a
+        truncated write that still happens to be valid JSON on its own, like a
+        bare `2` or a list — has no `.get`, and `state["etag"]` on such a value
+        raises `TypeError`, not `KeyError`; both were already caught here, so
+        this was harmless before the version check was added. `state.get(...)`
+        on a non-dict raises `AttributeError`, which was NOT in the tuple below
+        — so a malformed sidecar stopped reading as "no sidecar" for this one
+        file and instead escaped `plan()` entirely, taking the whole repo into
+        the fallback and `_clear_parts` deleting every OTHER file's progress
+        along with it. Checking the shape up front says directly what every
+        line below it assumes, rather than relying on whichever accessor
+        happens to be first to notice.
         """
         try:
             with open(self.sidecar) as handle:
                 state = json.load(handle)
+            if not isinstance(state, dict):
+                return None
             if state.get("version") != SIDECAR_VERSION:
                 return None
             if state["etag"] != self.meta["etag"] or state["size"] != self.size:

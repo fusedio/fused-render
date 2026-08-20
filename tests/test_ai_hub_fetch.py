@@ -947,6 +947,39 @@ def test_a_sidecar_from_a_future_version_is_also_discarded(base, monkeypatch,
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
 
 
+@pytest.mark.parametrize("content", ["2", "[1, 2, 3]", '"just a string"'])
+def test_a_sidecar_that_is_not_an_OBJECT_is_thrown_away_not_fatal(
+        base, monkeypatch, tmp_path, payload, content):
+    """A sidecar whose JSON parses but is not a dict — a truncated write that
+    still happens to be valid JSON on its own — used to hit `state["etag"]`
+    and raise `TypeError`, caught by the same tuple as everything else here:
+    "no sidecar", one file restarts clean. `state.get("version")` runs BEFORE
+    that check now, and `.get` on a non-dict raises `AttributeError` instead —
+    which was NOT in the tuple, so this escaped `_saved` and `plan()` entirely,
+    turning a clean one-file restart into a whole-repo fallback that deletes
+    every OTHER file's progress via `_clear_parts`. This must still resolve
+    quietly to a fresh download of the one affected file, on the segmented
+    path — never a repo-wide fallback.
+    """
+    url, state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    blobs = os.path.join(folder, "blobs")
+    os.makedirs(blobs)
+    with open(os.path.join(blobs, "e7ag.fusedpart"), "wb") as handle:
+        handle.write(b"\0" * len(payload))
+    with open(os.path.join(blobs, "e7ag.fusedpart.json"), "w") as handle:
+        handle.write(content)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    # Fresh, fixed-size-chunk download — the segmented path, not the fallback:
+    # a repo-wide `_Unsegmentable`/fallback would never touch this server at
+    # all, since `_fake_hub`/`_wire` only wires the real server for the fast
+    # path.
+    assert _offsets(state["log"]) == [0, 50_000, 100_000, 150_000]
+
+
 def test_a_large_file_splits_into_many_fixed_size_chunks_not_four(
         base, monkeypatch, tmp_path):
     """`MAX_SEGMENTS_PER_FILE` capped a file at 4 segments so that a static
