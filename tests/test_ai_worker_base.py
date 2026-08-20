@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -85,6 +86,58 @@ def test_every_route_refuses_a_wrong_token(base):
             assert caught.value.code == 403, path
     finally:
         server.shutdown()
+
+
+def test_a_refused_post_does_not_desync_the_keep_alive_connection(base):
+    """The 403 path has to READ the body it is refusing.
+
+    This handler is HTTP/1.1, so the connection is kept alive and the NEXT
+    request is parsed off the same socket. Leave the refused request's body
+    unread and those bytes are consumed as that next request's request-line,
+    which is what this asserts. The same omission also made the eventual close
+    send an RST rather than a FIN on Windows, so the client got
+    ConnectionAbortedError ([WinError 10053]) instead of the 403 — that half is
+    not observable off-Windows, but it is the same missing read, and it flaked
+    this file on the runner.
+    """
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        body = b'{"prompt": "x"}'
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            # (1) refused POST, WITH a body.
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                b"\r\n" + body)
+            # (2) a VALID request down the same connection.
+            s.sendall(
+                b"GET /health HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: secret\r\n"
+                b"\r\n")
+            s.settimeout(3.0)
+            data = b""
+            try:
+                while len(data) < 65536:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+            except (TimeoutError, socket.timeout):
+                pass
+    finally:
+        server.shutdown()
+
+    statuses = re.findall(rb"HTTP/1\.[01] (\d{3})", data)
+    # The refusal, then the second request UNDERSTOOD — not a 400 off the
+    # leftover body, and not a dropped connection.
+    assert statuses[:1] == [b"403"], data
+    assert b"200" in statuses[1:], data
 
 
 def test_a_missing_token_is_refused_too(base):

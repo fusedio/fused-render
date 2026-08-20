@@ -2125,6 +2125,26 @@ def _handler(generate, streaming):
         def log_message(self, *args):
             pass  # the supervisor captures stderr; per-request noise is not useful
 
+        def _drain(self):
+            """Read and discard the request body.
+
+            Mandatory before answering a request WITHOUT reading its body. This
+            handler is HTTP/1.1, so the connection is kept alive and the next
+            request is parsed off the same socket — an undrained body is still
+            queued there and its bytes get read as that request's request-line.
+            And closing a socket that still holds unread data makes Windows
+            send an RST instead of a FIN, which reaches the client as
+            [WinError 10053] ConnectionAbortedError rather than the clean 403
+            this path exists to deliver. (Both halves are real: the desync bites
+            on every platform, the RST is Windows-specific.)
+            """
+            remaining = int(self.headers.get("Content-Length") or 0)
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 64 * 1024))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+
         def _authorized(self):
             # The token is a header the supervisor generated and passed in this
             # process's environment. A foreign page that guessed the ephemeral
@@ -2132,6 +2152,10 @@ def _handler(generate, streaming):
             # log line or a Referer.
             if TOKEN and self.headers.get("X-Fused-Worker") == TOKEN:
                 return True
+            # Before the refusal, not after: see _drain. A rejected POST still
+            # arrived with a body, and leaving it unread turns a 403 into a
+            # dropped connection.
+            self._drain()
             self.send_response(403)
             self.send_header("Content-Length", "0")
             self.end_headers()

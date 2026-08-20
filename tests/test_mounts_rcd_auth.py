@@ -174,6 +174,17 @@ def _serve_once(handler_state):
         def do_POST(self):
             handler_state["auth"] = self.headers.get("Authorization")
             handler_state["path"] = self.path
+            # Drain the request body, as the real rclone rc daemon does — every
+            # _rc call POSTs one (`{}` at the least). Answering without reading
+            # it leaves those bytes in the socket, and closing a socket that
+            # still holds unread data makes Windows send an RST instead of a
+            # FIN: the client's own read then fails with [WinError 10053] and
+            # _rc reports it as "rclone rc core/pid: ...". That is a stub that
+            # does not behave like the daemon it stands in for, not a bug in
+            # _rc — it flaked this file on the Windows runner.
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
             body = b'{"pid": 4242}'
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
