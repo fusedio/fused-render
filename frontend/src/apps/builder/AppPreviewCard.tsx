@@ -34,7 +34,7 @@
 // live preview (D365).
 import { useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
-import { downloadAppFile, rawUrl } from "@platform/lib/api";
+import { appfilePreviewUrl, downloadAppFile, rawUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { withNoFocus } from "@platform/lib/frame-focus";
@@ -86,6 +86,17 @@ export function AppPreviewCard({
   // Set when the authored thumbnail fails to decode — see the fallback chain in
   // the module comment. One-way: a retry would loop on a file that is broken.
   const [shotFailed, setShotFailed] = useState(false);
+  // The still's source. An exported .fused card (kind "appfile", D392) has no
+  // folder to hold a preview.png — its still is the payload's, streamed by a
+  // single-member zip read; the endpoint 404s when the file ships without one
+  // and this <img>'s ordinary onError drops the card to the empty thumb
+  // (entry_html is null for these, so there is no live branch to fall to).
+  const shotSrc =
+    app.kind === "appfile"
+      ? appfilePreviewUrl(app.path)
+      : app.preview_image
+        ? rawUrl(app.preview_image)
+        : null;
   // Gates the live-iframe branch only — preview.png costs nothing to keep
   // mounted and the empty thumb costs nothing at all, so neither needs this.
   const [thumbRef, nearViewport] = useNearViewport<HTMLSpanElement>();
@@ -140,7 +151,7 @@ export function AppPreviewCard({
         </span>
       </span>
       <span className="app-pcard-thumb" aria-hidden="true" ref={thumbRef}>
-        {app.preview_image && !shotFailed ? (
+        {shotSrc && !shotFailed ? (
           <>
             {/* Hover live preview, mounted BELOW the img in the stacking
                 order so the still stays on top until the app has painted. */}
@@ -164,7 +175,7 @@ export function AppPreviewCard({
             )}
             <img
               className="app-pcard-shot"
-              src={rawUrl(app.preview_image)}
+              src={shotSrc}
               alt=""
               loading="lazy"
               onError={() => setShotFailed(true)}

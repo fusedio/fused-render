@@ -187,6 +187,11 @@ def api_home_apps(limit: int = HOME_APPS_LIMIT):
             limit=limit, include_updated_at=False, opened_only=True
         )
     )
+    # Opened .fused files (D392): their recents store is already newest-first
+    # and every entry carries openedAt, so they merge exactly as the other two.
+    from fused_render import exported_apps
+
+    recent.extend(exported_apps.recent_exported_apps(limit))
     recent.sort(
         key=lambda a: (-_app_recency(a), a["tag"].lower(), a["name"].lower())
     )

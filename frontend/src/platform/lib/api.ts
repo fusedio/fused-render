@@ -1490,8 +1490,33 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
 // fetch + blob rather than a bare <a download>, same reason as the templates
 // export above: a non-2xx JSON error (not an app, over
 // budget) surfaces to the caller instead of saving as a corrupt file.
-export async function downloadAppFile(path: string, name: string): Promise<void> {
-  const res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));
+// The exported card's thumbnail: the preview.png INSIDE the .fused at `path`,
+// served as bytes by a single-member zip read (never an extraction). 404s when
+// the file ships without one — the card's onError fallback owns that case.
+export function appfilePreviewUrl(path: string): string {
+  return "/api/appfile/preview?path=" + encodeURIComponent(path);
+}
+
+export async function downloadAppFile(
+  path: string,
+  name: string,
+  // Optional capture of the app to bake into the .fused as its preview.png
+  // (D392). The server only uses it when the folder has no authored one.
+  preview?: Blob,
+): Promise<void> {
+  let res: Response;
+  if (preview) {
+    const form = new FormData();
+    form.set("path", path);
+    form.set("preview", preview, "preview.png");
+    res = await fetch("/api/appfile/export", {
+      method: "POST",
+      headers: { "X-Fused": "1" },
+      body: form,
+    });
+  } else {
+    res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));
+  }
   if (!res.ok) {
     let message = `export failed (${res.status})`;
     try {

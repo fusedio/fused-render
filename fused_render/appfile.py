@@ -75,6 +75,12 @@ MAX_OPEN_TOTAL_BYTES = 1024 * 1024 * 1024
 # runs). A real manifest is a few hundred bytes; 256 KiB is generous.
 _MANIFEST_CAP_BYTES = 256 * 1024
 
+# Cap on the payload's preview.png, both directions (a capture injected at
+# export time and the member `read_preview` streams to a card). A card
+# thumbnail is ~1280x800; 8 MiB is generous for any real screenshot.
+MAX_PREVIEW_BYTES = 8 * 1024 * 1024
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
 # Directory/file names never exported. Dotted names (`.git`, `.claude`,
 # `.venv`, `.DS_Store`, `.env` — which may hold secrets) are dropped by the
 # hidden-name rule; these are the non-dotted machinery dirs on top of it.
@@ -136,13 +142,20 @@ def default_file_name(app_dir: str) -> str:
     return os.path.basename(os.path.abspath(app_dir)) + ".fused"
 
 
-def export_app_file(app_dir: str, out_path: str) -> dict:
+def export_app_file(app_dir: str, out_path: str,
+                    preview_bytes: bytes | None = None) -> dict:
     """Write the app folder at ``app_dir`` as a ``.fused`` file at ``out_path``.
 
     Returns the manifest written into the zip. Raises :class:`AppFileError`
     on anything user-correctable: not an app folder (no page carries the
     marker), or a folder over budget.
     Non-destructive: refuses an existing ``out_path``.
+
+    ``preview_bytes`` is an optional caller-captured card screenshot (D392):
+    it becomes the payload's ``preview.png`` ONLY when the folder has no
+    authored one — an author's chosen still always wins over a capture. It
+    must be a real PNG under the preview cap; anything else raises rather
+    than baking a broken thumbnail into the artifact forever.
     """
     app_dir = os.path.abspath(app_dir)
     if not os.path.isdir(app_dir):
@@ -176,6 +189,16 @@ def export_app_file(app_dir: str, out_path: str) -> dict:
             f"app folder is too large to export ({total} bytes > {MAX_EXPORT_TOTAL_BYTES})"
         )
 
+    if preview_bytes is not None:
+        if len(preview_bytes) > MAX_PREVIEW_BYTES:
+            raise AppFileError(
+                f"preview image is too large ({len(preview_bytes)} bytes > "
+                f"{MAX_PREVIEW_BYTES})")
+        if not preview_bytes.startswith(_PNG_MAGIC):
+            raise AppFileError("preview image is not a PNG")
+        if any(rel == app_listing.PREVIEW_IMAGE_NAME for _, rel in members):
+            preview_bytes = None  # the authored still wins
+
     manifest = {
         "fused_app_file": 1,
         "root": PAYLOAD_DIR,
@@ -191,6 +214,9 @@ def export_app_file(app_dir: str, out_path: str) -> dict:
     try:
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            if preview_bytes is not None:
+                zf.writestr(
+                    f"{PAYLOAD_DIR}/{app_listing.PREVIEW_IMAGE_NAME}", preview_bytes)
             for full, rel in members:
                 zf.write(full, arcname=f"{PAYLOAD_DIR}/{rel}")
         os.replace(tmp, out_path)
@@ -236,6 +262,34 @@ def read_manifest(fused_path: str) -> dict:
     ):
         raise AppFileError(f"invalid entry path in manifest: {entry!r}")
     return manifest
+
+
+def read_preview(fused_path: str) -> bytes | None:
+    """The payload's ``preview.png`` bytes, or None when the file ships
+    without one — read-only, single member, nothing extracted (the same
+    posture as :func:`read_manifest`; a card thumbnail must never trigger
+    extraction). Raises :class:`AppFileError` for an unreadable/invalid
+    ``.fused``; a member that is over the cap or not a PNG answers None —
+    for a THUMBNAIL, "broken still" and "no still" earn the same fallback."""
+    manifest = read_manifest(fused_path)
+    root = manifest.get("root") or PAYLOAD_DIR
+    if not isinstance(root, str) or "\\" in root or ".." in root.split("/"):
+        raise AppFileError(f"invalid root path in manifest: {root!r}")
+    member = f"{root}/{app_listing.PREVIEW_IMAGE_NAME}"
+    try:
+        with zipfile.ZipFile(fused_path) as zf:
+            try:
+                with zf.open(member) as f:
+                    # Bounded read, like the manifest's: declared sizes in an
+                    # archive are attacker-controlled.
+                    raw = f.read(MAX_PREVIEW_BYTES + 1)
+            except KeyError:
+                return None
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise AppFileError(f"not a readable .fused file: {exc}")
+    if len(raw) > MAX_PREVIEW_BYTES or not raw.startswith(_PNG_MAGIC):
+        return None
+    return raw
 
 
 def _file_key(fused_path: str, name: str) -> str:

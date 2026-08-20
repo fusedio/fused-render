@@ -189,6 +189,56 @@ def _clear_cache() -> None:
         _cache = None
 
 
+def _row(path: str, mtime: float | None, opened: float | None) -> dict:
+    """One /apps listing dict for the ``.fused`` at ``path`` — the shape both
+    the hub catalog and Home's recents strip serve. ``entry`` is the file
+    itself (a click opens the fusedapp view), ``entry_html`` None (not a
+    renderable page: the card never live-iframes it; its thumbnail is the
+    payload's preview.png via GET /api/appfile/preview, keyed off ``kind``)."""
+    canonical = canonical_fs_path(path)
+    return {
+        "name": os.path.splitext(os.path.basename(path))[0],
+        "tag": EXPORTED_TAG,
+        "kind": "appfile",
+        "path": canonical,
+        "entry": canonical,
+        "entry_html": None,
+        "preview_image": None,
+        "category": None,
+        "title": None,
+        "updated_at": mtime,
+        "opened_at": opened,
+    }
+
+
+def recent_exported_apps(limit: int) -> list[dict]:
+    """At most ``limit`` recently OPENED exported apps, stored order (newest
+    first) — Home's slice (D392). Recents-only on purpose: Home is a recency
+    strip, so the index query (which knows nothing about opens) has nothing
+    to add here, and the hot Home path stays free of duckdb entirely."""
+    from fused_render.server.walk import junk_path
+
+    guard = MountGuard()
+    apps: list[dict] = []
+    for e in read_recents():
+        opened = _opened_epoch(e.get("openedAt"))
+        if opened is None:
+            continue
+        path = os.path.abspath(e["path"])
+        if junk_path(path) or guard.blocks(path):
+            continue
+        try:
+            if not os.path.isfile(path):
+                continue
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        apps.append(_row(path, mtime, opened))
+        if len(apps) >= limit:
+            break
+    return apps
+
+
 def exported_apps() -> list[dict]:
     """Every discoverable ``.fused`` file as an /apps listing dict.
 
@@ -232,19 +282,5 @@ def exported_apps() -> list[dict]:
                 mtime = os.path.getmtime(path)
         except OSError:
             continue
-        name = os.path.splitext(os.path.basename(path))[0]
-        canonical = canonical_fs_path(path)
-        apps.append({
-            "name": name,
-            "tag": EXPORTED_TAG,
-            "kind": "appfile",
-            "path": canonical,
-            "entry": canonical,
-            "entry_html": None,
-            "preview_image": None,
-            "category": None,
-            "title": None,
-            "updated_at": mtime,
-            "opened_at": opened_at.get(key),
-        })
+        apps.append(_row(path, mtime, opened_at.get(key)))
     return apps

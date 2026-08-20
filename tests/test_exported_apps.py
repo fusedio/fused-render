@@ -222,6 +222,75 @@ def test_appfile_open_records_recency_on_the_source_file(client, tmp_path):
     assert [e["path"] for e in exported_apps.read_recents()] == [str(out)]
 
 
+def test_home_row_includes_opened_exported_apps(client, tmp_path):
+    app_dir = _app_folder(tmp_path, "homer")
+    out = tmp_path / "homer.fused"
+    appfile.export_app_file(str(app_dir), str(out))
+    client.post("/api/appfile/open", json={"file": str(out)},
+                headers={"X-Fused": "1"})
+    apps = client.get("/api/apps/home").json()["apps"]
+    mine = [a for a in apps if a.get("kind") == "appfile"]
+    assert [a["name"] for a in mine] == ["homer"]
+    assert mine[0]["opened_at"] is not None
+
+
+# ----------------------------------------------------------- preview member
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 16
+
+
+def test_export_bakes_a_capture_only_when_no_authored_preview(tmp_path):
+    a = _app_folder(tmp_path / "one", "a")
+    out_a = tmp_path / "a.fused"
+    appfile.export_app_file(str(a), str(out_a), preview_bytes=PNG)
+    assert appfile.read_preview(str(out_a)) == PNG
+
+    b = _app_folder(tmp_path / "two", "b")
+    (b / "preview.png").write_bytes(PNG + b"authored")
+    out_b = tmp_path / "b.fused"
+    appfile.export_app_file(str(b), str(out_b), preview_bytes=PNG)
+    assert appfile.read_preview(str(out_b)) == PNG + b"authored"
+
+
+def test_export_refuses_a_non_png_capture(tmp_path):
+    a = _app_folder(tmp_path, "a")
+    with pytest.raises(appfile.AppFileError):
+        appfile.export_app_file(str(a), str(tmp_path / "a.fused"),
+                                preview_bytes=b"GIF89a nope")
+
+
+def test_preview_route_serves_the_member_or_404s(client, tmp_path):
+    a = _app_folder(tmp_path / "one", "a")
+    out = tmp_path / "a.fused"
+    appfile.export_app_file(str(a), str(out), preview_bytes=PNG)
+    r = client.get("/api/appfile/preview", params={"path": str(out)})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert r.content == PNG
+
+    bare = _app_folder(tmp_path / "two", "bare")
+    out2 = tmp_path / "bare.fused"
+    appfile.export_app_file(str(bare), str(out2))
+    assert client.get("/api/appfile/preview",
+                      params={"path": str(out2)}).status_code == 404
+    assert client.get("/api/appfile/preview",
+                      params={"path": "relative.fused"}).status_code == 400
+
+
+def test_post_export_carries_the_capture_into_the_download(client, tmp_path):
+    a = _app_folder(tmp_path, "posted")
+    r = client.post("/api/appfile/export", data={"path": str(a)},
+                    files={"preview": ("preview.png", PNG, "image/png")},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200
+    out = tmp_path / "posted.fused"
+    out.write_bytes(r.content)
+    assert appfile.read_preview(str(out)) == PNG
+    # The guard holds: no X-Fused, no export.
+    assert client.post("/api/appfile/export",
+                       data={"path": str(a)}).status_code == 403
+
+
 # ------------------------------------- extract-dir double-listing suppression
 
 

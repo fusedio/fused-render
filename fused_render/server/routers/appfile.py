@@ -21,8 +21,8 @@ import shutil
 import tempfile
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Header
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, Body, File, Form, Header, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 
 from fused_render import appfile
@@ -70,6 +70,64 @@ def api_appfile_export(path: str = ""):
         },
         background=BackgroundTask(shutil.rmtree, tmp_dir, ignore_errors=True),
     )
+
+
+@router.post("/api/appfile/export")
+async def api_appfile_export_with_preview(
+    path: str = Form(default=""),
+    preview: UploadFile | None = File(default=None),
+    x_fused: str | None = Header(default=None),
+):
+    """The card's export path (D392): same download as the GET, plus an
+    optional caller-captured screenshot that becomes the payload's
+    ``preview.png`` when the folder has no authored one. A POST because it
+    carries a body; X-Fused-guarded because — unlike the GET — its caller is
+    always our own fetch, never bare browser navigation."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if not path or not os.path.isabs(path):
+        return _error("path must be an absolute app folder path")
+    preview_bytes: bytes | None = None
+    if preview is not None:
+        preview_bytes = await preview.read(appfile.MAX_PREVIEW_BYTES + 1)
+        if not preview_bytes:
+            preview_bytes = None
+    tmp_dir = tempfile.mkdtemp(prefix="fused-appfile-export-")
+    file_name = appfile.default_file_name(path)
+    out_path = os.path.join(tmp_dir, file_name)
+    try:
+        appfile.export_app_file(path, out_path, preview_bytes=preview_bytes)
+    except appfile.AppFileError as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return _error(str(exc))
+    return FileResponse(
+        out_path,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": "attachment; filename*=UTF-8''" + quote(file_name)
+        },
+        background=BackgroundTask(shutil.rmtree, tmp_dir, ignore_errors=True),
+    )
+
+
+@router.get("/api/appfile/preview")
+def api_appfile_preview(path: str = ""):
+    """The ``preview.png`` inside the ``.fused`` at ``path``, as bytes — the
+    exported card's thumbnail (D392). Read-only single-member zip read, no
+    extraction (a grid of thumbnails must never populate the extract cache).
+    404 when the file ships without one, so the card's ordinary onError
+    fallback shows the empty thumb."""
+    if not path or not os.path.isabs(path):
+        return _error("path must be an absolute .fused file path")
+    try:
+        raw = appfile.read_preview(path)
+    except appfile.AppFileError as exc:
+        return _error(str(exc))
+    if raw is None:
+        return _error("this app file has no preview image", status=404)
+    return Response(raw, media_type="image/png",
+                    headers={"Cache-Control": "no-cache"})
 
 
 @router.post("/api/appfile/open")
