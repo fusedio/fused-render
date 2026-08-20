@@ -611,3 +611,41 @@ def test_a_grid_overhanging_180_is_not_rolled(eng, tmp_path):
     assert descriptor["status"] == "ok", descriptor.get("message")
     # Rolled, it would have started at -180 and stopped short of 180.
     assert descriptor["bounds"][2] > 180 - 2.6
+
+
+def test_the_page_may_zoom_past_the_grid_and_still_get_tiles(eng, tmp_path):
+    # A coarse grid's native maxzoom is low (z2 for ERA5, z0 for a 1-degree
+    # grid). Capping the source there left MapLibre stretching one blurry
+    # image over every closer view, so the descriptor advertises headroom and
+    # the engine renders those levels from the same array.
+    path = tmp_path / "coarse.nc"
+    lat = np.linspace(80, -80, 60)
+    lon = np.linspace(-180, 179, 120)
+    xr.Dataset(
+        {"v": (("lat", "lon"), np.random.default_rng(0).random((60, 120)).astype("float32"))},
+        coords={"lat": lat, "lon": lon},
+    ).to_netcdf(path, engine="h5netcdf")
+    descriptor = _describe(eng, path)
+    native = descriptor["stats"]["native_maxzoom"]
+    assert descriptor["maxzoom"] > native
+    source_id = descriptor["data"]["source_id"]
+    for zoom in (native + 1, native + 4, descriptor["maxzoom"]):
+        span = 2 ** zoom
+        tile = eng.tile(source_id, zoom, span // 2, span // 2)
+        assert tile[:4] == b"\x89PNG", zoom
+
+
+def test_resolution_is_reported_for_the_info_line(eng, tmp_path):
+    path = tmp_path / "quarter.nc"
+    lat = np.arange(20, -20, -0.25)
+    lon = np.arange(-30, 30, 0.25)
+    xr.Dataset(
+        {"v": (("lat", "lon"), np.zeros((lat.size, lon.size), dtype="float32"))},
+        coords={"lat": lat, "lon": lon},
+    ).to_netcdf(path, engine="h5netcdf")
+    resolution = _describe(eng, path)["stats"]["resolution"]
+    assert resolution["degrees"] is True
+    assert abs(resolution["x"] - 0.25) < 1e-9
+    assert abs(resolution["y"] - 0.25) < 1e-9
+    # 0.25 degrees of latitude is ~27.8 km.
+    assert 27000 < resolution["metres"] < 28500

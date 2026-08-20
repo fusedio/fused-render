@@ -1807,12 +1807,28 @@ const DOTS = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor
 
 const RASTER_KINDS = new Set(["raster_image", "raster_tiles", "raster_cog_client"]);
 
+// "0.25° (~27.8 km)" — the cell size, which is what "how much detail is in
+// here" actually asks of a gridded dataset. Longitude cells narrow away from
+// the equator, so the metres are the latitude step and are marked approximate.
+function cellSizeLabel(res) {
+  if (!res) return "";
+  const fmt = v => Number(v.toPrecision(4)).toString();
+  if (!res.degrees) return `${fmt(res.x)}×${fmt(res.y)} units/px`;
+  const size = Math.abs(res.x - res.y) < res.y * 1e-6
+    ? `${fmt(res.y)}°` : `${fmt(res.x)}°×${fmt(res.y)}°`;
+  const m = res.metres;
+  if (!m) return size;
+  return `${size} (~${m >= 1000 ? fmt(m / 1000) + " km" : Math.round(m) + " m"})`;
+}
+
 function rasterStatLine(st) {
   // The browser reader reports what the TIFF tags carry, which is less than the
   // Python engine reads; show the parts that are there.
   const parts = [];
   if (st.bands) parts.push(`${st.bands}-band`);
   if (st.width && st.height) parts.push(`${st.width}×${st.height}`);
+  const cell = cellSizeLabel(st.resolution);
+  if (cell) parts.push(cell);
   if (st.dtype) parts.push(st.dtype);
   if (st.overviews) parts.push(`${st.overviews} overviews`);
   return parts.join(" · ");
@@ -2025,6 +2041,7 @@ function renderStyleDock() {
   if (RASTER_KINDS.has(d.kind)) statTxt = rasterStatLine(st);
   else if (["vector_geojson", "vector_points_binary", "vector_tiles_mvt"].includes(d.kind)) statTxt = `${(st.feature_count||0).toLocaleString()} features · ${(st.geometry_types||[]).join(", ")}`;
   if (d.crs_original) statTxt += `\nCRS: ${d.crs_original}`;
+  if (st.native_maxzoom != null && st.resolution) statTxt += `\nFull detail to zoom ${st.native_maxzoom}; closer views draw the grid cells`;
   if (d.timing_ms != null) statTxt += ` · ${d.timing_ms} ms`;
   if (statTxt) { const s = document.createElement("div"); s.className = "stat"; s.textContent = statTxt; body.appendChild(s); }
   (d.warnings||[]).forEach(w => { const el = document.createElement("div"); el.className="warnline"; el.textContent="⚠ "+w; body.appendChild(el); });

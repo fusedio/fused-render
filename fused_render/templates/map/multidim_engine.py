@@ -57,6 +57,14 @@ MAX_SLICE_BYTES = int(os.environ.get("MAP_VIEWER_MULTIDIM_SLICE_BYTES", str(512 
 # or an animation through a long series would grow the daemon without limit.
 # Only the most recent selections matter: an evicted id just re-describes.
 MAX_SOURCES = int(os.environ.get("MAP_VIEWER_MULTIDIM_SOURCES", "256"))
+# A coarse grid's native maxzoom is the level where one cell is about one
+# screen pixel — z2 for ERA5, z0 for a 1-degree grid. Stopping the source
+# there leaves MapLibre stretching one blurry image over every closer view,
+# so the page may ask for levels past it and the engine renders them from the
+# same array: nearest-neighbour, so cells stay crisp and square the way QGIS
+# draws them. Eight levels puts one cell at roughly a full tile, which is as
+# far in as there is anything left to see.
+OVERZOOM_LEVELS = 8
 MAX_DIM_LABELS = 20000
 MAX_DIMS_META = 32
 
@@ -162,6 +170,19 @@ def _looks_geographic(da: Any, ydim: str, xdim: str) -> bool:
         and x.min() >= -180.5
         and x.max() <= 360.5
     )
+
+
+def _cell_size(da: Any) -> tuple[float, float] | None:
+    """Grid spacing in CRS units, from the prepared slice's own coordinates."""
+    import numpy as np
+
+    steps = []
+    for axis in ("x", "y"):
+        values = da.coords[axis].values
+        if values.size < 2:
+            return None
+        steps.append(float(np.abs(np.diff(values.astype("float64"))).mean()))
+    return steps[0], steps[1]
 
 
 def _sample_windows(da: Any, span: int = 512, spots: int = 3) -> Any:
@@ -303,6 +324,8 @@ class MultidimSource:
     bounds: list[float]
     minzoom: int
     maxzoom: int
+    native_maxzoom: int
+    cell: tuple[float, float] | None
     width: int
     height: int
     dtype: str
@@ -310,6 +333,19 @@ class MultidimSource:
     colormap: str
     rescale: list[list[float]]
     auto_rescale: bool = True
+
+
+def _resolution_stats(record: MultidimSource) -> dict[str, Any] | None:
+    """Cell size for the info line: CRS units, plus metres when degrees."""
+    if record.cell is None:
+        return None
+    x, y = record.cell
+    stats: dict[str, Any] = {"x": x, "y": y, "degrees": "4326" in record.crs}
+    if stats["degrees"]:
+        # One degree of latitude, which is what a reader means by "how big is
+        # a cell"; longitude narrows with latitude and would need a location.
+        stats["metres"] = y * 111320.0
+    return stats
 
 
 class MultidimEngine:
@@ -778,7 +814,9 @@ class MultidimEngine:
             dims=[{**dim, "index": sel.get(dim["name"], 0)} for dim in dims_template],
             bounds=bounds,
             minzoom=minzoom,
-            maxzoom=maxzoom,
+            maxzoom=min(24, maxzoom + OVERZOOM_LEVELS),
+            native_maxzoom=maxzoom,
+            cell=_cell_size(da),
             width=int(da.sizes["x"]),
             height=int(da.sizes["y"]),
             dtype=str(da.dtype),
@@ -851,6 +889,8 @@ class MultidimEngine:
                 "dtype": record.dtype,
                 "nodata": None,
                 "native_minzoom": record.minzoom,
+                "native_maxzoom": record.native_maxzoom,
+                "resolution": _resolution_stats(record),
                 "band_stats": [
                     {
                         "index": 1,
