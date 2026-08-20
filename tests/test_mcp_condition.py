@@ -4,19 +4,23 @@
 gate's question is "is this folder an app?" — a page plus at least one callable
 `main`. Four properties are tested directly:
 
-* **Both halves are required.** A folder with `index.html` but no `main()` has
-  nothing to curate; a folder of `main()`s with no page is not an app. Either
-  half alone is False.
+* **Both halves are required.** A folder with a page but no `main()` has nothing
+  to curate; a folder of `main()`s with no page is not an app. Either half alone
+  is False.
+* **The page is the TAGGED one, whatever it is called** (D301). `index.html` has
+  no special status: a folder whose entry is `mail.html` is an app, and an
+  untagged `index.html` is not a page at all. The marker check is the shared
+  `app_entry.has_fused_meta`, so this gate cannot disagree with the two
+  templates that resolve the same folder's entry.
 * **A file is never offered.** `mcp` is FOLDER-ONLY like `git`: the manifest it
   writes lives at the app folder's root and covers the whole folder, so the
   folder is the target. The registry says the same thing (`mcp` rides the "/"
   directory key alone) and the gate says it again, so a hand-written
   `?_mode=mcp` on a file gets a no.
-* **The listing is bounded, and only paid for by a page.** The gate reads ONE
-  directory level, and only after `index.html` is confirmed — so an ordinary
-  folder costs a single stat, exactly like its peer gates. Recursion
-  (`os.walk`/`glob`) stays fatal for the whole suite, and the folders that never
-  reach the listing are asserted not to have listed at all.
+* **The listing is bounded, and one listing serves both halves.** The gate reads
+  ONE directory level and never opens a file it does not have to: a folder with
+  no `.html` or no `.py` in the NAMES is refused before anything is read.
+  Recursion (`os.walk`/`glob`) stays fatal for the whole suite.
 * **It fails closed** (CT-12): a mount-backed path, an unavailable mount
   detector, an unreadable path, an unparseable `.py` — every one is False.
 """
@@ -32,7 +36,12 @@ from _thread_scoped import this_thread_only
 CONDITION = os.path.join(
     os.path.dirname(__file__), "..", "fused_render", "templates", "mcp", "condition.py")
 
-_PAGE = "<h1>mail</h1>\n<script>fused.runPython('mail.py', {op: 'list'})</script>\n"
+# A page is an app's page because it carries the marker, not because of its name
+# (D301) — so the fixture carries it, and the tests below cover both halves of
+# that rule.
+MARKER = '<meta name="fused-app" />'
+_PAGE = ("<html><head><meta charset=\"utf-8\" />" + MARKER + "</head><body>"
+         "<script>fused.runPython('mail.py', {op: 'list'})</script></body></html>")
 _DISPATCHER = '"""Local mail app."""\n\n\ndef main(op="list", to=None):\n    return [op, to]\n'
 
 
@@ -80,12 +89,13 @@ def gate():
     return call
 
 
-def _app(tmp_path, name="open-mail", *, page=_PAGE, py=_DISPATCHER, py_name="mail.py"):
-    """An app folder: a page plus a dispatcher with a top-level `main`."""
+def _app(tmp_path, name="open-mail", *, page=_PAGE, py=_DISPATCHER,
+         py_name="mail.py", page_name="index.html"):
+    """An app folder: a tagged page plus a dispatcher with a top-level `main`."""
     app = tmp_path / name
     app.mkdir()
     if page is not None:
-        (app / "index.html").write_text(page, encoding="utf-8")
+        (app / page_name).write_text(page, encoding="utf-8")
     if py is not None:
         (app / py_name).write_text(py, encoding="utf-8")
     return str(app)
@@ -116,6 +126,12 @@ def test_an_async_main_counts(gate, tmp_path):
     assert gate(_app(tmp_path, py="async def main(op=None):\n    return op\n")) is True
 
 
+def test_the_tagged_page_may_be_named_anything(gate, tmp_path):
+    # D301: the marker is the only signal. A folder whose entry is `mail.html`
+    # is every bit an app, and an `index.html` requirement gave it no MCP pill.
+    assert gate(_app(tmp_path, page_name="mail.html")) is True
+
+
 # ------------------------------------------------------------------- it refuses
 
 
@@ -126,9 +142,24 @@ def test_a_page_with_no_python_is_not_offered(gate, tmp_path):
 
 
 def test_python_with_no_page_is_not_offered(gate, tmp_path):
-    # A folder of scripts is not an app. `index.html` is what makes the Python
+    # A folder of scripts is not an app. The tagged page is what makes the Python
     # an app's entrypoints rather than someone's library.
     assert gate(_app(tmp_path, page=None)) is False
+
+
+def test_an_untagged_page_is_not_a_page(gate, tmp_path):
+    # An `index.html` with no marker declares nothing (D301) — the same folder
+    # the old `isfile("index.html")` probe accepted.
+    assert gate(_app(tmp_path, page="<html><body>hi</body></html>")) is False
+
+
+def test_a_tagged_page_beside_an_untagged_index_is_offered(gate, tmp_path):
+    # The mixed folder that made the old probe pick the WRONG page: it passed the
+    # gate on `index.html` while the app's real entry was `mail.html`.
+    app = _app(tmp_path, page="<html><body>not the app</body></html>")
+    with open(os.path.join(app, "mail.html"), "w", encoding="utf-8") as fh:
+        fh.write(_PAGE)
+    assert gate(app) is True
 
 
 def test_a_module_without_a_top_level_main_is_not_offered(gate, tmp_path):
@@ -199,30 +230,34 @@ def test_an_unavailable_mount_detector_fails_closed(gate, tmp_path, monkeypatch)
 # ------------------------------------------------------------- bounded, and cheap
 
 
-def test_a_folder_without_a_page_never_lists(gate, tmp_path, monkeypatch):
-    """The listing is the expensive half, and only a page buys it.
+def test_a_folder_with_no_html_opens_nothing(gate, tmp_path, monkeypatch):
+    """The NAMES are checked before any file is opened.
 
     `mcp` rides the universal "/" key, so this gate answers for every directory
-    the user opens. Almost none of them hold an `index.html`, and those must
-    cost what a peer gate costs: one stat. This pins the ordering — the cheap
-    marker probe first, the listing only after it passes — so a later
-    refactor cannot quietly make every folder in someone's home directory pay
-    for a listing.
+    the user opens, and almost none of them are apps. One listing is the floor;
+    what must not happen on top of it is a read per file. A folder with no
+    `.html` at all cannot have a page, so nothing in it is worth opening — this
+    pins that, because a refactor that read the `.py` files first would make
+    every source folder in a home directory pay for a parse.
     """
     plain = tmp_path / "plain"
     plain.mkdir()
     (plain / "mail.py").write_text(_DISPATCHER, encoding="utf-8")
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("a folder with no index.html must not be listed")
+        raise AssertionError("a folder with no .html must not have a file opened")
 
-    monkeypatch.setattr(os, "scandir", this_thread_only(os.scandir, forbidden))
-    monkeypatch.setattr(os, "listdir", this_thread_only(os.listdir, forbidden))
+    # Thread-scoped for the reason `_no_recursion` documents: `open` is
+    # process-wide and another package's background thread has its own files.
+    import builtins
+
+    monkeypatch.setattr(builtins, "open", this_thread_only(open, forbidden))
     assert gate(str(plain)) is False
 
 
 def test_the_listing_happens_once(gate, tmp_path, monkeypatch):
-    # One directory level, read once — not once per candidate file.
+    # One directory level, read once — for BOTH halves, not once per half and not
+    # once per candidate file.
     app = _app(tmp_path)
     calls = []
     real = os.scandir

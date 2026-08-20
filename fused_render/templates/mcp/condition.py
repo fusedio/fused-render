@@ -26,35 +26,43 @@ Three questions, in this order, because the order is what makes the gate cheap:
    — not a second copy. If that import fails we cannot tell, and "cannot tell"
    must read as "refuse" (CT-12).
 
-2. **Is there an `index.html`?** One `isfile`, and it is deliberately FIRST
-   among the two app halves. This mode rides the universal "/" key, so the gate
-   answers for every directory the user opens, and almost none of them are apps.
-   A folder with no page therefore costs exactly what a peer gate costs — a
-   single stat — and never reaches the listing below. `test_mcp_condition.py`
-   pins that ordering, because a refactor that reversed it would make every
-   folder in someone's home directory pay for a listing.
+2. **Is there a TAGGED entry page?** An app's page is the first non-hidden
+   top-level `.html` (name order) carrying `<meta name="fused-app">` — the
+   marker is THE only signal and a filename declares nothing, `index.html`
+   included (D301). This gate must not invent a second answer to "which page is
+   the app's", so the marker check is the SHARED one
+   (`../shared/app_entry.has_fused_meta`), never a regex of its own; only the
+   listing and the cap below are this gate's.
 
-3. **Is there a top-level `def main` in a top-level `.py`?** This is the half
-   that needs the folder's contents, and it is the one place this gate does
-   something its peers do not: ONE single-level `os.scandir`. That is a real
-   cost and it is admitted deliberately, because there is no marker file to
-   probe for instead — an app's entrypoint may be called anything (`mail.py`,
-   `server.py`), which is exactly why the panel exists to curate them. What
-   keeps it honest:
+3. **Is there a top-level `def main` in a top-level `.py`?** A page over no
+   callable entrypoint has nothing to curate into a tool.
 
-   * it happens only for folders that already passed (2), so it is not paid by
-     ordinary folders;
-   * it is ONE level and never a walk — a `main` a directory down is not the
-     app's entrypoint anyway (the runner looks the name up in the executed
-     module's namespace, so a nested or class-scoped `def main` is not an
-     entrypoint either);
-   * it is BOUNDED: at most `_MAX_CANDIDATES` files are read, at most
-     `_READ_LIMIT` bytes each, and it stops at the first qualifying file. A
-     pathological folder whose only `main` sits past the cap answers False —
-     the gate is the UX and `inspect_app.py`, which reads the folder properly
-     once on demand, is the guarantee (MD-11);
-   * the folder was just listed by the explorer to display it, so this is the
-     same listing again from cache, not a new class of I/O.
+Both halves read the folder's names, so they share ONE single-level
+`os.scandir` — and that listing is the one place this gate does something its
+peers do not. It is admitted deliberately: there is no constant name to probe
+for on either half. The page is whatever the author tagged (D301) and the
+entrypoint may be called anything (`mail.py`, `server.py`), which is exactly
+why the curation panel exists at all. What keeps it honest:
+
+* it is ONE level and never a walk — a page or a `main` a directory down is not
+  this app's, and the runner looks an entrypoint up in the executed module's
+  namespace, so a nested or class-scoped `def main` is not one either;
+* it is BOUNDED: at most `_MAX_CANDIDATES` files are read per half, at most
+  `_READ_LIMIT` bytes each (4 KiB for the marker), and each half stops at its
+  first hit. A pathological folder whose only tagged page or only `main` sits
+  past the cap answers False — the gate is the UX and `inspect_app.py`, which
+  reads the folder properly once on demand (uncapped, through
+  `app_entry.entry_html` itself), is the guarantee (MD-11);
+* the folder was just listed by the explorer to display it, so this is the same
+  listing again from cache, not a new class of I/O;
+* the CHEAPER half runs first: no `.html` at all means no reads whatsoever, and
+  a folder with no `.py` never has its pages opened.
+
+This replaced an `index.html` `isfile` probe, which was cheaper and wrong: it
+gave a folder whose tagged page is `mail.html` no MCP pill at all, and gave one
+with an untagged `index.html` beside a tagged `mail.html` a panel whose pin
+hints came from the wrong file. A name rule kept for its cost is the guess D301
+deleted, sneaking back in.
 
 CRITICAL: never a walk, a glob, or a recursion — the rule
 `zarr_aoi/condition.py` documents, and the property the suite makes fatal.
@@ -75,14 +83,15 @@ only) — the module is exec'd standalone (not imported as part of a package), s
 nothing here imports fused_render (SPEC PY-15).
 """
 
-# The page that makes the Python an app's entrypoints rather than someone's
-# library. Also the cheap probe that keeps the listing off ordinary folders.
-_PAGE = "index.html"
-
-# How many top-level `.py` files may be read before the gate gives up looking
-# for an entrypoint. An app has a handful; a folder with dozens is something
-# else, and a gate that parsed all of them would stall the folder's first paint.
+# How many files may be read PER HALF before the gate gives up looking. An app
+# has a handful of each; a folder with dozens is something else, and a gate that
+# opened all of them would stall the folder's first paint.
 _MAX_CANDIDATES = 24
+
+# Bytes read looking for the `<meta name="fused-app">` marker. The same 4 KiB
+# budget `app_entry` itself reads, so the two agree about a page whose marker
+# sits absurdly far down (neither sees it).
+_MARKER_READ_LIMIT = 4096
 
 # Bytes read per candidate. An entrypoint's `def main` is a top-level statement,
 # so it is within the first pages of the file in every real app; a truncated
@@ -113,23 +122,63 @@ def _has_top_level_main(source: str) -> bool:
     return False
 
 
-def _has_entrypoint(path: str) -> bool:
-    """Whether one top-level `.py` in `path` defines a top-level `main`.
+def _top_level_names(path: str):
+    """`(html, py)` — the non-hidden top-level file names of each kind, sorted.
 
-    ONE `os.scandir`, bounded reads, first hit wins. Sorted by name so the
-    candidate set the cap admits is deterministic — an unsorted `scandir` would
-    make a capped folder's verdict depend on directory order, i.e. flap.
+    ONE `os.scandir` for both halves. Sorted by name because both caps below
+    take a PREFIX of these lists: an unsorted `scandir` would make a capped
+    folder's verdict depend on directory order, i.e. flap. Name order is also
+    what `app_entry` resolves the entry page by, so the page this gate finds is
+    the page every other consumer finds.
     """
     import os
 
+    html, py = [], []
     try:
         with os.scandir(path) as entries:
-            names = sorted(
-                e.name for e in entries
-                if e.name.endswith(".py") and not e.name.startswith(".") and e.is_file()
-            )
+            for e in entries:
+                if e.name.startswith(".") or not e.is_file():
+                    continue
+                lower = e.name.lower()
+                if lower.endswith(".html"):
+                    html.append(e.name)
+                elif lower.endswith(".py"):
+                    py.append(e.name)
     except OSError:
+        return [], []
+    return sorted(html), sorted(py)
+
+
+def _has_entry_page(path: str, html_names) -> bool:
+    """Whether one of `html_names` carries the app marker (D301).
+
+    The marker check is `app_entry`'s own — the rule has one home and this gate
+    is not a second one. Only the listing and the cap are local: `entry_html`
+    would list the folder again (this gate already has the names) and would read
+    every page in it, which a gate answering on every directory the user opens
+    cannot afford.
+    """
+    import os
+    import sys
+
+    shared = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    try:
+        from app_entry import has_fused_meta
+    except Exception:  # noqa: BLE001 — cannot tell -> refuse (CT-12)
         return False
+
+    for name in html_names[:_MAX_CANDIDATES]:
+        if has_fused_meta(os.path.join(path, name)):
+            return True
+    return False
+
+
+def _has_entrypoint(path: str, names) -> bool:
+    """Whether one of `names` defines a top-level `main`. Bounded, first hit wins."""
+    import os
 
     for name in names[:_MAX_CANDIDATES]:
         try:
@@ -172,16 +221,19 @@ def main(path: str) -> bool:
         if not path:
             return False
 
-        # (2) Folder-only, and the page is the cheap half. `isdir` rather than
-        # `not isfile` so a path that does not exist reads as "refuse"; then one
-        # `isfile` for the page, which is what keeps the listing below off the
-        # ordinary folders this gate is asked about all day.
+        # (2) Folder-only. `isdir` rather than `not isfile` so a path that does
+        # not exist reads as "refuse".
         if not os.path.isdir(path):
             return False
-        if not os.path.isfile(os.path.join(path, _PAGE)):
-            return False
 
-        # (3) The half that costs a listing — bounded, one level, first hit wins.
-        return _has_entrypoint(path)
+        # ONE listing serves both halves, and the halves run cheapest-first: the
+        # name lists cost nothing to check, so a folder with no `.html` or no
+        # `.py` is refused before a single file is opened.
+        html_names, py_names = _top_level_names(path)
+        if not html_names or not py_names:
+            return False
+        if not _has_entrypoint(path, py_names):
+            return False
+        return _has_entry_page(path, html_names)
     except Exception:  # noqa: BLE001 — a broken gate must hide, never raise
         return False

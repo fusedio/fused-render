@@ -29,7 +29,7 @@ INSPECT = os.path.join(
     os.path.dirname(__file__), "..", "fused_render", "templates", "mcp", "inspect_app.py")
 
 _PAGE = """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>mail</title></head>
+<html><head><meta charset="utf-8"><meta name="fused-app" /><title>mail</title></head>
 <body><script>
   const inbox = await fused.runPython("./mail.py", { op: "list", limit: "20" });
   await fused.runPython("./mail.py", { op: "send", to: to });
@@ -192,31 +192,85 @@ def test_run_python_call_sites_and_their_literal_arguments(inspect_app, app):
 def test_a_page_with_no_calls_is_an_empty_list(inspect_app, tmp_path):
     folder = tmp_path / "bare"
     folder.mkdir()
-    (folder / "index.html").write_text("<h1>nothing</h1>", encoding="utf-8")
+    (folder / "index.html").write_text(
+        '<meta name="fused-app" /><h1>nothing</h1>', encoding="utf-8")
     (folder / "run.py").write_text("def main():\n    return 1\n", encoding="utf-8")
 
     assert inspect_app.main(path=str(folder))["page"]["calls"] == []
 
 
+def test_the_page_is_the_TAGGED_entry_not_index_html(inspect_app, app):
+    # D301, via the shared `app_entry.entry_html`: the marker is the only signal.
+    # An untagged `index.html` beside a tagged `mail.html` used to make the panel
+    # read its pin hints out of the wrong file.
+    with open(os.path.join(app, "index.html"), "w", encoding="utf-8") as fh:
+        fh.write("<html><body>not the app</body></html>")
+    with open(os.path.join(app, "mail.html"), "w", encoding="utf-8") as fh:
+        fh.write(_PAGE)
+
+    page = inspect_app.main(path=app)["page"]
+
+    assert page["file"] == "mail.html"
+    assert [c["file"] for c in page["calls"]] == ["mail.py", "mail.py", "stats.py"]
+
+
+def test_a_folder_with_no_tagged_page_reports_no_page(inspect_app, app):
+    # The gate refuses such a folder, but a hand-written `?_mode=mcp` reaches
+    # here anyway (MD-11) and must get a payload, not an exception.
+    with open(os.path.join(app, "index.html"), "w", encoding="utf-8") as fh:
+        fh.write("<html><body>untagged</body></html>")
+
+    report = inspect_app.main(path=app)
+
+    assert report["ok"] is True
+    assert report["page"] == {"file": "", "exists": False, "calls": []}
+
+
 # ----------------------------------------------------------- registration probe
 
 
-def test_the_fused_executable_is_resolved(inspect_app, app, monkeypatch):
-    # Registration writes `{command: <this>, args: [app, serve, <dir>]}`, so the
-    # panel must know whether a `fused` exists before offering the button.
+def _fake_cli(app, monkeypatch, name="fused"):
+    """A `fused` wrapper in a dir exported the way the SERVER exports it (D334)."""
     bin_dir = os.path.join(app, "bin")
-    os.makedirs(bin_dir)
-    fake = os.path.join(bin_dir, "fused")
-    with open(fake, "w", encoding="utf-8") as fh:
+    os.makedirs(bin_dir, exist_ok=True)
+    path = os.path.join(bin_dir, name)
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write("#!/bin/sh\n")
-    os.chmod(fake, 0o755)
-    monkeypatch.setenv("PATH", bin_dir)
+    os.chmod(path, 0o755)
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", bin_dir)
+    return path
+
+
+def test_the_fused_executable_comes_from_the_servers_own_export(
+    inspect_app, app, monkeypatch
+):
+    # Registration writes `{command: <this>, args: [app, serve, <dir>]}` into a
+    # GLOBAL ~/.claude.json, so the binary has to be the one the server vetted
+    # and exported (D334) — never whatever `fused` a PATH lookup happens to find.
+    fake = _fake_cli(app, monkeypatch)
+    monkeypatch.delenv("PATH", raising=False)
 
     assert inspect_app.main(path=app)["fused"] == fake
 
 
-def test_no_fused_on_path_is_an_empty_string(inspect_app, app, monkeypatch, tmp_path):
-    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+def test_a_fused_on_PATH_is_NOT_offered(inspect_app, app, monkeypatch):
+    # The D334 regression this guards: a venv without the [fused] extra plus a
+    # stray pipx `fused` on PATH must not get that binary registered globally.
+    stray = os.path.join(app, "stray")
+    os.makedirs(stray)
+    with open(os.path.join(stray, "fused"), "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\n")
+    os.chmod(os.path.join(stray, "fused"), 0o755)
+    monkeypatch.setenv("PATH", stray)
+    monkeypatch.delenv("FUSED_RENDER_FUSED_CLI_DIR", raising=False)
+
+    assert inspect_app.main(path=app)["fused"] == ""
+
+
+def test_an_exported_dir_with_no_wrapper_in_it_is_an_empty_string(
+    inspect_app, app, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", str(tmp_path / "empty"))
 
     assert inspect_app.main(path=app)["fused"] == ""
 
@@ -304,6 +358,43 @@ def test_a_tool_curated_without_a_snapshot_is_unknown(inspect_app, app):
     # A hand-written manifest carries no snapshot; there is nothing to compare,
     # so the panel must not claim the tool is either fine or drifted.
     assert inspect_app.main(path=app)["drift"][0]["status"] == "unknown"
+
+
+def test_an_entrypoint_whose_docstring_is_only_whitespace_survives(inspect_app, app):
+    # A docstring that is TRUTHY but strips to nothing (a lone form feed) used to
+    # index an empty list — and the exception was outside every try, so one odd
+    # docstring in one file blanked the entire panel.
+    with open(os.path.join(app, "mail.py"), "w", encoding="utf-8") as fh:
+        fh.write('def main(op="list"):\n    """\x0c"""\n    return op\n')
+
+    report = inspect_app.main(path=app)
+
+    assert report["ok"] is True
+    entry = _file(report, "mail.py")["entrypoints"][0]
+    assert entry["doc"] == ""
+    assert entry["signature"] == "main(op='list')"
+
+
+def test_a_module_docstring_of_only_whitespace_survives(inspect_app, app):
+    with open(os.path.join(app, "mail.py"), "w", encoding="utf-8") as fh:
+        fh.write('"""\x0c"""\n\n\ndef main():\n    return 1\n')
+
+    assert _file(inspect_app.main(path=app), "mail.py")["doc"] == ""
+
+
+def test_a_manifest_that_is_not_utf8_is_reported_not_raised(inspect_app, app):
+    # tomllib raises UnicodeDecodeError — a ValueError, not a TOMLDecodeError — on
+    # a hand-edited Latin-1 file. This module's contract is a payload, and the
+    # surface above the manifest is still worth drawing.
+    with open(os.path.join(app, "mcp.toml"), "wb") as fh:
+        fh.write(b'[[tool]]\nname = "caf\xe9"\n')
+
+    report = inspect_app.main(path=app)
+
+    assert report["ok"] is True
+    assert report["manifest"]["error"]
+    assert report["drift"] == []
+    assert [f["file"] for f in report["files"]] == ["mail.py", "stats.py"]
 
 
 def test_an_unparseable_manifest_is_reported_as_an_error(inspect_app, app):

@@ -45,11 +45,10 @@ import ast
 import json
 import os
 import re
-import shutil
+import sys
 
-# The entry page. Also the marker the gate uses (`condition.py`), so the two
-# agree about which file is "the app's page".
-_PAGE = "index.html"
+# Which `.html` is "the app's page" is NOT decided here: it is
+# `app_entry.entry_html`'s answer, the marker being the only signal (D301).
 
 # The manifest filename — the contract with `fused app serve` (openfused
 # spec/serve/app-mcp.md §2). Deliberately NOT `openfused.toml`: fused's project
@@ -83,25 +82,69 @@ _ARG_PAIR = re.compile(
     r"""|(?P<num>-?\d+(?:\.\d+)?)|(?P<bool>true|false)|(?P<other>[^,}]+))""")
 
 
+def _shared_import(name: str, attr: str):
+    """An attribute of a `../shared/*.py` module, or None if it cannot be had.
+
+    The guarded `sys.path.insert` every template uses (SPEC PY-15: a template
+    never imports fused_render). "Cannot tell" is a None rather than an
+    exception, because each caller has a defined answer for the absence.
+    """
+    shared = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
+    if shared not in sys.path:
+        sys.path.insert(0, shared)
+    try:
+        module = __import__(name)
+    except Exception:  # noqa: BLE001 — absent shared helper: answer "cannot"
+        return None
+    return getattr(module, attr, None)
+
+
+def _fused_cli() -> str:
+    """The absolute `fused` the registration entry should name, or `""`.
+
+    From `appenv.fused_cli_dir()` — the directory the SERVER exported after
+    vetting its own interpreter's CLI and baking `FUSED_ENV` (D334,
+    `fusedcli.py`) — never from a PATH lookup. `shutil.which("fused")` was what
+    this did, and it is the exact mechanism D334 replaced: on a machine whose app
+    venv has no `[fused]` extra but whose PATH carries some other `fused` (a pipx
+    shim, another project's venv), the panel would bake that unvetted binary into
+    a GLOBAL `~/.claude.json` entry, where it runs with no FUSED_ENV and fails
+    somewhere the user cannot see. Absent means registration is not offered.
+    """
+    cli_dir = _shared_import("appenv", "fused_cli_dir")
+    if cli_dir is None:
+        return ""
+    directory = cli_dir()
+    if not directory:
+        return ""
+    candidate = os.path.join(directory, "fused.exe" if os.name == "nt" else "fused")
+    return candidate if os.path.isfile(candidate) else ""
+
+
 def _refuse(reason: str, message: str) -> dict:
     """A refusal payload — the panel renders it (never an exception)."""
     return {"ok": False, "reason": reason, "message": message}
 
 
-def _doc_summary(tree) -> str:
-    """The module docstring's first non-empty line, or `""`.
+def _first_line(doc) -> str:
+    """A docstring's first non-empty line, or `""`.
 
     One line, because it is a description SEED shown in one row of the panel —
     and because a whole docstring pasted into a tool description is noise the
-    model pays for on every request.
+    model pays for on every request. Loops rather than indexing: `None`, `""`
+    and a docstring of nothing but whitespace all have to answer `""` instead of
+    raising, and this runs over whatever an app folder happens to contain.
     """
-    doc = ast.get_docstring(tree)
-    if not doc:
-        return ""
-    for line in doc.splitlines():
+    for line in (doc or "").splitlines():
         if line.strip():
             return line.strip()
     return ""
+
+
+def _doc_summary(tree) -> str:
+    """The module docstring's first non-empty line, or `""`."""
+    return _first_line(ast.get_docstring(tree))
 
 
 def _signature(name: str, fn) -> str:
@@ -164,8 +207,11 @@ def _entrypoints(tree) -> list:
         out.append({
             "name": node.name,
             "signature": _signature(node.name, node),
-            "doc": (ast.get_docstring(node) or "").strip().splitlines()[0]
-                   if ast.get_docstring(node) else "",
+            # `_first_line`, not `.splitlines()[0]`: a docstring that is truthy
+            # but strips to nothing (a lone form feed) indexes an empty list, and
+            # this call is outside any try — an IndexError here blanked the whole
+            # panel over one odd docstring in one file.
+            "doc": _first_line(ast.get_docstring(node)),
             "params": _params(node),
         })
     return out
@@ -275,14 +321,27 @@ def _call_args(literal: str) -> dict:
 def _page_report(folder: str) -> dict:
     """The entry page's `runPython` call sites, in source order.
 
+    WHICH page is `app_entry.entry_html`'s answer — the first non-hidden
+    top-level `.html` (name order) carrying `<meta name="fused-app">`, the marker
+    being the only signal (D301). Deliberately not `index.html`: a filename
+    declares nothing, so a folder whose tagged page is `mail.html` reports ITS
+    call sites, and one with an untagged `index.html` beside a tagged `mail.html`
+    no longer draws its pin hints from the wrong file. Uncapped here, unlike the
+    gate: this runs once, on demand, for a folder the user opened.
+
     Best-effort by construction (see `_RUN_PYTHON`): the page is JavaScript and
-    this is a regex plus a brace scan, so a computed path or an exotic call
-    shape is simply not reported. It costs a suggestion, never correctness — the
+    this is a regex plus a brace scan, so a computed path or an exotic call shape
+    is simply not reported. It costs a suggestion, never correctness — the
     manifest is written from the user's edits, not from this.
     """
-    page = os.path.join(folder, _PAGE)
-    report = {"file": _PAGE, "exists": os.path.isfile(page), "calls": []}
-    if not report["exists"]:
+    entry_html = _shared_import("app_entry", "entry_html")
+    page = entry_html(folder) if entry_html is not None else None
+    report = {
+        "file": os.path.basename(page) if page else "",
+        "exists": bool(page),
+        "calls": [],
+    }
+    if not page:
         return report
     try:
         text = _read(page, _PAGE_READ_LIMIT)
@@ -319,7 +378,11 @@ def _manifest_report(folder: str) -> dict:
     try:
         with open(path, "rb") as fh:
             raw = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError covers BOTH tomllib.TOMLDecodeError (a subclass) and the
+        # UnicodeDecodeError tomllib raises on a manifest that is not UTF-8 — a
+        # hand-edited Latin-1 file. Neither may reach the page as a traceback
+        # overlay when this module's contract is a refusal payload.
         out["error"] = str(exc)
         return out
     for entry in raw.get("tool", []) or []:
@@ -406,10 +469,10 @@ def main(path: str = "") -> dict:
         "ok": True,
         "path": folder,
         "name": os.path.basename(folder.rstrip(os.sep)) or folder,
-        # The absolute executable the registration entry will name, resolved at
-        # READ time so the panel's Register button reflects this machine as it is
-        # now. `""` means no registration is possible and the panel says so.
-        "fused": shutil.which("fused") or "",
+        # The absolute executable the registration entry will name, from the
+        # server's own vetted export (D334) and NOT from PATH — see `_fused_cli`.
+        # `""` means no registration is possible and the panel says so.
+        "fused": _fused_cli(),
         "files": [_file_report(folder, name) for name in _python_files(folder)],
         "page": _page_report(folder),
         "manifest": manifest,
