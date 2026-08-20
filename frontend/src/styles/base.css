@@ -68,6 +68,12 @@ table.listing-table th.sortable,
 html, body {
   height: 100%;
   margin: 0;
+  /* The shell is a fixed 100vh flex frame (#app) — the document itself never
+     scrolls. Any wheel delta an inner pane doesn't consume chains up to here,
+     and macOS answers with the elastic bounce: the whole app lurches and snaps
+     back, loudest when a pane hits its end mid-scroll (Akshil, 2026-08-20, the
+     Tasks list). Nothing real is lost by refusing it at the root. */
+  overscroll-behavior: none;
 }
 
 body {
