@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   closeOverdrag,
+  committedWidth,
   OPEN_PULL,
   reopenWidth,
   resizeWidth,
@@ -87,6 +88,44 @@ describe("reopenWidth — the edge of a SHUT panel", () => {
   it("is eager where the close is deliberate", () => {
     expect(OPEN_PULL).toBe(32);
     expect(OPEN_PULL).toBeLessThan(closeOverdrag(MIN));
+  });
+});
+
+// CLOSING NEVER RECORDS A WIDTH. The trap this guards is that a close is only
+// reachable by dragging THROUGH the resistance band, so the last width the seam
+// rendered is always the floor — and a seam that commits "wherever the drag
+// ended" files the floor as a choice the user never made.
+describe("committedWidth — what a finished drag remembers", () => {
+  it("records the width an ordinary resize settled at", () => {
+    expect(committedWidth(320, 240)).toBe(320);
+    expect(committedWidth(MIN, null)).toBe(MIN);
+  });
+
+  it("hands back the pre-gesture width when the drag CLOSED the panel", () => {
+    expect(committedWidth(null, 520)).toBe(520);
+  });
+
+  it("keeps 'no width chosen yet' as a close's answer, rather than inventing one", () => {
+    // Never dragged, then dragged shut: the panel still has no remembered width
+    // and must reopen at the container's share, not at a pixel count.
+    expect(committedWidth(null, null)).toBeNull();
+  });
+
+  // The whole bug, as one sequence: a gesture that walks a wide column inward
+  // through the floor and out the far side of the resistance band. Every move but
+  // the last answers MIN (the stick), the last answers null (the close) — and what
+  // gets remembered is neither, it is the 520 the column had before the pointer
+  // went down.
+  it("close-drag then reopen restores the pre-gesture width, not the floor", () => {
+    const preGesture = 520;
+    let outcome: number | null | undefined;
+    for (const implied of [520, 400, MIN + 1, MIN, MIN - 1, MIN - closeOverdrag(MIN)]) {
+      outcome = resizeWidth(implied, MIN, MAX);
+      if (outcome === null) break;
+    }
+    expect(outcome).toBeNull(); // the gesture ended in a close
+    expect(committedWidth(outcome ?? null, preGesture)).toBe(preGesture);
+    expect(committedWidth(outcome ?? null, preGesture)).not.toBe(MIN);
   });
 });
 

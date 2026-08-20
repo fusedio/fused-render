@@ -65,6 +65,34 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
+/** WHAT A FINISHED DRAG RECORDS as the panel's remembered width. `outcome` is
+    what the last pointermove decided — a width, or `null` for "this gesture shut
+    the panel"; `preGesture` is what the panel remembered before the pointer went
+    down (itself possibly `null`, meaning "no choice made, use the layout's
+    share").
+ *
+ * CLOSING NEVER RECORDS A WIDTH. That is the rule the whole module is built
+ * around and the one that is easiest to lose in the plumbing, because a close is
+ * reached by dragging THROUGH the resistance band — so the last width the seam
+ * actually rendered is the floor, and a naive "remember where the drag ended"
+ * writes that floor down. Shut a 520px column and it would come back at 280.
+ * Shutting a panel and narrowing it are different acts; one drag must not do
+ * both, so a close hands back exactly what was remembered before the gesture —
+ * including `null`, where the answer is the container's share and not any pixel
+ * count at all.
+ *
+ * The global sidebar reaches the same rule a different way (`restoreWidth` is
+ * carried into the state it writes mid-drag, SidebarFrame), because it publishes
+ * the collapsed state as it happens rather than at pointer-up. Same law, two
+ * plumbings; this is the one for a seam that only commits when the pointer lifts.
+ */
+export function committedWidth(
+  outcome: number | null,
+  preGesture: number | null
+): number | null {
+  return outcome === null ? preGesture : outcome;
+}
+
 /** WHAT A DRAG ON AN OPEN PANEL'S SEAM MEANS. Answers the width to render, or
     `null` for "this gesture has closed the panel".
  *

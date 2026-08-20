@@ -53,7 +53,7 @@ import {
   setSideWidth,
   subscribeSideWidth,
 } from "@apps/explorer/lib/side-store";
-import { resizeWidth } from "@platform/lib/panel-drag";
+import { committedWidth, resizeWidth } from "@platform/lib/panel-drag";
 
 // The split container's class, and the drag's frame of reference. Looked up from
 // the divider with `closest` rather than handed down as a ref: the two live in
@@ -203,11 +203,18 @@ export default function PreviewSidebar({
     const divider = e.currentTarget;
     divider.setPointerCapture(e.pointerId);
     divider.classList.add("dragging");
-    // What the drag has moved the divider to, if it moved at all. Recorded to the
-    // module store on POINTER-UP and not on every move: a COMPLETED drag is the
-    // choice (lib/side-store), and a click on the divider that moves nothing must
-    // not turn the measured default into a remembered number.
-    let dragged: number | null = null;
+    // What the LAST pointermove decided: a width, `null` for "this gesture shut
+    // the column", or `undefined` for a press that never moved at all. Recorded to
+    // the module store on POINTER-UP and not on every move: a COMPLETED drag is
+    // the choice (lib/side-store), and a click on the divider that moves nothing
+    // must not turn the measured default into a remembered number — hence the
+    // third state, which is why this is not just `number | null`.
+    let outcome: number | null | undefined;
+    // What the store held BEFORE the pointer went down, which is what a close
+    // hands back (`committedWidth`, platform/lib/panel-drag). Possibly null, and
+    // that is a value and not a gap: it means "no drag has ever chosen a width
+    // here", and a gesture that shuts the column must not invent one.
+    const preGesture = getSideWidth();
     // Once this gesture has shut the column, it is over. Losing the capture with
     // the divider usually ends the event stream on its own, but "usually" is not
     // a thing to hang a URL write on: a second `onClose` is a second
@@ -227,18 +234,24 @@ export default function PreviewSidebar({
       if (next === null) {
         // Dragged clean through the floor: the gesture means SHUT, and it hands
         // off to the same `_side=off` the header's chevron writes. Deliberately
-        // WITHOUT recording a width — `dragged` stays null, so the column keeps
-        // whatever width it had and the opener brings that back rather than the
-        // floor the drag stuck at on its way down. Shutting a panel is not the
-        // same act as making it narrow, and one drag should not do both.
+        // WITHOUT recording a width: the close is reached by dragging THROUGH the
+        // resistance band, so every move before this one stuck the column at the
+        // floor, and committing that would file MIN_W as the user's choice — shut
+        // a 520px column and it would come back at 280. `outcome = null` makes
+        // pointer-up hand `preGesture` back instead (`committedWidth`). Shutting a
+        // panel is not the same act as making it narrow, and one drag should not
+        // do both.
+        outcome = null;
+        closed = true;
         onClose();
         return;
       }
-      dragged = next;
+      outcome = next;
       setWidth((w) => (w === next ? w : next));
     };
     const onUp = () => {
-      if (dragged !== null) setSideWidth(dragged);
+      // `undefined` = the pointer never moved; leave the store entirely alone.
+      if (outcome !== undefined) setSideWidth(committedWidth(outcome, preGesture));
       divider.classList.remove("dragging");
       divider.removeEventListener("pointermove", onMove);
       divider.removeEventListener("pointerup", onUp);
