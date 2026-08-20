@@ -6527,7 +6527,7 @@ async function shotEncodeBadged(pane, badges, limits) {
   return null;
 }
 
-// Each SEGMENT goes to exactly one click — OpenPointer's fixed lead window
+// Each piece of speech goes to exactly one click — OpenPointer's fixed lead window
 // (each click owns "LEAD seconds before it until the next click") looked
 // right but double-counts by construction: click i's window reaches forward
 // to click i+1's own timestamp, and click i+1's window reaches the same
@@ -6535,29 +6535,55 @@ async function shotEncodeBadged(pane, badges, limits) {
 // landed in BOTH notes the moment two clicks were less than LEAD apart —
 // which a quick "click, say one word, click again" walkthrough hits on
 // nearly every click. Nearest-by-start-time has no such overlap: a segment
-// can only be closest to one click, so it can only ever fill in one note.
+// can only be closest to one click, so it can only ever fill in one note
+// (same for a word, once the pieces are words — see below).
 // It also self-adjusts to the pace of the recording instead of needing a
 // tuned constant — narrating right after a click (the common case) and
 // narrating just before one (also common) both resolve correctly because
 // "closest" means the same thing either direction.
 // It returns the INTRO: everything said before the first click is the user
-// framing the task, not a comment on any one spot, so those segments become
+// framing the task, not a comment on any one spot, so those pieces become
 // the message's own prompt text (annRecEnd seeds the composer with it) rather
 // than being pulled onto click 1 by the nearest-match below.
+// Matched per WORD, not per segment, whenever the engine timed the words
+// (`words: true`, D392): a segment is a sentence or several — "Test 1. This is
+// another comment. This is the third comment." comes back as ONE 7-second span
+// — so a segment-grained match hands every word of it to whichever click its
+// FIRST word started nearest, and a click made mid-sentence (the ordinary case:
+// talk, click, keep talking) drags the words that came after it onto the
+// previous note. Words are on the same absolute timeline as segment starts, so
+// nothing below changes: the units being matched are just finer.
+//
+// The flattening is per SEGMENT, so a reply degrades a segment at a time rather
+// than all-or-nothing. Word timings are answered best-effort and never refused
+// (D392) — an engine that has none leaves the `words` key OFF, which is
+// indistinguishable here from a run that never asked, and a mixed reply (some
+// segments worded, some not) matches each segment at whatever grain it arrived
+// with. A segment whose words are not all timed falls back WHOLE rather than
+// dropping the untimed ones: no words are lost either way.
 function annRecAssign(ids, segments) {
   const timed = ids.map((id) => annotations.find((a) => a.id === id))
                    .filter(Boolean).sort((a, b) => a.t - b.t);
   if (!timed.length || !segments || !segments.length) return "";
+  const units = [];
+  for (const s of segments) {
+    const ws = Array.isArray(s.words) ? s.words : [];
+    if (ws.length && ws.every((w) => w && typeof w.start === "number")) {
+      // `word`, not `text` — and it arrives with its leading space, which the
+      // join below collapses like any other whitespace.
+      for (const w of ws) units.push({ start: w.start, text: w.word || "" });
+    } else units.push({ start: s.start, text: s.text });
+  }
   const intro = [];
   const words = new Map(timed.map((c) => [c.id, []]));
-  for (const s of segments) {
-    if (s.start < timed[0].t) { intro.push(s.text); continue; }
-    let best = timed[0], bestDist = Math.abs(s.start - timed[0].t);
+  for (const u of units) {
+    if (u.start < timed[0].t) { intro.push(u.text); continue; }
+    let best = timed[0], bestDist = Math.abs(u.start - timed[0].t);
     for (const c of timed) {
-      const dist = Math.abs(s.start - c.t);
+      const dist = Math.abs(u.start - c.t);
       if (dist < bestDist) { best = c; bestDist = dist; }
     }
-    words.get(best.id).push(s.text);
+    words.get(best.id).push(u.text);
   }
   for (const c of timed) {
     c.content = words.get(c.id).join(" ").replace(/\s+/g, " ").trim();
@@ -6683,7 +6709,18 @@ async function annRecEnd() {
     const dir = await shotDirPath();
     const path = shotJoin(dir, shotStamp() + "-walkthrough" + annRecExt(blob.type));
     await fused.uploadFile(path, blob);
-    const rec = await fused.ai.transcribe({ path });
+    // `words: true` asks for per-word timings inside each segment (D392), which
+    // is what lets a click that landed MID-sentence take only the words after
+    // it (annRecAssign). Best-effort by contract, never refused: an engine
+    // without word timings just leaves the `words` key off its segments, so the
+    // matcher degrades to whole-segment matching on its own. It costs an extra
+    // forward pass per decoded window (and a one-time Metal compile on the
+    // first worded call in a process) and it changes the decode — the library
+    // gates its hallucination pruning on the same flag, so the same audio can
+    // come back as a different number of segments than it would without this.
+    // Both are fine here: the recording is seconds of speech, and nothing on
+    // this page reads segment COUNT.
+    const rec = await fused.ai.transcribe({ path, words: true });
     // Everything said BEFORE the first click is the main prompt, not a note:
     // it seeds the composer as the message's own words, so the send reads as
     // "here is the task, and here are the spots" rather than a first comment
