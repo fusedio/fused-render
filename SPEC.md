@@ -7688,5 +7688,29 @@ manifest is the entire contract between them.
   `error || stderr || stdout` and treats a false `ok` from `action=list` as the
   warning it is, rather than as an empty server list. The action buttons are
   disabled in the markup and enabled only by a successful load, so a click before
-  or after a failed one cannot dereference a report that is not there; Reload
-  stays enabled, because it is how the user retries.
+  or after a failed one cannot dereference a report that is not there.
+- **MC-10** **THE PANEL PAINTS BEFORE THE REGISTRATION PROBE ANSWERS.** That
+  probe is `claude mcp list`, and that command health-checks every MCP server the
+  user has configured by connecting to each one: **10.9 s** wall on a machine
+  with a dozen claude.ai connectors. `load()` awaited it before the first
+  `render()`, so the panel sat on "Loading…" for eleven seconds holding an editor
+  whose contents were already in hand — and paid it again on every reload.
+  Nothing in the editor depends on the answer, so the editor renders as soon as
+  `inspect_app.py` returns and the probe fills its own line in afterwards. Only
+  the registration control waits, and it says what it is waiting for. A second
+  load can start inside that window, so the probe carries a sequence number and a
+  stale answer is dropped rather than painted over the fresh one.
+- **MC-11** **The toolbar is TWO VERBS, and everything else sits where it acts.**
+  Curate and Save operate on the whole curated set, so they are the toolbar;
+  `+ add tool` appends ONE row and therefore lives at the end of the list, where
+  that row will appear; the registration state is a line above the footer, because
+  it reports as much as it acts, and reads `◉ Registered in Claude` /
+  `○ Not registered` with the server name beside it. **There is no Reload
+  button**: Save re-reads the folder itself, and the two states that wanted a
+  manual reload now offer the retry themselves — a failed `inspect_app.py` puts a
+  `retry` affordance in the status line, and a failed registration probe makes its
+  own line re-probe on click rather than toggling a state nobody knows. Four
+  registration states, not two: registered, not registered, still checking
+  (unclickable), and could-not-tell (re-probes). A control that offered a
+  direction before the answer was in would be asserting the opposite of what
+  might be true.

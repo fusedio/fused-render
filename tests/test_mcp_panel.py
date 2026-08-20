@@ -9,6 +9,15 @@ Two things are pinned here, and they are the two that were wrong:
   flag behaved as on. The three pure functions that decide a pin's value are run
   for real (`_mcp_pins_probe.mjs`), because a source assertion can only say they
   exist.
+* **The panel paints before the registration probe answers.** That probe is
+  `claude mcp list`, which health-checks every configured MCP server by
+  connecting to it — 10.9s wall on a machine with a dozen claude.ai connectors —
+  and it used to be awaited before the first paint, so the panel sat on
+  "Loading…" for eleven seconds holding an editor that was already in hand.
+* **The toolbar is two verbs.** Curate and Save act on the whole set and belong
+  there; `add tool` appends one row and lives at the end of the list; the
+  registration state is a line above the footer, because it reports as much as it
+  acts; and Reload is gone, so the failures that wanted it offer their own retry.
 * **A registration failure REACHES the user.** `/api/claude-config/mcp` answers
   HTTP 200 with `{ok: false}` for its own refusals, and `add`/`remove` carry the
   claude CLI's `{stdout, stderr}` with NO `error` key
@@ -163,27 +172,139 @@ def test_every_in_band_refusal_is_surfaced():
     assert panel.count("configError(out") == 4
 
 
-def test_the_final_status_line_cannot_wipe_a_warning():
+def _load_body(panel):
+    """`load()`'s source, from its signature to its closing brace."""
+    body = panel[panel.index("async function load()"):]
+    return body[:body.index("\n}\n")]
+
+
+def _fn_body(panel, signature):
+    """One function's source, from its signature to its closing brace."""
+    body = panel[panel.index(signature):]
+    return body[:body.index("\n}\n")]
+
+
+def test_the_status_line_is_set_before_the_probe_not_after_it():
     # `load()` used to end with an unconditional `say("")`, which erased whatever
-    # `refreshRegistration` had just put in the footer.
+    # `refreshRegistration` had just put in the footer. The ordering is what
+    # protects that warning, and it has to survive the probe becoming async: the
+    # manifest's own complaint is said first, so the probe (whenever it lands)
+    # overwrites it rather than the reverse.
+    load = _load_body(_read(TEMPLATE))
+    said = load.index('say("mcp.toml does not parse')
+    probed = load.index("probe();")
+    assert said < probed
+    # ...and nothing says anything after the probe is kicked off.
+    assert "say(" not in load[probed:]
+
+
+# ------------------------------------------- the 11s stall: paint, then probe
+
+
+def test_the_editor_paints_before_the_registration_probe_resolves():
+    """The panel must not wait on `claude mcp list`.
+
+    That command health-checks every MCP server the user has configured by
+    connecting to each one — 10.9s wall on a machine with a dozen claude.ai
+    connectors — and `load()` used to `await` it before the first `render()`. So
+    the panel sat on "Loading…" for eleven seconds holding an editor whose
+    contents were already in hand, and again on every Reload. Nothing in the
+    editor depends on the answer.
+    """
     panel = _read(TEMPLATE)
-    body = panel[panel.index("async function load()"):panel.index("async function callConfig")]
-    load = body[:body.index("\n}\n")]
-    # The last two statements are the probe and the paint; the status line is set
-    # BEFORE them, conditionally, so a warning either of them leaves survives.
-    assert load.rstrip().endswith("await refreshRegistration();\n  render();")
-    assert 'say("mcp.toml does not parse' in load
+    load = _load_body(panel)
+    painted = load.index("\n  render();")
+    probed = load.index("probe();")
+    assert painted < probed, "render() must come before the probe is started"
+    # Not awaited anywhere: the whole point. `.then` re-renders when it lands.
+    assert "await refreshRegistration" not in panel
+    assert "refreshRegistration().then(" in _fn_body(panel, "function probe()")
+
+
+def test_a_stale_probe_cannot_overwrite_a_fresh_one():
+    # Reload twice inside the sweep and two probes are in flight; the first to
+    # return is not the one that owns the panel.
+    probe = _fn_body(_read(TEMPLATE), "function probe()")
+    assert "probeSeq += 1" in probe
+    assert "if (seq !== probeSeq) return;" in probe
+
+
+def test_editing_is_unlocked_by_the_inspect_alone():
+    # A user must not wait on the registration sweep to rename a tool — so the
+    # three editor buttons are `setEnabled`'s business and `register` is not.
+    panel = _read(TEMPLATE)
+    enabled = _fn_body(panel, "function setEnabled(")
+    assert '["curate", "save"]' in enabled
+    assert "register" not in enabled
+
+
+def test_the_registration_line_says_which_of_four_states_it_is_in():
+    """Not a yes/no: "still checking" and "could not tell" are their own states.
+
+    A line that said "Not registered" while the probe was still running would be
+    asserting the opposite of what might be true, and one that said it after a
+    FAILED probe would offer a toggle whose direction nobody knows.
+    """
+    render = _fn_body(_read(TEMPLATE), "function renderRegistration()")
+    assert "Checking registration…" in render        # the probe is out
+    assert "Registration state unknown" in render    # the probe could not tell
+    assert "Registered in Claude" in render          # yes
+    assert "Not registered" in render                # no
+    assert "Registration unavailable" in render      # no `fused` CLI at all
+    # The two that must not be clickable are the two that have no direction.
+    assert "!registrationChecked" in render
+    assert "disabled = true" in render
+
+
+def test_a_failed_probe_re_probes_instead_of_toggling():
+    # The registration line is the ONLY affordance that can recover an unreadable
+    # server list now that Reload is gone, so a click there has to mean "look
+    # again" rather than "toggle whatever I last guessed".
+    toggle = _fn_body(_read(TEMPLATE), "async function toggleRegistration()")
+    assert toggle.index("if (probeFailed)") < toggle.index("await guard(")
+    assert "probe();" in toggle
+    # And the ordinary guards still refuse an unanswered probe.
+    assert "!registrationChecked" in toggle[:toggle.index("await guard(")]
 
 
 # ----------------------------------------------------- nothing dead-clickable
 
 
-def test_the_action_buttons_start_disabled_and_reload_does_not():
+def test_the_toolbar_is_two_verbs_and_they_start_disabled():
     panel = _read(TEMPLATE)
-    for button in ("curate", "add", "save", "register"):
+    header = panel[panel.index("<header>"):panel.index("</header>")]
+    # Curate and Save act on the whole tool set; nothing else belongs beside
+    # them. Both disabled in the markup, since both need the report.
+    ids = [line.split('id="')[1].split('"')[0]
+           for line in header.splitlines() if 'id="' in line and "<button" in line]
+    assert ids == ["curate", "save"]
+    for button in ids:
         assert f'id="{button}" disabled' in panel, button
-    # Reload is how a user retries a failed load, so it must never be stuck.
-    assert 'id="reload">' in panel
+    assert ">Save<" in header, "the label is Save, not Save manifest"
+
+
+def test_add_tool_is_a_row_at_the_end_of_the_list():
+    # It appends ONE row, so it sits where that row will appear rather than
+    # reading as a peer of Curate and Save in the toolbar.
+    panel = _read(TEMPLATE)
+    render = _fn_body(panel, "function render()")
+    made = render.index('text("button", "add-row", "+ add tool")')
+    listed = render.index("mainEl.appendChild(renderTool(i))")
+    assert listed < made, "the add row goes after the tools, not before them"
+    assert 'add.addEventListener("click", addTool)' in render
+    assert 'id="add"' not in panel
+
+
+def test_there_is_no_reload_button_and_a_failed_load_offers_a_retry():
+    # Reload is gone (Save re-reads the folder itself), so the one state that
+    # needed it — a failed inspect — has to offer the retry itself.
+    panel = _read(TEMPLATE)
+    assert 'id="reload"' not in panel
+    assert "Reload</button>" not in panel
+    load = _load_body(panel)
+    assert "sayWithRetry(" in load
+    retry = _fn_body(panel, "function sayWithRetry(")
+    assert "guard(load)" in retry
 
 
 def test_a_failed_load_leaves_the_actions_disabled():
@@ -193,6 +314,9 @@ def test_a_failed_load_leaves_the_actions_disabled():
     render = panel[panel.index("function render()"):]
     early = render[:render.index("el(\"app-name\")")]
     assert "setEnabled(false)" in early
+    # ...and the registration line is drawn in that state too, rather than left
+    # holding whatever it last said about a different folder.
+    assert "renderRegistration()" in early
 
 
 def test_registration_is_null_guarded_independently_of_the_button():

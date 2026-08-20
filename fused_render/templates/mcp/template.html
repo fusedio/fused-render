@@ -172,6 +172,61 @@
   .param .psig { color: var(--ink-3); font-size: 11px; }
   .param.pinned .pname { color: var(--accent); }
 
+  /* The add-tool row: part of the LIST, not the toolbar — it acts on the list
+     and reads where the thing it makes will appear. */
+  .add-row {
+    display: block;
+    width: 100%;
+    font: inherit;
+    text-align: left;
+    color: var(--ink-3);
+    background: none;
+    border: 1px dashed var(--line-strong);
+    border-radius: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .add-row:hover:not([disabled]) { color: var(--ink); border-color: var(--line-hover); }
+  .add-row[disabled] { cursor: not-allowed; color: var(--ink-3); }
+
+  /* The registration state, as one clickable line above the footer: it reports
+     first and acts second, which is the opposite weighting of a toolbar button
+     and the right one for something that is true or false about the machine. */
+  .reg {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    width: 100%;
+    font: inherit;
+    text-align: left;
+    color: var(--ink-2);
+    background: var(--surface);
+    border: none;
+    border-top: 1px solid var(--line);
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .reg:hover:not([disabled]) { color: var(--ink); background: var(--surface-2); }
+  .reg[disabled] { cursor: default; color: var(--ink-3); }
+  .reg .dot { color: var(--ink-3); }
+  .reg.on .dot { color: var(--accent); }
+  .reg .hint { color: var(--ink-3); font-size: 11px; }
+
+  /* A retry the failure itself offers, since there is no Reload button to point
+     at any more. */
+  .retry {
+    font: inherit;
+    color: var(--ink-2);
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--line-strong);
+    padding: 0;
+    margin-left: 6px;
+    cursor: pointer;
+  }
+  .retry:hover { color: var(--ink); }
+
   .empty { color: var(--ink-3); padding: 18px 0; }
   .sig { color: var(--ink-3); font-size: 11px; word-break: break-all; }
   footer {
@@ -190,19 +245,23 @@
   <div class="app-name" id="app-name">…</div>
   <div class="app-path" id="app-path"></div>
   <div class="bar">
-    <!-- Disabled in the MARKUP, not just by render(): every one of these acts on
-         the report, and until `inspect_app.py` has answered there is no report.
-         A click in that window used to throw a TypeError with nothing in the
-         footer. `reload` is the exception — it is how a user retries a load that
-         failed, so it must never be the button that is stuck. -->
+    <!-- TWO buttons, and they are the two VERBS the panel offers: propose a set
+         of tools, and write it. Everything else that used to sit here answered
+         to something other than the toolbar and has moved to where it belongs —
+         `add tool` to the end of the list it appends to, the registration state
+         to its own line above the footer (it reports as much as it acts), and
+         Reload nowhere: Save re-reads the folder itself, and the failures that
+         wanted a retry now offer one inline.
+
+         Disabled in the MARKUP, not just by render(): both act on the report,
+         and until `inspect_app.py` has answered there is no report. A click in
+         that window used to throw a TypeError with nothing in the footer. -->
     <button class="btn" id="curate" disabled>Curate with AI</button>
-    <button class="btn" id="add" disabled>Add tool</button>
-    <button class="btn primary" id="save" disabled>Save manifest</button>
-    <button class="btn" id="register" disabled>Register</button>
-    <button class="btn" id="reload">Reload</button>
+    <button class="btn primary" id="save" disabled>Save</button>
   </div>
 </header>
 <main id="main"><div class="empty">Loading…</div></main>
+<button class="reg" id="register" disabled></button>
 <footer id="status"></footer>
 
 <script>
@@ -237,6 +296,20 @@ let report = null;
 // pins: {param: value}}. Loaded from the manifest, edited here, written back.
 let tools = [];
 let registered = false;
+// HAS the registration probe answered? Separate from `registered` because
+// "not registered" and "we have not looked yet" are different things to draw,
+// and conflating them is what let a Register button be offered before the
+// answer was in. Reset on every load; only a probe result sets it.
+let registrationChecked = false;
+// The probe ANSWERED, and the answer was "I could not tell" (no CLI, a timeout,
+// a refusal). Distinct from `!registrationChecked`, which is "still running":
+// this one is what makes the registration line offer a re-probe instead of a
+// toggle, since toggling on an unknown state would be a guess.
+let probeFailed = false;
+// Which load the in-flight probe belongs to. `claude mcp list` can take ten
+// seconds, so a second Reload can start before the first probe returns — and the
+// stale answer must not overwrite the fresh one.
+let probeSeq = 0;
 let busy = false;
 
 const el = (id) => document.getElementById(id);
@@ -246,6 +319,18 @@ const statusEl = el("status");
 function say(text, bad) {
   statusEl.textContent = text;
   statusEl.className = bad ? "bad" : "";
+}
+
+// A failure that a re-read could clear says so and offers the re-read, because
+// there is no Reload button to point at any more. The affordance rides the
+// message it belongs to rather than living permanently in the chrome.
+function sayWithRetry(text, action) {
+  say(text, true);
+  const again = document.createElement("button");
+  again.className = "retry";
+  again.textContent = "retry";
+  again.addEventListener("click", action || (() => guard(load)));
+  statusEl.appendChild(again);
 }
 
 // The MCP server name this app registers under. Derived from the folder name so
@@ -290,7 +375,10 @@ async function load() {
   try {
     report = await fused.runPython("./inspect_app.py", { path: TARGET });
   } catch (err) {
-    say((err.type || "error") + ": " + err.message, true);
+    // A failed read is the one state that used to need the Reload button.
+    sayWithRetry((err.type || "error") + ": " + err.message);
+    setEnabled(false);
+    render();
     return;
   }
   if (!report.ok) {
@@ -298,6 +386,7 @@ async function load() {
     mainEl.appendChild(text("div", "empty", report.message || "Not an app folder."));
     say("");
     setEnabled(false);
+    render();
     return;
   }
   // The manifest as the editor's starting point: the panel edits the WHOLE set,
@@ -309,18 +398,45 @@ async function load() {
     entrypoint: t.entrypoint || "main",
     pins: Object.assign({}, t.pinned),
   }));
-  // The manifest's own complaint FIRST, then the registration probe — which may
-  // have its own to report and must be allowed to say so. This used to end with
-  // an unconditional `say()`, which wiped whatever warning `refreshRegistration`
-  // had just left in the footer: an unreachable Claude CLI looked like a clean
-  // load with a Register button that then failed silently.
+  // The manifest's own complaint, said BEFORE the probe is started — which is
+  // the same ordering as before and for the same reason: the probe may have its
+  // own warning to leave in the footer and must be allowed to overwrite this
+  // one, never the other way round. (This function used to end with an
+  // unconditional `say()`, which wiped exactly that warning.)
   if (report.manifest.error) {
     say("mcp.toml does not parse — fix it by hand.", true);
   } else {
     say("");
   }
-  await refreshRegistration();
+
+  // PAINT NOW, PROBE AFTER. The registration probe is `claude mcp list`, which
+  // health-checks every MCP server the user has configured by connecting to each
+  // one: measured at 10.9s wall on a machine with a dozen claude.ai connectors.
+  // Awaiting it here meant the panel sat on "Loading…" for eleven seconds before
+  // showing an editor whose contents had been in hand the whole time — and again
+  // on every Reload. Nothing in the editor depends on the answer; only the
+  // Register button does, and `registrationChecked` is what keeps that one
+  // honest while the sweep runs.
   render();
+  probe();
+}
+
+// Start the registration probe and repaint when it answers. Deliberately NOT
+// awaited by its callers, and deliberately not inside `guard()`: `busy` is about
+// work that blocks the editor, and this does not. Its own failure path is
+// `refreshRegistration`'s (a footer warning plus `probeFailed`), so there is
+// nothing here for a rejection handler to add beyond not being unhandled.
+function probe() {
+  registrationChecked = false;
+  probeSeq += 1;
+  const seq = probeSeq;
+  render();
+  refreshRegistration().then(() => {
+    // A load (or a re-probe) that started after this one owns the panel now.
+    if (seq !== probeSeq) return;
+    registrationChecked = true;
+    render();
+  });
 }
 
 // ------------------------------------------------------- registration state
@@ -347,8 +463,11 @@ function configError(out, fallback) {
   return String(said).trim() || fallback;
 }
 
+// Ask which MCP servers are registered. SLOW — see the call site in `load()` —
+// and therefore never awaited on a path that holds the editor back.
 async function refreshRegistration() {
   registered = false;
+  probeFailed = false;
   try {
     const out = await callConfig({ action: "list" });
     // A 200 is not a success: `{ok: false}` is how this module refuses (a claude
@@ -356,6 +475,7 @@ async function refreshRegistration() {
     // `registered` false with no explanation, so Register looked available and
     // then failed for a reason nothing had mentioned.
     if (out.ok === false) {
+      probeFailed = true;
       say("Could not read the registered MCP servers: "
           + configError(out, "the claude CLI did not answer"), true);
       return;
@@ -364,18 +484,28 @@ async function refreshRegistration() {
     registered = !!(out.servers || []).some((s) => s.name === name);
   } catch (err) {
     // Not fatal: the panel's other half (curate + save) works with no Claude
-    // CLI at all, so an unreadable server list must not blank the page. It only
-    // costs the accurate Register/Unregister label, which the footer says.
+    // CLI at all, so an unreadable server list must not blank the page. It costs
+    // the accurate registration line, which then offers its own re-probe.
+    probeFailed = true;
     say("Could not read the registered MCP servers: " + err.message, true);
   }
 }
 
 async function toggleRegistration() {
+  // A failed probe RE-PROBES rather than toggling: we do not know which of
+  // add/remove the click would mean, and this row is now the only affordance
+  // that can recover an unreadable server list (there is no Reload button).
+  if (probeFailed) {
+    probe();
+    return;
+  }
   // Null-guarded INSIDE the function as well as by the button's disabled state:
   // the two protect against different things (a click before the first load, and
   // a click after a failed one), and this one is what keeps a stray call from
   // dereferencing a null report.
-  if (!report || !report.ok || !report.fused) return;
+  // `registrationChecked` too: acting on a probe that has not answered would be
+  // guessing which of add/remove the click means.
+  if (!report || !report.ok || !report.fused || !registrationChecked) return;
   const name = serverName();
   await guard(async () => {
     if (registered) {
@@ -646,7 +776,7 @@ function renderState(parent) {
     parent.appendChild(note);
     return;
   }
-  if (registered) {
+  if (registered && registrationChecked) {
     const note = text("div", "note good");
     note.appendChild(text("b", null, "Registered as " + serverName() + "."));
     note.appendChild(text("div", null,
@@ -854,26 +984,71 @@ function coercePin(kind, value) {
 
 // The buttons that need a report, in one place — so "not loaded yet", "loading"
 // and "the load failed" are all the same answer rather than three.
+//
+// `register` is NOT among them: it needs the report *and* the registration
+// probe's answer, which arrives seconds later (see `load()`), so `render()` owns
+// its state alone. Everything else is editing, which the inspect alone unlocks —
+// a user must not wait on a `claude mcp list` sweep to rename a tool.
 function setEnabled(ready) {
-  for (const id of ["curate", "add", "save", "register"]) {
+  for (const id of ["curate", "save"]) {
     el(id).disabled = !ready;
   }
+}
+
+// The registration LINE — one row above the footer that says what is true and
+// toggles it on click. Four states, and the two that are not a plain yes/no are
+// the point: while the probe runs it says so and does nothing, and when the
+// probe could not tell, clicking re-probes rather than guessing a direction.
+function renderRegistration() {
+  const row = el("register");
+  row.innerHTML = "";
+  const dot = text("span", "dot", "○");
+  const label = text("span", null, "");
+  let on = false;
+  let disabled = false;
+  let hint = "";
+
+  if (!report || !report.ok) {
+    label.textContent = "Not an app folder";
+    disabled = true;
+  } else if (!report.fused) {
+    label.textContent = "Registration unavailable";
+    hint = "no `fused` CLI";
+    disabled = true;
+  } else if (probeFailed) {
+    label.textContent = "Registration state unknown";
+    hint = "click to check again";
+  } else if (!registrationChecked) {
+    label.textContent = "Checking registration…";
+    disabled = true;
+  } else if (registered) {
+    dot.textContent = "◉";
+    on = true;
+    label.textContent = "Registered in Claude";
+    hint = "as " + serverName();
+  } else {
+    label.textContent = "Not registered";
+    hint = "click to register " + serverName();
+  }
+
+  row.className = "reg" + (on ? " on" : "");
+  row.disabled = disabled || busy;
+  row.appendChild(dot);
+  row.appendChild(label);
+  if (hint) row.appendChild(text("span", "hint", hint));
 }
 
 function render() {
   if (!report || !report.ok) {
     setEnabled(false);
-    el("reload").disabled = busy;
+    renderRegistration();
     return;
   }
   el("app-name").textContent = report.name;
   el("app-path").textContent = report.path;
 
   setEnabled(!busy);
-  const reg = el("register");
-  reg.textContent = registered ? "Unregister" : "Register";
-  reg.disabled = busy || !report.fused;
-  el("reload").disabled = busy;
+  renderRegistration();
 
   mainEl.innerHTML = "";
   renderState(mainEl);
@@ -881,16 +1056,21 @@ function render() {
   if (tools.length === 0) {
     mainEl.appendChild(text("div", "empty",
       "No tools curated yet. “Curate with AI” proposes some from the app's "
-      + "entrypoints, or add one by hand."));
+      + "entrypoints, or add one below."));
   }
   for (let i = 0; i < tools.length; i++) mainEl.appendChild(renderTool(i));
+  // The add-tool row lives at the END OF THE LIST, where the tool it makes will
+  // appear — a toolbar button for it read as a peer of Curate and Save, which it
+  // is not: those two act on the whole set, this one appends one row.
+  const add = text("button", "add-row", "+ add tool");
+  add.disabled = busy;
+  add.addEventListener("click", addTool);
+  mainEl.appendChild(add);
 }
 
 el("curate").addEventListener("click", curate);
-el("add").addEventListener("click", addTool);
 el("save").addEventListener("click", save);
 el("register").addEventListener("click", toggleRegistration);
-el("reload").addEventListener("click", () => guard(load));
 
 load();
 </script>
