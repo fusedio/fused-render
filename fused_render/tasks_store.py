@@ -713,6 +713,54 @@ def strip_machinery(text: str) -> str:
     return "" if _LEADING_OPEN.match(out) else out
 
 
+def ann_notes(text: str) -> str:
+    """The words the user typed INSIDE their annotations, for a send that
+    carried no free text at all — or "" when there are none.
+
+    THE THIRD COPY of an annotation rule (`template.html`'s `stripAnnBlock`,
+    `agent.py`'s `_ann_notes`, this) and pinned to the second one over the
+    shared corpus by `test_claude_sessions_merged.py`, for the reason D166
+    forces on every one of these: a template may not import `fused_render`, and
+    four readers that stopped agreeing about machinery is the bug this whole
+    family of functions was written to end.
+
+    Deliberately NOT part of `strip_machinery`, which answers a different
+    question — "what did the human type in the composer" — and is asked by
+    `is_machinery` to decide whether a record is worth keeping at all. This is a
+    SECOND source, consulted only where an empty answer costs a row its name:
+    since annotations became sendable with an empty message, the notes on the
+    pins ARE what the user wrote, and no reader was showing them.
+    """
+    out = (text or "").strip()
+    while True:
+        match = _LEADING_BLOCK.match(out)
+        if not match:
+            break
+        out = out[match.end():].strip()
+    if not out.startswith(_ANN_PREAMBLE):
+        return ""
+    open_at = out.find(_ANN_FENCE_OPEN)
+    if open_at == -1:
+        return ""
+    close_at = out.find(_ANN_FENCE_CLOSE, open_at + len(_ANN_FENCE_OPEN))
+    if close_at == -1:
+        return ""
+    try:
+        pins = json.loads(out[open_at + len(_ANN_FENCE_OPEN):close_at])
+    except ValueError:
+        return ""
+    if not isinstance(pins, list):
+        return ""
+    notes = []
+    for pin in pins:
+        if not isinstance(pin, dict):
+            continue
+        note = pin.get("content")
+        if isinstance(note, str) and note.strip():
+            notes.append(note.strip())
+    return " · ".join(notes)
+
+
 def is_machinery(text: str) -> bool:
     """Is this record machinery WHOLE — nothing a human contributed to it?
 
@@ -862,7 +910,11 @@ def _parse_head(path: str) -> tuple[str | None, float | None, str, str]:
                         # user record, because a blank title while the message
                         # that could have named the row sits two lines further
                         # down is the same bug from the other side.
-                        prompt = strip_machinery(raw)
+                        # The pins are the FALLBACK: a send with both words and
+                        # annotations is named by the words. A send with only
+                        # annotations is named by the notes on them, which is
+                        # the only text in the record a human wrote (`ann_notes`).
+                        prompt = strip_machinery(raw) or ann_notes(raw)
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:

@@ -4667,6 +4667,13 @@ wanting "what has this file been through" wants §33.
       count, that id being the one handle that separates two unnamed chains. The
       full id stays on the heading's `title`, and on each row's, so a row read out
       of context can still say which "v2" it is.
+      - **A miss being ordinary is not licence to stop asking WHY one missed.**
+        The first two chains this panel ever showed for a real canvas both fell
+        back to "chat", and neither was from another folder: their sessions were
+        ANNOTATION-ONLY sends, whose preview stripped to "" — and `_cli_sessions`
+        drops a session with no preview, so the same "" had already taken both
+        chats out of "Recent chats" above. The fallback did its job and hid a
+        different bug behind a legitimate empty state (D395).
   - **The read declines BOTH of the reader's costs.** Enrichment reads session
     transcripts (5 MB+), so the panel takes the unenriched timeline — which is why
     it never claims a chain is complete (FH-3). The exact deltas are `difflib` per
@@ -4696,6 +4703,31 @@ wanting "what has this file been through" wants §33.
     files a checkpoint belongs to.
     The reader still returns its empty states as data rather than raising, which
     is what makes a sentence available to print.
+  - **The run ASKS for the checkpoints the panel reads, or there are none of
+    its own to read.** Claude Code's `fileHistoryEnabled` takes a separate
+    branch when `isInteractive()` is false, and every run this template spawns
+    is `-p` — so the store held only versions written by a TERMINAL claude in
+    that folder, and a file this chat had just edited four times printed "Claude
+    has no recorded versions of this file". A panel whose whole promise is
+    undoing what the agent just did could answer only for edits it did not make.
+    `_start`'s `spawn_env` therefore carries
+    `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` (D394).
+    - **An env var, not a setting, and not a hook.** That non-interactive branch
+      consults only the two env vars — the `fileCheckpointingEnabled` config
+      governing the interactive case is never read — so `--settings` cannot
+      reach it. The CLI then writes the same `<session>/<key>@vN` layout the
+      reader already enumerates, which is what makes this a one-line spawn
+      change with no reader change, no numbering rule of our own, and none of
+      the write-into-the-user's-store questions a `PreToolUse` checkpointing
+      hook would have raised.
+    - **`setdefault`, so an explicit opt-out survives.** The value is coerced
+      (`1/true/yes/on`, everything else false), so a user's `=0` means off and
+      this template does not get to re-enable a store they turned off; their
+      `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING` is ANDed into the same branch and
+      wins either way.
+    - **Still not a complete chain, and FH-3 is why that is stated rather than
+      fixed.** Only the edit TOOLS checkpoint: a `sed -i` from Bash moves the
+      file with nothing recorded, before this change and after it.
   - **A row expands to its diff and carries one action: "Go back to this
     snapshot".** A list that can only be looked at answers no question the user
     actually has. Clicking a row fetches `action="snapshot_plan"` (never cached
