@@ -7639,7 +7639,10 @@ manifest is the entire contract between them.
   re-records the snapshots, so Save is also the fix.
 - **MC-5** **Registration goes through the existing Claude-config MCP module,
   and pins the CLI THIS APP EXPORTED.** The panel POSTs
-  `/api/claude-config/mcp` (`action=add`, name `fused-app-<folder>`, server json
+  `/api/claude-config/mcp` (`action=add`, name `<folder>-mcp` — suffixed, because
+  the name is read in a list of the user's own servers where the folder is the
+  identifying half; a `fused-app-` prefix filed every app under one word and put
+  the identity past where anyone reads. Server json
   `{command: <exported fused>, args: ["app", "serve", <abs folder>]}`) — the same
   module the Claude Config page uses, which owns the `claude mcp` CLI, the
   `--scope user` choice and the name guard. There is deliberately no second way to

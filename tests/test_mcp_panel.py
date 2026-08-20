@@ -173,6 +173,26 @@ def test_the_curation_call_names_its_model_and_its_effort():
         assert local_only not in options, local_only
 
 
+def test_the_server_name_is_the_folder_suffixed_with_mcp():
+    """`<folder>-mcp`, and the SAME string for add, remove and the lookup.
+
+    The three have to agree or the registration line reports the opposite of the
+    truth forever — which is why the name is one function and not three literals.
+    Suffixed rather than prefixed because it is read in a list of the user's own
+    servers, where the folder is the identifying half.
+    """
+    panel = _read(TEMPLATE)
+    name = _fn_body(panel, "function serverName()")
+    assert '(base || "app") + "-mcp"' in name
+    # The old scheme survives only where the comment explains why it is gone.
+    assert '"fused-app-' not in panel
+    # Sanitisation stays: the name reaches a CLI argument.
+    assert 'replace(/[^A-Za-z0-9._-]+/g, "-")' in name
+    assert 'replace(/^-+/, "")' in name
+    # One source, used by every path that names the server.
+    assert panel.count("serverName()") >= 4
+
+
 # ------------------------------------------------------ registration errors
 
 

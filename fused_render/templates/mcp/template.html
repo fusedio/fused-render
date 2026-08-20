@@ -333,15 +333,25 @@ function sayWithRetry(text, action) {
   statusEl.appendChild(again);
 }
 
-// The MCP server name this app registers under. Derived from the folder name so
-// the same app re-registers over its own entry instead of accumulating
-// duplicates; sanitized because the name reaches a CLI argument (the module's
-// own guard would reject an option-shaped one, and this makes that unreachable).
+// The MCP server name this app registers under: `<folder>-mcp`.
+//
+// Derived from the folder name so the same app re-registers over its own entry
+// instead of accumulating duplicates, and SUFFIXED rather than prefixed because
+// the name is read in a list of the user's own servers, where the folder is the
+// identifying half — `local-transcription-mcp` sorts and scans as that app,
+// while `fused-app-local-transcription` (what this was) filed every app of every
+// project under one prefix and pushed the identifying half past the point anyone
+// reads. Sanitized because the name reaches a CLI argument: the config module's
+// own guard would reject an option-shaped one, and this makes that unreachable.
+//
+// ONE name, used for the add, the remove, and the "am I registered" lookup — the
+// three have to agree or the registration line reports the opposite of the truth
+// forever.
 function serverName() {
   const base = (report && report.name ? report.name : "app")
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/^-+/, "");
-  return "fused-app-" + (base || "app");
+  return (base || "app") + "-mcp";
 }
 
 function fileNames() {
