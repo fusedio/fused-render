@@ -53,6 +53,7 @@ dependencies = [
     "sentencepiece",
     "protobuf",
     "gguf",
+    "torchao>=0.15,<1",
     "pillow",
     "huggingface_hub",
     "psutil",

@@ -466,6 +466,13 @@ def generate(body):
         raise ValueError("'out' and 'outText' must be where to write the transcript")
 
     task = str(body.get("task") or "transcribe")
+    # `words` (D392) is ignored here, and ignoring it is the DESIGNED answer
+    # rather than an oversight: it is the one option answered best-effort, since
+    # a caller sees on the segment whether it was honoured. CTranslate2 could
+    # supply it — `model.transcribe` takes `word_timestamps` and returns
+    # `segment.words` from the same DTW alignment the MLX runner uses — so
+    # wiring it is a mapping into `{start, end, word}` and nothing else.
+    #
     # None, not "": faster-whisper reads a falsy language as "detect it", and an
     # empty string would be passed through as a language code that matches none.
     language = str(body.get("language") or "") or None

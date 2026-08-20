@@ -32,6 +32,12 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  /* A wheel that reaches the list's end must STOP there. Without this the
+     leftover delta chains up to the document, and macOS answers with the
+     elastic bounce — the whole page lurches and snaps back on every
+     overshoot, which reads as the page saying "nothing to scroll" while the
+     list is scrolling fine (Akshil, 2026-08-20). */
+  overscroll-behavior: contain;
 }
 
 .tasks-list {

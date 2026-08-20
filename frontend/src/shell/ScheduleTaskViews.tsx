@@ -1102,6 +1102,49 @@ export function TaskList({
     remember({ ...memory.current, expanded: [...expanded] });
   }, [expanded]);
 
+  // ---- the wheel works in the margins too -------------------------------------
+  // `.schedule-main` is capped at 1050px and centred, so a wide window leaves a
+  // band of empty page either side of the card — and the card is the scroller,
+  // so a wheel out in that band lands on `.schedule-page`, which is
+  // `overflow: hidden` and scrolls nothing: the reader had to aim at the card
+  // (Akshil, 2026-08-20). Making the scroller full-width instead was tried first
+  // and traded this for two worse bugs — the card's frame scrolled away with its
+  // content, and the reserved scrollbar gutters pushed the card off the
+  // toolbar's axis (bugbot, #678) — so the geometry stays exactly as it was and
+  // the wheel is forwarded: a wheel anywhere on this page that no scroller of
+  // its own claims is handed to the list. Board and Calendar mount their own
+  // components, so nothing here can touch their scrolling.
+  useEffect(() => {
+    // The page div, NOT via the ref: on the mount this effect runs after, the
+    // rows are usually still in flight and the ref is still null — the page
+    // ancestor is the one element of this pair that is always there. The ref is
+    // read again inside the handler, per wheel, for the same reason.
+    const page = document.querySelector<HTMLElement>(".schedule-page");
+    if (!page) return;
+    const onWheel = (e: WheelEvent) => {
+      const el = listRef.current;
+      if (!el || !(e.target instanceof Element) || e.deltaY === 0) return;
+      // Pinch-zoom arrives as ctrl+wheel; that is a zoom, not a scroll.
+      if (e.ctrlKey) return;
+      // Anything between the pointer and the page that scrolls for itself —
+      // the list, a menu, a popover — keeps its native wheel untouched.
+      for (let n: Element | null = e.target; n && n !== page; n = n.parentElement) {
+        const s = getComputedStyle(n);
+        if (
+          (s.overflowY === "auto" || s.overflowY === "scroll") &&
+          n.scrollHeight > n.clientHeight
+        ) {
+          return;
+        }
+      }
+      // deltaMode 1 is lines (Firefox with a wheel mouse); everything else
+      // that reaches a web page is already pixels.
+      el.scrollTop += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    };
+    page.addEventListener("wheel", onWheel, { passive: true });
+    return () => page.removeEventListener("wheel", onWheel);
+  }, []);
+
   const onScroll = () => {
     const el = listRef.current;
     if (!el) return;

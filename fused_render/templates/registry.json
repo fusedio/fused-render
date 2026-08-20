@@ -574,5 +574,8 @@
   ],
   ".pickle": [
     "joblib_model"
+  ],
+  ".fused": [
+    "fusedapp"
   ]
 }

@@ -252,7 +252,7 @@ def test_a_headless_run_asks_for_the_checkpoints_the_panel_reads(
     times reported "Claude has no recorded versions of this file" — the one
     question the panel exists to answer. Asked for in the ENV, not in
     `--settings`: the CLI takes a separate branch when `isInteractive()` is
-    false and that branch reads only the two env vars (D385)."""
+    false and that branch reads only the two env vars (D393)."""
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
                        raising=False)
     target = tmp_path / "notes.md"

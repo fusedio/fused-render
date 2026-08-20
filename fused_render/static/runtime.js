@@ -40,7 +40,7 @@
  *     it is null on the last tick and on resolve, because the preview file is
  *     deleted then — end on url. Rejects with .type "cancelled" | "ai_error" |
  *     "unavailable" (no image runner on this machine — reason in the message).
- *   fused.ai.transcribe({path, model, language, task, diarize, speakers,
+ *   fused.ai.transcribe({path, model, language, task, diarize, speakers, words,
  *                        onProgress, onSegment})
  *                  -> Promise<{output, url, text, segments, language, ...}>
  *     Speech to text, locally (SPEC §40). Takes a path to an audio or video
@@ -96,6 +96,27 @@
  *     audio of the transcript, and diarization reports as its own stage on the
  *     row instead. First use on a machine downloads ~33MB, so it needs a
  *     network that once; after that it works offline.
+ *     `words: true` times each WORD inside a segment, which is what a karaoke
+ *     highlight or a click-a-word-to-seek player needs — a segment is a whole
+ *     sentence or several. Every segment gains `words`, a list of
+ *     {start, end, word} in order; `word` keeps its leading space, so the
+ *     segment's text is the words concatenated. Timings are positions in the
+ *     ORIGINAL file, like a segment's, and always inside their own segment.
+ *     Default false, and unlike `diarize` this one is NOT free: an extra pass
+ *     per decoded window (+40% on a short clip), a one-time ~1.3s on the first
+ *     worded run in a worker, and it changes the decode itself — the library's
+ *     hallucination pruning only runs with word timings on — so the SAME file
+ *     can come back with a different number of segments than a call without it.
+ *     Ask for it when a page needs it, not by default.
+ *     BEST-EFFORT, and the only option here that is: asking never fails, and an
+ *     engine without word timings simply leaves `words` off its segments. Only
+ *     MLX Whisper produces them today, so write `segment.words || []` and a
+ *     page works unchanged on every machine — rather than asking which engine
+ *     it landed on before it asks for anything. `task: "translate"` also comes
+ *     back without them on every engine: a translation's words were never
+ *     spoken in the audio, so there is nothing to align them to.
+ *     There is no per-word confidence, deliberately — it is a number only some
+ *     engines have, and a page must not come to depend on which one ran.
  *   fused.watchJob(id) -> {get, watch, stop, cancel}
  *     Observe a job this page did NOT create — the server-owned work that
  *     fused.ai.models.load() and image generation start. The read side of the
@@ -2705,7 +2726,7 @@
     const onSegment = typeof opts.onSegment === "function" ? opts.onSegment : null;
     const body = {};
     for (const key of ["path", "model", "language", "task", "initialPrompt", "vad",
-                       "diarize", "speakers"]) {
+                       "diarize", "speakers", "words"]) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
     // The page's own path, so a RELATIVE `path` resolves beside this page —
