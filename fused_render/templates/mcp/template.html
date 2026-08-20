@@ -190,10 +190,15 @@
   <div class="app-name" id="app-name">…</div>
   <div class="app-path" id="app-path"></div>
   <div class="bar">
-    <button class="btn" id="curate">Curate with AI</button>
-    <button class="btn" id="add">Add tool</button>
-    <button class="btn primary" id="save">Save manifest</button>
-    <button class="btn" id="register">Register</button>
+    <!-- Disabled in the MARKUP, not just by render(): every one of these acts on
+         the report, and until `inspect_app.py` has answered there is no report.
+         A click in that window used to throw a TypeError with nothing in the
+         footer. `reload` is the exception — it is how a user retries a load that
+         failed, so it must never be the button that is stuck. -->
+    <button class="btn" id="curate" disabled>Curate with AI</button>
+    <button class="btn" id="add" disabled>Add tool</button>
+    <button class="btn primary" id="save" disabled>Save manifest</button>
+    <button class="btn" id="register" disabled>Register</button>
     <button class="btn" id="reload">Reload</button>
   </div>
 </header>
@@ -292,6 +297,7 @@ async function load() {
     mainEl.innerHTML = "";
     mainEl.appendChild(text("div", "empty", report.message || "Not an app folder."));
     say("");
+    setEnabled(false);
     return;
   }
   // The manifest as the editor's starting point: the panel edits the WHOLE set,
@@ -303,10 +309,18 @@ async function load() {
     entrypoint: t.entrypoint || "main",
     pins: Object.assign({}, t.pinned),
   }));
+  // The manifest's own complaint FIRST, then the registration probe — which may
+  // have its own to report and must be allowed to say so. This used to end with
+  // an unconditional `say()`, which wiped whatever warning `refreshRegistration`
+  // had just left in the footer: an unreachable Claude CLI looked like a clean
+  // load with a Register button that then failed silently.
+  if (report.manifest.error) {
+    say("mcp.toml does not parse — fix it by hand.", true);
+  } else {
+    say("");
+  }
   await refreshRegistration();
   render();
-  say(report.manifest.error ? "mcp.toml does not parse — fix it by hand." : "",
-      !!report.manifest.error);
 }
 
 // ------------------------------------------------------- registration state
@@ -322,10 +336,30 @@ async function callConfig(kwargs) {
   return body;
 }
 
+// WHY a helper: the module answers HTTP 200 with `{ok: false}` for its own
+// refusals, and the failure shape is not uniform — `list` and the guards carry
+// `error`, while `add`/`remove` carry the CLI's `{stdout, stderr}` and NO error
+// key at all (fused_render/claude_config/mcp.py). Reading only `error` therefore
+// reported "could not add" with the reason — the claude CLI's own words — sitting
+// unread in the response.
+function configError(out, fallback) {
+  const said = (out && (out.error || out.stderr || out.stdout)) || "";
+  return String(said).trim() || fallback;
+}
+
 async function refreshRegistration() {
   registered = false;
   try {
     const out = await callConfig({ action: "list" });
+    // A 200 is not a success: `{ok: false}` is how this module refuses (a claude
+    // CLI that is missing, signed out, or timed out). Treating it as success left
+    // `registered` false with no explanation, so Register looked available and
+    // then failed for a reason nothing had mentioned.
+    if (out.ok === false) {
+      say("Could not read the registered MCP servers: "
+          + configError(out, "the claude CLI did not answer"), true);
+      return;
+    }
     const name = serverName();
     registered = !!(out.servers || []).some((s) => s.name === name);
   } catch (err) {
@@ -337,12 +371,18 @@ async function refreshRegistration() {
 }
 
 async function toggleRegistration() {
+  // Null-guarded INSIDE the function as well as by the button's disabled state:
+  // the two protect against different things (a click before the first load, and
+  // a click after a failed one), and this one is what keeps a stray call from
+  // dereferencing a null report.
+  if (!report || !report.ok || !report.fused) return;
   const name = serverName();
-  if (!report.fused) return;
   await guard(async () => {
     if (registered) {
       const out = await callConfig({ action: "remove", name: name });
-      if (out.ok === false) throw new Error(out.error || "could not remove");
+      if (out.ok === false) {
+        throw new Error(configError(out, "could not unregister " + name));
+      }
       registered = false;
       say("Unregistered " + name + ".");
     } else {
@@ -358,7 +398,9 @@ async function toggleRegistration() {
         name: name,
         json: JSON.stringify(definition),
       });
-      if (out.ok === false) throw new Error(out.error || "could not add");
+      if (out.ok === false) {
+        throw new Error(configError(out, "could not register " + name));
+      }
       registered = true;
       say("Registered " + name + " — restart Claude to pick it up.");
     }
@@ -493,14 +535,19 @@ function parseProposal(raw) {
       ? item.entrypoint
       : (entries.indexOf("main") >= 0 ? "main" : entries[0]);
     if (!entrypoint) continue;
-    const known = paramsOf(file, entrypoint).map((p) => p.name);
+    const known = paramsOf(file, entrypoint);
     const pins = {};
     if (item.pinned && typeof item.pinned === "object") {
       for (const key of Object.keys(item.pinned)) {
         // A pin naming a parameter that does not exist would be written to the
         // manifest and then silently dropped by the runner — worse than absent,
         // because the operator believes it is enforced.
-        if (known.indexOf(key) >= 0) pins[key] = String(item.pinned[key]);
+        const param = known.find((p) => p.name === key);
+        if (!param) continue;
+        // TYPED, not `String(...)`: the model answers JSON, so `false` arrives as
+        // a boolean and must stay one (see pinKind) instead of being flattened to
+        // the truthy string "false".
+        pins[key] = coercePin(pinKind(param), item.pinned[key]);
       }
     }
     out.push({
@@ -590,11 +637,12 @@ function renderDriftBanner(parent) {
 function renderState(parent) {
   if (!report.fused) {
     const note = text("div", "note bad");
-    note.appendChild(text("b", null, "No `fused` on PATH."));
+    note.appendChild(text("b", null, "No `fused` CLI available."));
     note.appendChild(text("div", null,
       "Tools can be curated and saved, but registration needs the `fused` "
-      + "command — an MCP entry pointing at a missing binary would fail inside "
-      + "Claude, so Register is disabled."));
+      + "command this app itself provides — an MCP entry pointing at a binary "
+      + "that is missing (or at some other `fused` that happens to be on PATH) "
+      + "would fail inside Claude, so Register is disabled."));
     parent.appendChild(note);
     return;
   }
@@ -696,8 +744,9 @@ function renderTool(index) {
     box.addEventListener("change", () => {
       if (box.checked) {
         // Seed the pin with the parameter's own default, which is the value the
-        // page was already relying on.
-        tool.pins[p.name] = stripQuotes(p.default);
+        // page was already relying on — TYPED, so a boolean default seeds `false`
+        // and not the string "False".
+        tool.pins[p.name] = seedPin(p);
       } else {
         delete tool.pins[p.name];
       }
@@ -709,11 +758,31 @@ function renderTool(index) {
       (p.annotation ? ": " + p.annotation : "")
       + (p.required ? " (required)" : " = " + (p.default || "None"))));
     if (pinned) {
-      const value = document.createElement("input");
-      value.className = "value";
-      value.value = tool.pins[p.name];
-      value.addEventListener("input", () => { tool.pins[p.name] = value.value; });
-      row.appendChild(value);
+      const kind = pinKind(p);
+      if (kind === "bool") {
+        // A SELECT, not a text box: a boolean pin has two values and typing one
+        // of them is how `"False"` got written as a string in the first place.
+        const value = document.createElement("select");
+        for (const option of ["true", "false"]) {
+          const opt = document.createElement("option");
+          opt.value = option;
+          opt.textContent = option;
+          if (String(tool.pins[p.name]) === option) opt.selected = true;
+          value.appendChild(opt);
+        }
+        value.addEventListener("change", () => {
+          tool.pins[p.name] = value.value === "true";
+        });
+        row.appendChild(value);
+      } else {
+        const value = document.createElement("input");
+        value.className = "value";
+        value.value = String(tool.pins[p.name]);
+        value.addEventListener("input", () => {
+          tool.pins[p.name] = coercePin(kind, value.value);
+        });
+        row.appendChild(value);
+      }
     }
     params.appendChild(row);
   }
@@ -733,28 +802,77 @@ function renderTool(index) {
   return card;
 }
 
-// A default from the AST arrives as source text (`'list'`, `None`, `10`); a pin
-// is a value. Only the quotes come off — anything else would be interpreting
-// app source, which is the user's job in the value box.
-function stripQuotes(src) {
-  const s = String(src || "");
-  if (s.length >= 2 && (s[0] === "'" || s[0] === '"') && s[s.length - 1] === s[0]) {
-    return s.slice(1, -1);
+// WHAT KIND OF VALUE this parameter's pin is, from the annotation first and the
+// default's literal shape second. This is the whole of finding-1's fix: a pin is
+// written into `mcp.toml` as TOML and read back by the server as JSON, so a
+// `dry_run: bool = False` pinned "off" has to land as `dry_run = false` and not
+// as the string `"False"` — which the server would hand the entrypoint as a
+// non-empty (i.e. TRUTHY) string, turning a pinned-off safety flag on.
+function pinKind(p) {
+  const ann = String((p && p.annotation) || "").toLowerCase();
+  if (ann === "bool") return "bool";
+  if (ann === "int" || ann === "float") return "number";
+  if (ann === "str") return "str";
+  const src = String((p && p.default) || "").trim();
+  if (src === "True" || src === "False") return "bool";
+  if (src !== "" && /^-?\d+(\.\d+)?$/.test(src)) return "number";
+  return "str";
+}
+
+// A default from the AST arrives as SOURCE TEXT (`'list'`, `None`, `10`,
+// `False`); a pin is a VALUE. Turn the one into the other by kind — and only for
+// the literal shapes, because anything else would be evaluating app source,
+// which is the user's job in the value box.
+function seedPin(p) {
+  const src = String((p && p.default) || "").trim();
+  const kind = pinKind(p);
+  if (kind === "bool") return src === "True";
+  if (kind === "number") return src === "" ? 0 : Number(src);
+  if (src.length >= 2 && (src[0] === "'" || src[0] === '"')
+      && src[src.length - 1] === src[0]) {
+    return src.slice(1, -1);
   }
-  return s === "None" ? "" : s;
+  return src === "None" || src === "" ? "" : src;
+}
+
+// The value an edited box or a model's proposal becomes, by kind. A `number` box
+// whose text is not a number stays a STRING rather than becoming NaN (which JSON
+// cannot carry): the manifest writer then refuses it by type, which is a message,
+// where NaN would have been a silent null.
+function coercePin(kind, value) {
+  if (typeof value === "boolean" || typeof value === "number") {
+    return kind === "str" ? String(value) : value;
+  }
+  const text = String(value === null || value === undefined ? "" : value);
+  if (kind === "bool") return text.trim().toLowerCase() === "true";
+  if (kind === "number") {
+    const n = Number(text.trim());
+    return text.trim() !== "" && Number.isFinite(n) ? n : text;
+  }
+  return text;
+}
+
+// The buttons that need a report, in one place — so "not loaded yet", "loading"
+// and "the load failed" are all the same answer rather than three.
+function setEnabled(ready) {
+  for (const id of ["curate", "add", "save", "register"]) {
+    el(id).disabled = !ready;
+  }
 }
 
 function render() {
-  if (!report || !report.ok) return;
+  if (!report || !report.ok) {
+    setEnabled(false);
+    el("reload").disabled = busy;
+    return;
+  }
   el("app-name").textContent = report.name;
   el("app-path").textContent = report.path;
 
+  setEnabled(!busy);
   const reg = el("register");
   reg.textContent = registered ? "Unregister" : "Register";
   reg.disabled = busy || !report.fused;
-  el("curate").disabled = busy;
-  el("add").disabled = busy;
-  el("save").disabled = busy;
   el("reload").disabled = busy;
 
   mainEl.innerHTML = "";
