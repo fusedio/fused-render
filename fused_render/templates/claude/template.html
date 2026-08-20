@@ -9869,18 +9869,42 @@ const footEl = document.getElementById("footnote");
 // What the row needs on ONE line, summed by hand. NOT scrollWidth: on a flex row
 // it is floored at clientWidth, and this row also wraps, so an overflowing row
 // quietly gets taller and reports no overflow at all — the exact failure that made
-// this invisible to CSS. The spacer is skipped because it is slack and not
-// content (flex-basis 0 while the row fits, the line break once it does not).
+// this invisible to CSS.
+//
+// TWO THINGS THE SUM HAS TO GET EXACTLY RIGHT, and the first version got both
+// slightly wrong — enough to leave a ~6px band at every stage boundary where the
+// row had already wrapped (Schedule and Send fell to a second line) while this
+// function still reported that it fit (Akshil, 2026-08-20):
+//
+//   1. SEATS vs CONTENT are different questions. The spacer contributes no WIDTH
+//      (flex-basis 0 while the row fits, the line break once it does not) but it
+//      is a flex item like any other, so the browser puts a `gap` on each side of
+//      it. Skipping it from the gap count under-charged the row by exactly one
+//      gap. Every child that is laid out at all takes a seat here; only its width
+//      is conditional. `display: none` is the one thing with no seat — the
+//      screenshot button whenever there is no pane to photograph — and it is
+//      asked of the computed style rather than inferred from a zero offsetWidth,
+//      which cannot tell "not laid out" from "laid out at zero width".
+//
+//   2. SUB-PIXELS count, because the browser's own wrap decision is made in
+//      them. offsetWidth is rounded to an integer, so a row of seven controls
+//      could be under-read by several pixels at exactly the widths where a few
+//      pixels is the whole question. getBoundingClientRect is the fractional
+//      reading, and margins (which offsetWidth never included) come off the
+//      computed style so a later layout tweak cannot silently reopen this gap.
 function composerRowNeed(row) {
   const cs = getComputedStyle(row);
   let need = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
-  let kids = 0;
+  let seats = 0;
   for (const c of row.children) {
-    if (c.classList.contains("spacer") || !c.offsetWidth) continue;  // hidden child, no seat
-    need += c.offsetWidth;
-    kids += 1;
+    const s = getComputedStyle(c);
+    if (s.display === "none") continue;   // not laid out: no width, and no gap either
+    seats += 1;
+    if (c.classList.contains("spacer")) continue;   // a seat, but slack rather than content
+    need += c.getBoundingClientRect().width +
+      (parseFloat(s.marginLeft) || 0) + (parseFloat(s.marginRight) || 0);
   }
-  if (kids > 1) need += (parseFloat(cs.columnGap) || 0) * (kids - 1);
+  if (seats > 1) need += (parseFloat(cs.columnGap) || 0) * (seats - 1);
   return need;
 }
 
